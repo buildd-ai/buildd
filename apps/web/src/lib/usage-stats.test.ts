@@ -386,8 +386,42 @@ describe('computeUsageStats', () => {
     ]);
     expect(stats.byModel).toHaveLength(2);
     expect(stats.byModel[0].model).toBe('claude-opus-5');
-    expect(stats.byModel[0].inputTokens).toBe(800);
+    expect(stats.byModel[0].uncachedInputTokens).toBe(800);
     expect(stats.byModel.reduce((s, m) => s + m.share, 0)).toBeCloseTo(1);
+  });
+
+  /**
+   * C24: the response carried two incompatible definitions of `inputTokens`.
+   * `totals.inputTokens` comes from `workers.input_tokens`, which the runner
+   * writes as input + cache_read + cache_creation (apps/runner/src/usage-aggregate.ts),
+   * while `byModel[].inputTokens` was the SDK's cache-EXCLUSIVE figure. So
+   * sum(byModel) < totals by construction and nothing said why.
+   */
+  test('byModel input tokens use the same definition as totals', () => {
+    const meta = (model: string) => ({
+      stopReason: null, durationMs: 0, durationApiMs: 0, numTurns: 0,
+      modelUsage: {
+        [model]: {
+          inputTokens: 200, outputTokens: 50,
+          cacheReadInputTokens: 700, cacheCreationInputTokens: 100, costUSD: 0,
+        },
+      },
+    });
+    // What the runner would have persisted for that worker: 200+700+100.
+    const stats = computeUsageStats([
+      row({ taskId: 't1', inputTokens: 1000, outputTokens: 50, resultMeta: meta('claude-opus-5') }),
+      row({ taskId: 't2', inputTokens: 1000, outputTokens: 50, resultMeta: meta('claude-haiku-4-5') }),
+    ]);
+
+    const modelInput = stats.byModel.reduce((n, m) => n + m.inputTokens, 0);
+    expect(modelInput).toBe(stats.totals.inputTokens);
+
+    // The cache-exclusive figure is still available, under a name that says so.
+    expect(stats.byModel[0].uncachedInputTokens).toBe(200);
+    expect(stats.byModel[0].cacheReadTokens).toBe(700);
+    expect(stats.byModel[0].cacheCreationTokens).toBe(100);
+    // Share stays on the billable (uncached input + output) basis.
+    expect(stats.byModel.reduce((n, m) => n + m.share, 0)).toBeCloseTo(1);
   });
 
   test('null token columns count as zero rather than poisoning totals', () => {

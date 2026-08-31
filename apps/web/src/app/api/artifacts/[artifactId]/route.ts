@@ -4,6 +4,7 @@ import { artifacts } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { appBaseUrl } from '@/lib/app-url';
 
 // GET /api/artifacts/[artifactId] - Fetch a specific artifact by ID
 export async function GET(
@@ -42,10 +43,10 @@ export async function GET(
     }
   }
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
-  const shareUrl = artifact.shareToken ? `${baseUrl}/share/${artifact.shareToken}` : null;
+  // A token only addresses a live share while the artifact is public.
+  const shareUrl = artifact.shareToken && artifact.visibility === 'public'
+    ? `${appBaseUrl()}/share/${artifact.shareToken}`
+    : null;
 
   // Return full artifact without the worker relation
   const { worker: _worker, ...artifactData } = artifact;
@@ -109,10 +110,9 @@ export async function PATCH(
     .where(eq(artifacts.id, artifactId))
     .returning();
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
-  const shareUrl = updated.shareToken ? `${baseUrl}/share/${updated.shareToken}` : null;
+  const shareUrl = updated.shareToken && updated.visibility === 'public'
+    ? `${appBaseUrl()}/share/${updated.shareToken}`
+    : null;
 
   return NextResponse.json({
     artifact: { ...updated, shareUrl },

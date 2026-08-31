@@ -23,6 +23,23 @@ const mockTasksUpdate = mock(() => ({
   })),
 }));
 const mockTasksFindFirst = mock(() => Promise.resolve(null));
+// Mission-note delivery (user replies + mission guidance). Previously absent from
+// this mock, so the note-delivery block threw into its own try/catch and no test
+// ever exercised it.
+const mockMissionNotesFindMany = mock(() => Promise.resolve([] as any[]));
+let missionNotesUpdateSets: any[] = [];
+let missionNotesUpdateWheres: any[] = [];
+const mockMissionNotesUpdate = mock(() => ({
+  set: mock((vals: any) => {
+    missionNotesUpdateSets.push(vals);
+    return {
+      where: mock((w: any) => {
+        missionNotesUpdateWheres.push(w);
+        return Promise.resolve();
+      }),
+    };
+  }),
+}));
 const mockMissionsFindFirst = mock(() => Promise.resolve(null));
 const mockArtifactsFindMany = mock(() => Promise.resolve([]));
 const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
@@ -96,6 +113,7 @@ mock.module('@buildd/core/db', () => ({
       secrets: { findMany: mockSecretsFindMany },
       workerErrorTraces: { findMany: mockWorkerErrorTracesFindMany },
       missions: { findFirst: mockMissionsFindFirst },
+      missionNotes: { findMany: (...args: any[]) => mockMissionNotesFindMany(...args) },
       // Lazy wrapper: this mock.module factory runs before the const below is initialised.
       oauthBudgetEpisodes: { findFirst: (...args: any[]) => mockOauthEpisodesFindFirst(...args) },
       // Provider pause log + account budget flag, read by @/lib/backend-failover
@@ -110,6 +128,7 @@ mock.module('@buildd/core/db', () => ({
       if (table === 'teams') return mockTeamsUpdate();
       if (table === 'secrets') return mockSecretsUpdate();
       if (table === 'taskSchedules') return mockTaskSchedulesUpdate();
+      if (table === 'missionNotes') return mockMissionNotesUpdate();
       return mockWorkersUpdate();
     },
     insert: (table: any) => mockGenericInsert(table),
@@ -221,7 +240,7 @@ const mockGenericInsert = mock((table: any) => {
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
-  artifacts: 'artifacts',
+  artifacts: { workerId: 'artifacts.workerId', missionId: 'artifacts.missionId', updatedAt: 'artifacts.updatedAt' },
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
   accounts: 'accounts',
@@ -389,6 +408,17 @@ mock.module('@/lib/merge-policy', () => ({
       },
     };
   },
+}));
+
+// CBM fleet detectors. The real implementations are DB-backed and no-op unless
+// OPS_ALERTS_ENABLED, so stubbing them is the only way to observe the caller gate.
+// CBM_HEALTH_TERMINAL_STATUSES must be re-exported — route.ts imports it for that gate.
+const mockDetectCbmFleetDisabled = mock(() => Promise.resolve());
+const mockDetectCbmEnforcedUnused = mock(() => Promise.resolve());
+mock.module('@buildd/core/cbm-health', () => ({
+  CBM_HEALTH_TERMINAL_STATUSES: ['completed', 'failed', 'error'] as const,
+  detectCbmFleetDisabled: mockDetectCbmFleetDisabled,
+  detectCbmEnforcedUnused: mockDetectCbmEnforcedUnused,
 }));
 
 import { GET, PATCH } from './route';
@@ -1745,6 +1775,104 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
     });
 
+    // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
+    // Mission artifacts are inserted with workerId NULL by construction (see
+    // api/missions/[id]/artifacts/route.ts), and MCP create_artifact with a
+    // missionId routes down exactly that path — so an agent that DID produce its
+    // deliverable was told it had not.
+    it('artifact_required is satisfied by a mission artifact the worker created (workerId NULL)', async () => {
+      // Minimal evaluator for the mocked drizzle predicate tree, so the mock
+      // behaves like a database instead of returning rows unconditionally.
+      const matches = (pred: any, row: Record<string, any>): boolean => {
+        if (!pred) return true;
+        switch (pred.type) {
+          case 'and': return pred.args.every((a: any) => matches(a, row));
+          case 'or': return pred.args.some((a: any) => matches(a, row));
+          case 'not': return !matches(pred.expr, row);
+          case 'eq': return row[pred.field] === pred.value;
+          case 'isNull': return row[pred.field] === null || row[pred.field] === undefined;
+          case 'gte': return new Date(row[pred.field]).getTime() >= new Date(pred.value).getTime();
+          default: return true;
+        }
+      };
+      const missionArtifact = {
+        'artifacts.workerId': null,
+        'artifacts.missionId': 'mission-1',
+        'artifacts.updatedAt': new Date('2026-08-01T10:05:00.000Z'),
+      };
+      mockArtifactsFindMany.mockImplementation((args: any) =>
+        Promise.resolve(matches(args?.where, missionArtifact) ? [{ id: 'art-1' }] : []),
+      );
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/mission-research',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'),
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'artifact_required',
+        missionId: 'mission-1',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Mission artifact written.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('artifact_required still rejects when nothing belongs to the work', async () => {
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/mission-research',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'),
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'artifact_required',
+        missionId: 'mission-1',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('create_pr or create_artifact');
+    });
+
     it('artifact_required + artifact present + 0 diff + no PR → completed even with branch_merge release config', async () => {
       // Regression test: tasks with outputRequirement='artifact_required' that produce
       // only an artifact (no code changes, no pushed branch) were incorrectly flipped
@@ -2230,6 +2358,106 @@ describe('PATCH /api/workers/[id]', () => {
       expect(call.key).toBe('schedule-sched-456');
       expect(call.title).toContain('Daily check');
       expect(call.type).toBe('summary');
+    });
+
+    it('writes the auto artifact with no content and no structured output for a sensitive workspace', async () => {
+      // The redaction applied to taskUpdate.result.summary was block-local; the
+      // auto-artifact step re-read the raw body and persisted the prose anyway.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-sensitive' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'sensitive' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-sensitive',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        milestones: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        title: 'Scheduled check',
+        context: { scheduleId: 'sched-456', scheduleName: 'Daily check' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Customer SSN 123-45-6789 appears in the export',
+          structuredOutput: { finding: 'Customer SSN 123-45-6789 appears in the export' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAutoArtifact).toHaveBeenCalledTimes(1);
+      const call = mockUpsertAutoArtifact.mock.calls[0][0] as any;
+      expect(call.content).toBeNull();
+      expect(call.metadata.structuredOutput).toBeUndefined();
+      expect(JSON.stringify(call)).not.toContain('123-45-6789');
+      // The artifact itself is still recorded — only the prose is withheld.
+      expect(call.key).toBe('schedule-sched-456');
+      expect(call.metadata.autoGenerated).toBe(true);
+    });
+
+    it('keeps content and structured output for a standard workspace', async () => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkspacesFindFirst.mockResolvedValue({ dataClass: 'standard' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        milestones: null,
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        title: 'Scheduled check',
+        context: { scheduleId: 'sched-456', scheduleName: 'Daily check' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'All good',
+          structuredOutput: { finding: 'All good' },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockUpsertAutoArtifact).toHaveBeenCalledTimes(1);
+      const call = mockUpsertAutoArtifact.mock.calls[0][0] as any;
+      // formatStructuredOutput is stubbed in this file; what matters is that the
+      // formatted prose still reaches the artifact.
+      expect(call.content).toBe('## Status: ok\nFormatted output');
+      expect(call.metadata.structuredOutput).toEqual({ finding: 'All good' });
     });
 
     it('does not auto-create artifact for regular tasks', async () => {
@@ -3129,6 +3357,86 @@ describe('PATCH /api/workers/[id]', () => {
       expect(parseFloat(finalSet.costUsd)).toBeCloseTo(15, 1);
     });
 
+    // The test above passes a populated modelUsage map — a shape real OAuth auth
+    // never produces. This is the actual seat/OAuth shape: modelUsage EMPTY,
+    // totalUsage populated. Before the totals-based path existed, estimateCostUsd
+    // returned 0 here and workers.cost_usd kept its '0' default, which starved the
+    // mission cost gate and the burn forecast of their only input.
+    it('prices session totals against the session model when per-model attribution is empty (OAuth shape)', async () => {
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          // No costUsd at all — the runner omits it when the backend reported $0.
+          actualModel: 'claude-sonnet-4-6',
+          resultMeta: {
+            modelUsage: {},
+            // inputTokens is ALL-IN: 100k fresh + 1M cache read.
+            totalUsage: {
+              inputTokens: 1_100_000,
+              outputTokens: 100_000,
+              cacheReadInputTokens: 1_000_000,
+              cacheCreationInputTokens: 0,
+            },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // sonnet: 100k fresh input $0.30 + 100k output $1.50 + 1M cache read $0.30
+      const finalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(finalSet?.costUsd).toBeDefined();
+      expect(parseFloat(finalSet.costUsd)).toBeCloseTo(2.1, 6);
+      expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(2.1, 6);
+    });
+
+    it('does not invent a cost when the session model is unknown (older runner)', async () => {
+      setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          // No actualModel, no modelUsage — nothing names the model, and pricing
+          // spans 15x across tiers, so no charge is better than a fabricated one.
+          resultMeta: {
+            modelUsage: {},
+            totalUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const finalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(finalSet?.costUsd).toBeUndefined();
+    });
+
     it('aggregates cost from a second account in the same team and crosses threshold once', async () => {
       // Simulates: account-2 (same team) completed a task earlier, now account-1 completes another.
       // The team row already has $45 accumulated (from account-2). account-1 adds $10 → crosses 50%.
@@ -3293,6 +3601,111 @@ describe('PATCH /api/workers/[id]', () => {
       // totalTurns must be a plain number (worker.turns fallback), never a SQL object.
       expect(typeof callArgs.totalTurns).toBe('number');
       expect(callArgs.totalTurns).toBe(7);
+    });
+  });
+
+  // ── Model attribution + terminal-status gates ────────────────────────────
+  describe('session model attribution', () => {
+    function setupTerminal(worker: Record<string, unknown> = {}) {
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', turns: 2, pendingInstructions: null, ...worker,
+      });
+      // outputRequirement 'none' bypasses output validation; missionId absent so a
+      // 'failed' status does not auto-retry (maxRetries is 0 without a mission).
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none' });
+      return workerSetCalls;
+    }
+
+    beforeEach(() => {
+      mockRecordTaskOutcome.mockReset();
+      mockRecordTaskOutcome.mockResolvedValue(true);
+      mockDetectCbmFleetDisabled.mockClear();
+      mockDetectCbmEnforcedUnused.mockClear();
+    });
+
+    // task_outcomes.actual_model was NULL for every row because the caller passed
+    // no actualModel key at all, so the router's prediction could never be compared
+    // against what actually ran.
+    it('passes the runner-reported actualModel to recordTaskOutcome', async () => {
+      setupTerminal();
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', actualModel: 'claude-opus-4-8' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockRecordTaskOutcome).toHaveBeenCalled();
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-opus-4-8');
+    });
+
+    it('falls back to resultMeta.actualModel, then to per-model attribution', async () => {
+      setupTerminal();
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', resultMeta: { actualModel: 'claude-sonnet-4-6' } },
+      }), { params: mockParams });
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-sonnet-4-6');
+
+      mockRecordTaskOutcome.mockReset();
+      mockRecordTaskOutcome.mockResolvedValue(true);
+      setupTerminal();
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          resultMeta: {
+            modelUsage: {
+              'claude-haiku-4-5': { outputTokens: 10 },
+              // A mid-session fallback fired; the model that produced the most
+              // output is the representative one.
+              'claude-opus-4-8': { outputTokens: 900 },
+            },
+          },
+        },
+      }), { params: mockParams });
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-opus-4-8');
+    });
+
+    it('stays null when an older runner reports no model at all', async () => {
+      setupTerminal();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBeNull();
+    });
+
+    // The detectors' history query covers completed/failed/error, but the caller
+    // gate was 'completed' only — so on a workspace where every worker fails (the
+    // exact shape of a missing-binary outage) the widened query was never reached.
+    it('runs the CBM fleet detectors on failed and error, not just completed', async () => {
+      for (const status of ['completed', 'failed', 'error']) {
+        mockDetectCbmFleetDisabled.mockClear();
+        mockDetectCbmEnforcedUnused.mockClear();
+        setupTerminal();
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status, error: status === 'completed' ? undefined : 'boom', resultMeta: { cbm: { outcome: 'disabled', disableReason: 'binary_absent' } } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockDetectCbmFleetDisabled).toHaveBeenCalledTimes(1);
+        expect(mockDetectCbmEnforcedUnused).toHaveBeenCalledTimes(1);
+        expect(mockDetectCbmFleetDisabled.mock.calls[0][1]).toEqual({ outcome: 'disabled', disableReason: 'binary_absent' });
+      }
     });
   });
 
@@ -6261,5 +6674,475 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     // Warning should have been logged
     const capWarning = warnCalls.find((c: any[]) => String(c[0]).includes('cap hit'));
     expect(capWarning).toBeDefined();
+  });
+
+  it('full payload shape: all 7 required fields present on path_overlap_detected event', async () => {
+    // Verifies the complete event contract; removing the detection block drops this test.
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['packages/core/path-claim.ts'],
+      task: { pathManifest: ['packages/core/path-claim.ts'] },
+    }]);
+
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['packages/core/path-claim.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const overlapCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapCalls.length).toBe(1);
+    const payload = overlapCalls[0][2];
+    expect(payload.detectedWorkerId).toBe('worker-1');
+    expect(payload.detectedTaskId).toBe('task-1');
+    expect(payload.siblingWorkerId).toBe('worker-2');
+    expect(payload.siblingTaskId).toBe('task-2');
+    expect(Array.isArray(payload.overlappingPaths)).toBe(true);
+    expect(payload.overlappingPaths).toContain('packages/core/path-claim.ts');
+    expect(payload.detectedByBranch).toBe('buildd/task-1');
+    expect(payload.detectedBySha).toBe('abc123');
+  });
+
+  it('prefix overlap: reporter touches parent directory, sibling touches a file within it → fires', async () => {
+    // `packages/core` must overlap `packages/core/path-claim.ts` via prefix matching.
+    // This exercises the `nsp.startsWith(np + '/')` branch in the overlap filter.
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['packages/core/path-claim.ts'],
+      task: { pathManifest: ['packages/core/path-claim.ts'] },
+    }]);
+
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+
+    // Reporter only accumulated the directory path, not the specific file.
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['packages/core'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeDefined();
+    expect(overlapEvent![2].siblingTaskId).toBe('task-2');
+    // Reporter path is in overlappingPaths (the reporter's directory is the match anchor)
+    expect(overlapEvent![2].overlappingPaths).toContain('packages/core');
+  });
+
+  it('no path overlap: sibling touches different files → NO notice', async () => {
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['apps/runner/index.ts'],
+      task: { pathManifest: ['apps/runner/index.ts'] },
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find((u: any) => u.context?.pendingWorkerMessages?.length > 0);
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('sibling observedTouches null → NO notice (app-level null guard)', async () => {
+    // WHERE clause has `not(isNull(workers.observedTouches))` but the mock bypasses
+    // SQL. The app-level `if (siblingTouches.length === 0) continue` catches null.
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: null,
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find((u: any) => u.context?.pendingWorkerMessages?.length > 0);
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('sibling observedTouches empty array → NO notice', async () => {
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: [],
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find((u: any) => u.context?.pendingWorkerMessages?.length > 0);
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('sibling terminal (completed/failed/error) → NO notice (filtered by DB WHERE clause)', async () => {
+    // `not(inArray(workers.status, TERMINAL_WORKER_STATUSES))` in the query means
+    // terminal siblings never reach the app-level loop. Simulated by empty result.
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+  });
+});
+
+// ── Human instruction delivery (C1/C2/C6) ─────────────────────────────────────
+//
+// The queue used to be drained on EVERY PATCH while only the runner's sync loop
+// read the payload, so an ordinary milestone update threw an undelivered
+// instruction away. And `deliveryState: 'delivered'` was written before anything
+// confirmed a delivery, so the UI and get_task_messages reported deliveries that
+// never happened.
+
+describe('PATCH /api/workers/[id] — instruction queue hand-off', () => {
+  const baseWorker = {
+    id: 'worker-1',
+    accountId: 'account-1',
+    status: 'running',
+    workspaceId: 'ws-1',
+    taskId: null,
+    milestones: [],
+    pendingInstructions: 'Switch to the other auth flow',
+    instructionHistory: [
+      { type: 'instruction', message: 'Switch to the other auth flow', timestamp: 1, deliveryState: 'pending' },
+    ],
+    supportsInstructionAck: false,
+  };
+
+  let sets: any[] = [];
+
+  function setup(worker: any = baseWorker) {
+    sets = [];
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        sets.push(vals);
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockWorkersFindMany.mockResolvedValue([]);
+  }
+
+  function patch(body: any) {
+    return PATCH(
+      createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }),
+      { params: mockParams },
+    );
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockMissionNotesFindMany.mockReset();
+    mockMissionNotesFindMany.mockResolvedValue([]);
+  });
+
+  it('keeps the queue intact on a PATCH that does not consume instructions', async () => {
+    setup();
+    const res = await patch({ status: 'running', currentAction: 'Editing files' });
+
+    expect(res.status).toBe(200);
+    // Read-only copy: the caller still sees it, but nothing was destroyed.
+    expect((await res.json()).instructions).toBe('Switch to the other auth flow');
+    expect(sets.some(v => 'pendingInstructions' in v)).toBe(false);
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
+  it('serves a declared consumer without clearing, and returns the ack token', async () => {
+    setup();
+    const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
+
+    const data = await res.json();
+    expect(data.instructions).toBe('Switch to the other auth flow');
+    expect(data.instructionsAck).toBe('Switch to the other auth flow');
+    // Held until the consumer confirms delivery.
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(false);
+    expect(sets.some(v => 'instructionHistory' in v)).toBe(false);
+  });
+
+  it('records the ack-protocol capability from a declared consumer', async () => {
+    setup();
+    await patch({ status: 'running', milestones: [], consumeInstructions: true });
+    expect(sets.some(v => v.supportsInstructionAck === true)).toBe(true);
+  });
+
+  it('still drains on read for a runner that predates the ack protocol', async () => {
+    setup();
+    const res = await patch({ status: 'running', milestones: [], currentAction: 'Editing' });
+
+    expect((await res.json()).instructions).toBe('Switch to the other auth flow');
+    const drained = sets.find(v => v.pendingInstructions === null);
+    expect(drained).toBeDefined();
+    expect(drained.instructionHistory[0].deliveryState).toBe('delivered');
+  });
+
+  it('clears the queue and marks history delivered only when the consumer confirms', async () => {
+    setup();
+    const res = await patch({ instructionsDelivered: 'Switch to the other auth flow' });
+
+    expect(res.status).toBe(200);
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(true);
+    const marked = sets.find(v => v.instructionHistory);
+    expect(marked.instructionHistory[0].deliveryState).toBe('delivered');
+  });
+
+  it('does not clear a queue that grew after the hand-off', async () => {
+    // A second instruction was appended while the first was in flight; the
+    // confirmation covers only the first, so the queue must survive.
+    setup({ ...baseWorker, pendingInstructions: 'Switch to the other auth flow\n\nAlso add a test' });
+    await patch({ instructionsDelivered: 'Switch to the other auth flow' });
+
+    expect(sets.some(v => v.pendingInstructions === null)).toBe(false);
+  });
+
+  it('marks only the confirmed entry delivered', async () => {
+    setup({
+      ...baseWorker,
+      pendingInstructions: 'first\n\nsecond',
+      instructionHistory: [
+        { type: 'instruction', message: 'first', timestamp: 1, deliveryState: 'pending' },
+        { type: 'instruction', message: 'second', timestamp: 2, deliveryState: 'pending' },
+      ],
+    });
+    await patch({ instructionsDelivered: 'first' });
+
+    const marked = sets.find(v => v.instructionHistory).instructionHistory;
+    expect(marked[0].deliveryState).toBe('delivered');
+    expect(marked[1].deliveryState).toBe('pending');
+  });
+
+  it('does not count a bare acknowledgement as a turn', async () => {
+    setup();
+    await patch({ instructionsDelivered: 'Switch to the other auth flow' });
+    expect(sets.every(v => v.turns === undefined)).toBe(true);
+  });
+
+  it('counts a normal check-in as a turn', async () => {
+    setup();
+    await patch({ status: 'running', milestones: [] });
+    expect(sets.some(v => v.turns !== undefined)).toBe(true);
+  });
+});
+
+describe('PATCH /api/workers/[id] — mission note delivery', () => {
+  const worker = {
+    id: 'worker-1',
+    accountId: 'account-1',
+    status: 'running',
+    workspaceId: 'ws-1',
+    taskId: 'task-1',
+    milestones: [],
+    pendingInstructions: null,
+    instructionHistory: [],
+    supportsInstructionAck: true,
+  };
+
+  function setup() {
+    missionNotesUpdateSets = [];
+    missionNotesUpdateWheres = [];
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue(worker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+  }
+
+  function patch(body: any) {
+    return PATCH(
+      createMockRequest({ method: 'PATCH', headers: { Authorization: 'Bearer bld_test' }, body }),
+      { params: mockParams },
+    );
+  }
+
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockMissionNotesFindMany.mockReset();
+    mockMissionNotesUpdate.mockClear();
+  });
+
+  it('marks a delivered reply so the next check-in does not re-inject it', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany
+      // answered questions for this worker
+      .mockResolvedValueOnce([{ id: 'q-1', title: 'Which auth flow?' }])
+      // undelivered replies
+      .mockResolvedValueOnce([{ id: 'r-1', replyTo: 'q-1', title: 'Use the device flow', body: null }])
+      // guidance
+      .mockResolvedValueOnce([]);
+
+    const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
+    const data = await res.json();
+
+    expect(data.instructions).toContain('Use the device flow');
+    // deliveredTo must be appended for exactly the served note.
+    expect(missionNotesUpdateSets).toHaveLength(1);
+    expect(missionNotesUpdateSets[0].deliveredTo).toBeDefined();
+    const where = missionNotesUpdateWheres[0];
+    expect(JSON.stringify(where)).toContain('r-1');
+  });
+
+  it('marks delivered guidance notes too', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ id: 'g-1', title: 'Prefer small PRs', body: null }]);
+
+    const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
+    expect((await res.json()).instructions).toContain('Prefer small PRs');
+    expect(JSON.stringify(missionNotesUpdateWheres[0])).toContain('g-1');
+  });
+
+  it('does not select notes for a PATCH that will not inject them', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: 'mission-1', outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany.mockResolvedValue([{ id: 'g-1', title: 'Prefer small PRs', body: null }]);
+
+    const res = await patch({ status: 'running', currentAction: 'Editing files' });
+
+    expect((await res.json()).instructions).toBeUndefined();
+    expect(mockMissionNotesFindMany).not.toHaveBeenCalled();
+    expect(missionNotesUpdateSets).toHaveLength(0);
+  });
+
+  it('delivers task-scoped replies when the task has no mission', async () => {
+    setup();
+    mockTasksFindFirst.mockResolvedValue({ missionId: null, outputRequirement: 'none', context: {}, count: 0, scheduleId: null });
+    mockMissionNotesFindMany
+      .mockResolvedValueOnce([{ id: 'q-1', title: 'Which auth flow?' }])
+      .mockResolvedValueOnce([{ id: 'r-1', replyTo: 'q-1', title: 'Use the device flow', body: null }])
+      .mockResolvedValueOnce([]);
+
+    const res = await patch({ status: 'running', milestones: [], consumeInstructions: true });
+    expect((await res.json()).instructions).toContain('Use the device flow');
   });
 });

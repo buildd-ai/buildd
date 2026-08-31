@@ -2,7 +2,7 @@
 title: Timeline Dependency Geometry — DAG Shapes
 status: active
 owner: builder
-last_verified: 2026-08-29
+last_verified: 2026-08-30
 summary: The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/components/DependencyRail.tsx, apps/web/src/lib/dep-gate-contract.ts]
@@ -87,8 +87,14 @@ when ALL of the following hold:
 2. That blocker is the **immediately preceding row** in the section's rendered order.
 3. That blocker is in the **same section** (intra-section).
 
-In this case `DependencyRail` is rendered with `blockerVisible=true` (renders
-nothing — the elbow is the signal).
+The elbow is applied by the row's container, not by the rail: `DependencyRail`
+accepts `blockedBy`, `totalBlocked` and `max`, and has no elbow-related prop. The
+indent comes from a local flag in the list that renders the row —
+`blockerVisible` in `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx`, true
+when every blocker of the task is itself rendered in the same group — which
+selects the wrapper class `ml-4 border-l border-status-warning/50`. The rail
+still emits its chips (§2.3) in the elbow case; indent and chip are independent
+signals, and neither suppresses the other.
 
 **Rule ELB-1**: Elbow MUST NOT be applied when the task has more than one direct
 blocker. Use compact chip instead.
@@ -104,10 +110,11 @@ not by nesting.
 
 ### 2.3 Compact chip — everything else
 
-When the elbow conditions in §2.2 are not met, `DependencyRail` emits a
-monospaced `← {blocker title}` chip per named blocker, suffixed with `#{prNumber}`
-when the blocker is the half state (completed, PR still open). Each chip links to
-the blocking task.
+`DependencyRail` emits a monospaced `← {blocker title}` chip per named blocker,
+suffixed with `#{prNumber}` when the blocker is the half state (completed, PR
+still open). Each chip links to the blocking task. This is unconditional: the
+chips are emitted whenever `blockedByFrontier` is non-empty, including in the
+elbow case of §2.2.
 
 **Rule CC-1**: Blockers are named, not hashed. The chip label is the blocker's
 title, truncated to `MAX_TITLE_CHARS`. `← ${id.slice(0,6)}` is banned — a 6-char
@@ -409,12 +416,18 @@ the first 5 rows plus a count chip `+N more blocked by #X` as a non-interactive
 text line. This mirrors the `queuedOverflow` pattern.
 
 **Cycles**:
-If `dependsOn` contains a cycle (A→B→A or longer), the topological sort would
-loop. Detection: if Kahn's algorithm exits with unprocessed nodes, a cycle exists.
-Render ALL cycle participants with a warning chip `⚠ cycle` in the
-`StageChip` (`stage='BLOCKED'` + an `isCycle` prop that replaces the label with
-`⚠ CYCLE`). Do NOT loop. Cycle detection runs at O(N+E) over the section's
-intra-section dependency subgraph.
+If `dependsOn` contains a cycle (A→B→A or longer), a forward chain walk would
+loop. `identifyChains()` (`apps/web/src/lib/condensed-timeline.ts:182`) MUST
+terminate on such input and MUST render every participant: the linear walk
+carries a `pathSeen` set and breaks when the next id repeats (line 251), and the
+trailing sweep emits each still-unvisited task as its own `shape: 'standalone'`
+unit (lines 267–271). Do NOT loop. Termination and coverage are O(N+E) over the
+section's intra-section dependency subgraph.
+
+Cycle participants carry no cycle-specific label: `StageChipProps`
+(`apps/web/src/components/StageChip.tsx:45–56`) declares no cycle prop and
+`STAGE_CONFIG` has no ⚠ CYCLE entry, so they render with their ordinary stage.
+Labelling them is unimplemented — see **Out of scope**.
 
 ---
 
@@ -437,19 +450,20 @@ distinguishing:
 - `blockerVisible=true` → elbow (blocker is immediately above, same section) → renders nothing
 - `blockerVisible=false` + `blockedBy` non-empty → compact chip → renders `← #N` refs
 
-The calling code in `TaskRow` MUST compute `blockerVisible` as:
+The calling code MUST NOT decide this by comparing a row against the row above
+it: no previous-row identity is threaded through any renderer. Two shapes
+implement the decision instead, and each MUST keep the semantics above.
 
-```ts
-const directBlockerIds = new Set(task.chain?.blockedBy.map(b => b.id) ?? []);
-const prevTaskId = prevRow?.id ?? null;  // id of the row rendered just above
-const blockerVisible =
-  directBlockerIds.size === 1 &&          // single-blocker only
-  prevTaskId !== null &&
-  directBlockerIds.has(prevTaskId);       // that blocker is immediately above
-```
-
-`prevRow` is threaded from the `TaskList` mapping function — the index is
-available since `tasks.map((task, i) => ...)`.
+- **Timeline — adjacency is structural.** `identifyChains()` emits
+  `ChainUnit { head, tail, shape }`, and `ChainBlock`
+  (`apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx:410`)
+  renders `head` then `tail` in array order, so a `tail` row's blocker IS the row
+  immediately above it by construction. `ChainList` (line 431) maps over chain
+  units, never over a flat task array, so the elbow case needs no per-row test.
+- **Tasks grid — membership, not adjacency.** `renderTaskWithChildren`
+  (`apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx:159–161`) computes
+  `blockerVisible = groupScoped && isBlocked && every blocker id ∈ groupTaskIds`
+  and applies the `ml-4 border-l` elbow wrapper when it is true.
 
 ---
 
@@ -558,7 +572,7 @@ changes. `dependsOn`, `chain`, and all existing task fields are read-only inputs
 
 Primary files implementing this spec:
 
-- `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` — `TaskRow`, `TaskList`, `TimelineView`
+- `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` — `TaskRow`, `ChainBlock`, `ChainList`, `TimelineView`
 - `apps/web/src/lib/condensed-timeline.ts` — `groupTimelineTasks`, `TimelineGroups`
 - `apps/web/src/components/DependencyRail.tsx` — `DependencyRail`
 - `apps/web/src/components/StageChip.tsx` — `StageChip`, `deriveStage`
@@ -585,7 +599,7 @@ Primary files implementing this spec:
 
 **AC-7**: GIVEN a chain of depth 9 in `blocked`, WHEN the timeline renders, THEN only the first 6 rows are visible and a `▶ +3 more in chain` toggle is rendered.
 
-**AC-8**: GIVEN a cycle A→B→A detected in `dependsOn`, WHEN the timeline renders, THEN both A and B show `⚠ CYCLE` in their stage chip and the topological sort does NOT loop.
+**AC-8**: GIVEN a cycle A→B→A detected in `dependsOn`, WHEN the timeline renders, THEN `identifyChains()` returns without looping and both A and B appear exactly once as rendered rows (each as a `standalone` chain unit) — cycle participants are never dropped (§3.8).
 
 **AC-9**: GIVEN a partially-complete chain A→B→C where A is done, B is running, C is nextQueued, WHEN the timeline renders, THEN A appears only in the done (wave-banded) section; C appears in nextQueued with no DependencyRail chip (all gates satisfied).
 
@@ -611,3 +625,4 @@ Primary files implementing this spec:
 - Mobile swipe actions (`SwipeableRow`) — unaffected
 - Bookkeeping footer (§3.6 of timeline) — unaffected
 - Summary view (§3.5 of timeline) — unaffected; dependency geometry only applies to Timeline view
+- A ⚠ CYCLE stage-chip label for cycle participants — the claim that `StageChip` takes a cycle prop was removed from §3.8 on 2026-08-30: no such prop has ever existed. §3.8 and AC-8 now contract only what `identifyChains()` guarantees (termination + full coverage); adding the label needs a `StageChipProps` change and a new AC.

@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.191.1",
+  "version": "0.192.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -22,7 +22,6 @@
     "./backend-policy": "./backend-policy.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
-    "./task-classifier": "./task-classifier.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
     "./routing-analytics": "./routing-analytics.ts",

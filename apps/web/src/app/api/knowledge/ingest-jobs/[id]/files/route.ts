@@ -10,10 +10,12 @@
  * happens at /complete.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db } from '@buildd/core/db';
+import { knowledgeIngestJobs } from '@buildd/core/db/schema';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
+import { FULL_LEASE_MS } from '@/lib/knowledge-ingest-lease';
 import {
   shouldIngestFile,
   classifyIngestCorpus,
@@ -38,6 +40,9 @@ export async function POST(
   const account = await authenticateApiKey(authHeader?.replace('Bearer ', '') || null);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
+  }
+  if (account.level === 'trigger') {
+    return NextResponse.json({ error: 'Trigger tokens cannot upload ingest files' }, { status: 403 });
   }
 
   let body: FilesBody;
@@ -86,6 +91,20 @@ export async function POST(
   if (job.status !== 'running') {
     return NextResponse.json({ error: `Job is ${job.status}, expected running` }, { status: 409 });
   }
+
+  // Heartbeat: an accepted batch is proof of forward progress, so push the lease
+  // out. A long full ingest would otherwise outrun its TTL and be reclaimed
+  // mid-flight (harmless but wasteful — ingest upserts are idempotent).
+  const beat = new Date();
+  await db
+    .update(knowledgeIngestJobs)
+    .set({ heartbeatAt: beat, leaseExpiresAt: new Date(beat.getTime() + FULL_LEASE_MS) })
+    .where(and(eq(knowledgeIngestJobs.id, id), eq(knowledgeIngestJobs.status, 'running')))
+    .returning({ id: knowledgeIngestJobs.id })
+    .catch(err => {
+      console.error(`[knowledge-ingest] lease renewal failed for job ${id}:`, err);
+      return [];
+    });
 
   try {
     // Dynamic import keeps this module light for route tests (the store pulls

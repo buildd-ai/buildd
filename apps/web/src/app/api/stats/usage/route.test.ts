@@ -252,5 +252,43 @@ describe('GET /api/stats/usage — aggregation', () => {
     mockWorkersFindMany.mockResolvedValue([worker()]);
     const body = await (await GET(makeRequest())).json();
     expect(body.truncatedScan).toBe(false);
+    expect(body.scan.truncated).toBe(false);
+    expect(body.scan.completeSince).toBe(body.windowStart);
+  });
+
+  /**
+   * C23: the row cap was applied to an UNORDERED scan, so a truncated request
+   * got an arbitrary 5000 of the window's workers. Totals being "a floor" is
+   * honest for additive metrics; a p50/p90 over an arbitrary subset is not a
+   * percentile of anything. Ordering by completedAt desc makes the scanned set
+   * the COMPLETE population of a narrower window, which the response names.
+   */
+  it('orders the scan deterministically so a truncated window is a real window', async () => {
+    mockWorkersFindMany.mockResolvedValue([worker()]);
+    await GET(makeRequest());
+    const args = mockWorkersFindMany.mock.calls[0][0] as any;
+    expect(Array.isArray(args.orderBy)).toBe(true);
+    expect(args.orderBy.length).toBeGreaterThan(0);
+    expect(args.limit).toBe(5000);
+  });
+
+  it('names the window its distributions actually cover when the scan is truncated', async () => {
+    // 5000 rows, newest first (what the ordered query returns).
+    const rows = Array.from({ length: 5000 }, (_, i) =>
+      worker({
+        taskId: `task-${i}`,
+        completedAt: new Date(Date.UTC(2026, 7, 20, 0, 0, 0) - i * 60_000),
+      }),
+    );
+    mockWorkersFindMany.mockResolvedValue(rows);
+
+    const body = await (await GET(makeRequest({ window: '30d' }))).json();
+    expect(body.truncatedScan).toBe(true);
+    expect(body.scan.truncated).toBe(true);
+    expect(body.scan.rows).toBe(5000);
+    expect(body.scan.limit).toBe(5000);
+    // The oldest row actually scanned, not the requested 30d boundary.
+    expect(body.scan.completeSince).toBe(rows[4999].completedAt.toISOString());
+    expect(body.scan.completeSince).not.toBe(body.windowStart);
   });
 });

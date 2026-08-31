@@ -37,6 +37,7 @@ import {
   buildWorkerBwrapArgv,
   isMountAllowlistEnabled,
 } from '../bwrap-mount-allowlist';
+import { checkBwrapMountIsolationSupport } from '../env-scan';
 import { scanToolResult } from '../error-trace-scanner';
 import {
   classifyReportedFailure,
@@ -60,20 +61,44 @@ function probeBwrap(): boolean {
         '--ro-bind', '/usr', '/usr',
         '--', '/usr/bin/env', 'echo', 'ok',
       ],
-      { timeout: 5000 },
+      { timeout: 5000, encoding: 'utf8' },
     );
+    if (r.status !== 0) {
+      // Print WHY, not just that it failed. Relaxing
+      // kernel.apparmor_restrict_unprivileged_userns was necessary but NOT
+      // sufficient on GitHub's runners — the probe still declined there with the
+      // knob at 0 — and without the underlying error the next person has nothing
+      // to work from but guesses.
+      console.log(
+        `bwrap probe declined (status=${r.status}, signal=${r.signal ?? 'none'}): ` +
+        `${(r.stderr || '').trim() || '<no stderr>'}${r.error ? ` err=${r.error.message}` : ''}`,
+      );
+    }
     return r.status === 0;
-  } catch {
+  } catch (err) {
+    console.log(`bwrap probe threw: ${(err as Error).message}`);
     return false;
   }
 }
 
 const BWRAP_AVAILABLE = probeBwrap();
 
+/**
+ * Emitted so a skipped run cannot be mistaken for a verified one: this suite
+ * reports green either way, and the isolation claims are only tested when the
+ * mode is `full`. CI greps for this line before treating a pass as evidence of
+ * isolation; a guard test below asserts the suite's own probe agrees with the
+ * production gate.
+ */
+export const MOUNT_ISOLATION_MODE: 'full' | 'skipped' = BWRAP_AVAILABLE ? 'full' : 'skipped';
+console.log(`MOUNT_ISOLATION_MODE=${MOUNT_ISOLATION_MODE}`);
+
 if (!BWRAP_AVAILABLE) {
   console.log(
     '⏭️  bwrap user namespaces are unavailable on this host — isolation subprocess tests will be skipped.\n' +
     '   Install bubblewrap and enable user namespaces to run the full probe suite.\n' +
+    '   On Ubuntu 24.04+ (including GitHub runners) this is usually AppArmor:\n' +
+    '     sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n' +
     '   Escape-hatch and pattern-matching tests still run.',
   );
 }
@@ -185,6 +210,26 @@ function makeBwrapArgv(opts: {
     // gracefully if not present on the test runner.
   });
 }
+
+// ---------------------------------------------------------------------------
+// 0. GUARD — the skip decision must match what production actually requires
+// ---------------------------------------------------------------------------
+
+describe('probe guard', () => {
+  test('guards on the same namespaces the production gate probes', () => {
+    // checkBwrapMountIsolationSupport() is the runner-side gate for the outer
+    // wrapper. If the two ever diverge, this suite skips on hosts the runner
+    // considers usable (or worse, the reverse).
+    expect(checkBwrapMountIsolationSupport()).toBe(BWRAP_AVAILABLE);
+  });
+
+  test('reports the mode it ran in', () => {
+    expect(['full', 'skipped']).toContain(MOUNT_ISOLATION_MODE);
+    if (MOUNT_ISOLATION_MODE === 'skipped') {
+      console.log('   NOTE: isolation was NOT verified on this host.');
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // 1. NEGATIVE — isolation: blocked paths must be inaccessible inside bwrap

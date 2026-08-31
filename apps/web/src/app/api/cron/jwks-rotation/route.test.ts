@@ -43,8 +43,14 @@ mock.module('@buildd/core/secrets', () => ({
   getSecretsProvider: mockGetSecretsProvider,
 }));
 
+// Sentinel: the route must get its kid from lib/signing-keys, not from a
+// second local copy of the same generator.
+const SHARED_KID = 'buildd-FAKE-from-shared-lib';
+const mockMakeKid = mock((_now: Date) => SHARED_KID);
+
 mock.module('@/lib/signing-keys', () => ({
   generateSigningKeypair: mockGenerateSigningKeypair,
+  makeKid: mockMakeKid,
 }));
 
 process.env.CRON_SECRET = 'test-secret';
@@ -81,6 +87,8 @@ describe('GET /api/cron/jwks-rotation', () => {
     });
     mockProviderSet.mockResolvedValue('new-secret-id');
     mockSecretsFindMany.mockResolvedValue([]);
+    mockMakeKid.mockReset();
+    mockMakeKid.mockReturnValue(SHARED_KID);
   });
 
   it('returns 401 without correct CRON_SECRET', async () => {
@@ -158,5 +166,29 @@ describe('GET /api/cron/jwks-rotation', () => {
     expect(mockGenerateSigningKeypair).toHaveBeenCalledTimes(1);
     const body = await res.json();
     expect(body.rotated).toBe(true);
+  });
+
+  // Regression: `makeKid` was implemented twice (here and in lib/signing-keys),
+  // so a collision fix in one place silently missed the other. There must be a
+  // single implementation, imported.
+  it('uses the shared makeKid from lib/signing-keys on the bootstrap path', async () => {
+    mockSecretsFindMany.mockResolvedValue([]);
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect(mockMakeKid).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.newKid).toBe(SHARED_KID);
+  });
+
+  it('uses the shared makeKid from lib/signing-keys on the rotation path', async () => {
+    mockSecretsFindMany.mockResolvedValue([
+      { id: 'key-1', label: 'buildd-2026-06', tokenExpiresAt: null, createdAt: thirtyOneDaysAgo },
+    ]);
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    expect(mockMakeKid).toHaveBeenCalledTimes(1);
+    const body = await res.json();
+    expect(body.newKid).toBe(SHARED_KID);
+    expect(mockProviderSet.mock.calls[0][2]).toMatchObject({ label: SHARED_KID });
   });
 });

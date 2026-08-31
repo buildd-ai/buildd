@@ -47,7 +47,11 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
       });
 
       if (res.status === 409) {
-        setMessage({ type: 'error', text: 'Plan already approved' });
+        // 409 covers two distinct states — already approved, and rejected.
+        // Show what the server actually said so a reviewer who rejected this
+        // plan is never told it was approved.
+        const data = await res.json().catch(() => null);
+        setMessage({ type: 'error', text: data?.error || 'Plan already approved' });
         return;
       }
 

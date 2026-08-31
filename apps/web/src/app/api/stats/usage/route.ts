@@ -10,6 +10,7 @@ import {
   parseWindowMs,
   UNASSIGNED_ROLE,
   type GroupDimension,
+  type UsageWorkerRow,
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 
@@ -73,16 +74,60 @@ export async function GET(req: NextRequest) {
   const usageRows = await fetchUsageRows({ workspaceIds, windowStart });
   const stats = computeUsageStats(usageRows, groupBy);
   const labels = await groupLabels(stats.groups.map(g => g.key), groupBy, workspaceIds, scopedWorkspaces);
+  const scan = describeScan(usageRows, windowStart);
 
   return NextResponse.json({
     window: windowParam,
     windowStart: windowStart.toISOString(),
     workspaceIds,
     /** True when the row cap was hit — totals are then a floor, not a total. */
-    truncatedScan: usageRows.length >= USAGE_ROW_LIMIT,
+    truncatedScan: scan.truncated,
+    /**
+     * What the numbers below are actually computed over. On a truncated scan the
+     * rows are the newest `limit` workers, so they are the COMPLETE population
+     * of [completeSince, now) and an incomplete one for the requested window:
+     * read the totals as a floor and every distribution as covering
+     * `completeSince` onward, not `windowStart` onward.
+     */
+    scan,
     ...stats,
     groups: stats.groups.map(g => ({ ...g, label: labels[g.key] ?? g.key })),
   });
+}
+
+interface ScanBounds {
+  rows: number;
+  limit: number;
+  truncated: boolean;
+  /** ISO instant from which the scan is complete. Equals `windowStart` when it is. */
+  completeSince: string;
+}
+
+/**
+ * Bounds of what was actually read.
+ *
+ * The cap alone used to be reported (`truncatedScan`) with nothing saying which
+ * subset was kept — and because the query had no `orderBy`, the answer was
+ * "whichever 5000 rows Postgres felt like". The scan is now newest-first, so the
+ * honest statement is the timestamp of the oldest row that made it in.
+ */
+function describeScan(rows: UsageWorkerRow[], windowStart: Date): ScanBounds {
+  const truncated = rows.length >= USAGE_ROW_LIMIT;
+  let oldest: Date | null = null;
+  if (truncated) {
+    for (const r of rows) {
+      if (!r.completedAt) continue;
+      const t = new Date(r.completedAt);
+      if (!Number.isFinite(t.getTime())) continue;
+      if (!oldest || t < oldest) oldest = t;
+    }
+  }
+  return {
+    rows: rows.length,
+    limit: USAGE_ROW_LIMIT,
+    truncated,
+    completeSince: (oldest ?? windowStart).toISOString(),
+  };
 }
 
 /**
@@ -121,6 +166,7 @@ function emptyResponse(window: string, windowStart: Date, groupBy: GroupDimensio
     windowStart: windowStart.toISOString(),
     workspaceIds: [] as string[],
     truncatedScan: false,
+    scan: { rows: 0, limit: USAGE_ROW_LIMIT, truncated: false, completeSince: windowStart.toISOString() },
     ...stats,
     groups: [] as unknown[],
   };

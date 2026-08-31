@@ -5,6 +5,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { appBaseUrl } from '@/lib/app-url';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -61,13 +62,14 @@ export async function GET(
     limit,
   });
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
+  const baseUrl = appBaseUrl();
 
   const artifactsWithUrls = results.map(a => ({
     ...a,
-    shareUrl: a.shareToken ? `${baseUrl}/share/${a.shareToken}` : null,
+    // Only a public artifact has a link anyone can follow.
+    shareUrl: a.shareToken && a.visibility === 'public'
+      ? `${baseUrl}/share/${a.shareToken}`
+      : null,
   }));
 
   return NextResponse.json({ artifacts: artifactsWithUrls });

@@ -8,6 +8,42 @@ import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 
 /**
+ * Human plan-approval gate.
+ *
+ * Default OFF, which is exactly today's behaviour: every completed planning task
+ * self-approves its plan. Set `BUILDD_REQUIRE_PLAN_APPROVAL=1` to narrow
+ * auto-approval to the case it was designed for — mission-generated planning
+ * work — so a standalone planning task waits for a human to
+ * POST /api/tasks/[id]/approve-plan.
+ *
+ * One-line kill switch: unset BUILDD_REQUIRE_PLAN_APPROVAL (or set it to
+ * anything other than '1') and auto-approval is universal again.
+ */
+export function requirePlanApprovalEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.BUILDD_REQUIRE_PLAN_APPROVAL === '1';
+}
+
+/**
+ * Decide whether a completed planning task may approve its own plan.
+ *
+ * - `context.requiresPlanApproval === true` always demands a human, gate or not.
+ *   (Nothing sets this today, so it cannot change existing behaviour; it makes
+ *   the "a real human must look" case reachable without a fleet-wide env flip.)
+ * - Otherwise: gate off ⇒ auto-approve (today's behaviour); gate on ⇒
+ *   auto-approve only mission-generated plans.
+ */
+export function shouldAutoApprovePlan(
+  task: { missionId?: string | null; context?: Record<string, unknown> | null },
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  if (task.context?.requiresPlanApproval === true) return false;
+  if (!requirePlanApprovalEnabled(env)) return true;
+  return Boolean(task.missionId);
+}
+
+/**
  * Handle post-completion logic when a task reaches a terminal state (completed/failed).
  *
  * Checks if the completed task's parent has all children done and fires
@@ -30,7 +66,7 @@ export async function resolveCompletedTask(
   // Check if task is a planning task that needs mission-level handling
   const completedTaskFull = await db.query.tasks.findFirst({
     where: eq(tasks.id, completedTaskId),
-    columns: { mode: true, missionId: true, status: true },
+    columns: { mode: true, missionId: true, status: true, context: true },
   });
 
   if (completedTaskFull?.mode === 'planning') {
@@ -72,9 +108,20 @@ export async function resolveCompletedTask(
         }
       }
 
-      if (plan && Array.isArray(plan) && plan.length > 0) {
+      const hasPlan = Boolean(plan && Array.isArray(plan) && plan.length > 0);
+
+      if (hasPlan && !shouldAutoApprovePlan(completedTaskFull)) {
+        // Human gate: the plan stands as a proposal until someone approves it via
+        // POST /api/tasks/[id]/approve-plan. No children are created here, so no
+        // dependent work runs unreviewed.
+        console.log(
+          `[plan-gate] task ${completedTaskId} produced a ${plan!.length}-step plan awaiting human approval ` +
+          `(BUILDD_REQUIRE_PLAN_APPROVAL=${process.env.BUILDD_REQUIRE_PLAN_APPROVAL ?? 'unset'}, ` +
+          `mission=${completedTaskFull.missionId ?? 'none'})`
+        );
+      } else if (hasPlan) {
         try {
-          await approvePlan(completedTaskId, plan, { autoApproved: true });
+          await approvePlan(completedTaskId, plan!, { autoApproved: true });
           // Children created — retrigger will happen when they complete
           // via checkChildrenCompleted → maybeCreateAggregationTask → maybeRetriggerMission
         } catch (err) {

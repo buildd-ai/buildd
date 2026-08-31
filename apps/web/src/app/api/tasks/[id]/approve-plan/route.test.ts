@@ -352,4 +352,37 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     // Ensure no inserts happened
     expect(mockInsertValues).toHaveLength(0);
   });
+  // ── Regression: approve must refuse a rejected plan (C8) ────────────────────
+  // Before the fix /reject-plan mutated nothing, so a reviewer who rejected a
+  // plan could still approve it (or see "Plan already approved") while the
+  // unapproved child tasks were already running.
+
+  it('returns 409 when the plan was already rejected', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      context: {
+        planRejection: { feedback: 'Missing rollback step', rejectedAt: '2026-01-01T00:00:00.000Z' },
+      },
+      result: {
+        structuredOutput: {
+          plan: [{ ref: 'step-1', title: 'Research', description: 'Do research' }],
+          summary: 'A plan',
+        },
+      },
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest();
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(409);
+    const data = await response.json();
+    expect(data.error).toContain('rejected');
+    // No child tasks created from a rejected plan.
+    expect(mockInsertValues).toHaveLength(0);
+  });
 });

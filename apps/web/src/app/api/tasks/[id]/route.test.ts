@@ -259,7 +259,8 @@ describe('GET /api/tasks/[id]', () => {
       { id: 'w-1', status: 'completed', branch: 'feat/x', prUrl: 'https://github.com/o/r/pull/1' },
     ] as any);
     mockArtifactsFindMany.mockResolvedValue([
-      { id: 'a-1', title: 'Summary', type: 'summary', shareToken: 'tok1', workerId: 'w-1' },
+      // A shareUrl is only emitted while the artifact is public.
+      { id: 'a-1', title: 'Summary', type: 'summary', shareToken: 'tok1', visibility: 'public', workerId: 'w-1' },
     ] as any);
 
     const request = createMockRequest({

@@ -208,12 +208,20 @@ export interface LocalWorker {
   phaseStart: number | null;
   phaseToolCount: number;
   phaseTools: string[];  // Notable tool labels in current phase, cap 5
+  /**
+   * The model this session was started with — the per-task model the claim route
+   * resolved (task.context.model) or the runner-global default. Reported back so
+   * task_outcomes.actual_model reflects what really ran.
+   */
+  sessionModel?: string;
+  /** Model id the SDK reported on the init message, when it provides one. */
+  reportedModel?: string;
   // SDK result metadata (populated on completion)
   resultMeta?: ResultMeta | null;
   // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
   cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
-  cbmBootstrapResult?: 'ok' | 'failed';
+  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
+  cbmBootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
   cbmBootstrapFailReason?: string;
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
@@ -314,8 +322,20 @@ export interface ResultMeta {
   /**
    * Top-level usage totals from the SDK result. Populated even on seat-based
    * (OAuth) auth, where `modelUsage` stays empty — see usage-aggregate.ts.
+   * `inputTokens` is the all-in input figure (fresh + cache read + cache write);
+   * the optional cache fields carry the breakdown so the server can price a seat
+   * session without treating every cached token as fresh input.
    */
-  totalUsage?: { inputTokens: number; outputTokens: number } | null;
+  totalUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
+  } | null;
+  /** SDK-reported session cost. Always 0 on seat/OAuth auth. */
+  totalCostUsd?: number | null;
+  /** The model the session actually ran on (see resolveActualModel). */
+  actualModel?: string | null;
   permissionDenials?: Array<{ tool: string; reason: string }>;
   /** CBM observability metrics — present on all workers running CBM-enabled task 5+. */
   cbm?: CbmMetrics;

@@ -218,16 +218,28 @@ export async function POST(req: NextRequest) {
     columns: { accountId: true },
   });
   const uniqueAccountIds = [...new Set(activeAccountIds.map(w => w.accountId).filter(Boolean))] as string[];
+  // 4. Clean up workers stuck in waiting_input for 24+ hours — retry without input.
+  //    Runs inside the same per-account loop: cleanupStuckWaitingInput used to
+  //    take no arguments and sweep every account, so one caller (or one runner's
+  //    30-minute cleanup tick) fired the waiting_input timeout for every other
+  //    tenant. Cross-account coverage belongs to /api/cron/waiting-input-sweep.
+  let waitingInputFailedWorkers = 0;
+  let waitingInputRetriedTasks = 0;
+
   for (const accountId of uniqueAccountIds) {
     try {
       await cleanupStaleWorkers(accountId);
     } catch {
       // Non-fatal — continue with other accounts
     }
+    try {
+      const waitingInputResult = await cleanupStuckWaitingInput(accountId);
+      waitingInputFailedWorkers += waitingInputResult.failedWorkers;
+      waitingInputRetriedTasks += waitingInputResult.retriedTasks;
+    } catch {
+      // Non-fatal — a failed waiting_input sweep must not skip other accounts
+    }
   }
-
-  // 4. Clean up workers stuck in waiting_input for 24+ hours — retry without input
-  const waitingInputResult = await cleanupStuckWaitingInput();
 
   // 5. Mark workers as failed when their local-UI heartbeat is stale
   // This catches workers that appear active but their runner machine is offline
@@ -307,8 +319,8 @@ export async function POST(req: NextRequest) {
     cleaned: {
       stalledWorkers,
       orphanedTasks,
-      stuckWaitingInput: waitingInputResult.failedWorkers,
-      retriedTasks: waitingInputResult.retriedTasks,
+      stuckWaitingInput: waitingInputFailedWorkers,
+      retriedTasks: waitingInputRetriedTasks,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },

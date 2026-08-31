@@ -19,3 +19,7 @@ coverage/
 scripts/seed/.last-seed.json
 .agent/
 *.pen
+
+# Python bytecode from scripts/
+__pycache__/
+*.pyc

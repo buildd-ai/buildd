@@ -99,8 +99,9 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
         .returning();
       result = updated;
     } else {
-      // Insert new artifact
-      const shareToken = generateShareToken();
+      // Insert new artifact — PRIVATE, with no share token. A token is a bearer
+      // credential; only an explicit Share (POST /api/artifacts/[id]/share)
+      // mints one.
       const [inserted] = await db
         .insert(artifacts)
         .values({
@@ -110,24 +111,27 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
           type,
           title,
           content: content || null,
-          shareToken,
+          shareToken: null,
+          visibility: 'private',
           metadata,
         })
         .returning();
       result = inserted;
     }
 
-    // Fire Pusher events
+    // Fire Pusher events — never over the wire with the share credential on it.
+    const { shareToken: _shareToken, ...broadcastArtifact } = (result || {}) as Record<string, unknown>;
+
     await triggerEvent(
       channels.worker(workerId),
       events.WORKER_PROGRESS,
-      { artifact: result }
+      { artifact: broadcastArtifact }
     );
 
     await triggerEvent(
       channels.workspace(workspaceId),
       'worker:artifact',
-      { artifact: result }
+      { artifact: broadcastArtifact }
     );
   } catch (err) {
     console.error(`[Auto-artifact] Failed to upsert artifact for worker ${workerId}:`, err);

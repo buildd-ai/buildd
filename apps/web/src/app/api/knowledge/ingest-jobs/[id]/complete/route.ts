@@ -37,6 +37,9 @@ export async function POST(
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
+  if (account.level === 'trigger') {
+    return NextResponse.json({ error: 'Trigger tokens cannot complete ingest jobs' }, { status: 403 });
+  }
 
   let body: CompleteBody;
   try {
@@ -71,6 +74,9 @@ export async function POST(
     .set({
       status,
       finishedAt: new Date(),
+      // Release the lease: a terminal job must not look reclaimable.
+      leaseOwner: null,
+      leaseExpiresAt: null,
       ...(stats ? { stats } : {}),
       ...(changedFiles ? { changedFiles } : {}),
       ...(status === 'error' && typeof body.error === 'string' ? { error: body.error } : {}),

@@ -89,11 +89,25 @@ describe('POST /api/admin/refresh-model-aliases', () => {
     );
   });
 
-  it('allows session auth', async () => {
+  // Regression: the admin gate used to be skipped entirely on the session path
+  // (`if (apiAccount && apiAccount.level !== 'admin')`), so any logged-in user could
+  // rewrite the single global system_cache model-alias row. Session auth alone is
+  // never sufficient here — an admin-level API key is required.
+  it('rejects session-only auth (no admin API key) and does not touch the global aliases', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
 
     const res = await POST(createRequest());
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
+    expect(mockUpdateModelAliases).not.toHaveBeenCalled();
+  });
+
+  it('rejects a session user carrying a non-admin API key', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker' });
+
+    const res = await POST(createRequest());
+    expect(res.status).toBe(403);
+    expect(mockUpdateModelAliases).not.toHaveBeenCalled();
   });
 });

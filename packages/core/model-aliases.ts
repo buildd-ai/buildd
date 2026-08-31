@@ -1,8 +1,16 @@
 /**
- * Model alias resolution — maps short names (haiku, sonnet, opus) to full model IDs.
+ * Model alias map — short names (haiku, sonnet, opus) → full model IDs — plus the
+ * extended-thinking guards used at dispatch time.
  *
- * Reads from system_cache in DB (populated by runner's supportedModels() call).
- * Falls back to hardcoded defaults if cache is empty/expired.
+ * Honest state of this module (verified 2026-08-30):
+ * - `DEFAULT_ALIASES` is the in-code map, read by POST /api/admin/refresh-model-aliases.
+ * - `updateModelAliases` writes that map to `system_cache.model_aliases`. Its only
+ *   caller is that same admin route, i.e. a human-triggered refresh. Nothing in this
+ *   repo (runner included) calls it automatically, and nothing reads the cache row
+ *   back — the two resolvers that used to (`resolveModelName`, `resolveModelNameSync`)
+ *   had no reachable callers and were deleted. Treat the row as an operator-visible
+ *   record, not as an input to routing.
+ * - Claim-time model selection lives in `model-router.ts` + `model-tier-registry.ts`.
  */
 import { db } from './db/client';
 import { systemCache } from './db/schema';
@@ -12,74 +20,14 @@ const CACHE_KEY = 'model_aliases';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
- * Hardcoded fallbacks — only used when the DB cache is cold (e.g. first-ever deploy).
- * The DB cache (system_cache.model_aliases) is the source of truth and is refreshed
- * automatically by workers via supportedModels(), or manually via
- * POST /api/admin/refresh-model-aliases.
+ * The in-code alias map. Also the default payload POST /api/admin/refresh-model-aliases
+ * publishes to `system_cache.model_aliases` for any alias the operator omits.
  */
 export const DEFAULT_ALIASES: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-6',
   opus: 'claude-opus-5',
 };
-
-/** In-memory cache to avoid DB reads on every call. */
-let memoryCache: { aliases: Record<string, string>; loadedAt: number } | null = null;
-const MEMORY_TTL_MS = 5 * 60 * 1000; // 5 min in-memory
-
-/**
- * Resolve a short model name to a full model ID.
- * Returns the input unchanged if it's already a full ID.
- */
-export async function resolveModelName(name: string): Promise<string> {
-  const lower = name.toLowerCase();
-
-  // Fast path: not a short alias
-  if (!['haiku', 'sonnet', 'opus'].includes(lower)) return name;
-
-  const aliases = await getAliases();
-  return aliases[lower] || DEFAULT_ALIASES[lower] || name;
-}
-
-/**
- * Synchronous resolve using in-memory cache only.
- * Falls back to hardcoded defaults if cache is cold.
- */
-export function resolveModelNameSync(name: string): string {
-  const lower = name.toLowerCase();
-  if (!['haiku', 'sonnet', 'opus'].includes(lower)) return name;
-
-  if (memoryCache && Date.now() - memoryCache.loadedAt < MEMORY_TTL_MS) {
-    return memoryCache.aliases[lower] || DEFAULT_ALIASES[lower] || name;
-  }
-  return DEFAULT_ALIASES[lower] || name;
-}
-
-async function getAliases(): Promise<Record<string, string>> {
-  // Check in-memory cache first
-  if (memoryCache && Date.now() - memoryCache.loadedAt < MEMORY_TTL_MS) {
-    return memoryCache.aliases;
-  }
-
-  try {
-    const row = await db.query.systemCache.findFirst({
-      where: eq(systemCache.key, CACHE_KEY),
-    });
-
-    if (row && row.value && typeof row.value === 'object') {
-      const isExpired = row.expiresAt && new Date(row.expiresAt) < new Date();
-      if (!isExpired) {
-        const aliases = row.value as Record<string, string>;
-        memoryCache = { aliases, loadedAt: Date.now() };
-        return aliases;
-      }
-    }
-  } catch {
-    // DB unavailable — fall through to defaults
-  }
-
-  return DEFAULT_ALIASES;
-}
 
 type ThinkingConfig = { type: 'enabled' | 'disabled' | 'adaptive' } | undefined;
 type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined;
@@ -110,8 +58,12 @@ export function resolveEffectiveThinking(
 }
 
 /**
- * Update the cached model aliases from a supportedModels() response.
- * Called by the runner after discovering model capabilities.
+ * Publish an alias map to `system_cache.model_aliases`.
+ *
+ * Only caller: POST /api/admin/refresh-model-aliases (human-triggered). Accepts the
+ * `{ value, label? }[]` shape a supportedModels() response uses and slots entries by
+ * name substring. Failures are swallowed — this row is informational, not on any
+ * request path.
  */
 export async function updateModelAliases(
   models: Array<{ value: string; label?: string }>
@@ -147,10 +99,7 @@ export async function updateModelAliases(
           expiresAt,
         },
       });
-
-    // Update in-memory cache
-    memoryCache = { aliases, loadedAt: Date.now() };
   } catch {
-    // Non-fatal — next worker session will retry
+    // Non-fatal — the operator can just re-run the refresh.
   }
 }

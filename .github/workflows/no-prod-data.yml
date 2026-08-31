@@ -1,12 +1,15 @@
 name: No Production Data
 
 # This repo is public. Block production data from entering it — in the diff, in
-# commit messages, or in the PR body. See "This Repo Is Public" in CLAUDE.md.
+# commit messages, in the PR title, or in the PR body. See "This Repo Is Public"
+# in CLAUDE.md.
 #
 # The identifier list (personal handles, private repo names) lives in the repo
 # variable NO_PROD_DATA_IDENTIFIERS, not in this repo. Committing it here would
 # publish exactly what the check exists to catch. Set it under
 # Settings → Secrets and variables → Actions → Variables, as an ERE alternation.
+# Anchor short or common words, or the code scan will fire on ordinary
+# identifiers — a handle like "max" would match Math.max and maxWorkers.
 
 on:
   pull_request:
@@ -24,18 +27,29 @@ jobs:
           # Full history: the check reads every commit message on the branch.
           fetch-depth: 0
 
-      - name: Write the PR body to a file
-        # Via the environment, never as a shell argument — a PR body is
-        # untrusted input and would otherwise be interpolated into the script.
+      - name: Write the PR title and body to files
+        # Via the environment, never as shell arguments — both are untrusted
+        # input and would otherwise be interpolated into the script.
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" > /tmp/pr-body.txt
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          printf '%s' "$PR_BODY" > /tmp/pr-body.txt
+          printf '%s' "$PR_TITLE" > /tmp/pr-title.txt
 
       - name: Check for production data
         env:
           NO_PROD_DATA_IDENTIFIERS: ${{ vars.NO_PROD_DATA_IDENTIFIERS }}
+          # Also via the environment: a branch name can contain $, backticks and
+          # semicolons, so interpolating it into a run block is an injection path.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
-          git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
-          bash scripts/check-no-prod-data.sh \
-            "origin/${{ github.event.pull_request.base.ref }}" \
-            /tmp/pr-body.txt
+          git fetch --no-tags origin "$BASE_REF"
+          python3 scripts/check_no_prod_data.py "origin/$BASE_REF" \
+            --body /tmp/pr-body.txt --title /tmp/pr-title.txt
+
+      - name: Self-test the checker
+        # A guardrail that cannot fail is worse than none. This runs the pattern
+        # fixtures — real false positives from this repo's history, and real
+        # disclosure shapes the first version let through.
+        run: python3 scripts/__tests__/check_no_prod_data_test.py

@@ -228,7 +228,10 @@ describe('POST /api/tasks/cleanup', () => {
   it('includes stuck waiting_input counts in response', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
-    mockWorkersFindMany.mockResolvedValue([]);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])                            // stalled running
+      .mockResolvedValueOnce([{ accountId: 'account-1' }])  // active accounts
+      .mockResolvedValue([]);
     mockTasksFindMany.mockResolvedValue([]);
     mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 3, retriedTasks: 2 });
 
@@ -239,6 +242,36 @@ describe('POST /api/tasks/cleanup', () => {
     const data = await res.json();
     expect(data.cleaned.stuckWaitingInput).toBe(3);
     expect(data.cleaned.retriedTasks).toBe(2);
+  });
+
+  it('sweeps waiting_input per account instead of globally', async () => {
+    // The sweep used to be called once with no arguments and queried every
+    // account's waiting_input workers, so this endpoint timed out other
+    // tenants' workers. It now runs once per account the route already
+    // resolved for cleanupStaleWorkers.
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockWorkersFindMany
+      .mockResolvedValueOnce([])  // stalled running
+      .mockResolvedValueOnce([    // active accounts
+        { accountId: 'account-1' },
+        { accountId: 'account-2' },
+      ])
+      .mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([]);
+    mockCleanupStuckWaitingInput.mockResolvedValue({ failedWorkers: 1, retriedTasks: 1 });
+
+    const req = createMockRequest();
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    // Aggregated across both accounts, not a single global pass.
+    expect(data.cleaned.stuckWaitingInput).toBe(2);
+    expect(data.cleaned.retriedTasks).toBe(2);
+    expect(mockCleanupStuckWaitingInput).toHaveBeenCalledTimes(2);
+    expect(mockCleanupStuckWaitingInput).toHaveBeenCalledWith('account-1');
+    expect(mockCleanupStuckWaitingInput).toHaveBeenCalledWith('account-2');
   });
 
   it('clears claimedBy, claimedAt, and expiresAt when resetting orphaned tasks to pending', async () => {

@@ -5,6 +5,9 @@ const mockAuthenticateApiKey = mock(() => null as any);
 const mockArtifactsFindFirst = mock(() => null as any);
 const mockVerifyAccountWorkspaceAccess = mock(() => false as any);
 
+// What the PATCH UPDATE ... RETURNING hands back; per-test overridable.
+let updatedRow: Record<string, unknown> = { id: 'artifact-1', shareToken: 'test-token' };
+
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
 }));
@@ -21,7 +24,7 @@ mock.module('@buildd/core/db', () => ({
     update: () => ({
       set: mock(() => ({
         where: mock(() => ({
-          returning: mock(() => [{ id: 'artifact-1', shareToken: 'test-token' }]),
+          returning: mock(() => [updatedRow]),
         })),
       })),
     }),
@@ -30,6 +33,8 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  // artifact-helpers pulls in `and` at module load.
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -97,6 +102,7 @@ describe('GET /api/artifacts/[artifactId]', () => {
       title: 'Test Artifact',
       content: 'Full content here',
       shareToken: 'share-abc',
+      visibility: 'public',
       metadata: { key: 'value' },
       createdAt: new Date('2026-01-01'),
       updatedAt: new Date('2026-01-02'),
@@ -138,6 +144,30 @@ describe('GET /api/artifacts/[artifactId]', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.artifact.title).toBe('Shared Report');
+    expect(data.artifact.shareUrl).toBeNull();
+  });
+
+  it('omits shareUrl when the artifact is private but still holds a token', async () => {
+    // A token only addresses a live share while visibility is 'public'.
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      type: 'content',
+      title: 'Unshared',
+      content: 'Body',
+      shareToken: 'leftover-token',
+      visibility: 'private',
+      metadata: {},
+      worker: { accountId: 'account-1' },
+    });
+
+    const req = createMockGetRequest('bld_test');
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
     expect(data.artifact.shareUrl).toBeNull();
   });
 
@@ -189,6 +219,7 @@ describe('GET /api/artifacts/[artifactId]', () => {
 
 describe('PATCH /api/artifacts/[artifactId]', () => {
   beforeEach(() => {
+    updatedRow = { id: 'artifact-1', shareToken: 'test-token', visibility: 'public' };
     mockAuthenticateApiKey.mockReset();
     mockArtifactsFindFirst.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
@@ -225,6 +256,44 @@ describe('PATCH /api/artifacts/[artifactId]', () => {
     const req = createMockPatchRequest({ title: 'New Title' }, 'bld_test');
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(200);
+  });
+
+  it('omits shareUrl in the PATCH response when the artifact is private', async () => {
+    updatedRow = { id: 'artifact-1', shareToken: 'leftover-token', visibility: 'private' };
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      shareToken: 'leftover-token',
+      visibility: 'private',
+      worker: { accountId: 'account-1' },
+    });
+
+    const res = await PATCH(createMockPatchRequest({ title: 'New Title' }, 'bld_test'), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.artifact.shareUrl).toBeNull();
+  });
+
+  it('returns a shareUrl in the PATCH response when the artifact is public', async () => {
+    updatedRow = { id: 'artifact-1', shareToken: 'live-token', visibility: 'public' };
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockArtifactsFindFirst.mockResolvedValue({
+      id: 'artifact-1',
+      workerId: 'worker-1',
+      workspaceId: 'ws-1',
+      shareToken: 'live-token',
+      visibility: 'public',
+      worker: { accountId: 'account-1' },
+    });
+
+    const res = await PATCH(createMockPatchRequest({ title: 'New Title' }, 'bld_test'), { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.artifact.shareUrl).toContain('/share/live-token');
   });
 
   it('returns 403 when requester does not own the worker and has no workspace access', async () => {

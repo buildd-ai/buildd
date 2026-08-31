@@ -577,6 +577,44 @@ export async function buildMissionContext(missionId: string, templateContext?: R
     );
   }
 
+  // Re-armed by a blocked verdict. This cycle exists BECAUSE the gate refused —
+  // every deliverable is terminal and the mission cannot close, so the only
+  // useful output is work that moves a named criterion (or an argument that the
+  // criterion is wrong). Without this block the organizer would re-read the same
+  // task list, see nothing pending, and propose completion again.
+  const criteriaRearm = templateContext?.criteriaRearm as
+    | { reason?: string; verdictLines?: string; overall?: string; blockReason?: string }
+    | undefined;
+  if (criteriaRearm) {
+    descParts.push(
+      `\n## ⚠ RE-ARMED BY A BLOCKED COMPLETION GATE\n` +
+      `Every deliverable task in this mission is terminal, so nothing is pending — ` +
+      `and the mission still CANNOT complete, because its goal criteria came back ` +
+      `**${criteriaRearm.overall ?? 'non-passing'}**. ${criteriaRearm.reason ?? ''}\n\n` +
+      `Refusal: ${criteriaRearm.blockReason ?? 'goal criteria did not clear'}\n\n` +
+      (criteriaRearm.verdictLines
+        ? `Criteria still blocking completion:\n${criteriaRearm.verdictLines}\n\n`
+        : '') +
+      `**Do not propose completion this cycle.** Proposing it again produces the same ` +
+      `refusal and no progress. Exactly one of these is the right output:\n` +
+      `1. File the work that closes a named gap (\`create_task\` with a concrete ` +
+      `pathManifest). This is the expected outcome when a criterion names something real ` +
+      `that no open task covers.\n` +
+      `2. Argue the criterion is wrong or unmeasurable as written, via \`post_note\` ` +
+      `(type=question) naming which criterion and why. Say what it should say instead. ` +
+      `Do NOT silently work around it.\n` +
+      `3. If a criterion needs evidence that exists but was never attached (an artifact, ` +
+      `a doc, a command result), file the task that attaches it.\n\n` +
+      `Note the mechanics: an \`artifact_exists\` criterion is satisfied by a buildd ` +
+      `artifact (\`create_artifact\`), NOT by a file merged in a PR. An \`all_prs_merged\` ` +
+      `criterion needs the PRs actually merged, not just opened and approved. If a prior ` +
+      `task delivered the substance but not the form the criterion checks, that is a real ` +
+      `gap — file it or say the criterion is measuring the wrong thing.\n` +
+      `If nothing here can move, say so plainly: an unchanged verdict escalates to the ` +
+      `mission owner rather than repeating this cycle.`
+    );
+  }
+
   // Surface cycle info from closed-loop re-triggers
   const cycleNumber = templateContext?.cycleNumber as number | undefined;
   if (cycleNumber && cycleNumber > 1) {
@@ -610,6 +648,23 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       'or (b) the mission description explicitly authorizes gap-filling. ' +
       'Adding tasks beyond the pre-filed chain creates duplicates and wasted work.'
     );
+
+    // Narrow lift. Pre-filed tasks are a reason not to duplicate decomposition;
+    // they are not a reason to be unable to file a fix for a criterion the
+    // mission is failing. A mission that can be blocked by criteria but cannot
+    // file work to unblock itself is a deadlock — which is exactly what
+    // coordinate-only mode produced on 04449d1d: the organizer logged
+    // "will not create new ones", then declared completion against a criterion
+    // it had no authority to address.
+    if (criteriaRearm) {
+      descParts.push(
+        '**EXCEPTION — coordinate-only mode is lifted for the blocking criteria above.** ' +
+        'You may create tasks for gaps named in a non-passing criterion, and only for those. ' +
+        'Each such task must quote the criterion it unblocks in its description. ' +
+        'This is not authorization to re-decompose the mission: no new tasks for anything ' +
+        'the blocking criteria do not name.'
+      );
+    }
   }
 
   // Workspace state for organizer

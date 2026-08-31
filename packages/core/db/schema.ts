@@ -520,9 +520,17 @@ export interface CbmMetrics {
   /** How CBM was activated for this task. */
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
   /** Why CBM was not active (only set when outcome='disabled'). */
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
-  /** Whether the pre-index bootstrap ran and whether it succeeded. Only set when outcome='enforced'. */
-  bootstrapResult?: 'ok' | 'failed';
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
+  /**
+   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
+   * outcome='enforced'.
+   *
+   * 'skipped_warm' means no index was needed because a shared seeded cache already
+   * held this repo's graph. Distinct from 'ok' on purpose: lumping them together
+   * makes the warm-start path invisible, so you cannot tell a fleet that is
+   * serving 0s starts from one that is paying ~20s per task.
+   */
+  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
   bootstrapFailReason?: string;
   /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
   toolCalls: Record<string, number>;
@@ -729,6 +737,21 @@ export const missions = pgTable('missions', {
   // When false, organizer never auto-evaluates criteria; on-demand still works.
   // null reads as true (default: auto-verify ON when criteria are set).
   autoVerify: boolean('auto_verify'),
+  // Re-arm bookkeeping for the criteria consumer (see lib/criteria-rearm.ts).
+  // A non-pass verdict dispatches ONE organizer cycle carrying the verdict text;
+  // these columns are what stop that from becoming an infinite loop. The
+  // fingerprint is the verdict shape last re-armed on, the counter how many
+  // consecutive cycles it has stayed that shape. Deliberately NOT stored inside
+  // goalCriteriaState: that jsonb is the evaluator's snapshot, and every fresh
+  // verdict overwrites it wholesale, which would erase the consumer's memory of
+  // having already tried.
+  criteriaRearmFingerprint: text('criteria_rearm_fingerprint'),
+  criteriaRearmCycles: integer('criteria_rearm_cycles').default(0).notNull(),
+  criteriaRearmedAt: timestamp('criteria_rearmed_at', { withTimezone: true }),
+  // Set when the loop guard gave up and handed the mission to its owner. Non-null
+  // means "a human owes this mission a decision" — heartbeats stay off until the
+  // verdict shape changes.
+  criteriaEscalatedAt: timestamp('criteria_escalated_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1060,16 +1083,29 @@ export const workers = pgTable('workers', {
   filesChanged: integer('files_changed').default(0),
   linesAdded: integer('lines_added').default(0),
   linesRemoved: integer('lines_removed').default(0),
-  // Admin instructions - delivered on next progress update
+  // Admin instructions — the delivery queue. Handed to a consuming runner on its
+  // next check-in and cleared ONLY when that runner confirms it injected the text
+  // (PATCH `instructionsDelivered`). Multiple queued instructions concatenate, so
+  // a second instruction never overwrites an undelivered first one.
   pendingInstructions: text('pending_instructions'),
   // Instruction history - log of sent instructions and worker responses
   instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
     type: 'instruction' | 'response';
-    message: string;
+    /** Omitted for sensitive workspaces — the {type, ts} envelope is kept only. */
+    message?: string;
     timestamp: number;
-    // 'pending' = queued, not yet picked up; 'delivered' = worker received it
+    // 'pending' = queued, not yet confirmed delivered; 'delivered' = a consumer
+    // (the runner) confirmed the text reached the agent session. Never set to
+    // 'delivered' at write time — that recorded deliveries that never happened.
     deliveryState?: 'pending' | 'delivered';
   }>>(),
+  // Transitional capability flag: true once this worker's runner has checked in
+  // with `consumeInstructions: true`, i.e. it speaks the delivery-confirmation
+  // protocol (serve → inject → ack). Urgent (Pusher) instructions are only ALSO
+  // queued as a fallback for such runners; older runners would inject the Pusher
+  // copy and then the queued copy, duplicating the message. Drop this column once
+  // no pre-ack runner can check in.
+  supportsInstructionAck: boolean('supports_instruction_ack').default(false).notNull(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // MCP tool call log - appended by runner during execution
@@ -1214,6 +1250,14 @@ export const missionNotes = pgTable('mission_notes', {
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),
+  // Worker ids this note's content has already been handed to (JSON array of
+  // uuids). Delivery of user replies + mission guidance to a live agent is driven
+  // off this: a note is selected for worker X only while X is absent from the
+  // array, then X is appended. Without it every reply/guidance note was
+  // re-injected on every 10s check-in, filling the task timeline with duplicates.
+  // Mission-wide guidance still reaches each worker exactly once, which a single
+  // global delivered_at flag could not express.
+  deliveredTo: jsonb('delivered_to').default([]).$type<string[]>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   missionIdx: index('mission_notes_mission_idx').on(t.missionId),
@@ -1267,7 +1311,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_criteria_blocked' | 'orchestration_manual' | 'budget_exhausted'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),
@@ -1668,6 +1712,12 @@ export const knowledgeEdges = pgTable('knowledge_edges', {
 // full jobs (backfill / escalated large diffs) run on the runner fleet.
 // Idempotent enqueue via the partial unique index on (workspace_id, sha, scope)
 // — failed jobs (status = 'error') don't block a retry insert.
+//
+// Durability: every started job holds a lease (lease_owner / lease_expires_at,
+// heartbeat_at). A row still 'running' past its lease has a dead executor and is
+// reclaimed — requeued, or parked in 'error' after `attempts` hits the ceiling so
+// the idempotency index stops blocking redelivery. See
+// apps/web/src/lib/knowledge-ingest-lease.ts.
 export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -1684,11 +1734,28 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   /** Run stats: filesIngested / filesSkipped / filesDeleted / chunksUpserted / escalated… */
   stats: jsonb('stats').$type<Record<string, unknown>>(),
   error: text('error'),
+  /**
+   * Lease holder while status='running': the claiming runner's account/runner id,
+   * or 'serverless' for the webhook's inline diff executor. NULL on legacy rows
+   * (pre-lease) — those stay governed by `started_at`, never treated as leased.
+   */
+  leaseOwner: text('lease_owner'),
+  /**
+   * Lease TTL. A row still 'running' past this has a dead executor and is
+   * reclaimable (see knowledge-ingest-lease.ts). Extended by /files batches.
+   */
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+  /** Last proof of forward progress: set on claim, on every batch, and on requeue. */
+  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+  /** Reclaim attempts consumed. At MAX_INGEST_ATTEMPTS the job is parked in 'error'. */
+  attempts: integer('attempts').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (t) => ({
   workspaceStatusIdx: index('knowledge_ingest_jobs_ws_status_idx').on(t.workspaceId, t.status),
+  // Reclaim scan: find rows with a lapsed lease without scanning the whole table.
+  leaseExpiresAtIdx: index('knowledge_ingest_jobs_lease_expires_at_idx').on(t.leaseExpiresAt),
   // Idempotent enqueue: one non-errored job per (workspace, sha, scope).
   idempotencyIdx: uniqueIndex('knowledge_ingest_jobs_ws_sha_scope_idx')
     .on(t.workspaceId, t.sha, t.scope)

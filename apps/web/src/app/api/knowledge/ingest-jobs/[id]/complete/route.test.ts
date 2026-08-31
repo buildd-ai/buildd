@@ -87,6 +87,21 @@ describe('POST /api/knowledge/ingest-jobs/[id]/complete', () => {
     expect(res.status).toBe(401);
   });
 
+  it('returns 403 for a trigger-level token and does not transition the job', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'trigger' });
+    const res = await POST(createRequest({ status: 'done' }), params());
+    expect(res.status).toBe(403);
+    expect(updateCalls.length).toBe(0);
+    expect(deleteCalls.length).toBe(0);
+  });
+
+  it('allows a non-trigger token with workspace access to complete the job', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker' });
+    const res = await POST(createRequest({ status: 'done' }), params());
+    expect(res.status).toBe(200);
+    expect(updateCalls.find(c => c.set.status)?.set.status).toBe('done');
+  });
+
   it('returns 404 for an unknown job', async () => {
     jobRow = null;
     const res = await POST(createRequest({ status: 'done' }), params());
@@ -122,6 +137,14 @@ describe('POST /api/knowledge/ingest-jobs/[id]/complete', () => {
     expect(transition?.set.stats).toMatchObject({ filesIngested: 10 });
     // No sweep requested → no chunk deletes
     expect(deleteCalls.length).toBe(0);
+  });
+
+  it('C12: releases the lease when the job reaches a terminal state', async () => {
+    // A finished job must not keep a lease that the reclaimer would later act on.
+    await POST(createRequest({ status: 'done' }), params());
+    const transition = updateCalls.find(c => c.table === knowledgeIngestJobs && c.set.status);
+    expect(transition?.set.leaseOwner).toBeNull();
+    expect(transition?.set.leaseExpiresAt).toBeNull();
   });
 
   it('marks the job error with the error message', async () => {

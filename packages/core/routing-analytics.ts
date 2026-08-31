@@ -13,6 +13,7 @@ import { db } from './db';
 import { taskOutcomes } from './db/schema';
 import { sql } from 'drizzle-orm';
 import { reportOps } from './report-ops';
+import { BASELINE, type Tier } from './model-router';
 
 export interface TaskOutcomeInput {
   taskId: string;
@@ -83,20 +84,37 @@ export async function recordTaskOutcome(input: TaskOutcomeInput): Promise<boolea
 
 /**
  * Was the predicted model below the matrix baseline for this kind/complexity?
- * Mirrors the BASELINE table in model-router.ts.
+ *
+ * The baseline table is imported from model-router.ts — the router owns it. A
+ * local copy drifted (it claimed coordination = opus/opus/opus while the router
+ * says sonnet/sonnet/opus) and silently mis-flagged baseline coordination tasks.
  */
 const BASELINE_ORDER = ['haiku', 'sonnet', 'opus'] as const;
-type Tier = (typeof BASELINE_ORDER)[number];
 
-const BASELINE: Record<string, Record<string, Tier>> = {
-  coordination: { simple: 'opus', normal: 'opus', complex: 'opus' },
-  engineering: { simple: 'haiku', normal: 'sonnet', complex: 'opus' },
-  research: { simple: 'haiku', normal: 'sonnet', complex: 'sonnet' },
-  writing: { simple: 'haiku', normal: 'sonnet', complex: 'sonnet' },
-  design: { simple: 'sonnet', normal: 'opus', complex: 'opus' },
-  analysis: { simple: 'haiku', normal: 'sonnet', complex: 'sonnet' },
-  observation: { simple: 'haiku', normal: 'haiku', complex: 'haiku' },
-};
+/**
+ * Normalise whatever the claim route stored in tasks.predicted_model onto the
+ * router's tier order. The claim route writes the RESOLVED model id from the
+ * tier registry (a full dated model id), and only falls back to a bare
+ * alias when the task has no team, so both shapes must map.
+ *
+ * Returns null for anything with no tier equivalent (e.g. a Codex/GPT model id)
+ * — those are not comparable to an Anthropic tier baseline and never counted.
+ */
+export function normalizeToTier(model: string): Tier | null {
+  const id = model.trim().toLowerCase();
+  if (!id) return null;
+  // Bare router aliases.
+  if ((BASELINE_ORDER as readonly string[]).includes(id)) return id as Tier;
+  // Tier vocabulary used by roles/task.tier.
+  if (id === 'premium') return 'opus';
+  if (id === 'standard') return 'sonnet';
+  if (id === 'budget') return 'haiku';
+  // Full Anthropic model ids.
+  if (id.includes('opus')) return 'opus';
+  if (id.includes('sonnet')) return 'sonnet';
+  if (id.includes('haiku')) return 'haiku';
+  return null;
+}
 
 function detectDownshift(
   kind: string | null,
@@ -104,10 +122,9 @@ function detectDownshift(
   predicted: string,
 ): boolean {
   if (!kind || !complexity) return false;
-  const baseline = BASELINE[kind]?.[complexity];
+  const baseline = (BASELINE as Record<string, Record<string, Tier> | undefined>)[kind]?.[complexity];
   if (!baseline) return false;
-  // Only meaningful when predicted is an alias we can compare. Full IDs (from
-  // explicit overrides) are never counted as downshifted.
-  if (!BASELINE_ORDER.includes(predicted as Tier)) return false;
-  return BASELINE_ORDER.indexOf(predicted as Tier) < BASELINE_ORDER.indexOf(baseline);
+  const predictedTier = normalizeToTier(predicted);
+  if (!predictedTier) return false;
+  return BASELINE_ORDER.indexOf(predictedTier) < BASELINE_ORDER.indexOf(baseline);
 }

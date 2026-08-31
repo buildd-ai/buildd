@@ -9,12 +9,13 @@
  */
 
 import { describe, test, expect } from 'bun:test';
+import { ARTIFACT_TYPES } from '@buildd/shared';
 import { artifactTemplates } from '../artifact-templates';
 
-const KNOWN_ARTIFACT_TYPES = [
-  'content', 'report', 'data', 'link', 'summary',
-  'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event',
-];
+// Derived, never re-listed: this array used to be a fifth artifact vocabulary
+// (11 entries) that could pass while the routes disagreed. See
+// packages/core/__tests__/artifact-types.test.ts.
+const KNOWN_ARTIFACT_TYPES: readonly string[] = ARTIFACT_TYPES;
 
 describe('Artifact Templates', () => {
   test('templates object is not empty', () => {

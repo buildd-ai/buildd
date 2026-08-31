@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
+import { REASSIGNED_WORKER_ERROR, isNonReactivatableError } from '@/lib/worker-termination';
 
 // Mock functions
 const mockGetCurrentUser = mock(() => null as any);
@@ -8,6 +9,18 @@ const mockTasksFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockTasksUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) }));
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) }));
+
+// Values passed to db.update(workers).set(...) — captured so tests can assert
+// the exact column set a reassignment writes (C4: waitingFor must be cleared).
+const workersSetCalls: any[] = [];
+function capturingWorkersUpdate() {
+  return {
+    set: (values: any) => {
+      workersSetCalls.push(values);
+      return { where: () => Promise.resolve() };
+    },
+  };
+}
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
@@ -154,9 +167,8 @@ describe('POST /api/tasks/[id]/reassign', () => {
     mockTasksUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
     });
-    mockWorkersUpdate.mockReturnValue({
-      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
-    });
+    workersSetCalls.length = 0;
+    mockWorkersUpdate.mockImplementation(capturingWorkersUpdate as any);
   });
 
   it('returns 401 when no auth', async () => {
@@ -377,6 +389,42 @@ describe('POST /api/tasks/[id]/reassign', () => {
     expect(workerFailedCalls[0][2].error).toBe('Task was reassigned');
     // Must not carry the full worker row (413 risk)
     expect(workerFailedCalls[0][2].worker).toBeUndefined();
+  });
+
+  // C4 regression: reassignment left `waitingFor` populated on the workers it
+  // failed. The task-detail page falls back to ANY worker with `waitingFor`
+  // (terminal ones included) to render the "needs input" banner, so a human
+  // still saw — and could answer — a question belonging to a worker that no
+  // longer owned the task. The answer created a retry task off a dead branch.
+  it('clears waitingFor when failing the active workers of a reassigned task', async () => {
+    const mockTask = {
+      id: 'task-123',
+      title: 'Test Task',
+      status: 'assigned',
+      workspaceId: 'ws-1',
+      expiresAt: new Date(Date.now() + 1000 * 60 * 60),
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst
+      .mockResolvedValueOnce(mockTask)
+      .mockResolvedValueOnce({ ...mockTask, status: 'pending' });
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'worker-1', taskId: 'task-123', status: 'waiting_input' },
+    ]);
+
+    const request = createMockRequest({ searchParams: { force: 'true' } });
+    const response = await callHandler(request, 'task-123');
+
+    expect(response.status).toBe(200);
+    expect(workersSetCalls.length).toBe(1);
+    expect(workersSetCalls[0].status).toBe('failed');
+    expect(workersSetCalls[0].waitingFor).toBeNull();
+    // The error string is the shared non-reactivatable phrase, so the PATCH
+    // route's reactivation guard actually matches it.
+    expect(workersSetCalls[0].error).toBe(REASSIGNED_WORKER_ERROR);
+    expect(isNonReactivatableError(workersSetCalls[0].error)).toBe(true);
   });
 
   it('returns reassigned:false for completed task', async () => {

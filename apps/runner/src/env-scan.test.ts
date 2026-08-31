@@ -51,7 +51,12 @@ describe('checkBwrapSupport', () => {
     expect(checkBwrapSupport()).toBe(false);
   });
 
-  it('returns false when kernel proc file reports unprivileged_userns_clone=0', () => {
+  // Linux-only: the proc fast-path in checkBwrapSupport is guarded by
+  // `process.platform === 'linux'`, so off Linux the mocked readFileSync is never
+  // consulted and the assertion cannot hold. Skipped explicitly rather than left
+  // to fail on macOS — this file was uncollected until now, so the failure was
+  // invisible.
+  it.skipIf(process.platform !== 'linux')('returns false when kernel proc file reports unprivileged_userns_clone=0', () => {
     mockReadFileSync.mockImplementationOnce((path: string) => {
       if (typeof path === 'string' && path.includes('unprivileged_userns_clone')) return '0';
       return '';
@@ -290,7 +295,7 @@ describe('scanEnvironment', () => {
     }
   });
 
-  it('advertises mount-isolation support only when the runner opts in', () => {
+  it('advertises mount-isolation support only when the runner opts in AND bwrap works', () => {
     const originalOptIn = process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST;
     const originalDisable = process.env.BUILDD_DISABLE_SANDBOX;
     try {
@@ -298,7 +303,13 @@ describe('scanEnvironment', () => {
       delete process.env.BUILDD_DISABLE_SANDBOX;
       expect(scanEnvironment().envKeys).not.toContain('sandbox:mount-allowlist');
 
+      // Opt-in alone is not enough: the enclosing beforeEach makes every
+      // execSync throw, i.e. bwrap is absent, so nothing is enforced.
       process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST = '1';
+      expect(scanEnvironment().envKeys).not.toContain('sandbox:mount-allowlist');
+
+      // With a working bwrap namespace the capability becomes truthful.
+      mockExecSync.mockImplementation(() => Buffer.from('ok\n'));
       expect(scanEnvironment().envKeys).toContain('sandbox:mount-allowlist');
 
       process.env.BUILDD_DISABLE_SANDBOX = '1';

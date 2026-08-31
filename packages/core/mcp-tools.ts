@@ -9,7 +9,7 @@
 import { LOOP_MAX_LOOPS_MAX, LOOP_MAX_LOOPS_MIN, parseLoopConfig } from './loop-config';
 import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
 import type { MissionControlCapability } from './mission-control-capabilities';
-import { parseMergePolicy } from '@buildd/shared';
+import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
 import type {
   FailureAnalytics,
   FailureSignatureLookup,
@@ -24,6 +24,17 @@ const PRIORITY_NAMES: Record<string, number> = {
 };
 
 const NOTE_TYPES = ['decision', 'question', 'warning', 'suggestion', 'update'] as const;
+
+/**
+ * Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
+ * claim-time router's kind×complexity matrix reads. Same vocabulary the
+ * schedules path writes via classifyScheduleCadence and the same union the
+ * `tasks` table declares; POST /api/tasks validates against the identical lists.
+ */
+const TASK_KINDS = [
+  'coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation',
+] as const;
+const TASK_COMPLEXITIES = ['simple', 'normal', 'complex'] as const;
 
 /** Convert named priority levels (e.g. "medium") to integer 0-10. */
 function normalizePriority(val: unknown, fallback = 5): number {
@@ -139,7 +150,7 @@ export const triggerActions = [
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
   'list_schedules', 'trace_schedule',
-  'get_task', 'get_task_messages',
+  'get_task_messages',
 ] as const;
 
 export const workerActions = [
@@ -156,7 +167,7 @@ export const workerActions = [
   'suggest_schedule_update',
   'post_note',
   'list_schedules', 'trace_schedule',
-  'get_task', 'get_task_messages',
+  'get_task_messages',
   'get_budget_forecast',
   'get_usage_stats',
   'list_connectors',
@@ -193,6 +204,124 @@ export const allActions = [...workerActions, ...adminActions] as const;
 // delete and consolidate_knowledge moved to adminActions / buildd tool (compliance + single-consumer ops)
 export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'query_knowledge'] as const;
 
+/**
+ * JSON-Schema tool definitions for the `recall` / `learn` knowledge tools.
+ *
+ * Shared by both Streamable-HTTP MCP routes -- /api/mcp and the
+ * workspace-pinned /api/mcp-oauth/[workspace] -- so the advertised tool set
+ * cannot drift between them. It had drifted: the OAuth route's server
+ * instructions named both tools while its ListTools handler registered
+ * neither, so a client that believed the instructions got
+ * `Unknown tool: recall`.
+ *
+ * Every call site must keep these behind the same `dataClass !== 'sensitive'`
+ * gate the deprecated buildd_memory tool uses; handleRecallAction /
+ * handleLearnAction re-check `ctx.isSensitive` as defense in depth.
+ *
+ * The stdio server (buildd-mcp-server.ts) declares its own zod equivalents --
+ * that transport builds schemas from zod, not raw JSON Schema, so it cannot
+ * consume these.
+ */
+export const recallToolDefinition = {
+  name: "recall",
+  description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks. Pass the task title and any error message. Use scope=[\"memory\",\"task\"] to cover prior lessons AND recent outcomes in one call.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      query: {
+        type: "string" as const,
+        description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
+      },
+      scope: {
+        description: "Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+        oneOf: [
+          {
+            type: "string" as const,
+            enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+          },
+          {
+            type: "array" as const,
+            items: {
+              type: "string" as const,
+              enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+            },
+          },
+        ],
+      },
+      type: {
+        type: "string" as const,
+        description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
+      },
+      files: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Narrow results to entries touching these file paths.",
+      },
+      limit: {
+        type: "number" as const,
+        description: "Max results to return. Default: 10.",
+      },
+      id: {
+        type: "string" as const,
+        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+      },
+    },
+  },
+};
+
+export const learnToolDefinition = {
+  name: "learn",
+  description: "Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      type: {
+        type: "string" as const,
+        description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
+        enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
+      },
+      title: {
+        type: "string" as const,
+        description: "Short title for this lesson.",
+      },
+      content: {
+        type: "string" as const,
+        description: "The lesson content — what the next agent should know.",
+      },
+      files: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "File paths this lesson relates to.",
+      },
+      tags: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Tags for categorisation.",
+      },
+      scope: {
+        type: "string" as const,
+        description: "Project/monorepo scope for this memory.",
+      },
+      supersedes: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Memory IDs this entry replaces. Superseded entries drop out of default retrieval.",
+      },
+    },
+    required: ["type", "title", "content"],
+  },
+};
+
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];
 
@@ -214,9 +343,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
-    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, tier? (premium|standard|budget), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected',
+    create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind? (coordination|engineering|research|writing|design|analysis|observation — shape of the work), complexity? (simple|normal|complex), tier? (premium|standard|budget — hard override that skips the kind×complexity matrix), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
-    create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
+    create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
     list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
@@ -256,7 +385,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
-    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
@@ -1139,6 +1268,10 @@ export async function handleBuilddAction(
           status: 'running',
           progress: params.progress || 0,
           ...(appendMilestones.length > 0 && { appendMilestones }),
+          // This call surfaces `response.instructions` to the agent below, so it
+          // is a real consumer of the instruction queue and says so. Undeclared
+          // callers get a read-only copy and never move the queue.
+          consumeInstructions: true,
         };
         if (params.message) progressBody.currentAction = params.message;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
@@ -1166,6 +1299,19 @@ export async function handleBuilddAction(
       const instructions = response.instructions;
       if (instructions) {
         resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
+        // The instruction is in the tool result the agent is about to read, so
+        // delivery is real: confirm it. Without this the queue stays pending and
+        // the same instruction is repeated on every progress update.
+        if (typeof response.instructionsAck === 'string') {
+          try {
+            await api(`/api/workers/${workerId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ instructionsDelivered: response.instructionsAck }),
+            });
+          } catch {
+            // Unconfirmed: it stays queued and is served again next time.
+          }
+        }
       }
 
       return text(resultText);
@@ -1577,9 +1723,20 @@ export async function handleBuilddAction(
         'failureContext', 'skillSlugs', 'tier', 'model', 'effort', 'callbackUrl',
         'callbackToken', 'release', 'backend', 'startAt', 'startIn', 'startAfter',
         'loopConfig', 'loopUntilVerified', 'loopUntilMerged', 'subjectAnchor', 'fileAnywayReason', 'context',
+        'kind', 'complexity',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
       if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
+
+      // Routing inputs: kind × complexity feed the claim-time model matrix.
+      // Validated up front and rejected — never dropped — because a silently
+      // ignored routing hint is indistinguishable from one that was honoured.
+      if (params.kind !== undefined && !(TASK_KINDS as readonly string[]).includes(params.kind as string)) {
+        throw new Error(`kind must be one of: ${TASK_KINDS.join(', ')}`);
+      }
+      if (params.complexity !== undefined && !(TASK_COMPLEXITIES as readonly string[]).includes(params.complexity as string)) {
+        throw new Error(`complexity must be one of: ${TASK_COMPLEXITIES.join(', ')}`);
+      }
 
       const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
       if (!wsId) throw new Error('Could not determine workspace. Provide workspaceId.');
@@ -1703,6 +1860,8 @@ export async function handleBuilddAction(
       if (params.tier && ['premium', 'standard', 'budget'].includes(params.tier as string)) {
         taskBody.tier = params.tier;
       }
+      if (params.kind !== undefined) taskBody.kind = params.kind;
+      if (params.complexity !== undefined) taskBody.complexity = params.complexity;
       if (params.model && typeof params.model === 'string') {
         taskContext.model = params.model;
       }
@@ -2456,9 +2615,12 @@ export async function handleBuilddAction(
     case 'create_artifact': {
       if (!params.type || !params.title) throw new Error('type and title are required');
 
-      const validArtifactTypes = ['content', 'report', 'data', 'link', 'summary', 'email_draft', 'social_post', 'analysis', 'recommendation', 'alert', 'calendar_event', 'file'];
-      if (!validArtifactTypes.includes(params.type as string)) {
-        throw new Error(`Invalid type. Must be one of: ${validArtifactTypes.join(', ')}`);
+      // One vocabulary, shared with every route that persists an artifact
+      // (@buildd/shared ARTIFACT_TYPES). This list used to hold 12 of the 17
+      // types, so `screenshot` / `diff` / `walkthrough` / `impl_plan` were
+      // rejected here while the routes below accepted them.
+      if (!isArtifactType(params.type)) {
+        throw new Error(`Invalid type. Must be one of: ${ARTIFACT_TYPES.join(', ')}`);
       }
 
       const artifactBody: Record<string, unknown> = {
@@ -2542,8 +2704,9 @@ export async function handleBuilddAction(
         ``,
         `Download URL (permanent, for markdown embedding):`,
         data.downloadUrl,
+        `  Readable by this workspace, and by anyone once the artifact is shared.`,
         ``,
-        `Share URL: ${data.shareUrl}`,
+        `Share URL: ${data.shareUrl ?? 'not shared — publish the artifact to mint one'}`,
         `Artifact ID: ${data.artifactId}`,
       ];
 
@@ -2834,8 +2997,19 @@ export async function handleBuilddAction(
         p?.tasks && nOf(metric) < p.tasks ? ` [n=${nOf(metric)}/${p.tasks}]` : '';
 
       const lines: string[] = [
-        `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)${data.truncatedScan ? ' (row cap hit — totals are a floor)' : ''}`,
+        `Usage over ${data.window} — ${t.tasks} task(s), ${t.workers} worker(s)`,
       ];
+      // A truncated scan keeps the NEWEST rows (the query is ordered), so the
+      // totals are a floor for the requested window and every median/p90 below
+      // describes [completeSince, now) instead. Saying only "row cap hit" left
+      // the distributions looking like they covered the whole window.
+      if (data.truncatedScan) {
+        const since = data.scan?.completeSince;
+        lines.push(
+          `Row cap hit (${data.scan?.rows ?? '?'}/${data.scan?.limit ?? '?'}): totals are a floor for ${data.window}` +
+          `${since ? `, and every median/p90 below covers only since ${since}` : ''}`,
+        );
+      }
 
       const totalsParts = [`${fmtTokens(t.inputTokens)} in / ${fmtTokens(t.outputTokens)} out`];
       if (t.cacheReadTokens > 0) totalsParts.push(`${fmtTokens(t.cacheReadTokens)} cache read`);
@@ -3899,14 +4073,26 @@ export async function handleBuilddAction(
       // being worked on.
       const task = await api(`/api/tasks/${params.taskId}?include=workers`);
       const allWorkers: any[] = Array.isArray(task.workers) ? task.workers : [];
-      const activeWorker = allWorkers.find(
-        (w) => w.status !== 'completed' && w.status !== 'failed',
+      // 'error' is terminal for the check-in route: it rejects that worker's next
+      // PATCH, so a queued message would never be collected. Selecting an errored
+      // worker as "the active one" produced a cheerful "queued for delivery on
+      // next worker check-in" for a check-in that can never happen.
+      const liveWorker = allWorkers.find(
+        (w) => w.status !== 'completed' && w.status !== 'failed' && w.status !== 'error',
       );
+      const erroredWorker = allWorkers.find((w) => w.status === 'error');
+      const isUrgent = params.priority === 'urgent';
+      // Urgent goes over Pusher, which can still reach a session the runner holds
+      // in memory (it restarts an errored session on a follow-up message).
+      const activeWorker = liveWorker ?? (isUrgent ? erroredWorker : undefined);
       const workerId = activeWorker?.id;
 
       if (!workerId) {
         const hint = allWorkers.length === 0
           ? 'Task is still pending — not yet claimed by a worker.'
+          : erroredWorker
+          ? `Worker ${erroredWorker.id} is in state 'error', so a queued message would never be collected. ` +
+            "Retry with priority:'urgent' to attempt immediate delivery to a resident session, or recover the worker."
           : 'No active worker found for this task (all workers are in a terminal state).';
         throw new Error(`Cannot send message: ${hint} (task status: ${task.status})`);
       }
@@ -3919,11 +4105,17 @@ export async function handleBuilddAction(
         }),
       });
 
-      const deliveryNote = params.priority === 'urgent'
-        ? 'Message delivered instantly via Pusher.'
-        : 'Message queued for delivery on next worker check-in.';
-
-      return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
+      // Do not restate delivery here: the server owns that claim, and delivery is
+      // only confirmed once the agent actually receives the text. get_task_messages
+      // marks anything still unconfirmed as UNDELIVERED.
+      const stateNote = result.deliveryState === 'pending'
+        ? 'Delivery is confirmed by the agent, not by this call — check get_task_messages for ⏳ UNDELIVERED.'
+        : '';
+      return text([
+        `Message sent to worker ${workerId} (status: ${activeWorker.status}).`,
+        result.message || '',
+        stateNote,
+      ].filter(Boolean).join('\n'));
     }
 
     // Spec-drift compare (admin/dev only). Two-hop retrieval bridges the prose→code

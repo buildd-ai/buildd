@@ -26,10 +26,13 @@ const mockWorkersInsert = mock(() => ({
 const mockDbExecute = mock(() => Promise.resolve({
   rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
 }));
+/** Payloads written to `accounts` — lets a test see the budget auto-clear. */
+const accountsUpdateSets: any[] = [];
 const mockAccountsUpdate = mock(() => ({
-  set: mock(() => ({
-    where: mock(() => Promise.resolve()),
-  })),
+  set: mock((values: any) => {
+    accountsUpdateSets.push(values);
+    return { where: mock(() => Promise.resolve()) };
+  }),
 }));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
 const mockSecretsProviderGet = mock(() => Promise.resolve(null as string | null));
@@ -115,7 +118,7 @@ mock.module('@buildd/core/db', () => ({
     update: (table: any) => {
       if (table === 'workers') return mockWorkersUpdate();
       if (table === 'tasks') return mockTasksUpdate();
-      if (table === 'accounts') return mockAccountsUpdate();
+      if (table === 'accounts' || table === mockAccountsTable) return mockAccountsUpdate();
       return mockTasksUpdate();
     },
     insert: (table: any) => mockWorkersInsert(),
@@ -145,8 +148,16 @@ mock.module('drizzle-orm', () => ({
   gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
 }));
 
+/**
+ * The `accounts` table stub, hoisted so the `db.update` dispatcher can match it
+ * by identity. It used to compare `table === 'accounts'`, which never held (the
+ * route passes this object, not the string), so every write to `accounts` was
+ * silently routed to the tasks-update mock and no test could observe one.
+ */
+const mockAccountsTable = { id: 'id', activeSessions: 'activeSessions', teamId: 'teamId', seatId: 'seatId', authType: 'authType' };
+
 mock.module('@buildd/core/db/schema', () => ({
-  accounts: { id: 'id', activeSessions: 'activeSessions' },
+  accounts: mockAccountsTable,
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
@@ -546,6 +557,67 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(res.status).toBe(200);
     expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+  });
+
+  // C22: the auto-clear required a non-null reset and the exhaustion test read
+  // `!budgetResetsAt ||` as "still exhausted", so an account with
+  // budget_exhausted_at set and budget_resets_at NULL never became claimable
+  // again. The column has no notNull (it cannot — it is NULL for healthy
+  // accounts), so the pairing is convention, and a broken row must self-heal.
+  it('auto-clears a NULL budget reset once a session window has passed', async () => {
+    accountsUpdateSets.length = 0;
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+      budgetExhaustedAt: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
+      budgetResetsAt: null,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(accountsUpdateSets).toContainEqual({ budgetExhaustedAt: null, budgetResetsAt: null });
+  });
+
+  it('a NULL reset inside the session window is still exhausted, not cleared', async () => {
+    accountsUpdateSets.length = 0;
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'oauth',
+      maxConcurrentSessions: 10,
+      activeSessions: 0,
+      budgetExhaustedAt: new Date(Date.now() - 60 * 1000).toISOString(),
+      budgetResetsAt: null,
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'private', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(accountsUpdateSets).not.toContainEqual({ budgetExhaustedAt: null, budgetResetsAt: null });
   });
 
   it('budget exhaustion check only applies to OAuth accounts', async () => {

@@ -13,6 +13,42 @@ function randomToken(bytes: number): string {
   return randomBytes(bytes).toString('base64url');
 }
 
+/**
+ * Schemes that are dangerous in any redirect context and that no legitimate
+ * OAuth client registers. Checked against the URL parser's normalised,
+ * lowercased protocol, so `JavaScript:` and `java\tscript:` are covered too.
+ */
+const DANGEROUS_REDIRECT_SCHEMES = new Set([
+  'javascript:',
+  'data:',
+  'vbscript:',
+  'file:',
+  'blob:',
+]);
+
+/**
+ * Minimum bar for a redirect_uri, applied both at registration (RFC 7591 open
+ * registration is unauthenticated) and at authorize time — the latter so a
+ * client row that predates this validation can't be used either.
+ *
+ * Deliberately NOT a strict https-plus-loopback allowlist: native/desktop
+ * clients legitimately register private-use schemes, and non-loopback `http:`
+ * is still accepted here. Tightening that needs an audit of the redirect URIs
+ * already registered.
+ */
+export function isSafeRedirectUri(uri: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return false;
+  }
+  if (DANGEROUS_REDIRECT_SCHEMES.has(url.protocol.toLowerCase())) return false;
+  // RFC 6749 §3.1.2: the redirection endpoint URI must not include a fragment.
+  if (url.hash !== '') return false;
+  return true;
+}
+
 export async function createClient(args: {
   clientName?: string;
   redirectUris: string[];

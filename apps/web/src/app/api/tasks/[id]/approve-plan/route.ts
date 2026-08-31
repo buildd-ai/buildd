@@ -26,7 +26,7 @@ export async function POST(
   try {
     const task = await db.query.tasks.findFirst({
       where: eq(tasks.id, id),
-      columns: { id: true, workspaceId: true, mode: true, status: true, result: true },
+      columns: { id: true, workspaceId: true, mode: true, status: true, result: true, context: true },
     });
 
     if (!task) {
@@ -49,6 +49,17 @@ export async function POST(
 
     if (task.status !== 'completed') {
       return NextResponse.json({ error: 'Planning task has not completed yet' }, { status: 400 });
+    }
+
+    // A rejected plan is not approvable. The reviewer's verdict stands until a
+    // revised planning task produces a new plan (POST /reject-plan links the two
+    // via context.previousPlanTaskId).
+    const taskContext = (task.context as Record<string, unknown> | null) || {};
+    if (taskContext.planRejection) {
+      return NextResponse.json(
+        { error: 'Plan was rejected — approve the revised plan instead' },
+        { status: 409 },
+      );
     }
 
     // Extract plan from structured output

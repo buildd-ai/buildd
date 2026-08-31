@@ -5,18 +5,9 @@ import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
-import { ArtifactType } from '@buildd/shared';
+import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
+import { appBaseUrl } from '@/lib/app-url';
 
-const VALID_TYPES = new Set([
-  ArtifactType.CONTENT,
-  ArtifactType.REPORT,
-  ArtifactType.DATA,
-  ArtifactType.LINK,
-  ArtifactType.SUMMARY,
-  ArtifactType.FILE,
-  ArtifactType.ANALYSIS,
-  ArtifactType.RECOMMENDATION,
-]);
 
 /**
  * POST /api/missions/[id]/artifacts — create an artifact linked to a mission
@@ -66,9 +57,11 @@ export async function POST(
   const body = await req.json();
   const { type, title, content, url, metadata, key } = body;
 
-  if (!type || !VALID_TYPES.has(type)) {
+  // Single vocabulary (@buildd/shared ARTIFACT_TYPES) — see the note in
+  // packages/shared/src/types.ts on why no route keeps its own list.
+  if (!isArtifactType(type)) {
     return NextResponse.json(
-      { error: `Invalid type. Must be one of: ${[...VALID_TYPES].join(', ')}` },
+      { error: `Invalid type. Must be one of: ${ARTIFACT_TYPES.join(', ')}` },
       { status: 400 }
     );
   }
@@ -86,9 +79,7 @@ export async function POST(
     ...(url ? { url } : {}),
   };
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
+  const baseUrl = appBaseUrl();
 
   // Upsert by (workspaceId, key) if key provided
   if (key && typeof key === 'string' && mission.workspaceId) {

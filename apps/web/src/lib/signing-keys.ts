@@ -14,14 +14,29 @@
 
 import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, isNull, or, gt } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 
-// kid format: 'buildd-YYYY-MM'
-function makeKid(now: Date): string {
+/**
+ * kid format: 'buildd-YYYY-MM-<suffix>'.
+ *
+ * The month prefix stays for readability, but a month is not unique: a forced
+ * rotation (?force=true skips the 30-day age check) or a concurrent JWKS
+ * bootstrap can mint two keys in the same month, and no DB index prevents it.
+ * Two JWKS entries sharing one kid make verifier key selection ambiguous, so
+ * the suffix distinguishes them: millisecond-of-month (derived from the
+ * creation time) plus 4 random chars for same-instant mints.
+ *
+ * Existing bare 'buildd-YYYY-MM' kids keep working — nothing parses the kid,
+ * it is only ever compared by exact value against the stored label.
+ */
+export function makeKid(now: Date): string {
   const y = now.getUTCFullYear();
   const m = String(now.getUTCMonth() + 1).padStart(2, '0');
-  return `buildd-${y}-${m}`;
+  const msOfMonth = now.getTime() - Date.UTC(y, now.getUTCMonth(), 1);
+  const stamp = msOfMonth.toString(36);
+  const rand = crypto.randomUUID().replace(/-/g, '').slice(0, 4);
+  return `buildd-${y}-${m}-${stamp}${rand}`;
 }
 
 export interface KeyPairJwk {
@@ -92,15 +107,27 @@ export async function getActiveSigningKey(): Promise<{
 /**
  * Retrieve all public keys (Active + Retiring) for the JWKS endpoint.
  * Returns only public key material — private keys are never included.
+ *
+ * Publication is gated on expiry here, not just by the rotation cron's delete
+ * step: a key is published when tokenExpiresAt IS NULL (Active) or is still in
+ * the future (Retiring, so assertions signed before rotation still verify).
+ * An expired key is never published even if the deleter has not run.
  */
 export async function getAllPublicKeys(): Promise<Array<{
   kid: string;
   publicKeyJwk: JsonWebKey;
 }>> {
   const provider = getSecretsProvider();
+  const now = new Date();
 
   const rows = await db.query.secrets.findMany({
-    where: eq(secrets.purpose, 'signing_key'),
+    where: and(
+      eq(secrets.purpose, 'signing_key'),
+      or(
+        isNull(secrets.tokenExpiresAt),
+        gt(secrets.tokenExpiresAt, now),
+      ),
+    ),
     columns: { id: true, label: true },
     orderBy: (t, { asc }) => [asc(t.createdAt)],
   });

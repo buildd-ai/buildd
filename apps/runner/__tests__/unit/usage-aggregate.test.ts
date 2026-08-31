@@ -10,7 +10,14 @@ describe('extractResultUsage (SDK result message → totals)', () => {
         },
       },
     });
-    expect(usage).toEqual({ inputTokens: 10_000, outputTokens: 500 });
+    // The cache breakdown rides along so the server can price a seat session
+    // without treating every cached token as fresh input.
+    expect(usage).toEqual({
+      inputTokens: 10_000,
+      outputTokens: 500,
+      cacheReadInputTokens: 9_000,
+      cacheCreationInputTokens: 0,
+    });
   });
 
   // The regression this whole change exists for: on seat-based (OAuth) auth the
@@ -25,21 +32,36 @@ describe('extractResultUsage (SDK result message → totals)', () => {
         output_tokens: 3_400,
       },
     });
-    expect(usage).toEqual({ inputTokens: 42_000, outputTokens: 3_400 });
+    expect(usage).toEqual({
+      inputTokens: 42_000,
+      outputTokens: 3_400,
+      cacheReadInputTokens: 40_000,
+      cacheCreationInputTokens: 800,
+    });
   });
 
   test('accepts camelCase top-level usage too (SDK version drift)', () => {
     const usage = extractResultUsage({
       usage: { inputTokens: 100, cacheReadInputTokens: 50, outputTokens: 25 },
     });
-    expect(usage).toEqual({ inputTokens: 150, outputTokens: 25 });
+    expect(usage).toEqual({
+      inputTokens: 150,
+      outputTokens: 25,
+      cacheReadInputTokens: 50,
+      cacheCreationInputTokens: 0,
+    });
   });
 
   test('an empty byModel map does not mask the top-level totals', () => {
     const usage = extractResultUsage({
       usage: { byModel: {}, input_tokens: 700, output_tokens: 80 },
     });
-    expect(usage).toEqual({ inputTokens: 700, outputTokens: 80 });
+    expect(usage).toEqual({
+      inputTokens: 700,
+      outputTokens: 80,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
   });
 
   test('returns null when the SDK reported nothing usable', () => {

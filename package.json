@@ -40,9 +40,10 @@
     "cron:plan": "bun run scripts/sync-crons.ts --dry-run",
     "cron:sync": "bun run scripts/sync-crons.ts",
     "cron:check": "bun run scripts/sync-crons.ts --check",
-    "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts",
+    "migrations:lint": "bun test packages/core/__tests__/migration-journal-ordering.test.ts && bun test packages/core/__tests__/prod-build-runs-migrations.test.ts",
     "env:verify": "bun apps/runner/src/index.ts env verify",
-    "prepare": "git config core.hooksPath .githooks || true"
+    "prepare": "git config core.hooksPath .githooks || true",
+    "cbm:seed": "bun run apps/runner/scripts/cbm-seed.ts"
   },
   "dependencies": {
     "next": "^16.0.0",

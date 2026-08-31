@@ -5,7 +5,7 @@
  * Two concurrent callers always get distinct numbers, preventing the
  * "0106_foo.sql and 0106_bar.sql both generated on different branches" collision.
  *
- * Auth: API key (worker or admin token).
+ * Auth: API key (worker or admin token) with access to the target workspace.
  *
  * Body: { currentMax?: number }
  *   currentMax — the highest migration number the caller sees in the git journal.
@@ -22,6 +22,7 @@ import { db } from '@buildd/core/db';
 import { workspaces } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { verifyAccountWorkspaceAccess } from '@/lib/team-access';
 
 export async function POST(
   req: NextRequest,
@@ -35,6 +36,13 @@ export async function POST(
   const account = await authenticateApiKey(apiKey);
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
+  }
+
+  // The update below targets the path param verbatim, so the account has to be
+  // scoped to this workspace or any valid key could bump another tenant's counter.
+  const hasAccess = await verifyAccountWorkspaceAccess(account.id, workspaceId);
+  if (!hasAccess) {
+    return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
   try {

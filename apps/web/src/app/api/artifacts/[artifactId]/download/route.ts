@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
 
 // GET /api/artifacts/[artifactId]/download - Redirect to presigned download URL
 export async function GET(
@@ -17,8 +18,10 @@ export async function GET(
     return NextResponse.json({ error: 'Storage not configured' }, { status: 503 });
   }
 
+  // The worker relation is what makes a tenant comparison possible below.
   const artifact = await db.query.artifacts.findFirst({
     where: eq(artifacts.id, artifactId),
+    with: { worker: true },
   });
 
   if (!artifact) {
@@ -29,13 +32,22 @@ export async function GET(
     return NextResponse.json({ error: 'Artifact has no file' }, { status: 404 });
   }
 
-  // Auth: share token (public) or API key/session
+  // Auth: explicitly published artifact, share token, or API key/session.
+  //
+  // A `visibility: 'public'` artifact needs no credential: the share page already
+  // serves its content anonymously, and `upload_artifact` hands agents this URL as
+  // the "permanent, for markdown embedding" link (packages/core/mcp-tools.ts) which
+  // they inline into artifact prose. Requiring a credential here would break every
+  // embedded image on a shared page. Publishing is the deliberate act that opens
+  // the bytes; nothing here widens access to a private artifact.
   const token = req.nextUrl.searchParams.get('token');
-  if (token) {
-    // A valid token grants access only while the artifact is public.
-    if (token !== artifact.shareToken || artifact.visibility !== 'public') {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 403 });
-    }
+  if (artifact.visibility === 'public') {
+    // Published: no credential required, and no token needed either.
+  } else if (token) {
+    // A token is only ever a grant for a published artifact, and that case is
+    // handled above — so a token presented here is for a private artifact and is
+    // always rejected, whether or not it matches the stored one.
+    return NextResponse.json({ error: 'Invalid token' }, { status: 403 });
   } else {
     const authHeader = req.headers.get('authorization');
     const apiKey = authHeader?.replace('Bearer ', '') || null;
@@ -44,6 +56,27 @@ export async function GET(
 
     if (!account && !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Being authenticated is not being entitled: the caller has to own the
+    // artifact's worker or belong to its workspace. Same guard as ../route.ts.
+    if (account) {
+      const isOwner = artifact.worker?.accountId === account.id;
+      if (!isOwner) {
+        const hasAccess = artifact.workspaceId
+          ? await verifyAccountWorkspaceAccess(account.id, artifact.workspaceId)
+          : false;
+        if (!hasAccess) {
+          return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+        }
+      }
+    } else {
+      const hasAccess = artifact.workspaceId
+        ? await verifyWorkspaceAccess(user!.id, artifact.workspaceId)
+        : null;
+      if (!hasAccess) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
     }
   }
 

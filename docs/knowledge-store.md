@@ -9,7 +9,7 @@ backing store can change with zero call-site churn.
 ```
 buildd_memory (MCP)  ──save/update/delete──►  KnowledgeStore.upsert/delete
 buildd_memory query_knowledge ──────────────►  KnowledgeStore.query
-knowledge-ingest.yml (CI) ──────────────────►  KnowledgeStore.upsert
+ingest job (runner-claimed) ─────────────────►  KnowledgeStore.upsert
 ```
 
 - **`KnowledgeStore`** (`packages/core/knowledge-store/types.ts`) — `upsert`,
@@ -78,11 +78,20 @@ index is `(namespace, source_id)`.
 
 ## Ingestion
 
-### Automated (CI)
+### Automated (event-driven)
 
-`.github/workflows/knowledge-ingest.yml` runs on every push to `dev` and weekly
-on Mondays (06:17 UTC). It ingests the buildd workspace into the production
-knowledge store:
+There is **no scheduled ingest and no ingest workflow.**
+`.github/workflows/knowledge-ingest.yml` was deleted in v0.175.0 (commit
+`1b0ce506`) when full ingest moved to the runner-fleet claim protocol, and the
+weekly Monday run died with it. Nothing has replaced the schedule: no
+`cron-manifest.json` entry touches knowledge, and no code path produces
+`trigger: 'scheduled'` (the schema annotates that value as PHASE 2, not
+implemented).
+
+Ingest is driven by events instead — a repo link, the first-index backfill, a
+diff escalation on merge, or a manual POST to `/api/knowledge/ingest-jobs`.
+A full job is claimed and executed by a runner, which ingests the buildd
+workspace into the production knowledge store:
 
 | Step | Source | Corpus |
 |------|--------|--------|
@@ -133,6 +142,29 @@ Merged PRs on bound repos enqueue jobs into `knowledge_ingest_jobs`
   chunks in the workspace's `code`/`docs` namespaces that the run did not
   refresh (`sweep`), so deleted/renamed files drop out of retrieval. Disable
   per runner with `KNOWLEDGE_INGEST_JOBS=0`.
+
+#### Job durability (leases + reclaim)
+
+Every started job holds a **lease**: `lease_owner`, `lease_expires_at`,
+`heartbeat_at`, plus an `attempts` counter
+(`apps/web/src/lib/knowledge-ingest-lease.ts`). A runner claim leases for
+`FULL_LEASE_MS` and renews on every `…/{id}/files` batch; the serverless diff
+executor leases for `DIFF_LEASE_MS`. Terminal transitions release the lease.
+
+A row still `running` past its lease had its executor die. Reclaim requeues it
+(`attempts + 1`) and, past `MAX_INGEST_ATTEMPTS`, parks it in `error` — which the
+idempotency predicate (`status != 'error'`) excludes, so a redelivery can enqueue
+a fresh job. A lost `diff` job additionally escalates to a `full` job, which
+recovers the file contents at that sha (the PR's own `pr`-corpus diff chunks are
+not recoverable). Legacy rows with a NULL lease stay governed by `started_at`.
+
+Reclaim runs inline on live paths — the runner claim poll, the manual enqueue
+route, and the merged-PR webhook — deliberately **not** from a cron, since a
+trigger that silently never fires is the failure mode this replaces.
+
+`POST /api/knowledge/ingest-jobs` therefore answers **409 + `reason: 'stalled'`**
+(not a 200 `already_queued`) when a job holds the per-workspace slot and nothing
+is moving it.
 
 **Caveat:** the completion sweep removes *all* file-derived chunks in
 `{ws}:code` / `{ws}:docs` older than the run — including manual
@@ -208,6 +240,10 @@ interface lets the memory corpus be delegated out with zero call-site changes.
 - Requires the `pgvector` extension and migration `0050` (Phase 1).
 - Set `VOYAGE_API_KEY` in the environment to enable embeddings + reranking.
 - All ingestion is best-effort/idempotent; re-running is safe.
-- The CI workflow (`knowledge-ingest.yml`) uses the production `DATABASE_URL` and
-  `VOYAGE_API_KEY` secrets — no separate store or Neon branch.
-- `spec-sync.yml` is deprecated; the weekly knowledge-ingest job supersedes it.
+- Ingest uses the production `DATABASE_URL` and `VOYAGE_API_KEY` — no separate
+  store or Neon branch. The runner-executed path reads them from its own
+  environment; the HTTP path needs only `BUILDD_API_KEY`.
+- `spec-sync.yml` is deprecated and was NOT superseded by a scheduled job — see
+  "Automated (event-driven)" above. Nothing periodically refreshes the corpus, so
+  a drift audit that assumes a fresh index is reading stale data until an ingest
+  is triggered.

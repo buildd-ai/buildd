@@ -15,7 +15,8 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
-import { completeMissionIfVerified } from '@/lib/mission-completion';
+import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
+import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
 import { notify } from '@/lib/pushover';
 
@@ -138,6 +139,7 @@ export async function GET(req: NextRequest) {
   let triggerChecks = 0;
   let deterministicHeartbeatSkips = 0;
   let llmHeartbeatInvocations = 0;
+  let criteriaRearmInvocations = 0;
 
   try {
     // Find due schedules: enabled=true AND nextRunAt <= now
@@ -504,6 +506,10 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
+        // Set when a blocked criteria verdict re-arms the organizer: carries the
+        // verdict into buildMissionContext instead of skipping the cycle.
+        let criteriaRearmContext: Record<string, unknown> | null = null;
+
         // Read heartbeat/activeHours config from the schedule's taskTemplate.context
         const templateCtx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
         const isHeartbeat = templateCtx?.heartbeat === true;
@@ -561,20 +567,61 @@ export async function GET(req: NextRequest) {
               });
 
               if (!outcome.completed) {
-                // Advance to the schedule's own next slot. Without this the row
-                // stays due and every cron tick re-asks the predicate (which can
-                // re-run a command criterion); the heartbeat's cadence is the
-                // right re-verification interval.
-                await db.update(taskSchedules).set({
-                  nextRunAt: computeNextRunAt(schedule.cronExpression, schedule.timezone),
-                  lastDeferralReason: 'heartbeat_criteria_blocked',
-                  lastDeferredAt: now,
-                  updatedAt: now,
-                }).where(eq(taskSchedules.id, schedule.id));
+                // Every deliverable is terminal and the criteria gate refused:
+                // the mission is blocked and cannot file the work that would
+                // unblock it. Deferring alone made that a deadlock — the verdict
+                // was re-produced every cadence and read by nobody. Give it a
+                // consumer: wake the organizer ONCE per verdict shape, carrying
+                // the per-criterion text, and escalate to the owner rather than
+                // loop when the organizer cannot move it.
+                if (isCriteriaBlockCode(outcome.decision.code)) {
+                  const rearm = await applyCriteriaRearm({
+                    missionId: linkedMission.id,
+                    scheduleId: schedule.id,
+                    blockReason: outcome.decision.reason,
+                  }).catch(e => {
+                    console.error(`[cron-schedules] criteria re-arm failed for mission ${linkedMission.id}:`, e);
+                    return null;
+                  });
+
+                  if (rearm?.action === 'rearm') {
+                    // Fall through to the normal task-creation path below so the
+                    // cycle gets full mission context. `criteriaRearm` is what
+                    // buildMissionContext keys the verdict block (and the narrow
+                    // lift of coordinate-only mode) off.
+                    criteriaRearmContext = {
+                      criteriaRearm: {
+                        reason: rearm.reason,
+                        verdictLines: rearm.verdictLines,
+                        overall: outcome.decision.criteriaVerdict.kind === 'value'
+                          ? outcome.decision.criteriaVerdict.value
+                          : 'not evaluated',
+                        blockReason: outcome.decision.reason,
+                      },
+                    };
+                    criteriaRearmInvocations++;
+                  }
+                }
+
+                if (!criteriaRearmContext) {
+                  // Advance to the schedule's own next slot. Without this the row
+                  // stays due and every cron tick re-asks the predicate (which can
+                  // re-run a command criterion); the heartbeat's cadence is the
+                  // right re-verification interval.
+                  await db.update(taskSchedules).set({
+                    nextRunAt: computeNextRunAt(schedule.cronExpression, schedule.timezone),
+                    lastDeferralReason: 'heartbeat_criteria_blocked',
+                    lastDeferredAt: now,
+                    updatedAt: now,
+                  }).where(eq(taskSchedules.id, schedule.id));
+                }
               }
-              deterministicHeartbeatSkips++;
-              skipped++;
-              continue;
+
+              if (!criteriaRearmContext) {
+                deterministicHeartbeatSkips++;
+                skipped++;
+                continue;
+              }
             }
 
             if (prepass.action === 'skip_blocked' || prepass.action === 'skip_no_change') {
@@ -585,9 +632,16 @@ export async function GET(req: NextRequest) {
               continue;
             }
 
-            // invoke_llm: persist current state hash so next heartbeat can detect no-change
-            await db.update(taskSchedules).set({ lastHeartbeatStateHash: prepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
-            llmHeartbeatInvocations++;
+            if (prepass.action === 'invoke_llm') {
+              // Persist current state hash so the next heartbeat can detect no-change.
+              await db.update(taskSchedules).set({ lastHeartbeatStateHash: prepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+              llmHeartbeatInvocations++;
+            }
+            // Otherwise this is a criteria re-arm falling through from
+            // skip_complete: state is unchanged by construction (every
+            // deliverable is terminal), so the no-change hash must NOT be
+            // written — doing so would make the next tick read "no change" and
+            // suppress the cycle the re-arm just authorised.
           } catch (prepassErr) {
             console.warn(`[heartbeat-prepass] Error for mission ${linkedMission.id}:`, prepassErr instanceof Error ? prepassErr.message : prepassErr);
             llmHeartbeatInvocations++;
@@ -599,6 +653,7 @@ export async function GET(req: NextRequest) {
           const missionContext = await buildMissionContext(linkedMission.id, {
             ...template.context,
             triggerSource: 'cron',
+            ...(criteriaRearmContext ?? {}),
           });
           if (missionContext) {
             taskDescription = missionContext.description;
@@ -891,6 +946,7 @@ export async function GET(req: NextRequest) {
       heartbeatOrphans,
       deterministicHeartbeatSkips,
       llmHeartbeatInvocations,
+      criteriaRearmInvocations,
       healthWatcher,
       archivedMissions,
       overdueHeartbeatAlerts,

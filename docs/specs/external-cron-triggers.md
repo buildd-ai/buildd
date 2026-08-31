@@ -71,7 +71,7 @@ is how an MCP connector credential holding a valid refresh token stayed dead for
   least that fine, or it fires late.
 - Schedules fire **exactly on the hour**. No jitter may be added to `nextRunAt`:
   the tick runs at `:00`, so an offset past that instant does not spread load, it
-  delays the schedule to the next tick a full hour later. (`computeStaggerOffset`
+  delays the schedule to the next tick a full hour later. (computeStaggerOffset
   added 0–299s to every top-of-hour schedule and was removed for this reason.)
 - Reconciliation is origin-scoped: `sync-crons.ts` only reads, updates, or
   deletes provider jobs whose URL starts with

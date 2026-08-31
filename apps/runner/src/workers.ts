@@ -29,7 +29,7 @@ import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, cre
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
-import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
+import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
@@ -46,6 +46,8 @@ import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
   resolveMaxTurns,
+  resolveSessionModel,
+  resolveActualModel,
   discoverModelCapabilities,
   buildPrompt,
   buildSessionSummary,
@@ -69,9 +71,10 @@ import {
   buildWorkerBwrapArgv,
   createBwrapSpawn,
   isMountAllowlistEnabled,
+  shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, ensureCbmRuntimeDir, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -104,8 +107,13 @@ function parseClaimError(err: Error): { status: number; reason: string } {
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
 let _bwrapProbeAt: string | null = null;
-/** Test-only: reset the bwrap probe cache so each test starts from a known state. */
-export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; _bwrapProbeAt = null; }
+let _mountIsolationBwrapSupported: boolean | null = null;
+/** Test-only: reset the bwrap probe caches so each test starts from a known state. */
+export function __resetBwrapSupportForTest(): void {
+  _bwrapSupported = null;
+  _bwrapProbeAt = null;
+  _mountIsolationBwrapSupported = null;
+}
 /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
 export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
@@ -121,6 +129,25 @@ export function isBwrapSupported(): boolean {
     }
   }
   return _bwrapSupported;
+}
+
+/**
+ * Namespace support for the OUTER mount-allowlist wrapper only.
+ *
+ * isBwrapSupported() carries Claude Code's inner-sandbox requirement, which
+ * includes a network namespace. buildWorkerBwrapArgv never unshares net, so
+ * gating the wrapper on that stricter boolean turned mount isolation off on hosts
+ * where it works. Probe what this consumer actually needs.
+ */
+export function isMountIsolationBwrapSupported(): boolean {
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
+  if (_mountIsolationBwrapSupported === null) {
+    _mountIsolationBwrapSupported = checkBwrapMountIsolationSupport();
+    if (!_mountIsolationBwrapSupported) {
+      console.log('[runner] bwrap user/pid namespaces unavailable — outer mount allowlist cannot be enforced');
+    }
+  }
+  return _mountIsolationBwrapSupported;
 }
 
 // Async message stream for multi-turn conversations
@@ -1607,6 +1634,9 @@ export class WorkerManager {
     // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
     // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
     let cbmCacheDir: string | undefined;
+    let cbmRuntimeDir: string | undefined;
+    // Shared cache is host-wide and seeded — it must survive this worker's cleanup.
+    let cbmSharedCache = false;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
     // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
@@ -2285,6 +2315,17 @@ export class WorkerManager {
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);
 
+      // Resolve the session model: the model the claim route resolved for THIS
+      // task (task.context.model — smart-routing tier decision or an explicit
+      // per-task override) wins; the runner-global config.model stays the
+      // default and the local-UI override. A task with no resolved model
+      // behaves exactly as before.
+      const sessionModel = resolveSessionModel(task.context, this.config.model);
+      worker.sessionModel = sessionModel;
+      if (sessionModel !== this.config.model) {
+        console.log(`[Worker ${worker.id}] Using per-task model from claim: ${sessionModel} (runner default: ${this.config.model})`);
+      }
+
       // Resolve fallback model: task-level override > workspace-level setting
       const taskFallbackModel = (task.context as any)?.fallbackModel as string | undefined;
       const fallbackModel = taskFallbackModel || gitConfig?.fallbackModel || undefined;
@@ -2294,7 +2335,7 @@ export class WorkerManager {
       const extendedContext = taskExtendedContext !== undefined
         ? Boolean(taskExtendedContext)
         : Boolean(gitConfig?.extendedContext);
-      const betas = extendedContext && /sonnet/i.test(this.config.model)
+      const betas = extendedContext && /sonnet/i.test(sessionModel)
         ? ['context-1m-2025-08-07' as const]
         : undefined;
 
@@ -2315,19 +2356,41 @@ export class WorkerManager {
       const cbmActivation = buildCbmActivation({
         workerId: worker.id,
         worktreePath: worker.worktreePath,
+        // The base clone, not the worktree: a shared seed is indexed at this path,
+        // and CBM keys a project by the path it was indexed at.
+        repoPath,
         isCodexTask,
         cbmRoleDisabled: !!(worker as any).cbmDisabled,
       });
       const cbmEnforced = cbmActivation.enforced;
 
       let cbmBinaryPath: string | undefined;
+      // Set when a required CBM bind could not be mounted; see the bwrap argv
+      // build below. CBM is then off for this task even though the gates passed.
+      let cbmMountBlocked = false;
       if (cbmEnforced) {
         cbmBinaryPath = cbmActivation.cbmBinaryPath;
         cbmCacheDir = cbmActivation.cbmCacheDir;
+        cbmRuntimeDir = cbmActivation.cbmRuntimeDir;
+        cbmSharedCache = !!cbmActivation.sharedCache;
         mkdirSync(cbmCacheDir!, { recursive: true });
         // Daemon coordination dir — CBM will not start without it.
-        ensureCbmRuntimeDir(cbmCacheDir!);
-        console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
+        ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
+        console.log(
+          `[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`
+          + (cbmSharedCache ? ` (shared, pre-seeded project ${cbmActivation.cbmProject})` : ''),
+        );
+
+        // A seeded shared cache is already warm for this repo, so the per-task index
+        // is pure waste: measured ~20s cold and ~11s for a warm re-index of the same
+        // path, against 0s for querying a seed. Skipped rather than shortened.
+        if (cbmActivation.skipBootstrapIndex) {
+          console.log(`[Worker ${worker.id}] CBM: skipping index — shared cache already holds ${cbmActivation.cbmProject}`);
+          this.addMilestone(worker, { type: 'status', label: 'graph_index_skipped reason=shared_cache_warm', ts: Date.now() });
+          // NOT 'ok': that would make warm starts indistinguishable from a task
+          // that paid for an index, hiding whether the shared cache is working.
+          worker.cbmBootstrapResult = 'skipped_warm';
+        } else {
 
         // Pre-index the worktree so the graph is warm on turn one.
         // CBM_INDEX_TIMEOUT_MS hard timeout; bootstrap failure is non-fatal — CBM
@@ -2352,13 +2415,23 @@ export class WorkerManager {
           worker.cbmBootstrapResult = 'failed';
           worker.cbmBootstrapFailReason = reason;
         }
+        }
+
         // Re-assert before the bwrap argv is built below: an absent path is
         // dropped from the mount list, which would hide the problem inside the
         // sandbox rather than fail loudly.
-        ensureCbmRuntimeDir(cbmCacheDir!);
+        ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
+
+        // Keep the shared seed current, off the critical path. This worker already
+        // has its graph (shared or per-worker); the refresh is for the next one, and
+        // it exits immediately when HEAD has not moved.
+        if (repoPath) spawnCbmSeedRefresh(repoPath);
       }
 
-      // CBM observability: record activation outcome and initialize per-task counters.
+      // CBM observability: provisional activation outcome + per-task counters.
+      // Provisional because the mcpServers map does not exist yet — the final
+      // classification (which can be legacy_mcp_json) is resolved after MCP
+      // assembly, below.
       if (cbmEnforced) {
         worker.cbmOutcome = 'enforced';
       } else {
@@ -2375,23 +2448,16 @@ export class WorkerManager {
       // this, CBM was mounted but unmentioned: the tools appear in the tool list
       // with no policy preferring them over a Read/Grep sweep, so structural
       // questions kept being answered the expensive way. Appended only when
-      // enforced, so the instruction can never describe a server that is absent.
-      if (cbmEnforced) {
-        systemPrompt.append = (systemPrompt.append ?? '') +
-          '\n\n## Codebase graph (codebase-memory)\n' +
-          'This worktree is pre-indexed in the `codebase-memory` MCP server. For STRUCTURAL ' +
-          'questions about the code, query the graph instead of fanning out Read/Grep/Glob:\n' +
-          '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path\n' +
-          '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph\n' +
-          '- "what does this file import / how is this area laid out?" -> mcp__codebase-memory__get_architecture\n' +
-          '- locating a symbol, then reading it -> mcp__codebase-memory__search_code, then get_code_snippet\n' +
-          'One graph query replaces a Grep-and-Read sweep and stays accurate across files. ' +
-          'Keep using Read/Grep/Glob to read code you have already located, for non-code files, ' +
-          'and whenever the graph returns nothing useful — it is an accelerator, never a gate. ' +
-          'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.\n' +
-          'The graph answers structural questions ONLY. It is not a source of intent, history, or ' +
-          'prior decisions — use the buildd knowledge tools (recall) for those.';
+      // enforced AND actually mounted, so the instruction can never describe a
+      // server that is absent — `cbmMountBlocked` means a required bind was
+      // missing and CBM was dropped for this task.
+      if (cbmEnforced && !cbmMountBlocked) {
+        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
+          project: cbmActivation.cbmProject,
+          sharedBaseIndex: cbmActivation.sharedCache,
+        });
       }
+
 
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
@@ -2399,38 +2465,76 @@ export class WorkerManager {
       // spawn hook is the injection point prescribed by the design fallback.
       // BUILDD_DISABLE_SANDBOX remains the global kill switch, and the cached
       // support probe/runtime false-positive recovery remain the sole bwrap gate.
-      const workerBwrapArgv = isMountAllowlistEnabled() && isBwrapSupported()
-        ? buildWorkerBwrapArgv({
-            worktreePath: cwd,
-            repoPath,
-            homePath: cleanEnv.HOME,
-            bunInstallPath: cleanEnv.BUN_INSTALL,
-            claudeConfigDir,
-            codexHome: cleanEnv.CODEX_HOME,
-            isCodexTask,
-            executablePath: pathToClaudeCodeExecutable,
-            extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
-            cbmBinaryPath,
-            cbmCacheDir,
-          })
-        : undefined;
+      // Codex is excluded by the gate: it has no equivalent spawn hook, so an
+      // argv built for it was only ever discarded.
+      let workerBwrapArgv: string[] | undefined;
+      if (shouldWrapWorkerInBwrap({
+        isCodexTask,
+        mountAllowlistEnabled: isMountAllowlistEnabled(),
+        bwrapSupported: isMountIsolationBwrapSupported(),
+      })) {
+        const bwrapConfig = {
+          worktreePath: cwd,
+          repoPath,
+          homePath: cleanEnv.HOME,
+          bunInstallPath: cleanEnv.BUN_INSTALL,
+          claudeConfigDir,
+          codexHome: cleanEnv.CODEX_HOME,
+          isCodexTask,
+          executablePath: pathToClaudeCodeExecutable,
+          extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
+        };
+        try {
+          workerBwrapArgv = buildWorkerBwrapArgv({ ...bwrapConfig, cbmBinaryPath, cbmCacheDir, cbmRuntimeDir });
+        } catch (err) {
+          // A mount CBM cannot work without is gone (the bootstrap discards the
+          // cache dir on failure, and a stray rm or a full disk can too). Mounting
+          // CBM anyway would leave the agent indexing into the sandbox's
+          // `--tmpfs /tmp`, which is thrown away at session end — minutes of work
+          // for nothing, with no signal. Drop CBM for this task and say so.
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`[Worker ${worker.id}] CBM sandbox mount unavailable — running without CBM: ${reason}`);
+          this.addMilestone(worker, { type: 'status', label: `cbm_mount_unavailable: ${reason.slice(0, 120)}`, ts: Date.now() });
+          // cbmCacheDir stays set so the `finally` cleanup still removes it.
+          cbmMountBlocked = true;
+          worker.cbmOutcome = 'disabled';
+          worker.cbmDisableReason = 'mount_unavailable';
+          workerBwrapArgv = buildWorkerBwrapArgv(bwrapConfig);
+        }
+      }
+
+      // Steer the agent toward the graph when CBM is actually mounted. Without
+      // this, CBM was mounted but unmentioned: the tools appear in the tool list
+      // with no policy preferring them over a Read/Grep sweep, so structural
+      // questions kept being answered the expensive way. Appended only when
+      // enforced, so the instruction can never describe a server that is absent.
+      // `!cbmMountBlocked`: a required CBM bind that could not be mounted disables
+      // CBM entirely (see the mount-unavailable path above), so steering the agent
+      // toward a graph that is not there would be a lie.
+      if (cbmEnforced && !cbmMountBlocked) {
+        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock();
+      }
+
 
       // Build query options
       const outputFormat = resolveOutputFormat(task);
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: invocationSessionId,
         cwd,
-        model: this.config.model,
+        model: sessionModel,
         ...(fallbackModel ? { fallbackModel } : {}),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         ...(!isCodexTask && workerBwrapArgv
           ? {
               spawnClaudeCodeProcess: createBwrapSpawn(workerBwrapArgv, () => {
                 // The outer wrapper can expose the same probe false-positive as
-                // Claude's inner bwrap. Flip the cache once and signal startSession
+                // Claude's inner bwrap. Flip the caches once and signal startSession
                 // to auto-retry without sandbox rather than marking the task Failed.
-                if (_bwrapSupported !== false) {
+                // The outer wrapper needs a strict subset of the inner sandbox's
+                // namespaces, so a denial here rules both out.
+                if (_bwrapSupported !== false || _mountIsolationBwrapSupported !== false) {
                   _bwrapSupported = false;
+                  _mountIsolationBwrapSupported = false;
                   worker.bwrapRetryPending = true;
                   abortController.abort();
                 }
@@ -2587,20 +2691,29 @@ export class WorkerManager {
 
       // Enforce CBM as default MCP for repo-backed tasks.
       // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
-      if (cbmEnforced && !queryOptions.mcpServers['codebase-memory']) {
-        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!);
+      if (cbmEnforced && !cbmMountBlocked && !queryOptions.mcpServers['codebase-memory']) {
+        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
       }
 
-      // Block CBM tools that write to the repo or delete indexes — enforced for any
-      // mounted codebase-memory server regardless of how it was wired (enforcement,
-      // connector, or manual config).
-      if (queryOptions.mcpServers['codebase-memory']) {
-        (queryOptions as any).disallowedTools = [
-          ...((queryOptions as any).disallowedTools ?? []),
-          ...CBM_BLOCKED_TOOLS,
-        ];
-      }
+      // CBM observability, final classification. The provisional outcome above was
+      // set before the mcpServers map existed, so it could only say enforced or
+      // disabled. Now that connectors and the project's .mcp.json have been merged
+      // we can see the third case: CBM mounted without harness enforcement, which
+      // is `legacy_mcp_json` — recording it as `disabled` put a CBM-equipped
+      // session in the metrics control group.
+      worker.cbmOutcome = resolveCbmOutcome({
+        enforced: cbmEnforced,
+        mounted: !!queryOptions.mcpServers['codebase-memory'],
+      });
+      if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
+
+      // Block CBM tools that write to the repo or delete indexes. Applied
+      // unconditionally: a codebase-memory server can also arrive via the SDK's own
+      // project .mcp.json load (settingSources includes 'project'), where it never
+      // appears in queryOptions.mcpServers — gating on that left the destructive
+      // tools exposed on exactly that path. Disallowing an unmounted tool is inert.
+      (queryOptions as any).disallowedTools = applyCbmToolBlocklist((queryOptions as any).disallowedTools);
 
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role
@@ -2768,7 +2881,7 @@ export class WorkerManager {
             effort: configuredEffort,
             thinking: configuredThinking,
             extendedContext,
-          }, this.config.model, (e: any) => this.emit(e));
+          }, sessionModel, (e: any) => this.emit(e));
         },
       } : {
         // Codex branch: wire the shared MessageStream so review/nudge/steering
@@ -2791,9 +2904,9 @@ export class WorkerManager {
       // account"). The runner's configured model is Claude by default, so for Codex
       // tasks strip a Claude model id and let Codex use the account default (or a
       // genuine codex model id passes through). Claude tasks are unaffected.
-      const backendModel = isCodexTask && /^claude/i.test(this.config.model || '')
+      const backendModel = isCodexTask && /^claude/i.test(sessionModel || '')
         ? undefined
-        : this.config.model;
+        : sessionModel;
 
       for await (const event of backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
@@ -3221,6 +3334,9 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'completed',
           milestones: worker.milestones,
           ...gitStats,
+          // Cost + model attribution: without these the server can only guess,
+          // and workers.cost_usd stayed at its '0' default for every runner task.
+          ...this.terminalAttributionPayload(worker),
           ...(resultMeta && { resultMeta }),
           ...(inputTokens && { inputTokens }),
           ...(outputTokens && { outputTokens }),
@@ -3298,6 +3414,8 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'failed',
           error: worker.error || 'Session aborted',
           ...(worker.sandboxMountGap && { sandboxMountGap: true }),
+          // An aborted session still spent money before it was killed.
+          ...this.terminalAttributionPayload(worker),
           ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
@@ -3340,6 +3458,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
+          ...this.terminalAttributionPayload(worker),
           ...(isBudgetError && { budgetExhausted: true }),
           ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
           ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
@@ -3393,13 +3512,17 @@ If something is missing or incomplete, describe what and fix it now.`;
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
         }
 
-        // Clean up per-worker CBM cache dir (ephemeral per design doc §4.2).
-        if (cbmCacheDir) {
+        // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
+        // NEVER the shared seeded cache: it is host-wide, costs ~20s to rebuild, and
+        // every other worker on this host is reading it right now. In shared mode the
+        // only per-worker state is the runtime dir, which lives outside the cache.
+        const cbmDirToRemove = cbmSharedCache ? cbmRuntimeDir : cbmCacheDir;
+        if (cbmDirToRemove) {
           try {
-            rmSync(cbmCacheDir, { recursive: true, force: true });
-            console.log(`[Worker ${worker.id}] Cleaned up CBM cache dir: ${cbmCacheDir}`);
+            rmSync(cbmDirToRemove, { recursive: true, force: true });
+            console.log(`[Worker ${worker.id}] Cleaned up CBM ${cbmSharedCache ? 'runtime' : 'cache'} dir: ${cbmDirToRemove}`);
           } catch (err) {
-            console.warn(`[Worker ${worker.id}] Failed to clean up CBM cache dir ${cbmCacheDir}:`, err instanceof Error ? err.message : err);
+            console.warn(`[Worker ${worker.id}] Failed to clean up CBM dir ${cbmDirToRemove}:`, err instanceof Error ? err.message : err);
           }
         }
 
@@ -3546,6 +3669,30 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
   }
 
+  /**
+   * Cost + model attribution for a terminal worker update.
+   *
+   * `costUsd` is only sent when the backend reported real spend: a 0 would be
+   * indistinguishable from "this session was free" and would suppress the
+   * server's token-derived estimate (the seat/OAuth path, where the SDK always
+   * reports $0). `actualModel` is always sent when known so
+   * task_outcomes.actual_model stops being NULL.
+   */
+  private terminalAttributionPayload(worker: LocalWorker): { costUsd?: number; actualModel?: string } {
+    const meta = worker.resultMeta;
+    const reportedCost = meta?.totalCostUsd;
+    const actualModel = meta?.actualModel
+      || resolveActualModel({
+        modelUsage: meta?.modelUsage ?? null,
+        reportedModel: worker.reportedModel ?? null,
+        requestedModel: worker.sessionModel ?? null,
+      });
+    return {
+      ...(typeof reportedCost === 'number' && reportedCost > 0 ? { costUsd: reportedCost } : {}),
+      ...(actualModel ? { actualModel } : {}),
+    };
+  }
+
   private async handleMessage(worker: LocalWorker, msg: SDKMessage) {
     worker.lastActivity = Date.now();
     worker.hasNewActivity = true;
@@ -3566,6 +3713,10 @@ If something is missing or incomplete, describe what and fix it now.`;
       } else {
         worker.sessionId = msg.session_id;
       }
+      // Model attribution: the init message names the model the CLI actually
+      // resolved, which can differ from what we asked for (alias expansion).
+      const initModel = (msg as any).model;
+      if (typeof initModel === 'string' && initModel.trim()) worker.reportedModel = initModel.trim();
       this.addCheckpoint(worker, CheckpointEvent.SESSION_STARTED);
       // Immediately persist the captured id (critical for resume)
       storeSaveWorker(worker);
@@ -4105,6 +4256,10 @@ If something is missing or incomplete, describe what and fix it now.`;
             // first actual failure surfaces, flip the cache and abort the current
             // task. startSession's catch block will detect bwrapRetryPending and
             // restart the session without sandbox rather than marking it Failed.
+            // Scoped to the inner sandbox on purpose: this trace comes from
+            // Claude Code's own bwrap (which unshares net too). The outer wrapper
+            // needs less, and its own denials arrive via createBwrapSpawn's stderr
+            // hook above — do not flip _mountIsolationBwrapSupported from here.
             if (traces.some(t => t.pattern === 'bwrap_namespace_denied') && _bwrapSupported !== false) {
               _bwrapSupported = false;
               console.warn(
@@ -4225,13 +4380,24 @@ If something is missing or incomplete, describe what and fix it now.`;
       }
 
       // Capture SDK result metadata for server sync
+      const modelUsage = result.usage?.byModel ?? {};
       worker.resultMeta = {
         stopReason: result.stop_reason ?? null,
         terminalReason: result.terminal_reason ?? null,
         durationMs: result.duration_ms ?? 0,
         durationApiMs: result.duration_api_ms ?? 0,
         numTurns: result.num_turns ?? 0,
-        modelUsage: result.usage?.byModel ?? {},
+        modelUsage,
+        // Spend the backend reported for this session. 0 on seat/OAuth auth (and
+        // on some Codex paths) — the server falls back to a token-derived
+        // estimate in that case, so never send a 0 as if it were a real cost.
+        totalCostUsd: typeof result.total_cost_usd === 'number' ? result.total_cost_usd : null,
+        // What actually ran, for task_outcomes.actual_model.
+        actualModel: resolveActualModel({
+          modelUsage,
+          reportedModel: worker.reportedModel ?? null,
+          requestedModel: worker.sessionModel ?? null,
+        }),
         // Seat-based (OAuth) auth reports top-level usage but no byModel map.
         // Reading only byModel is why OAuth workers persisted 0 tokens.
         totalUsage: extractResultUsage(result),

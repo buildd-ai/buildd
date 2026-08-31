@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 
 import { parseArgs } from 'util';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
+import { writeSecretJsonFile } from './secure-file';
 
 const CONFIG_DIR = join(homedir(), '.buildd');
 const CONFIG_FILE = join(CONFIG_DIR, 'config.json');
@@ -47,7 +48,6 @@ function loadConfig(): Record<string, unknown> {
 }
 
 function saveConfig(data: Record<string, unknown>) {
-  mkdirSync(CONFIG_DIR, { recursive: true });
   let existing: Record<string, unknown> = {};
   try {
     if (existsSync(CONFIG_FILE)) {
@@ -55,7 +55,9 @@ function saveConfig(data: Record<string, unknown>) {
     }
   } catch { /* ignore */ }
   const merged = { ...existing, ...data };
-  writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+  // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts and
+  // claude-auth.ts do for their own credential files.
+  writeSecretJsonFile(CONFIG_FILE, merged);
 }
 
 function configureMcp(apiKey: string, server: string) {

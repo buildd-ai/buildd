@@ -4,7 +4,7 @@ import { modelTierRegistry, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
-import { getUserTeamIds } from '@/lib/team-access';
+import { getUserTeamIds, verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { resolveAllTiers, invalidateTierCache, type Tier } from '@buildd/core/model-tier-registry';
 
 // Resolve the teamId for a given workspaceId.
@@ -14,6 +14,30 @@ async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null
     columns: { teamId: true },
   });
   return ws?.teamId ?? null;
+}
+
+/**
+ * Resolve the teamId a workspace-scoped request should operate on, after verifying
+ * the caller can actually reach that workspace. Without this check any session user
+ * (or any admin key on another team) could read or overwrite another team's tier
+ * registry, which the claim path then honours. Returns null when access is denied
+ * or the workspace does not exist, so callers 404 like the other workspace routes.
+ */
+async function resolveScopedTeamId(
+  workspaceId: string,
+  user: { id: string } | null,
+  apiAccount: { id: string } | null,
+): Promise<string | null> {
+  if (apiAccount) {
+    const hasAccess = await verifyAccountWorkspaceAccess(apiAccount.id, workspaceId);
+    if (!hasAccess) return null;
+    return getTeamIdForWorkspace(workspaceId);
+  }
+  if (user) {
+    const access = await verifyWorkspaceAccess(user.id, workspaceId);
+    return access?.teamId ?? null;
+  }
+  return null;
 }
 
 // GET /api/model-tiers?workspaceId=<id>
@@ -45,8 +69,11 @@ export async function GET(req: NextRequest) {
     }
 
     if (workspaceId) {
-      const wsTeamId = await getTeamIdForWorkspace(workspaceId);
-      if (wsTeamId) teamId = wsTeamId;
+      const wsTeamId = await resolveScopedTeamId(workspaceId, user, apiAccount);
+      if (!wsTeamId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+      teamId = wsTeamId;
     }
 
     if (!teamId) {
@@ -98,8 +125,11 @@ export async function POST(req: NextRequest) {
       teamId = teamIds[0] ?? null;
     }
     if (workspaceId) {
-      const wsTeamId = await getTeamIdForWorkspace(workspaceId);
-      if (wsTeamId) teamId = wsTeamId;
+      const wsTeamId = await resolveScopedTeamId(workspaceId, user, apiAccount);
+      if (!wsTeamId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+      teamId = wsTeamId;
     }
     if (!teamId) {
       return NextResponse.json({ error: 'Could not resolve team' }, { status: 400 });
@@ -184,8 +214,11 @@ export async function DELETE(req: NextRequest) {
       teamId = teamIds[0] ?? null;
     }
     if (workspaceId) {
-      const wsTeamId = await getTeamIdForWorkspace(workspaceId);
-      if (wsTeamId) teamId = wsTeamId;
+      const wsTeamId = await resolveScopedTeamId(workspaceId, user, apiAccount);
+      if (!wsTeamId) {
+        return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+      }
+      teamId = wsTeamId;
     }
     if (!teamId) {
       return NextResponse.json({ error: 'Could not resolve team' }, { status: 400 });

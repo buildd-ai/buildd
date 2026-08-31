@@ -9,23 +9,47 @@ import MarkdownContent from '@/components/MarkdownContent';
 import AiFeedback from '@/components/AiFeedback';
 import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 import ArtifactShareControl from '@/components/ArtifactShareControl';
+import { ARTIFACT_TYPE_LABELS, isArtifactType, type ArtifactTypeValue } from '@buildd/shared';
 
 export const dynamic = 'force-dynamic';
 
-const TYPE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  content: { bg: 'bg-primary/10', text: 'text-primary', label: 'Content' },
-  report: { bg: 'bg-status-info/10', text: 'text-status-info', label: 'Report' },
-  data: { bg: 'bg-status-warning/10', text: 'text-status-warning', label: 'Data' },
-  link: { bg: 'bg-status-success/10', text: 'text-status-success', label: 'Link' },
-  summary: { bg: 'bg-surface-3', text: 'text-text-secondary', label: 'Summary' },
-  email_draft: { bg: 'bg-primary/10', text: 'text-primary', label: 'Email Draft' },
-  social_post: { bg: 'bg-primary/10', text: 'text-primary', label: 'Social Post' },
-  analysis: { bg: 'bg-status-info/10', text: 'text-status-info', label: 'Analysis' },
-  recommendation: { bg: 'bg-status-info/10', text: 'text-status-info', label: 'Recommendation' },
-  alert: { bg: 'bg-status-warning/10', text: 'text-status-warning', label: 'Alert' },
-  calendar_event: { bg: 'bg-status-success/10', text: 'text-status-success', label: 'Calendar Event' },
-  file: { bg: 'bg-surface-3', text: 'text-text-secondary', label: 'File' },
+/**
+ * Colour tokens only. Labels come from ARTIFACT_TYPE_LABELS in @buildd/shared so
+ * this file cannot drift into a second vocabulary — it used to render labels for
+ * four types no writer accepted, and none for the five it never listed.
+ */
+const TYPE_COLORS: Partial<Record<ArtifactTypeValue, { bg: string; text: string }>> = {
+  content: { bg: 'bg-primary/10', text: 'text-primary' },
+  report: { bg: 'bg-status-info/10', text: 'text-status-info' },
+  data: { bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  link: { bg: 'bg-status-success/10', text: 'text-status-success' },
+  summary: { bg: 'bg-surface-3', text: 'text-text-secondary' },
+  email_draft: { bg: 'bg-primary/10', text: 'text-primary' },
+  social_post: { bg: 'bg-primary/10', text: 'text-primary' },
+  analysis: { bg: 'bg-status-info/10', text: 'text-status-info' },
+  recommendation: { bg: 'bg-status-info/10', text: 'text-status-info' },
+  alert: { bg: 'bg-status-warning/10', text: 'text-status-warning' },
+  calendar_event: { bg: 'bg-status-success/10', text: 'text-status-success' },
+  file: { bg: 'bg-surface-3', text: 'text-text-secondary' },
 };
+
+const DEFAULT_TYPE_COLOR = { bg: 'bg-surface-3', text: 'text-text-secondary' };
+
+/**
+ * Types whose `content` is NOT markdown prose. Expressed as the exclusion set so
+ * a type added to the vocabulary renders its content by default instead of
+ * silently showing nothing — the failure mode of the old inclusion list, which
+ * omitted impl_plan / walkthrough / diff / screenshot / recording.
+ */
+const NON_PROSE_TYPES = new Set<string>(['data', 'diff', 'link', 'file', 'screenshot', 'recording']);
+
+const isProse = (type: string) => !NON_PROSE_TYPES.has(type);
+
+function typeStyle(type: string): { bg: string; text: string; label: string } {
+  const color = TYPE_COLORS[type as ArtifactTypeValue] ?? DEFAULT_TYPE_COLOR;
+  const label = isArtifactType(type) ? ARTIFACT_TYPE_LABELS[type] : type;
+  return { ...color, label };
+}
 
 export default async function ArtifactDetailPage({
   params,
@@ -79,7 +103,7 @@ export default async function ArtifactDetailPage({
     : undefined;
   const taskTitle = artifact.worker?.task?.title;
   const taskId = artifact.worker?.task?.id;
-  const style = TYPE_STYLES[artifact.type] || { bg: 'bg-surface-3', text: 'text-text-secondary', label: artifact.type };
+  const style = typeStyle(artifact.type);
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   return (
@@ -165,14 +189,11 @@ export default async function ArtifactDetailPage({
             </div>
           )}
 
-          {(artifact.type === 'content' || artifact.type === 'report' || artifact.type === 'summary' ||
-            artifact.type === 'email_draft' || artifact.type === 'social_post' ||
-            artifact.type === 'analysis' || artifact.type === 'recommendation' ||
-            artifact.type === 'alert' || artifact.type === 'calendar_event') && artifact.content && (
+          {isProse(artifact.type) && artifact.content && (
             <MarkdownContent content={artifact.content} />
           )}
 
-          {artifact.type === 'data' && artifact.content && (
+          {(artifact.type === 'data' || artifact.type === 'diff') && artifact.content && (
             <pre className="overflow-x-auto text-sm font-mono text-text-secondary">
               {(() => {
                 try {

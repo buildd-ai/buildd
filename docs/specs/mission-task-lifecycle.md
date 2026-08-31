@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-08-29
+last_verified: 2026-08-30
 summary: The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/api/workers/[id]/route.ts]
@@ -203,7 +203,8 @@ claim loop counts them but `/start` also rejects on them: `subject_dead`
   admits the task on the next poll.
 - AC-CG-3: GIVEN a bypass key written as boolean `true` or string `'true'` THEN
   both the SQL prefilter and the in-loop guard accept it.
-- AC-CG-4: GIVEN a task pending beyond `QUEUE_STALL_THRESHOLD` with no
+- AC-CG-4: GIVEN a task pending beyond `STALL_THRESHOLD_HOURS` (4h, declared in
+  `apps/web/src/app/api/cron/queue-stall/route.ts:99`) with no
   successful claim THEN `/api/cron/queue-stall` reports it with the first gate
   actually blocking it — never a bare "stalled".
 - AC-CG-5: GIVEN a subject-dead task with a binding anchor WHEN the
@@ -253,7 +254,14 @@ status and tracks the agent's runtime state:
 **Invariants**:
 - A terminal worker (`completed`, `failed`, `error`) MUST NOT accept status
   updates except a single `running` reactivation (for follow-up messages from
-  the runner, with a guard on `isCleanupExpiry`).
+  the runner), and that reactivation MUST require BOTH an explicit
+  `body.reactivate === true` AND a `worker.error` matching none of the
+  server-expiry phrases (`Interrupted — human takeover`, `expired`, `timed out`,
+  `went offline`, `runner restarted`). No named guard helper exists: both
+  predicates are inline locals `reactivateRequested` and
+  `isNonReactivatableTermination` in the PATCH handler
+  (`apps/web/src/app/api/workers/[id]/route.ts:270–278`); failing either returns
+  `409`.
 - `waitingFor` MUST be cleared (`null`) automatically when status transitions
   to `running`.
 - `workers.startedAt` is set the first time status becomes `running`.
@@ -353,10 +361,13 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   it makes, allowed or refused, and logs the same payload. Callers that only READ
   the predicate (`canCompleteMission` direct, e.g. the release trigger) log but
   do not emit — they decided nothing.
-- A mission whose work is done but whose criteria do not pass stays `active` and
-  keeps its schedule enabled (awaiting verification). It MUST NOT be
-  auto-archived by `selectMissionsToArchive` while a stated criterion lacks a
-  passing verdict.
+- A mission whose work is done but whose criteria do not pass stays `active`
+  (awaiting verification), and keeps its schedule enabled for as long as the
+  verdict can still be acted on. It MUST NOT be auto-archived by
+  `selectMissionsToArchive` while a stated criterion lacks a passing verdict. The
+  one case that stands the schedule down is escalation to the owner — see
+  *Blocked-Verdict Consumer* below; the mission stays `active` and un-archived
+  there too, waiting on a person rather than on a cadence.
 - Any non-terminal task that is not housekeeping blocks completion — `work` AND
   `attempt`, so a pending CI retry counts. Housekeeping rows (including a
   criterion's own verification task) MUST NOT block, or a `command` criterion
@@ -466,9 +477,76 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   the command ran WHEN its outcome is handed back THEN the criterion is NOT set
   to `pass`.
 
+### Blocked-Verdict Consumer
+
+**Capability statement**: A non-passing verdict MUST have a consumer. A mission
+that can be BLOCKED by its criteria but cannot file the work to unblock itself is
+a deadlock, and a verdict re-produced on a cadence and read by nobody is that
+deadlock's signature.
+
+Observed shape: with every deliverable terminal and criteria failing, the
+heartbeat prepass proposed completion, the gate refused, the schedule deferred,
+and the tick ended — so the only branch that dispatches an organizer cycle
+(`invoke_llm`, which requires open deliverables) was structurally unreachable.
+Four missions sat in that state, one for ~40 cycles, each finished by hand.
+
+**Invariants**:
+- A refusal whose `code` satisfies `isCriteriaBlockCode` MUST dispatch exactly ONE
+  organizer cycle per distinct verdict shape, carrying the per-criterion verdict
+  text into the planning description — the `failureContext` pattern, applied to a
+  criteria failure.
+- Verdict shape is `criteriaFingerprint`: `overall` plus each criterion's verdict
+  keyed on `criterionFingerprint` (falling back to index). Evidence WORDING is
+  excluded: an LLM re-grading the same failure phrases it differently every run,
+  and treating rewording as new information defeats the loop guard.
+- The EVALUATOR MUST NOT file work. Prose criteria are LLM-graded and the least
+  reliable signal in the system; a grader with write access to the backlog turns a
+  hallucinated verdict into hallucinated scope. The consumer decides only whether
+  to WAKE the organizer; the organizer decides what to file.
+- Re-arming MUST NOT loop. An unchanged verdict escalates: after
+  `MAX_REARM_CYCLES` unchanged cycles, or immediately once the organizer has seen
+  that exact verdict and filed nothing against it, buildd posts a `question` note
+  naming the blocking criteria and disables the heartbeat schedule. A criteria
+  failure nobody can move is a decision, not a retry.
+- While work filed against the current verdict is still open, the consumer waits
+  rather than re-arming — otherwise it duplicates the work in flight.
+- Escalation MUST be self-clearing: any change in verdict shape re-arms the
+  organizer and clears `criteriaEscalatedAt`, so an owner fixing a criterion (or
+  a merge flipping `all_prs_merged`) resumes the mission without a manual restart.
+- A re-arm cycle MUST NOT write `lastHeartbeatStateHash`. Mission state is
+  unchanged by construction (every deliverable is terminal), so persisting it
+  would make the next tick read "no change" and suppress the cycle just
+  authorised.
+- Coordinate-only mode (`decompositionSkipped`) is LIFTED, narrowly, for gaps
+  named in a non-passing criterion. Pre-filed tasks are a reason not to duplicate
+  decomposition; they are not a reason to be unable to fix a criterion the mission
+  is failing. The lift MUST NOT authorize re-decomposition of anything the
+  blocking criteria do not name.
+
+**Acceptance criteria**:
+- AC-11j: GIVEN a heartbeat mission with every deliverable terminal and
+  `overall = fail` WHEN the cron tick runs THEN one planning task is created for
+  the mission and its context carries `criteriaRearm` with the non-passing
+  criterion lines — not a bare deferral.
+- AC-11k: GIVEN the same mission on a later tick with the verdict shape unchanged
+  and no task filed since the last re-arm WHEN the tick runs THEN no cycle is
+  created, a `Goal criteria blocked — owner decision needed` note is posted, and
+  the heartbeat schedule is disabled with
+  `lastDeferralReason = 'criteria_escalated'`.
+- AC-11l: GIVEN an escalated mission WHEN a criterion's verdict changes THEN the
+  next tick re-arms the organizer and `criteriaEscalatedAt` is cleared.
+- AC-11m: GIVEN a completion refused for a non-criteria reason (e.g.
+  `infra_stalled`) WHEN the tick runs THEN no re-arm is attempted.
+- AC-11n: GIVEN a re-arm cycle WHEN the schedule row is written THEN
+  `lastHeartbeatStateHash` is not among the written columns.
+
 **Code surface**:
 - Predicate + writer: `apps/web/src/lib/mission-completion.ts` —
-  `canCompleteMission()`, `completeMissionIfVerified()`
+  `canCompleteMission()`, `completeMissionIfVerified()`, `isCriteriaBlockCode()`
+- Blocked-verdict consumer: `apps/web/src/lib/criteria-rearm.ts` —
+  `criteriaFingerprint()`, `decideCriteriaRearm()`, `applyCriteriaRearm()`
+- Re-arm prompt injection: `apps/web/src/lib/mission-context.ts` —
+  `buildMissionContext()` (`criteriaRearm` block + coordinate-only lift)
 - Verdict producer: `apps/web/src/lib/mission-criteria-eval.ts` —
   `ensureCriteriaVerdict()`, `evaluateCriteriaNow()`
 - Command criteria: `apps/web/src/lib/mission-criteria-verify.ts` —

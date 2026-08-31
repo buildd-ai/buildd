@@ -179,6 +179,18 @@ export class BuilddClient {
     // Token usage
     inputTokens?: number;
     outputTokens?: number;
+    /**
+     * Backend-reported spend for the session. Only sent when the backend
+     * reported a real (> 0) cost — the server derives an estimate from token
+     * usage otherwise (seat/OAuth auth always reports $0).
+     */
+    costUsd?: number;
+    /**
+     * The model the session actually ran on. Feeds task_outcomes.actual_model.
+     * Optional: an older runner simply omits it and the server falls back to
+     * deriving it from resultMeta.
+     */
+    actualModel?: string;
     // SDK result metadata
     resultMeta?: Record<string, unknown>;
     // Completion summary (from SDK Stop hook last_assistant_message)

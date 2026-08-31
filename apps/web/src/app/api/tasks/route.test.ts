@@ -2599,4 +2599,107 @@ describe('POST /api/tasks', () => {
       expect(data.error).toContain('array');
     });
   });
+  describe('kind/complexity routing inputs', () => {
+    function setupKindAuth() {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_test' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-1',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+    }
+
+    function captureInsert() {
+      const createdTask = { id: 'task-kc', workspaceId: 'ws-1', title: 'Task', status: 'pending' };
+      const captured: { values: any } = { values: null };
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          captured.values = values;
+          return { returning: mock(() => [createdTask]) };
+        }),
+      });
+      return captured;
+    }
+
+    it('persists a valid kind/complexity pair on the task row', async () => {
+      setupKindAuth();
+      const captured = captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', kind: 'research', complexity: 'complex' },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(captured.values.kind).toBe('research');
+      expect(captured.values.complexity).toBe('complex');
+      // Explicit caller-supplied routing inputs are attributed to the user.
+      expect(captured.values.classifiedBy).toBe('user');
+    });
+
+    it('rejects an invalid kind with a 400 instead of dropping it', async () => {
+      setupKindAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', kind: 'enginering' },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('kind must be one of');
+    });
+
+    it('rejects an invalid complexity with a 400 instead of dropping it', async () => {
+      setupKindAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', complexity: 'medium' },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('complexity must be one of');
+    });
+
+    it('leaves kind/complexity/classifiedBy unset when omitted', async () => {
+      setupKindAuth();
+      const captured = captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task' },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(captured.values.kind).toBeUndefined();
+      expect(captured.values.complexity).toBeUndefined();
+      expect(captured.values.classifiedBy).toBeUndefined();
+    });
+
+    it('accepts a kind on its own without a complexity', async () => {
+      setupKindAuth();
+      const captured = captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Task', kind: 'observation' },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(captured.values.kind).toBe('observation');
+      expect(captured.values.complexity).toBeUndefined();
+    });
+  });
 });

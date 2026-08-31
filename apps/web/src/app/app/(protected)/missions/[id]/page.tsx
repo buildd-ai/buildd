@@ -23,6 +23,7 @@ import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
 import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
+import StructureView from './StructureView';
 import TaskPanelWrapper from './TaskPanelWrapper';
 import HeartbeatStatusBadge from './HeartbeatStatusBadge';
 import HeartbeatChecklistEditor from './HeartbeatChecklistEditor';
@@ -87,6 +88,7 @@ export default async function MissionDetailPage({
           loopState: true,
           loopIteration: true,
           startAt: true,
+          reviewerRetryPrNumber: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -169,6 +171,7 @@ export default async function MissionDetailPage({
                   updatedAt: true, result: true, mode: true, roleSlug: true,
                   creationSource: true, dependsOn: true, parentTaskId: true, category: true,
                   taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
+                  reviewerRetryPrNumber: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -453,6 +456,22 @@ export default async function MissionDetailPage({
     }
   }
 
+  // Map fix tasks dispatched after a reviewer requested changes (parentTaskId →
+  // retry task info). allTasks is newest-first, so the first entry wins — giving
+  // us the most-recent retry for each original task.
+  const reviewerRetryMap = new Map<string, { id: string; status: string; title: string; prNumber: number | null }>();
+  for (const t of allTasks) {
+    if ((t as any).reviewerRetryPrNumber != null && t.parentTaskId && !reviewerRetryMap.has(t.parentTaskId)) {
+      const lw = (t.workers as any[])?.[0];
+      reviewerRetryMap.set(t.parentTaskId, {
+        id: t.id,
+        status: t.status,
+        title: t.title,
+        prNumber: lw?.prNumber ?? null,
+      });
+    }
+  }
+
   // §3.6: Deliverable tasks appear in the timeline; bookkeeping tasks (attempts,
   // reviewer runs, orchestration planning) collapse to the expandable footer.
   // taskClass='work' → timeline; 'attempt'|'bookkeeping' → housekeeping footer.
@@ -542,10 +561,16 @@ export default async function MissionDetailPage({
     let humanActionPending: boolean;
     if (effectivePolicy.tier === 'agent-review') {
       const note = reviewerNoteMap.get(task.id);
-      humanActionPending =
-        note?.type === 'reviewer_approved' ||
-        note?.type === 'reviewer_escalated' ||
-        note?.type === 'reviewer_request_changes';
+      if (note?.type === 'reviewer_request_changes') {
+        // A retry fix task is in-flight or completed → not waiting on human.
+        // A failed retry, or no retry dispatched yet → needs human attention.
+        const retry = reviewerRetryMap.get(task.id);
+        humanActionPending = !retry || retry.status === 'failed';
+      } else {
+        humanActionPending =
+          note?.type === 'reviewer_approved' ||
+          note?.type === 'reviewer_escalated';
+      }
     } else {
       humanActionPending = true;
     }
@@ -601,6 +626,7 @@ export default async function MissionDetailPage({
           }
         : null,
       reviewerTaskHref: reviewerTaskRef ? `/app/tasks/${reviewerTaskRef.id}` : null,
+      reviewerRetryTask: reviewerRetryMap.get(task.id) ?? null,
     };
   }
 
@@ -616,6 +642,25 @@ export default async function MissionDetailPage({
     done: rawGroups.done.map(toChainUnit),
     failed: rawGroups.failed.map(toChainUnit),
   };
+
+  // Structure view: flat chain list (same identifyChains result shared with Timeline)
+  const allChains: ChainUnit<CondensedTimelineTask>[] = [
+    ...timelineGroups.waitingOnYou,
+    ...timelineGroups.running,
+    ...timelineGroups.nextQueued,
+    ...timelineGroups.blocked,
+    ...timelineGroups.done,
+    ...timelineGroups.failed,
+  ];
+
+  // Retry lineage: childId → parentId for tasks both present in the timeline task set
+  const timelineTaskIdSet = new Set(timelineTasks.map(t => t.id));
+  const retryLinks = new Map<string, string>();
+  for (const t of timelineTasks) {
+    if (t.parentTaskId && timelineTaskIdSet.has(t.parentTaskId)) {
+      retryLinks.set(t.id, t.parentTaskId);
+    }
+  }
 
   // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.
   // Use timelineTasks.length (exactly what renders in the timeline) instead of allTasksCount
@@ -1023,6 +1068,14 @@ export default async function MissionDetailPage({
           />
         )}
         feedContent={<MissionFeed missionId={id} />}
+        structureContent={allChains.length > 0 ? (
+          <StructureView
+            chains={allChains}
+            taskMap={condensedTaskMapForGrouping}
+            missionId={id}
+            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
+          />
+        ) : undefined}
       />
 
 
