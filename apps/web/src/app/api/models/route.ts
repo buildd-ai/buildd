@@ -23,6 +23,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId } from '@/lib/team-access';
 import { resolveAnthropicAuth } from '@/lib/claude-credential';
 import { resolveAllTiers, type Tier } from '@buildd/core/model-tier-registry';
+import { auditTierModels } from '@buildd/core/model-tier-liveness';
 
 interface AnthropicModel {
   id: string;
@@ -156,5 +157,23 @@ export async function GET(req: NextRequest) {
     ...(catalog ?? []).filter(m => !seen.has(m.id)),
   ];
 
-  return NextResponse.json({ models, catalogComplete: catalog !== null });
+  // Audit the team's TIER CONFIG against the live catalog. `detectStalePin` on the
+  // client covers a different case (a model the *user* pinned that no longer
+  // exists); nothing checked the tiers themselves, so `standard` sat a generation
+  // behind a cheaper model with no signal anywhere. Only a complete catalog can
+  // justify either verdict — an empty list would condemn every model at once.
+  const tierAudit = auditTierModels(
+    Object.fromEntries(
+      tierEntries.map(m => [m.tier ?? m.id, { provider: m.provider, model: m.id }]),
+    ),
+    catalog ?? [],
+  );
+  for (const { tier, model } of tierAudit.unknown) {
+    console.warn(`[api/models] tier "${tier}" is pinned to ${model}, which the models API does not return — retired, renamed, or a typo`);
+  }
+  for (const { tier, model, newer } of tierAudit.superseded) {
+    console.warn(`[api/models] tier "${tier}" is on ${model}; ${newer} is newer in the same family — check price and capability before switching`);
+  }
+
+  return NextResponse.json({ models, catalogComplete: catalog !== null, tierAudit });
 }
