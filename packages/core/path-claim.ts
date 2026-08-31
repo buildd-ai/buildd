@@ -53,6 +53,11 @@ export function normalizeTrailingSlash(path: string): string {
   return path.replace(/\/+$/, '');
 }
 
+/** Returns true if the path is non-empty after trimming whitespace. */
+export function isNonEmptyPath(path: string): boolean {
+  return path.trim().length > 0;
+}
+
 // ── Conflict detection ───────────────────────────────────────────────────────
 
 /**
