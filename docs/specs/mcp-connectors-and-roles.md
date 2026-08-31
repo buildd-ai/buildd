@@ -2,7 +2,7 @@
 title: MCP Connectors & Roles
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-08-30
 summary: Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 domain: mcp
 surfaces: [apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/connectors/route.ts, apps/web/src/lib/connector-status.ts, apps/web/src/lib/mcp-connector-refresh.ts]
@@ -58,7 +58,11 @@ supersedes: []
 > - `apps/web/src/app/api/workers/claim/route.ts` — legacy role MCP assembly
 >   (980–1009, 1174–1219) and connector injection block (1228–1327)
 > - `apps/web/src/lib/role-config.ts` + `apps/web/src/app/api/workspaces/[id]/skills/route.ts`
->   (`normalizeMcpToConfig`, `packageRoleConfig`) — the R2 role-tarball MCP path
+>   (`packageRoleConfig`) — the R2 role bundle, which no longer carries MCP at
+>   all: every caller passes `mcpConfig: {}` / `envMapping: {}` (skills/route.ts
+>   213, 264) and `RoleConfigInput.mcpConfig`/`.envMapping` are `@deprecated`
+>   (role-config.ts 8–24). The normalizer that folded `workspaceSkills.mcpServers`
+>   into the bundle is deleted; there is no role-tarball MCP path left to read.
 > - `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
 >   — role "Connectors" + `McpRegistryBrowser` (243–406, 733–768)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
@@ -337,8 +341,10 @@ create (or reuse) a team `connectors` row and add its id to the role's
 
 **Code surface**:
 - UI: `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
-  (`McpRegistryBrowser.onInstall` → calls connector create instead of local
-  `setMcpServers`).
+  (`McpRegistryBrowser.onInstall` is wired to `installConnector` (424–450),
+  which POSTs `/api/connectors` and appends the returned connector id to the
+  role's `connectorRefs` via `setConnectorRefs`; the editor holds no local
+  mcpServers state — see the note at RoleEditor.tsx:84).
 - Route: `apps/web/src/app/api/connectors/route.ts` (create-or-reuse),
   `apps/web/src/app/api/mcp/registry/route.ts` (unchanged search).
 

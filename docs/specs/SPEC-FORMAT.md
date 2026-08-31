@@ -25,6 +25,7 @@ domain: releases                       # exactly one of the vocabulary below
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts]
 related: [db-migration-gates, mission-task-lifecycle]
 keywords: [deploy, workflow_dispatch, prod branch, tag]
+verified_by: [apps/web/src/lib/release-executor.test.ts]  # tests that assert these invariants
 supersedes: []                         # slugs this spec replaces
 ---
 ```
@@ -40,12 +41,13 @@ supersedes: []                         # slugs this spec replaces
 | `surfaces` | no | 2–4 paths, most important first. Every path is existence-checked (dead path = error); more than 4 warns. Distinct from the in-body **Code surface** section, which is exhaustive; this is the shortlist. |
 | `related` | no | Sibling spec **slugs** (filename without `.md`). Existence-checked; self-reference is an error. These are the graph edges an ingesting agent follows. |
 | `keywords` | no | Retrieval aliases a reader would search that the title omits — old feature names, error strings, column names. |
+| `verified_by` | **yes if active** | Test files that actually assert this spec's invariants. Every path is existence-checked (dead path = error); a non-test path warns. An `active` spec with an empty `verified_by` is an error — see the lifecycle rule below. |
 
 **Domain vocabulary** (extend `DOMAINS` in `scripts/check-specs.ts` in the same
 PR if you genuinely need a new one):
 
 `missions` · `tasks` · `runners` · `releases` · `knowledge` · `auth` · `mcp` ·
-`surfaces` · `integrations`
+`surfaces` · `integrations` · `billing`
 
 Why these fields exist: twenty specs with only a title are a directory listing,
 not a map. `summary` + `domain` make `INDEX.md` answer "which spec covers this?"
@@ -97,3 +99,30 @@ and documents intentional omissions.
 6. **Frontmatter is part of the contract.** A new spec without `summary` and
    `domain` fails CI. When behaviour changes, re-read the `summary` — a stale
    one-liner is worse than none, because the index is where people stop reading.
+7. **Every symbol you name must exist.** `specs:lint` extracts backticked
+   identifiers from the body — camelCase with an internal hump, or
+   SCREAMING_SNAKE — and resolves each one against `apps/`, `packages/` and
+   `scripts/`. Naming `isCleanupExpiry` as the guard on a transition is a
+   checkable claim, and six such symbols in four active specs turned out to name
+   nothing at all. If the behaviour exists but no constant does, describe the
+   real shape and cite `path:line` — do not invent a tidy name.
+8. **No guard, no `active`.** An `active` spec must name the tests that assert
+   its invariants in `verified_by`. A contract nobody can fail is a wish, so a
+   new spec with no guard ships as `status: draft` — which is the honest state —
+   and is promoted once tests exist. Pre-existing specs without guards are
+   enumerated in `VERIFIED_BY_DEBT` in `scripts/check-specs.ts`; that list only
+   shrinks.
+
+## What the linter deliberately does NOT check
+
+**"Code newer than `last_verified`."** Measured on this corpus it flags 20 of 21
+specs, because the files these specs name churn daily. A gate that always fires
+teaches people to ignore the gate. Staleness stays a warning past 90 days;
+truthfulness is enforced through symbol liveness and `verified_by` instead.
+
+**Surface coverage is advisory.** `specs:lint` prints how many high-value modules
+(`apps/runner/src/*.ts`, `packages/core/*.ts`, every `/api/cron/*` route) no live
+spec names, and `--orphans` lists them. It never fails the build: an unspecced
+module is a backlog item, and failing here would block every PR that adds a file.
+Use the number to decide what to spec next — it is how a default-on capability
+shipped across six modules with no contract at all.

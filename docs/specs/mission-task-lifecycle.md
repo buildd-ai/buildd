@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-08-29
+last_verified: 2026-08-30
 summary: The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/api/workers/[id]/route.ts]
@@ -203,7 +203,8 @@ claim loop counts them but `/start` also rejects on them: `subject_dead`
   admits the task on the next poll.
 - AC-CG-3: GIVEN a bypass key written as boolean `true` or string `'true'` THEN
   both the SQL prefilter and the in-loop guard accept it.
-- AC-CG-4: GIVEN a task pending beyond `QUEUE_STALL_THRESHOLD` with no
+- AC-CG-4: GIVEN a task pending beyond `STALL_THRESHOLD_HOURS` (4h, declared in
+  `apps/web/src/app/api/cron/queue-stall/route.ts:99`) with no
   successful claim THEN `/api/cron/queue-stall` reports it with the first gate
   actually blocking it — never a bare "stalled".
 - AC-CG-5: GIVEN a subject-dead task with a binding anchor WHEN the
@@ -253,7 +254,14 @@ status and tracks the agent's runtime state:
 **Invariants**:
 - A terminal worker (`completed`, `failed`, `error`) MUST NOT accept status
   updates except a single `running` reactivation (for follow-up messages from
-  the runner, with a guard on `isCleanupExpiry`).
+  the runner), and that reactivation MUST require BOTH an explicit
+  `body.reactivate === true` AND a `worker.error` matching none of the
+  server-expiry phrases (`Interrupted — human takeover`, `expired`, `timed out`,
+  `went offline`, `runner restarted`). No named guard helper exists: both
+  predicates are inline locals `reactivateRequested` and
+  `isNonReactivatableTermination` in the PATCH handler
+  (`apps/web/src/app/api/workers/[id]/route.ts:270–278`); failing either returns
+  `409`.
 - `waitingFor` MUST be cleared (`null`) automatically when status transitions
   to `running`.
 - `workers.startedAt` is set the first time status becomes `running`.
