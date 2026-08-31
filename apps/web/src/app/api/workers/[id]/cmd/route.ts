@@ -6,8 +6,14 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { appendInstructionHistory } from '@/lib/worker-instructions';
 
 // POST /api/workers/[id]/cmd - Send command to worker via Pusher
+//
+// `action: 'message'` is human input to the agent, so it is recorded in
+// `workers.instructionHistory` exactly like /instruct does. It used to fire the
+// Pusher event and persist nothing, which left the task UI's message list and
+// `get_task_messages` under-reporting every message sent through this route.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -57,6 +63,30 @@ export async function POST(
     );
   }
 
+  // Record human input before pushing it, so a Pusher failure still leaves a
+  // trace of what was sent. deliveryState stays 'pending' until the runner
+  // confirms the text reached the agent session (PATCH `instructionsDelivered`);
+  // runners that predate that protocol never confirm, so their messages are
+  // recorded as delivered here — the same assumption the old /instruct made.
+  let deliveryState: 'pending' | 'delivered' | undefined;
+  if (action === 'message' && typeof text === 'string' && text.length > 0) {
+    const isSensitive = (worker.workspace as { dataClass?: string } | null)?.dataClass === 'sensitive';
+    deliveryState = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true
+      ? 'pending'
+      : 'delivered';
+    await db
+      .update(workers)
+      .set({
+        instructionHistory: appendInstructionHistory(worker.instructionHistory, {
+          message: text,
+          isSensitive,
+          deliveryState,
+        }),
+        updatedAt: new Date(),
+      })
+      .where(eq(workers.id, id));
+  }
+
   // Push command via Pusher
   await triggerEvent(
     channels.worker(id),
@@ -64,5 +94,5 @@ export async function POST(
     { action, text, timestamp: Date.now() }
   );
 
-  return NextResponse.json({ ok: true, action });
+  return NextResponse.json({ ok: true, action, ...(deliveryState ? { deliveryState } : {}) });
 }

@@ -176,6 +176,91 @@ describe('send_agent_message', () => {
     ).rejects.toThrow(/no active worker/i);
   });
 
+  // An 'error' worker is terminal for the check-in route: its next PATCH is
+  // rejected with a 409, so a queued message would never be collected. Selecting
+  // it as "the active worker" produced a cheerful "queued for delivery on next
+  // worker check-in" for a check-in that can never happen.
+  describe('error workers', () => {
+    it('refuses a queued message when the only worker is in error', async () => {
+      mockApi.mockResolvedValueOnce({
+        id: TASK_ID,
+        status: 'assigned',
+        workers: [{ id: WORKER_ID, status: 'error' }],
+      });
+
+      await expect(
+        handleBuilddAction(
+          mockApi as unknown as ApiFn,
+          'send_agent_message',
+          { taskId: TASK_ID, message: 'hello' },
+          ctx(),
+        ),
+      ).rejects.toThrow(/urgent/i);
+      // Never reaches the instruct endpoint.
+      expect(mockApi).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows an urgent Pusher attempt at an error worker', async () => {
+      mockApi
+        .mockResolvedValueOnce({
+          id: TASK_ID,
+          status: 'assigned',
+          workers: [{ id: WORKER_ID, status: 'error' }],
+        })
+        .mockResolvedValueOnce({ ok: true, message: 'Instructions sent via Pusher — delivery is not confirmed' });
+
+      const result = await handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'send_agent_message',
+        { taskId: TASK_ID, message: 'hello', priority: 'urgent' },
+        ctx(),
+      );
+
+      const [instructEndpoint] = mockApi.mock.calls[1];
+      expect(instructEndpoint).toContain(`/api/workers/${WORKER_ID}/instruct`);
+      expect(result.content[0].text).not.toContain('delivered instantly');
+    });
+
+    it('prefers a live worker over an error worker', async () => {
+      const LIVE = '44444444-4444-4444-4444-444444444444';
+      mockApi
+        .mockResolvedValueOnce({
+          id: TASK_ID,
+          status: 'assigned',
+          workers: [{ id: WORKER_ID, status: 'error' }, { id: LIVE, status: 'running' }],
+        })
+        .mockResolvedValueOnce({ ok: true, message: 'queued' });
+
+      await handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'send_agent_message',
+        { taskId: TASK_ID, message: 'hello' },
+        ctx(),
+      );
+
+      expect(mockApi.mock.calls[1][0]).toContain(LIVE);
+    });
+
+    it('surfaces the pending delivery state instead of claiming delivery', async () => {
+      mockApi
+        .mockResolvedValueOnce({
+          id: TASK_ID,
+          status: 'assigned',
+          workers: [{ id: WORKER_ID, status: 'running' }],
+        })
+        .mockResolvedValueOnce({ ok: true, message: 'Instructions queued', deliveryState: 'pending' });
+
+      const result = await handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'send_agent_message',
+        { taskId: TASK_ID, message: 'hello' },
+        ctx(),
+      );
+
+      expect(result.content[0].text).toContain('UNDELIVERED');
+    });
+  });
+
   it('picks the first (latest) non-terminal worker when multiple workers exist', async () => {
     const NEW_WORKER_ID = '33333333-3333-3333-3333-333333333333';
     mockApi

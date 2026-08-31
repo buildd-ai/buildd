@@ -6,9 +6,22 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import {
+  appendInstructionHistory,
+  enqueuePendingInstruction,
+  isUnreachableWorkerStatus,
+} from '@/lib/worker-instructions';
 
 // POST /api/workers/[id]/instruct - Send instructions to a worker (admin only)
-// Instructions are delivered on the worker's next progress update
+//
+// Delivery model. A queued instruction is handed to the runner on its next
+// check-in and is cleared only when the runner confirms it injected the text.
+// An urgent instruction additionally goes out over Pusher for instant delivery.
+//
+// This endpoint must only accept workers the check-in route will actually serve:
+// `completed`, `failed` and `error` workers have their PATCH rejected with a 409
+// long before the delivery code runs, so queueing for them is a promise that can
+// never be kept.
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -67,41 +80,67 @@ export async function POST(
     );
   }
 
-  const isSensitive = (worker.workspace as any)?.dataClass === 'sensitive';
+  const isUrgent = priority === 'urgent';
 
-  // Get current instruction history
-  const currentHistory = (worker.instructionHistory as any[]) || [];
-
-  // Build the pending instruction payload
-  const pendingPayload = message;
-
-  // Add to history and set as pending
-  // Sensitive: keep {type, ts} only — drop message text
-  // deliveryState: urgent messages go via Pusher immediately (delivered), others queue (pending)
-  const newHistoryEntry = isSensitive
-    ? { type: 'instruction' as const, timestamp: Date.now(), deliveryState: (priority === 'urgent' ? 'delivered' : 'pending') as 'pending' | 'delivered' }
-    : { type: 'instruction' as const, message, timestamp: Date.now(), deliveryState: (priority === 'urgent' ? 'delivered' : 'pending') as 'pending' | 'delivered' };
-
-  // Cap history at 30 entries to prevent JSONB bloat
-  const updatedHistory = [...currentHistory, newHistoryEntry];
-  if (updatedHistory.length > 30) {
-    updatedHistory.splice(0, updatedHistory.length - 30);
+  // An `error` worker is rejected by the check-in route (409, `abort: true`), so
+  // it never collects a queued instruction. Saying "queued for delivery on next
+  // worker check-in" here was a promise nothing could keep. The Pusher path can
+  // still reach a session the runner holds in memory (sendMessage restarts it),
+  // so urgent is allowed through — but nothing is queued for it either.
+  if (isUnreachableWorkerStatus(worker.status) && !isUrgent) {
+    return NextResponse.json(
+      {
+        error: `Cannot queue instructions for a worker in state '${worker.status}' — ` +
+          'its next check-in is rejected, so the instruction would never be delivered',
+        workerStatus: worker.status,
+        hint: "Retry with priority:'urgent' to attempt an immediate Pusher delivery to a " +
+          'resident session, or POST /api/workers/<id>/recover to restart the worker.',
+      },
+      { status: 409 }
+    );
   }
 
-  // Urgent messages are delivered instantly via Pusher — don't also queue as
-  // pendingInstructions, otherwise the runner processes the same message twice
-  // (once via Pusher, once on the next sync poll), producing duplicate milestones.
-  const [updated] = await db
+  const isSensitive = (worker.workspace as any)?.dataClass === 'sensitive';
+
+  // Only a runner that speaks the delivery-confirmation protocol can confirm a
+  // delivery (and can be trusted not to double-inject a message that arrived
+  // both over Pusher and over the queue). Older runners get exactly the old
+  // behaviour: Pusher only, optimistically recorded as delivered.
+  const ackCapable = (worker as { supportsInstructionAck?: boolean }).supportsInstructionAck === true;
+
+  // Terminal-but-urgent: Pusher only — a queued copy could never be collected.
+  const queueable = !isUnreachableWorkerStatus(worker.status) && (!isUrgent || ackCapable);
+  // 'delivered' is only written where no confirmation can ever arrive.
+  const deliveryState = queueable || ackCapable ? 'pending' : 'delivered';
+
+  const updatedHistory = appendInstructionHistory(worker.instructionHistory, {
+    message,
+    isSensitive,
+    deliveryState,
+  });
+
+  // Urgent instructions are queued as well as pushed, so a Pusher event that
+  // reaches nobody (runner offline, not yet subscribed, Pusher down) is still
+  // recoverable on the next check-in. The runner de-duplicates: it skips
+  // injecting text it already injected and acknowledges it instead.
+  //
+  // Read-modify-write: two instructions sent in the same instant can still lose
+  // one (pre-existing, and equally true of instructionHistory). A concurrent
+  // hand-off cannot lose one, because the queue is cleared by a compare-and-set
+  // on the delivered text, not blindly.
+  await db
     .update(workers)
     .set({
-      pendingInstructions: priority === 'urgent' ? null : pendingPayload,
+      pendingInstructions: queueable
+        ? enqueuePendingInstruction(worker.pendingInstructions, message)
+        : worker.pendingInstructions ?? null,
       instructionHistory: updatedHistory,
       updatedAt: new Date(),
     })
     .where(eq(workers.id, id))
     .returning();
 
-  if (priority === 'urgent') {
+  if (isUrgent) {
     await triggerEvent(
       channels.worker(id),
       events.WORKER_COMMAND,
@@ -111,9 +150,12 @@ export async function POST(
 
   return NextResponse.json({
     ok: true,
-    message: priority === 'urgent'
-      ? 'Instructions sent instantly via Pusher'
+    message: isUrgent
+      ? queueable
+        ? 'Instructions sent via Pusher and queued as a fallback — delivery is reported once the agent receives them'
+        : 'Instructions sent via Pusher — delivery is not confirmed'
       : 'Instructions queued for delivery on next worker check-in',
+    deliveryState,
     workerId: id,
   });
 }
