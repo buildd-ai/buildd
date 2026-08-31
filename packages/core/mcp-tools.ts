@@ -4503,12 +4503,55 @@ export async function handleLearnAction(
   return text(`Memory saved: "${data.memory.title}" (${data.memory.type})\nID: ${data.memory.id}${supersededStr}`);
 }
 
+/** Log prefix for deprecated `buildd_memory` dispatches — grep prod logs for this. */
+export const BUILDD_MEMORY_DEPRECATION_TAG = '[buildd_memory-deprecated]';
+
+/**
+ * Actions that arrive through this dispatcher but are NOT deprecated: they were
+ * promoted to the `buildd` admin action set rather than replaced by recall/learn.
+ * Counting them would drown the signal that decides when buildd_memory can go.
+ */
+const NON_DEPRECATED_MEMORY_ACTIONS = new Set(['consolidate_knowledge', 'query_knowledge']);
+
+const builddMemoryDeprecationCounts = new Map<string, number>();
+
+/**
+ * Per-action call counts for the deprecated `buildd_memory` tool, for the life of
+ * this process. Serverless instances are short-lived, so treat this as a probe for
+ * tests and local runs — the durable signal is the log line below.
+ */
+export function getBuilddMemoryDeprecationCounts(): Record<string, number> {
+  return Object.fromEntries(builddMemoryDeprecationCounts);
+}
+
+export function resetBuilddMemoryDeprecationCounts(): void {
+  builddMemoryDeprecationCounts.clear();
+}
+
+/**
+ * Record one deprecated-tool call. `buildd_memory` was superseded by `recall` and
+ * `learn` in #1944 but stays routed for compatibility; step 6 of
+ * docs/design/knowledge-tool-surface.md ("remove buildd_memory") needs evidence
+ * that nothing still calls it, and static description strings produce none. One
+ * single-line, greppable record per call is that evidence.
+ */
+function recordBuilddMemoryDeprecation(action: string, ctx: MemoryActionCtx): void {
+  if (NON_DEPRECATED_MEMORY_ACTIONS.has(action)) return;
+  const next = (builddMemoryDeprecationCounts.get(action) ?? 0) + 1;
+  builddMemoryDeprecationCounts.set(action, next);
+  console.warn(
+    `${BUILDD_MEMORY_DEPRECATION_TAG} action=${action} workspace=${ctx.workspaceId ?? 'unknown'}`
+    + ` worker=${ctx.workerId ?? 'none'} calls=${next} — migrate to recall/learn`,
+  );
+}
+
 export async function handleMemoryAction(
   memoryClient: MemoryStore | null,
   action: string,
   params: Record<string, unknown>,
   ctx: MemoryActionCtx,
 ): Promise<ToolResult> {
+  recordBuilddMemoryDeprecation(action, ctx);
   // consolidate_knowledge and query_knowledge operate directly on the PgVectorStore
   // and do not call memoryClient — null is acceptable for those ops.
   const clientRequired = ['context', 'search', 'save', 'get', 'update', 'delete'];
@@ -4538,7 +4581,7 @@ export async function handleMemoryAction(
       });
 
       if (!data.results || data.results.length === 0) {
-        return text(`No memories found${params.query ? ` matching "${params.query}"` : ''}. Use buildd_memory action=save to record memories.`);
+        return text(`No memories found${params.query ? ` matching "${params.query}"` : ''}. Use \`learn\` to record memories.`);
       }
 
       // Fetch full content

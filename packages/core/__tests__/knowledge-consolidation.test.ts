@@ -269,14 +269,17 @@ describe('WEEKLY_CONSOLIDATION_SCHEDULE', () => {
     expect(WEEKLY_CONSOLIDATION_SCHEDULE.taskTemplate.title.length).toBeGreaterThan(0);
   });
 
-  it('prompt covers spec §5 steps 1–4: find dups, merge via memory service, archive decayed, report', () => {
+  it('prompt covers spec §5 steps 1–4: find dups, merge via learn, archive decayed, report', () => {
     const prompt = WEEKLY_CONSOLIDATION_SCHEDULE.taskTemplate.description ?? '';
     expect(prompt).toContain('consolidate_knowledge');
     expect(prompt).toContain('find_duplicates');
     expect(prompt).toContain('find_decayed');
     expect(prompt).toContain('archive');
-    // Memory service is the source of truth for merges
-    expect(prompt).toContain('buildd_memory');
+    // The memories table is the source of truth for merges; the standalone
+    // memory service was absorbed into the buildd DB in #1944.
+    expect(prompt).toContain('learn');
+    expect(prompt).not.toContain('buildd_memory');
+    expect(prompt.toLowerCase()).not.toContain('memory service');
     expect(prompt).toContain('supersedes');
     // Ends with an auditable consolidation report artifact
     expect(prompt).toContain('create_artifact');

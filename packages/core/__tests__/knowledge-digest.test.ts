@@ -38,7 +38,9 @@ describe('WEEKLY_DIGEST_SCHEDULE', () => {
     // Three sources: PRs, tasks, memories
     expect(prompt.toLowerCase()).toContain('merged pr');
     expect(prompt).toContain('list_tasks');
-    expect(prompt).toContain('buildd_memory');
+    expect(prompt).toContain('recall');
+    // buildd_memory is deprecated — a seeded prompt must not teach it.
+    expect(prompt).not.toContain('buildd_memory');
     // Saved as an auto-indexed summary artifact (the whole deliverable)
     expect(prompt).toContain('create_artifact');
     expect(prompt).toContain('type=summary');
