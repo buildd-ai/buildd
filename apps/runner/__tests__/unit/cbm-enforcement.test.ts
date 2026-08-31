@@ -10,6 +10,7 @@ import {
   buildCbmActivation,
   buildCbmMcpEntry,
   ensureCbmRuntimeDir,
+  resolveCbmOutcome,
   CBM_BLOCKED_TOOLS,
   CBM_ALLOWED_TOOLS,
   type CbmContext,
@@ -190,5 +191,23 @@ describe('CBM_ALLOWED_TOOLS', () => {
       const bareName = blocked.replace('mcp__codebase-memory__', '');
       expect(allowedSet.has(bareName as any)).toBe(false);
     }
+  });
+});
+
+describe('resolveCbmOutcome (final metric bucket)', () => {
+  test('enforced wins regardless of how the server got mounted', () => {
+    expect(resolveCbmOutcome({ enforced: true, mounted: true })).toBe('enforced');
+    expect(resolveCbmOutcome({ enforced: true, mounted: false })).toBe('enforced');
+  });
+
+  // The regression: a worker with codebase-memory mounted by a connector or the
+  // project's own .mcp.json, but not enforced by the harness, used to be recorded
+  // as 'disabled' — a CBM-equipped session sitting in the metrics control group.
+  test('mounted but not enforced is legacy_mcp_json, not disabled', () => {
+    expect(resolveCbmOutcome({ enforced: false, mounted: true })).toBe('legacy_mcp_json');
+  });
+
+  test('neither enforced nor mounted is disabled', () => {
+    expect(resolveCbmOutcome({ enforced: false, mounted: false })).toBe('disabled');
   });
 });

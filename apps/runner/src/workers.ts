@@ -46,6 +46,8 @@ import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
   resolveMaxTurns,
+  resolveSessionModel,
+  resolveActualModel,
   discoverModelCapabilities,
   buildPrompt,
   buildSessionSummary,
@@ -71,7 +73,7 @@ import {
   isMountAllowlistEnabled,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, ensureCbmRuntimeDir, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, ensureCbmRuntimeDir, resolveCbmOutcome, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -2285,6 +2287,17 @@ export class WorkerManager {
       // Resolve max budget for SDK-level cost control
       const maxBudgetUsd = resolveMaxBudgetUsd(workspaceConfig, this.config.maxBudgetUsd);
 
+      // Resolve the session model: the model the claim route resolved for THIS
+      // task (task.context.model — smart-routing tier decision or an explicit
+      // per-task override) wins; the runner-global config.model stays the
+      // default and the local-UI override. A task with no resolved model
+      // behaves exactly as before.
+      const sessionModel = resolveSessionModel(task.context, this.config.model);
+      worker.sessionModel = sessionModel;
+      if (sessionModel !== this.config.model) {
+        console.log(`[Worker ${worker.id}] Using per-task model from claim: ${sessionModel} (runner default: ${this.config.model})`);
+      }
+
       // Resolve fallback model: task-level override > workspace-level setting
       const taskFallbackModel = (task.context as any)?.fallbackModel as string | undefined;
       const fallbackModel = taskFallbackModel || gitConfig?.fallbackModel || undefined;
@@ -2294,7 +2307,7 @@ export class WorkerManager {
       const extendedContext = taskExtendedContext !== undefined
         ? Boolean(taskExtendedContext)
         : Boolean(gitConfig?.extendedContext);
-      const betas = extendedContext && /sonnet/i.test(this.config.model)
+      const betas = extendedContext && /sonnet/i.test(sessionModel)
         ? ['context-1m-2025-08-07' as const]
         : undefined;
 
@@ -2354,7 +2367,10 @@ export class WorkerManager {
         }
       }
 
-      // CBM observability: record activation outcome and initialize per-task counters.
+      // CBM observability: provisional activation outcome + per-task counters.
+      // Provisional because the mcpServers map does not exist yet — the final
+      // classification (which can be legacy_mcp_json) is resolved after MCP
+      // assembly, below.
       if (cbmEnforced) {
         worker.cbmOutcome = 'enforced';
       } else {
@@ -2416,7 +2432,7 @@ export class WorkerManager {
       const queryOptions: Parameters<typeof query>[0]['options'] = {
         sessionId: invocationSessionId,
         cwd,
-        model: this.config.model,
+        model: sessionModel,
         ...(fallbackModel ? { fallbackModel } : {}),
         ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
         ...(!isCodexTask && workerBwrapArgv
@@ -2587,6 +2603,18 @@ export class WorkerManager {
         queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
       }
+
+      // CBM observability, final classification. The provisional outcome above was
+      // set before the mcpServers map existed, so it could only say enforced or
+      // disabled. Now that connectors and the project's .mcp.json have been merged
+      // we can see the third case: CBM mounted without harness enforcement, which
+      // is `legacy_mcp_json` — recording it as `disabled` put a CBM-equipped
+      // session in the metrics control group.
+      worker.cbmOutcome = resolveCbmOutcome({
+        enforced: cbmEnforced,
+        mounted: !!queryOptions.mcpServers['codebase-memory'],
+      });
+      if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
 
       // Block CBM tools that write to the repo or delete indexes — enforced for any
       // mounted codebase-memory server regardless of how it was wired (enforcement,
@@ -2764,7 +2792,7 @@ export class WorkerManager {
             effort: configuredEffort,
             thinking: configuredThinking,
             extendedContext,
-          }, this.config.model, (e: any) => this.emit(e));
+          }, sessionModel, (e: any) => this.emit(e));
         },
       } : {
         // Codex branch: wire the shared MessageStream so review/nudge/steering
@@ -2787,9 +2815,9 @@ export class WorkerManager {
       // account"). The runner's configured model is Claude by default, so for Codex
       // tasks strip a Claude model id and let Codex use the account default (or a
       // genuine codex model id passes through). Claude tasks are unaffected.
-      const backendModel = isCodexTask && /^claude/i.test(this.config.model || '')
+      const backendModel = isCodexTask && /^claude/i.test(sessionModel || '')
         ? undefined
-        : this.config.model;
+        : sessionModel;
 
       for await (const event of backend.runStreamed({
         prompt: promptArg as string | AsyncIterable<unknown>,
@@ -3217,6 +3245,9 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'completed',
           milestones: worker.milestones,
           ...gitStats,
+          // Cost + model attribution: without these the server can only guess,
+          // and workers.cost_usd stayed at its '0' default for every runner task.
+          ...this.terminalAttributionPayload(worker),
           ...(resultMeta && { resultMeta }),
           ...(inputTokens && { inputTokens }),
           ...(outputTokens && { outputTokens }),
@@ -3294,6 +3325,8 @@ If something is missing or incomplete, describe what and fix it now.`;
           status: 'failed',
           error: worker.error || 'Session aborted',
           ...(worker.sandboxMountGap && { sandboxMountGap: true }),
+          // An aborted session still spent money before it was killed.
+          ...this.terminalAttributionPayload(worker),
           ...spanPayload,
         }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
       } else {
@@ -3336,6 +3369,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         await this.buildd.updateWorker(worker.id, {
           status: 'failed',
           error: worker.error,
+          ...this.terminalAttributionPayload(worker),
           ...(isBudgetError && { budgetExhausted: true }),
           ...(isSteeringDeliveryCrash && { steeringDelivery: true }),
           ...(terminalTraces ? { appendErrorTraces: terminalTraces } : {}),
@@ -3542,6 +3576,30 @@ If something is missing or incomplete, describe what and fix it now.`;
     }
   }
 
+  /**
+   * Cost + model attribution for a terminal worker update.
+   *
+   * `costUsd` is only sent when the backend reported real spend: a 0 would be
+   * indistinguishable from "this session was free" and would suppress the
+   * server's token-derived estimate (the seat/OAuth path, where the SDK always
+   * reports $0). `actualModel` is always sent when known so
+   * task_outcomes.actual_model stops being NULL.
+   */
+  private terminalAttributionPayload(worker: LocalWorker): { costUsd?: number; actualModel?: string } {
+    const meta = worker.resultMeta;
+    const reportedCost = meta?.totalCostUsd;
+    const actualModel = meta?.actualModel
+      || resolveActualModel({
+        modelUsage: meta?.modelUsage ?? null,
+        reportedModel: worker.reportedModel ?? null,
+        requestedModel: worker.sessionModel ?? null,
+      });
+    return {
+      ...(typeof reportedCost === 'number' && reportedCost > 0 ? { costUsd: reportedCost } : {}),
+      ...(actualModel ? { actualModel } : {}),
+    };
+  }
+
   private async handleMessage(worker: LocalWorker, msg: SDKMessage) {
     worker.lastActivity = Date.now();
     worker.hasNewActivity = true;
@@ -3562,6 +3620,10 @@ If something is missing or incomplete, describe what and fix it now.`;
       } else {
         worker.sessionId = msg.session_id;
       }
+      // Model attribution: the init message names the model the CLI actually
+      // resolved, which can differ from what we asked for (alias expansion).
+      const initModel = (msg as any).model;
+      if (typeof initModel === 'string' && initModel.trim()) worker.reportedModel = initModel.trim();
       this.addCheckpoint(worker, CheckpointEvent.SESSION_STARTED);
       // Immediately persist the captured id (critical for resume)
       storeSaveWorker(worker);
@@ -4221,13 +4283,24 @@ If something is missing or incomplete, describe what and fix it now.`;
       }
 
       // Capture SDK result metadata for server sync
+      const modelUsage = result.usage?.byModel ?? {};
       worker.resultMeta = {
         stopReason: result.stop_reason ?? null,
         terminalReason: result.terminal_reason ?? null,
         durationMs: result.duration_ms ?? 0,
         durationApiMs: result.duration_api_ms ?? 0,
         numTurns: result.num_turns ?? 0,
-        modelUsage: result.usage?.byModel ?? {},
+        modelUsage,
+        // Spend the backend reported for this session. 0 on seat/OAuth auth (and
+        // on some Codex paths) — the server falls back to a token-derived
+        // estimate in that case, so never send a 0 as if it were a real cost.
+        totalCostUsd: typeof result.total_cost_usd === 'number' ? result.total_cost_usd : null,
+        // What actually ran, for task_outcomes.actual_model.
+        actualModel: resolveActualModel({
+          modelUsage,
+          reportedModel: worker.reportedModel ?? null,
+          requestedModel: worker.sessionModel ?? null,
+        }),
         // Seat-based (OAuth) auth reports top-level usage but no byModel map.
         // Reading only byModel is why OAuth workers persisted 0 tokens.
         totalUsage: extractResultUsage(result),

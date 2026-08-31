@@ -70,3 +70,54 @@ export function estimateCostUsd(
   }
   return total;
 }
+
+/**
+ * All-in token totals for a session, as the runner reports them in
+ * `resultMeta.totalUsage`. `inputTokens` is the ALL-IN input figure (fresh +
+ * cache read + cache creation); the two cache fields are the breakdown of it.
+ */
+export interface SessionTokenTotals {
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
+}
+
+const finite = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+
+/**
+ * Estimate cost from SESSION TOTALS priced against one known model.
+ *
+ * Why this exists alongside estimateCostUsd: per-model attribution
+ * (`usage.byModel`) is empty on seat/OAuth auth — which is precisely the auth
+ * mode the estimate exists for, so estimateCostUsd returned 0 exactly when it
+ * was needed. Top-level totals ARE populated on OAuth, so price those instead.
+ *
+ * Requires a model id: pricing spans 15× between haiku and opus, so guessing a
+ * tier would invent a number rather than estimate one. The runner reports the
+ * session's actual model, and this returns 0 when it is unknown (an older runner
+ * that omits it keeps today's behaviour rather than getting a fabricated charge).
+ *
+ * Cache tokens are priced at their own rates: pricing a 40k cache-read context
+ * as fresh input overstates spend ~10×.
+ */
+export function estimateCostUsdFromTotals(
+  totals: SessionTokenTotals | null | undefined,
+  modelId: string | null | undefined,
+): number {
+  if (!totals || !modelId || !modelId.trim()) return 0;
+  const p = priceForModel(modelId);
+  const cacheRead = finite(totals.cacheReadInputTokens);
+  const cacheWrite = finite(totals.cacheCreationInputTokens);
+  // inputTokens is all-in, so the fresh portion is what remains after the cache
+  // components. Clamped: a partial/older report can carry cache fields that
+  // exceed the total.
+  const freshInput = Math.max(0, finite(totals.inputTokens) - cacheRead - cacheWrite);
+  return (
+    (freshInput * p.input +
+      finite(totals.outputTokens) * p.output +
+      cacheRead * p.cacheRead +
+      cacheWrite * p.cacheWrite) /
+    1_000_000
+  );
+}

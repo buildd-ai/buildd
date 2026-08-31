@@ -17,9 +17,9 @@ import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
-import { detectCbmFleetDisabled, detectCbmEnforcedUnused } from '@buildd/core/cbm-health';
+import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
-import { estimateCostUsd } from '@buildd/core/model-prices';
+import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
 import { applyBudgetUsage } from '@buildd/core/budget-alerts';
 import { executeRelease } from '@/lib/release-executor';
 import { fireMissionReleaseIfComplete } from '@/lib/mission-release';
@@ -61,6 +61,46 @@ const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error'];
 
 function isTerminalWorkerStatus(status: string | null | undefined): boolean {
   return !!status && TERMINAL_WORKER_STATUSES.includes(status);
+}
+
+/**
+ * The model this session actually ran on.
+ *
+ * Feeds two things: `task_outcomes.actual_model` (which was written as NULL for
+ * every task because nothing ever passed a value) and the seat/OAuth cost
+ * estimate, which needs a model to price session totals against.
+ *
+ * Priority: the runner's explicit report > the model it recorded in resultMeta >
+ * the SDK's own per-model attribution. Returns null when nothing is known — an
+ * older runner that sends none of these keeps the previous behaviour rather than
+ * having a model guessed for it.
+ *
+ * With several models in the attribution map (a mid-session fallback fired) the
+ * one that produced the most output tokens is the representative model.
+ */
+function resolveSessionActualModel(
+  reported: unknown,
+  resultMeta: { actualModel?: unknown; modelUsage?: Record<string, unknown> | null } | null | undefined,
+): string | null {
+  const asModel = (v: unknown): string | null =>
+    typeof v === 'string' && v.trim() ? v.trim() : null;
+
+  const fromBody = asModel(reported);
+  if (fromBody) return fromBody;
+
+  const fromMeta = asModel(resultMeta?.actualModel);
+  if (fromMeta) return fromMeta;
+
+  const entries = Object.entries(resultMeta?.modelUsage ?? {});
+  if (entries.length === 0) return null;
+  let best: string | null = null;
+  let bestOut = -1;
+  for (const [model, usage] of entries) {
+    const out = (usage as { outputTokens?: unknown } | null)?.outputTokens;
+    const n = typeof out === 'number' && Number.isFinite(out) ? out : 0;
+    if (n > bestOut) { bestOut = n; best = asModel(model); }
+  }
+  return best;
 }
 
 /**
@@ -352,6 +392,9 @@ export async function PATCH(
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
+    // The model the session actually ran on, as reported by the runner.
+    // Optional: an older runner omits it and the server derives what it can.
+    actualModel,
     // Actual branch checked out in worktree (may differ from claim-time branch
     // when setupWorktree honors a resumeBranch). Persisted so reviewer/CI retry
     // dispatch reads the correct branch from the DB for the next retry's context.
@@ -1100,6 +1143,13 @@ export async function PATCH(
   if (status === 'completed' || status === 'failed' || status === 'error') {
     updates.completedAt = new Date();
 
+    // Resolved once: the cost estimate needs it to price seat-session totals and
+    // the routing-outcome row needs it for task_outcomes.actual_model.
+    const sessionActualModel = resolveSessionActualModel(
+      actualModel,
+      (resultMeta ?? worker.resultMeta) as Parameters<typeof resolveSessionActualModel>[1],
+    );
+
     // Accumulate monthly spend + fire budget-threshold alerts (non-fatal).
     // Guarded by the worker's prior status so a duplicate terminal PATCH can't
     // double-count. Prefers the SDK's reported cost; falls back to a token-derived
@@ -1113,7 +1163,17 @@ export async function PATCH(
         const usageForCost = (resultMeta?.modelUsage ?? (worker.resultMeta as any)?.modelUsage) as
           | Parameters<typeof estimateCostUsd>[0]
           | undefined;
-        const effectiveCost = reportedCost > 0 ? reportedCost : estimateCostUsd(usageForCost);
+        // Per-model attribution first. It is EMPTY on seat/OAuth auth — the very
+        // case this estimate exists for — so fall back to pricing the session
+        // totals (which OAuth does populate) against the session's actual model.
+        const perModelEstimate = estimateCostUsd(usageForCost);
+        const totalsForCost = (resultMeta?.totalUsage ?? (worker.resultMeta as any)?.totalUsage) as
+          | Parameters<typeof estimateCostUsdFromTotals>[0]
+          | undefined;
+        const estimatedCost = perModelEstimate > 0
+          ? perModelEstimate
+          : estimateCostUsdFromTotals(totalsForCost, sessionActualModel);
+        const effectiveCost = reportedCost > 0 ? reportedCost : estimatedCost;
 
         // Write effectiveCost back to the worker row so per-worker aggregations
         // (e.g. mission spend) see a non-null value for OAuth workers that don't
@@ -1663,6 +1723,7 @@ export async function PATCH(
           taskId: worker.taskId,
           accountId: worker.accountId,
           outcome: effectiveOutcome,
+          actualModel: sessionActualModel,
           totalCostUsd: updates.costUsd ?? worker.costUsd ?? null,
           totalTurns: typeof updates.turns === 'number' ? updates.turns : (worker.turns ?? null),
           durationMs,
@@ -1673,10 +1734,13 @@ export async function PATCH(
         recordRunnerOutcome(effectiveOutcome === 'completed' ? 'completed' : 'failed').catch(() => {});
         // Fleet CBM-disabled detector: pages (error) when every recent worker in
         // this workspace has binary_absent — a broken platform capability, not just
-        // one bad task. Only fires on completed workers (failed tasks may skew the
-        // reason). Passes the current worker's CBM outcome directly to avoid a
+        // one bad task. Passes the current worker's CBM outcome directly to avoid a
         // timing gap between the DB write and the query.
-        if (status === 'completed') {
+        // All three terminal statuses set completedAt and carry resultMeta.cbm, and
+        // the detectors' own history query covers all three — gating the call on
+        // 'completed' alone meant an all-failing workspace (the exact shape of a
+        // missing-binary outage) never reached the widened query.
+        if (CBM_HEALTH_TERMINAL_STATUSES.includes(status)) {
           const currentCbm = (resultMeta as Record<string, unknown> | undefined)?.cbm ?? null;
           detectCbmFleetDisabled(worker.workspaceId, currentCbm).catch(() => {});
           // Same shape, opposite condition: mounted-and-ignored rather than absent.

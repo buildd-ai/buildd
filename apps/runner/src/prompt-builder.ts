@@ -79,6 +79,77 @@ export function resolveMaxTurns(
   return undefined;
 }
 
+// ── Model selection ────────────────────────────────────────────────
+
+/**
+ * Resolve which model this session runs on.
+ *
+ * Priority: the per-task model the claim route resolved (written to
+ * `task.context.model` by the smart-routing decision, and also the landing spot
+ * for an explicit per-task override) > the runner-global `config.model`.
+ *
+ * Before this existed the runner always ran `config.model`, so the router's
+ * decision was computed, persisted, shipped to the runner and discarded.
+ *
+ * **Gated OFF by default.** The claim route writes `context.model` for EVERY
+ * claimed task, so honouring it moves the whole fleet onto the tier registry's
+ * models in a single deploy — tasks the router tiers to opus start running on
+ * opus. That is the intended design, but it is a fleet-wide spend change, so it
+ * ships as its own reviewed rollout rather than riding along with unrelated
+ * fixes. Set `BUILDD_HONOR_TASK_MODEL=1` to enable it on a runner.
+ *
+ * While it is off, `sessionModel === configModel`, which keeps every downstream
+ * report truthful: the SDK call, the `betas` check, the backend model, and the
+ * `requestedModel` sent back to the server all describe what actually ran.
+ */
+export function honorTaskModelEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.BUILDD_HONOR_TASK_MODEL === '1';
+}
+
+export function resolveSessionModel(
+  taskContext: unknown,
+  configModel: string,
+  honorTaskModel: boolean = honorTaskModelEnabled(),
+): string {
+  if (!honorTaskModel) return configModel;
+  const ctx = taskContext as { model?: unknown } | null | undefined;
+  const taskModel = typeof ctx?.model === 'string' ? ctx.model.trim() : '';
+  return taskModel || configModel;
+}
+
+/**
+ * The model the session actually ran on, for `task_outcomes.actual_model`.
+ *
+ * Priority: the SDK's own per-model attribution (`usage.byModel`) > the model
+ * reported on the init message > the model we asked for. On seat/OAuth auth
+ * `byModel` is empty, which is why the later fallbacks matter.
+ *
+ * When several models appear (a mid-session fallback fired), the one that
+ * produced the most output tokens is the representative model.
+ */
+export function resolveActualModel(input: {
+  modelUsage?: Record<string, unknown> | null;
+  reportedModel?: string | null;
+  requestedModel?: string | null;
+}): string | null {
+  const entries = Object.entries(input.modelUsage ?? {});
+  if (entries.length === 1) return entries[0][0];
+  if (entries.length > 1) {
+    let best = entries[0][0];
+    let bestOut = -1;
+    for (const [model, usage] of entries) {
+      const out = (usage as { outputTokens?: unknown } | null)?.outputTokens;
+      const n = typeof out === 'number' && Number.isFinite(out) ? out : 0;
+      if (n > bestOut) { bestOut = n; best = model; }
+    }
+    return best;
+  }
+  const reported = typeof input.reportedModel === 'string' ? input.reportedModel.trim() : '';
+  if (reported) return reported;
+  const requested = typeof input.requestedModel === 'string' ? input.requestedModel.trim() : '';
+  return requested || null;
+}
+
 // ── Model capabilities ─────────────────────────────────────────────
 
 /**
