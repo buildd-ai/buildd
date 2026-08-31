@@ -110,6 +110,43 @@ export function ensureCbmRuntimeDir(cbmCacheDir: string): string {
 }
 
 /**
+ * System-prompt block appended for CBM-enforced sessions.
+ *
+ * Lives here (not inline in workers.ts) so the wording is testable: production
+ * data showed essentially every CBM-enforced worker indexing successfully and then
+ * making zero graph calls, so this text is the thing under test, not decoration.
+ *
+ * The previous version listed the tools and the question shapes they answer, which
+ * is a capability list — the agent read it, then reached for Grep anyway, because
+ * Grep answers well enough that the graph never gets consulted. The fix is
+ * procedural and ordered: on a task that touches code you have not read yet, the
+ * FIRST navigation call is a graph call. It stays scoped (greenfield files and
+ * docs edits have no structural question) and stays non-blocking (Read/Grep remain
+ * available, and the graph is explicitly an accelerator, never a gate).
+ */
+export function buildCbmSystemPromptBlock(): string {
+  return [
+    '## Codebase graph (codebase-memory)',
+    'This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.',
+    '',
+    'When a task touches existing code you have not read yet, make a graph call your FIRST navigation step,',
+    'before any Read/Grep/Glob sweep. One call is usually enough to know where to look:',
+    '- orienting in an unfamiliar area, or "how is this laid out?" -> mcp__codebase-memory__get_architecture',
+    '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path',
+    '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph',
+    '- locating a symbol before reading it -> mcp__codebase-memory__search_code, then get_code_snippet',
+    '',
+    'Then use Read/Grep/Glob to read what the graph located, for non-code files, for a greenfield file that',
+    'does not exist yet, and whenever the graph returns nothing useful — it is an accelerator, never a gate.',
+    'A Grep-and-Read sweep that a single graph query would have answered is the specific waste to avoid.',
+    'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.',
+    '',
+    'The graph answers structural questions ONLY. It is not a source of intent, history, or prior',
+    'decisions — use the buildd knowledge tools (recall) for those.',
+  ].join('\n');
+}
+
+/**
  * Determine whether CBM should be active for this worker.
  * Returns enforced=true with the binary path and cache dir when all gates pass.
  * Pure function — does NOT create the cache dir (caller must mkdir before bwrap mount).
