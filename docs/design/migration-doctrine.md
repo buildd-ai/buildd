@@ -50,10 +50,63 @@ A required CI check (`Schema Drift / check-prod`) compares the production databa
 - Fails if any column exists in the DB but not in the snapshot (manual DDL not tracked),
   **unless** a migration drops that column — migrations run on deploy, after this gate,
   so a column awaiting its `DROP COLUMN` is expected, not drift
-- Fails if any column is expected by the snapshot but absent from the DB (unapplied migration)
+- For an object the snapshot expects that the DB does **not** have, the verdict depends on
+  `__drizzle_migrations`, because "missing" alone is ambiguous this early in the deploy:
+  - the migration that adds it is **not** recorded as applied → `[pending]`, gate passes.
+    Migrations run during the deploy, i.e. after this gate, so this is the normal state of
+    any release that carries a migration.
+  - the migration that adds it **is** recorded as applied → **fails**. A migration that
+    "ran" without its DDL taking effect is the 0067-class silent skip, or a tracking row
+    written without the DDL ever running.
+  - **no** migration in the journal adds it → **fails** (unattributable).
 - Sends a Pushover alert (via `PUSHOVER_TOKEN_ALERT`) on any gate failure
 
+Historical note: until this was corrected, the gate logged `[pending]` for *every* missing
+column and exited 0, while this document claimed it failed on any missing column. That gap is
+what let a bogus tracking-row backfill (see Rule 5) pass unnoticed. Classification logic:
+`packages/core/db/migrate-drift.ts` (unit-tested); the gate script prints the counts behind
+each verdict so a scan that compared nothing cannot read as a pass. Run
+`bun run scripts/check-schema-drift.ts --offline` to exercise everything except the database.
+
 **To add this as a required check:** go to GitHub → Settings → Branches → `main` → Require status checks → add `Schema Drift / check-prod`.
+
+### Rule 5: A migration is recorded as applied only if its statements ran
+
+`packages/core/db/migrate.ts` splits untracked migrations two ways (`packages/core/db/migrate-plan.ts`):
+
+- **newer** than the `__drizzle_migrations` high-water mark → execute the SQL, then record.
+- **older** than the high-water mark → a *candidate* for a tracking-row backfill, because a
+  missing row there can mean "ran, but the tracking insert was lost". It is not proof of that,
+  so the backfill must now **prove** it: `migrate-backfill.ts` derives assertions from the
+  migration's own SQL (`ADD COLUMN` → that column exists, `DROP TABLE` → that table is gone,
+  `CREATE INDEX` → that index exists, FK `DO $$` blocks → that constraint exists) and checks
+  them against live `information_schema` introspection.
+  - assertions all hold → record the tracking row.
+  - any assertion fails → **abort the deploy**, record nothing. The migration never ran; a
+    tracking row would make the skip permanent, because the next run would then skip it
+    forever. Resolve it the way `0074_reconcile_missions_secret_refs_drift.sql` did: a new
+    reconciliation migration re-issuing the equivalent idempotent DDL under current names.
+  - nothing in the file is checkable (pure data DML) → abort, unless the operator sets
+    `MIGRATION_BACKFILL_ALLOW_UNVERIFIED=1`, which records it with a loud log line.
+
+Previously this loop inserted a tracking row without ever reading `migration.sql`, exited 0,
+and the drift gate reported the missing column as `[pending]`. Silent, permanent schema loss.
+
+### Rule 6: Only one migrator runs at a time
+
+Two deploys overlapping used to both read `__drizzle_migrations` before either wrote, compute
+the same work, and race through it. 142 of the committed `ADD COLUMN` statements have no
+`IF NOT EXISTS`, so the loser fails mid-file and can leave a multi-statement migration
+half-applied under a tracking row that claims success.
+
+`migrate.ts` now takes a lock before the apply loop and releases it in a `finally`. It is a
+lock **row** (`drizzle.__buildd_migrate_lock`) taken by one atomic `INSERT ... ON CONFLICT DO
+UPDATE ... WHERE acquired_at < now() - <stale window> RETURNING holder`, **not**
+`pg_advisory_lock`: the migrator runs on the `@neondatabase/serverless` HTTP driver, where
+"sessions and transactions are not supported", so a session-scoped advisory lock would be
+released before the next statement and would provide no exclusion at all. A second migrator
+waits, then finds nothing to do. A lock held past the staleness window (15 min) is taken over,
+so a crashed deploy cannot wedge future ones.
 
 ## Summary: The Decision Tree
 
@@ -75,3 +128,11 @@ Schema change needed?
 - [ ] `Schema Drift / check-prod` job in `build.yml`: introspects production DB on release PRs (new)
 - [ ] `main` branch protection: `Schema Drift / check-prod` is a required status check
 - [ ] Pushover alert sent when either gate fails (`PUSHOVER_TOKEN_ALERT` + `PUSHOVER_USER` GitHub secrets)
+- [x] `bun run migrations:lint` (pre-commit hook): journal `when` ordering across the WHOLE
+      journal, plus `apps/web`'s `build` script still carrying `db:migrate &&` — the only path
+      by which migrations reach production. CI builds with `build:only`, so deleting that
+      prefix used to ship green as a silent no-migrate deploy.
+- [ ] `bun run migrations:lint` added as a CI step in `build.yml`. Not done: `build.yml` is
+      outside the scope of the change that added this line. Until then the only always-on
+      enforcement is the pre-commit hook, plus the unit tests (which CI skips for a PR that
+      touches nothing but `package.json`, per `scripts/affected-tests.sh`).
