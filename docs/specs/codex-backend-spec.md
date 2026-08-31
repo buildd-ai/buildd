@@ -147,7 +147,7 @@ A bump that breaks any of these breaks the spec above. Re-verify on SDK upgrade.
 - `mcp_tool_call` **carries `arguments`** at runtime even though the `.d.ts` omits it (INV-6).
 - `Thread` supports multiple consecutive turns; `thread.runStreamed(input: string)` is repeatable. `Input = string` — **no multimodal**.
 - `codex.resumeThread(id, options)` exists; `thread.id` populated after the first turn starts. Sessions persist under `$CODEX_HOME/sessions/`; the SDK spawns `codex exec` with inherited `CODEX_HOME` and never overrides it.
-- `ThreadOptions = {model, sandboxMode, workingDirectory, skipGitRepoCheck}` only — no `instructions`/`approvalMode`/`effort` (hence config.toml, §7).
+- `ThreadOptions = {model, sandboxMode, workingDirectory, skipGitRepoCheck}` only — no instructions/approvalMode/effort options (hence config.toml, §7).
 - `turn.completed.usage` includes `reasoning_output_tokens` (INV-21).
 
 ---
