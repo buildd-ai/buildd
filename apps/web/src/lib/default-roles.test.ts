@@ -74,4 +74,23 @@ describe('DEFAULT_ROLES', () => {
       expect(role.content).toContain('recall');
     }
   });
+  // The Organizer prompt used to order the agent to "Always set `kind` and
+  // `complexity` — they drive how much Claude-horsepower the task gets". Neither
+  // half was true: plan approval (approve-plan.ts) does not copy those fields
+  // onto the task row, so they change nothing about routing on that path.
+  it('Organizer prompt does not claim plan-level kind/complexity drive model choice', () => {
+    const c = bySlug.organizer.content;
+    expect(c).not.toContain('Always set `kind` and `complexity`');
+    expect(c).not.toContain('how much Claude-horsepower the task gets');
+  });
+
+  it('Organizer prompt names roleSlug as the real routing lever and documents tier', () => {
+    const c = bySlug.organizer.content;
+    // roleSlug is what actually selects a model for a planned task.
+    expect(c).toMatch(/`roleSlug`[^\n]*model/);
+    // tier is the working override on the direct-creation surface.
+    expect(c).toContain('`tier`');
+    expect(c).toContain('premium');
+    expect(c).toContain('budget');
+  });
 });

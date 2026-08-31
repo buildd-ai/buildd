@@ -22,7 +22,6 @@
     "./backend-policy": "./backend-policy.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
-    "./task-classifier": "./task-classifier.ts",
     "./inference-client": "./inference-client.ts",
     "./inference-policy": "./inference-policy.ts",
     "./routing-analytics": "./routing-analytics.ts",

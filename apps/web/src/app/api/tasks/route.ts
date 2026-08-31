@@ -31,6 +31,17 @@ import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 
+// Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
+// claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
+// Mirrors the unions declared on the `tasks` table and the values the schedules
+// path writes via classifyScheduleCadence.
+const TASK_KINDS = [
+  'coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation',
+] as const;
+const TASK_COMPLEXITIES = ['simple', 'normal', 'complex'] as const;
+type TaskKind = (typeof TASK_KINDS)[number];
+type TaskComplexity = (typeof TASK_COMPLEXITIES)[number];
+
 // Field names that must never appear as string properties in outputSchemas for
 // sensitive workspaces. These names are characteristic of content-bearing email
 // fields that would route real data through the structured-output carve-out.
@@ -348,6 +359,9 @@ export async function POST(req: NextRequest) {
       pathManifest: rawPathManifest,
       // Intelligence tier — resolved to a concrete model at claim time via the team's registry.
       tier: rawTier,
+      // Routing inputs — the claim-time router's kind×complexity matrix reads these.
+      kind: rawKind,
+      complexity: rawComplexity,
       startAt: rawStartAt,
       startIn: rawStartIn,
       startAfter: rawStartAfter,
@@ -358,6 +372,23 @@ export async function POST(req: NextRequest) {
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
+    }
+
+    // Routing inputs. Same vocabulary as tasks.kind / tasks.complexity in the
+    // schema and as classifyScheduleCadence writes on the schedules path.
+    // An out-of-vocabulary value is a 400, not a silent drop — a hint the caller
+    // believes was applied but wasn't is worse than an error.
+    if (rawKind !== undefined && !TASK_KINDS.includes(rawKind)) {
+      return NextResponse.json(
+        { error: `kind must be one of: ${TASK_KINDS.join(', ')}` },
+        { status: 400 },
+      );
+    }
+    if (rawComplexity !== undefined && !TASK_COMPLEXITIES.includes(rawComplexity)) {
+      return NextResponse.json(
+        { error: `complexity must be one of: ${TASK_COMPLEXITIES.join(', ')}` },
+        { status: 400 },
+      );
     }
 
     // Prose-gate lint: reject if description declares a dependency gate in prose but dependsOn
@@ -836,6 +867,11 @@ export async function POST(req: NextRequest) {
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? { pathManifest } : {}),
         ...(['premium', 'standard', 'budget'].includes(rawTier) ? { tier: rawTier as 'premium' | 'standard' | 'budget' } : {}),
+        ...(rawKind !== undefined ? { kind: rawKind as TaskKind } : {}),
+        ...(rawComplexity !== undefined ? { complexity: rawComplexity as TaskComplexity } : {}),
+        // Caller-supplied routing inputs are attributed to the user so routing
+        // analytics can tell them apart from cadence/organizer-derived values.
+        ...(rawKind !== undefined || rawComplexity !== undefined ? { classifiedBy: 'user' as const } : {}),
         ...(['true', 'false', 'inherit'].includes(rawRelease) ? { release: rawRelease as 'true' | 'false' | 'inherit' } : {}),
         ...(resolvedBackend ? { backend: resolvedBackend } : {}),
         ...(rawRequiresReview === true ? { requiresReview: true } : {}),
