@@ -371,6 +371,28 @@ describe('canCompleteMission — the goal-criteria gate', () => {
     expect(d.criteriaEvaluatedAt).toBe(PASSING_STATE.evaluatedAt);
   });
 
+  it('gates the heartbeat on a failing verdict — no path is exempt from the criteria gate', async () => {
+    // The organizer once declared missionComplete against a criterion it had
+    // explicitly failed, justifying it as an evaluation-infrastructure problem.
+    // The heartbeat is the evaluation authority, but authority to EVALUATE is not
+    // authority to OVERRULE: a fresh non-pass verdict refuses every automated
+    // path, this one included. (A human transition does not come through here.)
+    activeMission({ goalCriteria: [{ type: 'description', description: 'Contract applied' }] });
+    taskRows = [work('completed')];
+    mockEnsureCriteriaVerdict.mockImplementation(() => Promise.resolve({
+      evaluatedAt: '2026-08-31T11:00:00.000Z',
+      evaluatedBy: 'auto',
+      overall: 'fail',
+      criteria: [{ index: 0, type: 'description', label: 'Contract applied', verdict: 'fail', evidence: 'not applied' }],
+    }) as any);
+
+    for (const path of ['heartbeat', 'heartbeat_prepass', 'agent_signal'] as const) {
+      const d = await canCompleteMission('m1', { path, proposed: true });
+      expect(d.ok).toBe(false);
+      expect(d.code).toBe('criteria_failed');
+    }
+  });
+
   it('M2: refuses when the evaluator produces no verdict — unevaluated is not a pass', async () => {
     activeMission({
       goalCriteria: [
