@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaces, tasks, accountWorkspaces, taskSchedules, workspaceSkills, workers, artifacts, missions, memories } from '@buildd/core/db/schema';
-import { eq, desc, and, count, ilike, inArray, notInArray } from 'drizzle-orm';
+import { eq, desc, and, count, inArray, notInArray } from 'drizzle-orm';
+import { workspaceProjectKey } from '@buildd/core/project-scope';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { ConnectRunnerSection } from './connect-runner';
@@ -71,13 +72,20 @@ export default async function WorkspaceDetailPage({
   // Scoped by project the same way /api/workspaces/:id/memory scopes its list, so the
   // badge matches what the Memory tab actually shows. Without the project filter every
   // workspace in a team reports the team's whole memory pool.
-  const memoryProject = workspace.repo || workspace.name;
+  //
+  // This was a substring ILIKE against the raw repo/name, which silently undercounted:
+  // when `repo` is a full URL and the rows store the short `owner/repo` form, the
+  // `%<full url>%` pattern matches nothing, so the badge read far lower than the
+  // number of memories actually scoped to the workspace. Both sides now reduce to the
+  // canonical `owner/repo` key (see project-scope.ts) and compare exactly, which also
+  // lets the (team_id, project) index serve the count.
+  const memoryProject = workspaceProjectKey(workspace.repo, workspace.name);
   const [memCountRes] = await db
     .select({ total: count() })
     .from(memories)
     .where(and(
       eq(memories.teamId, workspace.teamId),
-      ...(memoryProject ? [ilike(memories.project, `%${memoryProject}%`)] : []),
+      ...(memoryProject ? [eq(memories.project, memoryProject)] : []),
     ));
   const memoryCount = Number(memCountRes?.total || 0);
 

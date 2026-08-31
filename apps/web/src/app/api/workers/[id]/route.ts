@@ -1137,8 +1137,17 @@ export async function PATCH(
           let committed = false;
 
           for (let attempt = 0; attempt < 5 && !committed; attempt++) {
+            // Explicit column list — see the note on teams.memoryApiKey for why an
+            // unfiltered teams query is a deploy hazard. These four are the whole
+            // budget CAS working set.
             const team = await db.query.teams.findFirst({
               where: eq(teams.id, account.teamId),
+              columns: {
+                monthlyBudgetUsd: true,
+                monthlyCostUsd: true,
+                monthlyCostMonth: true,
+                budgetAlertsSent: true,
+              },
             });
             if (!team) break;
 
