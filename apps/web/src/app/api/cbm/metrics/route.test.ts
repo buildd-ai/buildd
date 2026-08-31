@@ -451,7 +451,12 @@ describe('GET /api/cbm/metrics', () => {
       eligibleCount: 0, fallbackCount: 0, byDesignSkipCount: 0, byDesignSkips: {},
     });
     expect(body.indexBuild).toEqual({
-      attempted: 0, ok: 0, failed: 0, failureRate: null, unreported: 0, failReasons: {},
+      attempted: 0, ok: 0, failed: 0, failureRate: null,
+      // Warm starts are reported separately from attempts: a task served by the
+      // shared seeded cache built nothing, so counting it as an attempt would
+      // dilute the failure rate of the tasks that did build an index.
+      skippedWarm: 0, warmStartRate: null,
+      unreported: 0, failReasons: {},
     });
     expect(body.cbmActive.byOutcome).toEqual({});
     expect(body.cbmDisabled.excludedFromComparable).toEqual({

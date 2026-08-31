@@ -520,9 +520,17 @@ export interface CbmMetrics {
   /** How CBM was activated for this task. */
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
   /** Why CBM was not active (only set when outcome='disabled'). */
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
-  /** Whether the pre-index bootstrap ran and whether it succeeded. Only set when outcome='enforced'. */
-  bootstrapResult?: 'ok' | 'failed';
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
+  /**
+   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
+   * outcome='enforced'.
+   *
+   * 'skipped_warm' means no index was needed because a shared seeded cache already
+   * held this repo's graph. Distinct from 'ok' on purpose: lumping them together
+   * makes the warm-start path invisible, so you cannot tell a fleet that is
+   * serving 0s starts from one that is paying ~20s per task.
+   */
+  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
   bootstrapFailReason?: string;
   /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
   toolCalls: Record<string, number>;

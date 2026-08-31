@@ -22,9 +22,11 @@ import {
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
+import { aggregateCbm, summarizeCbm, type CbmHealthSummary, type CbmRow } from '@/lib/cbm-insight';
 import { HealthClient } from './HealthClient';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
+export type { CbmHealthSummary };
 
 export const dynamic = 'force-dynamic';
 
@@ -162,6 +164,7 @@ export default async function HealthPage({
     consumption,
     failureAnalytics,
     strandSummary,
+    cbmSummary,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
@@ -373,6 +376,29 @@ export default async function HealthPage({
     // read "All systems healthy" while the queue can never drain.
     getBackendStrandSummary({ teamId: activeTeamId, workspaceIds: scopedWsIds })
       .catch(() => null),
+
+    // Codebase graph (CBM), 7d. Same aggregation the /api/cbm/metrics endpoint
+    // returns — the page used to show CBM only as rows in the generic top-tools
+    // list, which cannot distinguish "mounted and never queried" from healthy.
+    (async (): Promise<CbmHealthSummary | null> => {
+      const windowStart = new Date(Date.now() - parseWindowMs('7d'));
+      const rows = await db.query.workers.findMany({
+        where: and(
+          eq(workers.status, 'completed'),
+          sql`${workers.completedAt} >= ${windowStart}`,
+          scopedWsIds.length > 0 ? inArray(workers.workspaceId, scopedWsIds) : sql`false`,
+        ),
+        columns: { inputTokens: true, resultMeta: true },
+        limit: 5000,
+      });
+      const cbmRows: CbmRow[] = [];
+      for (const r of rows as any[]) {
+        const cbm = r.resultMeta?.cbm;
+        if (cbm) cbmRows.push({ inputTokens: r.inputTokens ?? 0, cbm });
+      }
+      if (cbmRows.length === 0) return null;
+      return summarizeCbm(aggregateCbm(cbmRows, '7d', windowStart));
+    })().catch(() => null),
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -422,6 +448,7 @@ export default async function HealthPage({
       budgetForecast={budgetForecast ?? null}
       failureAnalytics={failureAnalytics ?? null}
       failureWindow={failureWindow}
+      cbm={cbmSummary ?? null}
     />
   );
 }

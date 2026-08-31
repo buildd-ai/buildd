@@ -2387,7 +2387,9 @@ export class WorkerManager {
         if (cbmActivation.skipBootstrapIndex) {
           console.log(`[Worker ${worker.id}] CBM: skipping index — shared cache already holds ${cbmActivation.cbmProject}`);
           this.addMilestone(worker, { type: 'status', label: 'graph_index_skipped reason=shared_cache_warm', ts: Date.now() });
-          worker.cbmBootstrapResult = 'ok';
+          // NOT 'ok': that would make warm starts indistinguishable from a task
+          // that paid for an index, hiding whether the shared cache is working.
+          worker.cbmBootstrapResult = 'skipped_warm';
         } else {
 
         // Pre-index the worktree so the graph is warm on turn one.

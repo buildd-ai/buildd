@@ -15,6 +15,7 @@ import type {
   BudgetForecast,
   FailureAnalytics,
   FailureWindow,
+  CbmHealthSummary,
 } from './page';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
@@ -169,6 +170,7 @@ interface Props {
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
   failureWindow: FailureWindow;
+  cbm: CbmHealthSummary | null;
 }
 
 export function HealthClient({
@@ -184,6 +186,7 @@ export function HealthClient({
   budgetForecast,
   failureAnalytics,
   failureWindow,
+  cbm,
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -735,6 +738,8 @@ export function HealthClient({
         <ConsumptionSection stats={consumption} />
       )}
 
+      {cbm && <CodebaseGraphSection cbm={cbm} />}
+
       {/* 4. Schedules — collapsed by default */}
       {schedules.length > 0 && (
         <section data-testid="health-section-schedules" className="mb-6">
@@ -1099,6 +1104,186 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
  * the reason as a tooltip — never a zero, which would read as "this task cost
  * nothing" instead of "we never recorded it".
  */
+/** Copy for each CBM state — the label carries the diagnosis, not just a colour. */
+const CBM_STATE: Record<
+  CbmHealthSummary['state'],
+  { label: string; tone: string; hint: string }
+> = {
+  healthy: {
+    label: 'In use',
+    tone: 'text-success',
+    hint: 'Most CBM-enabled tasks queried the graph.',
+  },
+  partial: {
+    label: 'Partly used',
+    tone: 'text-warning',
+    hint: 'A minority of CBM-enabled tasks queried the graph.',
+  },
+  unused: {
+    label: 'Never queried',
+    tone: 'text-error',
+    hint: 'The graph was mounted and warm on every task and no agent called it. '
+      + 'Indexing is being paid for and nothing is using it — this is a steering problem, not an availability one.',
+  },
+  unavailable: {
+    label: 'Not mounted',
+    tone: 'text-error',
+    hint: 'No task had the graph mounted. Check the binary and the disable reasons below.',
+  },
+  no_data: {
+    label: 'No data',
+    tone: 'text-text-muted',
+    hint: 'No completed task in this window recorded CBM metrics.',
+  },
+};
+
+function pct(v: number | null): string {
+  return v === null ? '—' : `${Math.round(v * 100)}%`;
+}
+
+/**
+ * Codebase graph (CBM) health.
+ *
+ * Replaces reading CBM off the generic top-tools list, which could only ever show
+ * which graph tools were called — and therefore looked identical whether the graph
+ * was unused or absent. The question this answers first is adoption: mounted, warm,
+ * and never queried is the failure mode that hid for weeks.
+ */
+function CodebaseGraphSection({ cbm }: { cbm: CbmHealthSummary }) {
+  const state = CBM_STATE[cbm.state];
+  const deltaSuppressed = cbm.deltasSuppressedBecause;
+
+  return (
+    <section data-testid="health-section-cbm" className="mb-6">
+      <h2 className="section-label mb-3">Codebase Graph</h2>
+      <div className="card p-4 space-y-4">
+
+        {/* Adoption first: the number that decides whether any of the rest matters. */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className={`text-sm font-medium ${state.tone}`} data-testid="cbm-state">
+                {state.label}
+              </span>
+              <span className="text-xs text-text-muted tabular-nums">
+                {pct(cbm.adoptionRate)} of {cbm.activeCount} task{cbm.activeCount !== 1 ? 's' : ''}
+              </span>
+            </div>
+            <p className="text-xs text-text-secondary max-w-prose">{state.hint}</p>
+          </div>
+          <span className="text-xs text-text-muted tabular-nums shrink-0" title="Graph tool calls in the window">
+            {cbm.totalGraphCalls} call{cbm.totalGraphCalls !== 1 ? 's' : ''}
+          </span>
+        </div>
+
+        {/* What agents did instead — the substitution the graph is meant to replace. */}
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 pt-3 border-t border-border-default">
+          <Stat
+            label="Graph calls / task"
+            value={cbm.avgGraphCallsOnActive === null ? '—' : cbm.avgGraphCallsOnActive.toFixed(1)}
+            sub="on CBM tasks"
+          />
+          <Stat
+            label="File reads / task"
+            value={cbm.avgFileAccessOnActive === null ? '—' : Math.round(cbm.avgFileAccessOnActive).toString()}
+            sub="Read + Grep + Glob"
+          />
+          <Stat
+            label="Warm starts"
+            value={pct(cbm.warmStartRate)}
+            sub={`${cbm.warmStarts} served by seed`}
+          />
+          <Stat
+            label="Index failures"
+            value={cbm.indexAttempted === 0 ? '—' : pct(cbm.indexFailureRate)}
+            sub={`${cbm.indexFailed}/${cbm.indexAttempted} builds`}
+          />
+        </div>
+
+        {/* Why a task had no graph. Decisions and breakage read differently. */}
+        {(cbm.binaryAbsent > 0 || cbm.mountUnavailable > 0 || Object.keys(cbm.byDesignSkips).length > 0 || cbm.topIndexFailReason) && (
+          <div className="space-y-1 pt-3 border-t border-border-default">
+            {cbm.binaryAbsent > 0 && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-error">Binary absent from the runner image</span>
+                <span className="text-xs text-text-muted tabular-nums">{cbm.binaryAbsent} task(s)</span>
+              </div>
+            )}
+            {cbm.mountUnavailable > 0 && (
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className="text-xs text-error"
+                  title="A mount CBM needs was missing, so CBM was dropped for the task rather than indexing into a tmpfs that is discarded at session end."
+                >
+                  Sandbox mount unavailable
+                </span>
+                <span className="text-xs text-text-muted tabular-nums">{cbm.mountUnavailable} task(s)</span>
+              </div>
+            )}
+            {cbm.topIndexFailReason && (
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-warning truncate" title={cbm.topIndexFailReason.reason}>
+                  Top index failure: {cbm.topIndexFailReason.reason}
+                </span>
+                <span className="text-xs text-text-muted tabular-nums shrink-0">
+                  {cbm.topIndexFailReason.count}
+                </span>
+              </div>
+            )}
+            {Object.entries(cbm.byDesignSkips).map(([reason, count]) => (
+              <div key={reason} className="flex items-center justify-between gap-2">
+                <span
+                  className="text-xs text-text-secondary"
+                  title="A decision, not a failure — excluded from the fallback rate."
+                >
+                  Skipped by design: {reason.replace(/_/g, ' ')}
+                </span>
+                <span className="text-xs text-text-muted tabular-nums">{count}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Payoff, or an honest refusal to claim one. */}
+        <div className="pt-3 border-t border-border-default">
+          {deltaSuppressed ? (
+            <p className="text-xs text-text-muted">
+              {deltaSuppressed === 'no_graph_tool_calls_observed'
+                ? 'Token and file-access deltas withheld: no graph call was observed, so any cohort difference has no mechanism behind it.'
+                : 'Token and file-access deltas withheld: cohorts are too small to compare yet.'}
+            </p>
+          ) : (
+            <div className="flex items-center gap-4">
+              <span className="text-xs text-text-secondary">
+                Input tokens{' '}
+                <span className="tabular-nums text-text-primary">{pct(cbm.inputTokenDeltaPct)}</span>
+              </span>
+              <span className="text-xs text-text-secondary">
+                File access{' '}
+                <span className="tabular-nums text-text-primary">{pct(cbm.fileAccessDeltaPct)}</span>
+              </span>
+              <span className="text-xs text-text-muted">vs comparable non-CBM tasks</span>
+            </div>
+          )}
+        </div>
+
+        {/* Per-tool counts last: useful once adoption is non-zero, meaningless before. */}
+        {cbm.topTools.length > 0 && (
+          <div className="space-y-1 pt-3 border-t border-border-default">
+            <span className="text-xs text-text-secondary">Tools used</span>
+            {cbm.topTools.map((t) => (
+              <div key={t.tool} className="flex items-center justify-between gap-2">
+                <span className="text-xs text-text-primary truncate">{t.tool}</span>
+                <span className="text-xs text-text-muted tabular-nums">{t.avgCalls.toFixed(1)} / task</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function MetricStat({
   label,
   metric,
