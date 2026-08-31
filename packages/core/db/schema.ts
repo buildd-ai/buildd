@@ -1668,6 +1668,12 @@ export const knowledgeEdges = pgTable('knowledge_edges', {
 // full jobs (backfill / escalated large diffs) run on the runner fleet.
 // Idempotent enqueue via the partial unique index on (workspace_id, sha, scope)
 // — failed jobs (status = 'error') don't block a retry insert.
+//
+// Durability: every started job holds a lease (lease_owner / lease_expires_at,
+// heartbeat_at). A row still 'running' past its lease has a dead executor and is
+// reclaimed — requeued, or parked in 'error' after `attempts` hits the ceiling so
+// the idempotency index stops blocking redelivery. See
+// apps/web/src/lib/knowledge-ingest-lease.ts.
 export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
@@ -1684,11 +1690,28 @@ export const knowledgeIngestJobs = pgTable('knowledge_ingest_jobs', {
   /** Run stats: filesIngested / filesSkipped / filesDeleted / chunksUpserted / escalated… */
   stats: jsonb('stats').$type<Record<string, unknown>>(),
   error: text('error'),
+  /**
+   * Lease holder while status='running': the claiming runner's account/runner id,
+   * or 'serverless' for the webhook's inline diff executor. NULL on legacy rows
+   * (pre-lease) — those stay governed by `started_at`, never treated as leased.
+   */
+  leaseOwner: text('lease_owner'),
+  /**
+   * Lease TTL. A row still 'running' past this has a dead executor and is
+   * reclaimable (see knowledge-ingest-lease.ts). Extended by /files batches.
+   */
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+  /** Last proof of forward progress: set on claim, on every batch, and on requeue. */
+  heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+  /** Reclaim attempts consumed. At MAX_INGEST_ATTEMPTS the job is parked in 'error'. */
+  attempts: integer('attempts').default(0).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }),
   finishedAt: timestamp('finished_at', { withTimezone: true }),
 }, (t) => ({
   workspaceStatusIdx: index('knowledge_ingest_jobs_ws_status_idx').on(t.workspaceId, t.status),
+  // Reclaim scan: find rows with a lapsed lease without scanning the whole table.
+  leaseExpiresAtIdx: index('knowledge_ingest_jobs_lease_expires_at_idx').on(t.leaseExpiresAt),
   // Idempotent enqueue: one non-errored job per (workspace, sha, scope).
   idempotencyIdx: uniqueIndex('knowledge_ingest_jobs_ws_sha_scope_idx')
     .on(t.workspaceId, t.sha, t.scope)

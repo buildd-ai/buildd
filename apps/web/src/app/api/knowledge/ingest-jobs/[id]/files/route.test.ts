@@ -13,6 +13,7 @@ mock.module('@/lib/knowledge-ingest-access', () => ({
 
 type Row = Record<string, any>;
 let jobRow: Row | null = null;
+let updateCalls: Array<{ set: Row }> = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -21,6 +22,17 @@ mock.module('@buildd/core/db', () => ({
         findFirst: mock(async () => jobRow),
       },
     },
+    update: () => ({
+      set: (set: Row) => ({
+        where: () => ({
+          returning: () => {
+            updateCalls.push({ set });
+            return Promise.resolve([{ id: 'job-1' }]);
+          },
+        }),
+      }),
+    }),
+    execute: async () => ({ rows: [] }),
   },
 }));
 
@@ -73,6 +85,26 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     jobRow = { ...runningJob };
     deleteBySourceCalls = [];
     upsertCalls = [];
+    updateCalls = [];
+  });
+
+  it('C12: renews the lease on every accepted batch (heartbeat)', async () => {
+    // Without this, a full ingest that legitimately outruns the lease TTL gets
+    // reclaimed mid-flight and runs twice.
+    const res = await POST(createRequest({ files: [{ path: 'src/a.ts', content: 'x' }] }), params());
+    expect(res.status).toBe(200);
+    const renewal = updateCalls.find(c => c.set.leaseExpiresAt);
+    expect(renewal).toBeDefined();
+    expect(renewal!.set.leaseExpiresAt).toBeInstanceOf(Date);
+    expect(renewal!.set.leaseExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(renewal!.set.heartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it('does not renew the lease for a batch it rejects', async () => {
+    jobRow = { ...runningJob, status: 'done' };
+    const res = await POST(createRequest({ files: [{ path: 'src/a.ts', content: 'x' }] }), params());
+    expect(res.status).toBe(409);
+    expect(updateCalls.length).toBe(0);
   });
 
   it('returns 401 without a valid API key', async () => {

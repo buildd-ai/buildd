@@ -143,6 +143,29 @@ Merged PRs on bound repos enqueue jobs into `knowledge_ingest_jobs`
   refresh (`sweep`), so deleted/renamed files drop out of retrieval. Disable
   per runner with `KNOWLEDGE_INGEST_JOBS=0`.
 
+#### Job durability (leases + reclaim)
+
+Every started job holds a **lease**: `lease_owner`, `lease_expires_at`,
+`heartbeat_at`, plus an `attempts` counter
+(`apps/web/src/lib/knowledge-ingest-lease.ts`). A runner claim leases for
+`FULL_LEASE_MS` and renews on every `…/{id}/files` batch; the serverless diff
+executor leases for `DIFF_LEASE_MS`. Terminal transitions release the lease.
+
+A row still `running` past its lease had its executor die. Reclaim requeues it
+(`attempts + 1`) and, past `MAX_INGEST_ATTEMPTS`, parks it in `error` — which the
+idempotency predicate (`status != 'error'`) excludes, so a redelivery can enqueue
+a fresh job. A lost `diff` job additionally escalates to a `full` job, which
+recovers the file contents at that sha (the PR's own `pr`-corpus diff chunks are
+not recoverable). Legacy rows with a NULL lease stay governed by `started_at`.
+
+Reclaim runs inline on live paths — the runner claim poll, the manual enqueue
+route, and the merged-PR webhook — deliberately **not** from a cron, since a
+trigger that silently never fires is the failure mode this replaces.
+
+`POST /api/knowledge/ingest-jobs` therefore answers **409 + `reason: 'stalled'`**
+(not a 200 `already_queued`) when a job holds the per-workspace slot and nothing
+is moving it.
+
 **Caveat:** the completion sweep removes *all* file-derived chunks in
 `{ws}:code` / `{ws}:docs` older than the run — including manual
 `ingest-knowledge.ts` ingests from other source trees into the same namespaces.
