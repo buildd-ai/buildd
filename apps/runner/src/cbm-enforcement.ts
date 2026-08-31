@@ -51,6 +51,8 @@ export interface CbmContext {
   workerId: string;
   /** Absolute path of the worker's git worktree (undefined when no repo checkout). */
   worktreePath: string | undefined;
+  /** Absolute path of the base clone the worktree belongs to — the path a shared seed is indexed at. */
+  repoPath?: string;
   isCodexTask: boolean;
   /** True when the role's DB record has mcpServers['codebase-memory'] === false. */
   cbmRoleDisabled: boolean;
@@ -64,6 +66,40 @@ export interface CbmActivation {
   cbmCacheDir?: string;
   /** Per-worker daemon runtime dir; see cbmRuntimeDirFor. */
   cbmRuntimeDir?: string;
+  /** True when cbmCacheDir is the host-wide seeded cache rather than a per-worker one. */
+  sharedCache?: boolean;
+  /** True when the graph is already warm, so the per-task index would be wasted work. */
+  skipBootstrapIndex?: boolean;
+  /** CBM project key the seed is indexed under (shared mode only). */
+  cbmProject?: string;
+}
+
+/**
+ * Host-wide seeded cache dir. Deliberately NOT under ~/.buildd: that is the
+ * runner's git clone, and install.sh runs `git reset --hard` in it.
+ */
+export function sharedCbmCacheDir(): string {
+  const { homedir } = require('os') as typeof import('os');
+  return process.env.BUILDD_CBM_SHARED_CACHE || join(homedir(), '.buildd-cbm-cache');
+}
+
+/**
+ * CBM's project key for a repo path.
+ *
+ * CBM keys a project by the absolute path it was indexed at, slugified — verified
+ * against 0.10.8: /Users/max/buildd -> "Users-max-buildd", /home/coder/base ->
+ * "home-coder-base", and the db lands at <cache>/<key>.db. This is what makes a
+ * seed non-portable: point the same cache at a different path and CBM indexes a
+ * second project at full cost. If this derivation is ever wrong the seed lookup
+ * simply misses and the caller falls back to a per-worker index — a safe failure.
+ */
+export function cbmProjectNameFor(repoPath: string): string {
+  return repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/[^A-Za-z0-9]+/g, '-');
+}
+
+/** Per-worker daemon runtime dir for shared mode — must live outside the shared cache. */
+function sharedModeRuntimeDir(workerId: string): string {
+  return `/tmp/cbm-rt-${workerId}`;
 }
 
 /**
@@ -97,12 +133,12 @@ export function cbmRuntimeDirFor(cbmCacheDir: string): string {
  * that is what we create — but the invariant worth guarding is existence, which is
  * why the bootstrap restores this dir after it discards a failed cache.
  */
-export function ensureCbmRuntimeDir(cbmCacheDir: string): string {
+export function ensureCbmRuntimeDir(cbmCacheDir: string, explicitDir?: string): string {
   // Required lazily: 26 runner test files replace 'fs' with a partial mock.module
   // stub, and a static named import of a function they omit fails the whole file
   // at parse time ("Export named 'chmodSync' not found in module 'node:fs'").
   const { chmodSync, mkdirSync } = require('fs') as typeof import('fs');
-  const dir = cbmRuntimeDirFor(cbmCacheDir);
+  const dir = explicitDir ?? cbmRuntimeDirFor(cbmCacheDir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // recursive:true ignores `mode` for a directory that already exists.
   chmodSync(dir, 0o700);
@@ -124,10 +160,23 @@ export function ensureCbmRuntimeDir(cbmCacheDir: string): string {
  * docs edits have no structural question) and stays non-blocking (Read/Grep remain
  * available, and the graph is explicitly an accelerator, never a gate).
  */
-export function buildCbmSystemPromptBlock(): string {
+export function buildCbmSystemPromptBlock(opts: { project?: string; sharedBaseIndex?: boolean } = {}): string {
+  // Shared mode indexes the base clone, not this worktree, so the graph maps the
+  // repo as of the seed and get_code_snippet serves that copy (verified against
+  // 0.10.8: an edit made in the worktree does not appear in the snippet).
+  // Structure is accurate; file contents on this branch are not — say so rather
+  // than let the agent trust a snippet of a file it just edited.
+  const opening = opts.sharedBaseIndex
+    ? [
+        'This repo is already indexed in the `codebase-memory` MCP server as project `'
+          + (opts.project ?? 'unknown') + '` — the graph is warm before your first turn, with no indexing to wait for.',
+        'It maps the base checkout, not your branch: trust it for structure, and Read the file for current content'
+          + ' — especially anything you have edited this session.',
+      ]
+    : ['This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.'];
   return [
     '## Codebase graph (codebase-memory)',
-    'This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.',
+    ...opening,
     '',
     'When a task touches existing code you have not read yet, make a graph call your FIRST navigation step,',
     'before any Read/Grep/Glob sweep. One call is usually enough to know where to look:',
@@ -158,6 +207,26 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
   });
   const enforced = !ctx.isCodexTask && !!ctx.worktreePath && !ctx.cbmRoleDisabled && pathExists(CBM_BINARY_PATH);
   if (!enforced) return { enforced: false };
+
+  // Prefer a seed already built for this repo: the graph is warm, so the per-task
+  // index (~20s cold, ~11s warm) is pure waste. Requires a db for THIS repo path —
+  // a seed for another repo is worthless, since the project key is the path.
+  if (ctx.repoPath) {
+    const shared = sharedCbmCacheDir();
+    const project = cbmProjectNameFor(ctx.repoPath);
+    if (pathExists(shared) && pathExists(join(shared, `${project}.db`))) {
+      return {
+        enforced: true,
+        cbmBinaryPath: CBM_BINARY_PATH,
+        cbmCacheDir: shared,
+        cbmRuntimeDir: sharedModeRuntimeDir(ctx.workerId),
+        sharedCache: true,
+        skipBootstrapIndex: true,
+        cbmProject: project,
+      };
+    }
+  }
+
   const cbmCacheDir = `/tmp/cbm-${ctx.workerId}`;
   return {
     enforced: true,
@@ -168,17 +237,73 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
 }
 
 /**
+ * Kick off a shared-cache refresh for a repo, out of band.
+ *
+ * Deliberately fire-and-forget and detached: seeding costs ~20s, so doing it on the
+ * worker's critical path would reintroduce exactly the rampup this replaces. The
+ * current worker uses whatever seed exists today (or falls back to a per-worker
+ * index); the next one gets the fresh graph. The script itself is idempotent — it
+ * stamps the indexed HEAD and exits immediately when it has not moved — and
+ * concurrent seeds are safe (verified at 0.10.8: two simultaneous
+ * index_repository writers into one cache dir both succeed with integrity intact).
+ *
+ * Deduped per repo per process so a burst of claims does not spawn a burst of
+ * indexers; the HEAD stamp covers the cross-process case.
+ */
+const seedRefreshRequested = new Set<string>();
+
+export function spawnCbmSeedRefresh(
+  repoPath: string,
+  deps: {
+    spawnProcess?: typeof import('child_process').spawn;
+    pathExists?: (p: string) => boolean;
+    scriptPath?: string;
+    runtime?: string;
+  } = {},
+): boolean {
+  const pathExists = deps.pathExists ?? ((p: string) => {
+    const { existsSync } = require('fs') as typeof import('fs');
+    return existsSync(p);
+  });
+  if (!repoPath || !pathExists(CBM_BINARY_PATH)) return false;
+  if (seedRefreshRequested.has(repoPath)) return false;
+
+  const script = deps.scriptPath ?? join(import.meta.dir, '..', 'scripts', 'cbm-seed.ts');
+  if (!pathExists(script)) return false;
+
+  seedRefreshRequested.add(repoPath);
+  try {
+    const spawn = deps.spawnProcess ?? (require('child_process') as typeof import('child_process')).spawn;
+    const child = spawn(deps.runtime ?? process.execPath, [script, repoPath], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref?.();
+    return true;
+  } catch {
+    // A failed refresh must never affect the worker — it just means no seed yet.
+    seedRefreshRequested.delete(repoPath);
+    return false;
+  }
+}
+
+/** Test seam: forget which repos have already been asked to refresh. */
+export function resetCbmSeedRefreshState(): void {
+  seedRefreshRequested.clear();
+}
+
+/**
  * Build the SDK mcpServers entry for the codebase-memory server.
  * Returns a stdio entry with all required env vars resolved to concrete values.
  */
-export function buildCbmMcpEntry(sessionCwd: string, cbmCacheDir: string) {
+export function buildCbmMcpEntry(sessionCwd: string, cbmCacheDir: string, cbmRuntimeDir?: string) {
   return {
     type: 'stdio' as const,
     command: CBM_BINARY_PATH,
     args: ['mcp'],
     env: {
       CBM_CACHE_DIR: cbmCacheDir,
-      CBM_RUNTIME_DIR: cbmRuntimeDirFor(cbmCacheDir),
+      CBM_RUNTIME_DIR: cbmRuntimeDir ?? cbmRuntimeDirFor(cbmCacheDir),
       CBM_ALLOWED_ROOT: sessionCwd,
       CBM_AUTO_WATCH: 'false',
       // Soft memory hint (not a hard RSS cap). Measured buildd RSS: 650-800 MB at 512; raised to 1024.

@@ -73,7 +73,7 @@ import {
   isMountAllowlistEnabled,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -1609,6 +1609,9 @@ export class WorkerManager {
     // Per-worker CBM cache dir (/tmp/cbm-<id>) — created when codebase-memory MCP is
     // wired for this task; deleted in finally (ephemeral per §4.2 of the CBM design doc).
     let cbmCacheDir: string | undefined;
+    let cbmRuntimeDir: string | undefined;
+    // Shared cache is host-wide and seeded — it must survive this worker's cleanup.
+    let cbmSharedCache = false;
     // Capture CLI stderr durably. Every chunk is filed into the per-worker session
     // log the instant it arrives (previously stderr only reached console.log, i.e.
     // the runner's screen buffer, and died with it — 0 of 201 per-worker log files
@@ -2328,6 +2331,9 @@ export class WorkerManager {
       const cbmActivation = buildCbmActivation({
         workerId: worker.id,
         worktreePath: worker.worktreePath,
+        // The base clone, not the worktree: a shared seed is indexed at this path,
+        // and CBM keys a project by the path it was indexed at.
+        repoPath,
         isCodexTask,
         cbmRoleDisabled: !!(worker as any).cbmDisabled,
       });
@@ -2337,10 +2343,24 @@ export class WorkerManager {
       if (cbmEnforced) {
         cbmBinaryPath = cbmActivation.cbmBinaryPath;
         cbmCacheDir = cbmActivation.cbmCacheDir;
+        cbmRuntimeDir = cbmActivation.cbmRuntimeDir;
+        cbmSharedCache = !!cbmActivation.sharedCache;
         mkdirSync(cbmCacheDir!, { recursive: true });
         // Daemon coordination dir — CBM will not start without it.
-        ensureCbmRuntimeDir(cbmCacheDir!);
-        console.log(`[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`);
+        ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
+        console.log(
+          `[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`
+          + (cbmSharedCache ? ` (shared, pre-seeded project ${cbmActivation.cbmProject})` : ''),
+        );
+
+        // A seeded shared cache is already warm for this repo, so the per-task index
+        // is pure waste: measured ~20s cold and ~11s for a warm re-index of the same
+        // path, against 0s for querying a seed. Skipped rather than shortened.
+        if (cbmActivation.skipBootstrapIndex) {
+          console.log(`[Worker ${worker.id}] CBM: skipping index — shared cache already holds ${cbmActivation.cbmProject}`);
+          this.addMilestone(worker, { type: 'status', label: 'graph_index_skipped reason=shared_cache_warm', ts: Date.now() });
+          worker.cbmBootstrapResult = 'ok';
+        } else {
 
         // Pre-index the worktree so the graph is warm on turn one.
         // CBM_INDEX_TIMEOUT_MS hard timeout; bootstrap failure is non-fatal — CBM
@@ -2365,10 +2385,17 @@ export class WorkerManager {
           worker.cbmBootstrapResult = 'failed';
           worker.cbmBootstrapFailReason = reason;
         }
+        }
+
         // Re-assert before the bwrap argv is built below: an absent path is
         // dropped from the mount list, which would hide the problem inside the
         // sandbox rather than fail loudly.
-        ensureCbmRuntimeDir(cbmCacheDir!);
+        ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
+
+        // Keep the shared seed current, off the critical path. This worker already
+        // has its graph (shared or per-worker); the refresh is for the next one, and
+        // it exits immediately when HEAD has not moved.
+        if (repoPath) spawnCbmSeedRefresh(repoPath);
       }
 
       // CBM observability: provisional activation outcome + per-task counters.
@@ -2393,7 +2420,10 @@ export class WorkerManager {
       // questions kept being answered the expensive way. Appended only when
       // enforced, so the instruction can never describe a server that is absent.
       if (cbmEnforced) {
-        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock();
+        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
+          project: cbmActivation.cbmProject,
+          sharedBaseIndex: cbmActivation.sharedCache,
+        });
       }
 
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
@@ -2415,6 +2445,7 @@ export class WorkerManager {
             extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
             cbmBinaryPath,
             cbmCacheDir,
+            cbmRuntimeDir,
           })
         : undefined;
 
@@ -2591,7 +2622,7 @@ export class WorkerManager {
       // Enforce CBM as default MCP for repo-backed tasks.
       // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
       if (cbmEnforced && !queryOptions.mcpServers['codebase-memory']) {
-        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!);
+        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
       }
 
@@ -3414,13 +3445,17 @@ If something is missing or incomplete, describe what and fix it now.`;
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
         }
 
-        // Clean up per-worker CBM cache dir (ephemeral per design doc §4.2).
-        if (cbmCacheDir) {
+        // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
+        // NEVER the shared seeded cache: it is host-wide, costs ~20s to rebuild, and
+        // every other worker on this host is reading it right now. In shared mode the
+        // only per-worker state is the runtime dir, which lives outside the cache.
+        const cbmDirToRemove = cbmSharedCache ? cbmRuntimeDir : cbmCacheDir;
+        if (cbmDirToRemove) {
           try {
-            rmSync(cbmCacheDir, { recursive: true, force: true });
-            console.log(`[Worker ${worker.id}] Cleaned up CBM cache dir: ${cbmCacheDir}`);
+            rmSync(cbmDirToRemove, { recursive: true, force: true });
+            console.log(`[Worker ${worker.id}] Cleaned up CBM ${cbmSharedCache ? 'runtime' : 'cache'} dir: ${cbmDirToRemove}`);
           } catch (err) {
-            console.warn(`[Worker ${worker.id}] Failed to clean up CBM cache dir ${cbmCacheDir}:`, err instanceof Error ? err.message : err);
+            console.warn(`[Worker ${worker.id}] Failed to clean up CBM dir ${cbmDirToRemove}:`, err instanceof Error ? err.message : err);
           }
         }
 

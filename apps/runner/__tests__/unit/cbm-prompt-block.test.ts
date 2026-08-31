@@ -11,6 +11,7 @@ import { describe, test, expect } from 'bun:test';
 import { buildCbmSystemPromptBlock } from '../../src/cbm-enforcement';
 
 const block = buildCbmSystemPromptBlock();
+const shared = buildCbmSystemPromptBlock({ project: 'home-coder-project-buildd', sharedBaseIndex: true });
 
 describe('buildCbmSystemPromptBlock', () => {
   test('tells the agent to open with a graph call before file navigation', () => {
@@ -46,5 +47,28 @@ describe('buildCbmSystemPromptBlock', () => {
   test('is a single appendable block with a heading and no leading blank line dependency', () => {
     expect(block.startsWith('\n')).toBe(false);
     expect(block).toContain('## Codebase graph');
+  });
+});
+
+describe('buildCbmSystemPromptBlock — shared base index', () => {
+  test('names the pre-seeded project so the agent can query it directly', () => {
+    expect(shared).toContain('home-coder-project-buildd');
+  });
+
+  test('warns that content is the base checkout, not this branch', () => {
+    // get_code_snippet serves the indexed copy — verified against 0.10.8, an edit
+    // made in the worktree does not appear. An agent trusting a snippet of a file
+    // it just edited would be working from stale code.
+    expect(shared).toMatch(/base checkout/i);
+    expect(shared).toMatch(/Read the file for current content/i);
+  });
+
+  test('does not claim the worktree itself is indexed', () => {
+    expect(shared).not.toContain('This worktree is already indexed');
+  });
+
+  test('per-worker mode keeps its original wording', () => {
+    expect(block).toContain('This worktree is already indexed');
+    expect(block).not.toMatch(/base checkout/i);
   });
 });

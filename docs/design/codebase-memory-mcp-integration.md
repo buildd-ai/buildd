@@ -202,6 +202,10 @@ This is a correctness constraint, not just a performance constraint. Sharing a c
 
 ### 4.2 v1 decision: fresh per-task cache root, no shared cache volume
 
+> **Superseded by §4.5 (2026-08-31).** Kept for the reasoning. The index-time premise
+> below ("2–10 seconds") no longer holds at 0.10.x, and §4.1's barrier turned out to
+> forbid *disagreeing* cache dirs rather than shared ones.
+
 **Decision:** Each worker gets its own `CBM_CACHE_DIR=/tmp/cbm-${WORKER_ID}`. No shared cache volume between workers.
 
 **Rationale:**
@@ -223,6 +227,60 @@ This is a correctness constraint, not just a performance constraint. Sharing a c
 The version-drift failure mode: worker A (v0.9.0) writes a graph to the shared cache. Worker B (v0.9.1) starts, sees a cache root with a different ABI, and either (a) fails its admission check or (b) silently reads corrupt graph data. Option (b) is undetectable without explicit version tagging in the cache header.
 
 Until a shared-cache design is fully specified and the cache format is understood to be version-stable, shared cache MUST NOT be enabled.
+
+### 4.5 Update — shared seeded cache supersedes §4.2 (measured 2026-08-31)
+
+§4.2 chose a fresh per-task cache root and §4.3 forbade sharing one. Both were
+written when an index cost 2–10 s. At 0.10.8 on this repo a cold index costs **~20 s**
+and a warm re-index of the same path **~11 s**, on every task — so the per-task cache
+stopped being a cheap safety property and became the dominant startup cost.
+
+**Decision:** seed one cache per repo, at the **base clone path**, and share that dir
+across workers. Per-task indexing is skipped entirely, not shortened.
+
+**Why seeding a per-worker cache does not work.** CBM keys a project by the absolute
+path it was indexed at — `/Users/max/buildd` → project `Users-max-buildd`, db at
+`<cache>/<project>.db`. Copying a cache preserves warmth *only* for that same path
+(measured: copied cache + same path = 11 s, same as warm; copied cache + a different
+path = ~21 s, i.e. full cold cost, and it silently indexes a **second** project).
+Workers run in per-branch worktrees, so every worktree path is a cache miss by
+construction. The base clone is the one path they all share.
+
+**What the §4.1 admission barrier actually forbids.** Not sharing — *disagreeing*.
+0.10.x refuses to start when an active daemon holds a **different** `CBM_CACHE_DIR`,
+so uniform cache dirs are the safe configuration and the per-worker dirs of §4.2 were
+the hazard (see §4.4). Each worker still gets its own `CBM_RUNTIME_DIR`, now at
+`/tmp/cbm-rt-<workerId>` — outside the shared dir, so it needs its own bwrap mount.
+
+Measured on the release binary, in the worker image:
+
+| scenario | cost |
+|---|---|
+| cold index, no cache | ~20 s |
+| warm re-index, same path | ~11 s |
+| copied cache, different path | ~21 s (new project) |
+| **query against a seed** | **0 s** |
+| 3 concurrent workers on one seed | all served, 0 conflicts |
+| 2 concurrent `index_repository` writers, one cache | both exit 0, integrity intact |
+
+**The trade-off, stated plainly.** The graph maps the base checkout, not the worker's
+branch. Structure is accurate for anything inherited from the base; `get_code_snippet`
+serves the **indexed** copy, verified — an edit made in the worktree does not appear.
+So the graph is a map, not a mirror, and the prompt says so: trust it for structure,
+Read the file for current content. A brand-new symbol on the worker's branch is absent
+from the graph until the next seed, which is the accepted cost of a 0 s start.
+
+**Operational rules this creates:**
+- Worker cleanup MUST NOT delete the shared cache (it deletes only its runtime dir).
+  The per-task `rm -rf` of §4.2 is now conditional on being in per-worker mode.
+- Refresh is out of band: `bun run cbm:seed <repoPath>`, spawned detached after a
+  claim, stamping the indexed HEAD and exiting immediately when it has not moved.
+  Never on the critical path — a 20 s blocking seed would reintroduce what it removes.
+- Fallback is automatic: no seed for this repo path → the old per-worker index runs.
+  A wrong project-name derivation therefore degrades to the previous behaviour rather
+  than breaking CBM.
+
+---
 
 ### 4.4 Update — what changed at v0.10.x (measured 2026-08-30)
 

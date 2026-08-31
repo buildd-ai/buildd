@@ -127,3 +127,34 @@ describe('mount allowlist rollout gates', () => {
     expect(isMountAllowlistEnabled()).toBe(false);
   });
 });
+
+describe('CBM shared-cache mounts', () => {
+  test('binds a runtime dir that lives outside the cache dir', () => {
+    // Shared mode: cache is host-wide, runtime dir is per-worker at /tmp/cbm-rt-<id>.
+    // Without its own mount the daemon cannot bind its socket and CBM refuses to start.
+    const argv = buildWorkerBwrapArgv({
+      worktreePath: '/repo/.buildd-worktrees/b',
+      repoPath: '/repo',
+      isCodexTask: false,
+      cbmCacheDir: '/home/coder/.buildd-cbm-cache',
+      cbmRuntimeDir: '/tmp/cbm-rt-w1',
+      pathExists: () => true,
+    });
+    const pairs = argv.join(' ');
+    expect(pairs).toContain('--bind /home/coder/.buildd-cbm-cache /home/coder/.buildd-cbm-cache');
+    expect(pairs).toContain('--bind /tmp/cbm-rt-w1 /tmp/cbm-rt-w1');
+  });
+
+  test('omits the runtime mount when it is nested in the cache dir', () => {
+    const argv = buildWorkerBwrapArgv({
+      worktreePath: '/repo/.buildd-worktrees/b',
+      repoPath: '/repo',
+      isCodexTask: false,
+      cbmCacheDir: '/tmp/cbm-w1',
+      pathExists: () => true,
+    });
+    expect(argv.filter(a => a === '/tmp/cbm-w1').length).toBeGreaterThan(0);
+    expect(argv.join(' ')).not.toContain('cbm-rt-');
+  });
+});
+
