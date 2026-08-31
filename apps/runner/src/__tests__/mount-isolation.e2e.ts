@@ -60,10 +60,22 @@ function probeBwrap(): boolean {
         '--ro-bind', '/usr', '/usr',
         '--', '/usr/bin/env', 'echo', 'ok',
       ],
-      { timeout: 5000 },
+      { timeout: 5000, encoding: 'utf8' },
     );
+    if (r.status !== 0) {
+      // Print WHY, not just that it failed. Relaxing
+      // kernel.apparmor_restrict_unprivileged_userns was necessary but NOT
+      // sufficient on GitHub's runners — the probe still declined there with the
+      // knob at 0 — and without the underlying error the next person has nothing
+      // to work from but guesses.
+      console.log(
+        `bwrap probe declined (status=${r.status}, signal=${r.signal ?? 'none'}): ` +
+        `${(r.stderr || '').trim() || '<no stderr>'}${r.error ? ` err=${r.error.message}` : ''}`,
+      );
+    }
     return r.status === 0;
-  } catch {
+  } catch (err) {
+    console.log(`bwrap probe threw: ${(err as Error).message}`);
     return false;
   }
 }
