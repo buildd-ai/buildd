@@ -228,6 +228,8 @@ export function claimedSymbols(body: string): string[] {
 
 /** Tracked file types worth searching for a code symbol. */
 const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|sh|sql|ya?ml)$|Dockerfile$/i;
+/** Tests are not a code surface a spec may cite — see resolveSymbols. */
+const TEST_FILE = /(^|\/)__tests__\/|\.(test|spec|e2e)\.(ts|tsx|js|jsx)$/;
 
 /**
  * Resolve every claimed symbol against the tracked source tree in one pass.
@@ -240,6 +242,12 @@ const SOURCE_EXT = /\.(ts|tsx|js|jsx|mjs|cjs|json|sh|sql|ya?ml)$|Dockerfile$/i;
  * `docs/` is excluded on purpose. A symbol mentioned only in another spec, or in
  * a design doc proposing a name that never shipped, must NOT count as existing —
  * that is precisely the drift this check exists to catch.
+ *
+ * Test files are excluded for the same reason, plus one of its own: a spec
+ * describes shipped behaviour, so a symbol that exists ONLY in a test is not a
+ * live code surface. Without this, the corpus also swallows its own tail — this
+ * checker's tests must name deliberately-fake symbols to prove the check can
+ * fail, and those literals would otherwise satisfy the very search they test.
  */
 export function resolveSymbols(symbols: string[]): Set<string> {
   if (symbols.length === 0) return new Set();
@@ -253,7 +261,7 @@ export function resolveSymbols(symbols: string[]): Set<string> {
   });
   const files = (ls.stdout ?? '')
     .split('\0')
-    .filter((f) => f && !f.startsWith('docs/') && SOURCE_EXT.test(f));
+    .filter((f) => f && !f.startsWith('docs/') && SOURCE_EXT.test(f) && !TEST_FILE.test(f));
 
   for (const file of files) {
     let text: string;
@@ -515,18 +523,29 @@ if (import.meta.main) {
 const specs = loadSpecs();
 const crossErrors = crossChecks(specs);
 
-// Symbol liveness: one batched git grep for every claim in the corpus. Skipped
-// for superseded specs — they are history, and their symbols are meant to be gone.
+// Symbol liveness: one batched git grep for every claim in the corpus.
+//
+// Status decides the severity, because status decides what a symbol name MEANS:
+//   * superseded — skipped entirely. These are history; their symbols are
+//     supposed to be gone.
+//   * draft — warning. A draft describes a design that is not built yet, so
+//     naming a symbol that does not exist is the normal, correct state (see
+//     mission-structure-view.md, which specifies a contention-edge prop for an
+//     unshipped feature). Erroring here would punish specs for being drafts and
+//     pressure authors to either de-backtick honest design or promote the spec
+//     to active before the code lands.
+//   * active — error. An active spec claims to describe what IS, so a symbol
+//     that resolves nowhere is a stale claim.
 {
   const live = specs.filter((s) => s.fm.status !== 'superseded');
   const claims = new Map<SpecFile, string[]>(live.map((s) => [s, claimedSymbols(s.body)]));
   const dead = resolveSymbols([...new Set([...claims.values()].flat())]);
   for (const [spec, syms] of claims) {
     for (const sym of syms) {
-      if (dead.has(sym))
-        spec.errors.push(
-          `names \`${sym}\`, which exists nowhere in the tracked source tree — the claim is stale`,
-        );
+      if (!dead.has(sym)) continue;
+      const msg = `names \`${sym}\`, which exists nowhere in the tracked source tree`;
+      if (spec.fm.status === 'draft') spec.warnings.push(`${msg} — expected for a draft, but it cannot be verified`);
+      else spec.errors.push(`${msg} — the claim is stale`);
     }
   }
 }

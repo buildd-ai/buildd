@@ -423,7 +423,7 @@ asserted as an invariant above.
    starts" half), CBM-12, CBM-14's mkdir-before-argv obligation, CBM-15, and the
    `disallowedTools` append are all implemented inline in `workers.ts` and covered
    only by unit tests of the helpers they call.
-   `cbm-observability.test.ts` re-implements `buildCbmMetrics` and `handleToolCall`
+   `cbm-observability.test.ts` re-implements buildCbmMetrics and handleToolCall
    as local copies rather than importing them, so CBM-2, CBM-16, CBM-17 and CBM-18
    are asserted against a **transcription** of `workers.ts`, not against
    `workers.ts`. A change to the real classifier would not fail that file.

@@ -106,6 +106,23 @@ and documents intentional omissions.
    checkable claim, and six such symbols in four active specs turned out to name
    nothing at all. If the behaviour exists but no constant does, describe the
    real shape and cite `path:line` — do not invent a tidy name.
+
+   Severity depends on `status`, because status decides what a symbol name
+   means: on an `active` spec an unresolvable symbol is an **error** (the spec
+   claims to describe what is), on a `draft` it is a **warning** (a draft
+   describes what is not built yet, so naming a symbol that does not exist is
+   the correct state), and `superseded` specs are skipped entirely.
+
+   Three kinds of mention are legitimately unresolvable even in an active spec:
+   asserting a symbol is **absent** ("the options object has no approvalMode"),
+   naming something **historical** ("computeStaggerOffset used to stagger by
+   0-299s"), and describing a symbol that exists **only in a test**. In all
+   three, write the name as plain text rather than in backticks — backticks are
+   the linter's signal for "this is a live code surface, go check it". Test
+   files are excluded from the search on purpose: a spec describes shipped
+   behaviour, so a name that lives only in a test is not a code surface, and
+   without the exclusion the corpus swallows its own tail (the linter's own
+   tests must name deliberately-fake symbols to prove the check can fail).
 8. **No guard, no `active`.** An `active` spec must name the tests that assert
    its invariants in `verified_by`. A contract nobody can fail is a wish, so a
    new spec with no guard ships as `status: draft` — which is the honest state —

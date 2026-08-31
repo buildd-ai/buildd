@@ -33,13 +33,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Knowledge Ingest Pipeline](./knowledge-ingest-pipeline.md) · @max — verified 2026-08-30
   Every file-derived chunk MUST arrive via a knowledge_ingest_jobs row that is atomically claimed by one executor, batched under the serverless body cap, and closed by an atomic completion.
-- [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-07-18
+- [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-08-31
   The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
 
 ### mcp (2)
 
-- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-07-18
-  The MCP server at /api/mcp MUST expose exactly the buildd and buildd_memory tools over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate each action by the token's privilege level.
+- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-08-31
+  The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-08-30
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
@@ -92,8 +92,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (1)
+## Draft (2)
 
+- [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
+  The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-08-29
   Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 
