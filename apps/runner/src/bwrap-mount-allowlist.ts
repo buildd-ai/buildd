@@ -27,6 +27,13 @@ export interface WorkerBwrapConfig {
   cbmBinaryPath?: string;
   /** rw-bind the per-worker CBM cache dir (must be pre-created by the caller). */
   cbmCacheDir?: string;
+  /**
+   * rw-bind the CBM daemon runtime dir when it is NOT nested inside cbmCacheDir.
+   * In shared-cache mode the cache is host-wide and the runtime dir is per-worker
+   * at /tmp/cbm-rt-<id>, so it needs its own mount or the daemon cannot bind its
+   * socket and CBM refuses to start.
+   */
+  cbmRuntimeDir?: string;
   pathExists?: (path: string) => boolean;
   warn?: (message: string) => void;
 }
@@ -114,6 +121,7 @@ export function buildWorkerBwrapArgv(config: WorkerBwrapConfig): string[] {
   mounts.push(...parseExtraMounts(config.extraMounts, warn));
   if (config.cbmBinaryPath) mounts.push({ path: resolve(config.cbmBinaryPath), mode: 'ro' });
   if (config.cbmCacheDir) mounts.push({ path: resolve(config.cbmCacheDir), mode: 'rw' });
+  if (config.cbmRuntimeDir) mounts.push({ path: resolve(config.cbmRuntimeDir), mode: 'rw' });
 
   const present = mounts.filter(mount => {
     if (pathExists(mount.path)) return true;
