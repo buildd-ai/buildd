@@ -88,9 +88,14 @@ export function cbmRuntimeDirFor(cbmCacheDir: string): string {
 }
 
 /**
- * Create the runtime dir with mode 0700. CBM checks the permissions of this
- * directory and refuses a looser one with "secure CLI coordination could not be
- * created (endpoint)" — a group-readable 0755 dir is enough to trip it.
+ * Create the runtime dir, not world-writable.
+ *
+ * Measured against 0.10.8, CBM's actual requirements are: the dir must EXIST
+ * (missing → "secure daemon endpoint could not be created"), and it must be owned
+ * by the caller and not world-writable (0777 → "not a usable private-directory
+ * parent"). 0755 is accepted; 0700 is simply the tightest mode that qualifies, so
+ * that is what we create — but the invariant worth guarding is existence, which is
+ * why the bootstrap restores this dir after it discards a failed cache.
  */
 export function ensureCbmRuntimeDir(cbmCacheDir: string): string {
   // Required lazily: 26 runner test files replace 'fs' with a partial mock.module
