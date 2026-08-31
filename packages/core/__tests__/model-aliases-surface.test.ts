@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import * as modelAliases from '../model-aliases';
+import { TIER_DEFAULTS } from '../model-tier-defaults';
 
 const SOURCE = readFileSync(join(import.meta.dir, '../model-aliases.ts'), 'utf8');
 
@@ -31,5 +32,21 @@ describe('model-aliases surface', () => {
     expect(SOURCE).not.toContain('populated by runner');
     expect(SOURCE).not.toContain('Called by the runner');
     expect(SOURCE).not.toContain('refreshed\n * automatically by workers');
+  });
+});
+
+/**
+ * The alias map and the tier defaults are two hand-maintained lists of model IDs
+ * for the same three tiers, so they can drift apart silently: `DEFAULT_ALIASES`
+ * is informational (nothing on a request path reads it back) and until the
+ * runner honours the claim-time model, `TIER_DEFAULTS` was only ever compared
+ * against itself. An operator reading the alias row should not see a different
+ * model than routing actually selects.
+ */
+describe('DEFAULT_ALIASES agree with the tier defaults', () => {
+  it('each alias names the same model as the tier it maps to', () => {
+    expect(modelAliases.DEFAULT_ALIASES.opus).toBe(TIER_DEFAULTS.premium.model);
+    expect(modelAliases.DEFAULT_ALIASES.sonnet).toBe(TIER_DEFAULTS.standard.model);
+    expect(modelAliases.DEFAULT_ALIASES.haiku).toBe(TIER_DEFAULTS.budget.model);
   });
 });
