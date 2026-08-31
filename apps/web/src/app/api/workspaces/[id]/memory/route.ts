@@ -14,6 +14,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { hashApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { workspaceProjectKey } from '@buildd/core/project-scope';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -45,12 +46,18 @@ async function verifyAccess(auth: NonNullable<Awaited<ReturnType<typeof authenti
   return true; // dev mode
 }
 
+/**
+ * Canonical project scope key for this workspace. `workspaces.repo` is itself
+ * inconsistent (mostly full URLs, at least one bare `owner/repo`), so it is
+ * reduced to the same canonical form the memories rows carry — otherwise the
+ * list scoped a URL against short-form rows and returned nothing.
+ */
 async function getWorkspaceProject(id: string): Promise<string | undefined> {
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, id),
     columns: { repo: true, name: true },
   });
-  return ws?.repo || ws?.name || undefined;
+  return workspaceProjectKey(ws?.repo, ws?.name) ?? undefined;
 }
 
 export async function GET(

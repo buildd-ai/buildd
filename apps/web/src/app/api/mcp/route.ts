@@ -49,6 +49,7 @@ import {
 } from "@buildd/core/mcp-tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
+import { normalizeProject, workspaceProjectKey } from "@buildd/core/project-scope";
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -110,6 +111,29 @@ async function resolveTeamId(workspaceId: string | null | undefined, fallbackTea
     if (ws?.teamId) return ws.teamId;
   }
   return fallbackTeamId ?? null;
+}
+
+/**
+ * Canonical `memories.project` key for this connection.
+ *
+ * The `?repo=` param is whatever the client sent — a full URL for most workspaces,
+ * a bare `owner/repo` for at least one. Resolving through the workspace row and
+ * canonicalizing means memories written over MCP land on the same key the
+ * dashboard queries, instead of on whichever spelling the client happened to use.
+ */
+async function resolveProjectKey(
+  workspaceId: string | null | undefined,
+  repoParam?: string,
+): Promise<string | undefined> {
+  if (workspaceId) {
+    const ws = await db.query.workspaces.findFirst({
+      where: eq(workspaces.id, workspaceId),
+      columns: { repo: true, name: true },
+    });
+    const key = workspaceProjectKey(ws?.repo, ws?.name);
+    if (key) return key;
+  }
+  return normalizeProject(repoParam) ?? undefined;
 }
 
 // getMemoryClientForTeam is imported from @/lib/memory-helper (canonical implementation).
@@ -506,7 +530,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
           const memTeamId = await resolveTeamId(wsId, accountTeamId);
           return await handleMemoryAction(memClient, action === 'memory_delete' ? 'delete' : 'consolidate_knowledge', params, {
-            project: repoName,
+            project: await resolveProjectKey(wsId, repoName),
             workerId,
             workspaceId: wsId ?? undefined,
             teamId: memTeamId ?? undefined,
@@ -788,7 +812,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
         const memTeamId = await resolveTeamId(wsId, accountTeamId);
         return await handleMemoryAction(memClient, action, params, {
-          project: repoName,
+          project: await resolveProjectKey(wsId, repoName),
           workerId,
           workspaceId: wsId ?? undefined,
           teamId: memTeamId ?? undefined,
@@ -826,7 +850,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
         const memTeamId = await resolveTeamId(wsId, accountTeamId);
 
         const memCtx = {
-          project: repoName,
+          project: await resolveProjectKey(wsId, repoName),
           workerId,
           workspaceId: wsId ?? undefined,
           teamId: memTeamId ?? undefined,
@@ -1258,7 +1282,7 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           const wsId = await getWorkspaceId();
           const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
           if (memClient) {
-            const data = await memClient.getContext(repoName);
+            const data = await memClient.getContext(await resolveProjectKey(wsId, repoName));
             return {
               contents: [{ uri, mimeType: "text/plain", text: data.markdown || "No memories yet." }],
             };

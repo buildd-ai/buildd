@@ -53,8 +53,29 @@ export async function GET(
       return NextResponse.json({ error: 'Team not found' }, { status: 404 });
     }
 
+    // Explicit column list. This response shape is a contract with unknown
+    // callers, so rather than trimming it to the two fields the dashboard reads
+    // (enabledBackends / enabledInferenceCapabilities) it enumerates every column
+    // EXCEPT the deprecated teams.memoryApiKey. That keeps the payload identical
+    // apart from an always-NULL credential field, and it decouples the route from
+    // schema.ts so dropping that column cannot break this route mid-deploy.
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, id),
+      columns: {
+        id: true,
+        name: true,
+        slug: true,
+        plan: true,
+        createdAt: true,
+        updatedAt: true,
+        monthlyBudgetUsd: true,
+        monthlyCostUsd: true,
+        monthlyCostMonth: true,
+        budgetAlertsSent: true,
+        enabledBackends: true,
+        criteriaEvaluationStrategy: true,
+        enabledInferenceCapabilities: true,
+      },
     });
 
     if (!team) {
