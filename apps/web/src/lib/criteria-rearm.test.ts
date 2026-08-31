@@ -111,6 +111,51 @@ describe('decideCriteriaRearm', () => {
   });
 });
 
+describe('two-tick scenario — dd2166e8 regression', () => {
+  // Mission dd2166e8 burned evaluator sessions in a loop: all tasks done, both
+  // PRs merged, verdict stuck at `overall: fail` with one NOT_EVALUATED prose
+  // criterion. Each lap the LLM rephrased the same failure. The guard must treat
+  // rephrased evidence as unchanged and escalate to the owner on the second tick.
+  it('escalates on the second tick when the verdict shape is identical but evidence was reworded', () => {
+    const tick1State = state('fail', [
+      { fingerprint: 'fp1', verdict: 'fail', evidence: 'No artifact matching (type="content") found' },
+      { fingerprint: 'fp2', verdict: 'NOT_EVALUATED', evidence: 'Could not evaluate this criterion this round' },
+      { fingerprint: 'fp3', verdict: 'fail', evidence: 'PR is still open' },
+    ]);
+    const tick2State = state('fail', [
+      { fingerprint: 'fp1', verdict: 'fail', evidence: 'A content artifact was not present in this mission' },
+      { fingerprint: 'fp2', verdict: 'NOT_EVALUATED', evidence: 'Evaluation skipped: another criterion already failed' },
+      { fingerprint: 'fp3', verdict: 'fail', evidence: 'The pull request has not been merged' },
+    ]);
+
+    const fp1 = criteriaFingerprint(tick1State);
+    const fp2 = criteriaFingerprint(tick2State);
+    // Evidence wording must not affect the fingerprint.
+    expect(fp1).toBe(fp2);
+
+    // Tick 1: no prior fingerprint → re-arm the organizer.
+    const tick1 = decideCriteriaRearm({
+      fingerprint: fp1,
+      previousFingerprint: null,
+      cycles: 0,
+      tasksCreatedSinceRearm: 0,
+      alreadyEscalated: false,
+    });
+    expect(tick1.action).toBe('rearm');
+
+    // Tick 2: same fingerprint, organizer ran but filed no work → escalate.
+    const tick2 = decideCriteriaRearm({
+      fingerprint: fp2,
+      previousFingerprint: fp1,
+      cycles: tick1.nextCycles,
+      tasksCreatedSinceRearm: 0,
+      alreadyEscalated: false,
+    });
+    expect(tick2.action).toBe('escalate');
+    expect(tick2.reason).toMatch(/filed no work/i);
+  });
+});
+
 describe('formatVerdictLines', () => {
   it('names every non-passing criterion with its verdict and evidence', () => {
     const lines = formatVerdictLines(state('fail', [
