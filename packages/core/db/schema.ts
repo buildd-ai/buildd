@@ -729,6 +729,21 @@ export const missions = pgTable('missions', {
   // When false, organizer never auto-evaluates criteria; on-demand still works.
   // null reads as true (default: auto-verify ON when criteria are set).
   autoVerify: boolean('auto_verify'),
+  // Re-arm bookkeeping for the criteria consumer (see lib/criteria-rearm.ts).
+  // A non-pass verdict dispatches ONE organizer cycle carrying the verdict text;
+  // these columns are what stop that from becoming an infinite loop. The
+  // fingerprint is the verdict shape last re-armed on, the counter how many
+  // consecutive cycles it has stayed that shape. Deliberately NOT stored inside
+  // goalCriteriaState: that jsonb is the evaluator's snapshot, and every fresh
+  // verdict overwrites it wholesale, which would erase the consumer's memory of
+  // having already tried.
+  criteriaRearmFingerprint: text('criteria_rearm_fingerprint'),
+  criteriaRearmCycles: integer('criteria_rearm_cycles').default(0).notNull(),
+  criteriaRearmedAt: timestamp('criteria_rearmed_at', { withTimezone: true }),
+  // Set when the loop guard gave up and handed the mission to its owner. Non-null
+  // means "a human owes this mission a decision" — heartbeats stay off until the
+  // verdict shape changes.
+  criteriaEscalatedAt: timestamp('criteria_escalated_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1288,7 +1303,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_criteria_blocked' | 'orchestration_manual' | 'budget_exhausted'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),

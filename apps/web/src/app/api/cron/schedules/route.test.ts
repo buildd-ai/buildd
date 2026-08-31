@@ -144,6 +144,27 @@ mock.module('@/lib/pushover', () => ({
   notify: mockNotify,
 }));
 
+// Heartbeat decision chain. Inert for non-heartbeat schedules (the prepass is
+// only consulted when taskTemplate.context.heartbeat === true), so these mocks
+// do not disturb the rest of the file.
+const mockPrepass = mock(() => Promise.resolve({ action: 'invoke_llm', stateKey: 'sk-1' } as any));
+mock.module('@/lib/heartbeat-prepass', () => ({
+  evaluateHeartbeatPrepass: mockPrepass,
+}));
+
+const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
+mock.module('@/lib/mission-completion', () => ({
+  completeMissionIfVerified: mockCompleteMission,
+  isCriteriaBlockCode: (code: string) => ['criteria_failed', 'criteria_pending', 'criteria_unverified'].includes(code),
+}));
+
+const mockApplyCriteriaRearm = mock(() => Promise.resolve({
+  action: 'wait', reason: 'stub', nextCycles: 0, verdictLines: '', fingerprint: 'fp',
+} as any));
+mock.module('@/lib/criteria-rearm', () => ({
+  applyCriteriaRearm: mockApplyCriteriaRearm,
+}));
+
 import { GET } from './route';
 
 function makeRequest(headers: Record<string, string> = {}) {
@@ -199,6 +220,14 @@ describe('GET /api/cron/schedules', () => {
     mockEstimateCronIntervalMs.mockReturnValue(30 * 60 * 1000);
     mockGetOrCreateCoordinationWorkspace.mockReset();
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
+    mockPrepass.mockReset();
+    mockPrepass.mockResolvedValue({ action: 'invoke_llm', stateKey: 'sk-1' } as any);
+    mockCompleteMission.mockReset();
+    mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
+    mockApplyCriteriaRearm.mockReset();
+    mockApplyCriteriaRearm.mockResolvedValue({
+      action: 'wait', reason: 'stub', nextCycles: 0, verdictLines: '', fingerprint: 'fp',
+    } as any);
     taskSchedulesUpdateCalls = [];
     tasksInsertValues = null;
     mockSelectCount = 0;
@@ -442,6 +471,123 @@ describe('GET /api/cron/schedules', () => {
       triggerSource: 'cron',
       heartbeat: true,
     }));
+  });
+
+  describe('criteria-blocked heartbeat', () => {
+    function heartbeatSchedule() {
+      return makeSchedule({
+        workspaceId: 'ws-1',
+        taskTemplate: {
+          title: 'Mission: Blocked',
+          mode: 'planning',
+          priority: 0,
+          context: { heartbeat: true },
+        },
+      });
+    }
+
+    function arrangeBlockedMission(rearm: Record<string, unknown>) {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+      // Every deliverable terminal → the prepass proposes completion...
+      mockPrepass.mockResolvedValue({ action: 'skip_complete' } as any);
+      // ...and the criteria gate refuses it.
+      mockCompleteMission.mockResolvedValue({
+        completed: false,
+        decision: {
+          code: 'criteria_failed',
+          reason: 'Goal criteria failed — [fail] Design doc exists: no artifact found',
+          criteriaVerdict: { kind: 'value', value: 'fail' },
+        },
+      } as any);
+      mockApplyCriteriaRearm.mockResolvedValue(rearm as any);
+    }
+
+    it('dispatches an organizer cycle carrying the verdict instead of skipping', async () => {
+      // The deadlock this fixes: the verdict blocked completion, the heartbeat
+      // deferred, and no organizer cycle was ever created — so the mission could
+      // neither close nor file the work that would let it close.
+      const { buildMissionContext } = await import('@/lib/mission-context');
+      const mockBuildCtx = buildMissionContext as ReturnType<typeof mock>;
+      mockBuildCtx.mockResolvedValue({ description: 'ctx', context: { missionId: 'mission-1' } });
+
+      arrangeBlockedMission({
+        action: 'rearm',
+        reason: 'Goal-criteria verdict changed since the last organizer cycle',
+        nextCycles: 1,
+        verdictLines: '- [fail] Design doc exists — no artifact found',
+        fingerprint: 'fp-A',
+      });
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.criteriaRearmInvocations).toBe(1);
+      expect(tasksInsertValues).not.toBeNull();
+      expect(tasksInsertValues.missionId).toBe('mission-1');
+      expect(mockBuildCtx).toHaveBeenCalledWith('mission-1', expect.objectContaining({
+        criteriaRearm: expect.objectContaining({
+          overall: 'fail',
+          verdictLines: '- [fail] Design doc exists — no artifact found',
+        }),
+      }));
+    });
+
+    it('does not write the no-change state hash on a re-arm cycle', async () => {
+      // Writing it would make the next tick read "state unchanged" and suppress
+      // the very cycle the re-arm just authorised.
+      arrangeBlockedMission({
+        action: 'rearm', reason: 'r', nextCycles: 1, verdictLines: '', fingerprint: 'fp-A',
+      });
+
+      await GET(makeRequest());
+
+      const hashWrite = taskSchedulesUpdateCalls.find(c => 'lastHeartbeatStateHash' in (c.set ?? {}));
+      expect(hashWrite).toBeUndefined();
+    });
+
+    it('defers without a cycle when the re-arm guard says wait', async () => {
+      arrangeBlockedMission({
+        action: 'wait', reason: 'work in flight', nextCycles: 2, verdictLines: '', fingerprint: 'fp-A',
+      });
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.criteriaRearmInvocations).toBe(0);
+      expect(tasksInsertValues).toBeNull();
+      const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_criteria_blocked');
+      expect(deferral).toBeDefined();
+    });
+
+    it('does not re-arm when completion was refused for a non-criteria reason', async () => {
+      arrangeBlockedMission({ action: 'rearm', reason: 'r', nextCycles: 1, verdictLines: '', fingerprint: 'fp' });
+      mockCompleteMission.mockResolvedValue({
+        completed: false,
+        decision: { code: 'infra_stalled', reason: 'a deliverable died on infra', criteriaVerdict: { kind: 'value', value: 'pass' } },
+      } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(mockApplyCriteriaRearm).not.toHaveBeenCalled();
+      expect(body.criteriaRearmInvocations).toBe(0);
+      expect(tasksInsertValues).toBeNull();
+    });
+
+    it('still skips silently when the mission completes', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+      mockPrepass.mockResolvedValue({ action: 'skip_complete' } as any);
+      mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(mockApplyCriteriaRearm).not.toHaveBeenCalled();
+      expect(body.criteriaRearmInvocations).toBe(0);
+      expect(tasksInsertValues).toBeNull();
+    });
   });
 
   it('should skip task creation when mission maxConcurrentTasks cap is reached', async () => {
