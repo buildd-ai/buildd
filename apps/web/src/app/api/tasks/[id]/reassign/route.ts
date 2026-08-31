@@ -6,6 +6,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { REASSIGNED_WORKER_ERROR } from '@/lib/worker-termination';
 
 /**
  * POST /api/tasks/[id]/reassign
@@ -116,10 +117,17 @@ export async function POST(
 
       // Mark all active workers as failed
       if (activeWorkers.length > 0) {
+        // waitingFor MUST be cleared here. The task-detail page renders the
+        // "needs input" banner from ANY worker with `waitingFor` set — terminal
+        // ones included, deliberately, because inputAsRetry leaves a worker
+        // `error` + waiting. Leaving the question on a reassigned worker let a
+        // human answer on behalf of a worker that no longer owns the task, and
+        // /respond happily built a retry task from its dead branch.
         await db.update(workers)
           .set({
             status: 'failed',
-            error: 'Task was reassigned',
+            error: REASSIGNED_WORKER_ERROR,
+            waitingFor: null,
             completedAt: new Date(),
             updatedAt: new Date(),
           })
@@ -137,7 +145,7 @@ export async function POST(
               workerId: w.id,
               taskId: w.taskId,
               status: 'failed',
-              error: 'Task was reassigned',
+              error: REASSIGNED_WORKER_ERROR,
             }
           );
         }

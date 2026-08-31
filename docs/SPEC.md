@@ -145,7 +145,9 @@ An agent execution **session** on a task (a runner claims a task → spawns a wo
 Holds all telemetry: `status`, `waitingFor` (question to user), `costUsd`,
 input/output tokens, `turns`, `milestones`, git stats (commits/files/lines),
 `prUrl`/`prNumber`, `resultMeta` (SDK result), `mcpCalls` log, `pendingInstructions` +
-`instructionHistory` (admin nudges), `localUiUrl` (direct runner access),
+`instructionHistory` (admin nudges; an entry is marked delivered only when the
+runner confirms the exact text it injected, and `supportsInstructionAck` records
+whether a runner speaks that protocol), `localUiUrl` (direct runner access),
 `currentAction`. Resumable: Claude via session id, Codex via thread id.
 
 ### Role / Skill (`workspace_skills`)

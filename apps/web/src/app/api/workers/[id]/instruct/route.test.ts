@@ -271,7 +271,8 @@ describe('POST /api/workers/[id]/instruct', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
-    expect(data.message).toContain('instantly via Pusher');
+    // Wording must not assert a delivery Pusher cannot confirm.
+    expect(data.message).toContain('via Pusher');
 
     // Verify Pusher was called with correct channel and event
     expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
@@ -355,7 +356,12 @@ describe('POST /api/workers/[id]/instruct', () => {
       expect(capturedSet.pendingInstructions).toBe('Check the auth module');
     });
 
-    it('sets deliveryState to "delivered" for urgent messages', async () => {
+    // An urgent message goes out over Pusher, which is fire-and-forget: nothing
+    // reports whether a runner was listening. Recording it as delivered at send
+    // time meant the UI and get_task_messages asserted a delivery that may never
+    // have happened, and the text was not kept anywhere, so it could not be
+    // retried or even read back.
+    it('keeps an urgent message pending and queued when the runner can confirm delivery', async () => {
       let capturedSet: any = null;
       mockWorkersUpdate.mockReturnValue({
         set: mock((updates: any) => {
@@ -371,16 +377,126 @@ describe('POST /api/workers/[id]/instruct', () => {
         workspace: { dataClass: 'standard' },
         instructionHistory: [],
         pendingInstructions: null,
+        supportsInstructionAck: true,
       });
 
       const req = createMockRequestWithAuth({ message: 'Stop and pivot', priority: 'urgent' }, 'bld_admin');
       const res = await POST(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      const entry = capturedSet.instructionHistory[0];
-      expect(entry.deliveryState).toBe('delivered');
-      // Urgent: NOT stored in pendingInstructions (sent via Pusher)
+      expect(capturedSet.instructionHistory[0].deliveryState).toBe('pending');
+      // Queued as a fallback: a Pusher event that reaches nobody is recoverable.
+      expect(capturedSet.pendingInstructions).toBe('Stop and pivot');
+      expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    });
+
+    // Runners that predate the confirmation protocol would inject the Pusher copy
+    // and then the queued copy. Their behaviour is unchanged: Pusher only.
+    it('keeps the old Pusher-only behaviour for a runner that cannot confirm', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'running',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+        supportsInstructionAck: false,
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Stop and pivot', priority: 'urgent' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.instructionHistory[0].deliveryState).toBe('delivered');
       expect(capturedSet.pendingInstructions).toBeNull();
+    });
+
+    it('appends to the queue instead of overwriting an undelivered instruction', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'running',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: 'Use the device flow',
+      });
+
+      const req = createMockRequestWithAuth({ message: 'And add a test' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.pendingInstructions).toBe('Use the device flow\n\nAnd add a test');
+    });
+  });
+
+  // The check-in route rejects a worker in state 'error' with a 409 long before
+  // it reaches the instruction hand-off, so "queued for delivery on next worker
+  // check-in" described a check-in that can never happen.
+  describe('unreachable worker statuses', () => {
+    function errorWorker() {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        status: 'error',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        pendingInstructions: null,
+        supportsInstructionAck: true,
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) })),
+      });
+    }
+
+    it('refuses to queue for an error worker instead of promising delivery', async () => {
+      errorWorker();
+      const req = createMockRequestWithAuth({ message: 'Try the other flow' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.error).toContain('error');
+      expect(data.workerStatus).toBe('error');
+      expect(data.hint).toContain('urgent');
+      expect(mockTriggerEvent).not.toHaveBeenCalled();
+    });
+
+    it('still allows an urgent Pusher attempt at an error worker, without queueing it', async () => {
+      let capturedSet: any = null;
+      errorWorker();
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequestWithAuth({ message: 'Try the other flow', priority: 'urgent' }, 'bld_admin');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+      // Nothing queued: the check-in that would collect it is rejected.
+      expect(capturedSet.pendingInstructions).toBeNull();
+      const data = await res.json();
+      expect(data.message).not.toContain('queued for delivery on next worker check-in');
     });
   });
 

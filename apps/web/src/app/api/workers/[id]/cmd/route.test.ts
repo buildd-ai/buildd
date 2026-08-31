@@ -6,6 +6,13 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockTriggerEvent = mock(() => Promise.resolve());
+let workersUpdateSets: any[] = [];
+const mockWorkersUpdate = mock(() => ({
+  set: mock((vals: any) => {
+    workersUpdateSets.push(vals);
+    return { where: mock(() => Promise.resolve()) };
+  }),
+}));
 
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -34,6 +41,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findFirst: mockWorkersFindFirst },
     },
+    update: () => mockWorkersUpdate(),
   },
 }));
 
@@ -67,6 +75,8 @@ describe('POST /api/workers/[id]/cmd', () => {
     mockVerifyWorkspaceAccess.mockReset();
     mockWorkersFindFirst.mockReset();
     mockTriggerEvent.mockReset();
+    mockWorkersUpdate.mockClear();
+    workersUpdateSets = [];
     mockGetCurrentUser.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
   });
@@ -174,6 +184,84 @@ describe('POST /api/workers/[id]/cmd', () => {
       'worker:command',
       expect.objectContaining({ action: 'message', text: 'Hello worker' })
     );
+  });
+
+  // The message action is human input to the agent. It used to fire the Pusher
+  // event and persist nothing, so the task UI's message list and
+  // get_task_messages under-reported every message sent through this route.
+  describe('action: message — history', () => {
+    it('records the message in instructionHistory', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [{ type: 'response', message: 'earlier', timestamp: 1 }],
+        supportsInstructionAck: true,
+      });
+
+      const req = createMockRequest({ action: 'message', text: 'Try the device flow' }, 'bld_test');
+      const res = await POST(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(workersUpdateSets).toHaveLength(1);
+      const history = workersUpdateSets[0].instructionHistory;
+      expect(history).toHaveLength(2);
+      expect(history[1]).toMatchObject({
+        type: 'instruction',
+        message: 'Try the device flow',
+        deliveryState: 'pending',
+      });
+    });
+
+    it('redacts the text for sensitive workspaces', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        workspace: { dataClass: 'sensitive' },
+        instructionHistory: [],
+        supportsInstructionAck: true,
+      });
+
+      const req = createMockRequest({ action: 'message', text: 'token abc123' }, 'bld_test');
+      await POST(req, { params: mockParams });
+
+      const entry = workersUpdateSets[0].instructionHistory[0];
+      expect(entry.type).toBe('instruction');
+      expect(entry.message).toBeUndefined();
+    });
+
+    it('records delivered for a runner that cannot confirm delivery', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+        supportsInstructionAck: false,
+      });
+
+      const req = createMockRequest({ action: 'message', text: 'hi' }, 'bld_test');
+      await POST(req, { params: mockParams });
+
+      expect(workersUpdateSets[0].instructionHistory[0].deliveryState).toBe('delivered');
+    });
+
+    it('writes no history for non-message commands', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        workspace: { dataClass: 'standard' },
+        instructionHistory: [],
+      });
+
+      const req = createMockRequest({ action: 'abort' }, 'bld_test');
+      await POST(req, { params: mockParams });
+
+      expect(workersUpdateSets).toHaveLength(0);
+    });
   });
 
   it('accepts resume command', async () => {

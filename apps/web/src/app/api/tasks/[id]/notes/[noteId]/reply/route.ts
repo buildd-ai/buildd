@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missionNotes, tasks } from '@buildd/core/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, verifyWorkspaceAccess } from '@/lib/team-access';
@@ -34,11 +34,16 @@ export async function POST(
     : await verifyAccountWorkspaceAccess(apiAccount!.id, task.workspaceId);
   if (!hasAccess) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
+  // Identify the parent by (note, task) only. Requiring `missionId IS NULL` here
+  // made this route the mirror image of the note-DELIVERY selection, which only
+  // looks at notes whose missionId is NON-null: between the two predicates a
+  // reply written here could never be selected for delivery, and notes that
+  // legitimately carry both ids (reviewer_escalated, dead-PR shutdown) could not
+  // be replied to at all.
   const parentNote = await db.query.missionNotes.findFirst({
     where: and(
       eq(missionNotes.id, noteId),
       eq(missionNotes.taskId, id),
-      isNull(missionNotes.missionId),
     ),
   });
   if (!parentNote) return NextResponse.json({ error: 'Note not found' }, { status: 404 });
@@ -53,9 +58,14 @@ export async function POST(
     .set({ status: 'answered' })
     .where(eq(missionNotes.id, noteId));
 
+  // The reply MUST carry the same scope as the question it answers — mission,
+  // task AND the worker that asked. Delivery matches a question to its reply by
+  // scope, so a reply written into a different scope than its parent is written
+  // into a hole. Hardcoding `missionId: null` was exactly that hole.
   const [reply] = await db.insert(missionNotes).values({
-    missionId: null,
+    missionId: parentNote.missionId,
     taskId: id,
+    workerId: parentNote.workerId,
     authorType: apiAccount ? 'agent' : 'user',
     type: 'reply',
     title,

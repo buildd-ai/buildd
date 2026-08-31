@@ -12,6 +12,10 @@ const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
 const mockUpdate = mock(() => ({ set: mockUpdateSet }));
 const mockUpdateWhere = mock(() => Promise.resolve());
 const mockWorkspacesFindMany = mock(() => [] as any[]);
+const mockWorkspacesFindFirst = mock(() => null as any);
+
+// Sequence counter so inserted rows get distinct IDs (approvePlan resolves refs by ID)
+let insertSeq = 0;
 
 // Track chained select calls to return different results
 let selectCallCount = 0;
@@ -44,6 +48,7 @@ mock.module('@buildd/core/db', () => ({
       },
       workspaces: {
         findMany: (...args: any[]) => mockWorkspacesFindMany(...args),
+        findFirst: (...args: any[]) => mockWorkspacesFindFirst(...args),
       },
     },
     select: (...args: any[]) => {
@@ -69,7 +74,16 @@ mock.module('@buildd/core/db', () => ({
     insert: (...args: any[]) => {
       mockInsert(...args);
       return {
-        values: mockInsertValues,
+        // Supports both `await db.insert().values({...})` and
+        // `await db.insert().values({...}).returning()` (approvePlan needs IDs).
+        values: (...valueArgs: any[]) => {
+          mockInsertValues(...valueArgs);
+          insertSeq += 1;
+          const rows = [{ id: `inserted-task-${insertSeq}` }];
+          return Object.assign(Promise.resolve(rows), {
+            returning: () => Promise.resolve(rows),
+          });
+        },
       };
     },
     update: (...args: any[]) => {
@@ -111,7 +125,12 @@ mock.module('./pr-reconcile', () => ({
   refreshWorkerMergeStateIfStale: mockRefreshWorkerMergeState,
 }));
 
-import { resolveCompletedTask, checkDependsOnResolved } from './task-dependencies';
+import {
+  resolveCompletedTask,
+  checkDependsOnResolved,
+  shouldAutoApprovePlan,
+  requirePlanApprovalEnabled,
+} from './task-dependencies';
 
 function resetMocks() {
   mockFindFirst.mockReset();
@@ -128,6 +147,9 @@ function resetMocks() {
   mockDispatchUnblockedTask.mockClear(); // mockReset() would kill the Promise impl
   mockWorkspacesFindMany.mockReset();
   mockWorkspacesFindMany.mockResolvedValue([]);
+  mockWorkspacesFindFirst.mockReset();
+  mockWorkspacesFindFirst.mockResolvedValue(null);
+  insertSeq = 0;
   mockRefreshWorkerMergeState.mockReset();
   mockRefreshWorkerMergeState.mockResolvedValue(false);
   selectCallCount = 0;
@@ -832,5 +854,102 @@ describe('checkDependsOnResolved — mergedAt gate', () => {
 
     expect(mockRefreshWorkerMergeState).toHaveBeenCalledTimes(5);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+});
+
+// ── Human plan-approval gate (C8) ─────────────────────────────────────────────
+// Before the fix, EVERY completed planning task self-approved its own plan with
+// `autoApproved: true`, so dependent child tasks ran without a human ever
+// looking. The gate narrows auto-approval to mission-generated work and is
+// off by default (today's behaviour) via BUILDD_REQUIRE_PLAN_APPROVAL.
+
+describe('shouldAutoApprovePlan', () => {
+  it('auto-approves everything when the gate is off (default = today behaviour)', () => {
+    expect(shouldAutoApprovePlan({ missionId: null }, {})).toBe(true);
+    expect(shouldAutoApprovePlan({ missionId: 'mission-1' }, {})).toBe(true);
+    expect(shouldAutoApprovePlan({ missionId: null }, { BUILDD_REQUIRE_PLAN_APPROVAL: '0' })).toBe(true);
+  });
+
+  it('with the gate on, auto-approves only mission-generated plans', () => {
+    const env = { BUILDD_REQUIRE_PLAN_APPROVAL: '1' };
+    expect(shouldAutoApprovePlan({ missionId: 'mission-1' }, env)).toBe(true);
+    expect(shouldAutoApprovePlan({ missionId: null }, env)).toBe(false);
+    expect(shouldAutoApprovePlan({ missionId: undefined }, env)).toBe(false);
+  });
+
+  it('honours the per-task requiresPlanApproval opt-in regardless of the gate', () => {
+    const task = { missionId: 'mission-1', context: { requiresPlanApproval: true } };
+    expect(shouldAutoApprovePlan(task, {})).toBe(false);
+    expect(shouldAutoApprovePlan(task, { BUILDD_REQUIRE_PLAN_APPROVAL: '1' })).toBe(false);
+  });
+
+  it('requirePlanApprovalEnabled reads the env kill switch', () => {
+    expect(requirePlanApprovalEnabled({})).toBe(false);
+    expect(requirePlanApprovalEnabled({ BUILDD_REQUIRE_PLAN_APPROVAL: '1' })).toBe(true);
+  });
+});
+
+describe('resolveCompletedTask — plan approval gate', () => {
+  beforeEach(resetMocks);
+
+  const PLAN = [{ ref: 'step-1', title: 'Do the work', description: 'work' }];
+
+  function seedPlanningTask(missionId: string | null, context: Record<string, unknown> = {}) {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'planning', missionId, status: 'completed', context };
+    findFirstResults[2] = { result: { structuredOutput: { plan: PLAN } } };
+    // approvePlan's own lookup of the planning task
+    findFirstResults[3] = { id: 'plan-task-1', workspaceId: 'ws-1', missionId };
+    mockFindMany.mockResolvedValue([]); // no existing children
+    selectWhereResults = [[], [], [], []];
+  }
+
+  it('auto-approves a non-mission plan when the gate is off (unchanged default)', async () => {
+    delete process.env.BUILDD_REQUIRE_PLAN_APPROVAL;
+    seedPlanningTask(null);
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).toHaveBeenCalled();
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Do the work', mode: 'execution' })
+    );
+  });
+
+  it('does NOT auto-approve a non-mission plan when the gate is on', async () => {
+    process.env.BUILDD_REQUIRE_PLAN_APPROVAL = '1';
+    try {
+      seedPlanningTask(null);
+
+      await resolveCompletedTask('plan-task-1', 'ws-1');
+
+      expect(mockInsert).not.toHaveBeenCalled();
+    } finally {
+      delete process.env.BUILDD_REQUIRE_PLAN_APPROVAL;
+    }
+  });
+
+  it('still auto-approves mission-generated plans when the gate is on', async () => {
+    process.env.BUILDD_REQUIRE_PLAN_APPROVAL = '1';
+    try {
+      seedPlanningTask('mission-1');
+
+      await resolveCompletedTask('plan-task-1', 'ws-1');
+
+      expect(mockInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Do the work', mode: 'execution' })
+      );
+    } finally {
+      delete process.env.BUILDD_REQUIRE_PLAN_APPROVAL;
+    }
+  });
+
+  it('does not auto-approve a task that opted into human approval', async () => {
+    delete process.env.BUILDD_REQUIRE_PLAN_APPROVAL;
+    seedPlanningTask('mission-1', { requiresPlanApproval: true });
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });

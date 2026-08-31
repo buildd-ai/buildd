@@ -1060,16 +1060,29 @@ export const workers = pgTable('workers', {
   filesChanged: integer('files_changed').default(0),
   linesAdded: integer('lines_added').default(0),
   linesRemoved: integer('lines_removed').default(0),
-  // Admin instructions - delivered on next progress update
+  // Admin instructions — the delivery queue. Handed to a consuming runner on its
+  // next check-in and cleared ONLY when that runner confirms it injected the text
+  // (PATCH `instructionsDelivered`). Multiple queued instructions concatenate, so
+  // a second instruction never overwrites an undelivered first one.
   pendingInstructions: text('pending_instructions'),
   // Instruction history - log of sent instructions and worker responses
   instructionHistory: jsonb('instruction_history').default([]).$type<Array<{
     type: 'instruction' | 'response';
-    message: string;
+    /** Omitted for sensitive workspaces — the {type, ts} envelope is kept only. */
+    message?: string;
     timestamp: number;
-    // 'pending' = queued, not yet picked up; 'delivered' = worker received it
+    // 'pending' = queued, not yet confirmed delivered; 'delivered' = a consumer
+    // (the runner) confirmed the text reached the agent session. Never set to
+    // 'delivered' at write time — that recorded deliveries that never happened.
     deliveryState?: 'pending' | 'delivered';
   }>>(),
+  // Transitional capability flag: true once this worker's runner has checked in
+  // with `consumeInstructions: true`, i.e. it speaks the delivery-confirmation
+  // protocol (serve → inject → ack). Urgent (Pusher) instructions are only ALSO
+  // queued as a fallback for such runners; older runners would inject the Pusher
+  // copy and then the queued copy, duplicating the message. Drop this column once
+  // no pre-ack runner can check in.
+  supportsInstructionAck: boolean('supports_instruction_ack').default(false).notNull(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
   // MCP tool call log - appended by runner during execution
@@ -1214,6 +1227,14 @@ export const missionNotes = pgTable('mission_notes', {
   // Set when a retry opens the replacement PR. Kept on the superseded note so
   // the timeline remains an audit trail and can link to the successor.
   supersededByPrNumber: integer('superseded_by_pr_number'),
+  // Worker ids this note's content has already been handed to (JSON array of
+  // uuids). Delivery of user replies + mission guidance to a live agent is driven
+  // off this: a note is selected for worker X only while X is absent from the
+  // array, then X is appended. Without it every reply/guidance note was
+  // re-injected on every 10s check-in, filling the task timeline with duplicates.
+  // Mission-wide guidance still reaches each worker exactly once, which a single
+  // global delivered_at flag could not express.
+  deliveredTo: jsonb('delivered_to').default([]).$type<string[]>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
   missionIdx: index('mission_notes_mission_idx').on(t.missionId),

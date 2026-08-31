@@ -51,6 +51,8 @@ import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { pathsOverlap, isAdvisoryManifest } from '@buildd/core/path-overlap';
+import { isNonReactivatableError } from '@/lib/worker-termination';
+import { markInstructionsDelivered } from '@/lib/worker-instructions';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -283,6 +285,11 @@ export async function PATCH(
   } catch {
     // Pattern redaction below still runs if secret lookup is unavailable.
   }
+  // Captured pre-redaction: this is an echo of the queued instruction text and is
+  // compared byte-for-byte against the stored queue to clear it. Redacting the
+  // echo (but not the stored copy) would make that compare-and-set never match,
+  // so the same instruction would be served forever. It is never persisted.
+  const rawInstructionsDelivered: unknown = body.instructionsDelivered;
   body = redactSecretsInBody(body, secretValues);
 
   // Check if worker was already terminated (reassigned/failed)
@@ -311,11 +318,9 @@ export async function PATCH(
     const reactivateRequested = body.reactivate === true;
     // Even an explicit request must not revive a worker the server itself
     // expired — the runner is gone or was killed, so there is nothing to resume.
-    const isNonReactivatableTermination = worker.error?.includes('Interrupted — human takeover') ||
-      worker.error?.includes('expired') ||
-      worker.error?.includes('timed out') ||
-      worker.error?.includes('went offline') ||
-      worker.error?.includes('runner restarted');
+    // The phrase list lives in @/lib/worker-termination so every terminator
+    // (reassign, interrupt, stale cleanup) and every reader agree on it.
+    const isNonReactivatableTermination = isNonReactivatableError(worker.error);
     if (body.status !== 'running' || !reactivateRequested || isNonReactivatableTermination) {
       // Enrich 409 with deliverable info so the runner can distinguish
       // "already completed successfully" from "genuinely terminated/reassigned"
@@ -421,9 +426,48 @@ export async function PATCH(
     touchedPaths,
   } = body;
 
+  // ── Who may consume the human-instruction queue ────────────────────────────
+  //
+  // `workers.pendingInstructions` is a delivery queue with exactly one real
+  // consumer: the runner's sync loop, which injects the text into the live agent
+  // session. Every other caller of this route (milestone updates, branch
+  // registration, status transitions, the hook-driven waiting_input PATCHes)
+  // ignores the response body entirely.
+  //
+  // The queue used to be cleared on EVERY PATCH, so an ordinary milestone update
+  // silently threw away an undelivered instruction. Only a declared consumer may
+  // move the queue now:
+  //
+  //  - `consumeInstructions: true` — the runner's sync loop. It receives the
+  //    payload plus `instructionsAck`, injects it, and confirms with
+  //    `instructionsDelivered: <text>`; the queue is cleared on that
+  //    confirmation, never before.
+  //  - a `milestones` / `appendMilestones` array and no flag — a client that
+  //    predates the confirmation protocol (an older runner sync, an external
+  //    worker posting progress). It gets the old drain-on-read behaviour, because
+  //    it will never send a confirmation and re-serving forever would make it
+  //    re-deliver the same message on every progress update.
+  //  - anything else — receives a read-only copy (no state change), so an
+  //    external worker implementation that reads `instructions` keeps working
+  //    while the queue survives for the real consumer.
+  const instructionAckText = typeof rawInstructionsDelivered === 'string' && rawInstructionsDelivered.length > 0
+    ? rawInstructionsDelivered
+    : null;
+  const declaresInstructionConsumer = body.consumeInstructions === true;
+  const legacyInstructionConsumer = !declaresInstructionConsumer
+    && !instructionAckText
+    && (Array.isArray(milestones) || Array.isArray(appendMilestones));
+  const instructionConsumer = declaresInstructionConsumer || legacyInstructionConsumer;
+
   const updates: Partial<typeof workers.$inferInsert> = {
     updatedAt: new Date(),
   };
+
+  // Record the runner's protocol capability so /instruct and /cmd know whether a
+  // delivery can ever be confirmed for this worker.
+  if (declaresInstructionConsumer && !(worker as { supportsInstructionAck?: boolean }).supportsInstructionAck) {
+    updates.supportsInstructionAck = true;
+  }
 
   if (status) updates.status = status;
   if (error !== undefined) updates.error = error;
@@ -433,8 +477,12 @@ export async function PATCH(
   if (typeof turns === 'number') updates.turns = turns;
   // Infer turns from resultMeta.numTurns when not explicitly provided (external runners send resultMeta but not turns)
   else if (resultMeta && typeof resultMeta.numTurns === 'number' && resultMeta.numTurns > 0) updates.turns = resultMeta.numTurns;
-  // Auto-increment turns for MCP workers that don't send explicit turn counts
-  else updates.turns = sql`${workers.turns} + 1` as any;
+  // Auto-increment turns for MCP workers that don't send explicit turn counts.
+  // A bare delivery acknowledgement is bookkeeping, not a turn — counting it
+  // would inflate turns (and the OAuth budget window that reads them).
+  else if (!(instructionAckText && status === undefined && currentAction === undefined && milestones === undefined)) {
+    updates.turns = sql`${workers.turns} + 1` as any;
+  }
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
   // Sensitive: generic state string instead of prose action description
   if (currentAction !== undefined) updates.currentAction = isSensitive ? 'working' : currentAction;
@@ -2153,22 +2201,49 @@ export async function PATCH(
     }
   }
 
-  // Capture pending instructions before clearing
-  const pendingInstructions = worker.pendingInstructions;
+  // ── Human instruction hand-off / delivery confirmation ─────────────────────
+  //
+  // `pendingInstructions` is served to a consumer and cleared only once that
+  // consumer confirms the text reached the agent. `instructionsAck` in the
+  // response tells the consumer exactly what to echo back.
+  const queuedInstructions = worker.pendingInstructions;
+  // Text to hand to this caller (undefined = nothing to hand over).
+  let pendingInstructions: string | null = null;
+  // Echo token for the confirmation round-trip (declared consumers only).
+  let instructionsAck: string | null = null;
 
-  // Clear pending instructions on update (they'll be delivered in response)
-  // Also mark the most recent 'pending' history entry as 'delivered'
-  if (pendingInstructions) {
-    updates.pendingInstructions = null;
-    const currentHistory = (worker.instructionHistory as any[]) || [];
-    // Find the last 'pending' instruction entry and mark it delivered
-    const lastPendingIdx = currentHistory.map((e: any) => e.deliveryState).lastIndexOf('pending');
-    if (lastPendingIdx !== -1) {
-      const updatedHistory = currentHistory.map((e: any, i: number) =>
-        i === lastPendingIdx ? { ...e, deliveryState: 'delivered' } : e
-      );
-      updates.instructionHistory = updatedHistory;
+  if (instructionAckText) {
+    // A consumer confirmed delivery: this is the ONLY place 'delivered' is written.
+    updates.instructionHistory = markInstructionsDelivered(worker.instructionHistory, instructionAckText);
+
+    // Clear the queue only while it still holds exactly the text that was
+    // delivered. A fresh instruction may have been appended after the hand-off;
+    // clearing then would destroy text nobody has seen. Atomic compare-and-set
+    // (neon-http has no interactive transactions) — losing the race just means
+    // the next check-in serves the queue again, and the runner skips text it
+    // has already injected.
+    if (queuedInstructions && instructionAckText.includes(queuedInstructions)) {
+      const [cleared] = await db
+        .update(workers)
+        .set({ pendingInstructions: null })
+        .where(and(eq(workers.id, id), eq(workers.pendingInstructions, queuedInstructions)))
+        .returning({ id: workers.id });
+      if (!cleared) {
+        console.log(`[workers PATCH] worker ${id}: instruction queue changed during delivery — keeping it queued`);
+      }
     }
+  } else if (queuedInstructions) {
+    pendingInstructions = queuedInstructions;
+    if (declaresInstructionConsumer) {
+      // Held until confirmed. Nothing is cleared here.
+      instructionsAck = queuedInstructions;
+    } else if (legacyInstructionConsumer) {
+      // Pre-confirmation runner: drain on read, as before. It cannot confirm, so
+      // holding the queue would re-inject the same text on every 10s sync.
+      updates.pendingInstructions = null;
+      updates.instructionHistory = markInstructionsDelivered(worker.instructionHistory, queuedInstructions);
+    }
+    // else: read-only copy — no state change, the queue survives for the runner.
   }
 
   // Guard for the final write:
@@ -2510,63 +2585,97 @@ export async function PATCH(
     }
   }
 
-  // Deliver unread mission note replies/guidance to this worker
+  // ── Deliver undelivered user replies / mission guidance to this worker ──────
+  //
+  // Selection is by delivery state, not by note status. Answered questions stay
+  // 'answered' and guidance stays 'open' forever, so re-selecting them on every
+  // check-in re-injected the same replies and guidance every ~10 seconds — each
+  // injection adding a chat message and a milestone, which visibly filled the
+  // task timeline with duplicates. `mission_notes.delivered_to` records the
+  // workers a note has already been handed to; a note is served once per worker,
+  // so mission-wide guidance still reaches each worker exactly once.
+  //
+  // Only a consumer is served: a milestone-only PATCH that ignores the response
+  // would otherwise mark notes delivered that nothing ever injected.
   let noteInstructions = '';
-  if (status !== 'completed' && status !== 'failed' && worker.taskId) {
+  if (instructionConsumer && status !== 'completed' && status !== 'failed' && worker.taskId) {
     try {
       const taskForNotes = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
         columns: { missionId: true },
       });
-      if (taskForNotes?.missionId) {
-        // Find this worker's open questions that have replies
-        const workerQuestions = await db.query.missionNotes.findMany({
+      // Task-scoped notes (a task with no mission) are addressed by taskId. The
+      // block used to require a missionId, so replies on mission-less tasks were
+      // never delivered at all.
+      const noteScope = taskForNotes?.missionId
+        ? eq(missionNotes.missionId, taskForNotes.missionId)
+        : and(isNull(missionNotes.missionId), eq(missionNotes.taskId, worker.taskId));
+      // Not yet handed to THIS worker.
+      const undeliveredToWorker = sql`NOT (COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) @> ${JSON.stringify([id])}::jsonb)`;
+      const servedNoteIds: string[] = [];
+
+      // Find this worker's answered questions
+      const workerQuestions = await db.query.missionNotes.findMany({
+        where: and(
+          noteScope,
+          eq(missionNotes.workerId, id),
+          eq(missionNotes.type, 'question'),
+          eq(missionNotes.status, 'answered'),
+        ),
+        columns: { id: true, title: true },
+      });
+
+      if (workerQuestions.length > 0) {
+        // Fetch the undelivered replies to those questions
+        const questionIds = workerQuestions.map(q => q.id);
+        const replies = await db.query.missionNotes.findMany({
           where: and(
-            eq(missionNotes.missionId, taskForNotes.missionId),
-            eq(missionNotes.workerId, id),
-            eq(missionNotes.type, 'question'),
-            eq(missionNotes.status, 'answered'),
-          ),
-          columns: { id: true, title: true },
-        });
-
-        if (workerQuestions.length > 0) {
-          // Fetch replies to those questions
-          const questionIds = workerQuestions.map(q => q.id);
-          const replies = await db.query.missionNotes.findMany({
-            where: and(
-              eq(missionNotes.missionId, taskForNotes.missionId),
-              eq(missionNotes.type, 'reply'),
-              eq(missionNotes.authorType, 'user'),
-              inArray(missionNotes.replyTo, questionIds),
-            ),
-            orderBy: [desc(missionNotes.createdAt)],
-          });
-
-          if (replies.length > 0) {
-            const replyLines = replies.map(r => {
-              const q = workerQuestions.find(wq => wq.id === r.replyTo);
-              return `- Re: "${q?.title || 'question'}": ${r.title}${r.body ? ` — ${r.body}` : ''}`;
-            });
-            noteInstructions += `\n\n**USER REPLIES:**\n${replyLines.join('\n')}`;
-          }
-        }
-
-        // Also deliver mission-wide guidance notes
-        const guidance = await db.query.missionNotes.findMany({
-          where: and(
-            eq(missionNotes.missionId, taskForNotes.missionId),
-            eq(missionNotes.type, 'guidance'),
-            eq(missionNotes.status, 'open'),
+            noteScope,
+            eq(missionNotes.type, 'reply'),
+            eq(missionNotes.authorType, 'user'),
+            inArray(missionNotes.replyTo, questionIds),
+            undeliveredToWorker,
           ),
           orderBy: [desc(missionNotes.createdAt)],
-          limit: 5,
         });
 
-        if (guidance.length > 0) {
-          const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
-          noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
+        if (replies.length > 0) {
+          const replyLines = replies.map(r => {
+            const q = workerQuestions.find(wq => wq.id === r.replyTo);
+            return `- Re: "${q?.title || 'question'}": ${r.title}${r.body ? ` — ${r.body}` : ''}`;
+          });
+          servedNoteIds.push(...replies.map(r => r.id));
+          noteInstructions += `\n\n**USER REPLIES:**\n${replyLines.join('\n')}`;
         }
+      }
+
+      // Also deliver mission-wide guidance notes this worker has not seen
+      const guidance = await db.query.missionNotes.findMany({
+        where: and(
+          noteScope,
+          eq(missionNotes.type, 'guidance'),
+          eq(missionNotes.status, 'open'),
+          undeliveredToWorker,
+        ),
+        orderBy: [desc(missionNotes.createdAt)],
+        limit: 5,
+      });
+
+      if (guidance.length > 0) {
+        const guidanceLines = guidance.map(g => `- ${g.title}${g.body ? `: ${g.body}` : ''}`);
+        servedNoteIds.push(...guidance.map(g => g.id));
+        noteInstructions += `\n\n**MISSION GUIDANCE:**\n${guidanceLines.join('\n')}`;
+      }
+
+      // Stamp at hand-off, with a per-row atomic append (no read-modify-write, so
+      // two concurrent check-ins for different workers cannot clobber each other).
+      if (servedNoteIds.length > 0) {
+        await db
+          .update(missionNotes)
+          .set({
+            deliveredTo: sql`COALESCE(${missionNotes.deliveredTo}, '[]'::jsonb) || ${JSON.stringify([id])}::jsonb`,
+          })
+          .where(inArray(missionNotes.id, servedNoteIds));
       }
     } catch (err) {
       console.error(`[Worker ${id}] Note delivery failed:`, err);
@@ -2579,6 +2688,9 @@ export async function PATCH(
   return jsonResponse({
     ...updated,
     instructions: allInstructions,
+    // Echo token: the consumer sends this back as `instructionsDelivered` once
+    // the text is in the agent session, which is what clears the queue.
+    ...(instructionsAck ? { instructionsAck } : {}),
     ...(pendingWorkerMessages.length > 0 ? { pendingMessages: pendingWorkerMessages } : {}),
     ...(outputWarning ? { outputWarning } : {}),
   }, undefined, { route: req.nextUrl.pathname });

@@ -18,6 +18,13 @@ import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 const SERVER_TERMINAL_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled']);
 
 /**
+ * How long an injected human message suppresses re-injection of identical text.
+ * Covers the Pusher-then-queue race (seconds) without swallowing a deliberate
+ * re-send much later.
+ */
+const DUPLICATE_INJECTION_WINDOW_MS = 15 * 60 * 1000;
+
+/**
  * Resolve the main-repo path that owns a worktree by trimming at the
  * `.buildd-worktrees/` marker. Worktrees live at
  * `<repoPath>/.buildd-worktrees/<safeBranch>`.
@@ -86,7 +93,8 @@ export interface WorkerSyncContext {
   dirtyForDisk: Set<string>;
   emit: (event: any) => void;
   abort: (workerId: string, reason?: string) => Promise<void>;
-  sendMessage: (workerId: string, message: string) => Promise<void>;
+  /** Injects text into the live agent session. Resolves false when it could not. */
+  sendMessage: (workerId: string, message: string) => Promise<boolean | void>;
   /** Adaptive stale timeout getter (may be updated externally) */
   getAdaptiveStaleTimeout: () => number;
   setAdaptiveStaleTimeout: (ms: number) => void;
@@ -107,7 +115,65 @@ export interface WorkerSyncContext {
  * - Cycle time tracking for adaptive timeouts
  */
 export class WorkerSync {
+  /**
+   * Newest human (`type: 'user'`) chat-message timestamp already accounted for,
+   * per worker. Human text also arrives outside this loop — the Pusher
+   * `worker:command` handler and the runner's own /message endpoints call
+   * sendMessage directly — and the server cannot see those deliveries. Reporting
+   * the messages we observe is what lets it mark them delivered instead of
+   * guessing at send time.
+   *
+   * Seeded (not reported) the first time a worker is seen, so a runner restart
+   * does not re-confirm history it did not deliver.
+   */
+  private lastSeenUserMessageTs = new Map<string, number>();
+
   constructor(private ctx: WorkerSyncContext) {}
+
+  /**
+   * Newest human message currently in the worker's local transcript.
+   */
+  private latestUserMessageTs(worker: LocalWorker): number {
+    let newest = 0;
+    for (const msg of (worker.messages ?? []) as Array<{ type?: string; timestamp?: number }>) {
+      if (msg?.type === 'user' && typeof msg.timestamp === 'number' && msg.timestamp > newest) {
+        newest = msg.timestamp;
+      }
+    }
+    return newest;
+  }
+
+  /**
+   * Human text injected into this session in the last few minutes (used to skip
+   * re-injecting an urgent instruction that arrived over Pusher and then again
+   * from the queue that backs it up).
+   *
+   * Time-boxed on purpose: the Pusher/queue race resolves in seconds, whereas a
+   * human deliberately re-sending the same words much later means "you did not
+   * act on this" and must reach the agent again.
+   */
+  private alreadyInjected(worker: LocalWorker, text: string): boolean {
+    const cutoff = Date.now() - DUPLICATE_INJECTION_WINDOW_MS;
+    return ((worker.messages ?? []) as Array<{ type?: string; content?: string; timestamp?: number }>).some(
+      (msg) => msg?.type === 'user'
+        && typeof msg.content === 'string'
+        && msg.content === text
+        && (msg.timestamp ?? 0) >= cutoff,
+    );
+  }
+
+  /**
+   * Tell the server that `text` reached the agent session. This is the only
+   * signal that marks an instruction delivered — the send-time optimism it
+   * replaces recorded deliveries for messages that never arrived.
+   */
+  private async confirmInstructionDelivery(workerId: string, text: string) {
+    try {
+      await this.ctx.buildd.updateWorker(workerId, { instructionsDelivered: text } as any);
+    } catch {
+      // Unconfirmed: the instruction stays queued server-side and is served again.
+    }
+  }
 
   /**
    * Restore workers from disk on startup.
@@ -244,7 +310,12 @@ export class WorkerSync {
         ...(worker.pendingPaths?.length ? { pendingPaths: [...worker.pendingPaths] } : {}),
         // Observed touches from git diff — server accumulates into workers.observedTouches.
         ...(touchedPaths && touchedPaths.length > 0 ? { touchedPaths } : {}),
-      };
+        // This loop is the one real consumer of the human-instruction queue:
+        // it injects `response.instructions` into the live session. Declaring it
+        // is what stops every other PATCH (milestones, branch, status) from
+        // draining the queue and throwing an undelivered instruction away.
+        consumeInstructions: true,
+      } as Parameters<BuilddClient['updateWorker']>[1] & { consumeInstructions?: boolean };
       if (worker.status === 'waiting' && worker.waitingFor) {
         update.waitingFor = {
           type: worker.waitingFor.type,
@@ -307,9 +378,50 @@ export class WorkerSync {
         return;
       }
 
+      // Report human text that reached the session through another path (Pusher
+      // command, local /message endpoint) so the server can mark it delivered.
+      const newestUserTs = this.latestUserMessageTs(worker);
+      const seenUserTs = this.lastSeenUserMessageTs.get(worker.id);
+      if (seenUserTs === undefined) {
+        this.lastSeenUserMessageTs.set(worker.id, newestUserTs);
+      } else if (newestUserTs > seenUserTs) {
+        this.lastSeenUserMessageTs.set(worker.id, newestUserTs);
+        const foreign = ((worker.messages ?? []) as Array<{ type?: string; content?: string; timestamp?: number }>)
+          .filter(m => m?.type === 'user' && typeof m.content === 'string' && (m.timestamp ?? 0) > seenUserTs);
+        for (const msg of foreign) {
+          await this.confirmInstructionDelivery(worker.id, msg.content as string);
+        }
+      }
+
       // Process any pending instructions from sync response
       if (response?.instructions) {
-        await this.ctx.sendMessage(worker.id, response.instructions);
+        // `instructionsAck` is the queued human text, served as the prefix of the
+        // payload (mission notes are appended after it).
+        const ackText: string | null = typeof response.instructionsAck === 'string'
+          ? response.instructionsAck
+          : null;
+        // The same urgent instruction can arrive twice: instantly over Pusher and
+        // again from the queue that backs it up. Text already in this session's
+        // transcript is confirmed rather than replayed to the agent.
+        const duplicatePrefix = !!ackText
+          && response.instructions.startsWith(ackText)
+          && this.alreadyInjected(worker, ackText);
+        const toInject = duplicatePrefix && ackText
+          ? response.instructions.slice(ackText.length)
+          : response.instructions;
+
+        let delivered = true;
+        if (toInject.trim().length > 0) {
+          delivered = (await this.ctx.sendMessage(worker.id, toInject)) !== false;
+          // Our own injection must not be re-reported as a foreign delivery on
+          // the next cycle.
+          if (delivered) this.lastSeenUserMessageTs.set(worker.id, this.latestUserMessageTs(worker));
+        }
+        // Only a real injection may clear the server-side queue. A failed
+        // sendMessage leaves it queued, and the next sync retries it.
+        if (delivered && ackText) {
+          await this.confirmInstructionDelivery(worker.id, ackText);
+        }
       }
     } catch (err) {
       // Silently ignore sync errors
@@ -400,6 +512,7 @@ export class WorkerSync {
         sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
         this.ctx.workers.delete(id);
         this.ctx.sessions.delete(id);
+        this.lastSeenUserMessageTs.delete(id);
         // Note: NOT deleting from disk — workers persist for 24h for history
       }
     }

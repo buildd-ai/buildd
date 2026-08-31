@@ -267,7 +267,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
-    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — deliver instantly via Pusher, otherwise queued for next check-in) } — deliver a mid-flight steering message to the running agent. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
+    send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
@@ -1150,6 +1150,10 @@ export async function handleBuilddAction(
           status: 'running',
           progress: params.progress || 0,
           ...(appendMilestones.length > 0 && { appendMilestones }),
+          // This call surfaces `response.instructions` to the agent below, so it
+          // is a real consumer of the instruction queue and says so. Undeclared
+          // callers get a read-only copy and never move the queue.
+          consumeInstructions: true,
         };
         if (params.message) progressBody.currentAction = params.message;
         if (typeof params.inputTokens === 'number') progressBody.inputTokens = params.inputTokens;
@@ -1177,6 +1181,19 @@ export async function handleBuilddAction(
       const instructions = response.instructions;
       if (instructions) {
         resultText += `\n\n**ADMIN INSTRUCTION:** ${instructions}`;
+        // The instruction is in the tool result the agent is about to read, so
+        // delivery is real: confirm it. Without this the queue stays pending and
+        // the same instruction is repeated on every progress update.
+        if (typeof response.instructionsAck === 'string') {
+          try {
+            await api(`/api/workers/${workerId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ instructionsDelivered: response.instructionsAck }),
+            });
+          } catch {
+            // Unconfirmed: it stays queued and is served again next time.
+          }
+        }
       }
 
       return text(resultText);
@@ -3938,14 +3955,26 @@ export async function handleBuilddAction(
       // being worked on.
       const task = await api(`/api/tasks/${params.taskId}?include=workers`);
       const allWorkers: any[] = Array.isArray(task.workers) ? task.workers : [];
-      const activeWorker = allWorkers.find(
-        (w) => w.status !== 'completed' && w.status !== 'failed',
+      // 'error' is terminal for the check-in route: it rejects that worker's next
+      // PATCH, so a queued message would never be collected. Selecting an errored
+      // worker as "the active one" produced a cheerful "queued for delivery on
+      // next worker check-in" for a check-in that can never happen.
+      const liveWorker = allWorkers.find(
+        (w) => w.status !== 'completed' && w.status !== 'failed' && w.status !== 'error',
       );
+      const erroredWorker = allWorkers.find((w) => w.status === 'error');
+      const isUrgent = params.priority === 'urgent';
+      // Urgent goes over Pusher, which can still reach a session the runner holds
+      // in memory (it restarts an errored session on a follow-up message).
+      const activeWorker = liveWorker ?? (isUrgent ? erroredWorker : undefined);
       const workerId = activeWorker?.id;
 
       if (!workerId) {
         const hint = allWorkers.length === 0
           ? 'Task is still pending — not yet claimed by a worker.'
+          : erroredWorker
+          ? `Worker ${erroredWorker.id} is in state 'error', so a queued message would never be collected. ` +
+            "Retry with priority:'urgent' to attempt immediate delivery to a resident session, or recover the worker."
           : 'No active worker found for this task (all workers are in a terminal state).';
         throw new Error(`Cannot send message: ${hint} (task status: ${task.status})`);
       }
@@ -3958,11 +3987,17 @@ export async function handleBuilddAction(
         }),
       });
 
-      const deliveryNote = params.priority === 'urgent'
-        ? 'Message delivered instantly via Pusher.'
-        : 'Message queued for delivery on next worker check-in.';
-
-      return text(`Message sent to worker ${workerId}.\n${deliveryNote}\n${result.message || ''}`);
+      // Do not restate delivery here: the server owns that claim, and delivery is
+      // only confirmed once the agent actually receives the text. get_task_messages
+      // marks anything still unconfirmed as UNDELIVERED.
+      const stateNote = result.deliveryState === 'pending'
+        ? 'Delivery is confirmed by the agent, not by this call — check get_task_messages for ⏳ UNDELIVERED.'
+        : '';
+      return text([
+        `Message sent to worker ${workerId} (status: ${activeWorker.status}).`,
+        result.message || '',
+        stateNote,
+      ].filter(Boolean).join('\n'));
     }
 
     // Spec-drift compare (admin/dev only). Two-hop retrieval bridges the prose→code
