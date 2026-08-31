@@ -7,9 +7,10 @@ const mockWorkersFindFirst = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 
 const mockInsertReturning = mock(() => [{ id: 'new-task-1', title: 'Continue: Fix auth bug' }]);
-const mockInsertValues = mock(() => ({
-  returning: mockInsertReturning,
-}));
+const mockInsertValues = mock(() => {
+  callOrder.push('insert');
+  return { returning: mockInsertReturning };
+});
 const mockInsert = mock(() => ({
   values: mockInsertValues,
 }));
@@ -18,9 +19,10 @@ const mockWorkersUpdateReturning = mock(() => [{ id: 'worker-1', status: 'comple
 const mockWorkersUpdateWhere = mock(() => ({
   returning: mockWorkersUpdateReturning,
 }));
-const mockWorkersUpdateSet = mock(() => ({
-  where: mockWorkersUpdateWhere,
-}));
+const mockWorkersUpdateSet = mock(() => {
+  callOrder.push('update');
+  return { where: mockWorkersUpdateWhere };
+});
 const mockWorkersUpdate = mock(() => ({
   set: mockWorkersUpdateSet,
 }));
@@ -37,6 +39,10 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
+// Order of writes matters (C3): the answer must be claimed with a CAS BEFORE
+// the retry task is inserted, so a losing racer inserts nothing.
+const callOrder: string[] = [];
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -49,10 +55,12 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  workers: 'workers',
+  workers: { id: 'workers.id', status: 'workers.status', waitingFor: 'workers.waitingFor' },
   tasks: 'tasks',
 }));
 
@@ -126,12 +134,19 @@ describe('POST /api/workers/[id]/respond', () => {
 
     // Reset mock implementations
     mockInsertReturning.mockReturnValue([{ id: 'new-task-1', title: 'Continue: Fix auth bug' }]);
-    mockInsertValues.mockReturnValue({ returning: mockInsertReturning });
+    mockInsertValues.mockImplementation((() => {
+      callOrder.push('insert');
+      return { returning: mockInsertReturning };
+    }) as any);
     mockInsert.mockReturnValue({ values: mockInsertValues });
     mockWorkersUpdateReturning.mockReturnValue([{ id: 'worker-1', status: 'completed' }]);
     mockWorkersUpdateWhere.mockReturnValue({ returning: mockWorkersUpdateReturning });
-    mockWorkersUpdateSet.mockReturnValue({ where: mockWorkersUpdateWhere });
+    mockWorkersUpdateSet.mockImplementation((() => {
+      callOrder.push('update');
+      return { where: mockWorkersUpdateWhere };
+    }) as any);
     mockWorkersUpdate.mockReturnValue({ set: mockWorkersUpdateSet });
+    callOrder.length = 0;
   });
 
   it('returns 401 when no auth provided', async () => {
@@ -473,5 +488,72 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(insertedValues.description).toContain('Set up project structure');
     expect(insertedValues.description).toContain('Which authentication method should we use?');
     expect(insertedValues.description).toContain('Use JWT tokens');
+  });
+
+  // ---------------------------------------------------------------------------
+  // C3: concurrent answers
+  // ---------------------------------------------------------------------------
+  // The route guarded only on `!worker.waitingFor` (read outside the write) and
+  // then updated by id alone, after having already inserted the retry task. Two
+  // humans answering the same question — or one human double-submitting — both
+  // got 200, both inserted a "Continue:" task, and both clobbered worker state.
+  describe('concurrency (CAS)', () => {
+    it('claims the answer with a CAS before inserting the retry task', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+      expect(res.status).toBe(200);
+
+      // State flip must precede the insert, so a loser inserts nothing.
+      expect(callOrder[0]).toBe('update');
+      expect(callOrder).toContain('insert');
+      expect(callOrder.indexOf('update')).toBeLessThan(callOrder.indexOf('insert'));
+
+      // The write must be conditional on the question still being open.
+      const where = mockWorkersUpdateWhere.mock.calls[0][0] as any;
+      expect(JSON.stringify(where)).toContain('isNotNull');
+      expect(JSON.stringify(where)).toContain('workers.waitingFor');
+    });
+
+    it('returns 409 and inserts no retry task when another answer already won', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+      // Racer already cleared waitingFor: the CAS matches no row.
+      mockWorkersUpdateReturning.mockReturnValue([]);
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.error).toContain('already answered');
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    it('restores the question when the retry task insert fails', async () => {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+      mockInsertReturning.mockImplementation((() => {
+        throw new Error('insert exploded');
+      }) as any);
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(500);
+      // Claim + compensating restore — never leave a half-applied answer where
+      // the worker is completed but no retry task exists.
+      expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(2);
+      const restore = mockWorkersUpdateSet.mock.calls[1][0] as any;
+      expect(restore.status).toBe(baseWorker.status);
+      expect(restore.waitingFor).toEqual(baseWorker.waitingFor);
+    });
   });
 });
