@@ -124,7 +124,7 @@ export async function GET(
         || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'https://buildd.dev');
       taskArtifacts = rows.map(a => ({
         ...a,
-        shareUrl: a.shareToken ? `${baseUrl}/share/${a.shareToken}` : null,
+        shareUrl: a.shareToken && a.visibility === 'public' ? `${baseUrl}/share/${a.shareToken}` : null,
       }));
     }
 

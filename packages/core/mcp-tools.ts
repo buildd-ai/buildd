@@ -2542,8 +2542,9 @@ export async function handleBuilddAction(
         ``,
         `Download URL (permanent, for markdown embedding):`,
         data.downloadUrl,
+        `  Readable by this workspace, and by anyone once the artifact is shared.`,
         ``,
-        `Share URL: ${data.shareUrl}`,
+        `Share URL: ${data.shareUrl ?? 'not shared — publish the artifact to mint one'}`,
         `Artifact ID: ${data.artifactId}`,
       ];
 

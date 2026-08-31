@@ -45,6 +45,8 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  // artifact-helpers (imported for shareBaseUrl) pulls in `and` at module load.
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -208,6 +210,27 @@ describe('POST /api/artifacts/upload-url', () => {
     expect((await POST(req(validBody()))).status).toBe(403);
 
     expect(mockGenerateSizedUploadUrl).not.toHaveBeenCalled();
+  });
+
+  it('creates the artifact private with no share token', async () => {
+    // A share token is a bearer credential. Minting it at insert time — before
+    // anyone decided to publish — meant POST /share later activated a token that
+    // had already been handed to the agent in this response.
+    const res = await POST(req(validBody()));
+    expect(res.status).toBe(200);
+
+    const values = mockInsertValues.mock.calls[0][0] as any;
+    expect(values.shareToken).toBeNull();
+    expect(values.visibility).toBe('private');
+  });
+
+  it('does not hand back a token-bearing download URL', async () => {
+    const res = await POST(req(validBody()));
+    const data = await res.json();
+    expect(data.downloadUrl).toContain(`/api/artifacts/artifact-1/download`);
+    expect(data.downloadUrl).not.toContain('token=');
+    expect(JSON.stringify(data)).not.toContain('share-token');
+    expect(data.shareUrl).toBeNull();
   });
 
   it('refuses to sign when the worker has no workspace to scope the key to', async () => {
