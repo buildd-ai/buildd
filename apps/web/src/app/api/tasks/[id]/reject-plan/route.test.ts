@@ -27,6 +27,10 @@ mock.module('@/lib/team-access', () => ({
   verifyAccountWorkspaceAccess: mockVerifyAccountWorkspaceAccess,
 }));
 
+// Track update calls (rejection persistence)
+const mockUpdateSetCalls: any[] = [];
+const mockUpdateReturning = mock(() => [{ id: 'plan-task-1' }] as any[]);
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -38,15 +42,23 @@ mock.module('@buildd/core/db', () => ({
         return { returning: mockInsertReturning };
       },
     }),
+    update: () => ({
+      set: (vals: any) => {
+        mockUpdateSetCalls.push(vals);
+        return { where: () => ({ returning: mockUpdateReturning }) };
+      },
+    }),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conds: any[]) => ({ conds, type: 'and' }),
+  sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', parentTaskId: 'parentTaskId' },
+  tasks: { id: 'id', parentTaskId: 'parentTaskId', context: 'context' },
 }));
 
 // Import handler AFTER mocks
@@ -88,6 +100,9 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockInsertReturning.mockReset();
     mockInsertValues.length = 0;
     mockInsertReturning.mockReturnValue([{ id: 'new-plan-task-1' }]);
+    mockUpdateSetCalls.length = 0;
+    mockUpdateReturning.mockReset();
+    mockUpdateReturning.mockReturnValue([{ id: 'plan-task-1' }]);
 
     // Default: grant access
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -236,5 +251,90 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     expect(response.status).toBe(200);
     expect(mockInsertValues).toHaveLength(1);
     expect(mockInsertValues[0].missionId).toBeNull();
+  });
+  // ── Regression: rejection must actually persist (C8) ────────────────────────
+  // Before the fix this route issued no db.update at all: a rejection mutated
+  // nothing, so approve-after-reject silently succeeded.
+
+  it('persists the rejection on the planning task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      parentTaskId: null,
+      missionId: null,
+      priority: 1,
+      title: 'Plan feature',
+      description: 'Plan it',
+      context: { existingKey: 'existingValue' },
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest({ body: { feedback: 'Missing rollback step' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+
+    // A rejected state was written to the planning task itself.
+    expect(mockUpdateSetCalls).toHaveLength(1);
+    const rejection = mockUpdateSetCalls[0].context.planRejection;
+    expect(rejection).toBeDefined();
+    expect(rejection.feedback).toBe('Missing rollback step');
+    expect(typeof rejection.rejectedAt).toBe('string');
+    // Existing context keys are preserved.
+    expect(mockUpdateSetCalls[0].context.existingKey).toBe('existingValue');
+  });
+
+  it('returns 409 when the plan was already rejected', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      parentTaskId: null,
+      missionId: null,
+      priority: 1,
+      title: 'Plan feature',
+      description: 'Plan it',
+      context: { planRejection: { feedback: 'earlier rejection', rejectedAt: '2026-01-01T00:00:00.000Z' } },
+      workspace: { id: 'ws-1' },
+    });
+
+    const request = createMockRequest({ body: { feedback: 'again' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(409);
+    const data = await response.json();
+    expect(data.error).toBe('Plan already rejected');
+    // No duplicate revised planning task.
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('returns 409 when a concurrent rejection won the optimistic lock', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      parentTaskId: null,
+      missionId: null,
+      priority: 1,
+      title: 'Plan feature',
+      description: 'Plan it',
+      context: {},
+      workspace: { id: 'ws-1' },
+    });
+    // UPDATE ... WHERE planRejection IS NULL matched no row.
+    mockUpdateReturning.mockReturnValue([]);
+
+    const request = createMockRequest({ body: { feedback: 'race' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(409);
+    expect(mockInsertValues).toHaveLength(0);
   });
 });

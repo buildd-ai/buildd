@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -57,9 +57,41 @@ export async function POST(
       return NextResponse.json({ error: 'Feedback is required' }, { status: 400 });
     }
 
-    // Create a new planning task with feedback context
     const existingContext = (task.context as Record<string, unknown>) || {};
 
+    if (existingContext.planRejection) {
+      return NextResponse.json({ error: 'Plan already rejected' }, { status: 409 });
+    }
+
+    // Persist the rejection on the planning task itself. Without this the whole
+    // route was a no-op: nothing recorded the reviewer's verdict, so approving
+    // after rejecting silently succeeded.
+    //
+    // The WHERE clause is the optimistic lock (neon-http has no interactive
+    // transactions): two concurrent rejections race, exactly one matches a row.
+    const rejectedAt = new Date();
+    const [rejected] = await db
+      .update(tasks)
+      .set({
+        context: {
+          ...existingContext,
+          planRejection: {
+            feedback,
+            rejectedAt: rejectedAt.toISOString(),
+            rejectedBy: user?.id ?? apiAccount?.id ?? null,
+          },
+        },
+        updatedAt: rejectedAt,
+      })
+      .where(and(eq(tasks.id, id), sql`${tasks.context} -> 'planRejection' IS NULL`))
+      .returning({ id: tasks.id });
+
+    if (!rejected) {
+      // Someone else rejected this plan between our read and our write.
+      return NextResponse.json({ error: 'Plan already rejected' }, { status: 409 });
+    }
+
+    // Create a new planning task with feedback context
     const [newTask] = await db
       .insert(tasks)
       .values({
