@@ -6675,6 +6675,225 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     const capWarning = warnCalls.find((c: any[]) => String(c[0]).includes('cap hit'));
     expect(capWarning).toBeDefined();
   });
+
+  it('full payload shape: all 7 required fields present on path_overlap_detected event', async () => {
+    // Verifies the complete event contract; removing the detection block drops this test.
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['packages/core/path-claim.ts'],
+      task: { pathManifest: ['packages/core/path-claim.ts'] },
+    }]);
+
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['packages/core/path-claim.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const overlapCalls = mockTriggerEvent.mock.calls.filter((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapCalls.length).toBe(1);
+    const payload = overlapCalls[0][2];
+    expect(payload.detectedWorkerId).toBe('worker-1');
+    expect(payload.detectedTaskId).toBe('task-1');
+    expect(payload.siblingWorkerId).toBe('worker-2');
+    expect(payload.siblingTaskId).toBe('task-2');
+    expect(Array.isArray(payload.overlappingPaths)).toBe(true);
+    expect(payload.overlappingPaths).toContain('packages/core/path-claim.ts');
+    expect(payload.detectedByBranch).toBe('buildd/task-1');
+    expect(payload.detectedBySha).toBe('abc123');
+  });
+
+  it('prefix overlap: reporter touches parent directory, sibling touches a file within it → fires', async () => {
+    // `packages/core` must overlap `packages/core/path-claim.ts` via prefix matching.
+    // This exercises the `nsp.startsWith(np + '/')` branch in the overlap filter.
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['packages/core/path-claim.ts'],
+      task: { pathManifest: ['packages/core/path-claim.ts'] },
+    }]);
+
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+
+    // Reporter only accumulated the directory path, not the specific file.
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['packages/core'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeDefined();
+    expect(overlapEvent![2].siblingTaskId).toBe('task-2');
+    // Reporter path is in overlappingPaths (the reporter's directory is the match anchor)
+    expect(overlapEvent![2].overlappingPaths).toContain('packages/core');
+  });
+
+  it('no path overlap: sibling touches different files → NO notice', async () => {
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['apps/runner/index.ts'],
+      task: { pathManifest: ['apps/runner/index.ts'] },
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find((u: any) => u.context?.pendingWorkerMessages?.length > 0);
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('sibling observedTouches null → NO notice (app-level null guard)', async () => {
+    // WHERE clause has `not(isNull(workers.observedTouches))` but the mock bypasses
+    // SQL. The app-level `if (siblingTouches.length === 0) continue` catches null.
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: null,
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find((u: any) => u.context?.pendingWorkerMessages?.length > 0);
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('sibling observedTouches empty array → NO notice', async () => {
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: [],
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] },
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find((u: any) => u.context?.pendingWorkerMessages?.length > 0);
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('sibling terminal (completed/failed/error) → NO notice (filtered by DB WHERE clause)', async () => {
+    // `not(inArray(workers.status, TERMINAL_WORKER_STATUSES))` in the query means
+    // terminal siblings never reach the app-level loop. Simulated by empty result.
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
+    expect(overlapEvent).toBeUndefined();
+  });
 });
 
 // ── Human instruction delivery (C1/C2/C6) ─────────────────────────────────────
