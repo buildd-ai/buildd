@@ -76,6 +76,20 @@ MUST_FAIL = [
 ]
 
 
+# The escape hatch must be usable without being triggerable by mention. An
+# unanchored pattern matched its own documentation and disabled the check on the
+# PR that introduced it.
+ALLOW_MUST_NOT_TRIGGER = [
+    "- **`no-prod-data: allow <reason>` escape hatch.**",
+    "documented at `no-prod-data: allow` in CLAUDE.md",
+    "we could add a no-prod-data: allow marker later",
+]
+ALLOW_MUST_TRIGGER = [
+    "no-prod-data: allow documenting the pattern itself",
+    "  no-prod-data: allow third-party star counts",
+]
+
+
 def main() -> int:
     bad = []
     for line in MUST_PASS:
@@ -85,19 +99,28 @@ def main() -> int:
         if not flags(line):
             bad.append(f"MISSED:         {line!r}")
 
+    for line in ALLOW_MUST_NOT_TRIGGER:
+        if chk.ALLOW_RE.search(line):
+            bad.append(f"ALLOW TRIGGERED BY MENTION: {line!r}")
+    for line in ALLOW_MUST_TRIGGER:
+        if not chk.ALLOW_RE.search(line):
+            bad.append(f"ALLOW NOT HONOURED: {line!r}")
+
     # masking must never leak digits or hex
     masked = chk.mask("3,521 rows and d2cb1c29-3f92-4ea1-ba0c-fe8b41ccf3b5")
     if any(c.isdigit() for c in masked):
         bad.append(f"MASK LEAKS DIGITS: {masked!r}")
 
-    total = len(MUST_PASS) + len(MUST_FAIL) + 1
+    total = (len(MUST_PASS) + len(MUST_FAIL)
+             + len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER) + 1)
     if bad:
         print(f"{len(bad)} of {total} failed:")
         for b in bad:
             print("  " + b)
         return 1
     print(f"all {total} cases pass "
-          f"({len(MUST_PASS)} must-pass, {len(MUST_FAIL)} must-fail, 1 masking)")
+          f"({len(MUST_PASS)} must-pass, {len(MUST_FAIL)} must-fail, "
+          f"{len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER)} escape-hatch, 1 masking)")
     return 0
 
 

@@ -27,7 +27,7 @@ handle and private repo names committed to a public repository. It arrives via
 NO_PROD_DATA_IDENTIFIERS as a regex alternation. When unset, that half is
 skipped and the script says so rather than passing quietly.
 
-Escape hatch: a line containing `no-prod-data: allow <reason>` in the PR body
+Escape hatch: a line STARTING with `no-prod-data: allow <reason>` in the PR body
 suppresses the count/UUID rules for that PR, and is reported. Documenting this
 check necessarily instantiates the patterns it forbids.
 
@@ -110,7 +110,11 @@ UUID_RE = re.compile(
 )
 PROD_CONTEXT_RE = re.compile(PROD_CONTEXT, re.I)
 
-ALLOW_RE = re.compile(r"no-prod-data:\s*allow\b(.*)", re.I)
+# Must start a line and carry a reason. An unanchored version matched its own
+# documentation -- a PR body that merely named the marker, inside backticks,
+# switched the check off on that PR. Mentioning the escape hatch must not be
+# the same act as using it.
+ALLOW_RE = re.compile(r"^[ \t]*no-prod-data:[ \t]*allow[ \t]+(\S.*)$", re.I | re.M)
 
 # This file documents the categories it forbids, so exclude it from the scan of
 # added lines or it flags its own docstring.
