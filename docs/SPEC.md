@@ -269,10 +269,12 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 
 ## 5. MCP
 
-Two tools exposed (HTTP MCP at `/api/mcp`): **`buildd`** (task actions —
-claim/update/create_pr/create_artifact/complete/get_task/send_agent_message/…) and
-**`buildd_memory`** (workspace knowledge — search/save/update/delete). claude.ai and
-other MCP clients connect via workspace-scoped OAuth (`mcp-oauth/[workspace]`).
+Four tools exposed (HTTP MCP at `/api/mcp`): **`buildd`** (task + admin actions —
+claim/update/create_pr/create_artifact/complete/get_task/send_agent_message/
+memory_delete/consolidate_knowledge/…), **`recall`** (read knowledge), **`learn`**
+(write knowledge), and **`buildd_memory`** (deprecated — superseded by
+recall/learn in #1944, still routed for compatibility). claude.ai and other MCP
+clients connect via workspace-scoped OAuth (`mcp-oauth/[workspace]`).
 
 ---
 

@@ -24,13 +24,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### knowledge (1)
 
-- [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-07-18
+- [Knowledge Store Retrieval](./knowledge-store-retrieval.md) · @max — verified 2026-08-31
   The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
 
 ### mcp (2)
 
-- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-07-18
-  The MCP server at /api/mcp MUST expose exactly the buildd and buildd_memory tools over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate each action by the token's privilege level.
+- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-08-31
+  The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-07-18
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 

@@ -2,7 +2,7 @@
 title: Knowledge Store Retrieval
 status: active
 owner: max
-last_verified: 2026-07-18
+last_verified: 2026-08-31
 summary: The knowledge store MUST ingest every corpus into knowledge_chunks as idempotent (namespace, source_id) rows and retrieve them via RRF-fused vector plus BM25 search, falling back to lexical-only with no embedder.
 domain: knowledge
 surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowledge-store/ingest.ts, packages/core/knowledge-store/chunker.ts, packages/core/mcp-tools.ts]
@@ -122,21 +122,24 @@ and return at most `topK` results scoped to the given namespace.
 ## Memory Mirroring
 
 **Invariants**:
-- When `buildd_memory save` or `update` is called, the MCP handler MUST mirror
-  the memory into `knowledge_chunks` (namespace `{workspaceId}:memory`) via a
-  best-effort `upsert` — failures MUST NOT block the memory save.
-- When `buildd_memory delete` is called, the corresponding chunk MUST be deleted
-  from `knowledge_chunks` (best-effort).
-- The external memory service (`memory.buildd.dev`) remains the source of truth
-  for memories; `knowledge_chunks` holds a searchable mirror.
+- When a memory is written (`learn`, or the deprecated `buildd_memory
+  save`/`update`), the MCP handler MUST mirror it into `knowledge_chunks`
+  (namespace `{workspaceId}:memory`) via a best-effort `upsert` — failures MUST
+  NOT block the memory save.
+- When a memory is deleted (`buildd` action=memory_delete, or the deprecated
+  `buildd_memory delete`), the corresponding chunk MUST be deleted from
+  `knowledge_chunks` (best-effort).
+- The `memories` table is the source of truth, read and written in-process via
+  `packages/core/memory-store.ts`; `knowledge_chunks` holds a searchable mirror.
+  The standalone `memory.buildd.dev` service was absorbed into the buildd DB in
+  #1944 and is no longer a dependency.
 
 **Acceptance criteria**:
-- AC-11: GIVEN a successful `buildd_memory save` WHEN the upsert to
-  `knowledge_chunks` fails THEN the memory save still succeeds (best-effort
-  mirror).
-- AC-12: GIVEN a memory that exists in both the external service and
-  `knowledge_chunks` WHEN `buildd_memory delete` is called THEN the
-  `knowledge_chunks` row for that memory is removed.
+- AC-11: GIVEN a successful memory write WHEN the upsert to `knowledge_chunks`
+  fails THEN the memory save still succeeds (best-effort mirror).
+- AC-12: GIVEN a memory that exists in both the `memories` table and
+  `knowledge_chunks` WHEN it is deleted THEN the `knowledge_chunks` row for that
+  memory is removed.
 
 **Code surface**:
 - Mirror logic: `packages/core/mcp-tools.ts` — `handleMemoryAction()`
