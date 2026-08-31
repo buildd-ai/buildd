@@ -10,8 +10,17 @@
 import { rmSync } from 'fs';
 import { spawn } from 'child_process';
 
-/** Abort the index build after this many milliseconds. */
-export const CBM_INDEX_TIMEOUT_MS = 30_000;
+import { cbmRuntimeDirFor, ensureCbmRuntimeDir } from './cbm-enforcement';
+
+/**
+ * Abort the index build after this many milliseconds.
+ *
+ * 0.9.0 indexed the buildd repo in ~10s. 0.10.x rebuilt the index pipeline and
+ * added a daemon cold start on the first command: a cold default-mode run
+ * measured 32s in the worker image — past the old 30s budget. A timeout also
+ * deletes the cache dir, so the agent then starts cold; headroom is cheaper.
+ */
+export const CBM_INDEX_TIMEOUT_MS = 60_000;
 
 export interface CbmServerConfig {
   command: string;
@@ -31,6 +40,8 @@ function resolveCbmEnv(
   const merged: Record<string, string> = {
     ...baseEnv,
     CBM_CACHE_DIR: cbmCacheDir,
+    // Per-worker daemon coordination dir — see cbmRuntimeDirFor.
+    CBM_RUNTIME_DIR: cbmRuntimeDirFor(cbmCacheDir),
     CBM_ALLOWED_ROOT: worktreePath,
     CBM_AUTO_WATCH: 'false',
     // Soft memory hint (not a hard RSS cap). Measured buildd RSS: 650-800 MB at 512; raised to 1024.
@@ -63,7 +74,7 @@ export interface CbmBootstrapOptions {
  * but without a warm cache.
  *
  * `--repo-path` is required. A bare trailing positional is parsed as raw JSON
- * args by CBM 0.9.0, so it never populates repo_path: the index worker exits 1
+ * args (checked on 0.9.0 and 0.10.8), so it never populates repo_path: the index worker exits 1
  * with `repo_path is required` in its own log, while the server reports the
  * misleading `"Indexing worker crashed on a file"`. That mismatch made this look
  * like a bad source file rather than an argv bug.
@@ -82,6 +93,8 @@ export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBoo
   } = opts;
 
   const cbmCacheDir = `/tmp/cbm-${workerId}`;
+  // The daemon needs its 0700 coordination dir to exist before the first command.
+  try { ensureCbmRuntimeDir(cbmCacheDir); } catch { /* best-effort; CBM reports the failure */ }
   const resolvedEnv = resolveCbmEnv(serverConfig.env, cbmCacheDir, worktreePath);
   const start = Date.now();
 

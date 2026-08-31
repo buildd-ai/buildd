@@ -9,11 +9,15 @@ import { describe, test, expect } from 'bun:test';
 import {
   buildCbmActivation,
   buildCbmMcpEntry,
+  ensureCbmRuntimeDir,
   CBM_BLOCKED_TOOLS,
   CBM_ALLOWED_TOOLS,
   type CbmContext,
 } from '../../src/cbm-enforcement';
 import { CBM_BINARY_PATH } from '../../src/bwrap-mount-allowlist';
+import { mkdirSync, mkdtempSync, rmSync, statSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 /** A pathExists stub that pretends the CBM binary is present. */
 const binaryPresent = (p: string) => p === CBM_BINARY_PATH;
@@ -66,6 +70,50 @@ describe('buildCbmActivation', () => {
   });
 });
 
+describe('per-worker daemon runtime dir', () => {
+  test('activation exposes a runtime dir nested in the cache dir', () => {
+    const r = buildCbmActivation({ ...BASE, workerId: 'worker-1' });
+    expect(r.cbmRuntimeDir).toBe('/tmp/cbm-worker-1/run');
+  });
+
+  test('runtime dir is scoped per worker so concurrent workers get separate daemons', () => {
+    // CBM 0.10.x refuses to start when an active account daemon holds a
+    // different CBM_CACHE_DIR. Per-worker cache dirs therefore need per-worker
+    // runtime dirs, or only the first concurrent worker on a host gets CBM.
+    const a = buildCbmActivation({ ...BASE, workerId: 'worker-a' }).cbmRuntimeDir;
+    const b = buildCbmActivation({ ...BASE, workerId: 'worker-b' }).cbmRuntimeDir;
+    expect(a).not.toBe(b);
+  });
+
+  test('ensureCbmRuntimeDir creates the dir with mode 0700', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cbm-rt-'));
+    const runtimeDir = ensureCbmRuntimeDir(cacheDir);
+    expect(runtimeDir).toBe(join(cacheDir, 'run'));
+    // A looser mode makes CBM fail with "secure CLI coordination could not be
+    // created (endpoint)" — verified against 0.10.8 in the worker image.
+    expect(statSync(runtimeDir).mode & 0o777).toBe(0o700);
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  test('ensureCbmRuntimeDir tightens the mode of a pre-existing dir', () => {
+    const cacheDir = mkdtempSync(join(tmpdir(), 'cbm-rt-'));
+    mkdirSync(join(cacheDir, 'run'), { mode: 0o755 });
+    ensureCbmRuntimeDir(cacheDir);
+    expect(statSync(join(cacheDir, 'run')).mode & 0o777).toBe(0o700);
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  test('the daemon socket path stays inside the sun_path limit', () => {
+    // <runtime>/cbm-daemon-<uid>/cbm-<16 hex>.anc must fit in 108 bytes.
+    const runtimeDir = buildCbmActivation({
+      ...BASE,
+      workerId: '11111111-2222-3333-4444-555555555555',
+    }).cbmRuntimeDir!;
+    const socketPath = join(runtimeDir, 'cbm-daemon-1000', `cbm-${'0'.repeat(16)}.anc`);
+    expect(socketPath.length).toBeLessThan(108);
+  });
+});
+
 describe('buildCbmMcpEntry', () => {
   const entry = buildCbmMcpEntry('/repo/.buildd-worktrees/branch-x', '/tmp/cbm-abc-123');
 
@@ -89,6 +137,10 @@ describe('buildCbmMcpEntry', () => {
 
   test('caps memory budget to 1024 MB', () => {
     expect(entry.env.CBM_MEM_BUDGET_MB).toBe('1024');
+  });
+
+  test('isolates the daemon runtime dir per worker', () => {
+    expect(entry.env.CBM_RUNTIME_DIR).toBe('/tmp/cbm-abc-123/run');
   });
 
   test('CBM_ALLOWED_ROOT reflects the actual sessionCwd (no stale path)', () => {
