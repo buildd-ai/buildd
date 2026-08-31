@@ -79,6 +79,16 @@ const workerWithoutCbm = {
   resultMeta: { stopReason: 'end_turn', durationMs: 0, durationApiMs: 0, numTurns: 5, modelUsage: {} },
 };
 
+let workerSeq = 0;
+/** Build a worker row carrying an arbitrary cbm record. */
+function mkWorker(cbm: Record<string, unknown>, inputTokens: number) {
+  return {
+    id: `w-gen-${++workerSeq}`,
+    inputTokens,
+    resultMeta: { stopReason: 'end_turn', durationMs: 0, durationApiMs: 0, numTurns: 1, modelUsage: {}, cbm },
+  };
+}
+
 describe('GET /api/cbm/metrics', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
@@ -239,5 +249,215 @@ describe('GET /api/cbm/metrics', () => {
     const body = await res.json();
     expect(body.totalTracked).toBe(1);
     expect(body.cbmActive.count).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // FIX 1 — control-group contamination
+  // ---------------------------------------------------------------------------
+
+  it('counts legacy_mcp_json workers as CBM-active, never as the baseline', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockWorkersFindMany.mockResolvedValue([mkWorker({
+      outcome: 'legacy_mcp_json',
+      toolCalls: { search_code: 2 },
+      totalCbmCalls: 2,
+      readCount: 1, grepCount: 1, globCount: 0,
+    }, 7000)]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.cbmActive.count).toBe(1);
+    expect(body.cbmActive.byOutcome.legacy_mcp_json).toBe(1);
+    expect(body.cbmDisabled.count).toBe(0);
+    expect(body.cbmDisabled.comparableCount).toBe(0);
+  });
+
+  it('excludes disabled rows that recorded CBM tool usage from the comparison baseline', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    // role_opt_out (so not filtered by the binary_absent rule) but the row carries
+    // real graph calls: codebase-memory was mounted by a connector / project
+    // .mcp.json even though the harness did not enforce it. Not a control.
+    const contaminated = mkWorker({
+      outcome: 'disabled',
+      disableReason: 'role_opt_out',
+      toolCalls: { search_code: 4 },
+      totalCbmCalls: 4,
+      readCount: 9, grepCount: 4, globCount: 2,
+    }, 11000);
+    mockWorkersFindMany.mockResolvedValue([
+      ...Array(5).fill(workerWithCbmEnforced),
+      ...Array(5).fill(contaminated),
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.cbmDisabled.count).toBe(5);
+    expect(body.cbmDisabled.comparableCount).toBe(0);
+    expect(body.cbmDisabled.excludedFromComparable.recorded_cbm_usage).toBe(5);
+    // No usable control cohort → deltas must be suppressed.
+    expect(body.specTargets.inputTokenDeltaPct).toBeNull();
+    expect(body.specTargets.deltasSuppressedBecause).toBe('insufficient_cohort');
+  });
+
+  it('reports how many baseline rows were excluded and why', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    const clean = mkWorker({
+      outcome: 'disabled', disableReason: 'role_opt_out',
+      toolCalls: {}, totalCbmCalls: 0, readCount: 10, grepCount: 5, globCount: 3,
+    }, 12000);
+    const contaminated = mkWorker({
+      outcome: 'disabled', disableReason: 'no_worktree',
+      toolCalls: { query_graph: 1 }, totalCbmCalls: 1, readCount: 2, grepCount: 0, globCount: 0,
+    }, 9000);
+    mockWorkersFindMany.mockResolvedValue([
+      workerWithCbmDisabled,   // binary_absent
+      clean,
+      contaminated,
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.cbmDisabled.count).toBe(3);
+    expect(body.cbmDisabled.comparableCount).toBe(1);
+    expect(body.cbmDisabled.excludedFromComparable).toEqual({
+      binary_absent: 1,
+      recorded_cbm_usage: 1,
+      total: 2,
+    });
+  });
+
+  it('counts a binary_absent row that recorded CBM usage only once as excluded', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    const both = mkWorker({
+      outcome: 'disabled', disableReason: 'binary_absent',
+      toolCalls: { search_code: 3 }, totalCbmCalls: 3, readCount: 1, grepCount: 1, globCount: 1,
+    }, 9000);
+    mockWorkersFindMany.mockResolvedValue([both]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.cbmDisabled.excludedFromComparable.total).toBe(1);
+    expect(body.cbmDisabled.comparableCount).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // FIX 2 — fallback denominator + index-build failure
+  // ---------------------------------------------------------------------------
+
+  it('excludes by-design skips from the eligible fallback denominator', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    const skip = (reason: string) => mkWorker({
+      outcome: 'disabled', disableReason: reason,
+      toolCalls: {}, totalCbmCalls: 0, readCount: 1, grepCount: 0, globCount: 0,
+    }, 5000);
+    mockWorkersFindMany.mockResolvedValue([
+      ...Array(4).fill(workerWithCbmEnforced),
+      skip('codex_task'), skip('codex_task'),
+      skip('no_worktree'), skip('no_worktree'),
+      skip('role_opt_out'), skip('role_opt_out'),
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    // Old field keeps its old (contaminated) meaning: 6 disabled / 10 tracked.
+    expect(body.fallbackRate).toBe(0.6);
+    // New field: no eligible case failed → 0, and the spec target is reachable.
+    expect(body.eligibleFallbackRate).toBe(0);
+    expect(body.eligibility.eligibleCount).toBe(4);
+    expect(body.eligibility.fallbackCount).toBe(0);
+    expect(body.eligibility.byDesignSkipCount).toBe(6);
+    expect(body.eligibility.byDesignSkips).toEqual({
+      codex_task: 2, no_worktree: 2, role_opt_out: 2,
+    });
+    expect(body.specTargets.eligibleFallbackRateMet).toBe(true);
+  });
+
+  it('counts binary_absent as a real fallback inside the eligible denominator', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockWorkersFindMany.mockResolvedValue([
+      ...Array(9).fill(workerWithCbmEnforced),
+      workerWithCbmDisabled, // binary_absent
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.eligibleFallbackRate).toBeCloseTo(0.1, 6);
+    expect(body.eligibility.eligibleCount).toBe(10);
+    expect(body.eligibility.fallbackCount).toBe(1);
+    expect(body.specTargets.eligibleFallbackRateMet).toBe(false);
+  });
+
+  it('treats a disabled row with an unknown reason as an eligible fallback', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockWorkersFindMany.mockResolvedValue([
+      workerWithCbmEnforced,
+      mkWorker({ outcome: 'disabled', toolCalls: {}, totalCbmCalls: 0, readCount: 0, grepCount: 0, globCount: 0 }, 1000),
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.eligibility.eligibleCount).toBe(2);
+    expect(body.eligibility.fallbackCount).toBe(1);
+    expect(body.eligibleFallbackRate).toBe(0.5);
+  });
+
+  it('surfaces index-build failures as a first-class metric aggregated from bootstrapResult', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    const bootstrapped = (result: 'ok' | 'failed', failReason?: string) => mkWorker({
+      outcome: 'enforced',
+      bootstrapResult: result,
+      ...(failReason ? { bootstrapFailReason: failReason } : {}),
+      toolCalls: { search_code: 1 }, totalCbmCalls: 1,
+      readCount: 1, grepCount: 0, globCount: 0,
+    }, 8000);
+    mockWorkersFindMany.mockResolvedValue([
+      bootstrapped('ok'),
+      bootstrapped('ok'),
+      bootstrapped('failed', 'index_timeout'),
+      bootstrapped('failed', 'index_timeout'),
+      workerWithCbmEnforced, // enforced but never reported a bootstrapResult
+    ]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.indexBuild.attempted).toBe(4);
+    expect(body.indexBuild.ok).toBe(2);
+    expect(body.indexBuild.failed).toBe(2);
+    expect(body.indexBuild.failureRate).toBe(0.5);
+    expect(body.indexBuild.failReasons).toEqual({ index_timeout: 2 });
+    expect(body.indexBuild.unreported).toBe(1);
+    expect(body.specTargets.indexBuildFailureRateMet).toBe(false);
+  });
+
+  it('reports a null index-build failure rate when no bootstrap ever ran', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockWorkersFindMany.mockResolvedValue([workerWithCbmDisabled]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.indexBuild.attempted).toBe(0);
+    expect(body.indexBuild.failureRate).toBeNull();
+    expect(body.specTargets.indexBuildFailureRateMet).toBeNull();
+  });
+
+  it('keeps the deprecated fallbackRate/fallbackRateMet fields at their original meaning', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(adminAccount);
+    mockWorkersFindMany.mockResolvedValue([workerWithCbmEnforced, workerWithCbmDisabled]);
+    const res = await GET(makeRequest({}, 'bld_admin'));
+    const body = await res.json();
+    expect(body.fallbackRate).toBe(0.5); // all disabled / totalTracked
+    expect(body.specTargets.fallbackRateMet).toBe(false);
+    expect(body.specTargets.fallbackRateTarget).toBe(0.05);
+  });
+
+  it('includes the new fields in the empty response', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@example.com' });
+    mockGetUserTeamIds.mockResolvedValue([]); // no teams → early empty response
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.eligibleFallbackRate).toBeNull();
+    expect(body.eligibility).toEqual({
+      eligibleCount: 0, fallbackCount: 0, byDesignSkipCount: 0, byDesignSkips: {},
+    });
+    expect(body.indexBuild).toEqual({
+      attempted: 0, ok: 0, failed: 0, failureRate: null, unreported: 0, failReasons: {},
+    });
+    expect(body.cbmActive.byOutcome).toEqual({});
+    expect(body.cbmDisabled.excludedFromComparable).toEqual({
+      binary_absent: 0, recorded_cbm_usage: 0, total: 0,
+    });
+    expect(body.specTargets.eligibleFallbackRateMet).toBeNull();
+    expect(body.specTargets.indexBuildFailureRateMet).toBeNull();
   });
 });

@@ -4,12 +4,16 @@ import { mock } from 'bun:test';
 // Controlled DB results — mutated per test.
 let findManyResult: Array<{ resultMeta: unknown }> = [];
 let reportOpsCalls: Array<unknown> = [];
+let findManyArgs: Array<Record<string, unknown>> = [];
 
 mock.module('../db', () => ({
   db: {
     query: {
       workers: {
-        findMany: () => Promise.resolve(findManyResult),
+        findMany: (args: Record<string, unknown>) => {
+          findManyArgs.push(args);
+          return Promise.resolve(findManyResult);
+        },
       },
     },
   },
@@ -18,8 +22,9 @@ mock.module('../db/schema', () => ({ workers: { workspaceId: 'wid', status: 'st'
 mock.module('drizzle-orm', () => ({
   and: (...a: unknown[]) => a,
   desc: (c: unknown) => c,
-  eq: (a: unknown, b: unknown) => [a, b],
-  isNotNull: (c: unknown) => c,
+  eq: (a: unknown, b: unknown) => ['eq', a, b],
+  isNotNull: (c: unknown) => ['isNotNull', c],
+  inArray: (c: unknown, vals: unknown) => ['inArray', c, vals],
 }));
 mock.module('../report-ops', () => ({
   reportOps: (input: unknown) => {
@@ -33,6 +38,7 @@ import {
   CBM_FLEET_THRESHOLD,
   detectCbmEnforcedUnused,
   CBM_UNUSED_THRESHOLD,
+  CBM_HEALTH_TERMINAL_STATUSES,
 } from '../cbm-health';
 
 const WS = 'ws-abc-123';
@@ -49,6 +55,7 @@ describe('detectCbmFleetDisabled', () => {
   beforeEach(() => {
     findManyResult = [];
     reportOpsCalls = [];
+    findManyArgs = [];
     process.env.OPS_ALERTS_ENABLED = '1';
   });
 
@@ -89,6 +96,35 @@ describe('detectCbmFleetDisabled', () => {
     expect(String(call.dedupeKey)).toContain(WS);
   });
 
+
+  it('counts failed and error workers in the streak, not only completed ones', async () => {
+    // A workspace where every worker DIES is exactly what binary_absent causes;
+    // scoping the history query to completed workers meant it could never page.
+    expect(CBM_HEALTH_TERMINAL_STATUSES).toEqual(['completed', 'failed', 'error']);
+    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBinaryAbsentRow());
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'binary_absent' });
+    const where = JSON.stringify(findManyArgs[0]?.where);
+    expect(where).toContain('failed');
+    expect(where).toContain('error');
+    expect(where).toContain('completed');
+    expect(reportOpsCalls).toHaveLength(1);
+  });
+
+  it('still requires the full streak — one transient failure does not page', async () => {
+    findManyResult = [
+      makeEnforcedRow(),
+      ...Array(CBM_FLEET_THRESHOLD - 2).fill(makeBinaryAbsentRow()),
+    ];
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'binary_absent' });
+    expect(reportOpsCalls).toHaveLength(0);
+    // Threshold and dedupe key must be untouched by the status widening.
+    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBinaryAbsentRow());
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'binary_absent' });
+    expect(reportOpsCalls).toHaveLength(1);
+    expect((reportOpsCalls[0] as Record<string, unknown>).dedupeKey)
+      .toBe(`cbm-fleet-disabled:${WS}`);
+  });
+
   it('is a no-op when OPS_ALERTS_ENABLED is not set', async () => {
     delete process.env.OPS_ALERTS_ENABLED;
     findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBinaryAbsentRow());
@@ -108,6 +144,7 @@ describe('detectCbmEnforcedUnused', () => {
   beforeEach(() => {
     findManyResult = [];
     reportOpsCalls = [];
+    findManyArgs = [];
     process.env.OPS_ALERTS_ENABLED = '1';
   });
 
@@ -149,6 +186,15 @@ describe('detectCbmEnforcedUnused', () => {
     findManyResult = Array.from({ length: 2 }, mountedUnused);
     await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
     expect(reportOpsCalls.length).toBe(0);
+  });
+
+
+  it('stays scoped to completed workers — a crashed session makes no graph calls', async () => {
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    const where = JSON.stringify(findManyArgs[0]?.where);
+    expect(where).toContain('completed');
+    expect(where).not.toContain('failed');
   });
 
   it('is a no-op when ops alerting is disabled', async () => {
