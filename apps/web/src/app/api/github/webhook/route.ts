@@ -597,7 +597,17 @@ async function handlePullRequestEvent(event: {
   // Knowledge ingestion (KM v2 spec §3): ANY merged PR on a repo bound to one
   // or more workspaces enqueues a diff ingest job per workspace, then kicks
   // execution after the response is sent. Fully best-effort — never fails the
-  // webhook, and jobs stay queued (retryable) if background execution is lost.
+  // webhook.
+  //
+  // This after() call is the ONLY executor of diff jobs, so a lost background
+  // run used to strand the job permanently. Durability now comes from the lease
+  // taken by runDiffIngestJob: a run killed mid-flight leaves a lease that
+  // lapses, and the next reclaim trigger (a runner claim poll, a manual enqueue,
+  // or a redelivery of this same webhook) requeues it — enqueueMergedPrIngestJobs
+  // returns reclaimed ids alongside newly inserted ones, so a redelivery
+  // actually re-runs the lost job instead of being swallowed by the idempotency
+  // index. Beyond the attempt ceiling the row is parked in `error` and the
+  // file contents are recovered by an escalated full ingest.
   try {
     const jobIds = await enqueueMergedPrIngestJobs({
       repoFullName: repository.full_name,

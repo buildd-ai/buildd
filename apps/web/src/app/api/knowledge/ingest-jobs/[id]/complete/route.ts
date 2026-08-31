@@ -74,6 +74,9 @@ export async function POST(
     .set({
       status,
       finishedAt: new Date(),
+      // Release the lease: a terminal job must not look reclaimable.
+      leaseOwner: null,
+      leaseExpiresAt: null,
       ...(stats ? { stats } : {}),
       ...(changedFiles ? { changedFiles } : {}),
       ...(status === 'error' && typeof body.error === 'string' ? { error: body.error } : {}),

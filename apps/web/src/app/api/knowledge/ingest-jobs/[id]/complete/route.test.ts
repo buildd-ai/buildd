@@ -139,6 +139,14 @@ describe('POST /api/knowledge/ingest-jobs/[id]/complete', () => {
     expect(deleteCalls.length).toBe(0);
   });
 
+  it('C12: releases the lease when the job reaches a terminal state', async () => {
+    // A finished job must not keep a lease that the reclaimer would later act on.
+    await POST(createRequest({ status: 'done' }), params());
+    const transition = updateCalls.find(c => c.table === knowledgeIngestJobs && c.set.status);
+    expect(transition?.set.leaseOwner).toBeNull();
+    expect(transition?.set.leaseExpiresAt).toBeNull();
+  });
+
   it('marks the job error with the error message', async () => {
     const res = await POST(createRequest({ status: 'error', error: 'clone missing' }), params());
     expect(res.status).toBe(200);

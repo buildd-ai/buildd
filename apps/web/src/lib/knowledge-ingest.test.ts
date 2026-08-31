@@ -153,7 +153,8 @@ mock.module('@buildd/core/knowledge-store', () => ({
 }));
 
 // Import AFTER mocks
-import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, extractGithubFullName } from './knowledge-ingest';
+import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, enqueueFullIngestJobDetailed, extractGithubFullName } from './knowledge-ingest';
+import { QUEUED_FULL_STALL_MS, FULL_LEASE_MS, MAX_INGEST_ATTEMPTS } from './knowledge-ingest-lease';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 const baseJob = {
@@ -234,10 +235,16 @@ describe('enqueueMergedPrIngestJobs', () => {
     expect(insertCalls[1].values.workspaceId).toBe('ws-2');
   });
 
-  it('skips duplicate jobs (conflict → no returned row → no id)', async () => {
+  it('skips duplicate jobs when the blocking row is genuinely in flight', async () => {
     selectResults = (table: any) => {
       if (table === githubRepos) return [{ id: 'repo-uuid-1' }];
       if (table === workspaces) return [{ id: 'ws-1' }];
+      // The row that caused the conflict: running, lease still valid.
+      if (table === knowledgeIngestJobs) return [{
+        id: 'inflight-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', scope: 'diff',
+        status: 'running', attempts: 0, leaseOwner: 'serverless',
+        leaseExpiresAt: new Date(Date.now() + 60_000), startedAt: new Date(), createdAt: new Date(),
+      }];
       return [];
     };
     insertReturning = []; // simulated ON CONFLICT DO NOTHING
@@ -248,6 +255,107 @@ describe('enqueueMergedPrIngestJobs', () => {
     });
     expect(ids).toEqual([]);
     expect(insertCalls.length).toBe(1); // insert attempted, conflict swallowed
+  });
+
+  // ── C13: a lost diff job must be recoverable ───────────────────────────────
+
+  it('C13: a redelivery reclaims the wedged row and hands its id back for re-run', async () => {
+    // The `!= 'error'` idempotency predicate blocks the re-insert, so before the
+    // fix a redelivery of a silently-lost diff job did literally nothing.
+    selectResults = (table: any) => {
+      if (table === githubRepos) return [{ id: 'repo-uuid-1' }];
+      if (table === workspaces) return [{ id: 'ws-1' }];
+      if (table === knowledgeIngestJobs) return [{
+        id: 'wedged-diff-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', scope: 'diff',
+        status: 'running', attempts: 0, leaseOwner: 'serverless',
+        leaseExpiresAt: new Date(Date.now() - 60_000), // lapsed
+        startedAt: new Date(Date.now() - 3_600_000), createdAt: new Date(Date.now() - 3_600_000),
+      }];
+      return [];
+    };
+    insertReturning = [];
+    const ids = await enqueueMergedPrIngestJobs({
+      repoFullName: 'test-org/test-repo',
+      prNumber: 42,
+      sha: 'merge-sha-1',
+    });
+    expect(ids).toEqual(['wedged-diff-1']);
+    // Requeued rather than left wedged.
+    expect(updateCalls.some(c => c.set.status === 'queued' && c.set.attempts === 1)).toBe(true);
+  });
+
+  it('C13: a diff job past the attempt ceiling is parked and escalated to a full job', async () => {
+    selectResults = (table: any) => {
+      if (table === githubRepos) return [{ id: 'repo-uuid-1' }];
+      if (table === workspaces) return [{ id: 'ws-1' }];
+      if (table === knowledgeIngestJobs) return [{
+        id: 'dead-diff-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', scope: 'diff',
+        status: 'running', attempts: MAX_INGEST_ATTEMPTS, leaseOwner: 'serverless',
+        leaseExpiresAt: new Date(Date.now() - 60_000),
+        startedAt: new Date(Date.now() - 3_600_000), createdAt: new Date(Date.now() - 3_600_000),
+        sha: 'merge-sha-1', prNumber: 42,
+      }];
+      return [];
+    };
+    insertReturning = [];
+    const ids = await enqueueMergedPrIngestJobs({
+      repoFullName: 'test-org/test-repo',
+      prNumber: 42,
+      sha: 'merge-sha-1',
+    });
+    expect(ids).toEqual([]);
+    // Parked in `error` — which the idempotency predicate excludes, so the next
+    // redelivery can insert a fresh row.
+    expect(updateCalls.some(c => c.set.status === 'error')).toBe(true);
+    // ...and a full-scope recovery job was enqueued (the runner claim path takes it).
+    expect(insertCalls.some(c => c.values.scope === 'full')).toBe(true);
+  });
+});
+
+// ── enqueueFullIngestJobDetailed (C12) ───────────────────────────────────────
+describe('enqueueFullIngestJobDetailed', () => {
+  beforeEach(resetAll);
+
+  it('returns enqueued with the new job id when the slot is free', async () => {
+    activeFullJobRows = [];
+    const res = await enqueueFullIngestJobDetailed({ workspaceId: 'ws-1', repo: 'test-org/test-repo' });
+    expect(res).toEqual({ status: 'enqueued', jobId: 'new-job-1' });
+  });
+
+  it('returns already_queued while the blocking job is genuinely progressing', async () => {
+    activeFullJobRows = [{
+      id: 'active-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', scope: 'full',
+      status: 'running', attempts: 0, leaseOwner: 'runner-1',
+      leaseExpiresAt: new Date(Date.now() + FULL_LEASE_MS), startedAt: new Date(), createdAt: new Date(),
+    }];
+    const res = await enqueueFullIngestJobDetailed({ workspaceId: 'ws-1', repo: 'test-org/test-repo' });
+    expect(res.status).toBe('already_queued');
+    expect((res as any).job.id).toBe('active-1');
+    expect(insertCalls.length).toBe(0);
+  });
+
+  it('C12: returns stalled when the blocking job is wedged, not already_queued', async () => {
+    activeFullJobRows = [{
+      id: 'wedged-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', scope: 'full',
+      status: 'queued', attempts: 0, leaseOwner: null, leaseExpiresAt: null,
+      startedAt: null, heartbeatAt: null,
+      createdAt: new Date(Date.now() - QUEUED_FULL_STALL_MS - 60_000),
+    }];
+    const res = await enqueueFullIngestJobDetailed({ workspaceId: 'ws-1', repo: 'test-org/test-repo' });
+    expect(res.status).toBe('stalled');
+    expect((res as any).job.id).toBe('wedged-1');
+    expect((res as any).job.ageMs).toBeGreaterThan(QUEUED_FULL_STALL_MS);
+  });
+
+  it('enqueueFullIngestJob keeps its string|null contract for fire-and-forget callers', async () => {
+    activeFullJobRows = [];
+    expect(await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'test-org/test-repo' })).toBe('new-job-1');
+    activeFullJobRows = [{
+      id: 'active-1', workspaceId: 'ws-1', repo: 'test-org/test-repo', scope: 'full',
+      status: 'running', attempts: 0, leaseExpiresAt: new Date(Date.now() + FULL_LEASE_MS),
+      startedAt: new Date(), createdAt: new Date(),
+    }];
+    expect(await enqueueFullIngestJob({ workspaceId: 'ws-1', repo: 'test-org/test-repo' })).toBeNull();
   });
 });
 
@@ -261,6 +369,36 @@ describe('runDiffIngestJob', () => {
     expect(result).toEqual({ claimed: false });
     expect(mockGithubApi).not.toHaveBeenCalled();
     expect(updateCalls.length).toBe(1); // only the claim attempt
+  });
+
+  it('C12: stamps a lease on the serverless claim so a killed function is reclaimable', async () => {
+    prFilePages = [[]];
+    await runDiffIngestJob('job-1');
+    const claim = updateCalls[0].set;
+    expect(claim.status).toBe('running');
+    expect(claim.leaseOwner).toBe('serverless');
+    expect(claim.leaseExpiresAt).toBeInstanceOf(Date);
+    expect(claim.leaseExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(claim.heartbeatAt).toBeInstanceOf(Date);
+  });
+
+  it('releases the lease when the job finishes', async () => {
+    prFilePages = [[]];
+    await runDiffIngestJob('job-1');
+    const done = finalUpdate();
+    expect(done?.status).toBe('done');
+    expect(done?.leaseOwner).toBeNull();
+    expect(done?.leaseExpiresAt).toBeNull();
+  });
+
+  it('releases the lease when the job errors', async () => {
+    githubApiError = new Error('boom');
+    const result = await runDiffIngestJob('job-1');
+    expect((result as any).status).toBe('error');
+    const failed = finalUpdate();
+    expect(failed?.status).toBe('error');
+    expect(failed?.leaseOwner).toBeNull();
+    expect(failed?.leaseExpiresAt).toBeNull();
   });
 
   it('happy path: ingests changed files, deletes removed files, records stats', async () => {

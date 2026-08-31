@@ -7,8 +7,10 @@ const mockAuthenticateApiKey = mock(async () => null as any);
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
 
 const mockEnqueueFullIngestJob = mock(async () => 'job-id-1' as string | null);
+const mockEnqueueFullIngestJobDetailed = mock(async () => ({ status: 'enqueued', jobId: 'job-id-1' }) as any);
 mock.module('@/lib/knowledge-ingest', () => ({
   enqueueFullIngestJob: mockEnqueueFullIngestJob,
+  enqueueFullIngestJobDetailed: mockEnqueueFullIngestJobDetailed,
 }));
 
 let accessibleWorkspaceIds = new Set<string>(['ws-1']);
@@ -68,6 +70,8 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     mockAuthenticateApiKey.mockResolvedValue(adminAccount);
     mockEnqueueFullIngestJob.mockReset();
     mockEnqueueFullIngestJob.mockResolvedValue('job-id-1');
+    mockEnqueueFullIngestJobDetailed.mockReset();
+    mockEnqueueFullIngestJobDetailed.mockResolvedValue({ status: 'enqueued', jobId: 'job-id-1' });
     joinResult = [{ repoFullName: 'test-org/test-repo' }];
     accessibleWorkspaceIds = new Set(['ws-1']);
   });
@@ -95,7 +99,7 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     accessibleWorkspaceIds = new Set();
     const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
     expect(res.status).toBe(404);
-    expect(mockEnqueueFullIngestJob).not.toHaveBeenCalled();
+    expect(mockEnqueueFullIngestJobDetailed).not.toHaveBeenCalled();
   });
 
   it('admin tokens bypass the workspace access check', async () => {
@@ -127,13 +131,36 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     expect(data.reason).toBe('no_github_repo');
   });
 
-  it('returns 200 with already_queued when enqueue returns null', async () => {
-    mockEnqueueFullIngestJob.mockResolvedValue(null);
+  it('returns 200 with already_queued when a job is genuinely in flight', async () => {
+    mockEnqueueFullIngestJobDetailed.mockResolvedValue({
+      status: 'already_queued',
+      job: { id: 'active-1', status: 'running', attempts: 0, ageMs: 5_000 },
+    });
     const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.job).toBeNull();
     expect(data.reason).toBe('already_queued');
+    expect(data.activeJob.id).toBe('active-1');
+  });
+
+  // ── C12: a wedged slot must not answer with a success shape forever ─────────
+
+  it('C12: returns 409 with reason=stalled when the blocking job is wedged', async () => {
+    // Before the fix this returned 200 + already_queued indefinitely, so a
+    // caller could never tell "in progress" from "stuck since last Tuesday".
+    mockEnqueueFullIngestJobDetailed.mockResolvedValue({
+      status: 'stalled',
+      job: { id: 'wedged-1', status: 'queued', attempts: 2, ageMs: 9_000_000 },
+    });
+    const res = await POST(makeRequest('POST', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(409);
+    const data = await res.json();
+    expect(data.job).toBeNull();
+    expect(data.reason).toBe('stalled');
+    expect(data.activeJob.id).toBe('wedged-1');
+    expect(data.activeJob.ageMs).toBe(9_000_000);
+    expect(data.activeJob.attempts).toBe(2);
   });
 
   it('returns 201 with job when successfully enqueued', async () => {
@@ -148,9 +175,9 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     expect(data.job.status).toBe('queued');
   });
 
-  it('calls enqueueFullIngestJob with correct params', async () => {
+  it('calls the enqueue helper with correct params', async () => {
     await POST(makeRequest('POST', { workspaceId: 'ws-abc' }));
-    expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith({
+    expect(mockEnqueueFullIngestJobDetailed).toHaveBeenCalledWith({
       workspaceId: 'ws-abc',
       repo: 'test-org/test-repo',
       trigger: 'manual',
@@ -162,7 +189,7 @@ describe('POST /api/knowledge/ingest-jobs', () => {
     expect(res.status).toBe(201);
     const data = await res.json();
     expect(data.job.trigger).toBe('backfill');
-    expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith(
+    expect(mockEnqueueFullIngestJobDetailed).toHaveBeenCalledWith(
       expect.objectContaining({ trigger: 'backfill' }),
     );
   });
@@ -170,7 +197,7 @@ describe('POST /api/knowledge/ingest-jobs', () => {
   it('defaults to trigger=manual for unknown trigger values', async () => {
     const res = await POST(makeRequest('POST', { workspaceId: 'ws-1', trigger: 'unknown' }));
     expect(res.status).toBe(201);
-    expect(mockEnqueueFullIngestJob).toHaveBeenCalledWith(
+    expect(mockEnqueueFullIngestJobDetailed).toHaveBeenCalledWith(
       expect.objectContaining({ trigger: 'manual' }),
     );
   });

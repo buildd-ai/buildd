@@ -9,13 +9,17 @@
  * /complete), which is fine for small repos but incurs Vercel billing for large ones.
  *
  * Auth: admin or worker-level API key. Trigger tokens are rejected.
+ *
+ * Response shapes: 201 + job (enqueued), 200 + reason=already_queued (a job is
+ * genuinely in flight), 409 + reason=stalled (a job holds the per-workspace slot
+ * and nothing is moving it), 422 + reason=no_github_repo.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos, knowledgeIngestJobs } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
+import { enqueueFullIngestJobDetailed } from '@/lib/knowledge-ingest';
 import { getIngestAccessibleWorkspaceIds } from '@/lib/knowledge-ingest-access';
 
 type TriggerValue = 'manual' | 'backfill' | 'repo_link' | 'scheduled';
@@ -73,21 +77,30 @@ export async function POST(req: NextRequest) {
   }
 
   const repoFullName = rows[0].repoFullName;
-  const jobId = await enqueueFullIngestJob({
+  const outcome = await enqueueFullIngestJobDetailed({
     workspaceId,
     repo: repoFullName,
     trigger,
   });
 
-  if (jobId === null) {
-    // A full job is already queued or running for this workspace — idempotent.
-    return NextResponse.json({ job: null, reason: 'already_queued' });
+  // A blocking job that is actually progressing is an idempotent no-op (200).
+  // A blocking job that nothing is moving is NOT success: it used to answer 200
+  // + already_queued forever, so a caller could never tell "in flight" from
+  // "wedged since last Tuesday". 409 + reason=stalled makes the wedge visible.
+  if (outcome.status === 'already_queued') {
+    return NextResponse.json({ job: null, reason: 'already_queued', activeJob: outcome.job });
+  }
+  if (outcome.status === 'stalled') {
+    return NextResponse.json(
+      { job: null, reason: 'stalled', activeJob: outcome.job },
+      { status: 409 },
+    );
   }
 
   return NextResponse.json(
     {
       job: {
-        id: jobId,
+        id: outcome.jobId,
         workspaceId,
         repo: repoFullName,
         trigger,

@@ -22,6 +22,15 @@ import {
   classifyIngestCorpus,
   MAX_INGEST_FILE_BYTES,
 } from '@buildd/core/knowledge-store/ingest-filter';
+import {
+  classifyIngestJobLiveness,
+  queuedAgeMs,
+  reclaimStaleIngestJobs,
+  recoverBlockedDiffJob,
+  DIFF_LEASE_MS,
+} from '@/lib/knowledge-ingest-lease';
+
+type IngestJob = typeof knowledgeIngestJobs.$inferSelect;
 
 export const MAX_DIFF_FILES = 100;
 export const MAX_DIFF_TOTAL_BYTES = 2 * 1024 * 1024;
@@ -42,25 +51,47 @@ export function extractGithubFullName(repoUrl: string): string | null {
   return null;
 }
 
+export interface BlockingIngestJob {
+  id: string;
+  status: string;
+  attempts: number;
+  /** How long the blocking job has sat in its current state. */
+  ageMs: number;
+  leaseOwner: string | null;
+}
+
+export type FullEnqueueOutcome =
+  | { status: 'enqueued'; jobId: string }
+  /** A job holds the slot and is demonstrably alive (fresh lease, or recently queued). */
+  | { status: 'already_queued'; job: BlockingIngestJob }
+  /** A job holds the slot and nothing is moving it. Callers must not read this as success. */
+  | { status: 'stalled'; job: BlockingIngestJob };
+
 /**
- * Enqueue a full ingest job for a workspace+repo pair (spec §1.2).
+ * Enqueue a full ingest job for a workspace+repo pair (spec §1.2), reporting
+ * *why* when the enqueue is a no-op.
  *
- * Per-workspace lock: if a full job is already queued or running for this
- * workspace+repo, skip the insert and return null. The partial unique index
+ * Per-workspace lock: the partial unique index
  * `knowledge_ingest_jobs_active_full_idx` on (workspace_id, repo) WHERE
- * scope='full' AND status IN ('queued','running') is the DB-level guard;
- * this application guard avoids spurious conflict log entries.
+ * scope='full' AND status IN ('queued','running') is the DB-level guard; the
+ * application guard below avoids spurious conflict log entries.
  *
- * Returns the new job's id, or null when the lock is held.
+ * Because that predicate counts `running` as active, a dead executor used to
+ * hold the slot forever while every caller kept getting an `already_queued`
+ * success shape. So: reclaim wedged rows first, then distinguish a live blocker
+ * (`already_queued`) from a wedged one (`stalled`).
  */
-export async function enqueueFullIngestJob(params: {
+export async function enqueueFullIngestJobDetailed(params: {
   workspaceId: string;
   /** "owner/name" */
   repo: string;
   trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled';
-}): Promise<string | null> {
+}): Promise<FullEnqueueOutcome> {
+  // Heal anything wedged in this workspace before judging the slot as occupied.
+  await reclaimStaleIngestJobs({ workspaceId: params.workspaceId });
+
   const activeFull = await db
-    .select({ id: knowledgeIngestJobs.id })
+    .select()
     .from(knowledgeIngestJobs)
     .where(
       and(
@@ -75,7 +106,24 @@ export async function enqueueFullIngestJob(params: {
     )
     .limit(1);
 
-  if (activeFull.length > 0) return null;
+  const blocker = activeFull[0] as IngestJob | undefined;
+  if (blocker) {
+    const now = new Date();
+    const liveness = classifyIngestJobLiveness(blocker, now);
+    const job: BlockingIngestJob = {
+      id: blocker.id,
+      status: blocker.status,
+      attempts: blocker.attempts ?? 0,
+      ageMs:
+        blocker.status === 'queued'
+          ? queuedAgeMs(blocker, now)
+          : now.getTime() - (blocker.startedAt ?? blocker.createdAt ?? now).getTime(),
+      leaseOwner: blocker.leaseOwner ?? null,
+    };
+    return liveness === 'live'
+      ? { status: 'already_queued', job }
+      : { status: 'stalled', job };
+  }
 
   const inserted = await db
     .insert(knowledgeIngestJobs)
@@ -89,10 +137,30 @@ export async function enqueueFullIngestJob(params: {
     .onConflictDoNothing()
     .returning({ id: knowledgeIngestJobs.id });
 
-  return inserted[0]?.id ?? null;
+  const jobId = inserted[0]?.id;
+  if (!jobId) {
+    // Lost the insert race to the unique index — treat as an in-flight blocker.
+    return {
+      status: 'already_queued',
+      job: { id: 'unknown', status: 'queued', attempts: 0, ageMs: 0, leaseOwner: null },
+    };
+  }
+  return { status: 'enqueued', jobId };
 }
 
-type IngestJob = typeof knowledgeIngestJobs.$inferSelect;
+/**
+ * Thin `string | null` wrapper for fire-and-forget callers (workspace create /
+ * repo re-bind) that don't inspect the reason.
+ */
+export async function enqueueFullIngestJob(params: {
+  workspaceId: string;
+  /** "owner/name" */
+  repo: string;
+  trigger?: 'repo_link' | 'backfill' | 'manual' | 'scheduled';
+}): Promise<string | null> {
+  const outcome = await enqueueFullIngestJobDetailed(params);
+  return outcome.status === 'enqueued' ? outcome.jobId : null;
+}
 
 export interface EnqueueMergedPrParams {
   /** "owner/name" */
@@ -111,7 +179,13 @@ export type DiffIngestOutcome =
  * Enqueue a `diff` ingest job for every workspace bound to the repo.
  * Resolution: github_repos.fullName → workspaces.githubRepoId.
  * Idempotent: duplicate deliveries hit the partial unique index and insert
- * nothing. Returns the ids of newly created jobs only.
+ * nothing.
+ *
+ * Returns ids the caller should execute: newly created jobs, plus any existing
+ * row that was wedged and has just been reclaimed. That second case is the C13
+ * fix — the `!= 'error'` idempotency predicate blocks the re-insert for exactly
+ * the silently-lost job, so before this a GitHub redelivery of a lost diff job
+ * did nothing at all.
  */
 export async function enqueueMergedPrIngestJobs(params: EnqueueMergedPrParams): Promise<string[]> {
   const repoRows = await db
@@ -141,7 +215,19 @@ export async function enqueueMergedPrIngestJobs(params: EnqueueMergedPrParams): 
       })
       .onConflictDoNothing()
       .returning({ id: knowledgeIngestJobs.id });
-    if (inserted[0]) jobIds.push(inserted[0].id);
+    if (inserted[0]) {
+      jobIds.push(inserted[0].id);
+      continue;
+    }
+    // Insert blocked by the idempotency index: a non-error row already exists
+    // for this (workspace, sha, diff). If it's wedged, reclaim it and hand the
+    // id back so this delivery re-runs it.
+    const recovered = await recoverBlockedDiffJob({
+      workspaceId: ws.id,
+      repo: params.repoFullName,
+      sha: params.sha,
+    });
+    if (recovered) jobIds.push(recovered);
   }
   return jobIds;
 }
@@ -150,12 +236,24 @@ export async function enqueueMergedPrIngestJobs(params: EnqueueMergedPrParams): 
  * Execute a queued diff ingest job. Atomic claim via
  * UPDATE … WHERE status='queued' RETURNING — safe under concurrent delivery.
  * Never throws: failures are recorded on the job row (status='error').
+ *
+ * The claim takes a lease. This executor runs inside a Vercel function that can
+ * be killed at any point after the webhook response, and without a lease that
+ * left the row `running` forever — wedging the workspace's ingest slot and
+ * blocking redelivery.
  */
 export async function runDiffIngestJob(jobId: string): Promise<DiffIngestOutcome> {
   // Atomic claim — a second concurrent call finds no queued row and bails.
+  const claimedAt = new Date();
   const claimed = await db
     .update(knowledgeIngestJobs)
-    .set({ status: 'running', startedAt: new Date() })
+    .set({
+      status: 'running',
+      startedAt: claimedAt,
+      leaseOwner: 'serverless',
+      leaseExpiresAt: new Date(claimedAt.getTime() + DIFF_LEASE_MS),
+      heartbeatAt: claimedAt,
+    })
     .where(and(eq(knowledgeIngestJobs.id, jobId), eq(knowledgeIngestJobs.status, 'queued')))
     .returning();
   if (claimed.length === 0) return { claimed: false };
@@ -165,7 +263,7 @@ export async function runDiffIngestJob(jobId: string): Promise<DiffIngestOutcome
     const { stats, changedFiles } = await executeDiffJob(job);
     await db
       .update(knowledgeIngestJobs)
-      .set({ status: 'done', stats, changedFiles, finishedAt: new Date() })
+      .set({ status: 'done', stats, changedFiles, finishedAt: new Date(), leaseOwner: null, leaseExpiresAt: null })
       .where(eq(knowledgeIngestJobs.id, job.id))
       .returning();
     return { claimed: true, status: 'done', stats };
@@ -175,7 +273,7 @@ export async function runDiffIngestJob(jobId: string): Promise<DiffIngestOutcome
     try {
       await db
         .update(knowledgeIngestJobs)
-        .set({ status: 'error', error: message, finishedAt: new Date() })
+        .set({ status: 'error', error: message, finishedAt: new Date(), leaseOwner: null, leaseExpiresAt: null })
         .where(eq(knowledgeIngestJobs.id, job.id))
         .returning();
     } catch (updateErr) {
