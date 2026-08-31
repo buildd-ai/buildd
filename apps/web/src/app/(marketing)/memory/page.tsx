@@ -39,70 +39,51 @@ const memoryTypes = [
   },
 ];
 
-const tiers = [
+const included = [
   {
-    name: "Free",
-    price: "$0",
-    period: "",
-    highlighted: false,
-    cta: { label: "Get Started Free", href: "https://memory.buildd.dev" },
-    limits: [
-      "1 workspace",
-      "200 memories",
-      "2 API keys",
-      "500 context calls/mo",
-      "1k search + write/mo",
-    ],
+    title: "No separate signup",
+    desc: "Memory lives in your buildd team. Create a buildd account and it is already there — there is no second product to register for.",
   },
   {
-    name: "Pro",
-    price: "$12",
-    period: "/mo",
-    badge: "Most Popular",
-    highlighted: true,
-    cta: { label: "Get Started", href: "https://memory.buildd.dev" },
-    limits: [
-      "3 workspaces",
-      "5k memories",
-      "20 API keys",
-      "10k context calls/mo",
-      "25k search + write/mo",
-    ],
+    title: "No extra API key",
+    desc: "The buildd API key your agents already use to claim tasks is the same key that reads and writes memory. One credential, one MCP server.",
   },
   {
-    name: "Scale",
-    price: "$49",
-    period: "/mo",
-    highlighted: false,
-    cta: { label: "Get Started", href: "https://memory.buildd.dev" },
-    limits: [
-      "Unlimited workspaces",
-      "50k memories",
-      "Unlimited API keys",
-      "100k context calls/mo",
-      "250k search + write/mo",
-    ],
+    title: "Shared across the team",
+    desc: "Memories are team-scoped, so every agent on every repo draws from the same pool. What one worker learns, the next one already knows.",
   },
 ];
 
 const faqs = [
   {
-    q: "What's a workspace?",
-    a: "A workspace maps to a project or repo. Each workspace has its own memories, API keys, and usage limits. Agents in one workspace can't see memories from another.",
+    q: "How is memory scoped?",
+    a: "Memory is team-scoped. Every agent in your team reads and writes the same pool, and memories can carry a project tag so you can narrow recall to one repo. Nothing is shared across teams.",
   },
   {
     q: "Do agents count as users?",
-    a: "No. You pay for knowledge capacity, not seats. Connect as many agents as you want — each gets an API key, and they all share the workspace's memory pool.",
+    a: "No. Memory is not seat-priced. Issue an API key per agent if you want separate audit trails — they all read and write the same team memory.",
   },
   {
-    q: "Can I self-host?",
-    a: "Yes. Memory is fully open source. Run it on your own infrastructure with your own Postgres database. The hosted version at memory.buildd.dev is the easiest way to get started.",
+    q: "Is there a standalone memory service?",
+    a: "Not any more. Memory used to run as a separate hosted service with its own signup and its own API key. It is now a built-in buildd feature backed by buildd's own database, reachable through the buildd MCP server. There is no separate service to run or self-host.",
   },
   {
-    q: "How does the free tier work?",
-    a: "Sign up, create a workspace, connect your agents. No credit card required. You get 200 memories and 500 context calls per month — enough to evaluate Memory on a real project.",
+    q: "How do agents actually use it?",
+    a: "Two MCP tools. Agents call recall before starting work to pull prior gotchas, patterns, and decisions, and learn to record what they discovered. Buildd also injects relevant memories into a task when a worker claims it.",
   },
 ];
+
+const mcpConfig = `{
+  "mcpServers": {
+    "buildd": {
+      "type": "http",
+      "url": "https://buildd.dev/api/mcp",
+      "headers": {
+        "Authorization": "Bearer bld_..."
+      }
+    }
+  }
+}`;
 
 export default function MemoryPage() {
   return (
@@ -133,17 +114,19 @@ export default function MemoryPage() {
             <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white/10 border border-white/20 rounded-full text-sm text-gray-300">
               <svg
                 className="w-4 h-4"
-                fill="currentColor"
+                fill="none"
+                stroke="currentColor"
                 viewBox="0 0 24 24"
                 aria-hidden="true"
               >
                 <path
-                  fillRule="evenodd"
-                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-                  clipRule="evenodd"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
                 />
               </svg>
-              Open Source
+              Built into buildd
             </span>
             <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-white/10 border border-white/20 rounded-full text-sm text-gray-300">
               <svg
@@ -174,10 +157,10 @@ export default function MemoryPage() {
                   strokeLinecap="round"
                   strokeLinejoin="round"
                   strokeWidth={2}
-                  d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"
+                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"
                 />
               </svg>
-              API-First
+              Team-Wide
             </span>
           </div>
 
@@ -187,15 +170,13 @@ export default function MemoryPage() {
           <p className="text-xl text-gray-300 max-w-2xl mx-auto">
             Persistent team knowledge that follows your agents across sessions.
             Every agent starts with the full context of everything your team has
-            learned.
+            learned &mdash; built into buildd, not a separate product to buy.
           </p>
 
           {/* CTAs */}
           <div className="flex flex-wrap justify-center gap-4 pt-2">
-            <a
-              href="https://memory.buildd.dev"
-              target="_blank"
-              rel="noopener noreferrer"
+            <Link
+              href="/app"
               className="inline-flex items-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg transition-colors"
             >
               Get Started Free
@@ -213,26 +194,28 @@ export default function MemoryPage() {
                   d="M13 7l5 5m0 0l-5 5m5-5H6"
                 />
               </svg>
-            </a>
+            </Link>
             <a
-              href="https://github.com/buildd-ai/memory"
+              href="https://docs.buildd.dev/memory"
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-medium rounded-lg transition-colors"
             >
               <svg
                 className="w-4 h-4"
-                fill="currentColor"
+                fill="none"
+                stroke="currentColor"
                 viewBox="0 0 24 24"
                 aria-hidden="true"
               >
                 <path
-                  fillRule="evenodd"
-                  d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-                  clipRule="evenodd"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
                 />
               </svg>
-              View on GitHub
+              Read the docs
             </a>
           </div>
         </div>
@@ -250,9 +233,14 @@ export default function MemoryPage() {
 
       {/* Setup Code Block */}
       <div className="max-w-4xl mx-auto px-6 pb-16">
-        <h2 className="text-2xl font-bold text-center mb-6">
-          3 lines to connect
+        <h2 className="text-2xl font-bold text-center mb-2">
+          One connection, memory included
         </h2>
+        <p className="text-gray-400 text-center mb-6 max-w-2xl mx-auto">
+          Point your agent at the buildd MCP server with the buildd API key you
+          create in Settings. Memory comes with it &mdash; no memory-only key, no
+          extra package to install.
+        </p>
         <div className="bg-[#1a1c24] rounded-xl border border-white/10 overflow-hidden">
           {/* Terminal header */}
           <div className="flex items-center justify-between px-4 py-3 bg-white/5 border-b border-white/10">
@@ -274,17 +262,7 @@ export default function MemoryPage() {
           </div>
           <div className="p-6">
             <pre className="text-sm text-gray-300 font-mono leading-relaxed">
-              <code>{`{
-  "mcpServers": {
-    "memory": {
-      "command": "npx",
-      "args": ["-y", "@buildd/memory-plugin"],
-      "env": {
-        "BUILDD_MEMORY_API_KEY": "bld_mem_..."
-      }
-    }
-  }
-}`}</code>
+              <code>{mcpConfig}</code>
             </pre>
           </div>
         </div>
@@ -300,7 +278,7 @@ export default function MemoryPage() {
             </div>
             <h3 className="font-semibold mb-2">Connect via MCP</h3>
             <p className="text-sm text-gray-300">
-              Add the MCP config to your project. Works with Claude Code,
+              Add the buildd MCP server to your project. Works with Claude Code,
               Cursor, Windsurf &mdash; any MCP-compatible agent.
             </p>
           </div>
@@ -310,8 +288,9 @@ export default function MemoryPage() {
             </div>
             <h3 className="font-semibold mb-2">Agents save discoveries</h3>
             <p className="text-sm text-gray-300">
-              As agents work, they record gotchas, patterns, and architecture
-              decisions. Memories are typed, tagged, and searchable.
+              As agents work they call <code>learn</code> to record gotchas,
+              patterns, and architecture decisions. Memories are typed, tagged,
+              and searchable.
             </p>
           </div>
           <div className="text-center">
@@ -320,7 +299,8 @@ export default function MemoryPage() {
             </div>
             <h3 className="font-semibold mb-2">Every session starts informed</h3>
             <p className="text-sm text-gray-300">
-              New sessions automatically load relevant memories. Your 10th agent
+              Agents call <code>recall</code> before they start, and claimed
+              tasks arrive with relevant memories attached. Your 10th agent
               avoids the mistakes of your first.
             </p>
           </div>
@@ -352,79 +332,23 @@ export default function MemoryPage() {
         </div>
       </div>
 
-      {/* Pricing */}
+      {/* Included with buildd (kept id="pricing" so existing inbound links land here) */}
       <div id="pricing" className="max-w-6xl mx-auto px-6 py-16">
         <h2 className="text-2xl font-bold text-center mb-4">
-          Agent-native pricing
+          Included with buildd
         </h2>
         <p className="text-gray-400 text-center mb-12 max-w-2xl mx-auto">
-          One API key per agent. One workspace per project. Pay for knowledge,
-          not seats.
+          Memory is a buildd feature, not an add-on. Nothing separate to
+          subscribe to, provision, or wire up.
         </p>
         <div className="grid md:grid-cols-3 gap-6">
-          {tiers.map((tier) => (
+          {included.map((item) => (
             <div
-              key={tier.name}
-              className={`rounded-xl p-6 md:p-8 border flex flex-col relative ${
-                tier.highlighted
-                  ? "border-amber-500/50 bg-amber-500/5 ring-1 ring-amber-500/20"
-                  : "border-white/10 bg-white/5"
-              }`}
+              key={item.title}
+              className="bg-white/5 rounded-xl p-6 md:p-8 border border-white/10"
             >
-              {"badge" in tier && tier.badge && (
-                <span className="absolute -top-3 left-6 px-3 py-1 text-xs font-semibold bg-amber-500 text-black rounded-full">
-                  {tier.badge}
-                </span>
-              )}
-
-              <div className="mb-6">
-                <h3 className="text-xl font-semibold mb-1">{tier.name}</h3>
-              </div>
-
-              <div className="mb-6">
-                <span className="text-4xl font-bold">{tier.price}</span>
-                {tier.period && (
-                  <span className="text-gray-400 ml-1">{tier.period}</span>
-                )}
-              </div>
-
-              <a
-                href={tier.cta.href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={`block text-center px-6 py-3 font-semibold rounded-lg transition-colors mb-8 ${
-                  tier.highlighted
-                    ? "bg-amber-500 hover:bg-amber-400 text-black"
-                    : "bg-white/10 hover:bg-white/20 border border-white/20 text-white"
-                }`}
-              >
-                {tier.cta.label}
-              </a>
-
-              <ul className="space-y-3 flex-1">
-                {tier.limits.map((limit) => (
-                  <li
-                    key={limit}
-                    className="flex items-start gap-2 text-sm text-gray-300"
-                  >
-                    <svg
-                      className="w-4 h-4 text-status-success mt-0.5 flex-shrink-0"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M5 13l4 4L19 7"
-                      />
-                    </svg>
-                    {limit}
-                  </li>
-                ))}
-              </ul>
+              <h3 className="text-lg font-semibold mb-3">{item.title}</h3>
+              <p className="text-sm text-gray-300">{item.desc}</p>
             </div>
           ))}
         </div>
@@ -452,36 +376,23 @@ export default function MemoryPage() {
           Stop losing knowledge between sessions
         </h2>
         <p className="text-gray-300 mb-6">
-          Connect Memory in 3 lines. Your agents will thank you.
+          Sign in to buildd, create an API key, and your agents share memory
+          from their next session on.
         </p>
         <div className="flex flex-wrap justify-center gap-4">
-          <a
-            href="https://memory.buildd.dev"
-            target="_blank"
-            rel="noopener noreferrer"
+          <Link
+            href="/app"
             className="inline-flex items-center gap-2 px-6 py-3 bg-amber-500 hover:bg-amber-400 text-black font-semibold rounded-lg transition-colors"
           >
             Get Started Free
-          </a>
+          </Link>
           <a
-            href="https://github.com/buildd-ai/memory"
+            href="https://docs.buildd.dev/memory"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-6 py-3 bg-white/10 hover:bg-white/20 border border-white/20 text-white font-medium rounded-lg transition-colors"
           >
-            <svg
-              className="w-4 h-4"
-              fill="currentColor"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path
-                fillRule="evenodd"
-                d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
-                clipRule="evenodd"
-              />
-            </svg>
-            View on GitHub
+            Read the docs
           </a>
         </div>
       </div>
@@ -510,14 +421,6 @@ export default function MemoryPage() {
                 className="hover:text-white transition-colors"
               >
                 Docs
-              </a>
-              <a
-                href="https://github.com/buildd-ai/memory"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:text-white transition-colors"
-              >
-                GitHub
               </a>
               <a
                 href="mailto:hello@buildd.dev"
