@@ -145,6 +145,52 @@ describe('detectCbmEnforcedUnused', () => {
     expect(reportOpsCalls.length).toBe(0);
   });
 
+  it('sends a real notification, not a badge-only warning', async () => {
+    // severity 'warning' maps to Pushover priority -2: badge only, no sound, no
+    // banner. This alert fired in production and was never seen. Adoption being
+    // zero is worth waking up for; if it is not, the alert should not exist.
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect((reportOpsCalls[0] as Record<string, unknown>).severity).toBe('error');
+  });
+
+  it('carries the observed evidence, not just static prose', async () => {
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, {
+      outcome: 'enforced',
+      toolCalls: {},
+      readCount: 31,
+      grepCount: 12,
+      globCount: 3,
+    });
+    const detail = String((reportOpsCalls[0] as Record<string, unknown>).detail);
+    // What the agent did instead of querying the graph is the actionable part.
+    expect(detail).toContain('31');
+    expect(detail).toContain('12');
+  });
+
+  it('ignores workers that never had CBM mounted when measuring the streak', async () => {
+    // A Codex task or a worktree-less coordination worker carries no cbm key. It
+    // is not evidence either way, but it used to break the streak and silence
+    // the alert — in a mixed fleet that is most of the time.
+    findManyResult = [
+      ...Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused),
+      { resultMeta: { stopReason: 'end_turn' } },
+      { resultMeta: { stopReason: 'end_turn' } },
+    ];
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect(reportOpsCalls.length).toBe(1);
+  });
+
+  it('still needs a full window of CBM-carrying workers', async () => {
+    findManyResult = [
+      ...Array.from({ length: 3 }, mountedUnused),
+      ...Array.from({ length: 20 }, () => ({ resultMeta: { stopReason: 'end_turn' } })),
+    ];
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
   it('stays silent without enough history', async () => {
     findManyResult = Array.from({ length: 2 }, mountedUnused);
     await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
