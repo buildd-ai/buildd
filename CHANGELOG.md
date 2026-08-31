@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Memory is now a built-in buildd feature; standalone memory.buildd.dev service decommissioned (#1976)
+
+### Fixed
+
+- Canonicalize `memories.project` to lowercase `owner/repo`; per-project memory scoping now matches regardless of which URL shape was stored (#1977)
 
 ## [0.186.2] - 2026-08-29
 
