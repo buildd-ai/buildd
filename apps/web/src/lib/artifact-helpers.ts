@@ -8,18 +8,6 @@ export function generateShareToken(): string {
   return randomBytes(24).toString('base64url');
 }
 
-/**
- * Public origin for share links. NEXT_PUBLIC_APP_URL wins; VERCEL_URL is the
- * per-deploy fallback. Written as a function because the naive
- * `A || B ? \`https://${B}\` : default` form yields `https://undefined` whenever
- * A is set and B is not.
- */
-export function shareBaseUrl(): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'https://buildd.dev';
-}
-
 export function formatStructuredOutput(
   structuredOutput?: Record<string, unknown>,
   summary?: string

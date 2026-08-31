@@ -467,25 +467,34 @@ not a stylistic note.
    future change that relaxes either earlier guard would make it one. Still
    unguarded: no test sends a repeated terminal PATCH and asserts a single
    charge.
-7. **`budgetExhaustedAt` with a null `budgetResetsAt` is unrecoverable.**
+7. **FIXED** — `budgetExhaustedAt` with a null `budgetResetsAt` is unrecoverable.**
    Auto-clear requires a non-null reset in the past
    (`claim/route.ts:168-181`) while `accountBudgetExhausted`
    (`:219-222`) treats a null reset as exhausted indefinitely. Today's only
    writer always supplies a reset, so the state is unreachable — but nothing
    guards it, and the claim response would also carry `budgetResetsAt: null`,
    giving the runner nothing to schedule against.
-8. **A truncated usage scan is an unspecified sample.** `fetchUsageRows` applies
+
+   Closed here: `effectiveBudgetResetAt()` derives a missing reset as `exhaustedAt + SESSION_WINDOW_MS` — the same fallback the writer uses — so a null reset heals after the window instead of reading as permanent. A writer-side test greps every `budgetExhaustedAt:` write and prints `{writes, offenders}`, since the pairing cannot be a schema `notNull` (the column is legitimately NULL for healthy accounts).
+
+8. **FIXED** — A truncated usage scan is an unspecified sample.** `fetchUsageRows` applies
    `USAGE_ROW_LIMIT` with no `ORDER BY`
    (`apps/web/src/lib/usage-stats-query.ts:27-47`), so which rows survive
    truncation is arbitrary. `truncatedScan` warns that totals are a floor but not
    that the sample is unordered, and no test covers the truncated path.
-9. **Cache tokens are counted in two places that are never reconciled.**
+
+   Closed here: the scan is ordered `(completedAt DESC, id DESC)`, so a truncated scan is the COMPLETE population of a narrower window rather than an arbitrary sample. The response carries `scan: {rows, limit, truncated, completeSince}` and the MCP formatter states that medians and p90 cover only since `completeSince`. Follow-up not taken: there is no index on `workers.completed_at`, so this sorts.
+
+9. **FIXED** — Cache tokens are counted in two places that are never reconciled.**
    `workers.inputTokens` includes cache-read and cache-creation tokens by design,
    while `MetricBlock` also publishes `cacheReadTokens`/`cacheCreationTokens`
    derived independently from `resultMeta.modelUsage`
    (`usage-stats.ts:271-284`, `:395-404`). Any consumer adding `inputTokens +
    cacheReadTokens` double-counts. No test states the intended relationship
    between the two.
+
+   Addressed here: the two definitions now agree. `byModel[].inputTokens` is cache-inclusive, matching the containment `totals` already used, and the cache-exclusive figure is kept under the self-describing `uncachedInputTokens`. Pinned by a test asserting `sum(byModel[].inputTokens) === totals.inputTokens`. `share` still uses the uncached basis, documented in place.
+
 10. **Episode token split is lossy on purpose, unflagged in reads.**
     `oauth_budget_episodes.inputTokens` is written with the *combined* window
     token total and `outputTokens` with `0`

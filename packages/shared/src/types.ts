@@ -93,6 +93,47 @@ export const ArtifactType = {
 
 export type ArtifactTypeValue = typeof ArtifactType[keyof typeof ArtifactType];
 
+/**
+ * The one authoritative artifact vocabulary.
+ *
+ * Every writer (worker / mission / initiative / upload-url routes and the MCP
+ * `create_artifact` action) MUST validate against this via `isArtifactType`.
+ * Four sites used to keep private accepted-type sets of 17, 12, 8 and 6 entries,
+ * so whether an agent's artifact was accepted depended on which route it hit.
+ * Add a type here and it is accepted everywhere; nowhere else gets a list.
+ */
+export const ARTIFACT_TYPES: readonly ArtifactTypeValue[] = Object.values(ArtifactType);
+
+/** Type guard for untrusted input (request bodies, MCP params). */
+export function isArtifactType(value: unknown): value is ArtifactTypeValue {
+  return typeof value === 'string' && (ARTIFACT_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Human labels for the vocabulary, keyed by type. The artifact UI reads these
+ * instead of keeping its own table — a duplicated table is how four of these
+ * types ended up renderable but unwritable.
+ */
+export const ARTIFACT_TYPE_LABELS: Record<ArtifactTypeValue, string> = {
+  [ArtifactType.IMPL_PLAN]: 'Implementation Plan',
+  [ArtifactType.SCREENSHOT]: 'Screenshot',
+  [ArtifactType.RECORDING]: 'Recording',
+  [ArtifactType.DIFF]: 'Diff',
+  [ArtifactType.WALKTHROUGH]: 'Walkthrough',
+  [ArtifactType.SUMMARY]: 'Summary',
+  [ArtifactType.CONTENT]: 'Content',
+  [ArtifactType.REPORT]: 'Report',
+  [ArtifactType.DATA]: 'Data',
+  [ArtifactType.LINK]: 'Link',
+  [ArtifactType.EMAIL_DRAFT]: 'Email Draft',
+  [ArtifactType.SOCIAL_POST]: 'Social Post',
+  [ArtifactType.ANALYSIS]: 'Analysis',
+  [ArtifactType.RECOMMENDATION]: 'Recommendation',
+  [ArtifactType.ALERT]: 'Alert',
+  [ArtifactType.CALENDAR_EVENT]: 'Calendar Event',
+  [ArtifactType.FILE]: 'File',
+};
+
 export const CreationSource = {
   DASHBOARD: 'dashboard',
   API: 'api',

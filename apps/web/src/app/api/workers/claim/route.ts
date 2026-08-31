@@ -45,6 +45,7 @@ import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import { buildSubjectPriorWork } from './subject-prior-work';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { notifyConnectorBlocked } from './connector-block-notify';
+import { isBudgetExhausted } from '@/lib/budget-errors';
 
 // Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
 // Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
@@ -166,7 +167,10 @@ export async function POST(req: NextRequest) {
     // Tenant tasks (with their own API keys) should still be claimable,
     // so we filter non-tenant tasks in the claim loop below.
     if (account.budgetExhaustedAt) {
-      if (account.budgetResetsAt && new Date() >= new Date(account.budgetResetsAt)) {
+      // `isBudgetExhausted` derives a reset from the exhaustion time when
+      // `budget_resets_at` is NULL. The clear used to require a non-null reset,
+      // so a half-written row (the column has no notNull) was frozen forever.
+      if (!isBudgetExhausted(account.budgetExhaustedAt, account.budgetResetsAt)) {
         // Budget has reset — auto-clear the flag for this account and all seatId siblings.
         const resetWhere = account.seatId && account.teamId
           ? and(
@@ -218,8 +222,7 @@ export async function POST(req: NextRequest) {
 
   // Track whether account's own OAuth budget is exhausted (tenant tasks can still proceed)
   const accountBudgetExhausted = account.authType === 'oauth'
-    && !!account.budgetExhaustedAt
-    && (!account.budgetResetsAt || new Date() < new Date(account.budgetResetsAt));
+    && isBudgetExhausted(account.budgetExhaustedAt, account.budgetResetsAt);
 
   const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
 

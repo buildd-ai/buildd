@@ -6,6 +6,7 @@ import { randomBytes } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyAccountWorkspaceAccess, getUserWorkspaceIds } from '@/lib/team-access';
 import { getCurrentUser } from '@/lib/auth-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 
 /**
  * Authorize a request against an artifact for share (make public / revoke) actions.
@@ -49,12 +50,6 @@ async function authorizeShare(
   return { response: NextResponse.json({ error: 'Forbidden' }, { status: 403 }) };
 }
 
-function baseUrl(): string {
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'https://buildd.dev';
-}
-
 // POST /api/artifacts/[artifactId]/share - Make an artifact public (generate token if needed)
 export async function POST(
   req: NextRequest,
@@ -82,7 +77,7 @@ export async function POST(
     .where(eq(artifacts.id, artifactId))
     .returning();
 
-  const shareUrl = `${baseUrl()}/share/${updated.shareToken}`;
+  const shareUrl = `${appBaseUrl()}/share/${updated.shareToken}`;
   return NextResponse.json({ shareUrl });
 }
 

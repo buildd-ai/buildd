@@ -19,10 +19,84 @@ export interface RunnerHeartbeat {
   maxConcurrentWorkers: number;
   /** How the runner connects: push_only = no inbound HTTP (headless/NAT), reachable = has inbound HTTP server. */
   connectivity: 'reachable' | 'push_only';
-  /** Whether bwrap sandboxing is active on this runner. null = probe not yet run. */
+  /**
+   * Whether the host's bwrap namespace probe passed. null = probe not yet run.
+   * This is a CAPABILITY, not a posture: true means bwrap works here, not that
+   * anything is confined. See deriveSandboxPosture.
+   */
   sandboxEnabled: boolean | null;
   /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
   sandboxProbeAt: string | null;
+  /**
+   * Whether the runner reports the `sandbox:mount-allowlist` capability, i.e. the
+   * mount allowlist is opted in AND the namespace it needs is available. This is
+   * the only signal that isolation is actually being enforced.
+   */
+  mountAllowlistEnforced: boolean;
+}
+
+/** Capability string the runner advertises when mount isolation is enforced. */
+const CAPABILITY_MOUNT_ALLOWLIST = 'sandbox:mount-allowlist';
+
+/**
+ * Read the mount-allowlist capability out of a heartbeat's reported environment.
+ *
+ * The capability has existed in the heartbeat payload since the mount-allowlist
+ * rollout and had no reader here, which is why the page could only show kernel
+ * capability. Duplicated as a literal rather than imported from @buildd/shared
+ * because this module is bundled into a client component and must stay
+ * dependency-free (see the file header).
+ */
+export function mountAllowlistEnforcedFrom(
+  environment: { envKeys?: string[] } | null | undefined,
+): boolean {
+  return Boolean(environment?.envKeys?.includes(CAPABILITY_MOUNT_ALLOWLIST));
+}
+
+export interface SandboxPosture {
+  label: string;
+  tier: 'success' | 'warning' | 'unknown';
+  /** One-line explanation for the badge tooltip / problems list. */
+  detail: string;
+}
+
+/**
+ * What the Health page should say about a runner's sandbox.
+ *
+ * Green means enforced — bwrap works AND the mount allowlist is on. A host with
+ * bwrap installed but the allowlist off is the worst case for a green badge: it
+ * looks confined and is not, so it reports as a warning instead.
+ */
+export function deriveSandboxPosture(hb: {
+  sandboxEnabled: boolean | null;
+  mountAllowlistEnforced: boolean;
+}): SandboxPosture {
+  if (hb.sandboxEnabled === null) {
+    return {
+      label: 'sandbox unknown',
+      tier: 'unknown',
+      detail: 'no bwrap probe reported yet',
+    };
+  }
+  if (hb.sandboxEnabled === false) {
+    return {
+      label: 'unsandboxed',
+      tier: 'warning',
+      detail: 'user namespaces denied · tasks run without bwrap isolation',
+    };
+  }
+  if (!hb.mountAllowlistEnforced) {
+    return {
+      label: 'mounts unrestricted',
+      tier: 'warning',
+      detail: 'bwrap available but the mount allowlist is off · the agent sees the whole host filesystem',
+    };
+  }
+  return {
+    label: 'sandboxed',
+    tier: 'success',
+    detail: 'bwrap namespace + mount allowlist enforced',
+  };
 }
 
 // 3× the 60-second liveness ping interval — absorbs transient network hiccups.

@@ -106,9 +106,11 @@ route's accepted set with HTTP 400 before touching the database.
   set to contain the mission/initiative `teamId` — unless its workspace has
   `accessMode = 'open'`. A miss returns HTTP 404 (not 403): the existence of
   another team's mission is not disclosed.
-- The worker route accepts only `DELIVERABLE_TYPES`; the mission and initiative
-  routes accept that set plus `analysis` and `recommendation`. A type outside
-  the route's set is HTTP 400 with the accepted list in the error.
+- Every write route validates `type` against the single shared vocabulary
+  (`ARTIFACT_TYPES` / `isArtifactType` in `packages/shared`). A type outside it
+  is HTTP 400 with the accepted list in the error. There is exactly one
+  vocabulary: per-route sets are a defect, not a feature, and a test greps the
+  write sites for a re-introduced local list.
 - `type = 'link'` without `url` is HTTP 400. A missing or non-string `title` is
   HTTP 400 on all three routes.
 - A caller-supplied `storageKey` MUST satisfy `isOwnedStorageKey(key,
@@ -136,9 +138,9 @@ route's accepted set with HTTP 400 before touching the database.
   `report` artifact with prose `content` THEN the stored row has `content = NULL`.
 
 **Code surface**:
-- Worker route: `apps/web/src/app/api/workers/[id]/artifacts/route.ts:10`
-  (`DELIVERABLE_TYPES`), `:43` (ownership), `:85` (`isOwnedStorageKey`), `:174`
-  (sensitive nulling)
+- Worker route: `apps/web/src/app/api/workers/[id]/artifacts/route.ts`
+  (`isArtifactType` validation, ownership, `isOwnedStorageKey`, sensitive
+  nulling)
 - Mission route: `apps/web/src/app/api/missions/[id]/artifacts/route.ts:41`
   (`resolveAccountTeamIds` gate)
 - Initiative route: `apps/web/src/app/api/initiatives/[id]/artifacts/route.ts:22`
@@ -370,13 +372,15 @@ retrieval scoping — see `knowledge-store-retrieval`.
 Each item is an invariant above, or a drift from one, that **no test asserts**.
 Listed so a reader can tell a guarded claim from an unguarded one.
 
-1. **The download route does not resolve caller scope.** The invariant is that
+1. **FIXED** — The download route does not resolve caller scope.** The invariant is that
    a tokenless download MUST resolve the caller's access to the artifact's
    workspace before returning any bytes, and MUST reject a caller who fails that
    check — every other read path resolves scope. No test asserts it. Specifics
    are tracked privately until the guard lands.
 
-2. **Two write paths still mint share tokens at insert time**, contradicting the
+   Closed in #1979: the download route resolves caller scope, and a `?token=` is accepted only for a published artifact. A published artifact is now readable without a credential — a deliberate widening, because agents inline the download URL into prose the share page serves anonymously.
+
+2. **FIXED** — Two write paths still mint share tokens at insert time**, contradicting the
    post-`a6f70f0d` rule that a token exists only after an explicit Share:
    `apps/web/src/app/api/artifacts/upload-url/route.ts:113` and
    `apps/web/src/lib/artifact-helpers.ts:103` (`upsertAutoArtifact`, the
@@ -391,7 +395,9 @@ Listed so a reader can tell a guarded claim from an unguarded one.
    existing token on publish — so publishing later activates a credential that
    was already broadcast. No test asserts token absence on either path.
 
-3. **List routes advertise `shareUrl` for private artifacts.**
+   Closed in #1979: neither insert path mints a token for a private artifact.
+
+3. **FIXED** — List routes advertise `shareUrl` for private artifacts.**
    `apps/web/src/app/api/artifacts/route.ts:83`,
    `apps/web/src/app/api/workspaces/[id]/artifacts/route.ts:70`,
    `apps/web/src/app/api/tasks/[id]/route.ts:127` and
@@ -399,6 +405,8 @@ Listed so a reader can tell a guarded claim from an unguarded one.
    `shareToken` alone, without the `visibility === 'public'` conjunct the
    create/upsert routes use. Combined with gap 2 this is how a pre-minted token
    reaches a caller. Untested.
+
+   Closed in #1979: `shareUrl` is emitted only when `visibility === 'public'`.
 
 4. **Sensitive-workspace content redaction is not enforced on every artifact
    write path.** The invariant, from commit `9b2bf156`, is that for a workspace
@@ -408,7 +416,7 @@ Listed so a reader can tell a guarded claim from an unguarded one.
    route's own nulling (AC-9) included. Specifics are tracked privately until
    the guard lands.
 
-5. **`baseUrl` precedence bug survives in seven call sites.** The pattern
+5. **FIXED** — `baseUrl` precedence bug survives in seven call sites.** The pattern
    `process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL ? "https://" + process.env.VERCEL_URL : <default>`
    parses as `(A || B) ? https://B : default`, so when `NEXT_PUBLIC_APP_URL` is
    set and `VERCEL_URL` is not, the emitted host is literally `undefined`, and on
@@ -421,22 +429,32 @@ Listed so a reader can tell a guarded claim from an unguarded one.
    has the correct form, which is what makes this drift rather than design. No
    test pins share-URL host derivation.
 
-6. **Type vocabulary drift between MCP and the routes.**
-   `packages/core/mcp-tools.ts:2459` validates 12 types and its parameter
-   description advertises them, but the worker route accepts 6
-   (`DELIVERABLE_TYPES`) and the mission/initiative routes 8. `email_draft`,
-   `social_post`, `alert` and `calendar_event` pass MCP validation and are then
-   rejected HTTP 400 by every write route, while
-   `apps/web/src/app/app/(protected)/artifacts/[id]/page.tsx:21` renders labels for
-   them. `packages/shared/src/types.ts:74` declares 17. Four vocabularies, no
-   single source; nothing tests them for agreement.
+   Closed here: hoisted to a single `appBaseUrl()` in `apps/web/src/lib/app-url.ts` and used at all eight sites; the duplicate shareBaseUrl helper is deleted. Guarded by `app-url.test.ts`, which scans every `NEXT_PUBLIC_APP_URL` file and prints `{scanned, broken}`.
 
-7. **The `artifact_required` completion gate counts only worker-owned
+6. **FIXED** — Type vocabulary drift between MCP and the routes. MCP validated
+   12 types, the worker route 6, the mission/initiative routes 8 each,
+   `packages/shared` declared 17, and a test asserted its own 11 — five
+   vocabularies, and `upload-url` validated nothing at all
+   (`type || ArtifactType.FILE`). `email_draft`, `social_post`, `alert` and
+   `calendar_event` passed MCP validation and were then rejected HTTP 400 by
+   every write route, while the detail page rendered labels for them. Now
+   `ARTIFACT_TYPES` / `isArtifactType` / `ARTIFACT_TYPE_LABELS` in
+   `packages/shared` are the only vocabulary, all five writers validate through
+   it, the UI derives its labels from it, and content rendering was inverted to
+   an exclusion set so a newly added type renders instead of silently showing
+   nothing. Guarded by `packages/core/__tests__/artifact-types.test.ts`, which
+   also greps every write site for a re-introduced literal list. One deliberate
+   narrowing: `upload-url` now rejects an unknown `type` where it previously
+   persisted it verbatim.
+
+7. **FIXED** — The `artifact_required` completion gate counts only worker-owned
    artifacts.** `apps/web/src/app/api/workers/[id]/route.ts:588` queries
    `artifacts` by `workerId = <this worker>`, so an artifact the same agent wrote
    through `/api/missions/[id]/artifacts` (which stores `workerId = NULL`) does
    not satisfy the gate and completion is rejected HTTP 400. The satisfied path is
    tested; the HTTP 400 rejection path is not.
+
+   Closed here: one `hasDeliverableArtifact()` helper counts worker-owned rows OR the task's mission artifacts updated since the worker started. `artifacts` has no `taskId`, so that time bound is what stops a sibling task's older mission artifact from satisfying the gate.
 
 8. **Unguarded on the share surface generally**: the public endpoint has no rate
    limit or abuse control of any kind, and a share token is a bearer credential,

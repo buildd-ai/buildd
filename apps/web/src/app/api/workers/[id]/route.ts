@@ -601,6 +601,37 @@ export async function PATCH(
         .limit(1)
     : [];
   const taskMissionId = terminalTaskRow[0]?.missionId ?? null;
+
+  /**
+   * Does a deliverable that belongs to THIS unit of work exist?
+   *
+   * The predicate used to be a bare `eq(artifacts.workerId, id)`, which cannot
+   * match a mission artifact: api/missions/[id]/artifacts inserts `workerId:
+   * null` by construction, and MCP `create_artifact` with a `missionId` routes
+   * down that path. An agent that correctly produced its artifact was told it
+   * had not, and 400'd on completion.
+   *
+   * `artifacts` has no taskId column, so mission-level rows are attributed by
+   * (missionId, touched since this worker started). The time bound is what stops
+   * a sibling task's pre-existing mission artifact from satisfying the gate.
+   */
+  // Captured outside the closure: narrowing of `worker` does not survive into a
+  // function body.
+  const workerStartedAt = worker.startedAt ?? null;
+  async function hasDeliverableArtifact(): Promise<boolean> {
+    // startedAt is written on the first `running` PATCH, so a completing worker
+    // has one; epoch keeps a null from excluding everything.
+    const workStart = workerStartedAt ? new Date(workerStartedAt) : new Date(0);
+    const where = taskMissionId
+      ? or(
+          eq(artifacts.workerId, id),
+          and(eq(artifacts.missionId, taskMissionId), gte(artifacts.updatedAt, workStart)),
+        )
+      : eq(artifacts.workerId, id);
+    const rows = await db.query.artifacts.findMany({ where, limit: 1 });
+    return rows.length > 0;
+  }
+
   if (status === 'completed') {
     // Fetch task to check outputRequirement. Explicit select (not the
     // relational query builder): `tasks` has a `workers` relation and the RQB
@@ -652,10 +683,7 @@ export async function PATCH(
 
       // artifact_required: require PR or artifact (regardless of commits)
       if (outputReq === 'artifact_required' && !hasPR) {
-        const workerArtifacts = await db.query.artifacts.findMany({
-          where: eq(artifacts.workerId, id),
-        });
-        if (workerArtifacts.length === 0) {
+        if (!(await hasDeliverableArtifact())) {
           return NextResponse.json({
             error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',
             hint: 'create_pr or create_artifact',
@@ -668,10 +696,7 @@ export async function PATCH(
 
       // auto (default): warn but allow completion — agent may have created PR via git CLI
       if (outputReq === 'auto' && effectiveCommits > 0 && !hasPR) {
-        const workerArtifacts = await db.query.artifacts.findMany({
-          where: eq(artifacts.workerId, id),
-        });
-        if (workerArtifacts.length === 0) {
+        if (!(await hasDeliverableArtifact())) {
           outputWarning = `Task has ${effectiveCommits} commit(s) but no tracked PR or artifact. Use create_pr next time for better tracking.`;
         }
       }

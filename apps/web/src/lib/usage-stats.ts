@@ -28,6 +28,11 @@ export const UNASSIGNED_ROLE = '(unassigned)';
 
 export interface UsageWorkerRow {
   workerId: string;
+  /**
+   * Terminal timestamp, and the scan's sort key. The route needs it to report
+   * which window a truncated scan actually covers.
+   */
+  completedAt?: Date | string | null;
   taskId: string | null;
   /**
    * Set when this worker's task is a retry attempt. Attempts are charged to the
@@ -93,18 +98,37 @@ export interface ServerEntry {
 
 export interface ModelEntry {
   model: string;
+  /**
+   * Cache-INCLUSIVE input tokens — the same definition as `MetricBlock.inputTokens`,
+   * so `sum(byModel[].inputTokens)` reconciles with `totals.inputTokens`.
+   *
+   * This field used to hold the SDK's cache-exclusive figure while `totals`
+   * held the cache-inclusive one, under the same name, so the two never added
+   * up and nothing in the response explained the gap. `cacheReadTokens` and
+   * `cacheCreationTokens` below are components of this number, not additions
+   * to it — the same containment `totals` uses.
+   */
   inputTokens: number;
+  /** Fresh (non-cached) input tokens only: `inputTokens` minus both cache components. */
+  uncachedInputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
-  /** Share of billable (non-cache-read) input+output tokens (0–1). */
+  /** Share of billable (uncached input + output) tokens (0–1). */
   share: number;
 }
 
 export interface MetricBlock {
   tasks: number;
   workers: number;
+  /**
+   * Cache-INCLUSIVE input tokens, as persisted in `workers.input_tokens`: the
+   * runner writes input + cache_read + cache_creation there
+   * (apps/runner/src/usage-aggregate.ts), because a re-sent context is real
+   * consumption. `cacheReadTokens` / `cacheCreationTokens` are components of
+   * this figure, not extras to add to it.
+   */
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
@@ -506,25 +530,33 @@ function buildModelRollup(rows: UsageWorkerRow[]): ModelEntry[] {
     for (const [model, u] of Object.entries(usage)) {
       const entry = (acc[model] ??= {
         inputTokens: 0,
+        uncachedInputTokens: 0,
         outputTokens: 0,
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
         costUsd: 0,
       });
-      entry.inputTokens += num(u.inputTokens);
+      const uncached = num(u.inputTokens);
+      const cacheRead = num(u.cacheReadInputTokens);
+      const cacheCreation = num(u.cacheCreationInputTokens);
+      // Cache-inclusive, matching MetricBlock.inputTokens / workers.input_tokens.
+      entry.inputTokens += uncached + cacheRead + cacheCreation;
+      entry.uncachedInputTokens += uncached;
       entry.outputTokens += num(u.outputTokens);
-      entry.cacheReadTokens += num(u.cacheReadInputTokens);
-      entry.cacheCreationTokens += num(u.cacheCreationInputTokens);
+      entry.cacheReadTokens += cacheRead;
+      entry.cacheCreationTokens += cacheCreation;
       entry.costUsd += num(u.costUSD);
     }
   }
 
-  const totalBillable = Object.values(acc).reduce((s, e) => s + e.inputTokens + e.outputTokens, 0);
+  // Share is a billing-weight proxy, so it stays on the uncached basis: a cache
+  // read is charged at a fraction of a fresh input token.
+  const totalBillable = Object.values(acc).reduce((s, e) => s + e.uncachedInputTokens + e.outputTokens, 0);
   return Object.entries(acc)
     .map(([model, e]) => ({
       model,
       ...e,
-      share: totalBillable > 0 ? (e.inputTokens + e.outputTokens) / totalBillable : 0,
+      share: totalBillable > 0 ? (e.uncachedInputTokens + e.outputTokens) / totalBillable : 0,
     }))
     .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens));
 }

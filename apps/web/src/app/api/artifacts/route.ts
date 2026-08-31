@@ -5,7 +5,7 @@ import { eq, and, inArray, desc, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
-import { shareBaseUrl } from '@/lib/artifact-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 
 // GET /api/artifacts — list artifacts for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -72,6 +72,8 @@ export async function GET(req: NextRequest) {
       },
     });
 
+    const baseUrl = appBaseUrl();
+
     const artifactsWithMeta = results.map(a => {
       const { mission: missionRel, ...artifactData } = a;
       return {
@@ -79,7 +81,7 @@ export async function GET(req: NextRequest) {
         missionTitle: missionRel?.title ?? null,
         // Only a public artifact has a link anyone can follow.
         shareUrl: a.shareToken && a.visibility === 'public'
-          ? `${shareBaseUrl()}/share/${a.shareToken}`
+          ? `${baseUrl}/share/${a.shareToken}`
           : null,
       };
     });

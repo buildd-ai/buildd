@@ -375,19 +375,25 @@ it is recognisable rather than discovered.
    last recorded run was BLOCKED on a host that denies namespace creation
    (13 of 24 checks skipped). WS-8 in particular is asserted by absence from a
    snapshot, not by a failed read.
-2. **The wrapper is never exercised for Codex, but the code pretends otherwise.**
+2. **FIXED** — The wrapper is never exercised for Codex, but the code pretends otherwise.**
    `buildWorkerBwrapArgv()` has a full Codex branch (WS-4) with its own snapshot
    test, yet `workers.ts:2420` gates the wrapper on `!isCodexTask`. No production
    path passes a Codex config to the builder. Either the Codex branch is dead
    code or the gate is an unfinished rollout; the snapshot makes it look shipped.
-3. **The capability probe is stricter than the wrapper it gates.**
+
+   Closed here: the gate is a tested predicate (`shouldWrapWorkerInBwrap`) and nothing is built for Codex. Its snapshot pinned argv nobody used; replaced with assertions on the split the acceptance probe depends on.
+
+3. **FIXED** — The capability probe is stricter than the wrapper it gates.**
    `checkBwrapSupport()` requires `--unshare-user --unshare-pid --unshare-net`
    to succeed (`env-scan.ts:83`) because it mirrors Claude Code's *inner*
    sandbox. The outer wrapper never unshares the network. A host that permits
    user and PID namespaces but denies network namespaces therefore reports
    `bwrapSupported: false` and gives up a mount boundary that would have worked.
    No test covers this combination.
-4. **`BUILDD_MOUNT_ALLOWLIST_EXTRA` can widen the base table (WS-25).** Dedupe is
+
+   Closed here: probes are per consumer. The strict user+pid+net probe still gates the inner sandbox and env scrubbing; a user+pid probe gates mount isolation, which is what the outer argv actually needs.
+
+4. **FIXED** — `BUILDD_MOUNT_ALLOWLIST_EXTRA` can widen the base table (WS-25).** Dedupe is
    last-writer-wins on mode, and `parseExtraMounts()` applies no denylist — the
    read-jail's denied prefixes are not consulted. Two classes of weakness follow,
    both operator-triggered and both currently untested: an `rw` entry covering a
@@ -397,6 +403,9 @@ it is recognisable rather than discovered.
    A guard that refuses extra mounts intersecting
    `buildReadJailDeniedPrefixes()` and refuses to downgrade a `SYSTEM_RO_BINDS`
    entry would close this; neither exists.
+
+   Closed here: built-ins are assembled first and an operator entry colliding with one is rejected with a warning, whatever mode it names — it can no longer downgrade a system bind to rw.
+
 5. **The rw `.git` bind (WS-2) is a real residual exposure.** The parent clone's
    `.git` must be writable for commit and push, which means the agent's writable
    view includes git's own configuration and hook directory — content that the
@@ -405,13 +414,16 @@ it is recognisable rather than discovered.
    sessions. Accepted deliberately (per-worker clones were rejected on cost), but
    it is the narrowest remaining path from inside the sandbox to host execution
    and it deserves a hook-integrity check.
-6. **The health surface reports the wrong thing.** `sandboxEnabled` on the
+6. **FIXED** — The health surface reports the wrong thing.** `sandboxEnabled` on the
    heartbeat is `isBwrapSupported()` — kernel capability — not whether the mount
    allowlist is active. Since WS-13 is default-off, a runner can display
    "sandbox ok" while running agents with no outer namespace at all. Similarly
    `doctor.ts:307-309` returns status **ok** with "bwrap not installed —
    sandboxing disabled (expected)". Nothing in CI asserts these two surfaces
    agree with `isMountAllowlistEnabled()`.
+
+   Closed here: the `sandbox:mount-allowlist` capability is advertised only when the opt-in is set AND the probe passes, and a derived posture drives the badge. Green now means enforced; bwrap-present-allowlist-off renders `mounts unrestricted` as a warning. Still open by choice: the Health problems panel does not COUNT a degraded runner, because with the allowlist default-off that would flag every runner today.
+
 7. **No host prerequisite is installed or checked at install time.**
    `apps/runner/install.sh` never mentions bubblewrap; the only mentions in the
    repo are the probe, the e2e suite, and the design doc. A fresh runner is

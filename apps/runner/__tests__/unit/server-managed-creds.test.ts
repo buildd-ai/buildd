@@ -109,6 +109,7 @@ mock.module('../../src/env-scan', () => ({
   // crashing the WorkerManager state-transition tests.
   checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
   checkBwrapSupport: () => true,
+  checkBwrapMountIsolationSupport: () => true,
 }));
 
 const { WorkerManager, teamKeyOf } = await import('../../src/workers');

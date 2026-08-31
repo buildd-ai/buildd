@@ -368,7 +368,7 @@ cold-per-task model (CBM-4) is what this spec describes.
 Unguarded claims and defects found while writing this spec. Nothing here is
 asserted as an invariant above.
 
-1. **Version pin drift, unguarded.** `CBM_VERSION` is `0.9.0` in **two**
+1. **FIXED** — Version pin drift, unguarded.** `CBM_VERSION` is `0.9.0` in **two**
    independent places — `docker/worker/Dockerfile:5` and
    `apps/runner/install.sh:379` — each with its own duplicated amd64/arm64 sha256
    pair. No test, lint, or CI check asserts the two agree, and nothing checks the
@@ -377,19 +377,28 @@ asserted as an invariant above.
    updates one file and not the other produces a Docker image and a Coder
    workspace running different binaries, which is exactly the admission-barrier
    hazard CBM-4 exists to avoid.
-2. **`install.sh` never upgrades an existing binary.** `install.sh:382` short-circuits
+
+   Closed on dev before this PR: `cbm-version-pin.test.ts` enforces version and linux-checksum equality between the Dockerfile and `install.sh`, and `verify-cbm-pin.sh` diffs all six digests against upstream in `worker-image.yml`. Both pins are 0.10.8.
+
+2. **FIXED** — `install.sh` never upgrades an existing binary.** `install.sh:382` short-circuits
    on `"$CBM_BINARY_PATH" --version` succeeding and only prints the version it
    found. Bumping `CBM_VERSION` therefore has **no effect** on any already-provisioned
    host; the only path to a new binary is a manual delete or an image rebuild. No
    test covers this.
-3. **The blocklist does not fail closed against new upstream tools.**
+
+   Closed on dev before this PR: `cbm_provision()` compares the installed `--version` against the pin and upgrades.
+
+3. **FIXED** — The blocklist does not fail closed against new upstream tools.**
    `CBM_ALLOWED_TOOLS` is explicitly "documentation only" and is never read at
    runtime; enforcement is `CBM_BLOCKED_TOOLS` on `disallowedTools`. Combined with
    gap 1, any destructive tool added between v0.9.0 and a future bump is exposed to
    agents by default. The design doc's §2.4 allowlist would have failed closed.
    `cbm-enforcement.test.ts:121` pins `CBM_ALLOWED_TOOLS.length === 12`, which
    asserts nothing about what the agent can actually call.
-4. **`legacy_mcp_json` is unreachable.** The value exists in
+
+   Narrowed here, NOT closed: `CBM_BLOCKED_TOOLS` is now derived from `CBM_ALLOWED_TOOLS` against the recorded tool surface, so an unallowed surface tool is blocked automatically, and the blocklist is applied unconditionally rather than only when the runner mounted CBM itself (an SDK-loaded project `.mcp.json` previously got no blocklist at all). The residual gap stands: `disallowedTools` cannot express deny-by-default, so a tool a future release ADDS is unclassified and unblocked. Bumping the pin requires re-classifying the surface.
+
+4. **FIXED** — `legacy_mcp_json` is unreachable.** The value exists in
    `packages/core/db/schema.ts:528` and `apps/runner/src/types.ts:207,287`, and
    `cbm-observability.test.ts:80` tests it — but **no code path ever assigns it**.
    `workers.ts:2356-2364` writes only `enforced` or `disabled`. Consequence: a
@@ -398,6 +407,9 @@ asserted as an invariant above.
    though the agent had the tools and may have called them — and the metrics route
    then files it in the *baseline* cohort (`route.ts:105`). That silently
    contaminates the control group the endpoint's whole comparison rests on.
+
+   Closed on dev before this PR: `resolveCbmOutcome` classifies mounted-but-not-enforced as `legacy_mcp_json`, so a CBM-equipped session is no longer recorded in the metrics control group.
+
 5. **`fallbackRate` does not measure what its name and target claim.** It is
    `disabled / tracked` over all four reasons, so `codex_task`, `no_worktree` and
    `role_opt_out` — all by-design outcomes — inflate it. `fallbackRateMet`
@@ -409,7 +421,7 @@ asserted as an invariant above.
    aggregates `bootstrapResult`; the only trace of a failed index is a per-task
    milestone string. This is the specific silence that let the `--repo-path` bug
    run for four weeks.
-6. **Bootstrap failure drops the cache-dir sandbox mount.** Ordering in
+6. **FIXED** — Bootstrap failure drops the cache-dir sandbox mount.** Ordering in
    `workers.ts` is `mkdirSync(cbmCacheDir)` (:2327) → `runCbmBootstrap` (:2336),
    which `rmSync`s the dir on failure or timeout (`cbm-bootstrap.ts:104,123`) →
    `buildWorkerBwrapArgv({ cbmCacheDir })` (:2398-2409), which drops mounts whose
@@ -419,6 +431,9 @@ asserted as an invariant above.
    sandbox's own `--tmpfs /tmp`. Not data loss (the cache is ephemeral either way),
    but the advertised recovery path in CBM-8 is untested end-to-end, and the only
    signal is a warning line.
+
+   Closed: the ordering half on dev (#1981 restores the runtime dir and re-asserts before the argv build), and the silent-drop half here — CBM binds are `required`, and an unmountable one disables CBM loudly with a milestone and `cbmDisableReason` instead of letting on-demand indexing land in the throwaway tmpfs.
+
 7. **No test exercises the runner's session flow.** CBM-3, CBM-8 (the "task still
    starts" half), CBM-12, CBM-14's mkdir-before-argv obligation, CBM-15, and the
    `disallowedTools` append are all implemented inline in `workers.ts` and covered

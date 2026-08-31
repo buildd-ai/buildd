@@ -33,7 +33,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
-  // artifact-helpers (imported for shareBaseUrl) pulls in `and` at module load.
+  // artifact-helpers pulls in `and` at module load.
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
 }));
 

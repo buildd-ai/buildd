@@ -57,7 +57,9 @@ All paths are resolved at task spawn time with absolute paths.
 | → `~/.claude/.credentials.json`, `~/.claude/settings.json` | **ro** | Local-credential fallback; no refresh_token path in sandbox |
 | Codex home (`cleanEnv.CODEX_HOME`) | **rw** | Per-worker `CODEX_HOME` holds `auth.json` + `sessions/` (Codex backend only) |
 | `.mcp.json` in worktree | — | Already covered by the worktree rw bind; no extra mount needed |
-| `BUILDD_MOUNT_ALLOWLIST_EXTRA` entries | caller-specified | Operator escape hatch for runner-specific paths (e.g. custom toolchains) |
+| CBM binary (`/opt/buildd/bin/codebase-memory-mcp`) | ro | **required** when CBM is active — absent ⇒ error, not a dropped mount |
+| CBM per-worker cache dir (`/tmp/cbm-<workerId>`) | **rw** | **required** when CBM is active — the `--tmpfs /tmp` above precedes the bind loop, so a dropped bind sends the index into a throwaway tmpfs |
+| `BUILDD_MOUNT_ALLOWLIST_EXTRA` entries | caller-specified, **additive only** | Operator escape hatch for runner-specific paths (e.g. custom toolchains) |
 
 **git push credential injection:** env token (`GITHUB_TOKEN` / `GH_TOKEN` already in `cleanEnv`). No credential-helper bind is required; env token is simpler, already implemented, and avoids binding `~/.gitconfig` or a helper binary.
 
@@ -100,7 +102,46 @@ BUILDD_MOUNT_ALLOWLIST_EXTRA=/opt/custom-toolchain:ro,/shared/cache:rw
 
 Parsing rejects relative paths and unknown modes. Unknown entries are skipped with a warning, never fatal.
 
-**`BUILDD_DISABLE_SANDBOX=1`** — unchanged. When set, mount allowlist assembly is skipped and no bwrap wrapper is created. Existing `isBwrapSupported()` logic is unaffected.
+**Operator entries cannot override a built-in bind.** Mounts are deduplicated by
+path, so an operator entry that names a built-in path used to replace it — including
+upgrading a system `ro` bind to `rw` (`/usr:rw`). The built-in table is the
+sandbox's contract: a colliding entry is now rejected with a warning and has no
+effect, whatever mode it names. Only paths outside the built-in set are additive.
+
+**Required vs optional mounts.** An absent optional mount (e.g. `~/.npm` on a host
+that has never run npm) is dropped with a warning. An absent *required* mount
+throws: the CBM binary and cache dir are required whenever CBM is active, because
+silently dropping either does not disable CBM, it redirects it — the index lands
+in the sandbox's own `--tmpfs /tmp` and is discarded at session end. The caller
+catches that error, disables CBM for the task (`cbmDisableReason:
+'mount_unavailable'`), and rebuilds the argv without the CBM binds.
+
+**Codex tasks are not wrapped.** The outer argv reaches the process through the
+Claude Agent SDK's `spawnClaudeCodeProcess` hook; the Codex backend spawns its own
+process and has no equivalent seam, so `shouldWrapWorkerInBwrap()` excludes Codex
+outright. Codex tasks therefore run without the outer mount allowlist — a known
+downgrade, not an oversight. The builder still supports the Codex bind split
+because the acceptance probe uses it for the cross-backend credential cases.
+
+**`BUILDD_DISABLE_SANDBOX=1`** — unchanged. When set, mount allowlist assembly is skipped and no bwrap wrapper is created.
+
+**Namespace probe, per consumer.** The outer wrapper unshares *user* and *pid* only
+— it deliberately does not unshare net, because the agent needs egress. It is
+therefore gated on `isMountIsolationBwrapSupported()` /
+`checkBwrapMountIsolationSupport()`, which probes exactly those two namespaces.
+`isBwrapSupported()` / `checkBwrapSupport()` remains the stricter probe (user +
+pid + net) for Claude Code's *inner* sandbox and for subprocess env scrubbing.
+Gating the wrapper on the stricter boolean reported the sandbox unavailable on
+hosts where it would have worked. A denial observed at runtime through the outer
+wrapper's stderr flips both caches (the outer needs a strict subset); a denial
+observed in tool output comes from the inner sandbox and flips only that one.
+
+**What Health reports.** `workerHeartbeats.sandboxEnabled` is the strict kernel
+probe — a capability, not a posture. Whether isolation is *enforced* is carried by
+the `sandbox:mount-allowlist` capability in the heartbeat's environment, which the
+runner advertises only when the opt-in is set AND the namespace probe passes.
+`deriveSandboxPosture()` (apps/web) renders green only when both hold; bwrap
+present with the allowlist off renders as `mounts unrestricted`, warning tier.
 
 ### 4. Failure Taxonomy: `sandbox_mount_gap`
 

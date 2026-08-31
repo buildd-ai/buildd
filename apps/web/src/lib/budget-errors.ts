@@ -155,3 +155,55 @@ export function extractResetTime(
   }
   return reset;
 }
+
+/** A timestamp as it can arrive from the driver, the API, or code. */
+type TimestampLike = Date | string | number | null | undefined;
+
+function toDate(value: TimestampLike): Date | null {
+  if (value === null || value === undefined) return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+/**
+ * When an exhausted budget becomes claimable again.
+ *
+ * `accounts.budget_resets_at` has no `notNull` (it cannot: the column is
+ * legitimately NULL for accounts that are not exhausted), so the pairing with
+ * `budget_exhausted_at` is a convention held by a single writer. If that pairing
+ * is ever broken — a half-applied manual UPDATE, a new writer, a restored
+ * backup — the account must recover on its own rather than be parked forever:
+ * the claim route's auto-clear required a non-null reset, and its exhaustion test
+ * read `!budgetResetsAt ||` as "still exhausted", so NULL meant permanent.
+ *
+ * A missing or unparseable reset therefore resolves to one session window after
+ * the exhaustion instant, which is the same fallback the writer itself uses when
+ * the provider error carries no reset time.
+ */
+export function effectiveBudgetResetAt(
+  exhaustedAt: Date | string | number,
+  resetsAt: TimestampLike,
+): Date {
+  const recorded = toDate(resetsAt);
+  if (recorded) return recorded;
+  const exhausted = toDate(exhaustedAt);
+  const base = exhausted ? exhausted.getTime() : Date.now();
+  return new Date(base + SESSION_WINDOW_MS);
+}
+
+/**
+ * Is this account's budget still exhausted right now?
+ *
+ * False when it was never flagged. Otherwise true until the effective reset —
+ * see `effectiveBudgetResetAt` for why a NULL reset is a recoverable fault and
+ * not a life sentence.
+ */
+export function isBudgetExhausted(
+  exhaustedAt: TimestampLike,
+  resetsAt: TimestampLike,
+  now: Date = new Date(),
+): boolean {
+  const exhausted = toDate(exhaustedAt);
+  if (!exhausted) return false;
+  return now.getTime() < effectiveBudgetResetAt(exhausted, resetsAt).getTime();
+}

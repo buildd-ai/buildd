@@ -1,7 +1,12 @@
 import { db } from '@buildd/core/db';
 import { accountWorkspaces, workerHeartbeats, workers } from '@buildd/core/db/schema';
 import { and, desc, gt, inArray } from 'drizzle-orm';
-import { isPushOnlyRunner, selectRelevantRunnerAccounts, type RunnerHeartbeat } from './runner-heartbeats-shared';
+import {
+  isPushOnlyRunner,
+  mountAllowlistEnforcedFrom,
+  selectRelevantRunnerAccounts,
+  type RunnerHeartbeat,
+} from './runner-heartbeats-shared';
 
 // Pure helpers and types live in ./runner-heartbeats-shared so client
 // components can import them without pulling `@buildd/core/db` (and its
@@ -10,6 +15,8 @@ import { isPushOnlyRunner, selectRelevantRunnerAccounts, type RunnerHeartbeat } 
 export {
   isRunnerOnline,
   isPushOnlyRunner,
+  deriveSandboxPosture,
+  mountAllowlistEnforcedFrom,
   selectRelevantRunnerAccounts,
   type RunnerHeartbeat,
   type RunnerRelevanceCandidate,
@@ -81,5 +88,9 @@ export async function getRunnerHeartbeats(
       connectivity: isPushOnlyRunner(hb.localUiUrl) ? 'push_only' as const : 'reachable' as const,
       sandboxEnabled: hb.sandboxEnabled ?? null,
       sandboxProbeAt: hb.sandboxProbeAt ? (hb.sandboxProbeAt as Date).toISOString() : null,
+      // The runner advertises `sandbox:mount-allowlist` only when isolation is
+      // actually enforced; without this the dashboard could report kernel
+      // capability only. See deriveSandboxPosture.
+      mountAllowlistEnforced: mountAllowlistEnforcedFrom(hb.environment as { envKeys?: string[] } | null),
     }));
 }

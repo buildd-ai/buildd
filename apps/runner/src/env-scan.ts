@@ -51,7 +51,7 @@ const DEFAULT_ENV_KEYS = [
  * is used by the runner to force-disable Claude Code sandboxing when namespaces are
  * unavailable — preventing every Bash tool call from failing with a bwrap error.
  */
-export function checkBwrapSupport(): boolean {
+function probeBwrapNamespaces(unshareFlags: readonly string[]): boolean {
   // Operator escape hatch — set when the kernel/container config is known-bad
   // and the proc-file approach below is insufficient (e.g. inside a user namespace
   // where the sysctl is not propagated correctly).
@@ -72,22 +72,46 @@ export function checkBwrapSupport(): boolean {
     return false; // not installed — sandbox won't be attempted
   }
   try {
-    // Must mirror all three namespace types Claude Code's sandbox uses internally:
-    // --unshare-user (user namespace), --unshare-pid (PID namespace),
-    // --unshare-net (network namespace). Testing only --unshare-user is insufficient:
-    // some container configs (seccomp, AppArmor) allow user namespace creation but
-    // block network or PID namespace creation, causing every Bash tool call to fail
-    // with "No permissions to create a new namespace" even when the user-ns check
-    // passes. Confirmed by inspecting the Claude Code binary: it always passes all
-    // three --unshare flags to bwrap.
-    execSync('bwrap --unshare-user --unshare-pid --unshare-net --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok', {
-      timeout: 5000,
-      stdio: 'pipe',
-    });
+    execSync(
+      `bwrap ${unshareFlags.join(' ')} --uid 0 --gid 0 --ro-bind /usr /usr --proc /proc --dev /dev -- echo ok`,
+      { timeout: 5000, stdio: 'pipe' },
+    );
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Self-check for Claude Code's INNER sandbox.
+ *
+ * Mirrors all three namespace types it uses internally: --unshare-user (user),
+ * --unshare-pid (PID), --unshare-net (network). Testing only --unshare-user is
+ * insufficient: some container configs (seccomp, AppArmor) allow user namespace
+ * creation but block network or PID namespace creation, causing every Bash tool
+ * call to fail with "No permissions to create a new namespace" even when the
+ * user-ns check passes. Confirmed by inspecting the Claude Code binary: it always
+ * passes all three --unshare flags to bwrap.
+ *
+ * This is the STRICTEST of the runner's bwrap requirements. Do not reuse it for a
+ * consumer that unshares less — see checkBwrapMountIsolationSupport.
+ */
+export function checkBwrapSupport(): boolean {
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid', '--unshare-net']);
+}
+
+/**
+ * Self-check for the OUTER mount-allowlist wrapper (buildWorkerBwrapArgv).
+ *
+ * That argv unshares user and pid and deliberately does NOT unshare net — the
+ * agent needs egress (git push, API calls). Probing for a network namespace it
+ * never creates reported the wrapper unavailable on hosts where it works, which
+ * silently downgraded mount isolation to nothing. The manual acceptance probe
+ * (apps/runner/src/__tests__/mount-isolation.e2e.ts) guards with exactly these
+ * two namespaces, which is the requirement of record.
+ */
+export function checkBwrapMountIsolationSupport(): boolean {
+  return probeBwrapNamespaces(['--unshare-user', '--unshare-pid']);
 }
 
 /**
@@ -282,9 +306,15 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
     console.log('[env-scan] Headless Chromium not found — browser capability not advertised. Install via: bunx playwright install --with-deps chromium');
   }
 
+  // Advertise mount isolation only when it is actually ENFORCED: the runner has
+  // opted in AND the host can create the namespace the wrapper needs. This
+  // capability is the only truthful signal the dashboard has for "the mount
+  // allowlist is on", so an opted-in runner on a kernel that refuses the
+  // namespace must not claim it.
   if (
     process.env.BUILDD_SANDBOX_MOUNT_ALLOWLIST === '1'
     && process.env.BUILDD_DISABLE_SANDBOX !== '1'
+    && checkBwrapMountIsolationSupport()
   ) {
     envKeys.push(CAPABILITY_SANDBOX_MOUNT_ALLOWLIST);
   }

@@ -3,18 +3,11 @@ import { db } from '@buildd/core/db';
 import { workers, artifacts, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { ArtifactType } from '@buildd/shared';
+import { ARTIFACT_TYPES, ArtifactType, isArtifactType } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
+import { appBaseUrl } from '@/lib/app-url';
 
-const DELIVERABLE_TYPES = new Set([
-  ArtifactType.CONTENT,
-  ArtifactType.REPORT,
-  ArtifactType.DATA,
-  ArtifactType.LINK,
-  ArtifactType.SUMMARY,
-  ArtifactType.FILE,
-]);
 
 // POST /api/workers/[id]/artifacts - Create (or upsert by key) an artifact for a worker
 export async function POST(
@@ -64,9 +57,12 @@ export async function POST(
   const body = await req.json();
   const { type, title, content, url, metadata, key, storageKey } = body;
 
-  if (!type || !DELIVERABLE_TYPES.has(type)) {
+  // Single vocabulary (@buildd/shared ARTIFACT_TYPES). This route used to accept
+  // 6 of the 17 types, so an agent whose `create_artifact` was routed here got a
+  // 400 for a type the mission route accepted.
+  if (!isArtifactType(type)) {
     return NextResponse.json(
-      { error: `Invalid type. Must be one of: ${[...DELIVERABLE_TYPES].join(', ')}` },
+      { error: `Invalid type. Must be one of: ${ARTIFACT_TYPES.join(', ')}` },
       { status: 400 }
     );
   }
@@ -97,9 +93,7 @@ export async function POST(
     ...(url ? { url } : {}),
   };
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
+  const baseUrl = appBaseUrl();
 
   // If key is provided, try to upsert by (workspaceId, key)
   if (key && typeof key === 'string' && worker.workspaceId) {

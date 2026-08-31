@@ -79,6 +79,7 @@ mock.module('../../src/env-scan', () => ({
   parseMcpJson: () => [],
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
+  checkBwrapMountIsolationSupport: () => true,
 }));
 
 mock.module('../../src/session-logger', () => ({

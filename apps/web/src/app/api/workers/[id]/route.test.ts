@@ -221,7 +221,7 @@ const mockGenericInsert = mock((table: any) => {
 mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   tasks: 'tasks',
-  artifacts: 'artifacts',
+  artifacts: { workerId: 'artifacts.workerId', missionId: 'artifacts.missionId', updatedAt: 'artifacts.updatedAt' },
   workspaces: 'workspaces',
   githubRepos: 'githubRepos',
   accounts: 'accounts',
@@ -1754,6 +1754,104 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
+    });
+
+    // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
+    // Mission artifacts are inserted with workerId NULL by construction (see
+    // api/missions/[id]/artifacts/route.ts), and MCP create_artifact with a
+    // missionId routes down exactly that path — so an agent that DID produce its
+    // deliverable was told it had not.
+    it('artifact_required is satisfied by a mission artifact the worker created (workerId NULL)', async () => {
+      // Minimal evaluator for the mocked drizzle predicate tree, so the mock
+      // behaves like a database instead of returning rows unconditionally.
+      const matches = (pred: any, row: Record<string, any>): boolean => {
+        if (!pred) return true;
+        switch (pred.type) {
+          case 'and': return pred.args.every((a: any) => matches(a, row));
+          case 'or': return pred.args.some((a: any) => matches(a, row));
+          case 'not': return !matches(pred.expr, row);
+          case 'eq': return row[pred.field] === pred.value;
+          case 'isNull': return row[pred.field] === null || row[pred.field] === undefined;
+          case 'gte': return new Date(row[pred.field]).getTime() >= new Date(pred.value).getTime();
+          default: return true;
+        }
+      };
+      const missionArtifact = {
+        'artifacts.workerId': null,
+        'artifacts.missionId': 'mission-1',
+        'artifacts.updatedAt': new Date('2026-08-01T10:05:00.000Z'),
+      };
+      mockArtifactsFindMany.mockImplementation((args: any) =>
+        Promise.resolve(matches(args?.where, missionArtifact) ? [{ id: 'art-1' }] : []),
+      );
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/mission-research',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'),
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'artifact_required',
+        missionId: 'mission-1',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Mission artifact written.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('artifact_required still rejects when nothing belongs to the work', async () => {
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/mission-research',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'),
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'artifact_required',
+        missionId: 'mission-1',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect((await res.json()).hint).toBe('create_pr or create_artifact');
     });
 
     it('artifact_required + artifact present + 0 diff + no PR → completed even with branch_merge release config', async () => {

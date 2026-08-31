@@ -78,19 +78,6 @@ mock.module('@buildd/core/db/schema', () => ({
   },
 }));
 
-mock.module('@buildd/shared', () => ({
-  ArtifactType: {
-    CONTENT: 'content',
-    REPORT: 'report',
-    DATA: 'data',
-    LINK: 'link',
-    SUMMARY: 'summary',
-    FILE: 'file',
-    ANALYSIS: 'analysis',
-    RECOMMENDATION: 'recommendation',
-  },
-}));
-
 import { POST, GET } from './route';
 
 const mockParams = Promise.resolve({ id: 'mission-1' });
@@ -190,6 +177,24 @@ describe('POST /api/missions/[id]/artifacts', () => {
     expect(insertedArtifactValues.missionId).toBe('mission-1');
     expect(insertedArtifactValues.workspaceId).toBe('ws-1');
   });
+
+  // C16: the mission route accepted 8 of the 17 shared types. `screenshot` and
+  // `impl_plan` are in the vocabulary and in the MCP help text, and were 400'd here.
+  it.each(['screenshot', 'impl_plan', 'diff', 'alert'])(
+    'accepts shared-vocabulary type %s',
+    async (type) => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', teamId: 'team-1', workspaceId: 'ws-1' });
+
+      const req = createRequest({
+        method: 'POST',
+        body: { type, title: 'Deliverable' },
+        headers: { authorization: 'Bearer bld_test' },
+      });
+      const res = await POST(req, { params: mockParams });
+      expect(res.status).toBe(200);
+    },
+  );
 
   it('rejects invalid artifact type', async () => {
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', teamId: 'team-1' });

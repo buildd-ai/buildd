@@ -220,7 +220,7 @@ export interface LocalWorker {
   resultMeta?: ResultMeta | null;
   // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
   cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
+  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
   cbmBootstrapResult?: 'ok' | 'failed';
   cbmBootstrapFailReason?: string;
   cbmToolCounts?: Record<string, number>;

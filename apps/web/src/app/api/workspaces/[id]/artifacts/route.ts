@@ -5,7 +5,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { shareBaseUrl } from '@/lib/artifact-helpers';
+import { appBaseUrl } from '@/lib/app-url';
 
 async function authenticateRequest(req: NextRequest) {
   const authHeader = req.headers.get('authorization');
@@ -62,11 +62,13 @@ export async function GET(
     limit,
   });
 
+  const baseUrl = appBaseUrl();
+
   const artifactsWithUrls = results.map(a => ({
     ...a,
     // Only a public artifact has a link anyone can follow.
     shareUrl: a.shareToken && a.visibility === 'public'
-      ? `${shareBaseUrl()}/share/${a.shareToken}`
+      ? `${baseUrl}/share/${a.shareToken}`
       : null,
   }));
 

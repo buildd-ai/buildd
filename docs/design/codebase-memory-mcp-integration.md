@@ -117,7 +117,25 @@ Pre-building the index before the agent starts avoids the agent spending its fir
 
 ### 2.4 Allowlisted MCP tools
 
-Of the 15 tools exposed by codebase-memory-mcp, workers are allowed to call the following subset. Claude Code enforces this via the role's `allowedTools` list (MCP tool names follow the `mcp__<server>__<tool>` pattern):
+Of the 15 tools exposed by codebase-memory-mcp, workers are allowed to call the following subset.
+
+**How it is enforced (as implemented):** the SDK is given a `disallowedTools`
+blocklist, not a per-role `allowedTools` list. `CBM_TOOL_SURFACE` in
+`apps/runner/src/cbm-enforcement.ts` holds the 15 classified tools,
+`CBM_ALLOWED_TOOLS` holds the 12 below, and `CBM_BLOCKED_TOOLS` is *derived* as
+the difference — so classifying a new tool without allowing it blocks it
+automatically. Two consequences worth stating plainly:
+
+- The blocklist is applied to **every** session, not only when the runner mounted
+  CBM itself. A `codebase-memory` entry can also reach the agent through the
+  project's `.mcp.json`, which the SDK loads on its own (`settingSources` includes
+  `'project'`) and which the runner's own `.mcp.json` injection skips because it
+  only handles `type: 'http'`. Gating the blocklist on "the runner mounted it" left
+  that path completely unguarded. Naming an unmounted tool is inert, so the
+  blocklist is unconditional.
+- A tool a future CBM release adds is *unclassified*, and `disallowedTools` cannot
+  express deny-by-default — it would reach the agent unblocked. Bumping the CBM pin
+  therefore means re-reading its tool list and classifying anything new.
 
 **Allowed (read-only structural queries + bootstrap):**
 | Tool | Purpose | Notes |
