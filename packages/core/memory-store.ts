@@ -91,7 +91,7 @@ export class MemoryStore {
   /** Markdown-formatted recent memories for agent context injection. */
   async getContext(project?: string): Promise<{ markdown: string; count: number }> {
     // Compare canonical-to-canonical: every write goes through normalizeProject,
-    // and 0133 rewrote the history, so exact equality is correct here and can use
+    // and 0132 rewrote the history, so exact equality is correct here and can use
     // the (team_id, project) index. Substring matching used to be required only
     // because the same project was stored as both a URL and a short name.
     const scope = normalizeProject(project);

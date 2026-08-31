@@ -34,8 +34,12 @@ const memoryTypes = [
   {
     type: "summary",
     emoji: "📋",
-    title: "Summary",
-    desc: "Condensed understanding. \"The worker claim flow: POST /claim → optimistic lock → return task.\"",
+    title: "Summary (legacy, read-only)",
+    // `learn` rejects this type — see validTypes in packages/core/mcp-tools.ts.
+    // It is kept here because most existing memories are summaries and they are
+    // still returned by reads; listing it as writable sends people into a
+    // validation error.
+    desc: "Condensed understanding, from before this type was retired. Still searchable, but new memories cannot be created with it.",
   },
 ];
 
