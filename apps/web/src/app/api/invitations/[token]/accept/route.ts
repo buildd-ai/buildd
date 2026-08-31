@@ -53,7 +53,7 @@ export async function POST(
 
     // Get team info to return. Explicit column list — an unfiltered query selects
     // every column declared in schema.ts, so removing one breaks this route for the
-    // whole build window (see the note on teams.memoryApiKey). Identity fields only;
+    // whole build window, since db:migrate runs before next build. Identity only;
     // this response never carried anything a caller needs beyond them.
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, invitation.teamId),

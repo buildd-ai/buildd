@@ -34,7 +34,8 @@ export default async function TeamDetailPage({
 
   // Explicit column list: an unfiltered `db.query.teams` selects every column
   // declared in schema.ts, which couples this page to the schema and makes any
-  // column removal a build-window outage (see the note on teams.memoryApiKey).
+  // column removal a build-window outage: db:migrate runs before next build, so
+  // the old code serves against the new schema for the length of the build.
   // These four are all this page passes to TeamDetailClient.
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, id),
