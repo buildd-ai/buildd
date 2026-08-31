@@ -26,6 +26,7 @@ function makeTask(id: string, overrides: Partial<CondensedTimelineTask> = {}): C
     taskType: null,
     reviewerNote: null,
     reviewerTaskHref: null,
+    reviewerRetryTask: null,
     ...overrides,
   };
 }
@@ -404,6 +405,121 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     // Full verdict visible — not collapsed to chip
     expect(html).toContain('Changes Requested');
     expect(html).toContain('Please fix the handler');
+  });
+
+  it('shows "queued" status when reviewer retry task is pending', () => {
+    const changesTask = makeTask('t-cr-queued', {
+      status: 'completed',
+      reviewerNote: {
+        type: 'reviewer_request_changes',
+        title: 'Changes Requested (iteration 1/3)',
+        body: 'Fix the imports',
+        status: 'active',
+        supersededByPrNumber: null,
+      },
+      reviewerRetryTask: {
+        id: 'retry-task-1',
+        status: 'pending',
+        title: '[reviewer retry #1] Build something',
+        prNumber: null,
+      },
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(changesTask)] }}
+        allTasksCount={1}
+      />,
+    );
+    expect(html).toContain('retry #1');
+    expect(html).toContain('queued');
+    expect(html).not.toContain('done');
+    expect(html).not.toContain('failed');
+  });
+
+  it('shows "running" status when reviewer retry task is in-progress', () => {
+    const changesTask = makeTask('t-cr-running', {
+      status: 'completed',
+      reviewerNote: {
+        type: 'reviewer_request_changes',
+        title: 'Changes Requested (iteration 1/3)',
+        body: 'Fix the imports',
+        status: 'active',
+        supersededByPrNumber: null,
+      },
+      reviewerRetryTask: {
+        id: 'retry-task-2',
+        status: 'running',
+        title: '[reviewer retry #1] Build something',
+        prNumber: null,
+      },
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(changesTask)] }}
+        allTasksCount={1}
+      />,
+    );
+    expect(html).toContain('retry #1');
+    expect(html).toContain('running');
+  });
+
+  it('shows "done" status with PR number when reviewer retry task completed', () => {
+    const changesTask = makeTask('t-cr-done', {
+      status: 'completed',
+      reviewerNote: {
+        type: 'reviewer_request_changes',
+        title: 'Changes Requested (iteration 1/3)',
+        body: 'Fix the imports',
+        status: 'active',
+        supersededByPrNumber: null,
+      },
+      reviewerRetryTask: {
+        id: 'retry-task-3',
+        status: 'completed',
+        title: '[reviewer retry #1] Build something',
+        prNumber: 1968,
+      },
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(changesTask)] }}
+        allTasksCount={1}
+      />,
+    );
+    expect(html).toContain('retry #1');
+    expect(html).toContain('done');
+    expect(html).toContain('#1968');
+  });
+
+  it('shows "failed" status when reviewer retry task failed', () => {
+    const changesTask = makeTask('t-cr-failed', {
+      status: 'completed',
+      reviewerNote: {
+        type: 'reviewer_request_changes',
+        title: 'Changes Requested (iteration 1/3)',
+        body: 'Fix the imports',
+        status: 'active',
+        supersededByPrNumber: null,
+      },
+      reviewerRetryTask: {
+        id: 'retry-task-4',
+        status: 'failed',
+        title: '[reviewer retry #1] Build something',
+        prNumber: null,
+      },
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(changesTask)] }}
+        allTasksCount={1}
+      />,
+    );
+    expect(html).toContain('retry #1');
+    expect(html).toContain('failed');
   });
 
   it('renders escalated verdict fully expanded', () => {
