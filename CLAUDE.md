@@ -54,6 +54,18 @@ CI will **fail** if you change schema.ts without generating/committing migration
 
 **Do NOT use `db:push`** in production - it bypasses migration tracking.
 
+## This Repo Is Public
+
+No production data anywhere in it — code, comments, commit messages, PR bodies,
+test fixtures, user-facing docs. No row or tenancy counts, no UUIDs, no personal
+handles, no private repo names. State evidence qualitatively; exact figures go in
+`knowledge-base` (private). Migrations join against real tables — a hardcoded list
+of observed values *is* the disclosure. Docs describe the reader's data, not ours.
+
+Enforced by `.github/workflows/no-prod-data.yml`. If something slips through after
+merge, fix the PR body and commit a correction — do **not** force-push a shared
+branch; GitHub keeps orphaned commits reachable by SHA, so it hides nothing.
+
 ## Git Workflow
 
 - **Default branch**: `dev`

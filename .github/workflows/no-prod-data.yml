@@ -1,0 +1,41 @@
+name: No Production Data
+
+# This repo is public. Block production data from entering it — in the diff, in
+# commit messages, or in the PR body. See "This Repo Is Public" in CLAUDE.md.
+#
+# The identifier list (personal handles, private repo names) lives in the repo
+# variable NO_PROD_DATA_IDENTIFIERS, not in this repo. Committing it here would
+# publish exactly what the check exists to catch. Set it under
+# Settings → Secrets and variables → Actions → Variables, as an ERE alternation.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the check reads every commit message on the branch.
+          fetch-depth: 0
+
+      - name: Write the PR body to a file
+        # Via the environment, never as a shell argument — a PR body is
+        # untrusted input and would otherwise be interpolated into the script.
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > /tmp/pr-body.txt
+
+      - name: Check for production data
+        env:
+          NO_PROD_DATA_IDENTIFIERS: ${{ vars.NO_PROD_DATA_IDENTIFIERS }}
+        run: |
+          git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
+          bash scripts/check-no-prod-data.sh \
+            "origin/${{ github.event.pull_request.base.ref }}" \
+            /tmp/pr-body.txt
