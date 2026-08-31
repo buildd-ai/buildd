@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { updateModelAliases, DEFAULT_ALIASES } from '@buildd/core/model-aliases';
 
@@ -13,18 +12,19 @@ import { updateModelAliases, DEFAULT_ALIASES } from '@buildd/core/model-aliases'
  * Request body (optional): `{ haiku?: string, sonnet?: string, opus?: string }`.
  * If omitted for any alias, the current DEFAULT_ALIASES value is kept.
  *
- * Admin-level API key (or session auth with admin flag) required.
+ * Auth: admin-level API key only. The write target is the single global
+ * system_cache model-alias row (not tenant-scoped), and there is no admin role on
+ * session users, so session auth is never sufficient.
  */
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const apiAccount = await authenticateApiKey(apiKey);
 
-  if (!user && !apiAccount) {
+  if (!apiAccount) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount.level !== 'admin') {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 

@@ -49,6 +49,9 @@ export async function POST(
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
+  if (account.level === 'trigger') {
+    return NextResponse.json({ error: 'Trigger tokens cannot write ingest graphs' }, { status: 403 });
+  }
 
   let body: GraphBody;
   try {

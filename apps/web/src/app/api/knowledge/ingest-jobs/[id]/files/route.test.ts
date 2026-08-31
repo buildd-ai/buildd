@@ -81,6 +81,21 @@ describe('POST /api/knowledge/ingest-jobs/[id]/files', () => {
     expect(res.status).toBe(401);
   });
 
+  it('returns 403 for a trigger-level token and ingests nothing', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'trigger' });
+    const res = await POST(createRequest({ files: [{ path: 'src/app.ts', content: 'x' }] }), params());
+    expect(res.status).toBe(403);
+    expect(upsertCalls.length).toBe(0);
+    expect(deleteBySourceCalls.length).toBe(0);
+  });
+
+  it('allows a non-trigger token with workspace access to ingest', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker' });
+    const res = await POST(createRequest({ files: [{ path: 'src/app.ts', content: 'x' }] }), params());
+    expect(res.status).toBe(200);
+    expect(upsertCalls.some(c => c.namespace === 'ws-1:code')).toBe(true);
+  });
+
   it('returns 404 for an unknown job', async () => {
     jobRow = null;
     const res = await POST(createRequest({ files: [{ path: 'a.ts', content: 'x' }] }), params());

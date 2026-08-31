@@ -2,10 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, artifacts, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
-import { randomBytes, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { isStorageConfigured, generateSizedUploadUrl } from '@/lib/storage';
 import { buildArtifactKey } from '@/lib/storage-keys';
+import { shareBaseUrl } from '@/lib/artifact-helpers';
 import { ArtifactType } from '@buildd/shared';
 
 /**
@@ -110,7 +111,6 @@ export async function POST(req: NextRequest) {
   } catch {
     return NextResponse.json({ error: 'Unable to derive a storage key' }, { status: 400 });
   }
-  const shareToken = randomBytes(24).toString('base64url');
 
   const artifactType = type || ArtifactType.FILE;
   const artifactTitle = title || filename;
@@ -123,7 +123,10 @@ export async function POST(req: NextRequest) {
       type: artifactType,
       title: artifactTitle,
       storageKey,
-      shareToken,
+      // Private until an explicit Share: a token is a bearer credential and
+      // POST /api/artifacts/[artifactId]/share is the only thing that mints one.
+      shareToken: null,
+      visibility: 'private',
       metadata: {
         ...(metadata || {}),
         // The caller's own name, kept verbatim for display; the object key uses
@@ -137,18 +140,15 @@ export async function POST(req: NextRequest) {
 
   const uploadUrl = await generateSizedUploadUrl(storageKey, mimeType, sizeBytes);
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : 'https://buildd.dev';
-
-  const downloadUrl = `${baseUrl}/api/artifacts/${artifact.id}/download?token=${shareToken}`;
-  const shareUrl = `${baseUrl}/share/${shareToken}`;
+  // The credentialed download path (API key / session, scoped to the artifact's
+  // tenant) is the only way to read this back until someone shares it.
+  const downloadUrl = `${shareBaseUrl()}/api/artifacts/${artifact.id}/download`;
 
   return NextResponse.json({
     artifactId: artifact.id,
     uploadUrl,
     downloadUrl,
-    shareUrl,
+    shareUrl: null,
     storageKey,
   });
 }

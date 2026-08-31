@@ -115,6 +115,22 @@ describe('POST /api/knowledge/ingest-jobs/[id]/graph', () => {
     expect(entityCalls.length).toBe(0);
   });
 
+  it('returns 403 for a trigger-level token and writes no graph', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'trigger' });
+    const res = await POST(createRequest(graphPayload), params());
+    expect(res.status).toBe(403);
+    expect(entityCalls.length).toBe(0);
+    expect(edgeCalls.length).toBe(0);
+    expect(aliasCalls.length).toBe(0);
+  });
+
+  it('allows a non-trigger token with workspace access to write the graph', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', level: 'worker' });
+    const res = await POST(createRequest(graphPayload), params());
+    expect(res.status).toBe(200);
+    expect(entityCalls.length).toBe(2);
+  });
+
   it('returns 404 for an unknown job', async () => {
     jobRow = null;
     const res = await POST(createRequest(graphPayload), params());

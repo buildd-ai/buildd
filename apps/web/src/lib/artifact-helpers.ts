@@ -8,6 +8,18 @@ export function generateShareToken(): string {
   return randomBytes(24).toString('base64url');
 }
 
+/**
+ * Public origin for share links. NEXT_PUBLIC_APP_URL wins; VERCEL_URL is the
+ * per-deploy fallback. Written as a function because the naive
+ * `A || B ? \`https://${B}\` : default` form yields `https://undefined` whenever
+ * A is set and B is not.
+ */
+export function shareBaseUrl(): string {
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'https://buildd.dev';
+}
+
 export function formatStructuredOutput(
   structuredOutput?: Record<string, unknown>,
   summary?: string
@@ -99,8 +111,9 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
         .returning();
       result = updated;
     } else {
-      // Insert new artifact
-      const shareToken = generateShareToken();
+      // Insert new artifact — PRIVATE, with no share token. A token is a bearer
+      // credential; only an explicit Share (POST /api/artifacts/[id]/share)
+      // mints one.
       const [inserted] = await db
         .insert(artifacts)
         .values({
@@ -110,24 +123,27 @@ export async function upsertAutoArtifact(params: UpsertAutoArtifactParams): Prom
           type,
           title,
           content: content || null,
-          shareToken,
+          shareToken: null,
+          visibility: 'private',
           metadata,
         })
         .returning();
       result = inserted;
     }
 
-    // Fire Pusher events
+    // Fire Pusher events — never over the wire with the share credential on it.
+    const { shareToken: _shareToken, ...broadcastArtifact } = (result || {}) as Record<string, unknown>;
+
     await triggerEvent(
       channels.worker(workerId),
       events.WORKER_PROGRESS,
-      { artifact: result }
+      { artifact: broadcastArtifact }
     );
 
     await triggerEvent(
       channels.workspace(workspaceId),
       'worker:artifact',
-      { artifact: result }
+      { artifact: broadcastArtifact }
     );
   } catch (err) {
     console.error(`[Auto-artifact] Failed to upsert artifact for worker ${workerId}:`, err);

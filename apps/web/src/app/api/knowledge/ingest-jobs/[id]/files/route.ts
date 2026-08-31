@@ -39,6 +39,9 @@ export async function POST(
   if (!account) {
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
+  if (account.level === 'trigger') {
+    return NextResponse.json({ error: 'Trigger tokens cannot upload ingest files' }, { status: 403 });
+  }
 
   let body: FilesBody;
   try {

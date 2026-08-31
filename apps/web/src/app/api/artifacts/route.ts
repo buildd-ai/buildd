@@ -5,6 +5,7 @@ import { eq, and, inArray, desc, isNotNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
+import { shareBaseUrl } from '@/lib/artifact-helpers';
 
 // GET /api/artifacts — list artifacts for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -71,16 +72,15 @@ export async function GET(req: NextRequest) {
       },
     });
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : 'https://buildd.dev';
-
     const artifactsWithMeta = results.map(a => {
       const { mission: missionRel, ...artifactData } = a;
       return {
         ...artifactData,
         missionTitle: missionRel?.title ?? null,
-        shareUrl: a.shareToken ? `${baseUrl}/share/${a.shareToken}` : null,
+        // Only a public artifact has a link anyone can follow.
+        shareUrl: a.shareToken && a.visibility === 'public'
+          ? `${shareBaseUrl()}/share/${a.shareToken}`
+          : null,
       };
     });
 

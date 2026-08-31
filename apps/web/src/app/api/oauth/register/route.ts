@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createClient } from '@/lib/oauth/storage';
+import { createClient, isSafeRedirectUri } from '@/lib/oauth/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +8,16 @@ export const dynamic = 'force-dynamic';
 // client) POSTs here to obtain a client_id before kicking off the OAuth flow.
 // We accept public clients only (PKCE-protected, no client_secret).
 const RegisterSchema = z.object({
-  redirect_uris: z.array(z.string().url()).min(1),
+  redirect_uris: z
+    .array(
+      z
+        .string()
+        .url()
+        .refine(isSafeRedirectUri, {
+          message: 'redirect_uri scheme is not allowed, or the URI carries a fragment',
+        }),
+    )
+    .min(1),
   client_name: z.string().optional(),
   grant_types: z.array(z.string()).optional(),
   response_types: z.array(z.string()).optional(),
