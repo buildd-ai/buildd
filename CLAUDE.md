@@ -54,6 +54,42 @@ CI will **fail** if you change schema.ts without generating/committing migration
 
 **Do NOT use `db:push`** in production - it bypasses migration tracking.
 
+## This Repo Is Public — Never Publish Production Data
+
+`buildd-ai/buildd` is a **public** repository. So are `buildd-ai/memory` and
+`buildd-ai/buildd-docs`. Anything you write in them is world-readable and, for
+commit messages, permanent.
+
+**Never put any of these in code, comments, commit messages, PR titles or bodies,
+issue comments, test fixtures, or user-facing docs:**
+
+- Row counts or table sizes from production (`memories`, `teams`, `workers`, …)
+- Tenancy figures — how many teams, accounts, users, workspaces or API keys exist
+- Per-team or per-project breakdowns, or any distribution of real values
+- Team, account, workspace or worker **UUIDs**
+- Personal GitHub handles, or the names of **private** repos
+- Internal project labels and sentinel values (they leak product structure)
+
+A reviewer needs to know **what a change does and that it was verified**. They never
+need to know **how much data we have, or whose**. State evidence qualitatively:
+"verified against a seeded local container, second run is a no-op" — not the counts.
+
+Exact figures belong in `buildd-ai/knowledge-base`, which is private.
+
+**Data migrations:** drive them from a join against real tables, never a hardcoded
+list of values you observed in production — the hardcoded list *is* the disclosure,
+and it rots the moment the data moves.
+
+**Product docs describe the reader's data, not ours.** "Older teams may have more
+`summary` rows than anything else" is fine; "`summary` is 80% of the corpus" is an
+aggregate statistic about every tenant.
+
+If you catch this after merging: edit the PR body and any comments, and open a
+follow-up commit for code, comments and docs. **Do not rewrite merged history on a
+public branch** — force-pushing a shared default branch breaks every clone, and
+GitHub keeps the orphaned commits reachable by SHA regardless, so it buys the look
+of a fix without the substance. Fix what is editable, leave the rest, and say so.
+
 ## Git Workflow
 
 - **Default branch**: `dev`
