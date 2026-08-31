@@ -32,8 +32,13 @@ export default async function TeamDetailPage({
     notFound();
   }
 
+  // Explicit column list: an unfiltered `db.query.teams` selects every column
+  // declared in schema.ts, which couples this page to the schema and makes any
+  // column removal a build-window outage (see the note on teams.memoryApiKey).
+  // These four are all this page passes to TeamDetailClient.
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, id),
+    columns: { id: true, name: true, slug: true, createdAt: true },
   });
 
   if (!team) {

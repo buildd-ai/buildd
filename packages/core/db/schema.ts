@@ -29,9 +29,24 @@ export const teams = pgTable('teams', {
   plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
   /**
    * @deprecated Memory now lives in buildd's own `memories` table (migration 0130).
-   * Nothing reads or writes this column. Values are cleared by 0130; the column is
-   * dropped in a follow-up migration once 0130's code is live in production — see
-   * the expand/contract note in packages/core/drizzle/0130_fantastic_tigra.sql.
+   * Nothing reads or writes this column and 0130 set every value to NULL, so it is
+   * empty and harmless — but do NOT delete this declaration yet.
+   *
+   * Removing the field from this file is what makes drizzle-kit emit the `DROP
+   * COLUMN`, and `db:migrate` runs BEFORE `next build`. So the column would vanish
+   * at the start of the build while the previous release is still serving traffic.
+   * Any `db.query.teams` call without a `columns:` filter selects every column
+   * declared here, so those queries would start failing on a column that no longer
+   * exists — the hazard #1956 was created to fix.
+   *
+   * Precondition for the drop: every `teams` query must have an explicit `columns:`
+   * list that omits this field, in a release that is already live. As of this
+   * commit the three that lacked one have been fixed:
+   *   - apps/web/src/app/api/teams/[id]/route.ts
+   *   - apps/web/src/app/api/invitations/[token]/accept/route.ts
+   *   - apps/web/src/app/app/(protected)/teams/[id]/page.tsx
+   * Once that release is in production, delete this field and let drizzle-kit
+   * generate the `DROP COLUMN`.
    */
   memoryApiKey: text('memory_api_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2474,6 +2489,11 @@ export type NewReleaseTask = typeof releaseTasks.$inferInsert;
 // Memories — absorbed from the standalone memory.buildd.dev service.
 // Team-scoped: all workspaces in a team share the same memory pool.
 // IDs are preserved from the service so knowledge_chunks source_ids remain valid.
+//
+// `project` is a canonical scope key: lowercase `owner/repo` for repo-shaped
+// values, otherwise the value verbatim (a bare repo name or a sentinel label).
+// Always write it through normalizeProject() in packages/core/project-scope.ts;
+// migration 0132 canonicalized the history.
 export const memories = pgTable('memories', {
   id: uuid('id').primaryKey().defaultRandom(),
   teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),

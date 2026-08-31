@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.190.0",
+  "version": "0.191.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -48,6 +48,7 @@
     "./knowledge-store/full-ingest": "./knowledge-store/full-ingest.ts",
     "./knowledge-store/scip-parser": "./knowledge-store/scip-parser.ts",
     "./knowledge-store/scip-runner": "./knowledge-store/scip-runner.ts",
+    "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
     "./path-claim": "./path-claim.ts",
     "./friction-manifest": "./friction-manifest.ts",

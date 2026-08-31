@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
 import type { Memory } from '@buildd/core/memory-store';
 import { getMemoryStoreForTeam } from '@/lib/memory-helper';
+import { workspaceProjectKey } from '@buildd/core/project-scope';
 import ObservationList from './ObservationList';
 
 async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Memory[]; total: number }> {
@@ -14,12 +15,14 @@ async function fetchInitialMemories(workspaceId: string): Promise<{ memories: Me
     const client = await getMemoryStoreForTeam(workspaceId);
     if (!client) return { memories: [], total: 0 };
 
-    // Resolve workspace project scope
+    // Resolve workspace project scope, canonicalized to the same `owner/repo`
+    // key the memories rows carry (workspaces.repo is a mix of full URLs and
+    // short forms, so the raw value scoped nothing).
     const ws = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
       columns: { repo: true, name: true },
     });
-    const project = ws?.repo || ws?.name || undefined;
+    const project = workspaceProjectKey(ws?.repo, ws?.name) ?? undefined;
 
     const searchData = await client.search({ project, limit: 50 });
     if (searchData.results.length === 0) return { memories: [], total: 0 };

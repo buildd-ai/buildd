@@ -13,6 +13,7 @@
 import { db } from './db';
 import { memories } from './db/schema';
 import { eq, and, inArray, or, ilike, desc, count as dbCount } from 'drizzle-orm';
+import { normalizeProject } from './project-scope';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
 
@@ -89,10 +90,15 @@ export class MemoryStore {
 
   /** Markdown-formatted recent memories for agent context injection. */
   async getContext(project?: string): Promise<{ markdown: string; count: number }> {
+    // Compare canonical-to-canonical: every write goes through normalizeProject,
+    // and 0133 rewrote the history, so exact equality is correct here and can use
+    // the (team_id, project) index. Substring matching used to be required only
+    // because the same project was stored as both a URL and a short name.
+    const scope = normalizeProject(project);
     const rows = await db.query.memories.findMany({
       where: and(
         eq(memories.teamId, this.teamId),
-        ...(project ? [ilike(memories.project, project)] : []),
+        ...(scope ? [eq(memories.project, scope)] : []),
       ),
       orderBy: [desc(memories.updatedAt), desc(memories.id)],
       limit: 20,
@@ -128,8 +134,11 @@ export class MemoryStore {
     if (params.type) {
       conditions.push(eq(memories.type, params.type as MemoryRecord['type']));
     }
-    if (params.project) {
-      conditions.push(ilike(memories.project, `%${params.project}%`));
+    // Exact canonical match, not a substring: a short project name used to also
+    // match every longer project name it happened to be a prefix of.
+    const scope = normalizeProject(params.project);
+    if (scope) {
+      conditions.push(eq(memories.project, scope));
     }
     if (params.query) {
       const q = `%${params.query}%`;
@@ -189,14 +198,14 @@ export class MemoryStore {
     return { memory: toRecord(row) };
   }
 
-  /** Insert a new memory. */
+  /** Insert a new memory. `project` is canonicalized on the way in. */
   async save(input: SaveMemoryInput): Promise<{ memory: MemoryRecord }> {
     const [row] = await db.insert(memories).values({
       teamId: this.teamId,
       type: input.type as MemoryRecord['type'],
       title: input.title,
       content: input.content,
-      project: input.project ?? null,
+      project: normalizeProject(input.project),
       tags: input.tags ?? [],
       files: input.files ?? [],
       source: input.source ?? null,
@@ -205,7 +214,7 @@ export class MemoryStore {
     return { memory: toRecord(row) };
   }
 
-  /** Update an existing memory. */
+  /** Update an existing memory. `project` is canonicalized on the way in. */
   async update(id: string, fields: UpdateMemoryInput): Promise<{ memory: MemoryRecord }> {
     const updateData: Partial<typeof memories.$inferInsert> = {
       updatedAt: new Date(),
@@ -213,7 +222,7 @@ export class MemoryStore {
     if (fields.type !== undefined) updateData.type = fields.type as MemoryRecord['type'];
     if (fields.title !== undefined) updateData.title = fields.title;
     if (fields.content !== undefined) updateData.content = fields.content;
-    if (fields.project !== undefined) updateData.project = fields.project;
+    if (fields.project !== undefined) updateData.project = normalizeProject(fields.project);
     if (fields.tags !== undefined) updateData.tags = fields.tags;
     if (fields.files !== undefined) updateData.files = fields.files;
     if (fields.source !== undefined) updateData.source = fields.source;
