@@ -47,7 +47,9 @@ A required CI check (`Schema Drift / check-prod`) compares the production databa
 
 - Introspects `information_schema.columns` on the production database (read-only)
 - Compares against the expected schema from `packages/core/drizzle/meta/<latest>_snapshot.json`
-- Fails if any column exists in the DB but not in the snapshot (manual DDL not tracked)
+- Fails if any column exists in the DB but not in the snapshot (manual DDL not tracked),
+  **unless** a migration drops that column — migrations run on deploy, after this gate,
+  so a column awaiting its `DROP COLUMN` is expected, not drift
 - Fails if any column is expected by the snapshot but absent from the DB (unapplied migration)
 - Sends a Pushover alert (via `PUSHOVER_TOKEN_ALERT`) on any gate failure
 
