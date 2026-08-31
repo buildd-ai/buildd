@@ -18,19 +18,50 @@ import { join } from 'path';
 import { CBM_BINARY_PATH } from './bwrap-mount-allowlist';
 
 /**
- * Tools the CBM server must NOT expose to the agent.
- * delete_project and ingest_traces are destructive; manage_adr writes ADR files
- * into the codebase — an unwanted side effect from an indexing tool.
+ * Deny decision over a classified tool surface: everything on the surface that is
+ * not explicitly allowed is blocked, MCP-prefixed for `disallowedTools`.
  */
-export const CBM_BLOCKED_TOOLS = [
-  'mcp__codebase-memory__delete_project',
-  'mcp__codebase-memory__manage_adr',
-  'mcp__codebase-memory__ingest_traces',
+export function deriveCbmBlockedTools(
+  surface: readonly string[],
+  allowed: readonly string[],
+): string[] {
+  const allowedSet = new Set(allowed);
+  return surface.filter(tool => !allowedSet.has(tool)).map(tool => `mcp__codebase-memory__${tool}`);
+}
+
+/**
+ * The CBM tools this runner has classified — the 15 tools recorded for
+ * codebase-memory-mcp in docs/design/codebase-memory-mcp-integration.md §2.4.
+ *
+ * This is the set the deny decision below is computed over — NOT a guarantee that
+ * the pinned build exposes nothing else. A tool CBM adds in a later release is unknown
+ * here and therefore reaches the agent unblocked; `disallowedTools` is a
+ * blocklist, so deny-by-default is not expressible through it. Bumping the CBM
+ * pin means re-reading its tool list and classifying any new entry here.
+ */
+export const CBM_TOOL_SURFACE = [
+  // read / query — safe for the agent
+  'search_graph',
+  'trace_path',
+  'detect_changes',
+  'query_graph',
+  'get_graph_schema',
+  'get_code_snippet',
+  'get_architecture',
+  'search_code',
+  'index_repository',
+  'index_status',
+  'list_projects',
+  'check_index_coverage',
+  // destructive / side-effecting — must not reach the agent
+  'delete_project',
+  'manage_adr',
+  'ingest_traces',
 ] as const;
 
 /**
  * Exact set of CBM tools the agent is allowed to use.
- * Listed here for documentation; enforcement is via CBM_BLOCKED_TOOLS (blocklist).
+ * Everything else on the classified surface is blocked (see CBM_BLOCKED_TOOLS).
  */
 export const CBM_ALLOWED_TOOLS = [
   'search_graph',
@@ -46,6 +77,30 @@ export const CBM_ALLOWED_TOOLS = [
   'list_projects',
   'check_index_coverage',
 ] as const;
+
+/**
+ * Tools the CBM server must NOT expose to the agent — derived, so that adding a
+ * tool to CBM_TOOL_SURFACE without allowing it blocks it automatically.
+ * delete_project and ingest_traces are destructive; manage_adr writes ADR files
+ * into the codebase — an unwanted side effect from an indexing tool.
+ */
+export const CBM_BLOCKED_TOOLS: readonly string[] = deriveCbmBlockedTools(CBM_TOOL_SURFACE, CBM_ALLOWED_TOOLS);
+
+/**
+ * Append the CBM blocklist to a session's disallowedTools.
+ *
+ * Apply this unconditionally. The previous call site ran only when the runner
+ * itself had put `codebase-memory` into queryOptions.mcpServers, which misses
+ * every other way the server can reach the agent — most concretely a stdio entry
+ * in the project's `.mcp.json`, which the SDK loads on its own via
+ * settingSources: ['user', 'project'] and which the runner's .mcp.json injection
+ * skips because it only handles `type: 'http'`. On that path the destructive
+ * tools were fully exposed. Naming a tool that is not mounted is inert, so there
+ * is no cost to always blocking these.
+ */
+export function applyCbmToolBlocklist(existing: readonly string[] | undefined): string[] {
+  return [...new Set([...(existing ?? []), ...CBM_BLOCKED_TOOLS])];
+}
 
 export interface CbmContext {
   workerId: string;

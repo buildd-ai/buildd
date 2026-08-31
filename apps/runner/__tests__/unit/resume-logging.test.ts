@@ -131,6 +131,7 @@ mock.module('../../src/env-scan', () => ({
   parseMcpJson: () => [],
   scanMcpServersRich: () => [],
   checkBwrapSupport: () => true,
+  checkBwrapMountIsolationSupport: () => true,
 }));
 
 const { WorkerManager } = await import('../../src/workers');

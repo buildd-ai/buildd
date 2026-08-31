@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState, useTransition, useCallback } from 'react';
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
-import { isRunnerOnline } from '@/lib/runner-heartbeats-shared';
+import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
 import { findDuplicateScheduleIds } from '@/lib/schedule-health';
 import type {
   UsageStats,
@@ -325,7 +325,12 @@ export function HealthClient({
 
   // Derive problems
   const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt));
-  const unsandboxedRunners = runners.filter(r => isRunnerOnline(r.lastHeartbeatAt) && r.sandboxEnabled === false);
+  // Every online runner whose sandbox posture is not actually enforced — bwrap
+  // denied, or bwrap available with the mount allowlist off. Both are degraded;
+  // neither may render as green.
+  const degradedSandboxRunners = runners.filter(
+    r => isRunnerOnline(r.lastHeartbeatAt) && deriveSandboxPosture(r).tier === 'warning',
+  );
   const failedSchedules = schedules.filter(s => s.enabled && !!s.lastError);
   const hasProblems =
     credentialHealth.length > 0 ||
@@ -467,18 +472,21 @@ export function HealthClient({
               </div>
             ))}
 
-            {/* Unsandboxed runners — degraded-but-working posture, warning tier */}
-            {unsandboxedRunners.map((hb) => (
-              <div key={`sandbox-${hb.id}`} className="px-4 py-3 flex items-center gap-3">
-                <span className="text-status-warning shrink-0 text-sm">⚠</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-text-primary">
-                    {hb.accountName || 'Runner'} running unsandboxed
-                  </p>
-                  <p className="text-xs text-text-muted">user namespaces denied · tasks run without bwrap isolation</p>
+            {/* Degraded sandbox posture — working but not confined, warning tier */}
+            {degradedSandboxRunners.map((hb) => {
+              const posture = deriveSandboxPosture(hb);
+              return (
+                <div key={`sandbox-${hb.id}`} className="px-4 py-3 flex items-center gap-3">
+                  <span className="text-status-warning shrink-0 text-sm">⚠</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-text-primary">
+                      {hb.accountName || 'Runner'}: {posture.label}
+                    </p>
+                    <p className="text-xs text-text-muted">{posture.detail}</p>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
             {/* Schedules with errors */}
             {failedSchedules.map((s) => (
@@ -546,16 +554,15 @@ export function HealthClient({
                 const statusClass = online
                   ? idle ? 'text-text-muted' : 'text-status-success'
                   : 'text-text-muted';
-                const sandboxLabel = hb.sandboxEnabled === null
-                  ? 'sandbox unknown'
-                  : hb.sandboxEnabled
-                    ? 'sandboxed'
-                    : 'unsandboxed';
-                const sandboxClass = hb.sandboxEnabled === null
-                  ? 'text-text-muted'
-                  : hb.sandboxEnabled
-                    ? 'text-status-success'
-                    : 'text-status-warning';
+                // Green means ENFORCED (namespace + mount allowlist), never merely
+                // "bwrap is installed here" — see deriveSandboxPosture.
+                const posture = deriveSandboxPosture(hb);
+                const sandboxLabel = posture.label;
+                const sandboxClass = posture.tier === 'success'
+                  ? 'text-status-success'
+                  : posture.tier === 'warning'
+                    ? 'text-status-warning'
+                    : 'text-text-muted';
                 return (
                   <div key={hb.id}>
                     <div className="flex items-center gap-3 px-4 py-3">
@@ -571,7 +578,10 @@ export function HealthClient({
                           <span className={`text-[10px] font-mono ${statusClass}`}>
                             {statusLabel}
                           </span>
-                          <span className={`text-[10px] font-mono ${sandboxClass}`} title={hb.sandboxProbeAt ? `probed ${timeAgo(hb.sandboxProbeAt)}` : 'not yet probed'}>
+                          <span
+                            className={`text-[10px] font-mono ${sandboxClass}`}
+                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt)}` : ' · not yet probed'}`}
+                          >
                             {sandboxLabel}
                           </span>
                         </div>

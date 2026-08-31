@@ -29,7 +29,7 @@ import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, cre
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
-import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport } from './env-scan';
+import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
@@ -71,9 +71,10 @@ import {
   buildWorkerBwrapArgv,
   createBwrapSpawn,
   isMountAllowlistEnabled,
+  shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, CBM_BLOCKED_TOOLS } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -106,8 +107,13 @@ function parseClaimError(err: Error): { status: number; reason: string } {
 // this once and force sandbox:disabled for all tasks on this runner.
 let _bwrapSupported: boolean | null = null;
 let _bwrapProbeAt: string | null = null;
-/** Test-only: reset the bwrap probe cache so each test starts from a known state. */
-export function __resetBwrapSupportForTest(): void { _bwrapSupported = null; _bwrapProbeAt = null; }
+let _mountIsolationBwrapSupported: boolean | null = null;
+/** Test-only: reset the bwrap probe caches so each test starts from a known state. */
+export function __resetBwrapSupportForTest(): void {
+  _bwrapSupported = null;
+  _bwrapProbeAt = null;
+  _mountIsolationBwrapSupported = null;
+}
 /** ISO timestamp of the last bwrap probe, or null if not yet probed. */
 export function getBwrapProbeAt(): string | null { return _bwrapProbeAt; }
 export function isBwrapSupported(): boolean {
@@ -123,6 +129,25 @@ export function isBwrapSupported(): boolean {
     }
   }
   return _bwrapSupported;
+}
+
+/**
+ * Namespace support for the OUTER mount-allowlist wrapper only.
+ *
+ * isBwrapSupported() carries Claude Code's inner-sandbox requirement, which
+ * includes a network namespace. buildWorkerBwrapArgv never unshares net, so
+ * gating the wrapper on that stricter boolean turned mount isolation off on hosts
+ * where it works. Probe what this consumer actually needs.
+ */
+export function isMountIsolationBwrapSupported(): boolean {
+  if (process.env.BUILDD_DISABLE_SANDBOX === '1') return false;
+  if (_mountIsolationBwrapSupported === null) {
+    _mountIsolationBwrapSupported = checkBwrapMountIsolationSupport();
+    if (!_mountIsolationBwrapSupported) {
+      console.log('[runner] bwrap user/pid namespaces unavailable — outer mount allowlist cannot be enforced');
+    }
+  }
+  return _mountIsolationBwrapSupported;
 }
 
 // Async message stream for multi-turn conversations
@@ -2340,6 +2365,9 @@ export class WorkerManager {
       const cbmEnforced = cbmActivation.enforced;
 
       let cbmBinaryPath: string | undefined;
+      // Set when a required CBM bind could not be mounted; see the bwrap argv
+      // build below. CBM is then off for this task even though the gates passed.
+      let cbmMountBlocked = false;
       if (cbmEnforced) {
         cbmBinaryPath = cbmActivation.cbmBinaryPath;
         cbmCacheDir = cbmActivation.cbmCacheDir;
@@ -2418,13 +2446,16 @@ export class WorkerManager {
       // this, CBM was mounted but unmentioned: the tools appear in the tool list
       // with no policy preferring them over a Read/Grep sweep, so structural
       // questions kept being answered the expensive way. Appended only when
-      // enforced, so the instruction can never describe a server that is absent.
-      if (cbmEnforced) {
+      // enforced AND actually mounted, so the instruction can never describe a
+      // server that is absent — `cbmMountBlocked` means a required bind was
+      // missing and CBM was dropped for this task.
+      if (cbmEnforced && !cbmMountBlocked) {
         systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
           project: cbmActivation.cbmProject,
           sharedBaseIndex: cbmActivation.sharedCache,
         });
       }
+
 
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
@@ -2432,22 +2463,56 @@ export class WorkerManager {
       // spawn hook is the injection point prescribed by the design fallback.
       // BUILDD_DISABLE_SANDBOX remains the global kill switch, and the cached
       // support probe/runtime false-positive recovery remain the sole bwrap gate.
-      const workerBwrapArgv = isMountAllowlistEnabled() && isBwrapSupported()
-        ? buildWorkerBwrapArgv({
-            worktreePath: cwd,
-            repoPath,
-            homePath: cleanEnv.HOME,
-            bunInstallPath: cleanEnv.BUN_INSTALL,
-            claudeConfigDir,
-            codexHome: cleanEnv.CODEX_HOME,
-            isCodexTask,
-            executablePath: pathToClaudeCodeExecutable,
-            extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
-            cbmBinaryPath,
-            cbmCacheDir,
-            cbmRuntimeDir,
-          })
-        : undefined;
+      // Codex is excluded by the gate: it has no equivalent spawn hook, so an
+      // argv built for it was only ever discarded.
+      let workerBwrapArgv: string[] | undefined;
+      if (shouldWrapWorkerInBwrap({
+        isCodexTask,
+        mountAllowlistEnabled: isMountAllowlistEnabled(),
+        bwrapSupported: isMountIsolationBwrapSupported(),
+      })) {
+        const bwrapConfig = {
+          worktreePath: cwd,
+          repoPath,
+          homePath: cleanEnv.HOME,
+          bunInstallPath: cleanEnv.BUN_INSTALL,
+          claudeConfigDir,
+          codexHome: cleanEnv.CODEX_HOME,
+          isCodexTask,
+          executablePath: pathToClaudeCodeExecutable,
+          extraMounts: process.env.BUILDD_MOUNT_ALLOWLIST_EXTRA,
+        };
+        try {
+          workerBwrapArgv = buildWorkerBwrapArgv({ ...bwrapConfig, cbmBinaryPath, cbmCacheDir, cbmRuntimeDir });
+        } catch (err) {
+          // A mount CBM cannot work without is gone (the bootstrap discards the
+          // cache dir on failure, and a stray rm or a full disk can too). Mounting
+          // CBM anyway would leave the agent indexing into the sandbox's
+          // `--tmpfs /tmp`, which is thrown away at session end — minutes of work
+          // for nothing, with no signal. Drop CBM for this task and say so.
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`[Worker ${worker.id}] CBM sandbox mount unavailable — running without CBM: ${reason}`);
+          this.addMilestone(worker, { type: 'status', label: `cbm_mount_unavailable: ${reason.slice(0, 120)}`, ts: Date.now() });
+          // cbmCacheDir stays set so the `finally` cleanup still removes it.
+          cbmMountBlocked = true;
+          worker.cbmOutcome = 'disabled';
+          worker.cbmDisableReason = 'mount_unavailable';
+          workerBwrapArgv = buildWorkerBwrapArgv(bwrapConfig);
+        }
+      }
+
+      // Steer the agent toward the graph when CBM is actually mounted. Without
+      // this, CBM was mounted but unmentioned: the tools appear in the tool list
+      // with no policy preferring them over a Read/Grep sweep, so structural
+      // questions kept being answered the expensive way. Appended only when
+      // enforced, so the instruction can never describe a server that is absent.
+      // `!cbmMountBlocked`: a required CBM bind that could not be mounted disables
+      // CBM entirely (see the mount-unavailable path above), so steering the agent
+      // toward a graph that is not there would be a lie.
+      if (cbmEnforced && !cbmMountBlocked) {
+        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock();
+      }
+
 
       // Build query options
       const outputFormat = resolveOutputFormat(task);
@@ -2461,10 +2526,13 @@ export class WorkerManager {
           ? {
               spawnClaudeCodeProcess: createBwrapSpawn(workerBwrapArgv, () => {
                 // The outer wrapper can expose the same probe false-positive as
-                // Claude's inner bwrap. Flip the cache once and signal startSession
+                // Claude's inner bwrap. Flip the caches once and signal startSession
                 // to auto-retry without sandbox rather than marking the task Failed.
-                if (_bwrapSupported !== false) {
+                // The outer wrapper needs a strict subset of the inner sandbox's
+                // namespaces, so a denial here rules both out.
+                if (_bwrapSupported !== false || _mountIsolationBwrapSupported !== false) {
                   _bwrapSupported = false;
+                  _mountIsolationBwrapSupported = false;
                   worker.bwrapRetryPending = true;
                   abortController.abort();
                 }
@@ -2621,7 +2689,7 @@ export class WorkerManager {
 
       // Enforce CBM as default MCP for repo-backed tasks.
       // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
-      if (cbmEnforced && !queryOptions.mcpServers['codebase-memory']) {
+      if (cbmEnforced && !cbmMountBlocked && !queryOptions.mcpServers['codebase-memory']) {
         queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
       }
@@ -2638,15 +2706,12 @@ export class WorkerManager {
       });
       if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
 
-      // Block CBM tools that write to the repo or delete indexes — enforced for any
-      // mounted codebase-memory server regardless of how it was wired (enforcement,
-      // connector, or manual config).
-      if (queryOptions.mcpServers['codebase-memory']) {
-        (queryOptions as any).disallowedTools = [
-          ...((queryOptions as any).disallowedTools ?? []),
-          ...CBM_BLOCKED_TOOLS,
-        ];
-      }
+      // Block CBM tools that write to the repo or delete indexes. Applied
+      // unconditionally: a codebase-memory server can also arrive via the SDK's own
+      // project .mcp.json load (settingSources includes 'project'), where it never
+      // appears in queryOptions.mcpServers — gating on that left the destructive
+      // tools exposed on exactly that path. Disallowing an unmounted tool is inert.
+      (queryOptions as any).disallowedTools = applyCbmToolBlocklist((queryOptions as any).disallowedTools);
 
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role
@@ -4189,6 +4254,10 @@ If something is missing or incomplete, describe what and fix it now.`;
             // first actual failure surfaces, flip the cache and abort the current
             // task. startSession's catch block will detect bwrapRetryPending and
             // restart the session without sandbox rather than marking it Failed.
+            // Scoped to the inner sandbox on purpose: this trace comes from
+            // Claude Code's own bwrap (which unshares net too). The outer wrapper
+            // needs less, and its own denials arrive via createBwrapSpawn's stderr
+            // hook above — do not flip _mountIsolationBwrapSupported from here.
             if (traces.some(t => t.pattern === 'bwrap_namespace_denied') && _bwrapSupported !== false) {
               _bwrapSupported = false;
               console.warn(

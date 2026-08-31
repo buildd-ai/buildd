@@ -13,6 +13,9 @@ import {
   resolveCbmOutcome,
   CBM_BLOCKED_TOOLS,
   CBM_ALLOWED_TOOLS,
+  CBM_TOOL_SURFACE,
+  applyCbmToolBlocklist,
+  deriveCbmBlockedTools,
   type CbmContext,
 } from '../../src/cbm-enforcement';
 import { CBM_BINARY_PATH } from '../../src/bwrap-mount-allowlist';
@@ -210,5 +213,64 @@ describe('resolveCbmOutcome (final metric bucket)', () => {
 
   test('neither enforced nor mounted is disabled', () => {
     expect(resolveCbmOutcome({ enforced: false, mounted: false })).toBe('disabled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C15(a) — the blocklist must apply on EVERY mount path
+// ---------------------------------------------------------------------------
+
+describe('applyCbmToolBlocklist', () => {
+  test('blocks the destructive tools even when the runner did not mount CBM itself', () => {
+    // A codebase-memory server can reach the agent without ever appearing in
+    // queryOptions.mcpServers: the SDK loads project .mcp.json itself via
+    // settingSources: ['user', 'project'], and the runner's own .mcp.json
+    // injection only handles type === 'http' entries (CBM is stdio). Gating the
+    // blocklist on "the runner mounted it" left that path unguarded.
+    const disallowed = applyCbmToolBlocklist(undefined);
+    for (const blocked of CBM_BLOCKED_TOOLS) {
+      expect(disallowed).toContain(blocked);
+    }
+  });
+
+  test('preserves tools the caller already disallowed', () => {
+    const disallowed = applyCbmToolBlocklist(['WebFetch']);
+    expect(disallowed).toContain('WebFetch');
+    expect(disallowed).toContain('mcp__codebase-memory__delete_project');
+  });
+
+  test('is idempotent — re-applying does not duplicate entries', () => {
+    const once = applyCbmToolBlocklist(undefined);
+    const twice = applyCbmToolBlocklist(once);
+    expect(twice.sort()).toEqual(once.sort());
+  });
+});
+
+describe('CBM tool classification', () => {
+  test('every classified CBM tool is either allowed or blocked, never both', () => {
+    const allowed = new Set<string>(CBM_ALLOWED_TOOLS);
+    const blockedBare = CBM_BLOCKED_TOOLS.map(t => t.replace('mcp__codebase-memory__', ''));
+    for (const bare of blockedBare) expect(allowed.has(bare)).toBe(false);
+    expect(new Set([...allowed, ...blockedBare]).size).toBe(allowed.size + blockedBare.length);
+  });
+
+  test('an unallowed tool on the surface is blocked automatically', () => {
+    // The deny decision is computed, not remembered: a tool that shows up on the
+    // surface without being allowed is blocked without anyone editing a list.
+    expect(deriveCbmBlockedTools(['search_graph', 'nuke_everything'], ['search_graph']))
+      .toEqual(['mcp__codebase-memory__nuke_everything']);
+    expect(deriveCbmBlockedTools(['search_graph'], ['search_graph'])).toEqual([]);
+  });
+
+  test('the shipped blocklist is that same decision over the shipped surface', () => {
+    expect([...CBM_BLOCKED_TOOLS].sort())
+      .toEqual(deriveCbmBlockedTools(CBM_TOOL_SURFACE, CBM_ALLOWED_TOOLS).sort());
+  });
+
+  test('the destructive tools are on the classified surface and not allowed', () => {
+    for (const tool of ['delete_project', 'manage_adr', 'ingest_traces']) {
+      expect(CBM_TOOL_SURFACE).toContain(tool as any);
+      expect(CBM_ALLOWED_TOOLS).not.toContain(tool as any);
+    }
   });
 });
