@@ -121,6 +121,18 @@ mock.module('../../src/skills.js', () => ({
   syncSkillToLocal: async () => {},
 }));
 
+// Mock env-scan — without this, the WorkerManager constructor's real
+// checkBwrapSupport() spawns a real bwrap subprocess to probe namespace
+// support, which hangs in CI and times out the first test in this file.
+mock.module('../../src/env-scan', () => ({
+  scanEnvironment: () => ({ platform: 'linux', arch: 'x64', tools: [], envKeys: [] }),
+  checkMcpPreFlight: () => ({ missing: [], warnings: [] }),
+  parseMcpJson: () => [],
+  scanMcpServersRich: () => [],
+  checkBwrapSupport: () => true,
+  checkBwrapMountIsolationSupport: () => true,
+}));
+
 // Import WorkerManager after all mocks
 const { WorkerManager } = await import('../../src/workers');
 
