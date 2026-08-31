@@ -29,6 +29,10 @@ import { eq } from 'drizzle-orm';
 import {
   handleBuilddAction,
   handleMemoryAction,
+  handleRecallAction,
+  handleLearnAction,
+  recallToolDefinition,
+  learnToolDefinition,
   allActions as allActionsList,
   memoryActions,
   buildToolDescription,
@@ -38,6 +42,7 @@ import {
   type ActionContext,
 } from '@buildd/core/mcp-tools';
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
+import { workspaceProjectKey } from '@buildd/core/project-scope';
 import { verifyAccessToken } from '@/lib/oauth/tokens';
 import { getIssuer } from '@/lib/oauth/config';
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from '@/lib/memory-helper';
@@ -82,7 +87,7 @@ function createApi(jwt: string): ApiFn {
   };
 }
 
-function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, isSensitive?: boolean) {
+function createMcpServer(api: ApiFn, workspaceId: string, accountTeamId: string, isSensitive?: boolean, project?: string) {
   const actions = [...allActionsList];
 
   const embedder = getVoyageEmbedder();
@@ -155,6 +160,7 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
           required: ['action'],
         },
       });
+      tools.push(recallToolDefinition, learnToolDefinition);
     }
 
     return { tools };
@@ -205,7 +211,26 @@ Workspace is bound to this connector — pass workspaceId only when overriding (
         if (!memClient) {
           return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
         }
-        return await handleMemoryAction(memClient, action, params, { ...ctx, isSensitive });
+        return await handleMemoryAction(memClient, action, params, { ...ctx, project, isSensitive });
+      }
+      if (name === 'recall' || name === 'learn') {
+        // Defense-in-depth: gate even if the tool was called despite being absent
+        // from the ListTools response for sensitive workspaces.
+        if (isSensitive) {
+          return { content: [{ type: 'text' as const, text: `Error: ${name} is not available in sensitive workspaces.` }], isError: true };
+        }
+        const memClient = await getMemoryClientForTeam(workspaceId, accountTeamId);
+        if (!memClient) {
+          return { content: [{ type: 'text' as const, text: 'Memory store unavailable — team could not be resolved.' }], isError: true };
+        }
+        // No multi-workspace guard here (unlike /api/mcp): this endpoint pins the
+        // workspace in its URL path and the JWT claim is checked against it, so
+        // the workspace can never be ambiguous.
+        const memCtx = { ...ctx, project, isSensitive };
+        const memArgs = (args || {}) as Record<string, unknown>;
+        return name === 'recall'
+          ? await handleRecallAction(memClient, memArgs, memCtx)
+          : await handleLearnAction(memClient, memArgs, memCtx);
       }
       throw new Error(`Unknown tool: ${name}`);
     } catch (error) {
@@ -229,13 +254,16 @@ async function handle(req: Request, workspace: string): Promise<Response> {
   // Verify workspace exists and grab its team for memory routing.
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspace),
-    columns: { id: true, teamId: true, dataClass: true },
+    columns: { id: true, teamId: true, dataClass: true, repo: true, name: true },
   });
   if (!ws) return new Response('Workspace not found', { status: 404 });
 
   const api = createApi(jwt);
   const isSensitive = (ws.dataClass as string) === 'sensitive';
-  const server = createMcpServer(api, workspace, ws.teamId, isSensitive);
+  // Same project key /api/mcp resolves, so `learn` writes land in the same
+  // scope from either transport instead of unscoped.
+  const project = workspaceProjectKey(ws.repo, ws.name) ?? undefined;
+  const server = createMcpServer(api, workspace, ws.teamId, isSensitive, project);
 
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

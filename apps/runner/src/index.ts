@@ -11,6 +11,7 @@ import { Outbox } from './outbox';
 import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
+import { writeSecretJsonFile } from './secure-file';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -240,11 +241,6 @@ async function promptYesNo(question: string): Promise<boolean> {
 
 function saveConfig(data: Partial<SavedConfig>) {
   try {
-    const dir = BUILDD_DIR;
-    if (!existsSync(dir)) {
-      const { mkdirSync } = require('fs');
-      mkdirSync(dir, { recursive: true });
-    }
     // Merge with existing, but don't recursively call loadSavedConfig
     let existing: SavedConfig = {};
     if (existsSync(CONFIG_FILE)) {
@@ -255,7 +251,9 @@ function saveConfig(data: Partial<SavedConfig>) {
     const merged = { ...existing, ...data };
     // Clean up: remove empty/null values
     if (!merged.apiKey) delete merged.apiKey;
-    writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+    // config.json holds a plaintext bld_* API key -- 0600, like codex-auth.ts and
+    // claude-auth.ts do for their own credential files.
+    writeSecretJsonFile(CONFIG_FILE, merged);
     console.log(`Config saved to ${CONFIG_FILE}`);
   } catch (err) {
     console.error('Failed to save config:', err);

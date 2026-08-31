@@ -150,7 +150,7 @@ export const triggerActions = [
   'list_artifacts', 'get_artifact', 'emit_event',
   'list_artifact_templates',
   'list_schedules', 'trace_schedule',
-  'get_task', 'get_task_messages',
+  'get_task_messages',
 ] as const;
 
 export const workerActions = [
@@ -167,7 +167,7 @@ export const workerActions = [
   'suggest_schedule_update',
   'post_note',
   'list_schedules', 'trace_schedule',
-  'get_task', 'get_task_messages',
+  'get_task_messages',
   'get_budget_forecast',
   'get_usage_stats',
   'list_connectors',
@@ -203,6 +203,124 @@ export const allActions = [...workerActions, ...adminActions] as const;
 
 // delete and consolidate_knowledge moved to adminActions / buildd tool (compliance + single-consumer ops)
 export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'query_knowledge'] as const;
+
+/**
+ * JSON-Schema tool definitions for the `recall` / `learn` knowledge tools.
+ *
+ * Shared by both Streamable-HTTP MCP routes -- /api/mcp and the
+ * workspace-pinned /api/mcp-oauth/[workspace] -- so the advertised tool set
+ * cannot drift between them. It had drifted: the OAuth route's server
+ * instructions named both tools while its ListTools handler registered
+ * neither, so a client that believed the instructions got
+ * `Unknown tool: recall`.
+ *
+ * Every call site must keep these behind the same `dataClass !== 'sensitive'`
+ * gate the deprecated buildd_memory tool uses; handleRecallAction /
+ * handleLearnAction re-check `ctx.isSensitive` as defense in depth.
+ *
+ * The stdio server (buildd-mcp-server.ts) declares its own zod equivalents --
+ * that transport builds schemas from zod, not raw JSON Schema, so it cannot
+ * consume these.
+ */
+export const recallToolDefinition = {
+  name: "recall",
+  description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks. Pass the task title and any error message. Use scope=[\"memory\",\"task\"] to cover prior lessons AND recent outcomes in one call.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      query: {
+        type: "string" as const,
+        description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
+      },
+      scope: {
+        description: "Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
+        oneOf: [
+          {
+            type: "string" as const,
+            enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+          },
+          {
+            type: "array" as const,
+            items: {
+              type: "string" as const,
+              enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
+            },
+          },
+        ],
+      },
+      type: {
+        type: "string" as const,
+        description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
+      },
+      files: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Narrow results to entries touching these file paths.",
+      },
+      limit: {
+        type: "number" as const,
+        description: "Max results to return. Default: 10.",
+      },
+      id: {
+        type: "string" as const,
+        description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
+      },
+    },
+  },
+};
+
+export const learnToolDefinition = {
+  name: "learn",
+  description: "Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.",
+  annotations: {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+  },
+  inputSchema: {
+    type: "object" as const,
+    properties: {
+      type: {
+        type: "string" as const,
+        description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
+        enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
+      },
+      title: {
+        type: "string" as const,
+        description: "Short title for this lesson.",
+      },
+      content: {
+        type: "string" as const,
+        description: "The lesson content — what the next agent should know.",
+      },
+      files: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "File paths this lesson relates to.",
+      },
+      tags: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Tags for categorisation.",
+      },
+      scope: {
+        type: "string" as const,
+        description: "Project/monorepo scope for this memory.",
+      },
+      supersedes: {
+        type: "array" as const,
+        items: { type: "string" as const },
+        description: "Memory IDs this entry replaces. Superseded entries drop out of default retrieval.",
+      },
+    },
+    required: ["type", "title", "content"],
+  },
+};
 
 export type BuilddAction = (typeof allActions)[number];
 export type MemoryAction = (typeof memoryActions)[number];

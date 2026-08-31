@@ -36,6 +36,8 @@ import {
   handleMemoryAction,
   handleRecallAction,
   handleLearnAction,
+  recallToolDefinition,
+  learnToolDefinition,
   triggerActions,
   workerActions,
   adminActions,
@@ -375,104 +377,8 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
             required: ["action"],
           },
         },
-        {
-          name: "recall",
-          description: "Team knowledge base. Query this BEFORE starting work or diagnosing a failure — it holds prior gotchas, architecture decisions, and outcomes of past tasks. Pass the task title and any error message. Use scope=[\"memory\",\"task\"] to cover prior lessons AND recent outcomes in one call.",
-          annotations: {
-            readOnlyHint: true,
-            destructiveHint: false,
-            openWorldHint: false,
-          },
-          inputSchema: {
-            type: "object" as const,
-            properties: {
-              query: {
-                type: "string" as const,
-                description: "Natural language query — the task title, error text, or concept to look up. Required unless id is provided.",
-              },
-              scope: {
-                description: "Corpus to search — single string or array for multi-corpus fused results. Default: memory. Options: memory | task | pr | plan | artifact | code | docs | spec",
-                oneOf: [
-                  {
-                    type: "string" as const,
-                    enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
-                  },
-                  {
-                    type: "array" as const,
-                    items: {
-                      type: "string" as const,
-                      enum: ["memory", "task", "pr", "plan", "artifact", "code", "docs", "spec"],
-                    },
-                  },
-                ],
-              },
-              type: {
-                type: "string" as const,
-                description: "Filter by memory type: gotcha | pattern | decision | discovery | architecture",
-              },
-              files: {
-                type: "array" as const,
-                items: { type: "string" as const },
-                description: "Narrow results to entries touching these file paths.",
-              },
-              limit: {
-                type: "number" as const,
-                description: "Max results to return. Default: 10.",
-              },
-              id: {
-                type: "string" as const,
-                description: "Direct fetch by memory ID — bypasses ranking; all other params ignored.",
-              },
-            },
-          },
-        },
-        {
-          name: "learn",
-          description: "Record a durable lesson for the team — a gotcha, pattern, decision, discovery, or architecture fact. Write what the next agent would have wanted to know. Near-duplicates are merged automatically.",
-          annotations: {
-            readOnlyHint: false,
-            destructiveHint: false,
-            openWorldHint: false,
-          },
-          inputSchema: {
-            type: "object" as const,
-            properties: {
-              type: {
-                type: "string" as const,
-                description: "Memory type. One of: gotcha | pattern | decision | discovery | architecture",
-                enum: ["gotcha", "pattern", "decision", "discovery", "architecture"],
-              },
-              title: {
-                type: "string" as const,
-                description: "Short title for this lesson.",
-              },
-              content: {
-                type: "string" as const,
-                description: "The lesson content — what the next agent should know.",
-              },
-              files: {
-                type: "array" as const,
-                items: { type: "string" as const },
-                description: "File paths this lesson relates to.",
-              },
-              tags: {
-                type: "array" as const,
-                items: { type: "string" as const },
-                description: "Tags for categorisation.",
-              },
-              scope: {
-                type: "string" as const,
-                description: "Project/monorepo scope for this memory.",
-              },
-              supersedes: {
-                type: "array" as const,
-                items: { type: "string" as const },
-                description: "Memory IDs this entry replaces. Superseded entries drop out of default retrieval.",
-              },
-            },
-            required: ["type", "title", "content"],
-          },
-        },
+        recallToolDefinition,
+        learnToolDefinition,
       );
     }
 
