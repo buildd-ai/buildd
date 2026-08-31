@@ -118,8 +118,10 @@ deprecated.
   token MUST be rejected (returns `isError: true`).
 - When the caller's team cannot be resolved the server MUST return
   `isError: true` with "Memory store not available". (Before #1944 this
-  invariant was phrased in terms of `MEMORY_API_URL`, which no longer exists in
-  any code path — the standalone service was absorbed into the buildd DB.)
+  invariant was phrased in terms of an env var, MEMORY_API_URL, which no longer
+  exists in any code path — the standalone service was absorbed into the buildd
+  DB. Deliberately not in backticks: it is a historical note, not a claim about
+  live code, and the spec linter reads a backticked identifier as the latter.)
 - `query_knowledge` queries the `PgVectorStore` with the resolved
   `{workspaceId}:{corpus}` namespace; it falls back to lexical search when
   `VOYAGE_API_KEY` is absent.
