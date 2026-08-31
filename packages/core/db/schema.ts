@@ -1135,6 +1135,10 @@ export const workers = pgTable('workers', {
     failureMode: 'never_mounted' | 'expired_or_revoked' | 'transient';
     detail?: string;
   }> | null>(),
+  // Cumulative observed file paths collected from git diff --name-only on each
+  // update_progress PATCH. Appended server-side (deduped, capped at 500). Cleared
+  // on terminal worker status. Used by passive collision detection (§6d).
+  observedTouches: jsonb('observed_touches').$type<string[] | null>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

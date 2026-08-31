@@ -224,6 +224,48 @@ The version-drift failure mode: worker A (v0.9.0) writes a graph to the shared c
 
 Until a shared-cache design is fully specified and the cache format is understood to be version-stable, shared cache MUST NOT be enabled.
 
+### 4.4 Update — what changed at v0.10.x (measured 2026-08-30)
+
+v0.10.0 routed every CBM process through a **per-user coordination daemon**, which
+adds a second admission rule the design above did not anticipate: the daemon is
+scoped to the *account*, not to the cache dir, and it **refuses to start when an
+active daemon for the same account holds a different `CBM_CACHE_DIR`**:
+
+```
+CBM could not start because the active account daemon uses a different cache
+directory (active cache <hash>; requested cache <hash>)
+```
+
+Per-worker cache dirs (§4.2) therefore stop being sufficient on their own — they
+become the *cause* of a conflict rather than the cure. Measured in the worker
+image at 0.10.8: with two concurrent `mcp` servers on one host, the second exits 1.
+Sequential CLI commands do not collide; only overlapping long-lived servers do,
+which is exactly the worker topology.
+
+**Resolution:** each worker also gets `CBM_RUNTIME_DIR=${CBM_CACHE_DIR}/run`, which
+scopes daemon discovery per worker. Three concurrent servers then start cleanly.
+Two constraints on that directory:
+
+- It must be mode **0700**. A 0755 dir fails with `secure CLI coordination could
+  not be created (endpoint)`.
+- Keep the path short. The daemon's unix socket lives inside it
+  (`<runtime>/cbm-daemon-<uid>/cbm-<16 hex>.anc`, 90 bytes for a UUID worker id)
+  and must fit `sun_path` — 108 bytes on Linux, 104 on macOS.
+
+Under bwrap the runtime dir needs no extra mount: it is nested in the cache dir,
+which is already bound rw. It matters most when the sandbox is **disabled**
+(`BUILDD_DISABLE_SANDBOX=1`), where workers share the host's `/tmp` and would
+otherwise contend for one account daemon.
+
+**Index time moved too.** §5's 2–10 s budget was measured on 0.9.0. A cold
+default-mode index of the buildd repo at 0.10.8 measured **32 s** in the worker
+image (`--mode fast`: 16 s), which is why `CBM_INDEX_TIMEOUT_MS` moved from 30 s
+to 60 s — a timeout deletes the cache dir, so overrunning the budget costs the
+whole index rather than degrading it.
+
+The `--repo-path` argv requirement (a bare positional is parsed as raw JSON args)
+is unchanged at 0.10.8.
+
 ---
 
 ## 5. Performance Budget

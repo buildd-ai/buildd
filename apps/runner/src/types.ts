@@ -153,6 +153,13 @@ export interface LocalWorker {
   // on CI) emit no SDK stream messages, so checkStale exempts in-flight tools
   // from the soft-probe/stale-abort path and relies on the 30-min hard timeout.
   toolInFlight?: boolean;
+  // Transient (never persisted): set by loadAllWorkers when it rewrites a
+  // 'working' worker to 'error' because SDK sessions cannot survive a runner
+  // restart. restoreWorkersFromDisk reads it to notify the server, which would
+  // otherwise leave the row 'running' until the reaper expires it. A marker,
+  // rather than re-deriving intent from the error string, keeps the two sides
+  // from silently drifting the way the status check did.
+  killedByRestart?: boolean;
   completedAt?: number;  // When task completed/errored (for sorting)
   milestones: Milestone[];
   currentAction: string;
@@ -183,6 +190,10 @@ export interface LocalWorker {
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
+  // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
+  // on the next successful claim call. Also included in update_progress PATCH body so
+  // the server can register them retroactively if the hook never recovers.
+  pendingPaths?: string[];
   lastAssistantMessage?: string;  // Final agent response text (from SDK Stop hook)
   /**
    * Running per-turn token tally, accumulated from backend turn_complete usage.

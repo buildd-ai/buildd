@@ -25,6 +25,7 @@ const mockTasksUpdate = mock(() => ({
 const mockTasksFindFirst = mock(() => Promise.resolve(null));
 const mockMissionsFindFirst = mock(() => Promise.resolve(null));
 const mockArtifactsFindMany = mock(() => Promise.resolve([]));
+const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
 const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
 const mockGithubApi = mock(() => Promise.resolve([]));
@@ -85,7 +86,7 @@ mock.module('@/lib/pusher', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      workers: { findFirst: mockWorkersFindFirst },
+      workers: { findFirst: mockWorkersFindFirst, findMany: (...args: any[]) => mockWorkersFindMany(...args) },
       tasks: { findFirst: mockTasksFindFirst },
       artifacts: { findMany: mockArtifactsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
@@ -3089,6 +3090,45 @@ describe('PATCH /api/workers/[id]', () => {
       expect(budgetNotifies()).toHaveLength(0); // 15% < 50%
     });
 
+    it('writes effectiveCost back to workers.costUsd for OAuth workers that do not self-report', async () => {
+      // Regression: workers.costUsd was left null for OAuth workers, making
+      // per-worker aggregations (e.g. mission spend) always return $0.
+      setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          costUsd: 0,
+          resultMeta: {
+            modelUsage: {
+              'claude-sonnet-4-6': {
+                inputTokens: 0, outputTokens: 1_000_000,
+                cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 0,
+              },
+            },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const finalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(finalSet?.costUsd).toBeDefined();
+      expect(parseFloat(finalSet.costUsd)).toBeCloseTo(15, 1);
+    });
+
     it('aggregates cost from a second account in the same team and crosses threshold once', async () => {
       // Simulates: account-2 (same team) completed a task earlier, now account-1 completes another.
       // The team row already has $45 accumulated (from account-2). account-1 adds $10 → crosses 50%.
@@ -5919,5 +5959,307 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
     expect(failedUpdate).toBeDefined();
     expect(taskSetCalls.some((u) => u.status === 'completed')).toBe(false);
+
+    /**
+     * The recorded reason must not assert a cause the server cannot observe.
+     * The original text said "runner did not request outputFormat", but the
+     * server sees only the absence of structuredOutput — it has no visibility
+     * into whether outputFormat was requested. That claim is also very likely
+     * false: the claim route hands the runner the full task row, so
+     * resolveOutputFormat() does receive `mode: 'planning'` and does request the
+     * schema. Naming a specific wrong cause sends whoever debugs this straight
+     * to the wrong file.
+     */
+    expect(failedUpdate.result.error).not.toContain('runner did not request outputFormat');
+    // Still has to say what was actually observed, so the failure stays diagnosable.
+    expect(failedUpdate.result.error.toLowerCase()).toContain('structuredoutput');
+  });
+});
+
+// ── §6d Passive overlap detection ─────────────────────────────────────────────
+
+describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
+  const baseWorker = {
+    id: 'worker-1',
+    accountId: 'account-1',
+    status: 'running',
+    workspaceId: 'ws-1',
+    taskId: 'task-1',
+    branch: 'buildd/task-1',
+    lastCommitSha: 'abc123',
+    observedTouches: null,
+    mergedAt: null,
+    pendingInstructions: null,
+    instructionHistory: [],
+  };
+
+  const updatedRow = { ...baseWorker, observedTouches: ['apps/web/src/lib/foo.ts'] };
+
+  function setupBaseWorkerMock() {
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', level: 'worker' });
+    mockWorkersFindFirst.mockResolvedValue(baseWorker);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [updatedRow]),
+        })),
+      })),
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    // Default: no task context on first call
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null,
+      outputRequirement: 'none',
+      missionId: null,
+      count: 0,
+      context: {},
+    });
+  }
+
+  beforeEach(() => {
+    mockTriggerEvent.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksUpdate.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockWorkersFindFirst.mockReset();
+  });
+
+  it('populates pendingWorkerMessages for overlapping sibling and emits Pusher event', async () => {
+    setupBaseWorkerMock();
+
+    // Sibling with overlapping observedTouches
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+      task: { pathManifest: ['apps/web/src/lib/foo.ts'] }, // concrete, not wildcard
+    }]);
+
+    // First tasks.findFirst call: worker's own task context (no notifiedOverlaps yet)
+    // Second tasks.findFirst call: sibling task context
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    // Should have emitted a path_overlap_detected Pusher event on workspace channel
+    const overlapEvent = mockTriggerEvent.mock.calls.find(
+      (c: any[]) => c[1] === 'path_overlap_detected',
+    );
+    expect(overlapEvent).toBeDefined();
+    expect(overlapEvent![2].siblingTaskId).toBe('task-2');
+    expect(overlapEvent![2].overlappingPaths).toContain('apps/web/src/lib/foo.ts');
+
+    // Sibling task should have a pendingWorkerMessage appended
+    const siblingUpdate = taskUpdateCalls.find(
+      (u: any) => u.context?.pendingWorkerMessages?.length > 0,
+    );
+    expect(siblingUpdate).toBeDefined();
+    const msg = siblingUpdate.context.pendingWorkerMessages[0];
+    expect(msg.type).toBe('path_blocked_on_you');
+    expect(msg.body.overlappingPaths).toContain('apps/web/src/lib/foo.ts');
+  });
+
+  it('dedup: second call with same (path, sibling) does NOT add another message', async () => {
+    setupBaseWorkerMock();
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['apps/web/src/lib/bar.ts'],
+      task: { pathManifest: ['apps/web/src/lib/bar.ts'] },
+    }]);
+
+    // Worker's task context already has notifiedOverlaps for this pair
+    mockTasksFindFirst
+      .mockResolvedValueOnce({
+        scheduleId: null, outputRequirement: 'none', missionId: null, count: 0,
+        context: {
+          notifiedOverlaps: [{ path: 'apps/web/src/lib/bar.ts', siblingTaskId: 'task-2' }],
+        },
+      })
+      .mockResolvedValueOnce({ context: {} });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/bar.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    // No path_overlap_detected event should be emitted (already notified)
+    const overlapEvent = mockTriggerEvent.mock.calls.find(
+      (c: any[]) => c[1] === 'path_overlap_detected',
+    );
+    expect(overlapEvent).toBeUndefined();
+
+    // Sibling task should NOT have a new pendingWorkerMessage
+    const siblingUpdate = taskUpdateCalls.find(
+      (u: any) => u.context?.pendingWorkerMessages?.length > 0,
+    );
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('wildcard guard: sibling with pathManifest ["**"] produces NO notice', async () => {
+    setupBaseWorkerMock();
+
+    // Sibling has wildcard manifest
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+      task: { pathManifest: ['**'] }, // advisory wildcard
+    }]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const taskUpdateCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateCalls.push(vals);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find(
+      (c: any[]) => c[1] === 'path_overlap_detected',
+    );
+    expect(overlapEvent).toBeUndefined();
+
+    const siblingUpdate = taskUpdateCalls.find(
+      (u: any) => u.context?.pendingWorkerMessages?.length > 0,
+    );
+    expect(siblingUpdate).toBeUndefined();
+  });
+
+  it('MERGED sibling (mergedAt set) produces NO notice', async () => {
+    // The workers.findMany query filters out merged workers via isNull(workers.mergedAt),
+    // so merged siblings never appear in the query result. Simulate this by returning no siblings.
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([]); // merged workers excluded by WHERE clause
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['packages/core/db/schema.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find(
+      (c: any[]) => c[1] === 'path_overlap_detected',
+    );
+    expect(overlapEvent).toBeUndefined();
+  });
+
+  it('STALE sibling (updatedAt > 24h) produces NO notice', async () => {
+    // Stale siblings are filtered out by the WHERE clause (gt(workers.updatedAt, 24hAgo)).
+    // Simulate by returning no siblings from findMany.
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['packages/core/path-claim.ts'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const overlapEvent = mockTriggerEvent.mock.calls.find(
+      (c: any[]) => c[1] === 'path_overlap_detected',
+    );
+    expect(overlapEvent).toBeUndefined();
+  });
+
+  it('cap: 501 paths stored as 500, warning logged', async () => {
+    setupBaseWorkerMock();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {},
+    });
+
+    const warnCalls: any[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: any[]) => { warnCalls.push(args); };
+
+    // Send 501 paths — worker.observedTouches is null (first accumulation)
+    const paths501 = Array.from({ length: 501 }, (_, i) => `apps/file-${i}.ts`);
+
+    let capturedSet: any;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        capturedSet = vals;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ ...baseWorker, observedTouches: vals.observedTouches }]),
+          })),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: paths501 },
+    });
+    await PATCH(req, { params: mockParams });
+
+    console.warn = origWarn;
+
+    // observedTouches should be capped at 500
+    expect(capturedSet?.observedTouches).toBeDefined();
+    expect(capturedSet.observedTouches.length).toBe(500);
+
+    // Warning should have been logged
+    const capWarning = warnCalls.find((c: any[]) => String(c[0]).includes('cap hit'));
+    expect(capWarning).toBeDefined();
   });
 });

@@ -160,6 +160,9 @@ describe('runCbmBootstrap', () => {
     expect(capturedEnv!['CBM_ALLOWED_ROOT']).toBe('/tmp/my-worktree');
     expect(capturedEnv!['CBM_AUTO_WATCH']).toBe('false');
     expect(capturedEnv!['CBM_MEM_BUDGET_MB']).toBe('1024');
+    // Per-worker daemon runtime dir — without it, a second concurrent worker is
+    // refused by the account daemon that already holds a different cache dir.
+    expect(capturedEnv!['CBM_RUNTIME_DIR']).toBe('/tmp/cbm-wk-env/run');
   });
 
   it('substitutes __WORKSPACE_DIR__ in env values from the server config', async () => {
@@ -249,7 +252,11 @@ describe('runCbmBootstrap', () => {
     expect(capturedArgs[2]).toBe('--repo-path');
   });
 
-  it('exports CBM_INDEX_TIMEOUT_MS as 30000', () => {
-    expect(CBM_INDEX_TIMEOUT_MS).toBe(30_000);
+  it('exports CBM_INDEX_TIMEOUT_MS as 60000', () => {
+    // 0.9.0 indexed this repo in ~10s, but 0.10.x rebuilt the pipeline and adds a
+    // daemon cold start: a cold default-mode run measured 32s in the worker image,
+    // i.e. over the old 30s budget. A timeout also deletes the cache dir, so the
+    // agent starts cold — headroom is cheaper than a wasted index.
+    expect(CBM_INDEX_TIMEOUT_MS).toBe(60_000);
   });
 });

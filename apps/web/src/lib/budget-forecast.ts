@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { accounts, teams, missions, workers, tasks, tenantBudgets, oauthBudgetEpisodes } from '@buildd/core/db/schema';
-import { and, eq, gte, inArray, isNotNull, desc, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, or, desc, sql } from 'drizzle-orm';
 import {
   learnOauthCapacity,
   oauthBudgetPressure,
@@ -167,11 +167,23 @@ export function oauthEpisodeConfidence(c: BudgetConfidence): ConfidenceLevel | n
 
 // ── Server-side data fetcher ──────────────────────────────────────────────────
 
+/** Statuses that can still accrue spend and are relevant to the forecast. */
+export const ACTIVE_MISSION_STATUSES = ['active', 'paused', 'budget_exhausted'] as const;
+
 /** How far back we look for the burn rate trailing window (24 hours). */
 const BURN_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /** Max OAuth accounts to probe per team (avoids fan-out on large teams). */
 const MAX_OAUTH_ACCOUNTS = 8;
+
+type MissionQueryRow = {
+  id: string;
+  title: string;
+  costBudgetUsd: string | null;
+  status: string;
+  teamId: string;
+  workspaceId: string | null;
+};
 
 type OauthAccountRow = { id: string; name: string; seatId: string | null; budgetResetsAt: Date | null };
 
@@ -225,21 +237,32 @@ export async function getBudgetForecast(
       limit: MAX_OAUTH_ACCOUNTS,
     }).catch(() => [] as OauthAccountRow[]),
 
-    // Active missions in scope with a cost budget
-    scopedWsIds.length > 0
-      ? db.query.missions.findMany({
-          where: and(
-            inArray(missions.workspaceId, scopedWsIds),
-            isNotNull(missions.costBudgetUsd),
-          ),
-          columns: {
-            id: true,
-            title: true,
-            costBudgetUsd: true,
-            status: true,
-          },
-        }).catch(() => [] as { id: string; title: string; costBudgetUsd: string | null; status: string }[])
-      : Promise.resolve([] as { id: string; title: string; costBudgetUsd: string | null; status: string }[]),
+    // Active missions in scope with a cost budget. Includes:
+    //   • workspace-scoped missions (workspaceId in scopedWsIds)
+    //   • team-level missions (workspaceId IS NULL, teamId matches) — same logic as missions page
+    // Excludes: completed, archived, and cancelled statuses that can no longer accrue spend.
+    // paused is kept because the mission can be resumed; budget_exhausted is kept because
+    // the row is still informative headroom context and may transition back on budget reset.
+    db.query.missions.findMany({
+      where: and(
+        scopedWsIds.length > 0
+          ? or(
+              inArray(missions.workspaceId, scopedWsIds),
+              and(isNull(missions.workspaceId), eq(missions.teamId, teamId)),
+            )
+          : and(isNull(missions.workspaceId), eq(missions.teamId, teamId)),
+        isNotNull(missions.costBudgetUsd),
+        inArray(missions.status, [...ACTIVE_MISSION_STATUSES]),
+      ),
+      columns: {
+        id: true,
+        title: true,
+        costBudgetUsd: true,
+        status: true,
+        teamId: true,
+        workspaceId: true,
+      },
+    }).catch(() => [] as MissionQueryRow[]),
 
     // Codex tenant budget exhaustion
     db.query.tenantBudgets.findFirst({
@@ -332,9 +355,14 @@ export async function getBudgetForecast(
 
   // ── Mission budgets ─────────────────────────────────────────────────────────
   const missionForecasts: MissionBudgetInput[] = [];
+  const activeMissionStatuses = new Set<string>(ACTIVE_MISSION_STATUSES);
 
-  for (const m of missionRows as { id: string; title: string; costBudgetUsd: string | null; status: string }[]) {
+  for (const m of missionRows as MissionQueryRow[]) {
     if (!m.costBudgetUsd) continue;
+    // Belt-and-suspenders: SQL WHERE already applies these filters, but guard
+    // here too so unit tests and any future query changes stay honest.
+    if (!activeMissionStatuses.has(m.status)) continue;
+    if (m.teamId !== teamId) continue;
     const budgetMUsd = parseFloat(m.costBudgetUsd);
     if (!budgetMUsd) continue;
 

@@ -217,12 +217,35 @@ export class BuilddClient {
     subagentSpansObserved?: number;
     // Sum of durationMs for isBackground=true spans.
     backgroundAgentMs?: number;
+    // Paths written while path-claim endpoint was unreachable; server registers them retroactively.
+    pendingPaths?: string[];
+    // Incremental file paths touched since last check-in (from git diff --name-only).
+    // Server accumulates into workers.observedTouches for passive collision detection (§6d).
+    touchedPaths?: string[];
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {
       method: 'PATCH',
       body: JSON.stringify(update),
     }, [409]);
+  }
+
+  /**
+   * Call POST /api/tasks/{taskId}/path-claim with a 200ms timeout.
+   * Returns the parsed response body on success (200 or 409), or null on
+   * timeout / network error (fail-open — caller must not block on null).
+   */
+  async claimPaths(taskId: string, paths: string[]): Promise<{ claimed: boolean; blockingTaskId?: string } | null> {
+    try {
+      const result = await this.fetch(`/api/tasks/${taskId}/path-claim`, {
+        method: 'POST',
+        body: JSON.stringify({ paths }),
+        signal: AbortSignal.timeout(200),
+      }, [409]);
+      return result as { claimed: boolean; blockingTaskId?: string };
+    } catch {
+      return null;
+    }
   }
 
   async sendCommand(workerId: string, action: string, text?: string) {

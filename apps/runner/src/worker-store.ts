@@ -155,10 +155,19 @@ export function loadAllWorkers(): LocalWorker[] {
       // cannot survive a runner restart. Mark all of them as error immediately.
       // Previously we only caught workers with no activity, but even workers mid-session
       // are dead after a restart and would block concurrency indefinitely if left as working.
+      // `killedByRestart` is a transient in-memory marker (never written to
+      // disk) telling restoreWorkersFromDisk that this row still needs its
+      // terminal state reported to the server. Rewriting the status here used to
+      // silently disable that notification, because the caller keyed off
+      // status === 'working' and by then it was already 'error' — so every
+      // restart left every in-flight worker's server row at 'running' until the
+      // reaper expired it.
+      let killedByRestart = false;
       if (data.status === 'working') {
         data.status = 'error';
         data.error = 'Killed: runner restarted, in-flight session terminated';
         data._savedAt = now;
+        killedByRestart = true;
         try {
           writeFileSync(filePath, JSON.stringify(data, null, 2));
         } catch {}
@@ -175,6 +184,7 @@ export function loadAllWorkers(): LocalWorker[] {
         workspaceName: data.workspaceName as string,
         branch: data.branch as string,
         status: data.status as LocalWorker['status'],
+        ...(killedByRestart ? { killedByRestart: true } : {}),
         taskBackend: data.taskBackend as LocalWorker['taskBackend'],
         error: data.error as string | undefined,
         completedAt: data.completedAt as number | undefined,
