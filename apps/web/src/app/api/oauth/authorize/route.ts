@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/auth';
-import { createAuthCode, getClient } from '@/lib/oauth/storage';
+import { createAuthCode, getClient, isSafeRedirectUri } from '@/lib/oauth/storage';
 import { db } from '@buildd/core/db';
 import { teamMembers, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
@@ -21,6 +21,10 @@ function plainError(message: string, status = 400) {
 const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
 export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: string): boolean {
+  // Applied here as well as at registration so a client row written before this
+  // validation existed can't be used at authorize time.
+  if (!isSafeRedirectUri(requestedUri)) return false;
+
   if (registeredUris.includes(requestedUri)) return true;
 
   let requested: URL;
@@ -41,6 +45,7 @@ export function isRegisteredRedirectUri(registeredUris: string[], requestedUri: 
     }
 
     return (
+      isSafeRedirectUri(registeredUri) &&
       LOOPBACK_HOSTS.has(registered.hostname) &&
       registered.protocol === requested.protocol &&
       registered.port === requested.port &&
@@ -164,8 +169,10 @@ export async function GET(req: NextRequest) {
   // root cause of the 2026-05-25 misroute incident, where the user couldn't
   // tell which of three buildd connectors they had just authorized.
   //
-  // The page auto-redirects via meta refresh + JS after 2s, with a fallback
-  // link so single-shot OAuth codes don't expire if JS is disabled.
+  // The page auto-redirects via meta refresh after 1s, with a visible fallback
+  // link. The URL is deliberately never inlined into a <script>: JSON.stringify
+  // does not neutralise a script-closing sequence, and the URL parser preserves
+  // raw angle brackets in the opaque path of a non-special scheme.
   return new NextResponse(
     renderAuthorizedInterstitial(chosen.name, cbUrl.toString(), client.clientName ?? clientId),
     {
@@ -222,10 +229,12 @@ ${items}
 
 /**
  * Confirmation page rendered after the user picks a workspace and before the
- * OAuth code-redirect fires. Two paths complete the redirect:
- *   - <meta http-equiv="refresh"> (works without JS, 2s delay)
- *   - inline JS (immediate fallback, fires first when JS is on)
- * Plus a visible <a> for users who land here without either.
+ * OAuth code-redirect fires. Two paths complete the redirect, both of which put
+ * the URL in an HTML context that escapeHtml fully neutralises:
+ *   - <meta http-equiv="refresh"> (works without JS, ~1s delay)
+ *   - a visible <a> for users the meta refresh doesn't move
+ * The redirect URL must NOT be inlined into a <script>: it is client-controlled
+ * (registered redirect_uri) and JSON.stringify does not escape `</script>`.
  */
 function renderAuthorizedInterstitial(
   workspaceName: string,
@@ -241,7 +250,7 @@ function renderAuthorizedInterstitial(
 <meta charset="utf-8">
 <title>Connected to ${safeWs}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="2;url=${safeUrl}">
+<meta http-equiv="refresh" content="1;url=${safeUrl}">
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0a0a0a; color: #fafafa; margin: 0; padding: 2rem; }
   .wrap { max-width: 480px; margin: 4rem auto 0; text-align: center; }
@@ -262,7 +271,6 @@ function renderAuthorizedInterstitial(
 <p>This connector is scoped to <strong>${safeWs}</strong> only. To use another workspace, add it as a separate connector.</p>
 <p class="hint">Redirecting you back… or <a href="${safeUrl}">continue now</a>.</p>
 </div>
-<script>setTimeout(function(){ window.location.href = ${JSON.stringify(redirectUrl)}; }, 800);</script>
 </body>
 </html>`;
 }

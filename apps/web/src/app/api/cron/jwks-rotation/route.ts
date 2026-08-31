@@ -19,7 +19,7 @@ import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import { generateSigningKeypair, type KeyPairJwk } from '@/lib/signing-keys';
+import { generateSigningKeypair, makeKid, type KeyPairJwk } from '@/lib/signing-keys';
 
 function getSigningKeyTeamId(): string {
   const teamId = process.env.BUILDD_SIGNING_KEY_TEAM_ID;
@@ -32,12 +32,6 @@ export const maxDuration = 60;
 const ACTIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const RETIRING_WINDOW_MS = 10 * 24 * 60 * 60 * 1000; // 10 days
 const RETIRING_WINDOW_FORCE_MS = 10 * 60 * 1000;     // 10 minutes (forced revocation)
-
-function makeKid(now: Date): string {
-  const y = now.getUTCFullYear();
-  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
-  return `buildd-${y}-${m}`;
-}
 
 export async function GET(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;

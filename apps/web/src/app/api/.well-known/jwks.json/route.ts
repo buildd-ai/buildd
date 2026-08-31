@@ -34,6 +34,24 @@ export async function GET() {
       })),
     };
 
+    // Never cache an unusable document. An empty set (failed/raced bootstrap) or
+    // a row without key material serialises to something that still looks like a
+    // JWKS — JSON.stringify drops the undefined members — and a 200 would pin
+    // that failure in caches for an hour, including the RFC-mandated re-fetch on
+    // unknown kid.
+    const usable = jwks.keys.length > 0 && jwks.keys.every(
+      k => Boolean(k.kty) && Boolean(k.crv) && Boolean(k.kid) && Boolean(k.x) && Boolean(k.y),
+    );
+    if (!usable) {
+      console.error(
+        `[JWKS] Refusing to publish an unusable key set (${jwks.keys.length} entr${jwks.keys.length === 1 ? 'y' : 'ies'})`,
+      );
+      return NextResponse.json({ error: 'jwks_unavailable' }, {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store' },
+      });
+    }
+
     return NextResponse.json(jwks, {
       status: 200,
       headers: {

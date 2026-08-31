@@ -1,5 +1,80 @@
-import { describe, it, expect } from 'bun:test';
-import { generateSigningKeypair, signAssertion } from './signing-keys';
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+// ── DB / secrets-provider mocks ───────────────────────────────────────────────
+// getAllPublicKeys() runs a real SQL predicate, so the mock interprets the
+// drizzle condition tree instead of hardcoding a row list. That way the test
+// exercises the predicate rather than mocking it away.
+
+type KeyRow = {
+  id: string;
+  label: string | null;
+  tokenExpiresAt: Date | null;
+  createdAt: Date;
+};
+
+let keyRows: KeyRow[] = [];
+// Fake key material — not a real keypair, just enough shape to round-trip.
+const fakeStoredKeypair = (id: string) => JSON.stringify({
+  privateKeyJwk: { kty: 'EC', crv: 'P-256', d: `FAKE-d-${id}`, x: `FAKE-x-${id}`, y: `FAKE-y-${id}` },
+  publicKeyJwk: { kty: 'EC', crv: 'P-256', x: `FAKE-x-${id}`, y: `FAKE-y-${id}`, use: 'sig', alg: 'ES256' },
+});
+
+type Cond = { type: string; field?: string; value?: unknown; conditions?: Cond[] };
+
+function matches(cond: Cond | undefined, row: Record<string, unknown>): boolean {
+  if (!cond) return true;
+  switch (cond.type) {
+    case 'and': return (cond.conditions ?? []).every(c => matches(c, row));
+    case 'or': return (cond.conditions ?? []).some(c => matches(c, row));
+    case 'eq': return row[cond.field!] === cond.value;
+    case 'isNull': return row[cond.field!] == null;
+    case 'gt': return row[cond.field!] != null && (row[cond.field!] as Date) > (cond.value as Date);
+    default: return false;
+  }
+}
+
+mock.module('drizzle-orm', () => ({
+  eq: (field: string, value: unknown) => ({ type: 'eq', field, value }),
+  isNull: (field: string) => ({ type: 'isNull', field }),
+  gt: (field: string, value: unknown) => ({ type: 'gt', field, value }),
+  and: (...conditions: Cond[]) => ({ type: 'and', conditions }),
+  or: (...conditions: Cond[]) => ({ type: 'or', conditions }),
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  secrets: {
+    id: 'id',
+    label: 'label',
+    purpose: 'purpose',
+    tokenExpiresAt: 'tokenExpiresAt',
+    createdAt: 'createdAt',
+  },
+}));
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      secrets: {
+        findMany: async (args: { where?: Cond }) =>
+          keyRows
+            .filter(r => matches(args?.where, { ...r, purpose: 'signing_key' }))
+            .map(r => ({ id: r.id, label: r.label })),
+        findFirst: async (args: { where?: Cond }) =>
+          keyRows
+            .filter(r => matches(args?.where, { ...r, purpose: 'signing_key' }))
+            .map(r => ({ id: r.id, label: r.label, createdAt: r.createdAt }))[0] ?? undefined,
+      },
+    },
+  },
+}));
+
+mock.module('@buildd/core/secrets', () => ({
+  getSecretsProvider: () => ({
+    get: async (id: string) => (keyRows.some(r => r.id === id) ? fakeStoredKeypair(id) : null),
+  }),
+}));
+
+import { generateSigningKeypair, signAssertion, makeKid, getAllPublicKeys } from './signing-keys';
 
 // Helper to decode a base64url string
 function decodeB64Url(s: string): Uint8Array {
@@ -169,5 +244,77 @@ describe('signAssertion', () => {
     const { payload } = parseJwt(token);
 
     expect(payload.aud).toBe(aud);
+  });
+});
+
+describe('makeKid', () => {
+  // Regression: a month-granular kid collides when two keys are minted in the
+  // same month (a forced rotation, or a concurrent JWKS bootstrap). Two JWKS
+  // entries sharing one kid make verifier key selection non-deterministic.
+  it('produces different kids for two keys minted in the same month', () => {
+    const a = makeKid(new Date('2026-07-02T00:00:00.000Z'));
+    const b = makeKid(new Date('2026-07-19T12:34:56.000Z'));
+    expect(a).not.toBe(b);
+  });
+
+  it('produces different kids even for the same instant (concurrent mint)', () => {
+    const at = new Date('2026-07-02T00:00:00.000Z');
+    expect(makeKid(at)).not.toBe(makeKid(at));
+  });
+
+  it('keeps the buildd-YYYY-MM prefix so kids stay recognisable', () => {
+    const kid = makeKid(new Date('2026-07-02T00:00:00.000Z'));
+    expect(kid.startsWith('buildd-2026-07')).toBe(true);
+    // Distinguishing suffix, not a bare month.
+    expect(kid).not.toBe('buildd-2026-07');
+  });
+});
+
+describe('getAllPublicKeys', () => {
+  const now = new Date();
+  const inFiveDays = new Date(now.getTime() + 5 * 24 * 60 * 60 * 1000);
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const twentyDaysAgo = new Date(now.getTime() - 20 * 24 * 60 * 60 * 1000);
+
+  beforeEach(() => {
+    keyRows = [];
+  });
+
+  it('publishes the Active key (tokenExpiresAt IS NULL)', async () => {
+    keyRows = [
+      { id: 'key-active', label: 'buildd-2026-07-abc1', tokenExpiresAt: null, createdAt: twentyDaysAgo },
+    ];
+    const keys = await getAllPublicKeys();
+    expect(keys.map(k => k.kid)).toEqual(['buildd-2026-07-abc1']);
+  });
+
+  it('publishes a Retiring key whose tokenExpiresAt is still in the future', async () => {
+    // Relying parties must still be able to verify assertions signed before rotation.
+    keyRows = [
+      { id: 'key-retiring', label: 'buildd-2026-06-def2', tokenExpiresAt: inFiveDays, createdAt: twentyDaysAgo },
+      { id: 'key-active', label: 'buildd-2026-07-abc1', tokenExpiresAt: null, createdAt: now },
+    ];
+    const keys = await getAllPublicKeys();
+    expect(keys.map(k => k.kid).sort()).toEqual(['buildd-2026-06-def2', 'buildd-2026-07-abc1']);
+  });
+
+  it('does NOT publish an expired Retiring key even if the deleter never ran', async () => {
+    // Regression: expiry used to be enforced only by the rotation cron's delete
+    // step, which the manifest stages disabled.
+    keyRows = [
+      { id: 'key-expired', label: 'buildd-2026-05-old0', tokenExpiresAt: oneDayAgo, createdAt: twentyDaysAgo },
+      { id: 'key-active', label: 'buildd-2026-07-abc1', tokenExpiresAt: null, createdAt: now },
+    ];
+    const keys = await getAllPublicKeys();
+    expect(keys.map(k => k.kid)).toEqual(['buildd-2026-07-abc1']);
+  });
+
+  it('still resolves a legacy month-format kid', async () => {
+    keyRows = [
+      { id: 'key-legacy', label: 'buildd-2026-07', tokenExpiresAt: null, createdAt: twentyDaysAgo },
+    ];
+    const keys = await getAllPublicKeys();
+    expect(keys.map(k => k.kid)).toEqual(['buildd-2026-07']);
+    expect(keys[0].publicKeyJwk.kty).toBe('EC');
   });
 });

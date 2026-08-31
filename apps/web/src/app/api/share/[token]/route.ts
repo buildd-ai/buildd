@@ -30,13 +30,16 @@ export async function GET(
   });
 
   if (!artifact) {
-    trackEvent('api.share.request', { token, status: 'not_found' });
+    // The token is a bearer credential and `trackEvent` fields reach the sink
+    // verbatim (lib/axiom.ts applies no redaction), so nothing derived from it
+    // is logged here — on a miss there is no non-reversible id to log either.
+    trackEvent('api.share.request', { status: 'not_found' });
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
   trackEvent('api.share.request', {
-    token,
     status: 'found',
+    artifactId: artifact.id,
     artifactType: artifact.type,
     taskId: artifact.worker?.task?.id,
   });
