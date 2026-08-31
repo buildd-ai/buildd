@@ -241,7 +241,7 @@ export function buildPrompt(ctx: PromptContext): string {
     if (compactResult.markdown) {
       let digest = compactResult.markdown;
       if (digest.length > MAX_MEMORY_BYTES) {
-        digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `buildd_search_memory` for more)*';
+        digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `recall` for more)*';
       }
       memoryContext.push(digest);
     }

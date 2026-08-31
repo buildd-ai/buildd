@@ -2,8 +2,8 @@
 title: MCP Action Contracts
 status: active
 owner: max
-last_verified: 2026-07-18
-summary: The MCP server at /api/mcp MUST expose exactly the buildd and buildd_memory tools over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate each action by the token's privilege level.
+last_verified: 2026-08-31
+summary: The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/api-auth.ts, packages/core/memory-store.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
@@ -12,10 +12,12 @@ supersedes: []
 ---
 # MCP Action Contracts
 
-**Capability statement**: The buildd MCP server at `/api/mcp` MUST expose exactly
-two tools (`buildd` and `buildd_memory`) over the Streamable HTTP MCP transport,
-authenticate every request with a Bearer API key, and return the correct action
-result or a structured `isError: true` response for every supported action.
+**Capability statement**: The buildd MCP server at `/api/mcp` MUST expose four
+tools over the Streamable HTTP MCP transport — `buildd` (task + admin actions),
+`recall` and `learn` (knowledge read/write), and `buildd_memory` (deprecated,
+routed for compatibility) — authenticate every request with a Bearer API key, and
+return the correct action result or a structured `isError: true` response for
+every supported action.
 
 ---
 
@@ -98,28 +100,36 @@ per-capability specs and in the `buildParamsDescription` strings).
 
 ---
 
-## `buildd_memory` tool — knowledge actions
+## `buildd_memory` tool — knowledge actions (deprecated)
 
 **Capability statement**: The `buildd_memory` tool MUST provide `context`,
 `search`, `save`, `get`, `update`, `delete`, and `query_knowledge` actions
-against the team's memory service and workspace knowledge store, scoped to the
+against the team's `memories` table and workspace knowledge store, scoped to the
 resolved team and workspace.
+
+**Status**: superseded by `recall` (read) and `learn` (write) in #1944; still
+routed for compatibility. Every dispatch emits a `[buildd_memory-deprecated]`
+log line so removal can be decided on evidence. `consolidate_knowledge` and
+`query_knowledge` were promoted to the `buildd` admin action set and are NOT
+deprecated.
 
 **Invariants**:
 - Writes (`save`, `update`, `delete`) against an ambiguous OAuth multi-workspace
   token MUST be rejected (returns `isError: true`).
-- When `MEMORY_API_URL` is not configured the server MUST return `isError: true`
-  with "Memory service not configured".
+- When the caller's team cannot be resolved the server MUST return
+  `isError: true` with "Memory store not available". (Before #1944 this
+  invariant was phrased in terms of `MEMORY_API_URL`, which no longer exists in
+  any code path — the standalone service was absorbed into the buildd DB.)
 - `query_knowledge` queries the `PgVectorStore` with the resolved
   `{workspaceId}:{corpus}` namespace; it falls back to lexical search when
   `VOYAGE_API_KEY` is absent.
 
 **Acceptance criteria**:
-- AC-10: WHEN `context` is called with a valid admin token and configured memory
-  service THEN the response contains markdown-formatted memory text (may be
-  "No memories yet.").
-- AC-11: WHEN any write action is called on a server with `MEMORY_API_URL` unset
-  THEN the response contains `isError: true` with "Memory service not configured".
+- AC-10: WHEN `context` is called with a valid admin token THEN the response
+  contains markdown-formatted memory text (may be "No memories yet.").
+- AC-11: WHEN any client-requiring action is called and the team cannot be
+  resolved THEN the response contains `isError: true` with "Memory store not
+  available".
 - AC-12: GIVEN an OAuth token with >1 workspace and no `?workspace=` WHEN `save`
   is called THEN the response contains `isError: true` mentioning "multiple
   workspaces".

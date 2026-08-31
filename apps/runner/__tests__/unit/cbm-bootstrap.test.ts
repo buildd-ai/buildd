@@ -3,6 +3,7 @@ import {
   runCbmBootstrap,
   CBM_INDEX_TIMEOUT_MS,
 } from '../../src/cbm-bootstrap';
+import { existsSync, rmSync, statSync } from 'fs';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -250,6 +251,57 @@ describe('runCbmBootstrap', () => {
     expect(capturedArgs[flagIndex + 1]).toBe('/repo/worktree');
     // No bare positional after the subcommand.
     expect(capturedArgs[2]).toBe('--repo-path');
+  });
+
+  // ── cache-dir cleanup must not disarm CBM for the rest of the session ────────
+  //
+  // Both failure paths delete the cache dir, and the daemon coordination dir
+  // lives inside it. CBM refuses to start at all when CBM_RUNTIME_DIR is missing
+  // ("secure daemon endpoint could not be created", verified against 0.10.8), so
+  // deleting it turns a warm-cache miss into no CBM at all — the MCP server
+  // wired up afterwards would fail to start.
+
+  it('leaves the daemon runtime dir in place after a failed index', async () => {
+    const workerId = `worker-rt-fail-${process.pid}`;
+    const result = await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      spawnProcess: makeFailSpawn(1) as any,
+    });
+    expect(result.ok).toBe(false);
+    expect(existsSync(`/tmp/cbm-${workerId}/run`)).toBe(true);
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  it('leaves the daemon runtime dir in place after a timeout', async () => {
+    const workerId = `worker-rt-timeout-${process.pid}`;
+    const result = await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      timeoutMs: 50,
+      spawnProcess: makeHangSpawn() as any,
+    });
+    expect(result.ok).toBe(false);
+    expect(existsSync(`/tmp/cbm-${workerId}/run`)).toBe(true);
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  it('creates the runtime dir before spawning, not world-writable', async () => {
+    const workerId = `worker-rt-mode-${process.pid}`;
+    await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      spawnProcess: makeSuccessSpawn() as any,
+    });
+    const mode = statSync(`/tmp/cbm-${workerId}/run`).mode & 0o777;
+    // CBM rejects a world-writable coordination dir ("not a usable
+    // private-directory parent"); 0755 is accepted, 0777 is not. 0700 is chosen
+    // as the tightest mode that satisfies it.
+    expect(mode & 0o002).toBe(0);
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
   });
 
   it('exports CBM_INDEX_TIMEOUT_MS as 60000', () => {

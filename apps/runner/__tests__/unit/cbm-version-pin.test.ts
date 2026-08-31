@@ -25,20 +25,21 @@ function match(source: string, pattern: RegExp): string {
 describe('CBM version pin', () => {
   it('pins the same version in the Dockerfile and install.sh', () => {
     const dockerVersion = match(dockerfile, /^ARG CBM_VERSION=(\S+)/m);
-    const installVersion = match(installSh, /^CBM_VERSION="([^"]+)"/m);
+    // Indented: the block runs inside a subshell so its failures can't abort install.sh.
+    const installVersion = match(installSh, /^\s*CBM_VERSION="([^"]+)"/m);
     expect(installVersion).toBe(dockerVersion);
   });
 
   it('pins the same linux checksums in the Dockerfile and install.sh', () => {
     for (const arch of ['AMD64', 'ARM64'] as const) {
       const dockerSha = match(dockerfile, new RegExp(`^ARG CBM_SHA256_${arch}=(\\S+)`, 'm'));
-      const installSha = match(installSh, new RegExp(`^CBM_SHA256_LINUX_${arch}="([^"]+)"`, 'm'));
+      const installSha = match(installSh, new RegExp(`^\\s*CBM_SHA256_LINUX_${arch}="([^"]+)"`, 'm'));
       expect(installSha).toBe(dockerSha);
     }
   });
 
   it('declares a checksum for every platform install.sh can download', () => {
-    const shaNames = [...installSh.matchAll(/^CBM_SHA256_([A-Z0-9_]+)="([0-9a-f]{64})"/gm)].map(m => m[1]);
+    const shaNames = [...installSh.matchAll(/^\s*CBM_SHA256_([A-Z0-9_]+)="([0-9a-f]{64})"/gm)].map(m => m[1]);
     expect(shaNames.sort()).toEqual([
       'DARWIN_AMD64',
       'DARWIN_ARM64',
@@ -47,10 +48,25 @@ describe('CBM version pin', () => {
     ]);
   });
 
+  it('declares four distinct checksums', () => {
+    // The unit suite cannot reach the network, so it cannot prove a checksum
+    // matches upstream — scripts/verify-cbm-pin.sh does that in CI. What it CAN
+    // catch is the copy-paste failure that mutation-testing exposed: bumping the
+    // version and leaving a platform's hash pointing at the previous release, or
+    // pasting one arch's hash over another's.
+    const shas = [...installSh.matchAll(/^\s*CBM_SHA256_[A-Z0-9_]+="([0-9a-f]{64})"/gm)].map(m => m[1]);
+    expect(shas).toHaveLength(4);
+    expect(new Set(shas).size).toBe(4);
+  });
+
   it('upgrades in place instead of skipping when the installed version differs', () => {
     // A bare `--version` presence check makes every future pin bump a no-op on
     // workspaces that already have the old binary.
-    expect(installSh).toMatch(/CBM_INSTALLED_VERSION/);
-    expect(installSh).toMatch(/\$CBM_INSTALLED_VERSION"?\s*=\s*"?\$?\{?CBM_VERSION/);
+    // It must read the installed binary's own version and compare it to the pin,
+    // not merely check that some binary exists at the path.
+    expect(installSh).toMatch(/--version[^\n]*\|[^\n]*awk/);
+    expect(installSh).toMatch(/"\$installed"\s*=\s*"\$CBM_VERSION"/);
+    // Provision failure must not abort the installer (a startup script gates on it).
+    expect(installSh).toMatch(/if\s+!\s+cbm_provision/);
   });
 });

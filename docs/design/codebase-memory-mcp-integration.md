@@ -246,8 +246,12 @@ which is exactly the worker topology.
 scopes daemon discovery per worker. Three concurrent servers then start cleanly.
 Two constraints on that directory:
 
-- It must be mode **0700**. A 0755 dir fails with `secure CLI coordination could
-  not be created (endpoint)`.
+- It must **exist**. A missing dir fails with `secure daemon endpoint could not be
+  created` — which is why a failed bootstrap restores it after discarding the
+  cache dir it lives in.
+- It must be owned by the caller and **not world-writable** (0777 fails with `not a
+  usable private-directory parent`). 0755 is accepted; we create 0700 as the
+  tightest mode that qualifies.
 - Keep the path short. The daemon's unix socket lives inside it
   (`<runtime>/cbm-daemon-<uid>/cbm-<16 hex>.anc`, 90 bytes for a UUID worker id)
   and must fit `sun_path` — 108 bytes on Linux, 104 on macOS.
@@ -257,7 +261,8 @@ which is already bound rw. It matters most when the sandbox is **disabled**
 (`BUILDD_DISABLE_SANDBOX=1`), where workers share the host's `/tmp` and would
 otherwise contend for one account daemon.
 
-**Index time moved too.** §5's 2–10 s budget was measured on 0.9.0. A cold
+**Index time moved too.** §5's 2–10 s budget was measured on 0.9.0 and no longer
+holds; treat §5 as historical until re-measured. A cold
 default-mode index of the buildd repo at 0.10.8 measured **32 s** in the worker
 image (`--mode fast`: 16 s), which is why `CBM_INDEX_TIMEOUT_MS` moved from 30 s
 to 60 s — a timeout deletes the cache dir, so overrunning the budget costs the

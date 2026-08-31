@@ -241,7 +241,7 @@ Only save a memory if you hit a **real gotcha** — a non-obvious error or fix t
 \`\`\`
 recall query="<concise gotcha description>"
 \`\`\`
-If a near-duplicate already exists, skip saving — or update it via buildd_memory action=update.
+If a near-duplicate already exists, skip saving — or replace it by calling learn with supersedes=[<existing id>].
 
 **Step 2 — save the gotcha:**
 \`\`\`

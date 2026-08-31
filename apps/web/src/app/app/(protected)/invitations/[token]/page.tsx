@@ -34,8 +34,9 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
     );
   }
 
-  // Get team and inviter info. Explicit column list — see the note on
-  // teams.memoryApiKey for why an unfiltered teams query is a deploy hazard.
+  // Get team and inviter info. Explicit column list: an unfiltered teams query
+  // selects every column in schema.ts, so dropping one takes this page down for
+  // the whole build window (db:migrate runs before next build).
   const team = await db.query.teams.findFirst({
     where: eq(teams.id, invitation.teamId),
     columns: { name: true },

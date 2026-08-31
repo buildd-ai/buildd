@@ -35,6 +35,48 @@ try {
   process.exit(1);
 }
 
+// ─── Pending drops ──────────────────────────────────────────────────────────
+//
+// Migrations run during the deploy, i.e. AFTER this gate (Rule 2 of the
+// migration doctrine). A column the DB still has, which a migration drops, is
+// therefore expected rather than manual DDL. Additive pending migrations were
+// already tolerated below; removals were not, which made any DROP COLUMN
+// impossible to release.
+//
+// This deliberately scans EVERY migration rather than trying to work out which
+// are pending: drizzle's __drizzle_migrations row count and the journal length
+// have diverged in this repo, so index arithmetic against the applied count is
+// not reliable. It does not need to be. This is only ever consulted for a
+// column that is absent from the latest snapshot but present in the DB. If
+// some migration drops it, then either it already ran -- in which case the
+// column would be gone -- or it has not run yet. A column later re-added
+// appears in the latest snapshot, so it never reaches this path.
+//
+// Returns a set of "table.column" that some migration drops.
+function droppedByMigration(): Set<string> {
+  const dropped = new Set<string>();
+  const migrationDir = join(SNAPSHOT_DIR, '..');
+  let files: string[];
+  try {
+    files = readdirSync(migrationDir).filter((f) => f.endsWith('.sql'));
+  } catch {
+    console.log('  [warn] could not read migration dir — pending drops not considered');
+    return dropped;
+  }
+  const re = /ALTER\s+TABLE\s+"?(\w+)"?\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi;
+  for (const f of files) {
+    let sqlText: string;
+    try {
+      sqlText = readFileSync(join(migrationDir, f), 'utf8');
+    } catch {
+      continue;
+    }
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sqlText)) !== null) dropped.add(`${m[1]}.${m[2]}`);
+  }
+  return dropped;
+}
+
 // ─── Load latest snapshot ────────────────────────────────────────────────────
 
 function latestSnapshot(): { tables: Record<string, DrizzleTable> } {
@@ -124,6 +166,8 @@ async function main() {
   }
   console.log(`Applied migrations in DB: ${appliedCount}`);
 
+  const drops = droppedByMigration();
+
   // ─── Diff ──────────────────────────────────────────────────────────────────
 
   const driftLines: string[] = [];
@@ -148,11 +192,16 @@ async function main() {
       }
     }
 
-    // Columns in DB but not in schema (manual DDL)
+    // Columns in DB but not in schema. Either a pending migration drops it
+    // (expected — migrations run on deploy, after this gate), or it is manual DDL.
     for (const col of actualCols) {
       if (!expectedCols.has(col)) {
         // Skip Drizzle internal columns
         if (col === '__drizzle_migrations') continue;
+        if (drops.has(`${tableName}.${col}`)) {
+          console.log(`  [pending] Column '${tableName}.${col}' still in DB — will be dropped on migrate`);
+          continue;
+        }
         driftLines.push(`  EXTRA in DB    : ${tableName}.${col}  ← untracked manual DDL`);
       }
     }

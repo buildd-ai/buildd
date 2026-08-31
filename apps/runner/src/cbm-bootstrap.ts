@@ -83,6 +83,21 @@ export interface CbmBootstrapOptions {
  * (63,861 nodes / 77,831 edges) inside the Coder workspace: default 10s,
  * moderate 7s, fast 6s — all well inside CBM_INDEX_TIMEOUT_MS.
  */
+/**
+ * Drop a half-built index, then put the daemon coordination dir back.
+ *
+ * The cache dir is deleted so the next command starts clean, but CBM_RUNTIME_DIR
+ * lives inside it — and CBM refuses to start at all when that dir is missing
+ * ("secure daemon endpoint could not be created", verified against 0.10.8). The
+ * caller mounts CBM regardless of what happens here and expects a failed index to
+ * cost only the warm cache, so leaving the dir deleted would silently turn a
+ * degraded session into one with no CBM at all.
+ */
+function discardCache(cbmCacheDir: string): void {
+  try { rmSync(cbmCacheDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  try { ensureCbmRuntimeDir(cbmCacheDir); } catch { /* best-effort */ }
+}
+
 export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBootstrapResult> {
   const {
     worktreePath,
@@ -114,7 +129,7 @@ export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBoo
       if (settled) return;
       settled = true;
       child.kill('SIGTERM');
-      try { rmSync(cbmCacheDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      discardCache(cbmCacheDir);
       resolve({ ok: false, reason: `timeout after ${timeoutMs}ms`, cbmCacheDir });
     }, timeoutMs);
 
@@ -133,7 +148,7 @@ export async function runCbmBootstrap(opts: CbmBootstrapOptions): Promise<CbmBoo
       if (code === 0) {
         resolve({ ok: true, durationMs, cbmCacheDir });
       } else {
-        try { rmSync(cbmCacheDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+        discardCache(cbmCacheDir);
         resolve({ ok: false, reason: `process exited with code ${code}`, cbmCacheDir });
       }
     });

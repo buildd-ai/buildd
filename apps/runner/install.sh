@@ -373,12 +373,18 @@ if [ -n "$SHELL_RC" ] && ! grep -q '.local/bin' "$SHELL_RC" 2>/dev/null; then
 fi
 
 # Install codebase-memory-mcp binary.
-# This mirrors the layer in docker/worker/Dockerfile, but that Dockerfile is only
-# used when the worker image is explicitly rebuilt (and never pushed). Running
-# install.sh is what actually provisions binaries on Coder workspaces, so this
-# block is the real upgrade path for the fleet — keep the version and the linux
-# checksums identical to the Dockerfile ARGs (enforced by
-# apps/runner/__tests__/unit/cbm-version-pin.test.ts).
+#
+# This mirrors the layer in docker/worker/Dockerfile, but that Dockerfile is built
+# in CI and never pushed — running install.sh is what actually provisions binaries
+# on Coder workspaces, so this is the real upgrade path for the fleet. Keep the
+# version and the linux checksums identical to the Dockerfile ARGs (enforced by
+# apps/runner/__tests__/unit/cbm-version-pin.test.ts, and checked against the
+# upstream release by scripts/verify-cbm-pin.sh in CI).
+#
+# Every step is explicitly guarded rather than relying on `set -e`: this function
+# is called from an `if !` test, and POSIX/bash ignore errexit inside a condition,
+# including within a subshell that has its own `set -e`. Depending on errexit here
+# silently disabled the checksum gate and installed an unverified binary.
 CBM_VERSION="0.10.8"
 CBM_BINARY_PATH="/opt/buildd/bin/codebase-memory-mcp"
 
@@ -388,67 +394,108 @@ CBM_SHA256_LINUX_ARM64="e2804a20f5a6fc392af361525a232703e351b7d1aacb81b88eef806e
 CBM_SHA256_DARWIN_AMD64="2b193085410af3801634a522f4b17dcd6699695e015a068393c87817c1d260d4"
 CBM_SHA256_DARWIN_ARM64="9bd840dfb3ec7eaef4f310382057adaa5b0e904df883104d03ffcf39836afd07"
 
-# Compare the installed version against the pin. A bare presence check would make
-# every future version bump a silent no-op on workspaces that already have CBM.
-CBM_INSTALLED_VERSION=""
-if [ -x "$CBM_BINARY_PATH" ]; then
-  CBM_INSTALLED_VERSION=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
-fi
+cbm_verify_archive() { # <expected-sha> <file>
+  # macOS has shasum, not sha256sum.
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "$1  $2" | sha256sum -c
+  else
+    echo "$1  $2" | shasum -a 256 -c
+  fi
+}
 
-if [ "$CBM_INSTALLED_VERSION" = "$CBM_VERSION" ]; then
-  echo -e "${GREEN}codebase-memory-mcp already at v${CBM_VERSION}${NC}"
-else
-  if [ -n "$CBM_INSTALLED_VERSION" ]; then
-    echo -e "${GREEN}Upgrading codebase-memory-mcp v${CBM_INSTALLED_VERSION} -> v${CBM_VERSION}...${NC}"
+cbm_provision() {
+  # Compare the installed version against the pin. A bare presence check would
+  # make every future version bump a silent no-op on workspaces that already
+  # have CBM.
+  local installed=""
+  if [ -x "$CBM_BINARY_PATH" ]; then
+    installed=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
+  fi
+
+  if [ "$installed" = "$CBM_VERSION" ]; then
+    echo -e "${GREEN}codebase-memory-mcp already at v${CBM_VERSION}${NC}"
+    return 0
+  fi
+  if [ -n "$installed" ]; then
+    echo -e "${GREEN}Upgrading codebase-memory-mcp v${installed} -> v${CBM_VERSION}...${NC}"
   else
     echo -e "${GREEN}Installing codebase-memory-mcp v${CBM_VERSION}...${NC}"
   fi
 
+  local os arch
   case "$(uname -s)" in
-    Linux)  CBM_OS="linux" ;;
-    Darwin) CBM_OS="darwin" ;;
-    *)      CBM_OS="" ;;
+    Linux)  os="linux" ;;
+    Darwin) os="darwin" ;;
+    *)      os="" ;;
   esac
   case "$(uname -m)" in
-    x86_64|amd64)  CBM_ARCH="amd64" ;;
-    aarch64|arm64) CBM_ARCH="arm64" ;;
-    *)             CBM_ARCH="" ;;
+    x86_64|amd64)  arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *)             arch="" ;;
   esac
-
-  if [ -z "$CBM_OS" ] || [ -z "$CBM_ARCH" ]; then
-    echo -e "${YELLOW}Warning: unsupported platform $(uname -s)/$(uname -m) — skipping CBM install.${NC}"
+  if [ -z "$os" ] || [ -z "$arch" ]; then
+    echo -e "${YELLOW}Unsupported platform $(uname -s)/$(uname -m) — skipping CBM install.${NC}"
     echo -e "${YELLOW}  Install manually: https://github.com/DeusData/codebase-memory-mcp/releases/tag/v${CBM_VERSION}${NC}"
-  else
-    eval "CBM_SHA256=\$CBM_SHA256_$(echo "${CBM_OS}_${CBM_ARCH}" | tr '[:lower:]' '[:upper:]')"
-    CBM_TMP=$(mktemp -d)
-    curl -fsSL \
-      "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CBM_VERSION}/codebase-memory-mcp-${CBM_OS}-${CBM_ARCH}.tar.gz" \
-      -o "$CBM_TMP/cbm.tar.gz"
-
-    # macOS has shasum, not sha256sum.
-    if command -v sha256sum >/dev/null 2>&1; then
-      echo "${CBM_SHA256}  $CBM_TMP/cbm.tar.gz" | sha256sum -c
-    else
-      echo "${CBM_SHA256}  $CBM_TMP/cbm.tar.gz" | shasum -a 256 -c
-    fi
-
-    # Extract only the binary — the archive also ships its own install.sh, which
-    # rewrites ~/.claude.json and must never run here.
-    tar -xzf "$CBM_TMP/cbm.tar.gz" -C "$CBM_TMP" codebase-memory-mcp
-
-    # A daemon from the old build holds the cache root and rejects mismatched
-    # build fingerprints (0.10.x+). Stop it before swapping the binary.
-    if [ -n "$CBM_INSTALLED_VERSION" ]; then
-      "$CBM_BINARY_PATH" daemon stop >/dev/null 2>&1 || true
-    fi
-
-    sudo mkdir -p /opt/buildd/bin
-    sudo install -m 0755 "$CBM_TMP/codebase-memory-mcp" "$CBM_BINARY_PATH"
-    rm -rf "$CBM_TMP"
-    CBM_VER=$("$CBM_BINARY_PATH" --version 2>&1 | head -1 || echo "installed")
-    echo -e "${GREEN}codebase-memory-mcp installed: ${CBM_VER}${NC}"
+    return 0
   fi
+
+  local sha_var sha tmp
+  sha_var="CBM_SHA256_$(echo "${os}_${arch}" | tr '[:lower:]' '[:upper:]')"
+  eval "sha=\$$sha_var"
+  if [ -z "$sha" ]; then
+    echo -e "${YELLOW}No checksum pinned for ${os}/${arch} — refusing to install.${NC}"
+    return 1
+  fi
+
+  tmp=$(mktemp -d) || return 1
+
+  if ! curl -fsSL \
+      "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${CBM_VERSION}/codebase-memory-mcp-${os}-${arch}.tar.gz" \
+      -o "$tmp/cbm.tar.gz"; then
+    rm -rf "$tmp"; return 1
+  fi
+  if ! cbm_verify_archive "$sha" "$tmp/cbm.tar.gz"; then
+    rm -rf "$tmp"; return 1
+  fi
+  # Extract only the binary — the archive also ships its own install.sh, which
+  # rewrites ~/.claude.json and must never run here.
+  if ! tar -xzf "$tmp/cbm.tar.gz" -C "$tmp" codebase-memory-mcp; then
+    rm -rf "$tmp"; return 1
+  fi
+
+  # Retire a default-env daemon from the old build before the swap. This only
+  # reaches a daemon started without CBM_RUNTIME_DIR: worker daemons live under
+  # /tmp/cbm-<workerId>/run and are invisible here by design. They are
+  # short-lived, and `install -m 0755` unlinks the destination rather than
+  # writing through it, so a running worker keeps its own inode.
+  if [ -n "$installed" ]; then
+    "$CBM_BINARY_PATH" daemon stop >/dev/null 2>&1 || true
+  fi
+
+  if ! sudo mkdir -p /opt/buildd/bin; then rm -rf "$tmp"; return 1; fi
+  if ! sudo install -m 0755 "$tmp/codebase-memory-mcp" "$CBM_BINARY_PATH"; then
+    rm -rf "$tmp"; return 1
+  fi
+  rm -rf "$tmp"
+
+  local now
+  now=$("$CBM_BINARY_PATH" --version 2>/dev/null | head -1 | awk '{print $NF}')
+  if [ "$now" != "$CBM_VERSION" ]; then
+    echo -e "${YELLOW}Warning: installed CBM reports '${now}', expected '${CBM_VERSION}'.${NC}"
+    return 1
+  fi
+  echo -e "${GREEN}codebase-memory-mcp installed: ${now}${NC}"
+  return 0
+}
+
+# A failed provision must not fail the installer: a Coder startup script gates on
+# install.sh's exit code, and the block is on the hot path now that it upgrades on
+# version mismatch instead of skipping whenever any binary is present.
+if ! cbm_provision; then
+  echo -e "${YELLOW}Warning: codebase-memory-mcp install/upgrade failed — continuing.${NC}"
+  echo -e "${YELLOW}  Workers will run without the code graph until this succeeds.${NC}"
 fi
+
 
 echo ""
 echo -e "${GREEN}Installation complete!${NC}"

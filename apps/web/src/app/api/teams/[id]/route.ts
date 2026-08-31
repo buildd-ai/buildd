@@ -56,9 +56,9 @@ export async function GET(
     // Explicit column list. This response shape is a contract with unknown
     // callers, so rather than trimming it to the two fields the dashboard reads
     // (enabledBackends / enabledInferenceCapabilities) it enumerates every column
-    // EXCEPT the deprecated teams.memoryApiKey. That keeps the payload identical
-    // apart from an always-NULL credential field, and it decouples the route from
-    // schema.ts so dropping that column cannot break this route mid-deploy.
+    // explicitly. That decouples the route from schema.ts, so dropping a column
+    // cannot break it mid-deploy — db:migrate runs before next build, so the old
+    // code serves against the new schema for the length of the build.
     const team = await db.query.teams.findFirst({
       where: eq(teams.id, id),
       columns: {
