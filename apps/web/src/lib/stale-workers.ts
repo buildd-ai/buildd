@@ -583,19 +583,27 @@ export async function attemptStaleRecovery(accountId: string): Promise<string[]>
 }
 
 /**
- * Clean up workers stuck in waiting_input for 24+ hours.
+ * Clean up workers stuck in waiting_input for 24+ hours, for ONE account.
  *
  * Instead of just resetting to pending, this creates a new retry task
  * with instructions to complete without asking for user input, since
  * the original task stalled waiting for a response that never came.
+ *
+ * `accountId` is REQUIRED and is not optional by accident: this used to take no
+ * arguments and query `waiting_input` globally, while its only automatic driver
+ * was each runner's own 30-minute cleanup tick. One healthy runner on any
+ * account therefore fired the timeout for every other tenant's waiting workers.
+ * Account-wide coverage is the cron sweep's job
+ * (`/api/cron/waiting-input-sweep`), which loops accounts explicitly.
  */
-export async function cleanupStuckWaitingInput(): Promise<{ failedWorkers: number; retriedTasks: number }> {
+export async function cleanupStuckWaitingInput(accountId: string): Promise<{ failedWorkers: number; retriedTasks: number }> {
   // Fetch all waiting workers past the shorter (mission) threshold, then filter
   const missionCutoff = new Date(Date.now() - WAITING_INPUT_MISSION_STALE_MS);
   const standaloneCutoff = new Date(Date.now() - WAITING_INPUT_STALE_MS);
 
   const allWaitingWorkers = await db.query.workers.findMany({
     where: and(
+      eq(workers.accountId, accountId),
       eq(workers.status, 'waiting_input'),
       lt(workers.updatedAt, missionCutoff),
     ),

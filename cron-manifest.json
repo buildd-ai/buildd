@@ -87,6 +87,13 @@
       "method": "GET"
     },
     {
+      "$comment": "Reclaims workers stuck in waiting_input (mission tasks 4h, standalone 24h) across ALL accounts. Exists because the sweep's only automatic driver was each runner's own 30-minute cleanup timer, and the sweep is now correctly account-scoped \u2014 so an account whose runners are all down had nothing to reclaim its stuck workers, which is precisely the case the timeout exists for. A runner-driven trigger cannot be the only trigger for a timeout about runners being unavailable. Hourly x the 4h floor puts worst-case detection ~5h, well inside the threshold's own tolerance. Do NOT make this sub-hourly: it is a DB-touching housekeeping sweep, and sub-hourly work never lets Neon's compute autosuspend. Daytime only (EST): the sweep FAILS a worker and CREATES a retry task, and a retry task queued at 03:00 needs a runner to claim it \u2014 the accounts this cron is for are exactly the ones with no live runner, so firing overnight buys nothing and the 8h night gap adds at most 8h to a wait that is already 4h+ by construction. Offset to :40 to stay clear of the schedules tick at :00 and the PR merge-state sweep at :20. ENABLED on first ship, deliberately: there is no accumulated backlog to detonate \u2014 the pre-fix sweep ran GLOBALLY on every runner's tick, so every account's past-threshold waiting_input worker has already been reaped by whichever runner ticked last. The only rows this can find are ones that accrued after the scoping fix, and each is bounded by the same 4h/24h thresholds that were already in force.",
+      "title": "Buildd: Waiting-Input Reclaim Sweep",
+      "path": "/api/cron/waiting-input-sweep",
+      "schedule": "40 7-23 * * *",
+      "method": "POST"
+    },
+    {
       "$comment": "Post-deploy health watch window: probes the verificationUrl of every release that reached `healthy` within the last 30 minutes. On non-2xx or error, transitions the release to `degraded` and auto-files a workspace task. Every 2 minutes keeps the degradation window tight relative to the 30-minute watch window (at most ~2min latency before detection). Sub-hourly by design \u2014 this is time-critical production monitoring, not a housekeeping sweep.",
       "title": "Buildd: Release Health Check",
       "path": "/api/cron/release-health-check",
