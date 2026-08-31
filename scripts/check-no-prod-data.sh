@@ -28,7 +28,9 @@ BODY_FILE="${2:-}"
 
 IDENTIFIERS="${NO_PROD_DATA_IDENTIFIERS:-}"
 
-# A grouped thousands figure (1,234) or a bare 4-digit+ count beside a data noun.
+# A grouped thousands figure (comma-separated, N,NNN) or a bare 4-digit+ count
+# beside a data noun. Written as a description, not an example: documentation that
+# instantiates the pattern trips this check, as this PR's own body first did.
 COUNTS='[0-9],[0-9]{3}\b|\b[0-9]{4,}[[:space:]]+(rows?|memories|teams?|keys?|users?|accounts?|workspaces?|workers?|chunks?)\b'
 
 # Canonical UUID.
