@@ -190,6 +190,16 @@ jobs:
       # Printed unconditionally: when the probe below reports a skip, these values
       # are the evidence for *why* (Ubuntu 24.04 images can restrict unprivileged
       # user namespaces via AppArmor).
+      # GitHub's Ubuntu 24.04 images ship
+      # kernel.apparmor_restrict_unprivileged_userns=1, which denies exactly the
+      # namespace bwrap needs — the first run of this job skipped 13 of 24 tests
+      # for that reason, i.e. it proved nothing about isolation. Runners have sudo,
+      # so relax it here. Best-effort: `|| true` keeps the job alive on an image
+      # without the knob, and the probe's own banner still reports which mode ran,
+      # so a silent skip cannot masquerade as a pass.
+      - name: Permit unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
       - name: Report user-namespace capability
         run: |
           for key in kernel.unprivileged_userns_clone user.max_user_namespaces kernel.apparmor_restrict_unprivileged_userns; do

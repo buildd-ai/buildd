@@ -70,10 +70,17 @@ function probeBwrap(): boolean {
 
 const BWRAP_AVAILABLE = probeBwrap();
 
+// Machine-readable mode banner. CI greps for this: a run where the kernel denied
+// namespaces proves nothing about isolation, and without an explicit marker that
+// outcome is indistinguishable from a passing run.
+console.log(BWRAP_AVAILABLE ? 'MOUNT_ISOLATION_MODE=full' : 'MOUNT_ISOLATION_MODE=skipped');
+
 if (!BWRAP_AVAILABLE) {
   console.log(
     '⏭️  bwrap user namespaces are unavailable on this host — isolation subprocess tests will be skipped.\n' +
     '   Install bubblewrap and enable user namespaces to run the full probe suite.\n' +
+    '   On Ubuntu 24.04+ (including GitHub runners) this is usually AppArmor:\n' +
+    '     sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n' +
     '   Escape-hatch and pattern-matching tests still run.',
   );
 }

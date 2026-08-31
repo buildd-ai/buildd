@@ -94,7 +94,7 @@ const BASELINE_ORDER = ['haiku', 'sonnet', 'opus'] as const;
 /**
  * Normalise whatever the claim route stored in tasks.predicted_model onto the
  * router's tier order. The claim route writes the RESOLVED model id from the
- * tier registry (e.g. "claude-sonnet-4-6"), and only falls back to a bare
+ * tier registry (a full dated model id), and only falls back to a bare
  * alias when the task has no team, so both shapes must map.
  *
  * Returns null for anything with no tier equivalent (e.g. a Codex/GPT model id)
