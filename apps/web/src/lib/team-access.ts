@@ -245,7 +245,10 @@ export type UserTeam = {
 export const getUserTeamsWithDetails = cache(async (userId: string): Promise<UserTeam[]> => {
   const memberships = await db.query.teamMembers.findMany({
     where: eq(teamMembers.userId, userId),
-    with: { team: true },
+    // Explicit column list — `team: true` selects every column in schema.ts.
+    // This runs in the cached app-layout path, so a schema change reaching it
+    // during a deploy takes the whole shell down.
+    with: { team: { columns: { id: true, name: true, slug: true, plan: true } } },
   });
 
   const validMemberships = memberships.filter(m => m.team != null);

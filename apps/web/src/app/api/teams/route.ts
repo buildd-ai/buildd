@@ -16,7 +16,16 @@ export async function GET(req: NextRequest) {
     const memberships = await db.query.teamMembers.findMany({
       where: eq(teamMembers.userId, user.id),
       with: {
-        team: true,
+        // Explicit column list. `team: true` expands to every column declared in
+        // schema.ts, exactly like an unfiltered top-level query — so a dropped
+        // column breaks this route for the length of a build, and a scanner
+        // looking only for `db.query.teams` without `columns:` will not see it.
+        team: {
+          columns: {
+            id: true, name: true, slug: true, plan: true,
+            createdAt: true, updatedAt: true,
+          },
+        },
       },
     });
 
