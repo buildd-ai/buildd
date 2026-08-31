@@ -284,7 +284,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors }: Prop
         <div className="mb-3 border border-status-warning/30 bg-status-warning/5 rounded-md p-3">
           <div className="flex items-center gap-2 mb-2">
             <span className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Interrupt</span>
-            <span className="text-[10px] text-text-muted">Message delivered instantly via Pusher</span>
+            <span className="text-[10px] text-text-muted">Sent over Pusher, then confirmed by the runner</span>
           </div>
           <form
             onSubmit={(e) => {
