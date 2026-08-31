@@ -1,11 +1,19 @@
+// Anything matching one of these prefixes and ending in .test.ts(x) is run.
+//
+// Prefixes, not a file list: the `scripts/` entries used to be enumerated one by
+// one, so a new script test was silently uncollected until someone remembered to
+// add it. Two whole directories were missing the same way -- `apps/runner/src/`
+// (3 files, never run in CI) and `apps/runner/__tests__/standalone/` (4 files, 35
+// tests, run by no script and no workflow at all). `collector-coverage.test.ts`
+// now fails if a tracked test file is neither matched here nor listed there as a
+// deliberate exclusion, so this cannot rot again.
 const UNIT_TEST_ROOTS = [
   'apps/web/src/',
   'apps/runner/__tests__/unit/',
+  'apps/runner/__tests__/standalone/',
+  'apps/runner/src/',
   'packages/core/',
-  'scripts/run-unit-tests.test.ts',
-  'scripts/sync-crons.test.ts',
-  'scripts/cron-coverage.test.ts',
-  'scripts/check-specs.test.ts',
+  'scripts/',
 ] as const;
 
 export function isUnitTestFile(path: string): boolean {

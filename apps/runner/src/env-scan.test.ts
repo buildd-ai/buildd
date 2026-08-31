@@ -51,7 +51,12 @@ describe('checkBwrapSupport', () => {
     expect(checkBwrapSupport()).toBe(false);
   });
 
-  it('returns false when kernel proc file reports unprivileged_userns_clone=0', () => {
+  // Linux-only: the proc fast-path in checkBwrapSupport is guarded by
+  // `process.platform === 'linux'`, so off Linux the mocked readFileSync is never
+  // consulted and the assertion cannot hold. Skipped explicitly rather than left
+  // to fail on macOS — this file was uncollected until now, so the failure was
+  // invisible.
+  it.skipIf(process.platform !== 'linux')('returns false when kernel proc file reports unprivileged_userns_clone=0', () => {
     mockReadFileSync.mockImplementationOnce((path: string) => {
       if (typeof path === 'string' && path.includes('unprivileged_userns_clone')) return '0';
       return '';

@@ -36,14 +36,19 @@ import {
 // ---------------------------------------------------------------------------
 
 const BUILDD_SERVER = process.env.BUILDD_TEST_SERVER;
-if (!BUILDD_SERVER) {
+const HAS_SERVER = Boolean(BUILDD_SERVER);
+if (!HAS_SERVER) {
   console.log(
     '⏭️  Skipping: BUILDD_TEST_SERVER not set.\n' +
     '   Set it to a preview/local URL to run E2E tests.\n' +
     '   Example: BUILDD_TEST_SERVER=http://localhost:3000 bun run test:e2e',
   );
-  process.exit(0);
 }
+// NOTE: skipping here MUST NOT call process.exit(). Bun's test runner loads every
+// matched file into one process, so a module-scope exit(0) aborted the entire run
+// and reported success: `bun test` at the repo root ran this file, exited 0, and
+// silently skipped 500+ unit test files. The suites below are already gated with
+// describe.skipIf, so the missing-server case just joins that condition.
 
 const LOCAL_UI_URL = process.env.LOCAL_UI_URL || 'http://localhost:8766';
 const TEST_TIMEOUT = 120_000; // 2 min — Claude execution can be slow
@@ -78,6 +83,7 @@ let originalAcceptRemote: boolean | null = null;
 // ---------------------------------------------------------------------------
 
 beforeAll(async () => {
+  if (!HAS_SERVER) return;
   console.log('\n=== E2E Setup ===');
   console.log(`  Server:   ${BUILDD_SERVER}`);
   console.log(`  Scope:    ${E2E_SCOPE}`);
@@ -164,6 +170,7 @@ beforeAll(async () => {
 }, 150_000);
 
 afterAll(async () => {
+  if (!HAS_SERVER) return;
   console.log('\n=== E2E Cleanup ===');
 
   // Abort any still-running workers
@@ -221,7 +228,7 @@ afterAll(async () => {
 // Tests — Server API (fast, no runner needed)
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!RUN_API_TESTS)('E2E: Server API', () => {
+describe.skipIf(!HAS_SERVER || !RUN_API_TESTS)('E2E: Server API', () => {
 
   test('server is reachable and returns workspaces', async () => {
     const { workspaces } = await server.listWorkspaces();
@@ -300,7 +307,7 @@ describe.skipIf(!RUN_API_TESTS)('E2E: Server API', () => {
 // Tests — Runner Health (needs runner, but no Claude execution)
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!RUN_WORKER_TESTS)('E2E: Runner Health', () => {
+describe.skipIf(!HAS_SERVER || !RUN_WORKER_TESTS)('E2E: Runner Health', () => {
 
   test('runner is operational and lists workers', async () => {
     const cfg = await localUI.getConfig();
@@ -333,7 +340,7 @@ describe.skipIf(!RUN_WORKER_TESTS)('E2E: Runner Health', () => {
 // Tests — Worker Execution (expensive, needs runner + Claude)
 // ---------------------------------------------------------------------------
 
-describe.skipIf(!RUN_WORKER_TESTS)('E2E: Worker Execution', () => {
+describe.skipIf(!HAS_SERVER || !RUN_WORKER_TESTS)('E2E: Worker Execution', () => {
 
   test('task is picked up by local worker and completes', async () => {
     const marker = `TEST_${Date.now()}`;
