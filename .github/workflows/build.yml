@@ -95,6 +95,19 @@ jobs:
             --form-string "url_title=View CI run" \
             https://api.pushover.net/1/messages.json || true
 
+      # Journal ordering is load-bearing and must not ride on the affected-tests
+      # fan-out. Drizzle's migrator applies migrations by the journal's `when`
+      # high-water-mark, so a migration whose `when` is lower than an
+      # already-applied one is silently recorded as applied and its DDL never
+      # runs. Today `scripts/affected-tests.sh` fans out to ALL for any
+      # `packages/core/` change (which every migration touches), so this test does
+      # execute -- but only as a side effect of that mapping, and it is also
+      # enforced by `.githooks/pre-commit`, which `--no-verify` bypasses and CI
+      # never runs. Invoke the gate by name so a future change to either one
+      # cannot quietly remove it.
+      - name: Lint migration journal ordering
+        run: bun run migrations:lint
+
       - name: Lint hardcoded model IDs
         run: bash scripts/lint-model-ids.sh
 
@@ -132,6 +145,89 @@ jobs:
           # Dummy values for build (not connecting to real DB)
           DATABASE_URL: "postgresql://dummy:dummy@localhost:5432/dummy"
           AUTH_SECRET: "dummy-secret-for-build"
+
+  # The ONLY test that spawns a real bwrap namespace and asserts that blocked paths
+  # are genuinely inaccessible (apps/runner/src/__tests__/mount-isolation.e2e.ts,
+  # `describe('negative isolation')`). Every other bwrap test only snapshots argv
+  # strings or mocks the SDK. Until now nothing invoked this file: it is *.e2e.ts, so
+  # scripts/run-unit-tests.ts (which globs **/*.test.{ts,tsx} under a fixed set of
+  # roots) cannot collect it, and no workflow or package script named it.
+  #
+  # Why its own job instead of a step in `build`:
+  #   * it needs an apt package (bubblewrap) and a kernel capability (unprivileged
+  #     user namespaces) that nothing else in the suite needs -- putting that on the
+  #     required check's critical path taxes every PR;
+  #   * it must be able to skip cleanly where the kernel denies user namespaces, and
+  #     a separate job keeps that outcome from being confused with a type-check or
+  #     unit-suite failure;
+  #   * the file must stay OUT of the unit suite: it spawns real git repos and
+  #     subprocesses, so folding it into `bun test` would slow every local run.
+  # Why in build.yml rather than a new workflow: it inherits the same triggers as the
+  # rest of the test gating (push to dev, PRs to dev/main) and lands in the same
+  # check suite. It needs no schedule and no `workflow_run` hook -- both of which are
+  # read only from the default branch and are therefore easy to leave dead.
+  sandbox-isolation:
+    name: Sandbox isolation probe (bwrap)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --version
+
+      # Printed unconditionally: when the probe below reports a skip, these values
+      # are the evidence for *why* (Ubuntu 24.04 images can restrict unprivileged
+      # user namespaces via AppArmor).
+      - name: Report user-namespace capability
+        run: |
+          for key in kernel.unprivileged_userns_clone user.max_user_namespaces kernel.apparmor_restrict_unprivileged_userns; do
+            echo "$key = $(sysctl -n "$key" 2>/dev/null || echo '<unset>')"
+          done
+
+      - name: Mount isolation probe
+        timeout-minutes: 10
+        run: |
+          set -o pipefail
+          FILE=apps/runner/src/__tests__/mount-isolation.e2e.ts
+          if [ ! -f "$FILE" ]; then
+            echo "::error::$FILE is missing -- the sandbox isolation gate has nothing to run."
+            exit 1
+          fi
+          # The ./ prefix matters: without it `bun test` treats the argument as a name
+          # filter, and since the file is *.e2e.ts rather than *.test.ts it matches
+          # nothing.
+          bun test "./$FILE" 2>&1 | tee /tmp/mount-isolation.log
+
+          # Silent-green guard. This suite's whole history is "excluded and nobody
+          # noticed", so a run that collected nothing must fail, not pass.
+          if ! grep -q "^Ran [0-9]* tests across 1 file" /tmp/mount-isolation.log; then
+            echo "::error::mount-isolation probe collected no tests -- the file was renamed, moved, or failed to load."
+            exit 1
+          fi
+          if grep -q "MOUNT_ISOLATION_MODE=skipped" /tmp/mount-isolation.log; then
+            echo "::warning::SKIPPED: this kernel denies unprivileged user namespaces. Only the pure-JS pattern and escape-hatch tests ran -- nothing proved the sandbox actually denies access on this host."
+          elif grep -q "MOUNT_ISOLATION_MODE=full" /tmp/mount-isolation.log; then
+            echo "::notice::bwrap namespaces available -- negative isolation assertions ran (blocked paths verified inaccessible inside a real namespace)."
+            if grep -qE "^ *[0-9]+ skip" /tmp/mount-isolation.log; then
+              echo "::error::bwrap was available but tests still reported skipped -- the capability probe and the per-test guards disagree."
+              exit 1
+            fi
+          else
+            echo "::error::mount-isolation probe printed neither MOUNT_ISOLATION_MODE=full nor MOUNT_ISOLATION_MODE=skipped -- the capability banner is gone, so a skipped run could pass unnoticed."
+            exit 1
+          fi
 
   # Pre-promote schema drift check — must produce a definitive pass/fail on every PR,
   # never Skipped. GitHub branch protection treats Skipped as satisfying a required

@@ -5,9 +5,18 @@
 # (relative) versus the committed baseline (packages/core/eval/retrieval-baseline.json).
 #
 # Triggers:
-#   - after "Knowledge Ingest" completes (post-ingest, fresh index)
 #   - on PRs that touch the retrieval pipeline or the eval harness
 #   - manual dispatch
+#
+# There is deliberately NO post-ingest trigger. This workflow used to fire on
+# `workflow_run` of "Knowledge Ingest", but that workflow was deleted in
+# v0.175.0 (commit 1b0ce506) when full ingest moved to the runner-fleet claim
+# protocol. `workflow_run` matches on workflow NAME, so once no workflow carried
+# that name the trigger could never fire again — it sat here looking like
+# post-ingest coverage while measuring nothing. Ingest is now event-driven
+# (repo link, first-index backfill, diff escalation, manual POST) with no
+# workflow to hang a `workflow_run` off. If post-ingest measurement is wanted
+# back, it needs a real signal from the ingest completion route, not a name.
 #
 # Secret guard: the job needs DATABASE_URL (read-only) + VOYAGE_API_KEY. On
 # forks / repos without these secrets it SKIPS cleanly and never fails the PR —
@@ -15,9 +24,6 @@
 name: Retrieval Eval
 
 on:
-  workflow_run:
-    workflows: ["Knowledge Ingest"]
-    types: [completed]
   workflow_dispatch:
   pull_request:
     branches: [dev, main]

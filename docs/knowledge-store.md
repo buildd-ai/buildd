@@ -9,7 +9,7 @@ backing store can change with zero call-site churn.
 ```
 buildd_memory (MCP)  ──save/update/delete──►  KnowledgeStore.upsert/delete
 buildd_memory query_knowledge ──────────────►  KnowledgeStore.query
-knowledge-ingest.yml (CI) ──────────────────►  KnowledgeStore.upsert
+ingest job (runner-claimed) ─────────────────►  KnowledgeStore.upsert
 ```
 
 - **`KnowledgeStore`** (`packages/core/knowledge-store/types.ts`) — `upsert`,
@@ -78,11 +78,20 @@ index is `(namespace, source_id)`.
 
 ## Ingestion
 
-### Automated (CI)
+### Automated (event-driven)
 
-`.github/workflows/knowledge-ingest.yml` runs on every push to `dev` and weekly
-on Mondays (06:17 UTC). It ingests the buildd workspace into the production
-knowledge store:
+There is **no scheduled ingest and no ingest workflow.**
+`.github/workflows/knowledge-ingest.yml` was deleted in v0.175.0 (commit
+`1b0ce506`) when full ingest moved to the runner-fleet claim protocol, and the
+weekly Monday run died with it. Nothing has replaced the schedule: no
+`cron-manifest.json` entry touches knowledge, and no code path produces
+`trigger: 'scheduled'` (the schema annotates that value as PHASE 2, not
+implemented).
+
+Ingest is driven by events instead — a repo link, the first-index backfill, a
+diff escalation on merge, or a manual POST to `/api/knowledge/ingest-jobs`.
+A full job is claimed and executed by a runner, which ingests the buildd
+workspace into the production knowledge store:
 
 | Step | Source | Corpus |
 |------|--------|--------|
@@ -208,6 +217,10 @@ interface lets the memory corpus be delegated out with zero call-site changes.
 - Requires the `pgvector` extension and migration `0050` (Phase 1).
 - Set `VOYAGE_API_KEY` in the environment to enable embeddings + reranking.
 - All ingestion is best-effort/idempotent; re-running is safe.
-- The CI workflow (`knowledge-ingest.yml`) uses the production `DATABASE_URL` and
-  `VOYAGE_API_KEY` secrets — no separate store or Neon branch.
-- `spec-sync.yml` is deprecated; the weekly knowledge-ingest job supersedes it.
+- Ingest uses the production `DATABASE_URL` and `VOYAGE_API_KEY` — no separate
+  store or Neon branch. The runner-executed path reads them from its own
+  environment; the HTTP path needs only `BUILDD_API_KEY`.
+- `spec-sync.yml` is deprecated and was NOT superseded by a scheduled job — see
+  "Automated (event-driven)" above. Nothing periodically refreshes the corpus, so
+  a drift audit that assumes a fresh index is reading stale data until an ingest
+  is triggered.
