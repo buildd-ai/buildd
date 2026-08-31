@@ -1,11 +1,13 @@
 /**
  * Default roles seeded into new workspaces.
  *
- * Roles: Organizer (Opus), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
- * Analyst (Sonnet), Spec Validator (Sonnet).
- * Model choices feed the claim-time router — Organizer/Builder default to Opus and
- * downshift via task complexity; the others start at Sonnet and can downshift to
- * Haiku under budget pressure.
+ * Roles: Organizer (Sonnet), Builder (Opus), Researcher (Sonnet), Writer (Sonnet),
+ * Analyst (Sonnet), Reviewer (Sonnet), Spec Validator (Sonnet).
+ * Each role's `model` is the claim-time router's role floor. The kind×complexity
+ * matrix only moves off that floor for tasks whose row actually carries `kind` /
+ * `complexity` — schedule-generated tasks (classifyScheduleCadence) and tasks
+ * created with those fields via POST /api/tasks or MCP create_task. Tasks with
+ * neither field are routed as engineering/normal.
  *
  * MCP configs use ${VAR} interpolation; users store secrets via /api/secrets
  * with purpose='mcp_credential' and matching labels.
@@ -88,7 +90,7 @@ Your plan is a JSON array in your structured output. Each item has:
 - \`baseBranch\` — ref of the predecessor task to chain git branches from (prevents parallel branch conflicts)
 - \`outputRequirement\` — "pr_required", "artifact_required", or "none"
 - \`priority\` — integer, higher = more urgent
-- \`kind\` — what shape of work this is (drives model routing). One of:
+- \`kind\` — what shape of work this is (advisory in a plan — see Model Routing below). One of:
   - \`engineering\` — code edits, refactors, bug fixes, tests
   - \`research\` — reading docs/repos, summarisation, competitive intel
   - \`writing\` — PR descriptions, release notes, user docs, changelogs
@@ -101,7 +103,11 @@ Your plan is a JSON array in your structured output. Each item has:
   - \`normal\`: bounded feature, fix-with-clear-repro, single-component refactor, structured research
   - \`complex\`: architecture change, ambiguous bug, multi-file refactor, open-ended research
 
-Always set \`kind\` and \`complexity\` — they drive how much Claude-horsepower the task gets. Underestimating complexity routes the task to a weaker model and it may loop; overestimating wastes Opus budget. Favour \`normal\` when unsure.
+### Model Routing — what actually picks the model
+
+- \`roleSlug\` is your real lever: each role carries its own default model, and the claim-time router adjusts from there. Pick the role that fits the work and the horsepower follows.
+- \`kind\` / \`complexity\` on a plan step are labels for whoever reads the plan. Plan approval does not copy them onto the task row today, so they do not change which model runs. Set them if they clarify the plan; do not treat a \`complex\` label as a request for a bigger model. Favour \`normal\` when unsure.
+- On the direct-creation surface (\`create_task\` via MCP/API — not your path) \`kind\`, \`complexity\` and \`tier\` are all accepted and persisted. \`tier\` (\`premium\` | \`standard\` | \`budget\`) is the hard override there: it short-circuits the kind×complexity matrix. Out-of-vocabulary values are rejected, never silently dropped.
 
 ### Sequencing Rules (CRITICAL)
 - **ONE task = ONE branch = ONE PR.** Never fan out parallel tasks that touch the same files.
@@ -152,9 +158,10 @@ If a near-duplicate exists, update it instead of creating a new entry.
 - Summarize your assessment in the \`summary\` field
 `,
     color: '#6366F1',
-    // Organizer plans the work — coordination tier. Sonnet handles planning
-    // well; the router upshifts to Opus for complex coordination via the
-    // BASELINE matrix when needed.
+    // Organizer plans the work. Sonnet handles planning well. Note that mission
+    // planning tasks (mission-run.ts) are inserted without `kind`, so the
+    // BASELINE coordination row never fires for them — this floor is the model
+    // they actually run on unless budget pressure downshifts it.
     model: 'sonnet',
     isRole: true,
     allowedTools: ['Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'Agent', 'WebSearch', 'WebFetch', 'NotebookEdit'],

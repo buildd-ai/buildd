@@ -391,6 +391,17 @@ mock.module('@/lib/merge-policy', () => ({
   },
 }));
 
+// CBM fleet detectors. The real implementations are DB-backed and no-op unless
+// OPS_ALERTS_ENABLED, so stubbing them is the only way to observe the caller gate.
+// CBM_HEALTH_TERMINAL_STATUSES must be re-exported — route.ts imports it for that gate.
+const mockDetectCbmFleetDisabled = mock(() => Promise.resolve());
+const mockDetectCbmEnforcedUnused = mock(() => Promise.resolve());
+mock.module('@buildd/core/cbm-health', () => ({
+  CBM_HEALTH_TERMINAL_STATUSES: ['completed', 'failed', 'error'] as const,
+  detectCbmFleetDisabled: mockDetectCbmFleetDisabled,
+  detectCbmEnforcedUnused: mockDetectCbmEnforcedUnused,
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {
@@ -3229,6 +3240,86 @@ describe('PATCH /api/workers/[id]', () => {
       expect(parseFloat(finalSet.costUsd)).toBeCloseTo(15, 1);
     });
 
+    // The test above passes a populated modelUsage map — a shape real OAuth auth
+    // never produces. This is the actual seat/OAuth shape: modelUsage EMPTY,
+    // totalUsage populated. Before the totals-based path existed, estimateCostUsd
+    // returned 0 here and workers.cost_usd kept its '0' default, which starved the
+    // mission cost gate and the burn forecast of their only input.
+    it('prices session totals against the session model when per-model attribution is empty (OAuth shape)', async () => {
+      const getSet = setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          // No costUsd at all — the runner omits it when the backend reported $0.
+          actualModel: 'claude-sonnet-4-6',
+          resultMeta: {
+            modelUsage: {},
+            // inputTokens is ALL-IN: 100k fresh + 1M cache read.
+            totalUsage: {
+              inputTokens: 1_100_000,
+              outputTokens: 100_000,
+              cacheReadInputTokens: 1_000_000,
+              cacheCreationInputTokens: 0,
+            },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // sonnet: 100k fresh input $0.30 + 100k output $1.50 + 1M cache read $0.30
+      const finalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(finalSet?.costUsd).toBeDefined();
+      expect(parseFloat(finalSet.costUsd)).toBeCloseTo(2.1, 6);
+      expect(parseFloat(getSet().monthlyCostUsd)).toBeCloseTo(2.1, 6);
+    });
+
+    it('does not invent a cost when the session model is unknown (older runner)', async () => {
+      setupCompletion(
+        {},
+        { monthlyBudgetUsd: '100', monthlyCostUsd: '0', monthlyCostMonth: monthKey, budgetAlertsSent: [] },
+      );
+
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          // No actualModel, no modelUsage — nothing names the model, and pricing
+          // spans 15x across tiers, so no charge is better than a fabricated one.
+          resultMeta: {
+            modelUsage: {},
+            totalUsage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const finalSet = workerSetCalls[workerSetCalls.length - 1];
+      expect(finalSet?.costUsd).toBeUndefined();
+    });
+
     it('aggregates cost from a second account in the same team and crosses threshold once', async () => {
       // Simulates: account-2 (same team) completed a task earlier, now account-1 completes another.
       // The team row already has $45 accumulated (from account-2). account-1 adds $10 → crosses 50%.
@@ -3393,6 +3484,111 @@ describe('PATCH /api/workers/[id]', () => {
       // totalTurns must be a plain number (worker.turns fallback), never a SQL object.
       expect(typeof callArgs.totalTurns).toBe('number');
       expect(callArgs.totalTurns).toBe(7);
+    });
+  });
+
+  // ── Model attribution + terminal-status gates ────────────────────────────
+  describe('session model attribution', () => {
+    function setupTerminal(worker: Record<string, unknown> = {}) {
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1',
+        taskId: 'task-1', turns: 2, pendingInstructions: null, ...worker,
+      });
+      // outputRequirement 'none' bypasses output validation; missionId absent so a
+      // 'failed' status does not auto-retry (maxRetries is 0 without a mission).
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none' });
+      return workerSetCalls;
+    }
+
+    beforeEach(() => {
+      mockRecordTaskOutcome.mockReset();
+      mockRecordTaskOutcome.mockResolvedValue(true);
+      mockDetectCbmFleetDisabled.mockClear();
+      mockDetectCbmEnforcedUnused.mockClear();
+    });
+
+    // task_outcomes.actual_model was NULL for every row because the caller passed
+    // no actualModel key at all, so the router's prediction could never be compared
+    // against what actually ran.
+    it('passes the runner-reported actualModel to recordTaskOutcome', async () => {
+      setupTerminal();
+      const req = createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', actualModel: 'claude-opus-4-8' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockRecordTaskOutcome).toHaveBeenCalled();
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-opus-4-8');
+    });
+
+    it('falls back to resultMeta.actualModel, then to per-model attribution', async () => {
+      setupTerminal();
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', resultMeta: { actualModel: 'claude-sonnet-4-6' } },
+      }), { params: mockParams });
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-sonnet-4-6');
+
+      mockRecordTaskOutcome.mockReset();
+      mockRecordTaskOutcome.mockResolvedValue(true);
+      setupTerminal();
+      await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          resultMeta: {
+            modelUsage: {
+              'claude-haiku-4-5': { outputTokens: 10 },
+              // A mid-session fallback fired; the model that produced the most
+              // output is the representative one.
+              'claude-opus-4-8': { outputTokens: 900 },
+            },
+          },
+        },
+      }), { params: mockParams });
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBe('claude-opus-4-8');
+    });
+
+    it('stays null when an older runner reports no model at all', async () => {
+      setupTerminal();
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockRecordTaskOutcome.mock.calls[0][0].actualModel).toBeNull();
+    });
+
+    // The detectors' history query covers completed/failed/error, but the caller
+    // gate was 'completed' only — so on a workspace where every worker fails (the
+    // exact shape of a missing-binary outage) the widened query was never reached.
+    it('runs the CBM fleet detectors on failed and error, not just completed', async () => {
+      for (const status of ['completed', 'failed', 'error']) {
+        mockDetectCbmFleetDisabled.mockClear();
+        mockDetectCbmEnforcedUnused.mockClear();
+        setupTerminal();
+        const res = await PATCH(createMockRequest({
+          method: 'PATCH', headers: { Authorization: 'Bearer bld_test' },
+          body: { status, error: status === 'completed' ? undefined : 'boom', resultMeta: { cbm: { outcome: 'disabled', disableReason: 'binary_absent' } } },
+        }), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockDetectCbmFleetDisabled).toHaveBeenCalledTimes(1);
+        expect(mockDetectCbmEnforcedUnused).toHaveBeenCalledTimes(1);
+        expect(mockDetectCbmFleetDisabled.mock.calls[0][1]).toEqual({ outcome: 'disabled', disableReason: 'binary_absent' });
+      }
     });
   });
 

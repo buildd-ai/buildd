@@ -21,8 +21,16 @@ import type { ResultMeta } from './types';
  */
 
 export interface TokenTotals {
+  /** All-in input tokens: fresh + cache read + cache creation. */
   inputTokens: number;
   outputTokens: number;
+  /**
+   * Breakdown of the input figure, when the SDK reported it. The server prices a
+   * seat session from these: cache reads are ~0.1× fresh input, so pricing the
+   * all-in total as fresh input overstates spend several-fold.
+   */
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
 }
 
 const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -36,19 +44,27 @@ export function extractResultUsage(result: unknown): TokenTotals | null {
   const byModel = usage.byModel;
   if (byModel && typeof byModel === 'object' && Object.keys(byModel).length > 0) {
     let inputTokens = 0, outputTokens = 0;
+    let cacheReadInputTokens = 0, cacheCreationInputTokens = 0;
     for (const entry of Object.values(byModel) as any[]) {
       inputTokens += num(entry?.inputTokens) + num(entry?.cacheReadInputTokens) + num(entry?.cacheCreationInputTokens);
       outputTokens += num(entry?.outputTokens);
+      cacheReadInputTokens += num(entry?.cacheReadInputTokens);
+      cacheCreationInputTokens += num(entry?.cacheCreationInputTokens);
     }
-    if (inputTokens > 0 || outputTokens > 0) return { inputTokens, outputTokens };
+    if (inputTokens > 0 || outputTokens > 0) {
+      return { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens };
+    }
   }
 
   // 2. Top-level totals — snake_case (API shape) or camelCase (SDK shape).
+  const cacheReadInputTokens = num(usage.cache_read_input_tokens) + num(usage.cacheReadInputTokens);
+  const cacheCreationInputTokens = num(usage.cache_creation_input_tokens) + num(usage.cacheCreationInputTokens);
   const inputTokens =
-    num(usage.input_tokens) + num(usage.cache_read_input_tokens) + num(usage.cache_creation_input_tokens) +
-    num(usage.inputTokens) + num(usage.cacheReadInputTokens) + num(usage.cacheCreationInputTokens);
+    num(usage.input_tokens) + num(usage.inputTokens) + cacheReadInputTokens + cacheCreationInputTokens;
   const outputTokens = num(usage.output_tokens) + num(usage.outputTokens);
-  if (inputTokens > 0 || outputTokens > 0) return { inputTokens, outputTokens };
+  if (inputTokens > 0 || outputTokens > 0) {
+    return { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens };
+  }
 
   return null;
 }

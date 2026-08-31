@@ -1,7 +1,8 @@
 /**
  * Fleet-wide CBM health detector.
  *
- * Fires an ops alert when the last N completed workers in a workspace all report
+ * Fires an ops alert when the last N terminal workers (completed / failed /
+ * error — see CBM_HEALTH_TERMINAL_STATUSES) in a workspace all report
  * cbmOutcome='disabled' with disableReason='binary_absent'. This condition means
  * the codebase-memory-mcp binary is missing from the runner image — a broken
  * platform capability that silently degrades every agent session without any
@@ -15,11 +16,24 @@
 
 import { db } from './db';
 import { workers } from './db/schema';
-import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { reportOps } from './report-ops';
 
 /** Number of consecutive binary_absent outcomes that trigger the fleet alert. */
 export const CBM_FLEET_THRESHOLD = 5;
+
+/**
+ * Terminal worker statuses that carry a CBM record.
+ *
+ * The fleet check used to look only at `completed` workers, which made it blind
+ * to the very failure it exists to catch: when the codebase-memory binary is
+ * missing, workers can die rather than complete, so a workspace where EVERY
+ * worker fails would never accumulate a streak and never page. All three of
+ * these statuses set `completedAt` and write `resultMeta.cbm`, so all three are
+ * valid streak members. The streak threshold is unchanged, so a single
+ * transient failure still cannot fire an alert.
+ */
+export const CBM_HEALTH_TERMINAL_STATUSES = ['completed', 'failed', 'error'] as const;
 
 function opsEnabled(): boolean {
   const v = process.env.OPS_ALERTS_ENABLED;
@@ -33,7 +47,7 @@ function isBinaryAbsent(cbm: unknown): boolean {
 }
 
 /**
- * Check whether the last CBM_FLEET_THRESHOLD completed workers in a workspace
+ * Check whether the last CBM_FLEET_THRESHOLD terminal workers in a workspace
  * all have cbmOutcome='disabled' / disableReason='binary_absent'. When they do,
  * fire a single ops alert (deduplicated per workspace per throttle window).
  *
@@ -81,7 +95,8 @@ export async function detectCbmFleetDisabled(
     const rows = await db.query.workers.findMany({
       where: and(
         eq(workers.workspaceId, workspaceId),
-        eq(workers.status, 'completed'),
+        inArray(workers.status, [...CBM_HEALTH_TERMINAL_STATUSES]),
+        isNotNull(workers.completedAt),
         isNotNull(workers.resultMeta),
       ),
       columns: { resultMeta: true },
@@ -135,6 +150,11 @@ function isEnforcedAndUnused(cbm: unknown): boolean {
  * Threshold is deliberately higher than the disabled check: a single task with no
  * structural question is expected to make no graph calls, so only a sustained run
  * of them indicates the steering is not working.
+ *
+ * Unlike detectCbmFleetDisabled this stays scoped to `completed` workers on
+ * purpose: a session that crashed or was killed naturally made no graph calls,
+ * so admitting failed/error workers here would manufacture adoption alerts out
+ * of unrelated outages.
  */
 export async function detectCbmEnforcedUnused(
   workspaceId: string,

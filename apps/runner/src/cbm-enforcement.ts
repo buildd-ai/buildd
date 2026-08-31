@@ -149,3 +149,25 @@ export function buildCbmMcpEntry(sessionCwd: string, cbmCacheDir: string) {
     },
   };
 }
+
+/** The three metric buckets a session can land in. Mirrors CbmMetrics.outcome. */
+export type CbmOutcome = 'enforced' | 'legacy_mcp_json' | 'disabled';
+
+/**
+ * Final CBM classification for the metrics.
+ *
+ * `mounted` is whether the session's FINAL `mcpServers` map carries a
+ * `codebase-memory` entry. That is only knowable after connector and project
+ * `.mcp.json` injection, so the caller resolves this late in session startup
+ * rather than at activation time.
+ *
+ * Why `legacy_mcp_json` matters: a session the harness did not enforce but that
+ * has CBM mounted some other way still HAS the graph tools. Recording it as
+ * `disabled` put a CBM-equipped session in the metrics control group, which
+ * flattens the exact comparison the metrics exist to make. Before this the
+ * declared `legacy_mcp_json` value was never assigned by any code path.
+ */
+export function resolveCbmOutcome(input: { enforced: boolean; mounted: boolean }): CbmOutcome {
+  if (input.enforced) return 'enforced';
+  return input.mounted ? 'legacy_mcp_json' : 'disabled';
+}

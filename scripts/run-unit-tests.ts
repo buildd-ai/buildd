@@ -45,6 +45,74 @@ async function discoverUnitTests(): Promise<string[]> {
   return files.sort();
 }
 
+/**
+ * Directory roots (as opposed to the individually-named script test files) that
+ * get the hidden-directory sweep below.
+ */
+const UNIT_TEST_DIR_ROOTS = UNIT_TEST_ROOTS.filter(root => root.endsWith('/'));
+
+/**
+ * The first dot-prefixed *directory* segment in a path, or null.
+ * A dotfile name (`.eslintrc.test.ts`) is fine — only directories hide a file
+ * from the scan, so the final segment is never considered.
+ */
+export function hiddenDirSegment(path: string): string | null {
+  return path.split('/').slice(0, -1).find(segment => segment.startsWith('.')) ?? null;
+}
+
+/**
+ * Find test files that live under a dot directory.
+ *
+ * `Bun.Glob` does not descend into dot directories unless `dot: true`, so the
+ * discovery scan above returns ZERO matches for e.g.
+ * `apps/web/src/app/api/.well-known/**\/*.test.ts`. Nothing rejects such a file —
+ * it is simply never collected, which is indistinguishable from a green run.
+ * (That is why the JWKS route's test sits one directory above the route.)
+ *
+ * The sweep is a second, narrow scan: only the unit-test roots, only paths that
+ * contain a dot directory. Measured at ~10ms against this repo versus ~400ms for
+ * turning `dot: true` on for the whole-repo discovery scan, and it cannot pick up
+ * `node_modules/.bun` or a `.claude/worktrees/<name>/apps/...` sibling checkout,
+ * neither of which is under a unit-test root.
+ */
+export async function discoverHiddenDirTests(
+  roots: readonly string[] = UNIT_TEST_DIR_ROOTS,
+  cwd = '.',
+): Promise<string[]> {
+  const found = new Set<string>();
+  for (const root of roots) {
+    const glob = new Bun.Glob(`${root}**/.*/**/*.test.{ts,tsx}`);
+    for await (const path of glob.scan({ cwd, onlyFiles: true, dot: true })) {
+      found.add(path);
+    }
+  }
+  return [...found].sort();
+}
+
+/**
+ * Loud, actionable failure text. The scan cannot run these files where they are,
+ * so the only fix is to move them out of the dot directory.
+ */
+export function formatHiddenDirTestReport(files: readonly string[]): string {
+  const out: string[] = [
+    '',
+    `${files.length} test file(s) live under a dot directory and are INVISIBLE to the unit-test scan:`,
+    '',
+  ];
+  for (const file of files) {
+    out.push(`::error file=${file}::Test file under dot directory "${hiddenDirSegment(file)}/" — Bun.Glob never collects it, so it silently never runs. Move the test out of the dot directory (e.g. one level up, importing the route under test) or the suite reports green while asserting nothing.`);
+    out.push(`  ${file}   (hidden by "${hiddenDirSegment(file)}/")`);
+  }
+  out.push(
+    '',
+    'Bun.Glob skips dot directories, so these paths return zero matches from',
+    "scripts/run-unit-tests.ts instead of failing — a silent gap, not a skip.",
+    'Move each file to a non-dot directory and import the code under test.',
+    '',
+  );
+  return out.join('\n');
+}
+
 type TestResult = {
   file: string;
   exitCode: number;
@@ -194,9 +262,21 @@ async function main(): Promise<void> {
   // delete another file's imports. Which file breaks then depends on load
   // order, which is why single-process runs report a rotating set of failures
   // that all pass individually. Keep CI pointed at this script.
+  // Runs on every invocation, including CI's named-file runs: a test parked under
+  // a dot directory is never collected by any code path, so this is the only place
+  // the gap can be reported at all. Printed at the END of the run (like the failure
+  // digest) because that is what agents and CI log tails actually read.
+  const hiddenDirTests = await discoverHiddenDirTests();
+  const reportHiddenDirTests = (): void => {
+    if (hiddenDirTests.length === 0) return;
+    console.error(formatHiddenDirTestReport(hiddenDirTests));
+    process.exitCode = 1;
+  };
+
   const files = selectTestFiles(Bun.argv.slice(2), await discoverUnitTests());
   if (files.length === 0) {
     console.log('No unit test files selected.');
+    reportHiddenDirTests();
     return;
   }
   const concurrency = getTestConcurrency(process.env.BUILDD_TEST_CONCURRENCY);
@@ -241,6 +321,7 @@ async function main(): Promise<void> {
   } else {
     console.log(`All ${files.length} unit test files passed in isolated processes.`);
   }
+  reportHiddenDirTests();
 }
 
 if (import.meta.main) {

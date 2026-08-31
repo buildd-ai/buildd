@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
+  discoverHiddenDirTests,
+  formatHiddenDirTestReport,
+  hiddenDirSegment,
   selectTestFiles,
   extractFailureDigest,
   formatFailureSummary,
@@ -215,5 +221,49 @@ describe('formatFailureSummary', () => {
     );
 
     expect(summary).toContain('+4 more failing tests in this file');
+  });
+});
+
+describe('hidden dot-directory tests', () => {
+  it('names the dot directory that hides a test file', () => {
+    expect(hiddenDirSegment('apps/web/src/app/api/.well-known/jwks.json/route.test.ts')).toBe('.well-known');
+    expect(hiddenDirSegment('apps/web/src/lib/team-access.test.ts')).toBeNull();
+    // A dotted *filename* is visible to the scan — only directories hide a file.
+    expect(hiddenDirSegment('apps/web/src/lib/.eslintrc.test.ts')).toBeNull();
+  });
+
+  it('finds dot-directory tests that the ordinary scan cannot see', async () => {
+    // Pins the Bun.Glob behaviour the guard exists for: without `dot: true` the
+    // ordinary `**/*.test.ts` pattern returns ZERO matches under a dot directory,
+    // so the file is never collected and the run still reports green.
+    const base = mkdtempSync(join(tmpdir(), 'buildd-hidden-'));
+    try {
+      mkdirSync(join(base, 'pkg/src/.well-known/jwks.json'), { recursive: true });
+      writeFileSync(join(base, 'pkg/src/.well-known/jwks.json/route.test.ts'), '');
+      writeFileSync(join(base, 'pkg/src/visible.test.ts'), '');
+
+      const ordinary: string[] = [];
+      for await (const path of new Bun.Glob('**/*.test.{ts,tsx}').scan({ cwd: base, onlyFiles: true })) {
+        ordinary.push(path);
+      }
+      expect(ordinary).toEqual(['pkg/src/visible.test.ts']);
+
+      expect(await discoverHiddenDirTests(['pkg/'], base)).toEqual([
+        'pkg/src/.well-known/jwks.json/route.test.ts',
+      ]);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('reports the offending file loudly enough to act on', () => {
+    const report = formatHiddenDirTestReport([
+      'apps/web/src/app/api/.well-known/jwks.json/route.test.ts',
+    ]);
+
+    expect(report).toContain('INVISIBLE');
+    expect(report).toContain('::error file=apps/web/src/app/api/.well-known/jwks.json/route.test.ts::');
+    expect(report).toContain('.well-known');
+    expect(report).toContain('Move each file to a non-dot directory');
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { estimateCostUsd, priceForModel } from '../model-prices';
+import { estimateCostUsd, estimateCostUsdFromTotals, priceForModel } from '../model-prices';
 import type { ModelUsage } from '../db/schema';
 
 function usage(overrides: Partial<ModelUsage> = {}): ModelUsage {
@@ -68,5 +68,64 @@ describe('estimateCostUsd', () => {
       'claude-opus-4-8': usage({ outputTokens: 1_000_000 }), // $75
     });
     expect(cost).toBeCloseTo(76, 6);
+  });
+});
+
+describe('estimateCostUsdFromTotals (seat/OAuth path)', () => {
+  it('prices session totals against the session model', () => {
+    // 1M fresh sonnet input ($3) + 1M output ($15)
+    const cost = estimateCostUsdFromTotals(
+      { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+      'claude-sonnet-4-6',
+    );
+    expect(cost).toBeCloseTo(18, 6);
+  });
+
+  it('prices the cache breakdown at cache rates, not fresh input', () => {
+    // inputTokens is ALL-IN: 1.1M total = 100k fresh + 1M cache read.
+    // Sonnet: 100k fresh = $0.30, 1M cache read = $0.30 → $0.60.
+    // Pricing the all-in figure as fresh input would be $3.30.
+    const cost = estimateCostUsdFromTotals(
+      { inputTokens: 1_100_000, outputTokens: 0, cacheReadInputTokens: 1_000_000 },
+      'claude-sonnet-4-6',
+    );
+    expect(cost).toBeCloseTo(0.6, 6);
+  });
+
+  it('prices cache creation at the write rate', () => {
+    // 1M cache-write on sonnet = $3.75, no fresh input left over.
+    const cost = estimateCostUsdFromTotals(
+      { inputTokens: 1_000_000, outputTokens: 0, cacheCreationInputTokens: 1_000_000 },
+      'claude-sonnet-4-6',
+    );
+    expect(cost).toBeCloseTo(3.75, 6);
+  });
+
+  it('honours the model tier — opus costs 5x sonnet on input', () => {
+    const totals = { inputTokens: 1_000_000, outputTokens: 0 };
+    expect(estimateCostUsdFromTotals(totals, 'claude-opus-4-8')).toBeCloseTo(15, 6);
+    expect(estimateCostUsdFromTotals(totals, 'claude-haiku-4-5')).toBeCloseTo(1, 6);
+  });
+
+  it('returns 0 without a model — never fabricates a tier', () => {
+    const totals = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+    expect(estimateCostUsdFromTotals(totals, null)).toBe(0);
+    expect(estimateCostUsdFromTotals(totals, '')).toBe(0);
+    expect(estimateCostUsdFromTotals(totals, '   ')).toBe(0);
+  });
+
+  it('returns 0 for missing or empty totals', () => {
+    expect(estimateCostUsdFromTotals(null, 'claude-sonnet-4-6')).toBe(0);
+    expect(estimateCostUsdFromTotals(undefined, 'claude-sonnet-4-6')).toBe(0);
+    expect(estimateCostUsdFromTotals({}, 'claude-sonnet-4-6')).toBe(0);
+  });
+
+  it('clamps a cache breakdown that exceeds the all-in input figure', () => {
+    // Defensive: a partial report must not produce a negative fresh-input charge.
+    const cost = estimateCostUsdFromTotals(
+      { inputTokens: 500, outputTokens: 0, cacheReadInputTokens: 1_000_000 },
+      'claude-sonnet-4-6',
+    );
+    expect(cost).toBeCloseTo(0.3, 6);
   });
 });

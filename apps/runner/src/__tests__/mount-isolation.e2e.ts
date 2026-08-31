@@ -60,20 +60,39 @@ function probeBwrap(): boolean {
         '--ro-bind', '/usr', '/usr',
         '--', '/usr/bin/env', 'echo', 'ok',
       ],
-      { timeout: 5000 },
+      { timeout: 5000, encoding: 'utf8' },
     );
+    if (r.status !== 0) {
+      // Print WHY, not just that it failed. Relaxing
+      // kernel.apparmor_restrict_unprivileged_userns was necessary but NOT
+      // sufficient on GitHub's runners — the probe still declined there with the
+      // knob at 0 — and without the underlying error the next person has nothing
+      // to work from but guesses.
+      console.log(
+        `bwrap probe declined (status=${r.status}, signal=${r.signal ?? 'none'}): ` +
+        `${(r.stderr || '').trim() || '<no stderr>'}${r.error ? ` err=${r.error.message}` : ''}`,
+      );
+    }
     return r.status === 0;
-  } catch {
+  } catch (err) {
+    console.log(`bwrap probe threw: ${(err as Error).message}`);
     return false;
   }
 }
 
 const BWRAP_AVAILABLE = probeBwrap();
 
+// Machine-readable mode banner. CI greps for this: a run where the kernel denied
+// namespaces proves nothing about isolation, and without an explicit marker that
+// outcome is indistinguishable from a passing run.
+console.log(BWRAP_AVAILABLE ? 'MOUNT_ISOLATION_MODE=full' : 'MOUNT_ISOLATION_MODE=skipped');
+
 if (!BWRAP_AVAILABLE) {
   console.log(
     '⏭️  bwrap user namespaces are unavailable on this host — isolation subprocess tests will be skipped.\n' +
     '   Install bubblewrap and enable user namespaces to run the full probe suite.\n' +
+    '   On Ubuntu 24.04+ (including GitHub runners) this is usually AppArmor:\n' +
+    '     sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\n' +
     '   Escape-hatch and pattern-matching tests still run.',
   );
 }

@@ -103,7 +103,10 @@ describe('recordTaskOutcome', () => {
     expect(payload.downshifted).toBe(false);
   });
 
-  it('never flags a full-model-ID prediction as downshifted', async () => {
+  // The claim route stores a RESOLVED full model id in tasks.predicted_model
+  // (tier registry output), never a bare alias. Comparing full ids is therefore
+  // the only comparison that can ever fire in production.
+  it('does not flag a full-model-ID prediction that meets the baseline', async () => {
     mockExecuteResult.mockResolvedValue({ rows: [
       { id: 't3', kind: 'engineering', complexity: 'complex', classified_by: 'user', predicted_model: 'claude-opus-4-8' },
     ] });
@@ -113,6 +116,66 @@ describe('recordTaskOutcome', () => {
     await recordTaskOutcome({ taskId: 't3', outcome: 'completed' });
     const payload = (values.mock.calls[0] as any)[0];
     expect(payload.downshifted).toBe(false);
+  });
+
+  it('flags a downshift when the predicted model is a full model id below the baseline', async () => {
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't4', kind: 'engineering', complexity: 'complex', classified_by: 'organizer', predicted_model: 'claude-sonnet-4-6' },
+    ] });
+    const values = mock(() => Promise.resolve());
+    mockOutcomesInsert.mockReturnValue({ values });
+
+    await recordTaskOutcome({ taskId: 't4', outcome: 'completed' });
+    const payload = (values.mock.calls[0] as any)[0];
+    // engineering/complex baseline is opus; sonnet-4-6 resolves to the sonnet tier.
+    expect(payload.downshifted).toBe(true);
+  });
+
+  it('maps tier-vocabulary aliases (premium/standard/budget) onto the baseline order', async () => {
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't5', kind: 'engineering', complexity: 'complex', classified_by: 'user', predicted_model: 'budget' },
+    ] });
+    const values = mock(() => Promise.resolve());
+    mockOutcomesInsert.mockReturnValue({ values });
+
+    await recordTaskOutcome({ taskId: 't5', outcome: 'completed' });
+    expect((values.mock.calls[0] as any)[0].downshifted).toBe(true);
+  });
+
+  it('does not flag a model id that maps to no known tier', async () => {
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't6', kind: 'engineering', complexity: 'complex', classified_by: 'user', predicted_model: 'gpt-5.5-codex' },
+    ] });
+    const values = mock(() => Promise.resolve());
+    mockOutcomesInsert.mockReturnValue({ values });
+
+    await recordTaskOutcome({ taskId: 't6', outcome: 'completed' });
+    expect((values.mock.calls[0] as any)[0].downshifted).toBe(false);
+  });
+
+  it('uses the router BASELINE table, not a local copy (coordination/normal is sonnet)', async () => {
+    // model-router.ts says coordination = sonnet/sonnet/opus. A stale duplicate in
+    // routing-analytics.ts said opus/opus/opus, which mis-flagged every
+    // baseline-tier coordination task as downshifted.
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't7', kind: 'coordination', complexity: 'normal', classified_by: 'organizer', predicted_model: 'claude-sonnet-4-6' },
+    ] });
+    const values = mock(() => Promise.resolve());
+    mockOutcomesInsert.mockReturnValue({ values });
+
+    await recordTaskOutcome({ taskId: 't7', outcome: 'completed' });
+    expect((values.mock.calls[0] as any)[0].downshifted).toBe(false);
+  });
+
+  it('records the actual model the session ran on', async () => {
+    mockExecuteResult.mockResolvedValue({ rows: [
+      { id: 't8', kind: 'engineering', complexity: 'normal', classified_by: 'user', predicted_model: 'claude-sonnet-4-6' },
+    ] });
+    const values = mock(() => Promise.resolve());
+    mockOutcomesInsert.mockReturnValue({ values });
+
+    await recordTaskOutcome({ taskId: 't8', outcome: 'completed', actualModel: 'claude-sonnet-4-6' });
+    expect((values.mock.calls[0] as any)[0].actualModel).toBe('claude-sonnet-4-6');
   });
 
   it('swallows DB errors (non-fatal telemetry)', async () => {

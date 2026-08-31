@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import { handleBuilddAction, type ApiFn, type ActionContext } from '../mcp-tools';
+import { handleBuilddAction, buildParamsDescription, type ApiFn, type ActionContext } from '../mcp-tools';
 
 const MOCK_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
 
@@ -560,5 +560,86 @@ describe('create_task — fileAnywayReason support', () => {
       },
       createMockContext(),
     )).rejects.toThrow('fileAnywayReason must be a non-blank string');
+  });
+});
+
+describe('create_task — kind/complexity routing inputs', () => {
+  let mockApi: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockApi = mock();
+    mockApi.mockResolvedValue({ id: 'task-new', title: 'Test Task', priority: 5, status: 'pending' });
+  });
+
+  it('forwards a valid kind/complexity pair to the task API', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Refactor claim route',
+        description: 'Split the claim handler',
+        kind: 'engineering',
+        complexity: 'complex',
+      },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.kind).toBe('engineering');
+    expect(body.complexity).toBe('complex');
+  });
+
+  it('accepts every kind in the routing vocabulary', async () => {
+    const kinds = ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation'];
+    for (const kind of kinds) {
+      mockApi.mockClear();
+      await handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'create_task',
+        { title: `Task ${kind}`, description: 'd', kind },
+        createMockContext(),
+      );
+      const body = JSON.parse(mockApi.mock.calls[0][1].body);
+      expect(body.kind).toBe(kind);
+    }
+  });
+
+  it('rejects an invalid kind instead of silently dropping it', async () => {
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd', kind: 'enginering' },
+      createMockContext(),
+    )).rejects.toThrow(/kind must be one of/);
+    expect(mockApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid complexity instead of silently dropping it', async () => {
+    await expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd', complexity: 'medium' },
+      createMockContext(),
+    )).rejects.toThrow(/complexity must be one of/);
+    expect(mockApi).not.toHaveBeenCalled();
+  });
+
+  it('omits kind/complexity when the caller does not set them', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd' },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.kind).toBeUndefined();
+    expect(body.complexity).toBeUndefined();
+  });
+
+  it('documents kind and complexity in the create_task params description', () => {
+    const description = buildParamsDescription(['create_task']);
+    expect(description).toContain('kind?');
+    expect(description).toContain('complexity?');
   });
 });

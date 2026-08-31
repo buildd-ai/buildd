@@ -61,8 +61,12 @@ export interface RouterDecision {
 /**
  * Baseline model matrix — kind × complexity → tier.
  * `coordination` and `observation` ignore complexity.
+ *
+ * Exported so routing-analytics.ts can compare a recorded prediction against
+ * the same table the router decided with — it used to keep a hand-copied
+ * duplicate that drifted out of sync.
  */
-const BASELINE: Record<TaskKind, Record<TaskComplexity, Tier>> = {
+export const BASELINE: Record<TaskKind, Record<TaskComplexity, Tier>> = {
   coordination: { simple: 'sonnet', normal: 'sonnet', complex: 'opus' },
   engineering:  { simple: 'haiku', normal: 'sonnet', complex: 'opus' },
   research:     { simple: 'haiku', normal: 'sonnet', complex: 'sonnet' },

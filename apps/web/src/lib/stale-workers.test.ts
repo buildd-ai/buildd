@@ -129,7 +129,7 @@ describe('cleanupStuckWaitingInput', () => {
   it('does nothing when no stuck waiting_input workers exist', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
     expect(result.failedWorkers).toBe(0);
     expect(result.retriedTasks).toBe(0);
   });
@@ -157,7 +157,7 @@ describe('cleanupStuckWaitingInput', () => {
       outputSchema: null,
     });
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
 
     expect(result.failedWorkers).toBe(1);
     expect(result.retriedTasks).toBe(1);
@@ -167,7 +167,7 @@ describe('cleanupStuckWaitingInput', () => {
     const recentDate = new Date(Date.now() - 12 * 60 * 60 * 1000); // 12 hours ago
     mockWorkersFindMany.mockResolvedValue([]); // Query with lt(24h) returns nothing
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
     expect(result.failedWorkers).toBe(0);
     expect(result.retriedTasks).toBe(0);
   });
@@ -203,7 +203,7 @@ describe('cleanupStuckWaitingInput', () => {
       }),
     });
 
-    await cleanupStuckWaitingInput();
+    await cleanupStuckWaitingInput('account-1');
 
     expect(capturedValues).not.toBeNull();
     expect(capturedValues.title).toBe('Fix the bug');
@@ -243,7 +243,7 @@ describe('cleanupStuckWaitingInput', () => {
       }),
     });
 
-    await cleanupStuckWaitingInput();
+    await cleanupStuckWaitingInput('account-1');
 
     expect(taskUpdateSet).not.toBeNull();
     expect(taskUpdateSet.status).toBe('failed');
@@ -272,7 +272,7 @@ describe('cleanupStuckWaitingInput', () => {
       // resolveCompletedTask calls findFirst internally (no parentTaskId → no-op)
       .mockResolvedValueOnce({ parentTaskId: null });
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
 
     expect(result.failedWorkers).toBe(2);
     expect(result.retriedTasks).toBe(2);
@@ -295,7 +295,7 @@ describe('cleanupStuckWaitingInput', () => {
       missionId: 'mission-1', runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
     });
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
 
     // Mission task at 5h should be cleaned up (past 4h threshold)
     expect(result.failedWorkers).toBe(1);
@@ -313,7 +313,7 @@ describe('cleanupStuckWaitingInput', () => {
       },
     ]);
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
 
     // Standalone task at 5h should NOT be cleaned up (needs 24h)
     expect(result.failedWorkers).toBe(0);
@@ -341,7 +341,7 @@ describe('cleanupStuckWaitingInput', () => {
       missionId: 'mission-1', runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
     });
 
-    const result = await cleanupStuckWaitingInput();
+    const result = await cleanupStuckWaitingInput('account-1');
 
     // Only the mission task (w1) should be cleaned up, not the standalone (w2)
     expect(result.failedWorkers).toBe(1);
@@ -371,7 +371,7 @@ describe('cleanupStuckWaitingInput', () => {
       }),
     });
 
-    await cleanupStuckWaitingInput();
+    await cleanupStuckWaitingInput('account-1');
 
     expect(capturedValues.description).toContain('What database should I use?');
   });
@@ -1374,7 +1374,7 @@ describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
       missionId: null, runnerPreference: 'any', mode: 'execution', outputRequirement: 'auto', outputSchema: null,
     });
 
-    await cleanupStuckWaitingInput();
+    await cleanupStuckWaitingInput('account-1');
 
     // activeSessions decrement must have been attempted for the worker's account
     expect(mockAccountsUpdate).toHaveBeenCalled();
@@ -1385,7 +1385,7 @@ describe('cleanupStuckWaitingInput — activeSessions seat release', () => {
   it('does not decrement activeSessions when no stuck workers exist', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
 
-    await cleanupStuckWaitingInput();
+    await cleanupStuckWaitingInput('account-1');
 
     expect(mockAccountsUpdate).not.toHaveBeenCalled();
   });
@@ -1860,5 +1860,89 @@ describe('cleanupStaleWorkers — heartbeat path taxonomy', () => {
 
     // Restore the file-wide default (fresh heartbeat) for anything appended later.
     mockWorkerHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+  });
+});
+
+describe('cleanupStuckWaitingInput — account scoping', () => {
+  // The sweep used to take no arguments and query `eq(workers.status,
+  // 'waiting_input')` globally, while its only automatic driver was each
+  // runner's own 30-minute cleanup tick. One healthy runner on any account
+  // therefore fired the waiting_input timeout for every other tenant.
+  const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000); // 25h — past both thresholds
+  const fixture = [
+    { id: 'w-a', taskId: 'task-a', accountId: 'acct-a', status: 'waiting_input', updatedAt: staleDate, waitingFor: null, branch: null, error: null, task: { missionId: null } },
+    { id: 'w-b', taskId: 'task-b', accountId: 'acct-b', status: 'waiting_input', updatedAt: staleDate, waitingFor: null, branch: null, error: null, task: { missionId: null } },
+  ];
+
+  /** Every eq() value in the mocked drizzle where-tree, flattened. */
+  function eqValues(node: any): unknown[] {
+    if (!node || typeof node !== 'object') return [];
+    if (node.type === 'eq') return [node.value];
+    if (Array.isArray(node.args)) return node.args.flatMap(eqValues);
+    return [];
+  }
+
+  let workerUpdateIds: string[];
+  let lastWhere: any;
+
+  beforeEach(() => {
+    workerUpdateIds = [];
+    lastWhere = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockTasksInsert.mockReset();
+    mockAccountsUpdate.mockReset();
+
+    // The account filter lives in SQL, so the fake honours it the way Postgres would.
+    mockWorkersFindMany.mockImplementation((args: any) => {
+      lastWhere = args?.where;
+      const scopes = eqValues(args?.where).filter(
+        (v): v is string => typeof v === 'string' && v.startsWith('acct-'),
+      );
+      return fixture.filter(w => scopes.length === 0 || scopes.includes(w.accountId));
+    });
+    mockTasksFindFirst.mockImplementation(() => ({
+      id: 'task-a', workspaceId: 'ws-1', title: 'T', description: 'D',
+      priority: 0, category: null, project: null, context: {}, requiredCapabilities: [],
+      missionId: null, runnerPreference: 'any', mode: 'execution',
+      outputRequirement: 'auto', outputSchema: null, parentTaskId: null,
+    }));
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock((w: any) => {
+          if (typeof w?.value === 'string') workerUpdateIds.push(w.value);
+          return Promise.resolve();
+        }),
+      })),
+    });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [{ id: 'new-task-id' }]) })),
+    });
+    mockAccountsUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+  });
+
+  it('scopes the waiting_input query to the given account', async () => {
+    await cleanupStuckWaitingInput('acct-a');
+    expect(eqValues(lastWhere)).toContain('acct-a');
+  });
+
+  it('does not touch another account\'s stuck waiting_input workers', async () => {
+    const result = await cleanupStuckWaitingInput('acct-a');
+
+    expect(workerUpdateIds).toContain('w-a');
+    expect(workerUpdateIds).not.toContain('w-b');
+    expect(result.failedWorkers).toBe(1);
+    expect(result.retriedTasks).toBe(1);
+  });
+
+  it('still reclaims the calling account\'s own worker past the threshold', async () => {
+    const result = await cleanupStuckWaitingInput('acct-b');
+
+    expect(workerUpdateIds).toEqual(['w-b']);
+    expect(result.failedWorkers).toBe(1);
+    expect(result.retriedTasks).toBe(1);
   });
 });
