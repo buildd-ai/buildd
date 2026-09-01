@@ -49,6 +49,16 @@ export const NAV_ITEMS: NavItem[] = [
     ),
   },
   {
+    label: 'Releases',
+    href: '/app/releases',
+    desktopOnly: true,
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+        <path d="M6 9l6-6 6 6M12 3v16M3 15h18" />
+      </svg>
+    ),
+  },
+  {
     label: 'Activity',
     href: '/app/tasks',
     icon: (
@@ -90,6 +100,7 @@ export function mobilePageTitle(pathname: string): string | null {
   if (pathname === '/app/home' || pathname === '/app/dashboard') return 'Home';
   if (pathname === '/app/missions') return 'Missions';
   if (pathname === '/app/initiatives') return 'Initiatives';
+  if (pathname === '/app/releases') return 'Releases';
   if (pathname === '/app/workspaces') return 'Workspaces';
   if (pathname === '/app/tasks') return 'Activity';
   if (pathname === '/app/team') return 'Team';

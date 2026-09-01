@@ -9,6 +9,7 @@ describe('NAV_ITEMS', () => {
       '/app/home',
       '/app/missions',
       '/app/initiatives',
+      '/app/releases',
       '/app/tasks',
       '/app/team',
       '/app/health',
@@ -17,14 +18,15 @@ describe('NAV_ITEMS', () => {
       'Home',
       'Missions',
       'Initiatives',
+      'Releases',
       'Activity',
       'Team',
       'Health',
     ]);
   });
 
-  it('marks only Initiatives desktop-only (kept off the mobile bottom bar)', () => {
-    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual(['/app/initiatives']);
+  it('marks only Initiatives and Releases desktop-only (kept off the mobile bottom bar)', () => {
+    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual(['/app/initiatives', '/app/releases']);
   });
 
   it('provides an icon for every item', () => {
