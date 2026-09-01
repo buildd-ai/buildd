@@ -139,17 +139,104 @@ export function sharedCbmCacheDir(): string {
 }
 
 /**
- * CBM's project key for a repo path.
+ * Is this path the ROOT of a git repo?
  *
- * CBM keys a project by the absolute path it was indexed at, slugified — verified
- * against 0.10.8: /Users/max/buildd -> "Users-max-buildd", /home/coder/base ->
- * "home-coder-base", and the db lands at <cache>/<key>.db. This is what makes a
- * seed non-portable: point the same cache at a different path and CBM indexes a
- * second project at full cost. If this derivation is ever wrong the seed lookup
- * simply misses and the caller falls back to a per-worker index — a safe failure.
+ * "Is it a git repo" is the wrong question: git answers from the nearest enclosing
+ * repo, so any subdirectory passes. On the live fleet the runner handed the seeder
+ * `/home/coder/.buildd/roles/builder` — a role config dir inside the runner's own
+ * checkout — and a plain repo check resolved origin/main from ~/.buildd and seeded
+ * an entire duplicate graph under a key nothing wanted. (The version before that
+ * indexed the directory itself: 821 MB of cache for a config folder.)
  */
-export function cbmProjectNameFor(repoPath: string): string {
-  return repoPath.replace(/^\/+/, '').replace(/\/+$/, '').replace(/[^A-Za-z0-9]+/g, '-');
+export function isGitRepoRoot(
+  repoPath: string,
+  runGit?: (args: string[], cwd: string) => { ok: boolean; out: string },
+): boolean {
+  const { resolve } = require('path') as typeof import('path');
+  const run = runGit ?? ((args: string[], cwd: string) => {
+    const { spawnSync } = require('child_process') as typeof import('child_process');
+    const r = spawnSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 30_000 });
+    return { ok: r.status === 0, out: (r.stdout ?? '').trim() };
+  });
+  const top = run(['rev-parse', '--show-toplevel'], repoPath);
+  if (!top.ok || !top.out) return false;
+  return resolve(top.out) === resolve(repoPath.replace(/\/+$/, ''));
+}
+
+/**
+ * Root for dedicated seed checkouts.
+ *
+ * A seed must be indexed from a checkout that tracks the repo's default branch.
+ * The base clone cannot serve: the runner only ever adds worktrees to it, so its
+ * HEAD stays on whatever leftover worker branch was checked out last — measured 98
+ * commits behind origin/main on the live fleet — and never moves, which also meant
+ * a HEAD-stamped refresh could never re-fire.
+ */
+export function cbmSeedRoot(): string {
+  const { homedir } = require('os') as typeof import('os');
+  return process.env.BUILDD_CBM_SEED_ROOT || join(homedir(), '.buildd-cbm-seed');
+}
+
+/** Stable, readable, collision-free seed path for a repo. */
+export function cbmSeedPathFor(repoPath: string): string {
+  const { createHash } = require('crypto') as typeof import('crypto');
+  const { basename } = require('path') as typeof import('path');
+  const normalized = repoPath.replace(/\/+$/, '');
+  const hash = createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+  return join(cbmSeedRoot(), `${basename(normalized) || 'repo'}-${hash}`);
+}
+
+export interface CbmSeedRecord {
+  repoPath: string;
+  seedPath: string;
+  /** Project name CBM itself reported — never derived. See below. */
+  project: string;
+  /** Ref the seed checkout tracks, e.g. "origin/main". */
+  ref: string;
+  /** Commit the seed was indexed at, so a refresh can tell when it moved. */
+  sha: string;
+  indexedAt: string;
+}
+
+/**
+ * Where the seed record for a repo lives.
+ *
+ * Keyed by a hash of the repo path so a record can be found without guessing
+ * CBM's slug rules.
+ */
+function seedRecordPath(repoPath: string): string {
+  const { createHash } = require('crypto') as typeof import('crypto');
+  const hash = createHash('sha1').update(repoPath.replace(/\/+$/, '')).digest('hex').slice(0, 16);
+  return join(sharedCbmCacheDir(), 'seeds', `${hash}.json`);
+}
+
+/**
+ * Record what the seeder actually produced.
+ *
+ * The project name is READ FROM CBM's own output rather than derived from the
+ * path. CBM's slug keeps dots — `/home/coder/.buildd-cbm-seed/buildd-abc123`
+ * becomes `home-coder-.buildd-cbm-seed-buildd-abc123` — which a
+ * replace-non-alphanumerics derivation silently collapsed, and a wrong key fails
+ * as "project not found or not indexed" at query time, on the agent's turn, with
+ * no signal at activation. Recording the fact removes the guess entirely.
+ */
+export function writeCbmSeedRecord(repoPath: string, record: CbmSeedRecord): void {
+  const { mkdirSync, writeFileSync } = require('fs') as typeof import('fs');
+  const path = seedRecordPath(repoPath);
+  mkdirSync(join(sharedCbmCacheDir(), 'seeds'), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+export function readCbmSeedRecord(repoPath: string): CbmSeedRecord | null {
+  const { existsSync, readFileSync } = require('fs') as typeof import('fs');
+  const path = seedRecordPath(repoPath);
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as CbmSeedRecord;
+    return parsed && typeof parsed.project === 'string' ? parsed : null;
+  } catch {
+    return null; // corrupt record: fall back to a per-worker index
+  }
 }
 
 /** Per-worker daemon runtime dir for shared mode — must live outside the shared cache. */
@@ -264,12 +351,15 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
   if (!enforced) return { enforced: false };
 
   // Prefer a seed already built for this repo: the graph is warm, so the per-task
-  // index (~20s cold, ~11s warm) is pure waste. Requires a db for THIS repo path —
-  // a seed for another repo is worthless, since the project key is the path.
+  // index (~20s cold, ~11s warm, worse under concurrency) is pure waste.
+  //
+  // The seed is looked up through its record, not by deriving a key from the repo
+  // path. Deriving matched a db indexed from the BASE CLONE, whose checkout tracks
+  // a stale leftover branch — that is the bug this replaces.
   if (ctx.repoPath) {
     const shared = sharedCbmCacheDir();
-    const project = cbmProjectNameFor(ctx.repoPath);
-    if (pathExists(shared) && pathExists(join(shared, `${project}.db`))) {
+    const record = readCbmSeedRecord(ctx.repoPath);
+    if (record && pathExists(join(shared, `${record.project}.db`))) {
       return {
         enforced: true,
         cbmBinaryPath: CBM_BINARY_PATH,
@@ -277,7 +367,7 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
         cbmRuntimeDir: sharedModeRuntimeDir(ctx.workerId),
         sharedCache: true,
         skipBootstrapIndex: true,
-        cbmProject: project,
+        cbmProject: record.project,
       };
     }
   }
