@@ -1775,6 +1775,28 @@ describe('cleanupStaleWorkers — never-started / silent-start taxonomy', () => 
     expect(taskUpdateSet.result.error).toContain('silent-start');
   });
 
+  // Regression: costUsd is never populated on the reaper's own kill path, so
+  // "$0 spend" was true for every worker regardless of real activity. A worker
+  // that already burned input/output tokens (live-synced by the runner every
+  // ~30s) must not be booked as silent_start just because costUsd is still $0.
+  it('books a worker with input tokens but $0 cost as infra_failure, not silent_start', async () => {
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'spender-1', taskId: 'task-1', status: 'running', startedAt: new Date(Date.now() - 20 * 60 * 1000), turns: 1, costUsd: '0.000000', inputTokens: 40000, outputTokens: 0, prUrl: null, prNumber: null, commitCount: null, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-1', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValue({ id: 'task-1', workspaceId: 'ws-1', parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    const update = workerUpdates[0].vals;
+    expect(update.exitCause).toBe('infra_failure');
+  });
+
   it('looks for silent-start workers on a shorter clock than the generic stale rule', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
 
