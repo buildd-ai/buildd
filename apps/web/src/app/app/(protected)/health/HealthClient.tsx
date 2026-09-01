@@ -18,6 +18,8 @@ import type {
   CbmHealthSummary,
 } from './page';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
+import { getModelDisplayName } from '@buildd/core/model-display';
+import { byModelAbsence, divergenceSummary, scanCaveat } from '@/lib/model-presentation';
 import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
@@ -999,10 +1001,15 @@ function shortToolName(name: string): string {
  * row: one runaway task skews a mean badly enough to make the number useless.
  */
 function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
-  const { totals, perTask, tools, groups, window } = stats;
+  const { totals, perTask, tools, groups, window, byModel, modelDivergence, scan } = stats;
   const topTools = tools.byTool.slice(0, 5);
   const maxToolCalls = topTools[0]?.calls ?? 0;
   const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
+  const topModels = byModel.slice(0, 6);
+  const divergence = divergenceSummary(modelDivergence);
+  // Qualifies every number in this section, not just the model rows: the page
+  // reads worker rows directly and the read is capped.
+  const caveat = scanCaveat(scan, timeAgo(scan.completeSince));
 
   /** "n of m tasks" — the sample behind a median, so it is never read as all of them. */
   const sampleNote = (metric: PerTaskMetric) => {
@@ -1012,7 +1019,18 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
 
   return (
     <section data-testid="health-section-consumption" className="mb-6">
-      <h2 className="section-label mb-3">Consumption ({window})</h2>
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h2 className="section-label">Consumption ({window})</h2>
+        {caveat && (
+          <span
+            data-testid="consumption-scan-caveat"
+            className="text-[11px] text-text-muted text-right"
+            title={`The scan reads the newest ${scan.limit} terminal workers, newest first. Rows older than the cap were not read, so every figure in this section — including the per-model rows — is a floor for the ${window} window, and a complete count only from ${scan.completeSince} onward.`}
+          >
+            {caveat}
+          </span>
+        )}
+      </div>
       <div className="card p-4 space-y-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <MetricStat
@@ -1074,6 +1092,69 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
             ))}
           </div>
         )}
+
+        <div data-testid="consumption-by-model" className="space-y-2 pt-3 border-t border-border-default">
+          <span className="text-xs text-text-secondary">By model</span>
+
+          {topModels.length > 0 ? (
+            <>
+              <div className="flex items-center gap-2 text-[9px] uppercase tracking-wide text-text-muted">
+                <span className="flex-1">model</span>
+                <span className="w-14 text-right">tokens</span>
+                <span className="w-16 text-right">cost</span>
+                <span className="w-10 text-right">share</span>
+                <span
+                  className="w-24 text-right"
+                  title="Workers that reported this model. A worker whose fallback fired reports two models and counts in both rows, so this column can sum to more than the number of workers."
+                >
+                  workers reporting
+                </span>
+              </div>
+              {topModels.map((m) => (
+                <div key={m.model} className="flex items-center gap-2">
+                  <span className="text-xs text-text-primary flex-1 truncate" title={m.model}>
+                    {getModelDisplayName(m.model)}
+                  </span>
+                  <span className="w-14 text-right text-[11px] text-text-muted tabular-nums">
+                    {fmtTokens(m.inputTokens + m.outputTokens)}
+                  </span>
+                  <span className="w-16 text-right text-[11px] text-text-muted tabular-nums">
+                    {fmtCost(m.costUsd)}
+                  </span>
+                  <span className="w-10 text-right text-[11px] text-text-muted tabular-nums">
+                    {Math.round(m.share * 100)}%
+                  </span>
+                  <span className="w-24 text-right text-[11px] text-text-muted tabular-nums">
+                    {m.workers}
+                  </span>
+                </div>
+              ))}
+            </>
+          ) : (
+            /* Never a silently empty block: on seat/OAuth auth the SDK reports
+               no per-model usage at all, for every worker on the team. */
+            <p data-testid="consumption-by-model-absent" className="text-[11px] text-text-muted">
+              {byModelAbsence(totals.inputTokens)}
+            </p>
+          )}
+
+          <div className="flex items-baseline justify-between gap-3 pt-2">
+            <div className="min-w-0">
+              <div
+                className="text-[9px] uppercase tracking-wide text-text-muted"
+                title="How often the model that ran disagreed with the model the router assigned (tasks.predicted_model). Aliases match any release in their family, so a team-less task assigned a bare family alias that ran a release of that same family counts as agreement, not divergence."
+              >
+                assigned vs actual
+              </div>
+              <div className="text-[11px] text-text-muted">{divergence.note}</div>
+            </div>
+            <span
+              className={`text-sm tabular-nums ${modelDivergence.kind === 'value' ? 'text-text-primary' : 'text-text-muted'}`}
+            >
+              {divergence.headline}
+            </span>
+          </div>
+        </div>
 
         {groups.length > 0 && (
           <div className="space-y-2 pt-3 border-t border-border-default">

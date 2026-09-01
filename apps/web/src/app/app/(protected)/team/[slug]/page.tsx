@@ -8,6 +8,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, HEALTH_DISPLAY, timeAgo } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import ExternalLink from '@/components/ExternalLink';
+import { roleModelLabel } from '@/lib/model-presentation';
 
 export const dynamic = 'force-dynamic';
 
@@ -237,11 +238,7 @@ export default async function RoleProfilePage({
     ? Array.isArray(mcpServers) ? mcpServers : Object.keys(mcpServers)
     : [];
 
-  const modelLabel = role.model === 'inherit' ? 'Inherit' :
-    role.model === 'opus' ? 'Claude Opus 4' :
-    role.model === 'sonnet' ? 'Claude Sonnet 4' :
-    role.model === 'haiku' ? 'Claude Haiku' :
-    role.model || 'Inherit';
+  const modelLabel = roleModelLabel(role.model);
 
   // Determine overall status
   const overallStatus = currentWorker ? currentWorker.status : 'idle';

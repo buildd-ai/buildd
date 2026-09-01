@@ -19,6 +19,8 @@ import RealTimeWorkerView from './RealTimeWorkerView';
 import PlanReviewPanel from './PlanReviewPanel';
 import PlanChainView from './PlanChainView';
 
+import TaskModelCell from './TaskModelCell';
+import { getModelDisplayName, primaryModelFromUsage, compareAssignedActual } from '@buildd/core/model-display';
 import TaskAutoRefresh from './TaskAutoRefresh';
 import SwitchBackendButton, { type BackendOption } from './SwitchBackendButton';
 import TaskQuestionFeed from './TaskQuestionFeed';
@@ -34,6 +36,7 @@ import ArtifactShareControl from '@/components/ArtifactShareControl';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
+import { deriveTaskModel } from '@/lib/model-presentation';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -417,6 +420,22 @@ export default async function TaskDetailPage({
   // the pending family; everywhere else it demotes into the Details disclosure.
   const isPendingFamily = phase === 'pending' || phase === 'blocked' || phase === 'budget_paused' || phase === 'assigned' || phase === 'subject_dead' || phase === 'mission_budget_exhausted';
 
+  // Which model this task was asked for, which one the router resolved, and which
+  // one actually ran — three values that are allowed to disagree. The `tasks`
+  // query above selects no `columns`, so `tier` and `predictedModel` are both
+  // present on the row. `modelUsage` comes from the most recent worker that
+  // reported any attribution: on seat/OAuth auth no worker reports one, and that
+  // absence must read as unattributed rather than as agreement.
+  const attributedWorker = taskWorkers.find(
+    w => Object.keys(((w.resultMeta as any)?.modelUsage ?? {}) as Record<string, unknown>).length > 0,
+  );
+  const modelSummary = deriveTaskModel({
+    tier: task.tier,
+    predictedModel: task.predictedModel,
+    context: task.context,
+    modelUsage: (attributedWorker?.resultMeta as any)?.modelUsage ?? null,
+  });
+
   // The next step in the execution plan — "what happens after this?" — surfaced as
   // a CTA when this task is done. The chain is the durable thread across workers.
   const currentChainIdx = planChain.findIndex(t => t.id === id);
@@ -612,6 +631,14 @@ export default async function TaskDetailPage({
               <>
                 <span className="text-text-muted">&middot;</span>
                 <span className="capitalize">{task.backend}</span>
+              </>
+            )}
+            {/* Tier word only at this altitude — the concrete id belongs in Details.
+                Pre-flight is the one moment the tier is still changeable. */}
+            {modelSummary.tierLabel && (
+              <>
+                <span className="text-text-muted">&middot;</span>
+                <span>{modelSummary.tierLabel}</span>
               </>
             )}
           </div>
@@ -985,6 +1012,7 @@ export default async function TaskDetailPage({
                 account: activeWorker.account ? { authType: activeWorker.account.authType } : null,
                 resultMeta: activeWorker.resultMeta as any,
               }}
+              modelTier={modelSummary.tierLabel}
             />
           </div>
         )}
@@ -1163,13 +1191,35 @@ export default async function TaskDetailPage({
                         {!(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any)?.stopReason && (worker.resultMeta as any).stopReason !== 'end_turn' && (
                           <span className="text-status-warning">stop: {(worker.resultMeta as any).stopReason}</span>
                         )}
+                        {/*
+                          The model THIS worker ran on, beside its turns and cost.
+                          Divergence is a per-worker fact — a retry is a second
+                          worker and a fallback fires within one — so this is
+                          where it belongs, and this row is visible by default.
+                          The same note inside the collapsed Details disclosure
+                          is only ever seen by someone already looking for it.
+                          Muted, never a status colour: a fallback is normal, and
+                          only the fleet-wide rate is worth alarm.
+                        */}
+                        {(() => {
+                          const ran = primaryModelFromUsage((worker.resultMeta as any)?.modelUsage);
+                          if (!ran.primary) return null;
+                          const verdict = compareAssignedActual(task.predictedModel, ran.primary);
+                          return (
+                            <span title={ran.all.join(', ')}>
+                              {getModelDisplayName(ran.primary)}
+                              {ran.multiple && ` +${ran.all.length - 1}`}
+                              {verdict.verdict === 'diverged' && ' (assigned ' + getModelDisplayName(verdict.assigned) + ')'}
+                            </span>
+                          );
+                        })()}
                       </div>
                       {/* Per-model usage breakdown — hidden on mobile for density */}
                       {(worker.resultMeta as any)?.modelUsage && Object.keys((worker.resultMeta as any).modelUsage).length > 0 && (
                         <div className="hidden md:flex mt-1.5 flex-wrap gap-x-4 gap-y-1 font-mono text-[10px] text-text-muted">
                           {Object.entries((worker.resultMeta as any).modelUsage as Record<string, { inputTokens: number; outputTokens: number; cacheReadInputTokens: number; costUSD: number }>).map(([model, usage]) => (
                             <span key={model} className="inline-flex items-center gap-1">
-                              <span className="text-text-secondary">{model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                              <span className="text-text-secondary">{getModelDisplayName(model)}</span>
                               <span>{((usage.inputTokens + usage.cacheReadInputTokens) / 1000).toFixed(0)}k in</span>
                               <span>{(usage.outputTokens / 1000).toFixed(0)}k out</span>
                               {usage.costUSD > 0 && <span className="text-text-secondary">${usage.costUSD.toFixed(4)}</span>}
@@ -1219,6 +1269,7 @@ export default async function TaskDetailPage({
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Priority</dt><dd className="text-text-primary">{task.priority}</dd></div>
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Runner</dt><dd className="text-text-primary">{task.runnerPreference}</dd></div>
             {task.backend && <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Backend</dt><dd className="text-text-primary capitalize">{task.backend}</dd></div>}
+            <TaskModelCell summary={modelSummary} />
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Claimed by</dt><dd className="text-text-primary truncate">{task.account?.name || '-'}</dd></div>
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Workers</dt><dd className="text-text-primary">{taskWorkers.length}</dd></div>
             <div><dt className="text-text-muted text-[11px] uppercase tracking-wider">Created</dt><dd className="text-text-primary">{new Date(task.createdAt).toLocaleDateString()}</dd></div>

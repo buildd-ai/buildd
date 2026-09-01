@@ -20,6 +20,7 @@
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",
+    "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
