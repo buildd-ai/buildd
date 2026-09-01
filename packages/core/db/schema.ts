@@ -1241,7 +1241,7 @@ export const missionNotes = pgTable('mission_notes', {
   taskId: uuid('task_id'),
   workerId: uuid('worker_id'),
   authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
-  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance' | 'reviewer_approved' | 'reviewer_request_changes' | 'reviewer_escalated'>(),
+  type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance' | 'reviewer_approved' | 'reviewer_request_changes' | 'reviewer_escalated' | 'reviewer_superseded'>(),
   title: text('title').notNull(),
   body: text('body'),
   replyTo: uuid('reply_to'),

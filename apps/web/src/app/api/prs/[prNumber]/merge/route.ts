@@ -20,6 +20,7 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
+import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 
 export async function POST(
   req: NextRequest,
@@ -245,6 +246,18 @@ export async function POST(
   if (worker.taskId) {
     checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
       console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
+    );
+
+    // A human just merged this PR directly — if a reviewer task was still
+    // pending or running for it, cancel it so it doesn't run against an
+    // already-merged PR (fire-and-forget: never blocks the merge response).
+    supersedeReviewerTaskOnMerge({
+      originalTaskId: worker.taskId,
+      installationId,
+      repoFullName,
+      prNumber,
+    }).catch((e: unknown) =>
+      console.error(`[pr-merge] supersedeReviewerTaskOnMerge failed for task ${worker.taskId}:`, e)
     );
   }
 

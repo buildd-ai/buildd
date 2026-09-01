@@ -54,7 +54,8 @@ export type PrActivityKind =
   | 'human_review_required'
   | 'ci_fixing'
   | 'ci_exhausted'
-  | 'changes_pushed';
+  | 'changes_pushed'
+  | 'review_superseded_by_merge';
 
 export interface PrActivityEntry {
   kind: PrActivityKind;
@@ -134,6 +135,12 @@ const PRESENTATION: Record<PrActivityKind, Presentation> = {
     working: true,
     label: 'Fixes pushed',
     status: 'buildd pushed new commits to this branch — waiting on checks.',
+  },
+  review_superseded_by_merge: {
+    icon: '⏭️',
+    working: false,
+    label: 'Review superseded — merged by a human',
+    status: 'A human merged this PR before the reviewer got to it. The pending review was cancelled.',
   },
 };
 

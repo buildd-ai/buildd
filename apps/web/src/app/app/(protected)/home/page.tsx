@@ -53,6 +53,7 @@ import {
 } from '@/lib/mission-helpers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
+import { resolveReviewerGate } from '@/lib/reviewer-gate';
 import { StageChip } from '@/components/StageChip';
 import { deriveStage } from '@/lib/stage';
 
@@ -228,7 +229,30 @@ export default async function HomePage({
     reviewerRoleSlug: string | null;
     reviewerStartedAt: Date | null;
     missionId: string | null;
+    unblockCount: number | null;
+    upstreamTaskTitle: string | null;
   }[] = [];
+
+  // PRs whose reviewer task exists but hasn't been claimed yet — the agent
+  // still owns the next move, so these render in-flight, not in Waiting on You.
+  let reviewQueuedPrs: {
+    taskId: string;
+    taskTitle: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    workspaceId: string;
+    workspaceName: string;
+    missionId: string | null;
+    reason: string | null;
+    unblockCount: number | null;
+    upstreamTaskTitle: string | null;
+  }[] = [];
+
+  // Per-original-task reviewer gate decision, keyed by taskId — computed once
+  // in the escalation-inbox block below, consulted again by the dependency
+  // (PR blockers) section so a PR under active/queued review never gets a
+  // second, human-facing MERGE card there.
+  let reviewerGateMap = new Map<string, import('@/lib/reviewer-gate').ReviewerGateResult>();
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
 
@@ -817,29 +841,38 @@ export default async function HomePage({
               sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
             ),
             columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, completedAt: true },
-            with: { task: { columns: { id: true, title: true, missionId: true, status: true } } },
+            with: {
+              task: {
+                columns: { id: true, title: true, missionId: true, status: true, requiresReview: true },
+                with: { mission: { columns: { id: true, mergePolicy: true, requiresReview: true } } },
+              },
+            },
           });
 
           if (openPrWorkers.length > 0) {
             const openTaskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
-            const openTaskIdSet = new Set(openTaskIds);
 
-            // ── Reviewer lease detection ──────────────────────────────────────
-            // Find active reviewer tasks (category='review') with a live worker
-            // linked to our open PR tasks via context.reviewerFor.
-            const reviewerLiveMap = new Map<string, {
-              reviewerWorkerId: string;
-              reviewerRoleSlug: string | null;
+            // ── Reviewer task lookup ────────────────────────────────────────────
+            // The reviewer gate needs the CURRENT state of each original task's
+            // most recent reviewer task — pending/running means the agent still
+            // owns this PR; only failed/cancelled/absent-when-none-will-come means
+            // it falls to the human. parentTaskId is a real column (set at
+            // createReviewerTask), so this is a direct join, not a context scan.
+            const latestReviewerTaskByOrigId = new Map<string, {
+              status: string;
+              hasLiveWorker: boolean;
+              createdAt: Date;
+              roleSlug: string | null;
+              reviewerWorkerId: string | null;
               reviewerStartedAt: Date | null;
             }>();
             if (openTaskIds.length > 0) {
-              const reviewerTasksWithWorkers = await db.query.tasks.findMany({
+              const reviewerTasksRaw = await db.query.tasks.findMany({
                 where: and(
-                  inArray(tasks.workspaceId, wsIds),
+                  inArray(tasks.parentTaskId, openTaskIds),
                   eq(tasks.category, 'review'),
-                  inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
                 ),
-                columns: { id: true, context: true, roleSlug: true },
+                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true },
                 with: {
                   workers: {
                     where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
@@ -847,19 +880,20 @@ export default async function HomePage({
                     limit: 1,
                   },
                 },
+                orderBy: [desc(tasks.createdAt)],
               });
-              for (const rt of reviewerTasksWithWorkers) {
-                const ctx = (rt.context ?? {}) as Record<string, unknown>;
-                const origTaskId = ctx.reviewerFor as string | undefined;
-                if (!origTaskId || !openTaskIdSet.has(origTaskId)) continue;
+              // orderBy desc → first row seen per parentTaskId is the latest.
+              for (const rt of reviewerTasksRaw) {
+                if (!rt.parentTaskId || latestReviewerTaskByOrigId.has(rt.parentTaskId)) continue;
                 const liveWorker = (rt as any).workers?.[0];
-                if (liveWorker) {
-                  reviewerLiveMap.set(origTaskId, {
-                    reviewerWorkerId: liveWorker.id,
-                    reviewerRoleSlug: rt.roleSlug ?? null,
-                    reviewerStartedAt: liveWorker.startedAt ?? null,
-                  });
-                }
+                latestReviewerTaskByOrigId.set(rt.parentTaskId, {
+                  status: rt.status,
+                  hasLiveWorker: !!liveWorker,
+                  createdAt: rt.createdAt,
+                  roleSlug: rt.roleSlug ?? null,
+                  reviewerWorkerId: liveWorker?.id ?? null,
+                  reviewerStartedAt: liveWorker?.startedAt ?? null,
+                });
               }
             }
             // ─────────────────────────────────────────────────────────────────
@@ -891,7 +925,32 @@ export default async function HomePage({
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
 
-            const agentReviewingTaskIds = new Set(reviewerLiveMap.keys());
+            // ── Reviewer gate ────────────────────────────────────────────────────
+            // Single predicate (resolveReviewerGate) deciding, per PR, whether the
+            // agent still owns the next move or it has genuinely fallen to the
+            // human. Both the in-flight cards and the escalation inbox below read
+            // from this one map so they can never disagree.
+            const gateNow = new Date();
+            for (const w of openPrWorkers) {
+              if (!w.taskId) continue;
+              const ws = wsInboxMap.get(w.workspaceId);
+              const mission = (w.task as any)?.mission ?? null;
+              const policy = ws
+                ? resolvePolicy(ws, mission, { requiresReview: (w.task as any)?.requiresReview })
+                : { tier: 'auto-threshold' as const };
+              const rt = latestReviewerTaskByOrigId.get(w.taskId);
+              reviewerGateMap.set(w.taskId, resolveReviewerGate({
+                policyTier: policy.tier,
+                escalationReason: escalatedMap.get(w.taskId) ?? null,
+                approvalSummary: approvedMap.get(w.taskId) ?? null,
+                reviewerTask: rt
+                  ? { status: rt.status as any, hasLiveWorker: rt.hasLiveWorker, createdAt: rt.createdAt }
+                  : null,
+                prOpenedAt: w.completedAt ?? null,
+                now: gateNow,
+              }));
+            }
+            // ─────────────────────────────────────────────────────────────────────
 
             // ── Conflict retry lease detection ──────────────────────────────────
             // While a conflict-retry task is live for a PR, the card renders as
@@ -955,12 +1014,14 @@ export default async function HomePage({
             }
             // ─────────────────────────────────────────────────────────────────────
 
-            // Build agent-reviewing cards (shown in Right Now, not in the human queue)
+            // Build in-flight cards (shown in Right Now, not in the human queue):
+            // 'reviewing' when a reviewer worker is live, 'queued' when a reviewer
+            // task exists (or will shortly) but hasn't been claimed yet.
             agentReviewingPrs = openPrWorkers
-              .filter(w => w.taskId && agentReviewingTaskIds.has(w.taskId))
+              .filter(w => w.taskId && reviewerGateMap.get(w.taskId)?.agentState === 'reviewing')
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
-                const reviewer = reviewerLiveMap.get(w.taskId!)!;
+                const rt = latestReviewerTaskByOrigId.get(w.taskId!);
                 return {
                   workerId: w.id,
                   taskId: w.taskId ?? '',
@@ -969,10 +1030,30 @@ export default async function HomePage({
                   prUrl: w.prUrl,
                   workspaceId: w.workspaceId,
                   workspaceName: ws?.name ?? '',
-                  reviewerWorkerId: reviewer.reviewerWorkerId,
-                  reviewerRoleSlug: reviewer.reviewerRoleSlug,
-                  reviewerStartedAt: reviewer.reviewerStartedAt,
+                  reviewerWorkerId: rt?.reviewerWorkerId ?? '',
+                  reviewerRoleSlug: rt?.roleSlug ?? null,
+                  reviewerStartedAt: rt?.reviewerStartedAt ?? null,
                   missionId: (w.task as any)?.missionId ?? null,
+                  unblockCount: null as number | null,
+                  upstreamTaskTitle: null as string | null,
+                };
+              });
+
+            reviewQueuedPrs = openPrWorkers
+              .filter(w => w.taskId && reviewerGateMap.get(w.taskId)?.agentState === 'queued')
+              .map(w => {
+                const ws = wsInboxMap.get(w.workspaceId);
+                return {
+                  taskId: w.taskId ?? '',
+                  taskTitle: (w.task as any)?.title ?? '',
+                  prNumber: w.prNumber,
+                  prUrl: w.prUrl,
+                  workspaceId: w.workspaceId,
+                  workspaceName: ws?.name ?? '',
+                  missionId: (w.task as any)?.missionId ?? null,
+                  reason: reviewerGateMap.get(w.taskId!)?.reason ?? 'review queued',
+                  unblockCount: null as number | null,
+                  upstreamTaskTitle: null as string | null,
                 };
               });
 
@@ -981,30 +1062,34 @@ export default async function HomePage({
                 const taskTitle = (w.task as any)?.title ?? '';
                 if (taskTitle.startsWith('[smoke-test')) return false;
                 if (w.taskId && supersededTaskIds.has(w.taskId)) return false;
-                // Exclude while under active agent-review lease
-                if (w.taskId && agentReviewingTaskIds.has(w.taskId)) return false;
                 // Include if a conflict retry is live (renders as RESOLVING)
                 if (w.prNumber != null && conflictRetryMap.has(`${w.workspaceId}:${w.prNumber}`)) return true;
                 // Dead zone exhausted — all retries failed, PR needs human action (BLOCKED)
                 if (deadZoneExhaustedMap.has(w.id)) return true;
-                if (w.taskId && escalatedMap.has(w.taskId)) return true;
-                if (w.taskId && approvedMap.has(w.taskId)) return true;
-                const ws = wsInboxMap.get(w.workspaceId);
-                if (!ws) return false;
-                return resolvePolicy(ws).tier === 'human';
+                // Otherwise: the reviewer gate is the single source of truth for
+                // whether this PR has genuinely fallen to the human. PENDING or
+                // RUNNING reviewer work (gate.actor === 'agent') is excluded here —
+                // it renders in the in-flight surface above instead.
+                // An orphaned worker (taskId null — e.g. its task was deleted) has
+                // no reviewer gate entry; fall back to the tier check directly
+                // rather than silently dropping a PR that may need a human.
+                if (!w.taskId) {
+                  const ws = wsInboxMap.get(w.workspaceId);
+                  return !!ws && resolvePolicy(ws).tier === 'human';
+                }
+                return reviewerGateMap.get(w.taskId)?.actor === 'human';
               })
               .map(w => {
                 const ws = wsInboxMap.get(w.workspaceId);
                 const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
-                const escalationReason = (w.taskId ? escalatedMap.get(w.taskId) : undefined)
-                  ?? (policy.tier === 'human' ? 'Human Gate — manual merge required' : null);
+                const gate = w.taskId ? reviewerGateMap.get(w.taskId) : undefined;
                 const verdictSummary = (w.taskId ? approvedMap.get(w.taskId) : undefined) ?? null;
                 const waitingMinutes = w.completedAt
                   ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
                   : null;
                 const leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human' =
                   verdictSummary ? 'agent_approved'
-                  : escalationReason && policy.tier !== 'human' ? 'agent_flagged'
+                  : gate?.reason && policy.tier !== 'human' ? 'agent_flagged'
                   : 'pending_human';
                 const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
                 const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
@@ -1020,7 +1105,7 @@ export default async function HomePage({
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
-                    : escalationReason,
+                    : (gate?.reason ?? null),
                   verdictSummary,
                   waitingMinutes,
                   conflictRetryTaskId: conflictRetry?.taskId ?? null,
@@ -1165,6 +1250,22 @@ export default async function HomePage({
                 const missionTitle = blockedMissionIds.length === 1
                   ? (downstreamMissionMap.get(blockedMissionIds[0]) ?? (upstream.mission as any)?.title ?? null)
                   : null;
+
+                // The reviewer gate (computed above from the same open-PR-worker
+                // universe) decides who this PR is actually waiting on. A pending
+                // or running reviewer task means the agent still owns it — the
+                // dependency urgency is real, but the actor isn't the human, so it
+                // belongs on the in-flight card, not a Waiting on You MERGE card.
+                const gate = reviewerGateMap.get(upstream.id);
+                if (gate && gate.actor === 'agent') {
+                  const inFlightCard = agentReviewingPrs.find(c => c.taskId === upstream.id)
+                    ?? reviewQueuedPrs.find(c => c.taskId === upstream.id);
+                  if (inFlightCard) {
+                    inFlightCard.unblockCount = blockedTasks.length;
+                    inFlightCard.upstreamTaskTitle = upstream.title;
+                  }
+                  continue;
+                }
 
                 waitingOnYou.push({
                   kind: 'merge',
@@ -1628,7 +1729,7 @@ export default async function HomePage({
             {/* Right Now */}
             <div className="mb-8">
               <div className="section-label mb-4">Right Now</div>
-              {activeItems.length === 0 && agentReviewingPrs.length === 0 && teamWorkspaces.length === 0 ? (
+              {activeItems.length === 0 && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0 && teamWorkspaces.length === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-2">Create a workspace</div>
                   <p className="text-[13px] text-text-secondary mb-4">
@@ -1641,7 +1742,7 @@ export default async function HomePage({
                     Connect a repo
                   </Link>
                 </div>
-              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 && totalTaskCount === 0 ? (
+              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0 && totalTaskCount === 0 ? (
                 <div className="border border-dashed border-border-default rounded-[10px] p-5">
                   <div className="text-[13px] font-medium text-text-primary mb-3">Get started</div>
                   <div className="space-y-3">
@@ -1683,7 +1784,7 @@ export default async function HomePage({
                     </div>
                   </div>
                 </div>
-              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 ? (
+              ) : activeItems.length === 0 && agentReviewingPrs.length === 0 && reviewQueuedPrs.length === 0 ? (
                 <div>
                   <div className="text-[14px] text-text-secondary mb-3">No agents running.</div>
                   {teamRoles.length > 0 && (
@@ -1728,6 +1829,11 @@ export default async function HomePage({
                                 {timeAgo(item.reviewerStartedAt)}
                               </span>
                             )}
+                            {!!item.unblockCount && item.unblockCount > 0 && (
+                              <span className="text-[10px] text-text-muted">
+                                · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
+                              </span>
+                            )}
                           </div>
                           <Link
                             href={`/app/tasks/${item.taskId}`}
@@ -1747,6 +1853,47 @@ export default async function HomePage({
                           </div>
                         </div>
                         <InterruptReviewButton workerId={item.reviewerWorkerId} />
+                      </div>
+                    </div>
+                  ))}
+                  {/* Review-queued PR cards — reviewer task exists but hasn't been
+                      claimed yet (seat contention, backoff, or dispatch lag). The
+                      agent still owns these, so no merge affordance is offered. */}
+                  {reviewQueuedPrs.map((item) => (
+                    <div
+                      key={item.taskId}
+                      className="border border-border-default rounded-[10px] px-4 py-3 bg-surface-2"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                          <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                            Review Queued
+                          </span>
+                          {!!item.unblockCount && item.unblockCount > 0 && (
+                            <span className="text-[10px] text-text-muted">
+                              · unblocks {item.unblockCount} task{item.unblockCount === 1 ? '' : 's'}
+                            </span>
+                          )}
+                        </div>
+                        <Link
+                          href={`/app/tasks/${item.taskId}`}
+                          className="text-[13px] font-medium text-text-primary truncate hover:underline block"
+                        >
+                          {item.taskTitle}
+                        </Link>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          {item.workspaceName && (
+                            <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                          )}
+                          {item.prUrl && (
+                            <ExternalLink href={item.prUrl} className="text-[11px] text-text-muted hover:underline">
+                              PR #{item.prNumber} ↗
+                            </ExternalLink>
+                          )}
+                          {item.reason && (
+                            <span className="text-[11px] text-text-muted">{item.reason}</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ))}
