@@ -39,6 +39,7 @@ export const NAV_ITEMS: NavItem[] = [
   {
     label: 'Releases',
     href: '/app/releases',
+    desktopOnly: true,
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
         <path d="M12 2v8m0 4v8" />

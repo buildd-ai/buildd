@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { releases, releaseTasks, tasks, workspaces, missions as missionsTable } from '@buildd/core/db/schema';
+import { releases, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -86,11 +86,12 @@ export default async function ReleasesPage({
     );
   }
 
-  // Fetch releases for the filtered workspaces
+  // Fetch releases for the filtered workspaces, eager-loading task attribution
   const allReleases = await db.query.releases.findMany({
     where: inArray(releases.workspaceId, targetWsIds),
     orderBy: [desc(releases.createdAt)],
     limit: 100,
+    with: { releaseTasks: { columns: { taskId: true } } },
   });
 
   // Build workspace map for display
@@ -102,29 +103,22 @@ export default async function ReleasesPage({
     });
   }
 
-  // For each release, get attributed task and mission counts
+  // Compute attributed task and mission counts from the eager-loaded release-task edges
+  const allTaskIds = [...new Set(allReleases.flatMap(r => r.releaseTasks.map(rt => rt.taskId)))];
+
+  const taskMissionRows = allTaskIds.length > 0
+    ? await db
+        .select({ taskId: tasks.id, missionId: tasks.missionId })
+        .from(tasks)
+        .where(inArray(tasks.id, allTaskIds))
+    : [];
+  const taskToMissionId = new Map(taskMissionRows.map(r => [r.taskId, r.missionId]));
+
   const releaseMetrics = new Map<string, { taskCount: number; missionCount: number }>();
   for (const release of allReleases) {
-    const rtRows = await db.query.releaseTasks.findMany({
-      where: eq(releaseTasks.releaseId, release.id),
-      columns: { taskId: true },
-    });
-
-    const taskCount = rtRows.length;
-    let missionCount = 0;
-
-    if (taskCount > 0) {
-      const taskIds = rtRows.map(r => r.taskId);
-      const missionRows = await db
-        .selectDistinct({ id: missionsTable.id })
-        .from(missionsTable)
-        .innerJoin(tasks, eq(tasks.missionId, missionsTable.id))
-        .where(inArray(tasks.id, taskIds));
-
-      missionCount = missionRows.length;
-    }
-
-    releaseMetrics.set(release.id, { taskCount, missionCount });
+    const taskIds = release.releaseTasks.map(rt => rt.taskId);
+    const missionIds = new Set(taskIds.map(id => taskToMissionId.get(id)).filter(Boolean));
+    releaseMetrics.set(release.id, { taskCount: taskIds.length, missionCount: missionIds.size });
   }
 
   return (
