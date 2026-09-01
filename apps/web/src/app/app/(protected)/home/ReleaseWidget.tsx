@@ -37,6 +37,9 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                         {item.workspaceName}
                       </span>
                     )}
+                    {item.baselineSource !== 'healthy' && (
+                      <span className="text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
+                    )}
                     <span className="text-[13px] text-text-secondary">
                       <DerivedMetricDisplay
                         metric={item.queueDepth}
@@ -71,6 +74,9 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                     <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
                       {item.workspaceName}
                     </span>
+                  )}
+                  {item.baselineSource !== 'healthy' && (
+                    <span className="text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
                   )}
                   <span className="text-[13px] font-medium text-text-primary">
                     <DerivedMetricDisplay

@@ -8,6 +8,7 @@ import { getUserWorkspaceIds } from '@/lib/team-access';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
+import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
 
 /**
  * Release readiness per gated workspace — applies spec §8 exception-rule data.
@@ -81,20 +82,18 @@ export async function GET(req: NextRequest) {
 
       const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
 
-      // Explicit baseline check: if no healthy releases row exists, the queue
-      // depth is structurally unavailable (no_baseline), not zero. A rendered 0
-      // must never be ambiguous with measured-zero.
-      const [baselineRow] = await db
-        .select({ baseline: sql<string | null>`MAX(${releases.healthyAt})::text` })
-        .from(releases)
-        .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
+      // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
+      // healthy release → deployed release → any release row → prod-branch HEAD.
+      // Shared with the missions page so the two surfaces cannot disagree.
+      const baseline = await resolveGatedReleaseBaseline(wsId);
 
-      if (!baselineRow?.baseline) {
+      if (!baseline.asOf) {
         return {
           workspaceId: wsId,
           workspaceName: ws.name,
           queueDepth: derivedUnavailable<number>('no_baseline'),
           oldestMergedAt: derivedUnavailable<string>('no_baseline'),
+          baselineSource: baseline.source,
           ciState,
           latestReleaseId: latestRelease?.id ?? null,
         };
@@ -111,7 +110,7 @@ export async function GET(req: NextRequest) {
           and(
             eq(tasks.workspaceId, wsId),
             isNotNull(workers.mergedAt),
-            sql`${workers.mergedAt} > ${baselineRow.baseline}::timestamptz`,
+            sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
           ),
         );
 
@@ -122,6 +121,7 @@ export async function GET(req: NextRequest) {
         oldestMergedAt: queueRow?.oldestMergedAt
           ? derivedValue(queueRow.oldestMergedAt)
           : derivedUnavailable<string>('no_scope'),
+        baselineSource: baseline.source,
         ciState,
         latestReleaseId: latestRelease?.id ?? null,
       };
