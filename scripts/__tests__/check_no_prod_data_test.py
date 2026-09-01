@@ -90,6 +90,67 @@ ALLOW_MUST_TRIGGER = [
 ]
 
 
+# ── Guard-integrity cases ───────────────────────────────────────────────────
+#
+# The three cases below are not pattern tuning. They cover the ways this check
+# could be *present and green while doing nothing*, which is the failure mode it
+# actually hit: NO_PROD_DATA_IDENTIFIERS was never set on this repo, so from the
+# day the check shipped until it was noticed, the identifier half — the only half
+# that reads added code — ran on every PR and scanned nothing, warning into a log
+# nobody reads and exiting 0.
+
+import os
+import subprocess
+
+SCRIPT = HERE.parent / "check_no_prod_data.py"
+
+
+def run_main(env_extra: dict, cwd: Path) -> subprocess.CompletedProcess:
+    """Run the checker end to end, so the exit code is the thing under test."""
+    env = {**os.environ, **env_extra}
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "HEAD", "--body", "/dev/null",
+         "--title", "/dev/null"],
+        capture_output=True, text=True, cwd=cwd, env=env)
+
+
+def guard_integrity_failures(tmp: Path) -> list[str]:
+    bad = []
+
+    # 1. An absent identifier list must FAIL. Skipping half the check and
+    #    exiting 0 makes every PR green over an empty set.
+    r = run_main({"NO_PROD_DATA_IDENTIFIERS": ""}, tmp)
+    if r.returncode == 0:
+        bad.append("UNSET IDENTIFIERS EXITED 0: the code-scan half is a no-op "
+                   "and the check still passed")
+
+    # 2. With a list present the checker must run and say so, not fail open.
+    r = run_main({"NO_PROD_DATA_IDENTIFIERS": r"\bzzzunlikelyhandle\b"}, tmp)
+    if r.returncode != 0:
+        bad.append(f"SET IDENTIFIERS FAILED A CLEAN TREE: rc={r.returncode} "
+                   f"{r.stdout.strip()[:120]!r}")
+
+    # 3. An identifier finding must never echo the match. mask() only redacts
+    #    [0-9a-f], so a name made of other letters survives it almost intact —
+    #    and Actions logs on a public repo are world-readable, so printing the
+    #    excerpt republishes the private name the check exists to catch.
+    secret = "some-private-repo-name"
+    rep = chk.Report()
+    import io
+    import contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rep.hit_identifier("added code", 7, f"const repo = '{secret}';")
+    out = buf.getvalue()
+    for fragment in (secret, "private-repo", "some-private"):
+        if fragment in out:
+            bad.append(f"IDENTIFIER FINDING ECHOED THE MATCH: {fragment!r} "
+                       f"appears in {out.strip()[:120]!r}")
+            break
+
+    return bad
+
+
 def main() -> int:
     bad = []
     for line in MUST_PASS:
@@ -106,13 +167,17 @@ def main() -> int:
         if not chk.ALLOW_RE.search(line):
             bad.append(f"ALLOW NOT HONOURED: {line!r}")
 
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        bad.extend(guard_integrity_failures(Path(td)))
+
     # masking must never leak digits or hex
     masked = chk.mask("3,521 rows and d2cb1c29-3f92-4ea1-ba0c-fe8b41ccf3b5")
     if any(c.isdigit() for c in masked):
         bad.append(f"MASK LEAKS DIGITS: {masked!r}")
 
     total = (len(MUST_PASS) + len(MUST_FAIL)
-             + len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER) + 1)
+             + len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER) + 1 + 3)
     if bad:
         print(f"{len(bad)} of {total} failed:")
         for b in bad:
@@ -120,7 +185,8 @@ def main() -> int:
         return 1
     print(f"all {total} cases pass "
           f"({len(MUST_PASS)} must-pass, {len(MUST_FAIL)} must-fail, "
-          f"{len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER)} escape-hatch, 1 masking)")
+          f"{len(ALLOW_MUST_NOT_TRIGGER) + len(ALLOW_MUST_TRIGGER)} escape-hatch, "
+          f"1 masking, 3 guard-integrity)")
     return 0
 
 

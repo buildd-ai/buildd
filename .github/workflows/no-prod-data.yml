@@ -5,11 +5,18 @@ name: No Production Data
 # in CLAUDE.md.
 #
 # The identifier list (personal handles, private repo names) lives in the repo
-# variable NO_PROD_DATA_IDENTIFIERS, not in this repo. Committing it here would
+# SECRET NO_PROD_DATA_IDENTIFIERS, not in this repo. Committing it here would
 # publish exactly what the check exists to catch. Set it under
-# Settings → Secrets and variables → Actions → Variables, as an ERE alternation.
+# Settings → Secrets and variables → Actions → Secrets, as an ERE alternation.
 # Anchor short or common words, or the code scan will fire on ordinary
 # identifiers — a handle like "max" would match Math.max and maxWorkers.
+#
+# It MUST be a secret, not a variable. Actions prints every env value in the
+# step's env group, and logs on a public repo are world-readable, so a variable
+# would publish the whole list on every run — the check leaking its own input.
+# Secrets are masked. This was a `vars.` reference and was never set at all; the
+# identifier half therefore scanned an empty pattern on every PR since it
+# shipped, which is why the script now fails rather than warns when it is absent.
 
 on:
   pull_request:
@@ -37,9 +44,16 @@ jobs:
           printf '%s' "$PR_BODY" > /tmp/pr-body.txt
           printf '%s' "$PR_TITLE" > /tmp/pr-title.txt
 
+      - name: Self-test the checker
+        # Ordered BEFORE the check it guards, deliberately. A failing step skips
+        # the ones after it, so while this ran second it was skipped on exactly
+        # the runs where the check misbehaved — including all six false positives
+        # on 2026-08-31. A guardrail that cannot fail is worse than none.
+        run: python3 scripts/__tests__/check_no_prod_data_test.py
+
       - name: Check for production data
         env:
-          NO_PROD_DATA_IDENTIFIERS: ${{ vars.NO_PROD_DATA_IDENTIFIERS }}
+          NO_PROD_DATA_IDENTIFIERS: ${{ secrets.NO_PROD_DATA_IDENTIFIERS }}
           # Also via the environment: a branch name can contain $, backticks and
           # semicolons, so interpolating it into a run block is an injection path.
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -47,9 +61,3 @@ jobs:
           git fetch --no-tags origin "$BASE_REF"
           python3 scripts/check_no_prod_data.py "origin/$BASE_REF" \
             --body /tmp/pr-body.txt --title /tmp/pr-title.txt
-
-      - name: Self-test the checker
-        # A guardrail that cannot fail is worse than none. This runs the pattern
-        # fixtures — real false positives from this repo's history, and real
-        # disclosure shapes the first version let through.
-        run: python3 scripts/__tests__/check_no_prod_data_test.py
