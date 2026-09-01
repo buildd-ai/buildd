@@ -15,7 +15,7 @@ import type { ChainUnit } from '@/lib/condensed-timeline';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
-import type { MissionSegment, TaskType } from '@buildd/core/mission-helpers';
+import type { MissionSegment, TaskType, CriteriaGatePresentation } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -100,10 +100,13 @@ export type CondensedTimelineProps = {
   completedTasks: number;
   totalTasks: number;
   /**
-   * Human-readable blocking reason when goal criteria are not yet passing.
-   * When set, the Summary view replaces "No actions needed" with this message.
+   * Shared criteria-gate presentation (see `deriveCriteriaGatePresentation`).
+   * 'unverified' replaces "No actions needed" with a quiet gated-completion
+   * line; 'failing'/'refused' replace it with a named reason. Never renders
+   * the word BLOCKED — that vocabulary is reserved for actual work-stopping
+   * states, not an unresolved completion gate.
    */
-  criteriaBlockingReason?: string | null;
+  criteriaGate?: CriteriaGatePresentation | null;
 };
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
@@ -567,14 +570,14 @@ function SummaryView({
   policyLabel,
   prsMerged,
   prsOpen,
-  criteriaBlockingReason,
+  criteriaGate,
 }: {
   groups: CondensedTimelineGroups;
   effectivePolicyTier: MergePolicyTier;
   policyLabel: string;
   prsMerged: number;
   prsOpen: number;
-  criteriaBlockingReason?: string | null;
+  criteriaGate?: CriteriaGatePresentation | null;
 }) {
   const { waitingOnYou, running, nextQueued, blocked } = groups;
 
@@ -624,17 +627,21 @@ function SummaryView({
         </div>
       )}
 
-      {/* Idle state — only reachable when criteria are passing AND nothing is in flight */}
-      {!criteriaBlockingReason && !hasTasks && (
+      {/* Idle state — criteria clear or never evaluated, nothing in flight. A
+          young/active mission with unevaluated criteria is normal, not an
+          alarm, so this stays quiet rather than reusing "blocked". */}
+      {(!criteriaGate || criteriaGate.state === 'unverified') && !hasTasks && (
         <p className="text-[13px] text-text-muted italic">
-          No actions needed — switch to Timeline for full history.
+          {criteriaGate?.state === 'unverified'
+            ? 'Completion gated by goal criteria — not yet verified. Switch to Timeline for full history.'
+            : 'No actions needed — switch to Timeline for full history.'}
         </p>
       )}
 
-      {/* Blocked-but-idle: criteria failing, no tasks running */}
-      {criteriaBlockingReason && !hasTasks && (
+      {/* Criteria failing, or completion was attempted and refused — idle otherwise */}
+      {criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && !hasTasks && (
         <p className="text-[13px] text-text-secondary">
-          Completion blocked — {criteriaBlockingReason}.
+          {criteriaGate.label}{criteriaGate.detail ? ` — ${criteriaGate.detail}` : ''}.
         </p>
       )}
     </div>
@@ -966,7 +973,7 @@ export default function CondensedTimeline({
   prsOpen,
   completedTasks,
   totalTasks,
-  criteriaBlockingReason,
+  criteriaGate,
 }: CondensedTimelineProps) {
   return (
     <div className="mb-6">
@@ -990,7 +997,7 @@ export default function CondensedTimeline({
           policyLabel={policyLabel}
           prsMerged={prsMerged}
           prsOpen={prsOpen}
-          criteriaBlockingReason={criteriaBlockingReason}
+          criteriaGate={criteriaGate}
         />
       ) : (
         <TimelineView

@@ -250,17 +250,32 @@ describe('CondensedTimeline — §3.5 density tiers', () => {
     expect(html).toContain('No actions needed');
   });
 
-  it('does NOT show "No actions needed" when criteriaBlockingReason is set', () => {
+  it('does NOT show "No actions needed" when a criteria gate is failing', () => {
     const html = renderToStaticMarkup(
       <CondensedTimeline
         {...baseProps}
         view="summary"
         allTasksCount={5}
-        criteriaBlockingReason="criterion failing: all_prs_merged"
+        criteriaGate={{ state: 'failing', label: 'Criteria failing', tone: 'warning', detail: 'all_prs_merged' }}
       />,
     );
     expect(html).not.toContain('No actions needed');
-    expect(html).toContain('Completion blocked');
+    expect(html).toContain('Criteria failing');
+    expect(html).not.toMatch(/blocked/i);
+  });
+
+  it('shows a quiet gated-completion line, not "No actions needed", when criteria are simply unverified', () => {
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        view="summary"
+        allTasksCount={5}
+        criteriaGate={{ state: 'unverified', label: 'Not yet verified', tone: 'neutral', detail: null }}
+      />,
+    );
+    expect(html).not.toContain('No actions needed');
+    expect(html).not.toMatch(/blocked/i);
+    expect(html).toContain('not yet verified');
   });
 });
 
