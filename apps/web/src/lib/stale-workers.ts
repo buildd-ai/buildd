@@ -311,10 +311,16 @@ export async function cleanupStaleWorkers(accountId: string) {
         and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
         // Silent-start rule, expressed in SQL so the shorter clock is applied by
         // the DB rather than by post-filtering the generic stale window.
+        // costUsd is never written on this path (only the terminal PATCH prices a
+        // worker) so it alone can't discriminate "dead" from "spent real tokens
+        // but wasn't priced yet" — inputTokens/outputTokens are live-synced by the
+        // runner's periodic progress reports and close that gap.
         sql`${workers.status} IN ('running', 'starting')
             AND ${workers.startedAt} IS NOT NULL
             AND COALESCE(${workers.turns}, 0) <= ${SILENT_START_MAX_TURNS}
             AND COALESCE(${workers.costUsd}, 0) = 0
+            AND COALESCE(${workers.inputTokens}, 0) = 0
+            AND COALESCE(${workers.outputTokens}, 0) = 0
             AND ${workers.updatedAt} < ${silentStartThreshold}`,
       ),
     ),
@@ -322,7 +328,7 @@ export async function cleanupStaleWorkers(accountId: string) {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       // Needed to tell a never-started row and a silent session apart from a
       // worker that did real work before going offline.
-      status: true, startedAt: true, turns: true, costUsd: true,
+      status: true, startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
     },
   });
 
@@ -422,7 +428,7 @@ export async function cleanupStaleWorkers(accountId: string) {
       ),
       columns: {
         id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
-        startedAt: true, turns: true, costUsd: true,
+        startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
       },
     });
 

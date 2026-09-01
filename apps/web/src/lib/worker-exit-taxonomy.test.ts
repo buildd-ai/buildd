@@ -90,6 +90,33 @@ describe('classifyStaleExit', () => {
     expect(classifyStaleExit({ startedAt: new Date(), turns: null, costUsd: null }).exitCause).toBe('silent_start');
     expect(classifyStaleExit({ startedAt: new Date(), turns: 0, costUsd: 0 }).exitCause).toBe('silent_start');
   });
+
+  // Regression: costUsd is never written on the reaper's kill path (only the
+  // terminal PATCH prices a worker), so "costUsd === 0" is a tautology that is
+  // true for every worker the reaper ever looks at — including ones that spent
+  // real tokens on turn 1 or 2. inputTokens/outputTokens DO get live-synced by
+  // the runner's periodic progress reports, so they are the signal that actually
+  // discriminates "burned tokens" from "dead session".
+  it('treats a worker with input tokens but $0 reported cost as infra_failure, not silent_start', () => {
+    const result = classifyStaleExit({
+      startedAt: new Date(), turns: 1, costUsd: '0.000000', inputTokens: 15000, outputTokens: 0,
+    });
+    expect(result.exitCause).toBe('infra_failure');
+  });
+
+  it('treats a worker with output tokens but $0 reported cost as infra_failure, not silent_start', () => {
+    const result = classifyStaleExit({
+      startedAt: new Date(), turns: 2, costUsd: '0.000000', inputTokens: 0, outputTokens: 300,
+    });
+    expect(result.exitCause).toBe('infra_failure');
+  });
+
+  it('still classifies as silent_start when tokens are zero or omitted', () => {
+    expect(classifyStaleExit({ startedAt: new Date(), turns: 1, costUsd: '0' }).exitCause).toBe('silent_start');
+    expect(
+      classifyStaleExit({ startedAt: new Date(), turns: 1, costUsd: '0', inputTokens: 0, outputTokens: 0 }).exitCause,
+    ).toBe('silent_start');
+  });
 });
 
 describe('consumesRetryAttempt', () => {
