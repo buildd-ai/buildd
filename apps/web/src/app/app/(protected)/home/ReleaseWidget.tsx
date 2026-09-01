@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { ReleaseReadinessItem } from '@/lib/release-readiness';
 import { computeReleaseWidgetDecision } from '@/lib/release-readiness';
 import { DerivedMetricDisplay } from '@/components/DerivedMetricDisplay';
+import { ReleaseActionButton } from './ReleaseActionButton';
 
 function daysAgo(isoDate: string): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
@@ -93,14 +94,17 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                     />
                   </span>
                 </div>
-                {releaseHref && (
-                  <Link
-                    href={releaseHref}
-                    className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
-                  >
-                    Release →
-                  </Link>
-                )}
+                <div className="flex items-center gap-3 shrink-0">
+                  <ReleaseActionButton workspaceId={item.workspaceId} />
+                  {releaseHref && (
+                    <Link
+                      href={releaseHref}
+                      className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
+                    >
+                      Release →
+                    </Link>
+                  )}
+                </div>
               </div>
             </div>
           );
