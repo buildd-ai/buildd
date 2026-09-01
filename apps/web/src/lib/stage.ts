@@ -17,10 +17,11 @@ export type Stage =
   | 'QUEUED'
   | 'RUNNING'
   | 'WAITING_INPUT'
-  | 'REVIEWING'   // agent review is in progress (caller must set explicitly)
-  | 'OPEN'        // PR open, no active gate
-  | 'CI'
-  | 'MERGE'
+  | 'REVIEWING'    // agent review is in progress (caller must set explicitly)
+  | 'OPEN'         // PR open, no CI signal yet
+  | 'CI'           // CI in progress (ci_running)
+  | 'CI_FAILING'   // CI completed with at least one failure (ci_failed)
+  | 'MERGE'        // CI passed, ready to merge (ci_green)
   | 'VERIFY'
   | 'DONE'
   | 'FAILED'
@@ -73,6 +74,8 @@ export function deriveStage(input: StageInput): Stage {
     const isClosed = prLifecycleStatus === 'closed';
     if (isMerged || isClosed) return 'DONE';
     if (prLifecycleStatus === 'ci_running') return 'CI';
+    if (prLifecycleStatus === 'ci_failed') return 'CI_FAILING';
+    if (prLifecycleStatus === 'ci_green') return 'MERGE';
     return 'OPEN';
   }
 

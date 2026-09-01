@@ -10,6 +10,8 @@ interface Props {
   criteriaState: GoalCriteriaState | null;
   autoVerify: boolean | null;
   readonly?: boolean;
+  /** PR numbers whose CI is currently failing — shown inline on all_prs_merged criterion. */
+  failingCiPrNumbers?: number[];
 }
 
 const CRITERION_TYPE_LABELS: Record<GoalCriterionType, string> = {
@@ -263,7 +265,7 @@ function AddCriterionForm({ onAdd, onCancel }: {
 }
 
 /* ── Main Component ── */
-export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly }: Props) {
+export default function MissionGoalCriteria({ missionId, criteria: initialCriteria, criteriaState: initialState, autoVerify: initialAutoVerify, readonly, failingCiPrNumbers }: Props) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [criteria, setCriteria] = useState<GoalCriterion[]>(initialCriteria);
@@ -463,6 +465,18 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
                   {isExpanded && c.type === 'description' && c.notMechanizableReason && (
                     <p className="text-[11px] text-text-muted mt-1 italic leading-snug">
                       Prose (needs a model to grade) because: {c.notMechanizableReason}
+                    </p>
+                  )}
+                  {/* Inline CI-block annotation for all_prs_merged — derived from live worker state */}
+                  {c.type === 'all_prs_merged' && failingCiPrNumbers && failingCiPrNumbers.length > 0 && verdict !== 'pass' && (
+                    <p className="text-[11px] text-status-error mt-0.5 leading-snug font-mono">
+                      blocked — {failingCiPrNumbers.length} PR{failingCiPrNumbers.length !== 1 ? 's' : ''} failing CI:{' '}
+                      {failingCiPrNumbers.map((n, idx) => (
+                        <span key={n}>
+                          {idx > 0 && ', '}
+                          #{n}
+                        </span>
+                      ))}
                     </p>
                   )}
                   {cs?.evidence && (
