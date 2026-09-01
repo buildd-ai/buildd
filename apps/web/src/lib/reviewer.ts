@@ -11,7 +11,7 @@
 
 import { db } from '@buildd/core/db';
 import { tasks, workers, missionNotes, artifacts } from '@buildd/core/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray, desc } from 'drizzle-orm';
 import type { MergePolicy } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
@@ -22,6 +22,8 @@ import {
   findUncoveredRiskPaths,
   buildPolicyClassPaths,
 } from './workspace-policy';
+import { LIVE_WORKER_STATUSES } from './task-presentation';
+import { appendPrActivity } from './pr-activity-comment';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -428,4 +430,100 @@ Use your outputSchema to return:
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide; include any proposed policy additions
 `.trim();
+}
+
+// ── Human-merge supersession ──────────────────────────────────────────────────
+
+export interface SupersedeReviewerOnMergeParams {
+  originalTaskId: string;
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+}
+
+/**
+ * Cancel a still-pending or still-running reviewer task after a human merges
+ * its PR directly. Without this, a reviewer that hasn't started yet gets
+ * claimed later and reviews a PR that's already merged — wasted work, and a
+ * verdict that can no longer affect anything.
+ *
+ * Best-effort: never throws. A failure here must not roll back the merge that
+ * already succeeded on GitHub.
+ */
+export async function supersedeReviewerTaskOnMerge(
+  params: SupersedeReviewerOnMergeParams,
+): Promise<{ superseded: boolean; reviewerTaskId: string | null }> {
+  const { originalTaskId, installationId, repoFullName, prNumber } = params;
+
+  try {
+    const reviewerTask = await db.query.tasks.findFirst({
+      where: and(
+        eq(tasks.parentTaskId, originalTaskId),
+        eq(tasks.category, 'review'),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ),
+      columns: { id: true, missionId: true },
+      orderBy: [desc(tasks.createdAt)],
+      with: {
+        workers: {
+          where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+          columns: { id: true, status: true },
+          limit: 1,
+        },
+      },
+    });
+
+    if (!reviewerTask) return { superseded: false, reviewerTaskId: null };
+
+    const liveWorker = (reviewerTask as any).workers?.[0];
+    if (liveWorker) {
+      // CAS-guarded — a reviewer completing at the same instant should win
+      // its own lease rather than being clobbered here.
+      await db
+        .update(workers)
+        .set({
+          status: 'failed',
+          error: 'Superseded — PR merged by a human before review completed',
+          exitCause: 'condition_unmet',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(and(eq(workers.id, liveWorker.id), eq(workers.status, liveWorker.status)));
+    }
+
+    const [cancelled] = await db
+      .update(tasks)
+      .set({ status: 'cancelled', updatedAt: new Date() })
+      .where(and(
+        eq(tasks.id, reviewerTask.id),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+      ))
+      .returning({ id: tasks.id });
+
+    if (!cancelled) return { superseded: false, reviewerTaskId: null };
+
+    if (reviewerTask.missionId) {
+      await db.insert(missionNotes).values({
+        missionId: reviewerTask.missionId,
+        taskId: originalTaskId,
+        authorType: 'system',
+        type: 'reviewer_superseded',
+        title: `PR #${prNumber}: review cancelled — merged by a human`,
+        body: 'A human merged this PR while the agent review was still pending or running. The review task was cancelled so it does not run against an already-merged PR.',
+        status: 'open',
+      });
+    }
+
+    await appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'review_superseded_by_merge' },
+    }).catch(() => {});
+
+    return { superseded: true, reviewerTaskId: reviewerTask.id };
+  } catch (err) {
+    console.error(`[reviewer] supersedeReviewerTaskOnMerge failed for PR #${prNumber}:`, err);
+    return { superseded: false, reviewerTaskId: null };
+  }
 }
