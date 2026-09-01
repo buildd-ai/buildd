@@ -26,6 +26,7 @@ ALLOWLIST=(
   "packages/core/model-tier-registry.ts"           # tier → model resolution
   "packages/core/model-tier-defaults.ts"           # code-level fallback tiers
   "packages/core/model-tier-liveness.ts"           # audits tier IDs; the IDs in its docstrings ARE the spec of the parser
+  "packages/core/model-display.ts"                 # humanises model IDs; the IDs in its docstrings ARE the spec of the parser
   "packages/core/mcp-tools.ts"                     # help/param documentation strings only
   "apps/web/src/app/api/qa/judge/route.ts"         # judge model pinned deliberately (PR #1029)
   "apps/runner/src/index.ts"                       # runner UI model dropdown

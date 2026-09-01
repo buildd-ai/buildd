@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { getModelDisplayName } from '@buildd/core/model-display';
 
 interface SessionSummary {
   sessionId: string;
@@ -199,7 +200,7 @@ export default function SessionHistoryPanel({ localUiUrl, viewerToken, workerId 
                     <span>{formatDuration(session.durationMs)}</span>
                   )}
                   {session.model && (
-                    <span>{session.model.replace('claude-', '').replace(/-\d{8}$/, '')}</span>
+                    <span>{getModelDisplayName(session.model)}</span>
                   )}
                 </div>
               </button>

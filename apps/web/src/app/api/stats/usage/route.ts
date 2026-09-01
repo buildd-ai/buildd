@@ -7,10 +7,10 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import {
   computeUsageStats,
+  describeScan,
   parseWindowMs,
   UNASSIGNED_ROLE,
   type GroupDimension,
-  type UsageWorkerRow,
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 
@@ -74,7 +74,7 @@ export async function GET(req: NextRequest) {
   const usageRows = await fetchUsageRows({ workspaceIds, windowStart });
   const stats = computeUsageStats(usageRows, groupBy);
   const labels = await groupLabels(stats.groups.map(g => g.key), groupBy, workspaceIds, scopedWorkspaces);
-  const scan = describeScan(usageRows, windowStart);
+  const scan = describeScan(usageRows, windowStart, USAGE_ROW_LIMIT);
 
   return NextResponse.json({
     window: windowParam,
@@ -93,41 +93,6 @@ export async function GET(req: NextRequest) {
     ...stats,
     groups: stats.groups.map(g => ({ ...g, label: labels[g.key] ?? g.key })),
   });
-}
-
-interface ScanBounds {
-  rows: number;
-  limit: number;
-  truncated: boolean;
-  /** ISO instant from which the scan is complete. Equals `windowStart` when it is. */
-  completeSince: string;
-}
-
-/**
- * Bounds of what was actually read.
- *
- * The cap alone used to be reported (`truncatedScan`) with nothing saying which
- * subset was kept — and because the query had no `orderBy`, the answer was
- * "whichever 5000 rows Postgres felt like". The scan is now newest-first, so the
- * honest statement is the timestamp of the oldest row that made it in.
- */
-function describeScan(rows: UsageWorkerRow[], windowStart: Date): ScanBounds {
-  const truncated = rows.length >= USAGE_ROW_LIMIT;
-  let oldest: Date | null = null;
-  if (truncated) {
-    for (const r of rows) {
-      if (!r.completedAt) continue;
-      const t = new Date(r.completedAt);
-      if (!Number.isFinite(t.getTime())) continue;
-      if (!oldest || t < oldest) oldest = t;
-    }
-  }
-  return {
-    rows: rows.length,
-    limit: USAGE_ROW_LIMIT,
-    truncated,
-    completeSince: (oldest ?? windowStart).toISOString(),
-  };
 }
 
 /**

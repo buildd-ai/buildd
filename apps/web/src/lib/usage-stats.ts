@@ -13,6 +13,7 @@
 
 import type { ResultMeta } from '@buildd/core/db/schema';
 import { derivedValue, derivedUnavailable, type DerivedMetric } from '@buildd/core/derived-metric';
+import { compareAssignedActual, primaryModelFromUsage } from '@buildd/core/model-display';
 
 /** Max entries the runner keeps in `workers.mcpCalls` (api/workers/[id]/route.ts). */
 const MCP_CALLS_CAP = 100;
@@ -44,6 +45,13 @@ export interface UsageWorkerRow {
   /** Task status, used for the per-group success rate. Null when the task is gone. */
   taskStatus: string | null;
   roleSlug: string | null;
+  /**
+   * `tasks.predicted_model` — the model the router assigned at claim time, and
+   * the "assigned" side of the divergence rate. Polymorphic on purpose: a full
+   * id normally, a bare alias (`sonnet`) when the task has no team, so it must
+   * be compared through `compareAssignedActual`, never as a string.
+   */
+  assignedModel?: string | null;
   inputTokens: number | null;
   outputTokens: number | null;
   /** Drizzle returns `decimal` as a string. */
@@ -117,6 +125,41 @@ export interface ModelEntry {
   costUsd: number;
   /** Share of billable (uncached input + output) tokens (0–1). */
   share: number;
+  /**
+   * Workers that REPORTED this model — not "workers", because a worker whose
+   * fallback fired reports two models and counts in both buckets. The sum of
+   * this column across models can exceed `totals.workers`, by design.
+   */
+  workers: number;
+}
+
+/**
+ * How often the model that ran disagreed with the model that was assigned.
+ *
+ * The one number that would have caught both incidents in
+ * `docs/design/task-model-visibility.md`: a tier left on a stale model, and a
+ * runner ignoring the resolved id and running its own global default.
+ *
+ * `compared` is the denominator and it is deliberately not the worker count:
+ * a worker with no attribution on either side is excluded from BOTH numerator
+ * and denominator. Folding those into "agree" is how this metric reads 0% and
+ * means "never recorded".
+ */
+export interface ModelDivergence {
+  /** Every worker considered — `compared + unattributed`. */
+  workers: number;
+  /** Workers where both sides named a comparable model. The denominator. */
+  compared: number;
+  /** Of `compared`, the workers whose actual model disagreed. The numerator. */
+  diverged: number;
+  /** `diverged / compared` (0–1). */
+  rate: number;
+  /**
+   * Workers excluded from the rate because one side named no model: no
+   * `predicted_model`, no `modelUsage` (seat/OAuth auth reports none), or a
+   * backend that reports a bare word (`codex`) instead of a model id.
+   */
+  unattributed: number;
 }
 
 export interface MetricBlock {
@@ -187,8 +230,22 @@ export interface UsageStats {
     byServer: ServerEntry[];
   };
   byModel: ModelEntry[];
+  /**
+   * Assigned vs actual, or `unavailable` with the reason when no worker in the
+   * window had both sides recorded — never a 0% that means "never measured".
+   */
+  modelDivergence: DerivedMetric<ModelDivergence>;
   groupBy: GroupDimension;
   groups: GroupEntry[];
+}
+
+/** Bounds of what a capped scan actually read. */
+export interface ScanBounds {
+  rows: number;
+  limit: number;
+  truncated: boolean;
+  /** ISO instant from which the scan is complete. Equals `windowStart` when it is. */
+  completeSince: string;
 }
 
 export type GroupDimension = 'role' | 'workspace' | 'none';
@@ -535,7 +592,12 @@ function buildModelRollup(rows: UsageWorkerRow[]): ModelEntry[] {
         cacheReadTokens: 0,
         cacheCreationTokens: 0,
         costUsd: 0,
+        workers: 0,
       });
+      // One row is one worker, and `modelUsage` keys are unique within it, so a
+      // multi-model worker increments every bucket it reported — see the field
+      // doc: this column is "workers reporting this model", not "workers".
+      entry.workers += 1;
       const uncached = num(u.inputTokens);
       const cacheRead = num(u.cacheReadInputTokens);
       const cacheCreation = num(u.cacheCreationInputTokens);
@@ -559,6 +621,84 @@ function buildModelRollup(rows: UsageWorkerRow[]): ModelEntry[] {
       share: totalBillable > 0 ? (e.uncachedInputTokens + e.outputTokens) / totalBillable : 0,
     }))
     .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens));
+}
+
+/**
+ * Assigned (`tasks.predicted_model`) vs actual (the highest-token key of
+ * `resultMeta.modelUsage`), per worker.
+ *
+ * Per WORKER rather than per task on purpose: a retry runs a second worker, and
+ * a fallback that fires on attempt two is exactly the divergence this is for.
+ *
+ * Comparison goes through `compareAssignedActual` because the assigned side is
+ * polymorphic — a bare family alias for a team-less task, matched against a
+ * concrete release of that same family, is agreement. A naive string compare
+ * would call every such task a divergence and report ~100%.
+ */
+function buildModelDivergence(rows: UsageWorkerRow[]): DerivedMetric<ModelDivergence> {
+  let compared = 0;
+  let diverged = 0;
+  let unattributed = 0;
+
+  for (const row of rows) {
+    const actual = primaryModelFromUsage(row.resultMeta?.modelUsage).primary;
+    const { verdict } = compareAssignedActual(row.assignedModel, actual);
+    if (verdict === 'unattributed') {
+      unattributed += 1;
+      continue;
+    }
+    compared += 1;
+    if (verdict === 'diverged') diverged += 1;
+  }
+
+  if (compared === 0) {
+    // Two different absences, and the reader needs to know which one they have.
+    const detail = rows.length === 0
+      ? 'No workers in this window'
+      : `No comparable worker: all ${unattributed} of ${rows.length} lack an assigned model, ` +
+        'a reported model, or both — the SDK reports no per-model usage on seat-based (OAuth) auth';
+    return derivedUnavailable<ModelDivergence>('no_scope', detail);
+  }
+
+  return derivedValue({
+    workers: rows.length,
+    compared,
+    diverged,
+    rate: diverged / compared,
+    unattributed,
+  });
+}
+
+/**
+ * Bounds of what was actually read, for a scan that is capped at `limit` rows.
+ *
+ * The cap alone used to be reported (`truncatedScan`) with nothing saying which
+ * subset was kept. `fetchUsageRows` orders newest-first, so the honest statement
+ * is the timestamp of the oldest row that made it in: the rows are the COMPLETE
+ * population of [completeSince, now) and an incomplete one for the window asked
+ * for.
+ */
+export function describeScan(
+  rows: UsageWorkerRow[],
+  windowStart: Date,
+  limit: number,
+): ScanBounds {
+  const truncated = rows.length >= limit;
+  let oldest: Date | null = null;
+  if (truncated) {
+    for (const r of rows) {
+      if (!r.completedAt) continue;
+      const t = new Date(r.completedAt);
+      if (!Number.isFinite(t.getTime())) continue;
+      if (!oldest || t < oldest) oldest = t;
+    }
+  }
+  return {
+    rows: rows.length,
+    limit,
+    truncated,
+    completeSince: (oldest ?? windowStart).toISOString(),
+  };
 }
 
 function buildGroups(tasks: TaskAgg[], groupBy: GroupDimension): GroupEntry[] {
@@ -600,6 +740,7 @@ export function computeUsageStats(
     perTask: perTaskBlock(tasks),
     tools: buildToolRollup(tasks),
     byModel: buildModelRollup(rows),
+    modelDivergence: buildModelDivergence(rows),
     groupBy,
     groups: buildGroups(tasks, groupBy),
   };
