@@ -37,6 +37,8 @@ import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
+import { resolveShippedRelease } from '@/lib/task-ship-state';
+import { TaskShipBadge } from '@/components/TaskShipBadge';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -187,6 +189,9 @@ export default async function TaskDetailPage({
     orderBy: [desc(workerErrorTraces.ts)],
     limit: 50,
   });
+  // Ship state (§10.3) — whether this task is attributed to a healthy release.
+  const shippedRelease = await resolveShippedRelease(task.id);
+
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
   );
@@ -561,6 +566,7 @@ export default async function TaskDetailPage({
                   {task.project}
                 </span>
               )}
+              <TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />
             </div>
             <p className="text-[14px] text-text-secondary">
               {task.workspace?.name ? displayWorkspaceName(task.workspace.name) : 'Unknown'} &middot; Created {new Date(task.createdAt).toLocaleDateString()}

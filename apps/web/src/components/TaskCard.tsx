@@ -14,6 +14,7 @@ import { StageChip } from '@/components/StageChip';
 import { deriveStage, type Stage } from '@/lib/stage';
 import { DependencyRail } from '@/components/DependencyRail';
 import { SegmentStrip } from '@/components/SegmentStrip';
+import { TaskShipBadge } from '@/components/TaskShipBadge';
 import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
@@ -62,6 +63,11 @@ export interface TaskCardProps {
   currentAction?: string | null;
 
   taskType?: TaskType | null;
+
+  /** `tasks.release` override — drives the Skip/Force release badge (§10.3). */
+  release?: 'true' | 'false' | 'inherit' | null;
+  /** Set when release_tasks attributes this task to a release in state 'healthy'. */
+  shippedReleaseId?: string | null;
 
   /** Exit condition type from loopConfig — passed to StageChip for 'WAITING · MERGE' rendering. */
   loopExitConditionType?: string | null;
@@ -216,6 +222,8 @@ export function TaskCard({
   prLifecycleStatus,
   currentAction,
   taskType,
+  release,
+  shippedReleaseId,
   loopExitConditionType,
   subjectDead = false,
   missionBudgetExhausted = false,
@@ -354,6 +362,7 @@ export function TaskCard({
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-text-primary group-hover:text-accent-text transition-colors">
             {taskType && <TaskTypeBadge type={taskType} />}
             <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
+            <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
           </div>
 
           {/* T1 — mission + workspace (suppressed inside GroupSection) */}
@@ -435,6 +444,7 @@ export function TaskCard({
         <div className="flex items-center gap-1.5 text-[15px] font-medium text-text-primary group-hover:text-accent-text transition-colors flex-1 min-w-0">
           {taskType && <TaskTypeBadge type={taskType} />}
           <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
+          <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
         </div>
         <StageChip stage={stage} prNumber={prNumber} startAt={startAt} loopIteration={loopIteration} loopState={loopState} loopMaxLoops={loopMaxLoops} loopExitConditionType={loopExitConditionType} />
       </div>
