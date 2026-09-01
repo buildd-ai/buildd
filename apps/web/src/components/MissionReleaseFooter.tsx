@@ -22,11 +22,11 @@ export type ContinuousReleaseFooter = {
 
 export type ReleaseFooterData = GatedReleaseFooter | ContinuousReleaseFooter | null;
 
-function daysAgo(isoDate: string): number {
+export function daysAgo(isoDate: string): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
 }
 
-const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string }> = {
+export const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string }> = {
   healthy: { label: 'Healthy', cls: 'text-status-success border-status-success/30' },
   deploying: { label: 'Deploying', cls: 'text-status-info border-status-info/30' },
   dispatched: { label: 'Dispatched', cls: 'text-status-info border-status-info/30' },

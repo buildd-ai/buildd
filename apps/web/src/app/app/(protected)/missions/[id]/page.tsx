@@ -45,6 +45,10 @@ import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { loadReleaseFooterData } from '@/lib/release-footer';
+import { MissionReleaseSection, deriveReleaseNowState } from './MissionReleaseSection';
+import { getSecretsProvider } from '@buildd/core/secrets';
+import type { ReleaseStrategy, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,7 +70,7 @@ export default async function MissionDetailPage({
   let mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),
     with: {
-      workspace: { columns: { id: true, name: true } },
+      workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
       initiative: { columns: { id: true, title: true } },
       tasks: {
         columns: {
@@ -163,7 +167,7 @@ export default async function MissionDetailPage({
           const refreshedMission = await db.query.missions.findFirst({
             where: eq(missions.id, id),
             with: {
-              workspace: { columns: { id: true, name: true } },
+              workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
               initiative: { columns: { id: true, title: true } },
               tasks: {
                 columns: {
@@ -716,6 +720,31 @@ export default async function MissionDetailPage({
     limit: 50,
   }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 })));
 
+  // Release section (§8.5): reads the same workspace-scoped loader as the
+  // mission-card footer (lib/release-footer.ts) so the two surfaces cannot
+  // disagree about queue depth or deploy state (AC-41).
+  const releaseWorkspace = mission.workspace as
+    | { id: string; name: string; gitConfig: unknown; releaseConfig: WorkspaceReleaseConfig | null }
+    | null
+    | undefined;
+  const releaseFooterData = releaseWorkspace
+    ? await loadReleaseFooterData({
+        id: releaseWorkspace.id,
+        name: releaseWorkspace.name,
+        gitConfig: releaseWorkspace.gitConfig,
+        releaseConfig: releaseWorkspace.releaseConfig,
+      })
+    : null;
+  const releaseStrategy: ReleaseStrategy | null = releaseWorkspace?.releaseConfig?.enabled
+    ? (releaseWorkspace.releaseConfig.strategy ?? 'branch_merge')
+    : null;
+  let hasVercelToken: boolean | null = null;
+  if (releaseFooterData && releaseStrategy === 'branch_merge') {
+    const secrets = await getSecretsProvider().list(mission.teamId);
+    hasVercelToken = secrets.some((s) => s.purpose === 'vercel_token');
+  }
+  const releaseNowState = deriveReleaseNowState({ strategy: releaseStrategy, hasVercelToken });
+
   return (
     <SwipeProvider>
     <TaskPanelWrapper>
@@ -806,6 +835,17 @@ export default async function MissionDetailPage({
                   : `${completedTasks} of ${totalTasks} tasks complete`}
             </div>
           </div>
+        )}
+
+        {/* Release — §8.5: gated shows queue depth + oldest age, continuous shows
+            last deploy state; `none` archetype and a genuinely clean queue both
+            render nothing (§9.1). */}
+        {mission.workspaceId && (
+          <MissionReleaseSection
+            data={releaseFooterData}
+            workspaceId={mission.workspaceId}
+            releaseNowState={releaseNowState}
+          />
         )}
 
         {/* Budget exhausted banner */}

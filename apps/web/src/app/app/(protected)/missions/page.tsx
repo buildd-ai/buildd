@@ -1,10 +1,8 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives, releases, tasks as tasksTable } from '@buildd/core/db/schema';
-import { inArray, desc, and, eq, sql, or, isNull, isNotNull } from 'drizzle-orm';
-import { detectArchetype } from '@buildd/core/release-archetype';
-import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
+import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives } from '@buildd/core/db/schema';
+import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
-import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { loadReleaseFooterData } from '@/lib/release-footer';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -158,88 +156,19 @@ export default async function MissionsPage({
     if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
   }
 
+  // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
+  // so the two surfaces cannot disagree about queue depth or deploy state.
   const releaseFooterMap = new Map<string, ReleaseFooterData>();
-  const gatedWsIds: string[] = [];
-  const continuousWsIds: string[] = [];
-
-  for (const [wsId, ws] of uniqueWorkspaces) {
-    const archetype = detectArchetype({
-      name: ws.name as string | null,
-      releaseConfig: (ws.releaseConfig as any) ?? null,
-      gitConfig: (ws.gitConfig as any) ?? null,
-    });
-    if (archetype === 'gated') gatedWsIds.push(wsId);
-    else if (archetype === 'continuous') continuousWsIds.push(wsId);
-  }
-
-  if (gatedWsIds.length > 0) {
-    await Promise.all(gatedWsIds.map(async (wsId) => {
-      const [latestRelRow] = await db
-        .select({ id: releases.id })
-        .from(releases)
-        .where(eq(releases.workspaceId, wsId))
-        .orderBy(desc(releases.createdAt))
-        .limit(1);
-
-      // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
-      // healthy release → deployed release → any release row → prod-branch HEAD.
-      // Shared with /api/releases/readiness so the two surfaces cannot disagree.
-      const baseline = await resolveGatedReleaseBaseline(wsId);
-
-      const queueRow = baseline.asOf
-        ? (await db
-            .select({
-              queueDepth: sql<number>`count(*)::int`,
-              oldestMergedAt: sql<string | null>`min(${workers.mergedAt})::text`,
-            })
-            .from(workers)
-            .innerJoin(tasksTable, eq(tasksTable.id, workers.taskId))
-            .where(and(
-              eq(tasksTable.workspaceId, wsId),
-              isNotNull(workers.mergedAt),
-              sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
-            )))[0]
-        : undefined;
-
-      releaseFooterMap.set(wsId, {
-        archetype: 'gated',
-        queueDepth: baseline.asOf ? derivedValue(queueRow?.queueDepth ?? 0) : derivedUnavailable<number>('no_baseline'),
-        oldestMergedAt:
-          baseline.asOf && queueRow?.oldestMergedAt
-            ? derivedValue(queueRow.oldestMergedAt)
-            : derivedUnavailable<string>('no_scope'),
-        baselineSource: baseline.source,
-        releaseId: latestRelRow?.id ?? null,
-      });
-    }));
-  }
-
-  if (continuousWsIds.length > 0) {
-    await Promise.all(continuousWsIds.map(async (wsId) => {
-      const [lastRelease] = await db
-        .select({
-          id: releases.id,
-          state: releases.state,
-          deployedAt: sql<string | null>`deployed_at::text`,
-          healthyAt: sql<string | null>`healthy_at::text`,
-        })
-        .from(releases)
-        .where(eq(releases.workspaceId, wsId))
-        .orderBy(desc(releases.createdAt))
-        .limit(1);
-
-      releaseFooterMap.set(wsId, lastRelease
-        ? {
-            archetype: 'continuous',
-            state: lastRelease.state,
-            deployedAt: lastRelease.deployedAt ?? null,
-            healthyAt: lastRelease.healthyAt ?? null,
-            releaseId: lastRelease.id,
-          }
-        : null,
-      );
-    }));
-  }
+  await Promise.all(
+    Array.from(uniqueWorkspaces.values()).map(async (ws) => {
+      releaseFooterMap.set(ws.id, await loadReleaseFooterData({
+        id: ws.id,
+        name: ws.name,
+        gitConfig: ws.gitConfig,
+        releaseConfig: ws.releaseConfig,
+      }));
+    }),
+  );
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
