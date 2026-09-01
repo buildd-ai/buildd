@@ -1612,9 +1612,18 @@ export async function POST(req: NextRequest) {
 
     // Persist the routing decision in task context so the runner consumes it
     // without extra lookups. We also write predictedModel for analytics.
+    //
+    // `routingReason` is diagnostic only — nothing reads it to decide a model.
+    // Without it, "why did this task get this model?" is unanswerable after the
+    // fact: `context.model` is overwritten here, so an explicit pin becomes
+    // indistinguishable from a tier resolution that happened to match, and a
+    // budget downshift (a surprisingly cheap model) looks like a deliberate
+    // choice. Fill-forward: rows claimed before this shipped have no reason and
+    // must be reported as unknown rather than guessed at.
     const patchedContext = {
       ...(taskContext || {}),
       model: resolvedModel,
+      routingReason: routingDecision.reason,
       ...(resolvedTierMeta ? { resolvedTier: resolvedTierMeta } : {}),
     };
 

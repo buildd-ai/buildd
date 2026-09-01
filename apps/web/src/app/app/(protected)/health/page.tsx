@@ -9,12 +9,14 @@ import { getRunnerHeartbeats, type RunnerHeartbeat } from '@/lib/runner-heartbea
 import { getBudgetForecast, type BudgetForecast } from '@/lib/budget-forecast';
 import {
   computeUsageStats,
+  describeScan,
   parseWindowMs,
   UNASSIGNED_ROLE,
   type GroupEntry,
+  type ScanBounds,
   type UsageStats as UsageRollup,
 } from '@/lib/usage-stats';
-import { fetchUsageRows } from '@/lib/usage-stats-query';
+import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 import {
   getFailureAnalytics,
   parseFailureWindow,
@@ -69,6 +71,13 @@ export interface ConsumptionGroup extends GroupEntry {
 export interface ConsumptionStats extends Omit<UsageRollup, 'groups'> {
   window: string;
   groups: ConsumptionGroup[];
+  /**
+   * What the numbers were actually computed over. The page reads worker rows
+   * directly and the read is capped, so on a busy team every figure below is a
+   * floor over a narrower window than the label claims — which the section says
+   * out loud rather than leaving the reader to assume full coverage.
+   */
+  scan: ScanBounds;
 }
 
 export interface RecentFailure {
@@ -344,6 +353,7 @@ export default async function HealthPage({
       if (rows.length === 0) return null;
 
       const stats = computeUsageStats(rows, 'role');
+      const scan = describeScan(rows, windowStart, USAGE_ROW_LIMIT);
       const slugs = stats.groups.map(g => g.key).filter(k => k !== UNASSIGNED_ROLE);
       const roleRows = slugs.length > 0
         ? await db.query.workspaceSkills.findMany({
@@ -360,6 +370,7 @@ export default async function HealthPage({
       return {
         ...stats,
         window,
+        scan,
         groups: stats.groups.map(g => ({
           ...g,
           label: roleBySlug.get(g.key)?.name ?? (g.key === UNASSIGNED_ROLE ? 'No role' : g.key),

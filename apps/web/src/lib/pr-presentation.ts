@@ -17,6 +17,7 @@ export const PR_LIFECYCLE: Record<string, PrLifecyclePresentation> = {
   merged:     { label: 'Merged',     cls: 'bg-status-success/15 text-status-success' },
   ci_running: { label: 'CI running', cls: 'bg-status-info/15 text-status-info' },
   ci_failed:  { label: 'CI failing', cls: 'bg-status-error/15 text-status-error' },
+  ci_green:   { label: 'CI passing', cls: 'bg-status-success/15 text-status-success' },
   conflict:   { label: 'Conflict',   cls: 'bg-status-warning/15 text-status-warning' },
   closed:     { label: 'Closed',     cls: 'bg-text-muted/15 text-text-muted' },
   pr_open:    { label: 'Open',       cls: 'bg-accent/15 text-accent-text' },

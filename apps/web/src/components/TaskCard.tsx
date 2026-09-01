@@ -112,6 +112,7 @@ const PR_LIFECYCLE: Record<string, { label: string; cls: string }> = {
   merged:     { label: 'merged',    cls: 'bg-status-success/12 text-status-success' },
   ci_running: { label: 'CI…',       cls: 'bg-status-info/12 text-status-info' },
   ci_failed:  { label: 'CI ✗',      cls: 'bg-status-error/12 text-status-error' },
+  ci_green:   { label: 'CI ✓',      cls: 'bg-status-success/12 text-status-success' },
   conflict:   { label: 'conflict',  cls: 'bg-status-warning/12 text-status-warning' },
   closed:     { label: 'closed',    cls: 'bg-text-muted/10 text-text-muted' },
   pr_open:    { label: 'open',      cls: 'bg-accent/12 text-accent-text' },

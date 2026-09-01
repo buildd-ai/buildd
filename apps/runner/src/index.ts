@@ -485,7 +485,13 @@ initCurrentCommit().then(() => {
 // Cached models from Anthropic API (auto-refreshes every hour)
 let modelsCache: { models: { id: string; name: string }[]; fetchedAt: number } | null = null;
 const MODELS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
+// Used only when GET /v1/models cannot be read (no key, API error). It is
+// hand-maintained, so it drifts: it listed neither Opus 5 nor Sonnet 5 while
+// TIER_DEFAULTS pointed at both, meaning a failed catalog read hid the models
+// this fleet actually routes to. Keep the current generation at the top.
 const FALLBACK_MODELS = [
+  { id: 'claude-opus-5', name: 'Claude Opus 5' },
+  { id: 'claude-sonnet-5', name: 'Claude Sonnet 5' },
   { id: 'claude-opus-4-8', name: 'Claude Opus 4.8' },
   { id: 'claude-opus-4-6', name: 'Claude Opus 4.6' },
   { id: 'claude-opus-4-5-20251101', name: 'Claude Opus 4.5' },

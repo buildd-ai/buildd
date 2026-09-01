@@ -48,7 +48,18 @@ export async function fetchUsageRows(opts: {
       mcpCalls: true,
     },
     with: {
-      task: { columns: { id: true, status: true, roleSlug: true, parentTaskId: true } },
+      // `predictedModel` is the assigned side of the divergence rate — the model
+      // the router picked at claim time, against which `resultMeta.modelUsage`
+      // is compared.
+      task: {
+        columns: {
+          id: true,
+          status: true,
+          roleSlug: true,
+          parentTaskId: true,
+          predictedModel: true,
+        },
+      },
     },
     orderBy: [desc(workers.completedAt), desc(workers.id)],
     limit: opts.limit ?? USAGE_ROW_LIMIT,
@@ -62,6 +73,7 @@ export async function fetchUsageRows(opts: {
     workspaceId: w.workspaceId,
     taskStatus: w.task?.status ?? null,
     roleSlug: w.task?.roleSlug ?? null,
+    assignedModel: w.task?.predictedModel ?? null,
     inputTokens: w.inputTokens,
     outputTokens: w.outputTokens,
     costUsd: w.costUsd,

@@ -288,6 +288,44 @@ So the graph is a map, not a mirror, and the prompt says so: trust it for struct
 Read the file for current content. A brand-new symbol on the worker's branch is absent
 from the graph until the next seed, which is the accepted cost of a 0 s start.
 
+**Why the 60 s budget was being hit (measured 2026-08-31).** Not index scope: CBM
+excludes `.buildd-worktrees` whether the repo lists it in `.gitignore` or only in
+`.git/info/exclude` (measured identical node counts and ~15 s either way), so a base-path
+seed does not walk sibling worktrees. It is contention. On a 4-core host, one cold index
+of this repo takes ~17.5 s; **four concurrent cold indexes take 34/51/51/51 s and one of
+them fails outright.** Per-task indexing is self-congesting: every worker pays for every
+other worker's index. The shared seed removes the failures by removing the work, which is
+a better fix than a larger budget.
+
+**Correction (2026-09-01): seed a dedicated checkout, and record the project name.**
+Seeding the base clone path — as first shipped — was wrong twice over, found by running
+it on the live fleet:
+
+1. **The base clone tracks a stale branch.** The runner only ever *adds worktrees* to
+   it, so its checkout sits on whatever leftover `buildd/<uuid>-…` worker branch was
+   used last — measured **98 commits behind origin/main** — and its HEAD never moves,
+   so a HEAD-stamped refresh could never re-fire. The seeder now maintains its own
+   `git worktree` under `~/.buildd-cbm-seed/<repo>-<hash>`, detached at
+   `origin/<default branch>`, and stamps *that* sha, which does move.
+2. **The project name must not be derived.** CBM's path-derived key keeps dots:
+   `/home/coder/.buildd-cbm-seed/buildd-abc` → `home-coder-.buildd-cbm-seed-buildd-abc`.
+   A replace-non-alphanumerics derivation collapsed that and produced a key CBM had
+   never heard of, which fails as `project not found or not indexed` at query time on
+   the agent's turn — not at activation. The seeder now reads the project name out of
+   CBM's own index output and writes a record under `<cache>/seeds/<hash>.json`;
+   activation looks the seed up through that record.
+
+**The path handed to the seeder must be a repo ROOT.** "Is it a git repo" is the wrong
+question — git answers from the nearest enclosing repo, so any subdirectory passes. The
+per-claim refresh handed it `/home/coder/.buildd/roles/builder` (a role config dir inside
+the runner's own checkout): the first version indexed the directory itself for **821 MB**
+of cache, and a plain repo check then resolved `origin/main` from `~/.buildd` and seeded a
+whole duplicate graph. Two junk projects had reached 1.6 GB before this was caught.
+
+Verified live after the fix: the seed checkout sits at `origin/main`, a query returns
+current line numbers rather than the stale seed's, and both a role dir and `/tmp` are
+refused.
+
 **Operational rules this creates:**
 - Worker cleanup MUST NOT delete the shared cache (it deletes only its runtime dir).
   The per-task `rm -rf` of §4.2 is now conditional on being in per-worker mode.
@@ -428,7 +466,7 @@ For the initial buildd pilot (§7), **set `CBM_MEM_BUDGET_MB=1024`** in the role
 
 ### 5.5 Fallback behaviour
 
-**Fallback trigger:** if `index_repository` does not complete within 30 seconds (runner-side timeout), the runner:
+**Fallback trigger:** if `index_repository` does not complete within `CBM_INDEX_TIMEOUT_MS` (runner-side timeout — 30 s as proposed, 60 s since §4.4), the runner:
 1. Terminates the CBM process
 2. Removes the partial cache dir
 3. Starts the agent session without CBM in the MCP server list
@@ -608,7 +646,7 @@ The following tasks are proposed for the implementation phase. They are NOT file
 **Work:**
 - Detect when role has `mcpServers["codebase-memory"]`
 - Set `CBM_CACHE_DIR=/tmp/cbm-${WORKER_ID}` in env
-- Before `query()`: run one-shot `codebase-memory-mcp cli index_repository <sessionCwd>` with 30s timeout
+- Before `query()`: run one-shot `codebase-memory-mcp cli index_repository <sessionCwd>` with the `CBM_INDEX_TIMEOUT_MS` budget (30 s as proposed, 60 s since §4.4; skipped entirely in the shared-cache mode of §4.5)
 - On timeout: log + emit `graph_index_timeout` event; proceed without CBM in server list
 - On success: add CBM to the SDK's `mcpServers` option for the `query()` call
 **Deliverable:** PR targeting `dev`; unit tests for timeout path.

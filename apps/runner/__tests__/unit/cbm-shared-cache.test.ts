@@ -7,100 +7,25 @@
  * path matches, because CBM keys a project by its absolute repo path (a seed
  * pointed at a different path indexes as a second project at full cost).
  *
- * So the design is: seed once per repo at the base clone path, share that cache
- * dir across workers (verified: concurrent readers AND concurrent index_repository
- * writers are safe, integrity intact), and give each worker its own runtime dir
- * outside the shared dir so daemon discovery stays per-worker.
+ * So the design is: seed once per repo, share that cache dir across workers
+ * (verified: concurrent readers AND concurrent index_repository writers are safe,
+ * integrity intact), and give each worker its own runtime dir outside the shared
+ * dir so daemon discovery stays per-worker.
+ *
+ * Activation and seed lookup are covered by cbm-seed-registry.test.ts — the seed
+ * moved off the base clone path once that path proved to track a stale branch.
  */
 import { describe, test, expect } from 'bun:test';
 import {
-  buildCbmActivation,
   buildCbmMcpEntry,
-  cbmProjectNameFor,
   resetCbmSeedRefreshState,
   sharedCbmCacheDir,
   spawnCbmSeedRefresh,
-  type CbmContext,
 } from '../../src/cbm-enforcement';
 import { CBM_BINARY_PATH } from '../../src/bwrap-mount-allowlist';
 
 const REPO = '/home/coder/project/buildd';
 const WORKTREE = '/home/coder/project/buildd/.buildd-worktrees/feat-x';
-
-const BASE: CbmContext = {
-  workerId: 'w-1',
-  worktreePath: WORKTREE,
-  repoPath: REPO,
-  isCodexTask: false,
-  cbmRoleDisabled: false,
-  pathExists: (p: string) => p === CBM_BINARY_PATH,
-};
-
-/** pathExists that also reports a seeded project db for the base repo. */
-function withSeed(shared = sharedCbmCacheDir()) {
-  const seedDb = `${shared}/${cbmProjectNameFor(REPO)}.db`;
-  return (p: string) => p === CBM_BINARY_PATH || p === shared || p === seedDb;
-}
-
-describe('cbmProjectNameFor', () => {
-  test('derives CBM project keys the way CBM does', () => {
-    // Verified against the real binary: /Users/max/buildd -> Users-max-buildd,
-    // /home/coder/base -> home-coder-base.
-    expect(cbmProjectNameFor('/Users/max/buildd')).toBe('Users-max-buildd');
-    expect(cbmProjectNameFor('/home/coder/base')).toBe('home-coder-base');
-  });
-
-  test('collapses separators and trailing slashes', () => {
-    expect(cbmProjectNameFor('/home/coder/project/buildd/')).toBe('home-coder-project-buildd');
-    expect(cbmProjectNameFor('/home/coder/my.repo')).toBe('home-coder-my-repo');
-  });
-});
-
-describe('buildCbmActivation — shared warm cache', () => {
-  test('uses the shared cache and skips bootstrap when a seed exists for the repo', () => {
-    const r = buildCbmActivation({ ...BASE, pathExists: withSeed() });
-    expect(r.enforced).toBe(true);
-    expect(r.cbmCacheDir).toBe(sharedCbmCacheDir());
-    expect(r.sharedCache).toBe(true);
-    expect(r.skipBootstrapIndex).toBe(true);
-    expect(r.cbmProject).toBe(cbmProjectNameFor(REPO));
-  });
-
-  test('keeps the runtime dir per-worker and OUTSIDE the shared cache', () => {
-    // Nesting it inside a shared dir would put every worker's daemon socket in one
-    // place; the whole point of the per-worker runtime dir is separate discovery.
-    const r = buildCbmActivation({ ...BASE, pathExists: withSeed() });
-    expect(r.cbmRuntimeDir).toContain('w-1');
-    expect(r.cbmRuntimeDir!.startsWith(sharedCbmCacheDir())).toBe(false);
-    const other = buildCbmActivation({ ...BASE, workerId: 'w-2', pathExists: withSeed() });
-    expect(other.cbmRuntimeDir).not.toBe(r.cbmRuntimeDir);
-  });
-
-  test('falls back to the per-worker cache when no seed exists', () => {
-    const r = buildCbmActivation(BASE);
-    expect(r.enforced).toBe(true);
-    expect(r.cbmCacheDir).toBe('/tmp/cbm-w-1');
-    expect(r.sharedCache).toBeFalsy();
-    expect(r.skipBootstrapIndex).toBeFalsy();
-    expect(r.cbmRuntimeDir).toBe('/tmp/cbm-w-1/run');
-  });
-
-  test('falls back when the seed belongs to a different repo', () => {
-    const shared = sharedCbmCacheDir();
-    const otherDb = `${shared}/${cbmProjectNameFor('/home/coder/project/other')}.db`;
-    const r = buildCbmActivation({
-      ...BASE,
-      pathExists: (p: string) => p === CBM_BINARY_PATH || p === shared || p === otherDb,
-    });
-    expect(r.sharedCache).toBeFalsy();
-    expect(r.cbmCacheDir).toBe('/tmp/cbm-w-1');
-  });
-
-  test('falls back when repoPath is unknown', () => {
-    const r = buildCbmActivation({ ...BASE, repoPath: undefined, pathExists: withSeed() });
-    expect(r.sharedCache).toBeFalsy();
-  });
-});
 
 describe('buildCbmMcpEntry — shared mode', () => {
   test('points CBM_CACHE_DIR at the shared cache with the per-worker runtime dir', () => {

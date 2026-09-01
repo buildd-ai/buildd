@@ -238,4 +238,57 @@ describe('GET /api/models', () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
+  // ── Tier audit ─────────────────────────────────────────────────────────────
+  //
+  // detectStalePin (client) covers a model the USER pinned. Nothing checked the
+  // team's tier CONFIG, which is how `standard` came to sit a generation behind
+  // a cheaper model with no signal anywhere.
+
+  it('flags a tier sitting behind a newer model in the same family', async () => {
+    mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
+    mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
+      { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
+      { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
+      { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
+      { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' },
+    ])));
+
+    const data = await (await GET(req())).json();
+
+    expect(data.tierAudit.checked).toBe(true);
+    expect(data.tierAudit.superseded).toEqual([
+      { tier: 'standard', model: 'claude-sonnet-4-6', newer: 'claude-sonnet-5' },
+    ]);
+    expect(data.tierAudit.unknown).toEqual([]);
+  });
+
+  it('flags a tier pinned to a model the API no longer returns', async () => {
+    mockResolveAllTiers.mockReturnValue(Promise.resolve({
+      premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'default' },
+      standard: { provider: 'anthropic', model: 'claude-sonnet-retired', source: 'team' },
+      budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
+    } as any));
+    mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
+    mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
+      { id: 'claude-opus-5' },
+      { id: 'claude-haiku-4-5-20251001' },
+    ])));
+
+    const data = await (await GET(req())).json();
+
+    expect(data.tierAudit.unknown).toEqual([
+      { tier: 'standard', model: 'claude-sonnet-retired' },
+    ]);
+  });
+
+  it('audits nothing when the catalog is incomplete, rather than condemning every tier', async () => {
+    // No credential => catalog is null. Warning here would flag all three tiers
+    // as retired off an empty set — the inverse of a gate that passes vacuously.
+    const data = await (await GET(req())).json();
+
+    expect(data.catalogComplete).toBe(false);
+    expect(data.tierAudit.checked).toBe(false);
+    expect(data.tierAudit.unknown).toEqual([]);
+    expect(data.tierAudit.superseded).toEqual([]);
+  });
 });

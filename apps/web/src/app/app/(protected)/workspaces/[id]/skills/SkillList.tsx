@@ -2,13 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-
-const MODEL_LABELS: Record<string, string> = {
-  opus: 'Opus',
-  sonnet: 'Sonnet',
-  haiku: 'Haiku',
-  inherit: 'Inherit',
-};
+import { roleModelLabel } from '@/lib/model-presentation';
 
 interface Skill {
   id: string;
@@ -118,7 +112,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
 
       <div className="border border-border-default rounded-lg divide-y divide-border-default">
         {filteredSkills.map((skill) => {
-          const modelLabel = MODEL_LABELS[skill.model] || skill.model;
+          const modelLabel = roleModelLabel(skill.model);
           const toolCount = skill.allowedTools?.length || 0;
           const delegateCount = skill.canDelegateTo?.length || 0;
 

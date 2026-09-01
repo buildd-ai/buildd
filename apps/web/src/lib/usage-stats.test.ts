@@ -18,6 +18,7 @@ import {
   percentile,
   serverOf,
   parseWindowMs,
+  describeScan,
   BUILT_IN_SERVER,
   UNASSIGNED_ROLE,
   type UsageWorkerRow,
@@ -565,5 +566,196 @@ describe('parseWindowMs', () => {
     expect(parseWindowMs('nonsense')).toBe(sevenDays);
     expect(parseWindowMs('0d')).toBe(sevenDays);
     expect(parseWindowMs('')).toBe(sevenDays);
+  });
+});
+
+// ── Model attribution ─────────────────────────────────────────────────────────
+
+/** A `resultMeta` reporting the given models, each with the given token split. */
+function withModels(usage: Record<string, { input: number; output: number }>) {
+  return {
+    stopReason: null,
+    durationMs: 0,
+    durationApiMs: 0,
+    numTurns: 0,
+    modelUsage: Object.fromEntries(
+      Object.entries(usage).map(([model, u]) => [model, {
+        inputTokens: u.input,
+        outputTokens: u.output,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        costUSD: 0,
+      }]),
+    ),
+  };
+}
+
+describe('byModel worker counts', () => {
+  test('counts the workers that reported each model', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', resultMeta: withModels({ 'claude-opus-5': { input: 100, output: 10 } }) }),
+      row({ taskId: 't2', resultMeta: withModels({ 'claude-opus-5': { input: 100, output: 10 } }) }),
+      row({ taskId: 't3', resultMeta: withModels({ 'claude-haiku-4-5': { input: 100, output: 10 } }) }),
+    ]);
+    const byModel = Object.fromEntries(stats.byModel.map(m => [m.model, m.workers]));
+    expect(byModel['claude-opus-5']).toBe(2);
+    expect(byModel['claude-haiku-4-5']).toBe(1);
+  });
+
+  /**
+   * A fallback firing is a real feature, so one worker can report two models.
+   * It then counts in BOTH buckets — which is why the label on the page reads
+   * "workers reporting this model", not "workers".
+   */
+  test('a worker that reported two models counts in both buckets', () => {
+    const stats = computeUsageStats([
+      row({
+        taskId: 't1',
+        resultMeta: withModels({
+          'claude-opus-5': { input: 100, output: 10 },
+          'claude-haiku-4-5': { input: 5, output: 1 },
+        }),
+      }),
+    ]);
+    expect(stats.byModel).toHaveLength(2);
+    expect(stats.byModel.every(m => m.workers === 1)).toBe(true);
+    // The sum of the per-model worker counts therefore exceeds the worker count.
+    expect(stats.byModel.reduce((n, m) => n + m.workers, 0)).toBe(2);
+    expect(stats.totals.workers).toBe(1);
+  });
+
+  test('the same worker reporting one model is not double-counted', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', resultMeta: withModels({ 'claude-opus-5': { input: 100, output: 10 } }) }),
+    ]);
+    expect(stats.byModel[0].workers).toBe(1);
+  });
+});
+
+describe('model divergence (assigned vs actual)', () => {
+  test('reports diverged over an explicit denominator that excludes unattributed workers', () => {
+    const stats = computeUsageStats([
+      // agree
+      row({
+        taskId: 't1',
+        assignedModel: 'claude-opus-5',
+        resultMeta: withModels({ 'claude-opus-5': { input: 100, output: 10 } }),
+      }),
+      // agree
+      row({
+        taskId: 't2',
+        assignedModel: 'claude-sonnet-5',
+        resultMeta: withModels({ 'claude-sonnet-5': { input: 100, output: 10 } }),
+      }),
+      // diverged: a different family ran
+      row({
+        taskId: 't3',
+        assignedModel: 'claude-opus-5',
+        resultMeta: withModels({ 'claude-haiku-4-5': { input: 100, output: 10 } }),
+      }),
+      // unattributed: seat/OAuth auth reports no per-model usage at all
+      row({ taskId: 't4', assignedModel: 'claude-opus-5', resultMeta: withModels({}) }),
+      // unattributed: no assigned model recorded (pre-router task)
+      row({
+        taskId: 't5',
+        assignedModel: null,
+        resultMeta: withModels({ 'claude-opus-5': { input: 100, output: 10 } }),
+      }),
+    ]);
+
+    expect(stats.modelDivergence.kind).toBe('value');
+    if (stats.modelDivergence.kind !== 'value') throw new Error('unreachable');
+    const d = stats.modelDivergence.value;
+    expect(d.workers).toBe(5);
+    expect(d.compared).toBe(3);
+    expect(d.diverged).toBe(1);
+    expect(d.unattributed).toBe(2);
+    expect(d.rate).toBeCloseTo(1 / 3);
+  });
+
+  /**
+   * `predicted_model` is a bare alias (`sonnet`) for a task with no team, while
+   * `modelUsage` always names a release. Compared as strings that is ~100%
+   * divergence, which is fiction.
+   */
+  test('a bare alias against a release in the same family is agreement, not divergence', () => {
+    const stats = computeUsageStats([
+      row({
+        taskId: 't1',
+        assignedModel: 'sonnet',
+        resultMeta: withModels({ 'claude-sonnet-5': { input: 100, output: 10 } }),
+      }),
+      row({
+        taskId: 't2',
+        assignedModel: 'opus',
+        resultMeta: withModels({ 'claude-opus-5-20260814': { input: 100, output: 10 } }),
+      }),
+    ]);
+    if (stats.modelDivergence.kind !== 'value') throw new Error('expected a value');
+    expect(stats.modelDivergence.value.compared).toBe(2);
+    expect(stats.modelDivergence.value.diverged).toBe(0);
+    expect(stats.modelDivergence.value.rate).toBe(0);
+  });
+
+  test('two releases of one family diverge — same family is not enough', () => {
+    const stats = computeUsageStats([
+      row({
+        taskId: 't1',
+        assignedModel: 'claude-sonnet-5',
+        resultMeta: withModels({ 'claude-sonnet-4-6': { input: 100, output: 10 } }),
+      }),
+    ]);
+    if (stats.modelDivergence.kind !== 'value') throw new Error('expected a value');
+    expect(stats.modelDivergence.value.diverged).toBe(1);
+    expect(stats.modelDivergence.value.rate).toBe(1);
+  });
+
+  /**
+   * The failure this shape exists to prevent: counting "never recorded" as
+   * agreement makes the metric read 0% — a green number over an empty set.
+   */
+  test('all-unattributed is unavailable, never 0%', () => {
+    const stats = computeUsageStats([
+      row({ taskId: 't1', assignedModel: 'claude-opus-5', resultMeta: withModels({}) }),
+      row({ taskId: 't2', assignedModel: null, resultMeta: null }),
+      // Codex reports the literal string `codex`, which names no comparable model.
+      row({
+        taskId: 't3',
+        assignedModel: 'claude-opus-5',
+        resultMeta: withModels({ codex: { input: 100, output: 10 } }),
+      }),
+    ]);
+    expect(stats.modelDivergence.kind).toBe('unavailable');
+    if (stats.modelDivergence.kind !== 'unavailable') throw new Error('unreachable');
+    expect(stats.modelDivergence.reason).toBe('no_scope');
+    // The excluded count is the point of the message — say how many and why.
+    expect(stats.modelDivergence.detail).toContain('3');
+  });
+
+  test('an empty window is unavailable rather than a 0% agreement claim', () => {
+    const stats = computeUsageStats([]);
+    expect(stats.modelDivergence.kind).toBe('unavailable');
+  });
+});
+
+describe('describeScan', () => {
+  test('an uncapped scan is complete from the window start', () => {
+    const windowStart = new Date('2026-08-01T00:00:00.000Z');
+    const scan = describeScan([row({ completedAt: new Date('2026-08-20T00:00:00.000Z') })], windowStart, 10);
+    expect(scan.truncated).toBe(false);
+    expect(scan.rows).toBe(1);
+    expect(scan.completeSince).toBe(windowStart.toISOString());
+  });
+
+  test('a capped scan reports the oldest row it actually read', () => {
+    const windowStart = new Date('2026-08-01T00:00:00.000Z');
+    const rows = [
+      row({ completedAt: new Date('2026-08-30T00:00:00.000Z') }),
+      row({ completedAt: new Date('2026-08-25T00:00:00.000Z') }),
+    ];
+    const scan = describeScan(rows, windowStart, 2);
+    expect(scan.truncated).toBe(true);
+    expect(scan.limit).toBe(2);
+    expect(scan.completeSince).toBe('2026-08-25T00:00:00.000Z');
   });
 });

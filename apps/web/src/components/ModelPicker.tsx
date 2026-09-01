@@ -49,6 +49,18 @@ interface ModelEntry {
   displayName: string;
 }
 
+/**
+ * The server's audit of the TEAM's tier config against the live catalog — a
+ * different question from `detectStalePin`, which is about a model *this user*
+ * pinned. `checked: false` means the catalog was incomplete and nothing was
+ * verified, so render nothing rather than a guess.
+ */
+interface TierAudit {
+  checked: boolean;
+  unknown: Array<{ tier: string; model: string }>;
+  superseded: Array<{ tier: string; model: string; newer: string }>;
+}
+
 interface Props {
   value: string;
   onChange: (value: string) => void;
@@ -79,6 +91,7 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [catalogComplete, setCatalogComplete] = useState(false);
+  const [tierAudit, setTierAudit] = useState<TierAudit | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsFetched, setModelsFetched] = useState(false);
 
@@ -87,11 +100,12 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
     setModelsLoading(true);
     fetch('/api/models')
       .then(r => r.ok
-        ? r.json() as Promise<{ models: ModelEntry[]; catalogComplete?: boolean }>
-        : Promise.resolve({ models: [], catalogComplete: false }))
+        ? r.json() as Promise<{ models: ModelEntry[]; catalogComplete?: boolean; tierAudit?: TierAudit }>
+        : Promise.resolve({ models: [], catalogComplete: false, tierAudit: undefined }))
       .then(data => {
         setModels(data.models ?? []);
         setCatalogComplete(data.catalogComplete === true);
+        setTierAudit(data.tierAudit ?? null);
         setModelsFetched(true);
       })
       .catch(() => {})
@@ -145,6 +159,19 @@ export function ModelPicker({ value, onChange, disabled = false }: Props) {
           Pinned model may be unavailable — will fall back to tier
         </div>
       )}
+
+      {/* Team tier config vs. the live catalog. Only rendered when the server
+          actually verified it (checked), so an unreadable catalog stays silent. */}
+      {showAdvanced && tierAudit?.checked && tierAudit.unknown.map(u => (
+        <div key={`unknown-${u.tier}`} className="text-[11px] text-status-warning" data-testid="tier-unknown-badge">
+          The {u.tier} tier is set to {u.model}, which the models API no longer lists.
+        </div>
+      ))}
+      {showAdvanced && tierAudit?.checked && tierAudit.superseded.map(sup => (
+        <div key={`superseded-${sup.tier}`} className="text-[11px] text-text-muted" data-testid="tier-superseded-badge">
+          The {sup.tier} tier is on {sup.model}; {sup.newer} is newer.
+        </div>
+      ))}
 
       {/* Advanced expander toggle */}
       <button
