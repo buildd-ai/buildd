@@ -297,6 +297,35 @@ them fails outright.** Per-task indexing is self-congesting: every worker pays f
 other worker's index. The shared seed removes the failures by removing the work, which is
 a better fix than a larger budget.
 
+**Correction (2026-09-01): seed a dedicated checkout, and record the project name.**
+Seeding the base clone path — as first shipped — was wrong twice over, found by running
+it on the live fleet:
+
+1. **The base clone tracks a stale branch.** The runner only ever *adds worktrees* to
+   it, so its checkout sits on whatever leftover `buildd/<uuid>-…` worker branch was
+   used last — measured **98 commits behind origin/main** — and its HEAD never moves,
+   so a HEAD-stamped refresh could never re-fire. The seeder now maintains its own
+   `git worktree` under `~/.buildd-cbm-seed/<repo>-<hash>`, detached at
+   `origin/<default branch>`, and stamps *that* sha, which does move.
+2. **The project name must not be derived.** CBM's path-derived key keeps dots:
+   `/home/coder/.buildd-cbm-seed/buildd-abc` → `home-coder-.buildd-cbm-seed-buildd-abc`.
+   A replace-non-alphanumerics derivation collapsed that and produced a key CBM had
+   never heard of, which fails as `project not found or not indexed` at query time on
+   the agent's turn — not at activation. The seeder now reads the project name out of
+   CBM's own index output and writes a record under `<cache>/seeds/<hash>.json`;
+   activation looks the seed up through that record.
+
+**The path handed to the seeder must be a repo ROOT.** "Is it a git repo" is the wrong
+question — git answers from the nearest enclosing repo, so any subdirectory passes. The
+per-claim refresh handed it `/home/coder/.buildd/roles/builder` (a role config dir inside
+the runner's own checkout): the first version indexed the directory itself for **821 MB**
+of cache, and a plain repo check then resolved `origin/main` from `~/.buildd` and seeded a
+whole duplicate graph. Two junk projects had reached 1.6 GB before this was caught.
+
+Verified live after the fix: the seed checkout sits at `origin/main`, a query returns
+current line numbers rather than the stale seed's, and both a role dir and `/tmp` are
+refused.
+
 **Operational rules this creates:**
 - Worker cleanup MUST NOT delete the shared cache (it deletes only its runtime dir).
   The per-task `rm -rf` of §4.2 is now conditional on being in per-worker mode.
