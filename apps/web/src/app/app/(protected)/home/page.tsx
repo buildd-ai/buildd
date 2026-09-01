@@ -20,6 +20,7 @@ import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
+import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
@@ -757,19 +758,19 @@ export default async function HomePage({
 
                 const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
 
-                // Explicit baseline check: if no healthy releases row exists, the queue
-                // depth is structurally unavailable (no_baseline), not zero.
-                const [baselineRow] = await db
-                  .select({ baseline: sql<string | null>`MAX(${releases.healthyAt})::text` })
-                  .from(releases)
-                  .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
+                // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
+                // healthy release → deployed release → any release row → prod-branch HEAD.
+                // Shared with the missions page and the readiness route so no two
+                // release surfaces can disagree about where the queue starts.
+                const baseline = await resolveGatedReleaseBaseline(wsId);
 
-                if (!baselineRow?.baseline) {
+                if (!baseline.asOf) {
                   return {
                     workspaceId: wsId,
                     workspaceName: ws.name,
                     queueDepth: derivedUnavailable<number>('no_baseline'),
                     oldestMergedAt: derivedUnavailable<string>('no_baseline'),
+                    baselineSource: baseline.source,
                     ciState,
                     latestReleaseId: latestRelease?.id ?? null,
                   };
@@ -786,7 +787,7 @@ export default async function HomePage({
                     and(
                       eq(tasks.workspaceId, wsId),
                       isNotNull(workers.mergedAt),
-                      sql`${workers.mergedAt} > ${baselineRow.baseline}::timestamptz`,
+                      sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
                     ),
                   );
 
@@ -797,6 +798,7 @@ export default async function HomePage({
                   oldestMergedAt: queueRow?.oldestMergedAt
                     ? derivedValue(queueRow.oldestMergedAt)
                     : derivedUnavailable<string>('no_scope'),
+                  baselineSource: baseline.source,
                   ciState,
                   latestReleaseId: latestRelease?.id ?? null,
                 };

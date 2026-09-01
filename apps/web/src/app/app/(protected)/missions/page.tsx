@@ -2,7 +2,9 @@ import { db } from '@buildd/core/db';
 import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives, releases, tasks as tasksTable } from '@buildd/core/db/schema';
 import { inArray, desc, and, eq, sql, or, isNull, isNotNull } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
+import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
+import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -172,12 +174,6 @@ export default async function MissionsPage({
 
   if (gatedWsIds.length > 0) {
     await Promise.all(gatedWsIds.map(async (wsId) => {
-      const [relRow] = await db
-        .select({ maxHealthyAt: sql<string | null>`MAX(healthy_at)::text` })
-        .from(releases)
-        .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
-      const hasRelease = relRow?.maxHealthyAt != null;
-
       const [latestRelRow] = await db
         .select({ id: releases.id })
         .from(releases)
@@ -185,26 +181,34 @@ export default async function MissionsPage({
         .orderBy(desc(releases.createdAt))
         .limit(1);
 
-      // No COALESCE epoch fallback: when no healthy baseline row exists the
-      // comparison `mergedAt > NULL` returns NULL (no match) → count = 0.
-      const [queueRow] = await db
-        .select({
-          queueDepth: sql<number>`count(*)::int`,
-          oldestMergedAt: sql<string | null>`min(${workers.mergedAt})::text`,
-        })
-        .from(workers)
-        .innerJoin(tasksTable, eq(tasksTable.id, workers.taskId))
-        .where(and(
-          eq(tasksTable.workspaceId, wsId),
-          isNotNull(workers.mergedAt),
-          sql`${workers.mergedAt} > (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy')`,
-        ));
+      // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
+      // healthy release → deployed release → any release row → prod-branch HEAD.
+      // Shared with /api/releases/readiness so the two surfaces cannot disagree.
+      const baseline = await resolveGatedReleaseBaseline(wsId);
+
+      const queueRow = baseline.asOf
+        ? (await db
+            .select({
+              queueDepth: sql<number>`count(*)::int`,
+              oldestMergedAt: sql<string | null>`min(${workers.mergedAt})::text`,
+            })
+            .from(workers)
+            .innerJoin(tasksTable, eq(tasksTable.id, workers.taskId))
+            .where(and(
+              eq(tasksTable.workspaceId, wsId),
+              isNotNull(workers.mergedAt),
+              sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
+            )))[0]
+        : undefined;
 
       releaseFooterMap.set(wsId, {
         archetype: 'gated',
-        queueDepth: queueRow?.queueDepth ?? 0,
-        oldestMergedAt: queueRow?.oldestMergedAt ?? null,
-        hasRelease,
+        queueDepth: baseline.asOf ? derivedValue(queueRow?.queueDepth ?? 0) : derivedUnavailable<number>('no_baseline'),
+        oldestMergedAt:
+          baseline.asOf && queueRow?.oldestMergedAt
+            ? derivedValue(queueRow.oldestMergedAt)
+            : derivedUnavailable<string>('no_scope'),
+        baselineSource: baseline.source,
         releaseId: latestRelRow?.id ?? null,
       });
     }));
