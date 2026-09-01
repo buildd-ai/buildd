@@ -72,7 +72,7 @@ describe('banned predicate enforcement (A.5.i)', () => {
 // the number of tasks counted in the progress denominator.
 
 type TaskFixture = Parameters<typeof computeMissionProgress>[0][number] & {
-  workers?: Array<{ prUrl: string | null }>;
+  workers?: Array<{ prUrl: string | null; mergedAt?: string | null }>;
 };
 
 function countPRs(tasks: TaskFixture[]): number {
@@ -142,7 +142,7 @@ describe('regression: de0357c2 mission shape (1 work + 1 bookkeeping)', () => {
   // The mission that triggered the "TASKS 1 vs View all 2" discrepancy.
   // One real work task + one bookkeeping orchestrator task.
   const tasks: TaskFixture[] = [
-    { id: 't1', status: 'completed', title: 'Implement the merge endpoint', taskClass: 'work', workers: [{ prUrl: 'https://github.com/org/repo/pull/10' }] },
+    { id: 't1', status: 'completed', title: 'Implement the merge endpoint', taskClass: 'work', workers: [{ prUrl: 'https://github.com/org/repo/pull/10', mergedAt: '2025-01-01' }] },
     { id: 't2', status: 'completed', title: 'Mission: merge endpoint planner', taskClass: 'bookkeeping', mode: 'planning', workers: [] },
   ];
 
@@ -163,8 +163,8 @@ describe('regression: de0357c2 mission shape (1 work + 1 bookkeeping)', () => {
 
 describe('regression: 83e86c15 mission shape (3 work + 4 attempts + 2 bookkeeping)', () => {
   const tasks: TaskFixture[] = [
-    { id: 'w1', status: 'completed', title: 'Build endpoint A', taskClass: 'work', workers: [{ prUrl: 'https://github.com/org/repo/pull/11' }] },
-    { id: 'w2', status: 'completed', title: 'Build endpoint B', taskClass: 'work', workers: [{ prUrl: 'https://github.com/org/repo/pull/12' }] },
+    { id: 'w1', status: 'completed', title: 'Build endpoint A', taskClass: 'work', workers: [{ prUrl: 'https://github.com/org/repo/pull/11', mergedAt: '2025-01-01' }] },
+    { id: 'w2', status: 'completed', title: 'Build endpoint B', taskClass: 'work', workers: [{ prUrl: 'https://github.com/org/repo/pull/12', mergedAt: '2025-01-01' }] },
     { id: 'w3', status: 'in_progress', title: 'Build endpoint C', taskClass: 'work', workers: [{ prUrl: null }] },
     { id: 'a1', status: 'failed', title: '[CI Retry #1] Build endpoint A', taskClass: 'attempt', parentTaskId: 'w1', workers: [{ prUrl: null }] },
     { id: 'a2', status: 'failed', title: '[CI Retry #2] Build endpoint A', taskClass: 'attempt', parentTaskId: 'w1', workers: [{ prUrl: null }] },

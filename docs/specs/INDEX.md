@@ -45,8 +45,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### missions (1)
 
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-08-30
-  The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-01
+  The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 
 ### releases (3)
 

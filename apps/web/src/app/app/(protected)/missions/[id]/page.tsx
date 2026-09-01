@@ -268,13 +268,6 @@ export default async function MissionDetailPage({
     }
   }
 
-  // BT-13: count tasks awaiting merge (completed + has open PR + not yet merged)
-  const awaitingMerge = (mission.tasks || []).filter(t => {
-    if (t.status !== 'completed') return false;
-    const latestWorker = (t.workers as any[])?.[0];
-    return latestWorker?.prUrl && !latestWorker?.mergedAt && latestWorker?.prLifecycleStatus !== 'closed';
-  }).length;
-
   // BT-21: resolve effective merge policy tier for mission header chip
   const workspaceForPolicy = mission.workspaceId
     ? await db.query.workspaces.findFirst({
@@ -300,7 +293,7 @@ export default async function MissionDetailPage({
   const allTasksCount = (mission.tasks || []).filter(t => t.taskClass !== 'attempt').length;
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
-  const { totalTasks, completedTasks, segments } = computeMissionProgress(mission.tasks || []);
+  const { totalTasks, completedTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
@@ -552,35 +545,17 @@ export default async function MissionDetailPage({
     };
   }
 
-  // Build CondensedTask objects for the grouping function
-  const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => {
-    // Under agent-review policy: approved, escalated, and request_changes all require
-    // human awareness — place them in Waiting-on-you (§3.7: Changes Requested never buried).
-    // Under other policies (auto-threshold, human), any open PR awaits human merge.
-    let humanActionPending: boolean;
-    if (effectivePolicy.tier === 'agent-review') {
-      const note = reviewerNoteMap.get(task.id);
-      if (note?.type === 'reviewer_request_changes') {
-        // A retry fix task is in-flight or completed → not waiting on human.
-        // A failed retry, or no retry dispatched yet → needs human attention.
-        const retry = reviewerRetryMap.get(task.id);
-        humanActionPending = !retry || retry.status === 'failed';
-      } else {
-        humanActionPending =
-          note?.type === 'reviewer_approved' ||
-          note?.type === 'reviewer_escalated';
-      }
-    } else {
-      humanActionPending = true;
-    }
-    return {
-      id: task.id,
-      status: task.status,
-      dependsOn: (task.dependsOn as string[] | null) ?? null,
-      workers: ((task.workers || []) as any[]).map(normaliseWorker),
-      humanActionPending,
-    };
-  });
+  // Build CondensedTask objects for the grouping function.
+  // A completed task with an unmerged PR always lands in "Waiting on you" —
+  // its terminal state is its PR's state, not the task's (task facae217) —
+  // regardless of merge-policy tier or reviewer verdict. See isWaitingOnYou
+  // in condensed-timeline.ts.
+  const condensedTasksForGrouping: CondensedTask[] = timelineTasks.map(task => ({
+    id: task.id,
+    status: task.status,
+    dependsOn: (task.dependsOn as string[] | null) ?? null,
+    workers: ((task.workers || []) as any[]).map(normaliseWorker),
+  }));
   const condensedTaskMapForGrouping = new Map(condensedTasksForGrouping.map(t => [t.id, t]));
 
   const rawGroups = groupChainUnits(condensedTasksForGrouping, condensedTaskMapForGrouping);
