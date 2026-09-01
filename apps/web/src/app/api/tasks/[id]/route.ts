@@ -183,7 +183,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, maxLoops } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, maxLoops, actorWorkerId } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -339,10 +339,32 @@ export async function PATCH(
     // missionId link), reopen the mission if it's currently completed. Idempotent.
     const isNowOpen = status !== undefined && !['completed', 'failed', 'cancelled'].includes(status as string);
     const missionLinkAdded = missionId !== undefined && updated?.missionId && updated.missionId !== task.missionId;
-    if (updated?.missionId && (isNowOpen || missionLinkAdded)) {
-      import('@/lib/mission-loop').then(m => m.reopenCompletedMission(updated.missionId!)).catch((err) =>
-        console.error('[task-patch] mission reopen check failed:', err)
-      );
+    const missionUnlinked = missionId !== undefined && !updated?.missionId && task.missionId;
+
+    // A task linked/unlinked/created against a mission is exactly the kind of
+    // silent work the mission feed used to miss — attribute it whether it came
+    // from the dashboard, a plain API call, or an external MCP caller. Lazily
+    // imported so route modules that never touch a mission-linked task don't
+    // pull in mission-feed's db/schema deps.
+    if (missionLinkAdded || missionUnlinked || (updated?.missionId && isNowOpen)) {
+      import('@/lib/mission-feed').then(async (feedMod) => {
+        const feedActor = await feedMod.resolveFeedActor({ user, apiAccount, actorWorkerId });
+        if (missionLinkAdded || missionUnlinked) {
+          const targetMissionId = missionLinkAdded ? updated!.missionId! : task.missionId!;
+          await feedMod.postMissionFeedEvent({
+            missionId: targetMissionId,
+            type: 'update',
+            title: missionLinkAdded ? `Task linked: ${updated!.title}` : `Task unlinked: ${task.title}`,
+            body: `Task ${id}`,
+            actor: feedActor,
+            taskId: id,
+          });
+        }
+        if (updated?.missionId && (isNowOpen || missionLinkAdded)) {
+          const { reopenCompletedMission } = await import('@/lib/mission-loop');
+          await reopenCompletedMission(updated.missionId, feedActor);
+        }
+      }).catch((err) => console.error('[task-patch] mission-feed/reopen failed:', err));
     }
 
     return NextResponse.json(updated);

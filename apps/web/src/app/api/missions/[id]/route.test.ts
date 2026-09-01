@@ -38,6 +38,13 @@ const mockScheduleUpdate = mock(() => ({
   }),
 }));
 
+// Mission-feed notes (postMissionFeedEvent). Kept separate from the schedule
+// insert mock above — both route through db.insert(), and a shared capture
+// var would have one clobber the other on any PATCH that triggers both.
+let insertedNotes: any[] = [];
+let recentCollapseNote: any = null;
+const mockMissionNotesFindFirst = mock(() => Promise.resolve(recentCollapseNote));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -70,13 +77,21 @@ mock.module('@buildd/core/db', () => ({
       taskSchedules: { findFirst: mockScheduleFindFirst },
       workspaces: { findFirst: mock(() => ({ id: 'ws-1' })) },
       initiatives: { findFirst: mockInitiativesFindFirst },
+      missionNotes: { findFirst: mockMissionNotesFindFirst },
+      workers: { findFirst: mock(() => Promise.resolve(null)) },
+      tasks: { findFirst: mock(() => Promise.resolve(null)) },
     },
     update: (table: any) => {
       if (table === 'taskSchedules') return mockScheduleUpdate();
+      if (table === 'missionNotes') return { set: mock(() => ({ where: mock(() => Promise.resolve()) })) };
       return mockMissionsUpdate();
     },
-    insert: () => ({
+    insert: (table: any) => ({
       values: mock((vals: any) => {
+        if (table === 'missionNotes') {
+          insertedNotes.push(vals);
+          return { returning: mock(() => [{ id: `note-${insertedNotes.length}`, ...vals }]) };
+        }
         insertedScheduleValues = vals;
         return {
           returning: mock(() => [{ id: 'sched-new', ...vals }]),
@@ -96,6 +111,7 @@ mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
   desc: (field: any) => ({ field, type: 'desc' }),
+  gte: (field: any, value: any) => ({ field, value, type: 'gte' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
@@ -105,6 +121,8 @@ mock.module('@buildd/core/db/schema', () => ({
   taskSchedules: 'taskSchedules',
   workspaces: { id: 'id', teamId: 'teamId' },
   initiatives: 'initiatives',
+  missionNotes: 'missionNotes',
+  workers: 'workers',
 }));
 
 import { PATCH } from './route';
@@ -128,6 +146,10 @@ describe('PATCH /api/missions/[id]', () => {
     updatedScheduleData = null;
     deletedTables = [];
     computeNextRunAtCalls = [];
+    insertedNotes = [];
+    recentCollapseNote = null;
+    mockMissionNotesFindFirst.mockReset();
+    mockMissionNotesFindFirst.mockImplementation(() => Promise.resolve(recentCollapseNote));
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -730,4 +752,166 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(200);
     expect(updatedSetData.initiativeId).toBeNull();
   });
+});
+
+describe('PATCH /api/missions/[id] — mission feed', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockAuthenticateApiKey.mockReset();
+    mockResolveAccountTeamIds.mockReset();
+    mockResolveAccountTeamIds.mockResolvedValue(['team-1']);
+    mockMissionsFindFirst.mockReset();
+    mockInitiativesFindFirst.mockReset();
+    insertedNotes = [];
+    recentCollapseNote = null;
+    mockMissionNotesFindFirst.mockReset();
+    mockMissionNotesFindFirst.mockImplementation(() => Promise.resolve(recentCollapseNote));
+
+    mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
+    mockAuthenticateApiKey.mockReturnValue(null);
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: null,
+    });
+    mockMissionsUpdate.mockImplementation(() => ({
+      set: mock((data: any) => {
+        updatedSetData = data;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'obj-1', ...data }]),
+          })),
+        };
+      }),
+    }));
+  });
+
+  it('names both states and the actor when reopening a completed mission', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'completed',
+      priority: 0,
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'active' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Mission reopened');
+    expect(note).toBeDefined();
+    expect(note.body).toBe('completed → active');
+    expect(note.authorType).toBe('user');
+    expect(note.actorLabel).toBe('user-1');
+  });
+
+  it('names a status change that is not a reopen distinctly', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'paused' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(insertedNotes.some((n) => n.title === 'Mission reopened')).toBe(false);
+    const note = insertedNotes.find((n) => n.title === 'Mission status changed');
+    expect(note).toBeDefined();
+    expect(note.body).toBe('active → paused');
+  });
+
+  it('names each added goal criterion', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Goal criterion added: No open tasks');
+    expect(note).toBeDefined();
+  });
+
+  it('names a removed goal criterion', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [] }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Goal criterion removed: No open tasks');
+    expect(note).toBeDefined();
+  });
+
+  it('collapses repeated config edits from the same actor into one feed entry', async () => {
+    const first = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ priority: 5 }),
+    });
+    await PATCH(first, { params: makeParams('obj-1') });
+
+    expect(insertedNotes.length).toBe(1);
+    expect(insertedNotes[0].title).toBe('Mission configuration updated');
+    expect(insertedNotes[0].body).toContain('priority: 0 → 5');
+
+    // Simulate the collapse window: the note just inserted is "recent".
+    recentCollapseNote = insertedNotes[0];
+
+    const second = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ pacingMode: 'paced' }),
+    });
+    await PATCH(second, { params: makeParams('obj-1') });
+
+    // No second row inserted — the existing one was updated in place.
+    expect(insertedNotes.length).toBe(1);
+  });
+
+  it('does not collapse status changes — each gets its own row even from the same actor', async () => {
+    const first = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'paused' }),
+    });
+    await PATCH(first, { params: makeParams('obj-1') });
+
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'paused',
+      priority: 0,
+    });
+    const second = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'active' }),
+    });
+    await PATCH(second, { params: makeParams('obj-1') });
+
+    expect(insertedNotes.filter((n) => n.title === 'Mission status changed').length).toBe(2);
+  });
+
 });

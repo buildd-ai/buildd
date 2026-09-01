@@ -1,11 +1,12 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, missionNotes } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, sql, desc, gt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { githubApi } from '@/lib/github';
 import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
+import { postMissionFeedEvent, systemActor, type FeedActor } from '@/lib/mission-feed';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 
 /** Max planning cycles within a single trigger chain before stopping */
@@ -321,8 +322,13 @@ export async function maybeRetriggerMission(
  * the update matches nothing and returns { reopened: false }.
  *
  * Call sites: POST /api/tasks (task creation), PATCH /api/tasks/[id] (un-cancel / link).
+ *
+ * `actor` names whoever's task-creation/link caused the reopen (human, agent,
+ * or external MCP caller) — resolved by the calling route. Falls back to a
+ * named system predicate for callers that don't have one to give (there are
+ * none today; every call site is a request the caller can attribute).
  */
-export async function reopenCompletedMission(missionId: string): Promise<{ reopened: boolean }> {
+export async function reopenCompletedMission(missionId: string, actor?: FeedActor): Promise<{ reopened: boolean }> {
   const [updated] = await db
     .update(missions)
     .set({ status: 'active', updatedAt: new Date() })
@@ -339,14 +345,13 @@ export async function reopenCompletedMission(missionId: string): Promise<{ reope
       .where(eq(taskSchedules.id, updated.scheduleId));
   }
 
-  await db.insert(missionNotes).values({
+  await postMissionFeedEvent({
     missionId,
-    authorType: 'system',
     type: 'update',
     title: 'Mission reopened',
     body: 'A new open task was added to a completed mission. Mission reset to active and orchestration resumed.',
-    status: 'open',
-  });
+    actor: actor ?? systemActor('task added to completed mission'),
+  }).catch(e => console.error(`[mission-loop] mission-feed note failed for reopened mission ${missionId}:`, e));
 
   await triggerEvent(
     channels.mission(missionId),

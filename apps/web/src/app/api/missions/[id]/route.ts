@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces, missionNotes, initiatives } from '@buildd/core/db/schema';
+import { missions, tasks, taskSchedules, workspaces, initiatives } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -13,6 +13,7 @@ import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { resolveTimezone } from '@buildd/core/timezone';
+import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabel } from '@/lib/mission-feed';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -200,7 +201,11 @@ export async function PATCH(
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
-      startMode, arm } = body;
+      startMode, arm, actorWorkerId } = body;
+
+    // Resolved once for the whole request so every feed entry this PATCH
+    // produces (status, criteria, config) attributes to the same caller.
+    const actor = await resolveFeedActor({ user, apiAccount, actorWorkerId });
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1 || maxConcurrentTasks > 20)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer between 1 and 20' }, { status: 400 });
@@ -282,17 +287,15 @@ export async function PATCH(
         const storedCriteria = Array.isArray(existing.goalCriteria) ? existing.goalCriteria : [];
         const storedVerdict = (existing.goalCriteriaState as { overall?: string } | null)?.overall ?? null;
         if (storedCriteria.length > 0 && storedVerdict !== 'pass') {
-          await db.insert(missionNotes).values({
+          await postMissionFeedEvent({
             missionId: id,
-            authorType: 'system',
             type: 'warning',
             title: 'Goal criteria gate overridden',
             body:
-              `Mission was set to completed by ${apiAccount ? `API key (account ${apiAccount.id})` : `user ${user?.email ?? 'unknown'}`} ` +
-              `while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
+              `Mission was set to completed while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
               `${storedCriteria.length} criteria were not satisfied at the time of the override.`,
-            status: 'open',
-          } as any).catch(e => console.error('[missions] override note failed:', e));
+            actor,
+          }).catch(e => console.error('[missions] override note failed:', e));
         }
       }
 
@@ -537,37 +540,92 @@ export async function PATCH(
       .where(eq(missions.id, id))
       .returning();
 
-    // Emit audit note when orchestrationMode changes
-    if (orchestrationMode !== undefined && orchestrationMode !== existing.orchestrationMode) {
-      const actor = user?.id ? `user ${user.id}` : 'API caller';
-      const modeLabel = orchestrationMode === 'manual' ? 'manual' : 'auto';
-      const modeDesc = orchestrationMode === 'manual'
-        ? 'Orchestrator is now idle — no heartbeat evaluation or task spawning until armed.'
-        : 'Orchestrator is now active — heartbeat evaluation and task spawning resumed.';
-      await db.insert(missionNotes).values({
+    // Status transitions (including reopening a completed/archived mission) always
+    // get their own feed row — rare and consequential enough to never collapse.
+    if (status !== undefined && status !== existing.status) {
+      const wasClosed = existing.status === 'completed' || existing.status === 'archived';
+      const isReopen = wasClosed && status === 'active';
+      await postMissionFeedEvent({
         missionId: id,
-        authorType: 'system',
         type: 'update',
-        title: `Orchestration mode set to ${modeLabel}`,
-        body: `${modeDesc} (by ${actor})`,
-        status: 'open',
-      }).catch(e => console.error('[missions/patch] Failed to emit mode-change note:', e));
+        title: isReopen ? 'Mission reopened' : 'Mission status changed',
+        body: `${existing.status} → ${status}`,
+        actor,
+      }).catch(e => console.error('[missions/patch] Failed to emit status-change note:', e));
     }
 
-    // Emit audit note when held state changes
-    if (updateData.isHeld !== undefined && updateData.isHeld !== existing.isHeld) {
-      const actor = user?.id ? `user ${user.id}` : 'API caller';
-      const held = updateData.isHeld;
-      await db.insert(missionNotes).values({
+    // goalCriteria: each addition/removal is named individually. Criteria have no
+    // stable id, so editing one field of an existing criterion reads as a
+    // removal + an addition — which is exactly "changing produces an entry too".
+    if (goalCriteria !== undefined) {
+      const before = Array.isArray(existing.goalCriteria) ? existing.goalCriteria as Record<string, unknown>[] : [];
+      const after = Array.isArray(updateData.goalCriteria) ? updateData.goalCriteria as Record<string, unknown>[] : [];
+      const { added, removed } = diffGoalCriteria(before, after);
+      for (const c of removed) {
+        await postMissionFeedEvent({
+          missionId: id,
+          type: 'update',
+          title: `Goal criterion removed: ${criterionLabel(c)}`,
+          actor,
+        }).catch(e => console.error('[missions/patch] Failed to emit criterion-removed note:', e));
+      }
+      for (const c of added) {
+        await postMissionFeedEvent({
+          missionId: id,
+          type: 'update',
+          title: `Goal criterion added: ${criterionLabel(c)}`,
+          actor,
+        }).catch(e => console.error('[missions/patch] Failed to emit criterion-added note:', e));
+      }
+    }
+
+    // Initiative link/unlink is rare and notable enough to stand on its own too.
+    if (initiativeId !== undefined && (updateData.initiativeId ?? null) !== (existing.initiativeId ?? null)) {
+      await postMissionFeedEvent({
         missionId: id,
-        authorType: 'system',
         type: 'update',
-        title: held ? 'Mission held' : 'Mission armed',
-        body: held
-          ? `Tasks under this mission are now held — workers will not claim them until armed. (by ${actor})`
-          : `Mission armed — tasks are now claimable by workers. (by ${actor})`,
-        status: 'open',
-      }).catch(e => console.error('[missions/patch] Failed to emit held-state note:', e));
+        title: updateData.initiativeId ? 'Mission linked to initiative' : 'Mission unlinked from initiative',
+        body: updateData.initiativeId ? `Initiative: ${updateData.initiativeId}` : null,
+        actor,
+      }).catch(e => console.error('[missions/patch] Failed to emit initiative-link note:', e));
+    }
+
+    // Everything else — orchestrationMode, held/armed, pacing, priority, budget,
+    // dependency gate, backend, merge policy — is "config": individually low
+    // signal, so repeated edits from the same actor within the window collapse
+    // into one feed row instead of spamming a line per field per PATCH.
+    const CONFIG_FIELDS: { key: keyof typeof updateData; label: string; format?: (v: unknown) => string }[] = [
+      { key: 'orchestrationMode', label: 'orchestrationMode' },
+      { key: 'isHeld', label: 'startMode', format: v => (v ? 'held' : 'armed') },
+      { key: 'pacingMode', label: 'pacingMode' },
+      { key: 'pacingMaxPerHour', label: 'pacingMaxPerHour' },
+      { key: 'priority', label: 'priority' },
+      { key: 'costBudgetUsd', label: 'costBudgetUsd' },
+      { key: 'gateCondition', label: 'gateCondition' },
+      { key: 'dependsOnMissionId', label: 'dependsOnMission' },
+      { key: 'defaultBackend', label: 'backend' },
+      { key: 'maxConcurrentTasks', label: 'maxConcurrentTasks' },
+      { key: 'autoVerify', label: 'autoVerify' },
+      { key: 'mergePolicy', label: 'mergePolicy', format: v => (v ? JSON.stringify(v) : 'null') },
+    ];
+    const configChanges: string[] = [];
+    for (const f of CONFIG_FIELDS) {
+      if (!(f.key in updateData)) continue;
+      const beforeVal = (existing as Record<string, unknown>)[f.key as string];
+      const afterVal = (updated as Record<string, unknown>)[f.key as string];
+      const beforeStr = f.format ? f.format(beforeVal) : String(beforeVal ?? 'null');
+      const afterStr = f.format ? f.format(afterVal) : String(afterVal ?? 'null');
+      if (beforeStr !== afterStr) configChanges.push(`${f.label}: ${beforeStr} → ${afterStr}`);
+    }
+    if (configChanges.length > 0) {
+      await postMissionFeedEvent({
+        missionId: id,
+        type: 'update',
+        title: 'Mission configuration updated',
+        body: configChanges.join('\n'),
+        actor,
+        collapseKey: `config:${actor.kind}:${actor.id ?? 'none'}`,
+      }).catch(e => console.error('[missions/patch] Failed to emit config-change note:', e));
     }
 
     return NextResponse.json(updated);

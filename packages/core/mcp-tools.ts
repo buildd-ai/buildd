@@ -3381,6 +3381,10 @@ export async function handleBuilddAction(
           if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
+          // Names the calling worker's task on the mission-feed entry this PATCH
+          // produces, so an in-task agent's edit reads as "agent (task X)"
+          // instead of collapsing into an anonymous API call.
+          if (ctx.workerId) body.actorWorkerId = ctx.workerId;
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
             body: JSON.stringify(body),
@@ -3393,7 +3397,7 @@ export async function handleBuilddAction(
           await assertMissionControlCapabilities(api, ['startMode']);
           const data = await api(`/api/missions/${params.missionId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ arm: true }),
+            body: JSON.stringify({ arm: true, ...(ctx.workerId ? { actorWorkerId: ctx.workerId } : {}) }),
           });
           return text(`Mission armed: "${data.title}" (ID: ${data.id}) — tasks are now claimable by workers.`);
         }
@@ -3406,7 +3410,7 @@ export async function handleBuilddAction(
           if (!params.missionId || !params.taskId) throw new Error('missionId and taskId are required');
           await api(`/api/tasks/${params.taskId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ missionId: params.missionId }),
+            body: JSON.stringify({ missionId: params.missionId, ...(ctx.workerId ? { actorWorkerId: ctx.workerId } : {}) }),
           });
           return text(`Task ${params.taskId} linked to mission ${params.missionId}`);
         }
@@ -3414,7 +3418,7 @@ export async function handleBuilddAction(
           if (!params.taskId) throw new Error('taskId is required');
           await api(`/api/tasks/${params.taskId}`, {
             method: 'PATCH',
-            body: JSON.stringify({ missionId: null }),
+            body: JSON.stringify({ missionId: null, ...(ctx.workerId ? { actorWorkerId: ctx.workerId } : {}) }),
           });
           return text(`Task ${params.taskId} unlinked from mission`);
         }

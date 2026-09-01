@@ -79,7 +79,10 @@ mock.module('@buildd/core/db', () => ({
       }),
     }),
     insert: () => ({
-      values: (v: any) => { insertedNoteData.push(v); return Promise.resolve([]); },
+      values: (v: any) => {
+        insertedNoteData.push(v);
+        return { returning: () => Promise.resolve([{ id: 'note-1', ...v }]) };
+      },
     }),
   },
 }));
@@ -111,6 +114,7 @@ mock.module('@/lib/pusher', () => ({
     MISSION_LOOP_COMPLETED: 'mission:loop_completed',
     MISSION_LOOP_STALLED: 'mission:loop_stalled',
     MISSION_REOPENED: 'mission:reopened',
+    MISSION_NOTE_POSTED: 'mission:note_posted',
   },
 }));
 
@@ -677,5 +681,27 @@ describe('reopenCompletedMission', () => {
       'mission:reopened',
       expect.objectContaining({ missionId: 'a01b3251', reason: 'task_added' })
     );
+  });
+
+  it('attributes the reopen feed note to the caller-supplied actor, not System', async () => {
+    updateReturningResult = [{ id: 'm1', scheduleId: null }];
+
+    await reopenCompletedMission('m1', { kind: 'mcp', id: 'acct-1', label: 'account "Ops Bot"' });
+
+    const note = insertedNoteData.find((n) => n.title === 'Mission reopened');
+    expect(note).toBeDefined();
+    expect(note.authorType).toBe('mcp');
+    expect(note.actorLabel).toBe('account "Ops Bot"');
+  });
+
+  it('falls back to a named system predicate when no actor is supplied', async () => {
+    updateReturningResult = [{ id: 'm1', scheduleId: null }];
+
+    await reopenCompletedMission('m1');
+
+    const note = insertedNoteData.find((n) => n.title === 'Mission reopened');
+    expect(note).toBeDefined();
+    expect(note.authorType).toBe('system');
+    expect(note.actorLabel).toBe('task added to completed mission');
   });
 });

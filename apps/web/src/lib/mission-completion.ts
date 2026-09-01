@@ -6,6 +6,7 @@ import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd
 import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 
 /**
  * The one mission-completion predicate.
@@ -497,20 +498,19 @@ export async function completeMissionIfVerified(
   }
 
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
-  await db.insert(missionNotes).values({
+  await postMissionFeedEvent({
     missionId,
-    authorType: 'system',
     type: 'update',
     title: 'Mission completed',
     body:
-      `Completed via ${opts.path}.\n\n` +
-      `Predicate: ${decision.reason}\n` +
       `Deliverables: ${statusSummary || 'none'}\n` +
       `Goal criteria: ${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : `unavailable (${decision.criteriaVerdict.reason})`}` +
       (decision.criteriaEvaluatedAt ? ` (evaluated ${decision.criteriaEvaluatedAt})` : '') +
       (opts.predicate ? `\nSignal: ${opts.predicate}` : ''),
-    status: 'open',
-  } as any).catch(e => console.error(`[mission-completion] completion note failed for ${missionId}:`, e));
+    // System is only ever right here because nothing external claimed this —
+    // the label names the exact predicate that fired, not just "the engine did it".
+    actor: systemActor(`completion predicate (${opts.path}): ${decision.reason}`),
+  }).catch(e => console.error(`[mission-completion] completion note failed for ${missionId}:`, e));
 
   await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
     console.error(`[mission-completion] unblock failed for ${missionId}:`, e)

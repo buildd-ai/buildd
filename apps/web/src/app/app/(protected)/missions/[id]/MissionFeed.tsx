@@ -191,8 +191,13 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[12px] text-text-secondary">
-                      {note.authorType === 'agent' ? 'Agent' : note.authorType === 'system' ? 'System' : 'You'}
+                      {note.authorType === 'agent' ? 'Agent' : note.authorType === 'system' ? 'System' : note.authorType === 'mcp' ? 'MCP' : 'You'}
                     </span>
+                    {note.actorLabel && (
+                      <span className="text-[11px] text-text-muted truncate max-w-[200px]">
+                        {note.actorLabel}
+                      </span>
+                    )}
                     <span className={`text-[9px] font-bold tracking-wider ${style.color}`}>
                       {style.label}
                     </span>
