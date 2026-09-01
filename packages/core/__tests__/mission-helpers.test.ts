@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress, deriveMissionProgressMetric, computeMissionSkyline, deriveTaskType, type MissionSegmentState } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress, deriveMissionProgressMetric, computeMissionSkyline, deriveTaskType, deriveCriteriaGatePresentation, type MissionSegmentState } from '../mission-helpers';
 
 // ── deriveTaskType ─────────────────────────────────────────────────────────────
 
@@ -885,5 +885,91 @@ describe('computeMissionSkyline', () => {
     const block1 = result!.blocks.find((b) => b.lane === 1);
     expect(block0).toMatchObject({ startSlot: 0, endSlot: 2 });
     expect(block1).toMatchObject({ startSlot: 1, endSlot: 3 });
+  });
+});
+
+// ── deriveCriteriaGatePresentation ───────────────────────────────────────────
+// Pins the four states shared by the mission card pill, the mission detail
+// banner, and the initiative KPI chip. The bug this guards against: a
+// never-evaluated criterion on a fresh mission rendering as a red "BLOCKED"
+// banner, indistinguishable from an actual failure or a real work-stopping state.
+
+describe('deriveCriteriaGatePresentation', () => {
+  it('returns null when there are no criteria — nothing to gate on', () => {
+    expect(deriveCriteriaGatePresentation({ criteriaCount: 0, overall: null })).toBeNull();
+  });
+
+  it('"clear": overall pass renders success, no alarm', () => {
+    const result = deriveCriteriaGatePresentation({ criteriaCount: 2, overall: 'pass' });
+    expect(result).toEqual({ state: 'clear', label: 'Verified', tone: 'success', detail: null });
+  });
+
+  it('"unverified": never evaluated on a young/active mission renders quiet, not BLOCKED', () => {
+    const result = deriveCriteriaGatePresentation({ criteriaCount: 1, overall: null });
+    expect(result!.state).toBe('unverified');
+    expect(result!.tone).toBe('neutral');
+    expect(result!.label).not.toMatch(/blocked/i);
+  });
+
+  it('"unverified": UNVERIFIED overall with no completion attempt still renders quiet', () => {
+    const result = deriveCriteriaGatePresentation({
+      criteriaCount: 1,
+      overall: 'UNVERIFIED',
+      items: [{ verdict: 'UNVERIFIED', label: 'no PRs yet' }],
+    });
+    expect(result!.state).toBe('unverified');
+    expect(result!.tone).toBe('neutral');
+  });
+
+  it('"failing": a failed criterion renders warning styling naming the criterion and its evidence', () => {
+    const result = deriveCriteriaGatePresentation({
+      criteriaCount: 2,
+      overall: 'fail',
+      items: [
+        { verdict: 'pass', label: 'all PRs merged' },
+        { verdict: 'fail', label: 'coverage check', evidence: 'coverage 62% < 80%' },
+      ],
+    });
+    expect(result!.state).toBe('failing');
+    expect(result!.tone).toBe('warning');
+    expect(result!.detail).toBe('coverage check: coverage 62% < 80%');
+    expect(result!.label).not.toMatch(/blocked/i);
+  });
+
+  it('"refused": completion attempted while criteria are unverified is prominent and distinct from "failing"', () => {
+    const result = deriveCriteriaGatePresentation({
+      criteriaCount: 1,
+      overall: 'UNVERIFIED',
+      items: [{ verdict: 'UNVERIFIED', label: 'no PRs yet' }],
+      completionAttempted: true,
+    });
+    expect(result!.state).toBe('refused');
+    expect(result!.tone).toBe('error');
+    expect(result!.label).toBe('Completion refused');
+  });
+
+  it('"refused": completion attempted with a failing criterion also refuses, naming the failure', () => {
+    const result = deriveCriteriaGatePresentation({
+      criteriaCount: 1,
+      overall: 'fail',
+      items: [{ verdict: 'fail', label: 'tests pass', evidence: '3 tests failing' }],
+      completionAttempted: true,
+    });
+    expect(result!.state).toBe('refused');
+    expect(result!.tone).toBe('error');
+    expect(result!.detail).toBe('tests pass: 3 tests failing');
+  });
+
+  it('BLOCKED never appears in any state label', () => {
+    const states: Array<Parameters<typeof deriveCriteriaGatePresentation>[0]> = [
+      { criteriaCount: 1, overall: null },
+      { criteriaCount: 1, overall: 'pass' },
+      { criteriaCount: 1, overall: 'fail', items: [{ verdict: 'fail', label: 'x' }] },
+      { criteriaCount: 1, overall: 'UNVERIFIED', completionAttempted: true },
+    ];
+    for (const opts of states) {
+      const result = deriveCriteriaGatePresentation(opts);
+      expect(result?.label ?? '').not.toMatch(/blocked/i);
+    }
   });
 });
