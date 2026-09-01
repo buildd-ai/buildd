@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { releases, releaseTasks, tasks, missions, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { tasks, missions, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds } from '@/lib/team-access';
+import { getReleaseWithTaskEdges } from '@/lib/release-queries';
 
 export async function GET(
   req: NextRequest,
@@ -21,13 +22,11 @@ export async function GET(
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const release = await db.query.releases.findFirst({
-    where: eq(releases.id, id),
-  });
-
-  if (!release) {
+  const found = await getReleaseWithTaskEdges(id);
+  if (!found) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
+  const { release, edges } = found;
 
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, release.workspaceId),
@@ -38,7 +37,11 @@ export async function GET(
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
-  if (user && !apiAccount) {
+  if (apiAccount) {
+    if (apiAccount.teamId !== ws.teamId) {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+  } else if (user) {
     const teamIds = await getUserTeamIds(user.id);
     if (!teamIds.includes(ws.teamId)) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
@@ -58,19 +61,6 @@ export async function GET(
     repoFullName && release.previousSha && release.headSha
       ? `https://github.com/${repoFullName}/compare/${release.previousSha}...${release.headSha}`
       : null;
-
-  const edges = await db
-    .select({
-      taskId: releaseTasks.taskId,
-      prNumber: releaseTasks.prNumber,
-      commitSha: releaseTasks.commitSha,
-      taskTitle: tasks.title,
-      taskStatus: tasks.status,
-      missionId: tasks.missionId,
-    })
-    .from(releaseTasks)
-    .leftJoin(tasks, eq(releaseTasks.taskId, tasks.id))
-    .where(eq(releaseTasks.releaseId, id));
 
   const missionIds = [...new Set(edges.map((e) => e.missionId).filter(Boolean) as string[])];
   const missionRows =
