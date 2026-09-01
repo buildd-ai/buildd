@@ -1003,6 +1003,53 @@ describe('POST /api/github/webhook', () => {
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
       expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
     });
+
+    // AC-5: failed/cancelled tasks must not spawn retry children
+    it('skips retry for failed task (AC-5)', async () => {
+      withFailedWorkerPr({ status: 'failed', missionId: null });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('skips retry for cancelled task (AC-5)', async () => {
+      withFailedWorkerPr({ status: 'cancelled', missionId: null });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    // AC-4: a late check_suite.failure webhook must not overwrite a merged PR's lifecycle status
+    it('does not stamp ci_failed when worker prLifecycleStatus is already merged (AC-4)', async () => {
+      // Simulate a late failure webhook arriving after the PR was merged.
+      // The first findFirst (ci_failed write loop) returns merged worker.
+      // The second findFirst (handleCheckSuiteFailure) also returns the same worker
+      // with a completed task so no retry is spawned.
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-merged',
+        workspaceId: 'ws1',
+        taskId: 't-merged',
+        prNumber: 42,
+        prLifecycleStatus: 'merged',
+        branch: 'buildd/merged-fix',
+        task: {
+          id: 't-merged', title: 'Merged fix', description: 'Fixed',
+          workspaceId: 'ws1', missionId: null,
+          context: {},
+          status: 'completed',
+        },
+      });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      const ciFailedWrite = updateCalls.find((c) => (c.setValues as any).prLifecycleStatus === 'ci_failed');
+      expect(ciFailedWrite).toBeUndefined();
+    });
   });
 
   // ── policy tier gating (check_suite success path) ──────────────────────────

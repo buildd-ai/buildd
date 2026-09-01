@@ -320,6 +320,36 @@ export async function hasCheckSuites(
   }
 }
 
+/**
+ * Derive the current CI lifecycle status for a commit from its check suites.
+ * Returns null when no suites exist (repo has no CI configured).
+ * Errors are non-fatal: returns null so the caller skips updating.
+ */
+export async function fetchCiLifecycleStatus(
+  installationId: number,
+  repoFullName: string,
+  headSha: string,
+): Promise<'ci_green' | 'ci_failed' | 'ci_running' | null> {
+  try {
+    const data = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/commits/${headSha}/check-suites`,
+    );
+    const suites = data.check_suites as Array<{ status: string; conclusion: string | null }> | undefined;
+    if (!suites || suites.length === 0) return null;
+
+    if (suites.some(s => s.status !== 'completed')) return 'ci_running';
+
+    const allPassed = suites.every(
+      s => s.conclusion === 'success' || s.conclusion === 'skipped' || s.conclusion === 'neutral',
+    );
+    return allPassed ? 'ci_green' : 'ci_failed';
+  } catch (error) {
+    console.warn(`[github] fetchCiLifecycleStatus failed for ${repoFullName}@${headSha}:`, error);
+    return null;
+  }
+}
+
 // Types for webhook events
 export interface GitHubInstallationEvent {
   action: 'created' | 'deleted' | 'suspend' | 'unsuspend' | 'new_permissions_accepted';

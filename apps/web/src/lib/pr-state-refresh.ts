@@ -14,7 +14,7 @@
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lt, notInArray, or } from 'drizzle-orm';
-import { githubApi } from '@/lib/github';
+import { githubApi, fetchCiLifecycleStatus } from '@/lib/github';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import {
@@ -59,12 +59,18 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
         lt(workers.prLastCheckedAt, staleCutoff),
       ),
     ),
-    columns: { id: true, prNumber: true, workspaceId: true, taskId: true },
+    columns: { id: true, prNumber: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
     limit: BATCH_CAP,
   });
 
   await _processWorkerBatch(
-    candidates.map(c => ({ id: c.id, prNumber: c.prNumber!, workspaceId: c.workspaceId, taskId: c.taskId })),
+    candidates.map(c => ({
+      id: c.id,
+      prNumber: c.prNumber!,
+      workspaceId: c.workspaceId,
+      taskId: c.taskId,
+      prLifecycleStatus: c.prLifecycleStatus,
+    })),
   );
 }
 
@@ -84,17 +90,26 @@ export async function refreshStaleWorkers(candidates: StalePrCandidate[]): Promi
     .slice(0, BATCH_CAP);
 
   await _processWorkerBatch(
-    stale.map(w => ({ id: w.id, prNumber: w.prNumber!, workspaceId: w.workspaceId, taskId: w.taskId })),
+    stale.map(w => ({
+      id: w.id,
+      prNumber: w.prNumber!,
+      workspaceId: w.workspaceId,
+      taskId: w.taskId,
+      prLifecycleStatus: w.prLifecycleStatus,
+    })),
   );
 }
 
 // ─── Internal ─────────────────────────────────────────────────────────────────
+
+const CI_STATUSES = new Set(['ci_running', 'ci_failed', 'ci_green']);
 
 interface _Candidate {
   id: string;
   prNumber: number;
   workspaceId: string;
   taskId: string | null;
+  prLifecycleStatus: string | null;
 }
 
 async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
@@ -130,7 +145,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         const pr = await githubApi(
           installationId,
           `/repos/${repo}/pulls/${worker.prNumber}`,
-        ) as { state: string; merged: boolean; merged_at: string | null };
+        ) as { state: string; merged: boolean; merged_at: string | null; head: { sha: string } };
 
         const now = new Date();
         const update: Record<string, unknown> = { prLastCheckedAt: now, updatedAt: now };
@@ -142,6 +157,17 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
           didMerge = true;
         } else if (pr.state === 'closed') {
           update.prLifecycleStatus = 'closed';
+        } else if (pr.state === 'open' && CI_STATUSES.has(worker.prLifecycleStatus ?? '')) {
+          // Reconcile CI state: fetch live check-suite verdict for open CI-tracked PRs.
+          // This corrects stale ci_failed→ci_green and ci_green→ci_failed transitions
+          // that webhooks may have missed or not yet delivered.
+          const headSha = (pr as any).head?.sha as string | undefined;
+          if (headSha) {
+            const liveStatus = await fetchCiLifecycleStatus(installationId, repo, headSha);
+            if (liveStatus !== null && liveStatus !== worker.prLifecycleStatus) {
+              update.prLifecycleStatus = liveStatus;
+            }
+          }
         }
 
         await db.update(workers).set(update).where(eq(workers.id, worker.id));
