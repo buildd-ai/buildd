@@ -8,6 +8,7 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.map((i) => i.href)).toEqual([
       '/app/home',
       '/app/missions',
+      '/app/releases',
       '/app/initiatives',
       '/app/tasks',
       '/app/team',
@@ -16,6 +17,7 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.map((i) => i.label)).toEqual([
       'Home',
       'Missions',
+      'Releases',
       'Initiatives',
       'Activity',
       'Team',
