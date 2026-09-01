@@ -216,6 +216,8 @@ async function backLinkInstallationRepos(installationId: number, source: string)
 
 const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
 const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
+// PR lifecycle statuses that must not be overwritten by any later CI event.
+const TERMINAL_STATUSES = ['merged', 'closed'];
 
 /**
  * Create a buildd task from a labeled GitHub issue (spec §3). Idempotent per
@@ -343,9 +345,9 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
         where: workerOwnsPr(repository.full_name, pr.number),
-        columns: { id: true, workspaceId: true, taskId: true },
+        columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker) {
+      if (worker && !TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
         await db
           .update(workers)
           .set({ prLifecycleStatus: 'ci_running', updatedAt: new Date() })
@@ -366,13 +368,15 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
 
   // CI failure: spawn fix tasks for worker PRs AND fail tracked release PRs.
   if (check_suite.conclusion === 'failure') {
-    // Mark worker PRs as ci_failed before handling retries
+    // Mark worker PRs as ci_failed before handling retries.
+    // Skip workers whose PR is already in a terminal state (merged/closed) — a late
+    // failure webhook must not overwrite a merged PR's lifecycle status (AC-4).
     for (const pr of check_suite.pull_requests) {
       const worker = await db.query.workers.findFirst({
         where: workerOwnsPr(repository.full_name, pr.number),
-        columns: { id: true, workspaceId: true, taskId: true },
+        columns: { id: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
       });
-      if (worker) {
+      if (worker && !TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
         await db
           .update(workers)
           .set({ prLifecycleStatus: 'ci_failed', updatedAt: new Date() })
@@ -425,10 +429,13 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         }
 
         // Mark CI as green — used by pr_checks_green loop exit condition evaluation.
-        await db
-          .update(workers)
-          .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
-          .where(eq(workers.id, worker.id));
+        // Skip if the PR is already in a terminal state (merged/closed wins).
+        if (!TERMINAL_STATUSES.includes(worker.prLifecycleStatus as any)) {
+          await db
+            .update(workers)
+            .set({ prLifecycleStatus: 'ci_green', updatedAt: new Date() })
+            .where(eq(workers.id, worker.id));
+        }
 
         // Resolve merge policy via the single precedence chain:
         //   task.requiresReview → mission.mergePolicy → mission.requiresReview → workspace.mergePolicy → default
@@ -913,9 +920,10 @@ async function handleCheckSuiteFailure(
       }
       const task = worker.task;
 
-      // Completed tasks must not spawn retry children — the PR is orphaned from
-      // the agent's perspective. Surface CI failures to the mission feed instead.
-      if (task.status === 'completed') {
+      // Terminal tasks (completed/failed/cancelled) must not spawn retry children —
+      // the PR is orphaned from the agent's perspective. Surface CI failures to the
+      // mission feed instead so a human can act (AC-5).
+      if (TERMINAL_TASK_STATUSES.includes(task.status)) {
         if (task.missionId) {
           await notifyMissionPrReady(task.missionId, {
             title: 'CI failing on completed task PR',

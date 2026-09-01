@@ -48,7 +48,11 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockGithubApi = mock(() =>
   Promise.resolve({ state: 'open', merged: false, merged_at: null }),
 );
-mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+const mockFetchCiLifecycleStatus = mock(() => Promise.resolve(null as 'ci_green' | 'ci_failed' | 'ci_running' | null));
+mock.module('@/lib/github', () => ({
+  githubApi: mockGithubApi,
+  fetchCiLifecycleStatus: mockFetchCiLifecycleStatus,
+}));
 
 // ─── Pusher mock ──────────────────────────────────────────────────────────────
 
@@ -97,6 +101,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     mockWorkspacesFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
     mockGithubApi.mockReset();
+    mockFetchCiLifecycleStatus.mockReset();
     mockTriggerEvent.mockReset();
     mockCheckDependsOnResolved.mockClear();
   });
@@ -272,6 +277,7 @@ describe('refreshStaleWorkers', () => {
     mockWorkspacesFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
     mockGithubApi.mockReset();
+    mockFetchCiLifecycleStatus.mockReset();
     mockTriggerEvent.mockReset();
     mockCheckDependsOnResolved.mockClear();
   });
@@ -412,5 +418,121 @@ describe('refreshStaleWorkers', () => {
     await refreshStaleWorkers(manyWorkers);
 
     expect(mockGithubApi).toHaveBeenCalledTimes(10);
+  });
+
+  // AC-1: ci_failed worker whose PR CI is now green refreshes to ci_green
+  it('AC-1: updates ci_failed → ci_green when live CI passes', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'sha-abc' } });
+    mockFetchCiLifecycleStatus.mockResolvedValue('ci_green');
+    const setMock = makeSetMock();
+
+    await refreshStaleWorkers([
+      {
+        id: 'w-ci-fail',
+        prNumber: 42,
+        workspaceId: 'ws1',
+        taskId: 't1',
+        prLifecycleStatus: 'ci_failed',
+        prLastCheckedAt: FIVE_MIN_AGO,
+      },
+    ]);
+
+    expect(mockFetchCiLifecycleStatus).toHaveBeenCalledWith(123, 'owner/repo', 'sha-abc');
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'ci_green' }),
+    );
+  });
+
+  // AC-2: ci_green worker whose PR CI is now red refreshes to ci_failed
+  it('AC-2: updates ci_green → ci_failed when live CI fails', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'sha-def' } });
+    mockFetchCiLifecycleStatus.mockResolvedValue('ci_failed');
+    const setMock = makeSetMock();
+
+    await refreshStaleWorkers([
+      {
+        id: 'w-ci-green',
+        prNumber: 99,
+        workspaceId: 'ws1',
+        taskId: 't2',
+        prLifecycleStatus: 'ci_green',
+        prLastCheckedAt: FIVE_MIN_AGO,
+      },
+    ]);
+
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'ci_failed' }),
+    );
+  });
+
+  // AC-6: #2010 regression — worker stuck as ci_green (renders as Open), live CI
+  // shows failure. Before fix: badge silently showed Open. After: badge shows
+  // CI failing once refresh corrects the stored status.
+  it('AC-6: #2010 regression — ci_green with live CI failure corrects to ci_failed', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'sha-2010' } });
+    mockFetchCiLifecycleStatus.mockResolvedValue('ci_failed');
+    const setMock = makeSetMock();
+
+    await refreshStaleWorkers([
+      {
+        id: 'w-2010',
+        prNumber: 2010,
+        workspaceId: 'ws1',
+        taskId: 't-2010',
+        // ci_green was set by webhook after first pass; pr-presentation maps ci_green→Open
+        // so Activity showed OPEN #2010 while GitHub reported 6/7 failed.
+        prLifecycleStatus: 'ci_green',
+        prLastCheckedAt: FIVE_MIN_AGO,
+      },
+    ]);
+
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'ci_failed' }),
+    );
+  });
+
+  it('does not call fetchCiLifecycleStatus for non-CI prLifecycleStatus', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'sha-open' } });
+    makeSetMock();
+
+    await refreshStaleWorkers([
+      {
+        id: 'w-open',
+        prNumber: 5,
+        workspaceId: 'ws1',
+        taskId: 't3',
+        prLifecycleStatus: 'pr_open',
+        prLastCheckedAt: FIVE_MIN_AGO,
+      },
+    ]);
+
+    expect(mockFetchCiLifecycleStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite prLifecycleStatus when CI state is unchanged', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'sha-same' } });
+    mockFetchCiLifecycleStatus.mockResolvedValue('ci_failed');
+    const setMock = makeSetMock();
+
+    await refreshStaleWorkers([
+      {
+        id: 'w-same',
+        prNumber: 7,
+        workspaceId: 'ws1',
+        taskId: 't4',
+        prLifecycleStatus: 'ci_failed',
+        prLastCheckedAt: FIVE_MIN_AGO,
+      },
+    ]);
+
+    // prLifecycleStatus should not be in the update when state is unchanged
+    expect(setMock).toHaveBeenCalledWith(
+      expect.not.objectContaining({ prLifecycleStatus: expect.anything() }),
+    );
   });
 });
