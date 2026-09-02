@@ -343,6 +343,88 @@ describe('canCompleteMission — task rows', () => {
   });
 });
 
+describe('canCompleteMission — awaiting merge (task facae217: a task\'s terminal state is its PR\'s state)', () => {
+  beforeEach(reset);
+
+  /** A work row whose latest worker carries the given PR fields. */
+  function workWithPr(
+    status: string,
+    pr: { prUrl?: string | null; prNumber?: number | null; mergedAt?: string | null; prLifecycleStatus?: string | null },
+    title = 'Build the thing',
+  ) {
+    return work(status, title, {
+      workers: [{
+        prUrl: pr.prUrl ?? null,
+        prNumber: pr.prNumber ?? null,
+        mergedAt: pr.mergedAt ?? null,
+        prLifecycleStatus: pr.prLifecycleStatus ?? null,
+      }],
+    });
+  }
+
+  it('regression (M4 / mission 50d29836): dormancy must not complete on "all deliverables terminal, no goal criteria" when the sole deliverable\'s PR is open with changes requested', async () => {
+    // Exact M4 shape: one completed deliverable, PR #2020 open, no goalCriteria set.
+    // Before this fix canCompleteMission returned ok:true with reason 'All
+    // deliverables terminal; mission states no goal criteria' — the literal
+    // string dormancy logged when it closed M4.
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/2020', prNumber: 2020, mergedAt: null, prLifecycleStatus: 'pr_open' })];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+    expect(d.awaitingMerge).toBe(1);
+    expect(d.awaitingMergeDetails).toEqual([{ taskId: expect.any(String), title: 'Build the thing', prNumber: 2020, prUrl: 'https://github.com/org/repo/pull/2020' }]);
+    expect(d.reason).toContain('Build the thing');
+    expect(d.reason).toContain('#2020');
+  });
+
+  it('same shape via the organizer/heartbeat path is refused identically — one predicate, not two', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/2020', prNumber: 2020, mergedAt: null, prLifecycleStatus: 'pr_open' })];
+
+    const d = await canCompleteMission('m1', { path: 'heartbeat', proposed: true });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+  });
+
+  it('blocks on a closed-without-merging PR too — the deliverable never shipped', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/50', prNumber: 50, mergedAt: null, prLifecycleStatus: 'closed' })];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+  });
+
+  it('blocks regardless of goal criteria passing — checked before criteria evaluation', async () => {
+    activeMission({ goalCriteria: [{ type: 'command', command: 'true' }], goalCriteriaState: PASSING_STATE });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/60', prNumber: 60, mergedAt: null, prLifecycleStatus: 'ci_green' })];
+
+    const d = await canCompleteMission('m1', { evaluateCriteria: false });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+  });
+
+  it('does not block once the PR has merged', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/2020', prNumber: 2020, mergedAt: '2026-08-31T00:00:00.000Z', prLifecycleStatus: 'merged' })];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.awaitingMerge).toBe(0);
+  });
+
+  it('does not block a completed deliverable that never produced a PR', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [work('completed')];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.awaitingMerge).toBe(0);
+  });
+});
+
 describe('canCompleteMission — the goal-criteria gate', () => {
   beforeEach(reset);
 
@@ -648,6 +730,27 @@ describe('completeMissionIfVerified — refused', () => {
     const note = insertedRows.find(r => r.title === AWAITING_VERIFICATION_NOTE_TITLE);
     expect(note).toBeDefined();
     expect(note.body).toContain('LLM evaluator not configured');
+  });
+
+  it('AC-1/AC-5: dormancy refuses on an unmerged PR and names the task + PR number in the feed note, even though dormancy never "proposes" completion', async () => {
+    // M4 replay: dormancy calls with proposed left unset (false) — the note must
+    // still post, or the refusal is invisible in exactly the case that mattered.
+    activeMission({ goalCriteria: null });
+    taskRows = [work('completed', 'MCP connector OAuth discovery', {
+      workers: [{ prUrl: 'https://github.com/org/repo/pull/2020', prNumber: 2020, mergedAt: null, prLifecycleStatus: 'pr_open' }],
+    })];
+
+    const result = await completeMissionIfVerified('m1', { path: 'dormancy' });
+
+    expect(result.completed).toBe(false);
+    expect(result.decision.code).toBe('awaiting_merge');
+    const note = insertedRows.find(r => r.title === AWAITING_VERIFICATION_NOTE_TITLE);
+    expect(note).toBeDefined();
+    expect(note.body).toContain('MCP connector OAuth discovery');
+    expect(note.body).toContain('#2020');
+
+    const call = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'mission:completion_decision');
+    expect((call as any[])[2]).toMatchObject({ allowed: false, code: 'awaiting_merge', awaitingMerge: 1 });
   });
 
   it('emits no decision event when nothing was decided (mission already closed)', async () => {
