@@ -148,6 +148,160 @@ async function workerConflictResponse(id: string) {
   }, { status: 409 });
 }
 
+/**
+ * Metrics-only PATCH: persist terminal MEASUREMENT on a worker whose outcome is
+ * already recorded.
+ *
+ * Why this exists: the documented worker workflow has the agent call the buildd
+ * MCP `complete_task` itself. That marks the worker terminal server-side and
+ * pushes worker:completed, so the runner's own completion PATCH — the sole
+ * carrier of `resultMeta` (CBM metrics, tool histogram, model attribution),
+ * token counts, reported cost, git stats and subagent spans — arrives on a
+ * terminal row and is refused with 409 {abort:true}. A large share of completed
+ * workers therefore had result_meta NULL with zero cost and zero tokens, and
+ * that cohort ran far longer than the measured one: every adoption, cost and
+ * token rollup was computed on the short-session half of the fleet.
+ *
+ * What makes this safe:
+ *  - It writes measurement only. `status`, `error`, `summary`, `completedAt`,
+ *    milestones, verification evidence and structured output are NOT writable
+ *    here, and the per-PATCH turn increment is skipped — so it can neither
+ *    resurrect a finished worker nor rewrite its outcome.
+ *  - It refuses a worker the SERVER terminated (`isNonReactivatableError`:
+ *    expiry, heartbeat loss, reassign, human takeover). The runner is gone or
+ *    was overruled in those cases, so its late report does not describe the
+ *    outcome that was recorded. This keeps the non-reactivatable-termination
+ *    protection exactly as strict as it is for a reactivation attempt.
+ *  - Numbers only ever go UP. A late report must not lower a figure another
+ *    writer (PR route diff stats, server-side cost estimate) already recorded.
+ *  - The write is a compare-and-swap on the status that was read, so a row
+ *    moving underneath it yields a retryable conflict rather than a stale write.
+ */
+async function applyMetricsOnlyPatch(
+  id: string,
+  worker: typeof workers.$inferSelect,
+  body: Record<string, any>,
+) {
+  if (isNonReactivatableError(worker.error)) {
+    const artifactCount = await getWorkerArtifactCount(id);
+    const deliverables = checkWorkerDeliverables(worker as any, { artifactCount });
+    return NextResponse.json({
+      error: 'Worker was terminated - task may have been reassigned',
+      abort: true,
+      metricsAccepted: false,
+      reason: worker.error,
+      actualStatus: worker.status,
+      hasDeliverables: deliverables.hasAny,
+    }, { status: 409 });
+  }
+
+  const updates: Partial<typeof workers.$inferInsert> = { updatedAt: new Date() };
+
+  // resultMeta is merged, not replaced: a provision-failure shell or an earlier
+  // partial report already on the row must not be erased by a later one that
+  // happens to carry fewer keys.
+  const incomingMeta = body.resultMeta;
+  const existingMeta = (worker.resultMeta && typeof worker.resultMeta === 'object' && !Array.isArray(worker.resultMeta))
+    ? worker.resultMeta as unknown as Record<string, unknown>
+    : {};
+  let mergedMeta: Record<string, unknown> = existingMeta;
+  if (incomingMeta && typeof incomingMeta === 'object' && !Array.isArray(incomingMeta)) {
+    mergedMeta = { ...existingMeta, ...incomingMeta };
+    updates.resultMeta = mergedMeta as unknown as typeof updates.resultMeta;
+  }
+
+  /** Monotonic: returns the incoming value only when it beats what we have. */
+  const raise = (incoming: unknown, existing: number | null | undefined): number | null => {
+    if (typeof incoming !== 'number' || !Number.isFinite(incoming) || incoming <= 0) return null;
+    return incoming > (existing ?? 0) ? incoming : null;
+  };
+
+  // Cost is measurement too — and on the seat/OAuth fleet it is DERIVED, not
+  // reported: costUsd arrives as 0 and the token totals are the only signal.
+  // The derivation normally happens in the status-transition block, which is
+  // gated on `wasTerminal === false`; for this cohort that block already ran at
+  // MCP-completion time with no tokens and no resultMeta, produced 0, and will
+  // never run again. Deriving here is the difference between "the tokens
+  // finally land" and "cost attribution finally works".
+  //
+  // Deliberately NOT done here: the teams.monthlyCostUsd accumulation and the
+  // budget-threshold notifications that sit beside that derivation. Those are
+  // spend CONSEQUENCES — back-filling spend that was never counted could cross a
+  // threshold and page on history rather than on activity. Making this cohort's
+  // spend consume budget is a separate, deliberate decision; see
+  // docs/specs/usage-and-cost-accounting.md.
+  const reportedCost = typeof body.costUsd === 'number' ? body.costUsd : 0;
+  let effectiveCost = reportedCost;
+  if (!(effectiveCost > 0)) {
+    const perModel = estimateCostUsd(
+      mergedMeta.modelUsage as Parameters<typeof estimateCostUsd>[0] | undefined,
+    );
+    effectiveCost = perModel > 0
+      ? perModel
+      : estimateCostUsdFromTotals(
+        mergedMeta.totalUsage as Parameters<typeof estimateCostUsdFromTotals>[0] | undefined,
+        resolveSessionActualModel(
+          body.actualModel,
+          mergedMeta as Parameters<typeof resolveSessionActualModel>[1],
+        ),
+      );
+  }
+  const cost = raise(effectiveCost, Number(worker.costUsd ?? 0));
+  if (cost !== null) updates.costUsd = cost.toString();
+  const inTokens = raise(body.inputTokens, worker.inputTokens);
+  if (inTokens !== null) updates.inputTokens = inTokens;
+  const outTokens = raise(body.outputTokens, worker.outputTokens);
+  if (outTokens !== null) updates.outputTokens = outTokens;
+  const commits = raise(body.commitCount, worker.commitCount);
+  if (commits !== null) updates.commitCount = commits;
+  const files = raise(body.filesChanged, worker.filesChanged);
+  if (files !== null) updates.filesChanged = files;
+  const added = raise(body.linesAdded, worker.linesAdded);
+  if (added !== null) updates.linesAdded = added;
+  const removed = raise(body.linesRemoved, worker.linesRemoved);
+  if (removed !== null) updates.linesRemoved = removed;
+  const spansObserved = raise(body.subagentSpansObserved, worker.subagentSpansObserved);
+  if (spansObserved !== null) updates.subagentSpansObserved = spansObserved;
+  const bgMs = raise(body.backgroundAgentMs, worker.backgroundAgentMs);
+  if (bgMs !== null) updates.backgroundAgentMs = bgMs;
+
+  if (typeof body.lastCommitSha === 'string' && body.lastCommitSha.length > 0) {
+    updates.lastCommitSha = body.lastCommitSha;
+  }
+  if (Array.isArray(body.subagentSpans) && body.subagentSpans.length > 0) {
+    updates.subagentSpans = body.subagentSpans;
+  }
+
+  const written = Object.keys(updates).filter((k) => k !== 'updatedAt');
+  if (written.length === 0) {
+    return NextResponse.json({ success: true, metricsOnly: true, updated: [] });
+  }
+
+  const [row] = await db
+    .update(workers)
+    .set(updates)
+    .where(worker.status
+      ? and(eq(workers.id, id), eq(workers.status, worker.status))
+      : eq(workers.id, id))
+    .returning();
+
+  if (!row) {
+    return NextResponse.json({
+      error: 'Worker state changed concurrently',
+      conflict: true,
+      retryable: true,
+      actualStatus: worker.status,
+    }, { status: 409 });
+  }
+
+  return NextResponse.json({
+    success: true,
+    metricsOnly: true,
+    updated: written,
+    actualStatus: row.status,
+  });
+}
+
 function collectSecretValues(label: string, plaintext: string): Array<{ label: string; value: string }> {
   const values = [{ label, value: plaintext }];
   try {
@@ -291,6 +445,15 @@ export async function PATCH(
   // so the same instruction would be served forever. It is never persisted.
   const rawInstructionsDelivered: unknown = body.instructionsDelivered;
   body = redactSecretsInBody(body, secretValues);
+
+  // Metrics-only write: measurement about a session, no state transition. Must
+  // be handled BEFORE the terminal guard below — a terminal worker is exactly
+  // the case it exists for (the agent completed the task itself via the MCP, so
+  // the runner's terminal PATCH lands on an already-completed row). See
+  // applyMetricsOnlyPatch for what it may and may not write.
+  if (body.metricsOnly === true) {
+    return await applyMetricsOnlyPatch(id, worker, body);
+  }
 
   // Check if worker was already terminated (reassigned/failed)
   // Allow reactivation with 'running' status for follow-up messages from runner,

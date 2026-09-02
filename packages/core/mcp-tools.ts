@@ -3077,6 +3077,15 @@ export async function handleBuilddAction(
       return text(lines.join('\n'));
     }
 
+    case 'list_connectors': {
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) {
+        throw new Error('Cannot resolve workspace. Pass ?workspace=<id> in the MCP URL, use a workspace-pinned endpoint, or include workspaceId in params.');
+      }
+      const data = await api(`/api/connectors/mounted?workspaceId=${encodeURIComponent(wsId)}`);
+      return text(JSON.stringify({ connectors: data.connectors ?? [] }));
+    }
+
     case 'get_failure_analytics': {
       // Read-only. Scoping is not re-implemented here: GET /api/health/failures
       // derives the team from the caller's bearer token and 404s a workspaceId

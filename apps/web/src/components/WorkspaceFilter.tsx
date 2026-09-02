@@ -303,7 +303,7 @@ export function WorkspaceFilter({ workspaces, selectedId: selectedIdProp }: Work
               <rect x="7" y="7" width="4" height="4" />
             </svg>
           )}
-          <span className={`truncate max-w-[120px] text-xs${!selectedId ? ' hidden md:inline' : ''}`}>{selectedLabel}</span>
+          <span className="truncate max-w-[120px] text-xs hidden md:inline">{selectedLabel}</span>
           <svg
             className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
             fill="none"
