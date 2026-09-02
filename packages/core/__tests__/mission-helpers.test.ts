@@ -414,20 +414,37 @@ describe('computeMissionProgress', () => {
 
   // ── orchestrator-completed case ───────────────────────────────────────────────
 
-  it('planning task with a PR counts as a deliverable (orchestrator mode)', () => {
+  it('planning task with a merged PR counts as a done deliverable (orchestrator mode)', () => {
     const tasks: Task[] = [
       {
         id: 'plan',
         status: 'completed',
         title: 'Mission: Build API',
         mode: 'planning',
-        workers: [{ status: 'completed', prUrl: 'https://github.com/org/repo/pull/42' }],
+        workers: [{ status: 'completed', prUrl: 'https://github.com/org/repo/pull/42', mergedAt: '2025-01-01' }],
       },
     ];
     const result = computeMissionProgress(tasks);
     expect(result.totalTasks).toBe(1);
     expect(result.completedTasks).toBe(1);
     expect(result.progress).toBe(100);
+  });
+
+  it('planning task with an UNmerged PR counts as a deliverable but not done — awaiting merge', () => {
+    const tasks: Task[] = [
+      {
+        id: 'plan',
+        status: 'completed',
+        title: 'Mission: Build API',
+        mode: 'planning',
+        workers: [{ status: 'completed', prUrl: 'https://github.com/org/repo/pull/42', mergedAt: null }],
+      },
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.totalTasks).toBe(1);
+    expect(result.completedTasks).toBe(0);
+    expect(result.awaitingMerge).toBe(1);
+    expect(result.progress).toBe(0);
   });
 
   it('planning task without a PR is still excluded', () => {
@@ -493,7 +510,7 @@ describe('computeMissionProgress — segments', () => {
   function makeTaskWithWorkers(
     id: string,
     status: string,
-    workers: Array<{ status: string; prUrl?: string | null; mergedAt?: string | null }> = [],
+    workers: Array<{ status: string; prUrl?: string | null; mergedAt?: string | null; prLifecycleStatus?: string | null }> = [],
     opts: { kind?: string } = {},
   ): TaskInput {
     return { id, status, title: 'Do some work', workers, ...opts };
@@ -540,6 +557,25 @@ describe('computeMissionProgress — segments', () => {
     ];
     const { segments } = computeMissionProgress(tasks);
     expect(segments[0].state).toBe<MissionSegmentState>('half');
+  });
+
+  it('half — awaitingMerge counts it, completedTasks does not (AC-2)', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed', [{ status: 'completed', prUrl: 'https://github.com/pr/2020', mergedAt: null, prLifecycleStatus: 'pr_open' }]),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.segments[0].state).toBe<MissionSegmentState>('half');
+    expect(result.completedTasks).toBe(0);
+    expect(result.awaitingMerge).toBe(1);
+    expect(result.progress).toBe(0);
+  });
+
+  it('notch — closed PR without merging is not "awaiting merge" (AC-4: renders as its own dead-end, not done)', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed', [{ status: 'completed', prUrl: 'https://github.com/pr/3', mergedAt: null, prLifecycleStatus: 'closed' }]),
+    ];
+    const { segments } = computeMissionProgress(tasks);
+    expect(segments[0].state).toBe<MissionSegmentState>('notch');
   });
 
   it('ghost — task has a live worker (running)', () => {

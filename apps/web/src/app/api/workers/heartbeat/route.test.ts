@@ -18,6 +18,10 @@ const mockInvalidateCachedApiKey = mock(() => Promise.resolve());
 const mockGetCachedAccountWorkspaces = mock(() => Promise.resolve(null));
 const mockSetCachedAccountWorkspaces = mock(() => Promise.resolve());
 const mockInvalidateCachedAccountWorkspaces = mock(() => Promise.resolve());
+// Captures the lease-renewal UPDATE so its scoping can be asserted.
+let leaseUpdateCalls: Array<{ set: any; where: any }> = [];
+let leaseRenewedRows: Array<{ id: string }> = [];
+let leaseUpdateThrows: Error | null = null;
 const mockGetLatestVersion = mock(() => Promise.resolve({ latestCommit: 'abc123', latestTag: null, updatedAt: '2026-01-01T00:00:00.000Z' }));
 
 mock.module('@/lib/api-auth', () => ({
@@ -43,12 +47,22 @@ mock.module('@buildd/core/db', () => ({
       workerHeartbeats: { findFirst: mockHeartbeatsFindFirst },
     },
     insert: () => mockHeartbeatsInsert(),
+    update: (_table: any) => ({
+      set: (vals: any) => ({
+        where: (cond: any) => {
+          leaseUpdateCalls.push({ set: vals, where: cond });
+          if (leaseUpdateThrows) throw leaseUpdateThrows;
+          return { returning: () => Promise.resolve(leaseRenewedRows) };
+        },
+      }),
+    }),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -60,6 +74,7 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   accountWorkspaces: { accountId: 'accountId' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
+  workers: { id: 'id', accountId: 'accountId', status: 'status', leaseExpiresAt: 'leaseExpiresAt' },
 }));
 
 mock.module('crypto', () => ({
@@ -106,6 +121,9 @@ describe('POST /api/workers/heartbeat', () => {
     mockSetCachedAccountWorkspaces.mockReset();
     mockInvalidateCachedAccountWorkspaces.mockReset();
     mockGetLatestVersion.mockReset();
+    leaseUpdateCalls = [];
+    leaseRenewedRows = [];
+    leaseUpdateThrows = null;
 
     // Default mocks
     mockGetCachedOpenWorkspaceIds.mockResolvedValue(null);
@@ -313,5 +331,127 @@ describe('POST /api/workers/heartbeat', () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ok).toBe(true);
+  });
+
+  // ─── Worker lease renewal ─────────────────────────────────────────────────
+  //
+  // The heartbeat is where INFERRED liveness becomes ASSERTED liveness. It runs
+  // on a timer, so renewal keeps working while a worker sits inside one long
+  // silent tool call — the case where `updatedAt` freezes and the server cannot
+  // tell a busy worker from a dead one.
+  describe('worker lease renewal', () => {
+    function authed() {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockWorkspacesFindMany.mockResolvedValue([]);
+      mockHeartbeatsFindFirst.mockResolvedValue(null);
+    }
+
+    it('renews leases for the reported worker ids', async () => {
+      authed();
+      leaseRenewedRows = [{ id: 'w-1' }, { id: 'w-2' }];
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerIds: ['w-1', 'w-2'] },
+      }));
+
+      expect(res.status).toBe(200);
+      expect((await res.json()).leasesRenewed).toBe(2);
+      expect(leaseUpdateCalls).toHaveLength(1);
+      // Lease must be pushed into the future, not merely touched.
+      expect(leaseUpdateCalls[0].set.leaseExpiresAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('scopes renewal to the calling account', async () => {
+      // Otherwise one account's heartbeat could extend another's leases and keep
+      // dead workers alive indefinitely.
+      authed();
+      leaseRenewedRows = [{ id: 'w-1' }];
+
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerIds: ['w-1'] },
+      }));
+
+      const conds = JSON.stringify(leaseUpdateCalls[0].where);
+      expect(conds).toContain('account-1');
+    });
+
+    it('scopes renewal to live statuses so a terminal worker cannot be revived', async () => {
+      authed();
+      leaseRenewedRows = [];
+
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerIds: ['w-done'] },
+      }));
+
+      const conds = JSON.stringify(leaseUpdateCalls[0].where);
+      expect(conds).toContain('running');
+      // A completed/failed worker must not be renewable.
+      expect(conds).not.toContain('completed');
+      expect(conds).not.toContain('failed');
+    });
+
+    it('writes no lease at all when the runner reports no ids (legacy runner)', async () => {
+      // THE safety property for rollout: a runner that does not renew leaves
+      // lease_expires_at NULL, and NULL must stay legacy-governed. If a heartbeat
+      // without ids wrote a lease, every worker on an un-upgraded runner would be
+      // reaped the moment lease authority is switched on.
+      authed();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766' },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(leaseUpdateCalls).toHaveLength(0);
+      expect((await res.json()).leasesRenewed).toBe(0);
+    });
+
+    it('treats an empty id list as "I own no live workers", not as a renewal', async () => {
+      authed();
+
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerIds: [] },
+      }));
+
+      expect(leaseUpdateCalls).toHaveLength(0);
+    });
+
+    it('ignores non-string ids rather than passing them to the query', async () => {
+      authed();
+      leaseRenewedRows = [{ id: 'w-1' }];
+
+      await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerIds: ['w-1', null, 42] },
+      }));
+
+      expect(leaseUpdateCalls[0].where).toBeDefined();
+      const inArrayCond = JSON.stringify(leaseUpdateCalls[0].where);
+      expect(inArrayCond).toContain('w-1');
+      expect(inArrayCond).not.toContain('42');
+    });
+
+    it('still returns 200 when lease renewal throws', async () => {
+      // Renewal is an addition to the heartbeat, never a new way for it to fail:
+      // a runner that cannot heartbeat looks offline, which is far worse.
+      authed();
+      leaseUpdateThrows = new Error('db unavailable');
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', activeWorkerIds: ['w-1'] },
+      }));
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.ok).toBe(true);
+      expect(data.leasesRenewed).toBe(0);
+    });
   });
 });

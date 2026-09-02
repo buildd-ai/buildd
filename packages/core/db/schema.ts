@@ -27,6 +27,13 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
   plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
+
+  // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
+  // teams that never set one behave exactly as before. Used for anything rendered to a
+  // shared or external surface — PR activity comments, new schedule defaults, mission
+  // active hours — where there is no single known viewer. Seeded from the detected zone
+  // of the first member to sign in. See packages/core/timezone.ts.
+  timezone: text('timezone'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -84,6 +91,11 @@ export const users = pgTable('users', {
   email: text('email').notNull(),
   name: text('name'),
   image: text('image'),
+
+  // Derived silently from the browser (Intl.DateTimeFormat().resolvedOptions().timeZone),
+  // never asked for. The zone THIS person sees their own dashboard in; falls back to the
+  // team zone, then UTC.
+  timezone: text('timezone'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -1050,6 +1062,17 @@ export const workers = pgTable('workers', {
   turns: integer('turns').default(0).notNull(),
   startedAt: timestamp('started_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Worker liveness lease. Renewed by the owning runner's 60s liveness timer
+  // (deterministic code, NOT the agent loop) so a worker sitting inside one long
+  // silent tool call keeps asserting liveness — the case that made "no update in
+  // N minutes" indistinguishable from a dead process.
+  //
+  // NULL means the owning runner does not renew leases (older build). Such rows
+  // MUST fall back to the legacy updatedAt staleness rule; never treat NULL as
+  // an expired lease, or every worker on an un-upgraded runner is reaped at once.
+  // Because of that, nothing may seed this at claim time: renewal is the only
+  // writer, so NULL unambiguously means "this runner doesn't do leases".
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
   error: text('error'),
   // Runner direct access URL (e.g., https://runner--workspace.coder.dev or http://100.x.x.x:8766)
   localUiUrl: text('local_ui_url'),
@@ -1240,10 +1263,25 @@ export const missionNotes = pgTable('mission_notes', {
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
   taskId: uuid('task_id'),
   workerId: uuid('worker_id'),
-  authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
+  // 'mcp' is a caller that is NOT tied to a running task — an external script or
+  // agent hitting the API/MCP directly with an account token. 'agent' is a worker
+  // acting from inside a task (actorLabel names the task). Keeping them distinct
+  // is the point of this table: "System" must not absorb work a human or an
+  // outside caller did to the mission.
+  authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system' | 'mcp'>(),
   type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance' | 'reviewer_approved' | 'reviewer_request_changes' | 'reviewer_escalated' | 'reviewer_superseded'>(),
   title: text('title').notNull(),
   body: text('body'),
+  // Human-readable actor detail: user email, "task \"<title>\" (<id>)", account
+  // name, or — for authorType='system' — the predicate that fired. Structured
+  // separately from `body` so the UI can render it in the feed header rather
+  // than requiring a reader to parse prose.
+  actorLabel: text('actor_label'),
+  // Groups repeated low-signal edits (config churn) from the same actor within a
+  // short window into one row instead of one row per field per edit. Null means
+  // "never collapse this entry" (status changes, task links, criteria edits).
+  collapseKey: text('collapse_key'),
+  collapseCount: integer('collapse_count').default(1).notNull(),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
@@ -1265,6 +1303,7 @@ export const missionNotes = pgTable('mission_notes', {
   replyToIdx: index('mission_notes_reply_to_idx').on(t.replyTo),
   typeIdx: index('mission_notes_type_idx').on(t.type),
   statusIdx: index('mission_notes_status_idx').on(t.status),
+  collapseKeyIdx: index('mission_notes_collapse_key_idx').on(t.missionId, t.collapseKey, t.createdAt),
 }));
 
 // observations table removed — memory is now stored in external memory service

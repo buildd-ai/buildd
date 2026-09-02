@@ -531,8 +531,21 @@ export class BuilddClient {
     redactionCounts?: Record<string, number>,
     sandboxEnabled?: boolean | null,
     sandboxProbeAt?: string | null,
-  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string }> {
+    /**
+     * Ids of workers this runner still owns and considers live. The server
+     * renews each one's lease, which is how a worker asserts liveness while
+     * inside a long silent tool call. Omitted by older runners — the server
+     * must then leave lease_expires_at NULL and fall back to the legacy
+     * updatedAt staleness rule for those workers.
+     */
+    activeWorkerIds?: string[],
+  ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number }> {
     const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
+    if (activeWorkerIds) {
+      // Sent even when empty: an empty list is a meaningful assertion ("I own no
+      // live workers"), distinct from an old runner that never reports ids.
+      payload.activeWorkerIds = activeWorkerIds;
+    }
     if (redactionCounts && Object.keys(redactionCounts).length > 0) {
       payload.redactionCounts = redactionCounts;
     }
@@ -544,7 +557,7 @@ export class BuilddClient {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit };
+    return { viewerToken: data.viewerToken, pendingTaskCount: data.pendingTaskCount, latestCommit: data.latestCommit, leasesRenewed: data.leasesRenewed };
   }
 
   async runCleanup(): Promise<{ cleaned: { stalledWorkers: number; orphanedTasks: number; expiredPlans: number } }> {

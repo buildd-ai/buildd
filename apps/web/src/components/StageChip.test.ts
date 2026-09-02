@@ -56,6 +56,33 @@ describe('deriveStage — completed task + PR state', () => {
     })).toBe('CI');
   });
 
+  it('returns CI_FAILING when prLifecycleStatus is ci_failed', () => {
+    expect(deriveStage({
+      taskStatus: 'completed',
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prLifecycleStatus: 'ci_failed',
+      mergedAt: null,
+    })).toBe('CI_FAILING');
+  });
+
+  it('returns MERGE when prLifecycleStatus is ci_green', () => {
+    expect(deriveStage({
+      taskStatus: 'completed',
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prLifecycleStatus: 'ci_green',
+      mergedAt: null,
+    })).toBe('MERGE');
+  });
+
+  it('returns OPEN when prLifecycleStatus is conflict (not terminal, no CI)', () => {
+    expect(deriveStage({
+      taskStatus: 'completed',
+      prUrl: 'https://github.com/org/repo/pull/1',
+      prLifecycleStatus: 'conflict',
+      mergedAt: null,
+    })).toBe('OPEN');
+  });
+
   it('returns DONE for a completed task with no PR', () => {
     expect(deriveStage({
       taskStatus: 'completed',

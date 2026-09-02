@@ -6,6 +6,7 @@ import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd
 import { type DerivedMetric, derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 
 /**
  * The one mission-completion predicate.
@@ -45,6 +46,7 @@ export type CompletionDecisionCode =
   | 'no_deliverables'
   | 'pending_deliverables'
   | 'infra_stalled'
+  | 'awaiting_merge'
   | 'criteria_failed'
   | 'criteria_pending'
   | 'criteria_unverified';
@@ -97,6 +99,14 @@ export interface MissionCompletionDecision {
   criteriaEvaluatedAt: string | null;
   /** Deliverables that failed on infrastructure, not on their own merits. */
   infraStalledTitles: string[];
+  /**
+   * Terminal (`completed`) deliverables whose latest worker produced a PR that
+   * has not merged — open, conflicted, CI-failing, or closed without merging.
+   * The task's own status is `completed`, but its PR's state is the actual
+   * terminal state (task facae217). Blocks completion until it merges.
+   */
+  awaitingMerge: number;
+  awaitingMergeDetails: Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>;
 }
 
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -138,7 +148,10 @@ export const AWAITING_VERIFICATION_NOTE_TITLE = 'Mission awaiting verification';
  *     completion (a monitoring mission's output is its heartbeat cycles)
  *  4. no deliverable is infra-stalled (failed for infrastructure reasons after
  *     exhausting retries — completing would hide the stall)
- *  5. goal criteria fold to `pass`, evaluating them now if no verdict exists
+ *  5. no `completed` deliverable has an unmerged PR (open, conflicted,
+ *     CI-failing, or closed without merging) — a task's status is not its
+ *     terminal state, its PR's state is
+ *  6. goal criteria fold to `pass`, evaluating them now if no verdict exists
  *
  * Pending housekeeping rows do NOT block: they are reported in `pendingAllTasks`
  * for the release trigger, which additionally waits for them. That is a timing
@@ -187,6 +200,8 @@ export async function canCompleteMission(
     criteriaVerdict: derivedUnavailable<CriterionVerdict>('not_evaluated'),
     criteriaEvaluatedAt: null as string | null,
     infraStalledTitles: [] as string[],
+    awaitingMerge: 0,
+    awaitingMergeDetails: [] as Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>,
   };
 
   if (!mission) {
@@ -228,6 +243,14 @@ export async function canCompleteMission(
     columns: {
       id: true, status: true, title: true, mode: true, kind: true,
       taskClass: true, creationSource: true, category: true, result: true,
+    },
+    with: {
+      // Latest worker only — enough to answer "did this deliverable's PR merge?"
+      workers: {
+        columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+        orderBy: (w, { desc: d }) => [d(w.startedAt)],
+        limit: 1,
+      },
     },
   });
 
@@ -293,6 +316,35 @@ export async function canCompleteMission(
       reason:
         `${infraStalled.length} deliverable task(s) failed on infrastructure and need manual intervention: ` +
         base.infraStalledTitles.map(t => `"${t}"`).join(', '),
+    };
+  }
+
+  // A task's status is not its terminal state — its PR's state is (task facae217).
+  // `pending` above only catches non-terminal rows, so a deliverable that reached
+  // `completed` with an unmerged PR sails through it; this is the check that
+  // would have caught M4 (dormancy: "all deliverables terminal; no goal
+  // criteria" while PR #2020 sat open with changes requested). Blocks on ANY
+  // unmerged PR — open, conflicted, CI-failing, or closed without merging —
+  // because none of those states means the deliverable shipped.
+  const awaitingMerge = deliverables.filter(t => {
+    if (t.status !== 'completed') return false;
+    const w = (t as unknown as { workers?: Array<{ prUrl: string | null; mergedAt: Date | string | null }> }).workers?.[0];
+    return !!w?.prUrl && !w.mergedAt;
+  });
+  if (awaitingMerge.length > 0) {
+    base.awaitingMerge = awaitingMerge.length;
+    base.awaitingMergeDetails = awaitingMerge.map(t => {
+      const w = (t as unknown as { workers?: Array<{ prUrl: string | null; prNumber: number | null }> }).workers?.[0];
+      return { taskId: t.id, title: t.title, prNumber: w?.prNumber ?? null, prUrl: w?.prUrl ?? null };
+    });
+    const named = base.awaitingMergeDetails
+      .map(d => `"${d.title}"${d.prNumber ? ` (PR #${d.prNumber})` : ''}`)
+      .join(', ');
+    return {
+      ...base,
+      ok: false,
+      code: 'awaiting_merge',
+      reason: `${awaitingMerge.length} deliverable task(s) completed but not merged: ${named}`,
     };
   }
 
@@ -398,6 +450,8 @@ export async function completeMissionIfVerified(
     criteriaCount: decision.criteriaCount,
     criteriaVerdict: decision.criteriaVerdict,
     criteriaEvaluatedAt: decision.criteriaEvaluatedAt,
+    awaitingMerge: decision.awaitingMerge,
+    awaitingMergeDetails: decision.awaitingMergeDetails,
     ...(opts.predicate ? { predicate: opts.predicate } : {}),
   }).catch(e => console.error(`[mission-completion] decision event failed for ${missionId}:`, e));
 
@@ -411,7 +465,7 @@ export async function completeMissionIfVerified(
     const worthANote =
       decision.code !== 'mission_not_found' &&
       decision.code !== 'mission_not_active' &&
-      (opts.proposed === true || decision.code.startsWith('criteria_') || decision.code === 'infra_stalled');
+      (opts.proposed === true || decision.code.startsWith('criteria_') || decision.code === 'infra_stalled' || decision.code === 'awaiting_merge');
     if (worthANote) await postAwaitingVerificationNote(missionId, opts.path, decision);
     return { completed: false, decision };
   }
@@ -444,20 +498,19 @@ export async function completeMissionIfVerified(
   }
 
   const statusSummary = Object.entries(decision.deliverableStatusCounts).map(([s, n]) => `${s}: ${n}`).join(', ');
-  await db.insert(missionNotes).values({
+  await postMissionFeedEvent({
     missionId,
-    authorType: 'system',
     type: 'update',
     title: 'Mission completed',
     body:
-      `Completed via ${opts.path}.\n\n` +
-      `Predicate: ${decision.reason}\n` +
       `Deliverables: ${statusSummary || 'none'}\n` +
       `Goal criteria: ${decision.criteriaVerdict.kind === 'value' ? decision.criteriaVerdict.value : `unavailable (${decision.criteriaVerdict.reason})`}` +
       (decision.criteriaEvaluatedAt ? ` (evaluated ${decision.criteriaEvaluatedAt})` : '') +
       (opts.predicate ? `\nSignal: ${opts.predicate}` : ''),
-    status: 'open',
-  } as any).catch(e => console.error(`[mission-completion] completion note failed for ${missionId}:`, e));
+    // System is only ever right here because nothing external claimed this —
+    // the label names the exact predicate that fired, not just "the engine did it".
+    actor: systemActor(`completion predicate (${opts.path}): ${decision.reason}`),
+  }).catch(e => console.error(`[mission-completion] completion note failed for ${missionId}:`, e));
 
   await checkAndUnblockDependentMissions(missionId, 'completed').catch(e =>
     console.error(`[mission-completion] unblock failed for ${missionId}:`, e)

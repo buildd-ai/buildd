@@ -129,8 +129,27 @@ function PrStatusLine({
   if (!lw?.prUrl || !lw.prNumber) return null;
 
   const isMerged = !!lw.mergedAt || lw.prLifecycleStatus === 'merged';
-  const isClosed = lw.prLifecycleStatus === 'closed';
-  if (isMerged || isClosed) return null;
+  if (isMerged) return null;
+
+  // Closed without merging is its own terminal state — render it distinctly
+  // rather than hiding the line (which reads as "nothing to see here" and
+  // used to let the row pass as done, AC-4).
+  if (lw.prLifecycleStatus === 'closed') {
+    return (
+      <div className="pl-7 pb-0.5 flex items-center gap-2 flex-wrap">
+        <a
+          href={lw.prUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="font-mono text-[10px] text-accent-text hover:underline"
+        >
+          #{lw.prNumber}
+        </a>
+        <span className="text-[10px] text-text-muted">·</span>
+        <span className="text-[10px] text-status-error">closed — not merged</span>
+      </div>
+    );
+  }
 
   const isWaitingMerge = task.status === 'completed';
   const statusEntry = lw.prLifecycleStatus ? PR_STATUS[lw.prLifecycleStatus] : null;
@@ -255,7 +274,6 @@ function TaskRow({
     !!latestWorker.prNumber &&
     latestWorker.prLifecycleStatus !== 'merged' &&
     !latestWorker.mergedAt &&
-    latestWorker.prLifecycleStatus !== 'closed' &&
     task.reviewerNote?.type !== 'reviewer_escalated' &&
     task.reviewerNote?.type !== 'reviewer_approved';
 

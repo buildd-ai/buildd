@@ -5,7 +5,7 @@ import { resolveCompletedTask } from '@/lib/task-dependencies';
 import { checkWorkerDeliverables, getWorkerArtifactCount, getLatestWorkerArtifactWithStructuredOutput } from '@/lib/worker-deliverables';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { classifyStaleExit, consumesRetryAttempt, SILENT_START_MAX_TURNS, type WorkerExitCause } from '@/lib/worker-exit-taxonomy';
-import { WORKER_STALE_REAP_MS, type LoopConfig } from '@buildd/shared';
+import { WORKER_STALE_REAP_MS, WORKER_LEASE_TTL_MS, type LoopConfig } from '@buildd/shared';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 
 /** Maximum number of failed worker attempts before a task is permanently failed */
@@ -281,6 +281,70 @@ async function resolveStaleTask(
  * periodic cleanup endpoint — important now that heartbeat-driven
  * claiming is removed and claim is called less frequently.
  */
+/**
+ * Shadow-mode reporting for the worker liveness lease.
+ *
+ * The lease is renewed by the runner's 60s liveness TIMER, so unlike
+ * `updatedAt` it keeps advancing while a worker sits inside one long silent
+ * tool call. That makes it a strictly better liveness signal — but it is not yet
+ * authoritative, so this only records what it WOULD have decided.
+ *
+ * Two disagreement directions, and they mean opposite things:
+ *
+ *  - `legacyStaleButLeaseValid` — the legacy rule is about to kill a worker
+ *    whose runner is still actively vouching for it. These are the
+ *    false-positive kills the lease exists to eliminate, so a non-zero count
+ *    here is EVIDENCE FOR flipping, not against.
+ *
+ *  - `leaseExpiredNotLegacy` — the lease would have reclaimed a worker the
+ *    legacy rule is still waiting on. Expected and desirable: it is the orphan
+ *    reclamation window shrinking from ~35min to ~5min. Should be dominated by
+ *    workers whose runner died.
+ *
+ * Exported for testing: the log line is the deliverable of this phase, so its
+ * content is asserted rather than left to chance.
+ */
+export function logLeaseShadowDisagreements(input: {
+  accountId: string;
+  leaseExpiredNotLegacy: Array<{ id: string; taskId: string | null; leaseExpiresAt: Date | null; updatedAt?: Date | null }>;
+  legacyStaleButLeaseValid: Array<{ id: string; taskId: string | null; leaseExpiresAt: Date | null }>;
+}): { agreed: boolean } {
+  const { accountId, leaseExpiredNotLegacy, legacyStaleButLeaseValid } = input;
+  if (leaseExpiredNotLegacy.length === 0 && legacyStaleButLeaseValid.length === 0) {
+    return { agreed: true };
+  }
+
+  if (legacyStaleButLeaseValid.length > 0) {
+    // The high-signal direction: healthy workers the legacy rule is killing.
+    console.warn(
+      `[lease-shadow] account ${accountId}: ${legacyStaleButLeaseValid.length} worker(s) ` +
+      `being reaped by the legacy updatedAt rule still hold a VALID lease — the runner is ` +
+      `actively vouching for them. Under lease authority these would survive. ` +
+      JSON.stringify(legacyStaleButLeaseValid.map(w => ({
+        workerId: w.id,
+        taskId: w.taskId,
+        leaseExpiresAt: w.leaseExpiresAt?.toISOString() ?? null,
+      }))),
+    );
+  }
+
+  if (leaseExpiredNotLegacy.length > 0) {
+    console.log(
+      `[lease-shadow] account ${accountId}: ${leaseExpiredNotLegacy.length} worker(s) have an ` +
+      `EXPIRED lease but are not yet legacy-stale — under lease authority these would be ` +
+      `reclaimed now instead of after the full ${Math.round(WORKER_STALE_REAP_MS / 60000)}min window. ` +
+      JSON.stringify(leaseExpiredNotLegacy.map(w => ({
+        workerId: w.id,
+        taskId: w.taskId,
+        leaseExpiresAt: w.leaseExpiresAt?.toISOString() ?? null,
+        leaseTtlMin: Math.round(WORKER_LEASE_TTL_MS / 60000),
+      }))),
+    );
+  }
+
+  return { agreed: false };
+}
+
 export async function cleanupStaleWorkers(accountId: string) {
   // 1. Auto-expire stale workers:
   //    - 'running'/'starting': no update for WORKER_STALE_REAP_MS (runner hard
@@ -329,8 +393,54 @@ export async function cleanupStaleWorkers(accountId: string) {
       // Needed to tell a never-started row and a silent session apart from a
       // worker that did real work before going offline.
       status: true, startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
+      // Shadow-mode only: compared against the legacy verdict, never acted on.
+      leaseExpiresAt: true,
     },
   });
+
+  // ── Lease shadow evaluation (observe-only) ────────────────────────────────
+  // The lease is NOT authoritative yet. We compute what it WOULD decide and log
+  // every disagreement with the legacy rule, so the flip can be made against
+  // real production evidence rather than hope. Deliberately wrapped: a bug in
+  // observation must never affect reaping.
+  try {
+    // Explicit db.select (not the relational query builder) so this observation
+    // query cannot perturb the ordered findMany sequence the reaper's real rules
+    // depend on — shadow code must be incapable of changing reaping behaviour.
+    const leaseExpiredNotLegacy = await db
+      .select({
+        id: workers.id,
+        taskId: workers.taskId,
+        leaseExpiresAt: workers.leaseExpiresAt,
+        updatedAt: workers.updatedAt,
+      })
+      .from(workers)
+      .where(and(
+        eq(workers.accountId, accountId),
+        inArray(workers.status, ['running', 'starting']),
+        // NULL lease = runner does not renew leases (older build). Those rows
+        // are legacy-governed and are not lease decisions at all.
+        sql`${workers.leaseExpiresAt} IS NOT NULL`,
+        lt(workers.leaseExpiresAt, new Date()),
+        staleWorkers.length > 0
+          ? notInArray(workers.id, staleWorkers.map(w => w.id))
+          : sql`true`,
+      ));
+
+    const legacyStaleButLeaseValid = staleWorkers.filter(w =>
+      (w.status === 'running' || w.status === 'starting') &&
+      w.leaseExpiresAt != null &&
+      w.leaseExpiresAt >= new Date(),
+    );
+
+    logLeaseShadowDisagreements({
+      accountId,
+      leaseExpiredNotLegacy,
+      legacyStaleButLeaseValid,
+    });
+  } catch (err) {
+    console.error('[lease-shadow] evaluation failed (non-fatal, reaping unaffected):', err);
+  }
 
   if (staleWorkers.length > 0) {
     const staleWorkerIds = staleWorkers.map(w => w.id);

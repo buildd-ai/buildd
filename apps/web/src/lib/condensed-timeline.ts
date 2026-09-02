@@ -21,13 +21,6 @@ export type CondensedTask = {
   status: string;
   dependsOn: string[] | null;
   workers: CondensedTaskWorker[];
-  /**
-   * Precomputed by the caller: is there a live action the human must take?
-   * Under agent-review policy: true only when reviewer_approved or reviewer_escalated.
-   * Under other policies: always true (any open PR awaits human merge).
-   * Undefined = backward-compat default (treated as true).
-   */
-  humanActionPending?: boolean;
 };
 
 export type TimelineGroups<T extends CondensedTask = CondensedTask> = {
@@ -53,6 +46,13 @@ function hasLiveWorker(task: CondensedTask): boolean {
   return (LIVE_WORKER_STATUSES as readonly string[]).includes(latest.status);
 }
 
+/**
+ * A `completed` task's terminal state is its PR's state, not the task's
+ * (task facae217) — an open, conflicted, or CI-failing PR always routes here,
+ * regardless of merge-policy tier or reviewer verdict. Never bury an unmerged
+ * PR in the done pile: a reviewer's "changes requested" with a retry queued
+ * still means the work is not finished, whether or not the retry has started.
+ */
 function isWaitingOnYou(task: CondensedTask): boolean {
   if (task.status !== 'completed') return false;
   const latest = task.workers[0];
@@ -61,8 +61,6 @@ function isWaitingOnYou(task: CondensedTask): boolean {
   if (latest.mergedAt) return false;
   if (latest.prLifecycleStatus === 'closed') return false;
   if (latest.prLifecycleStatus === 'merged') return false;
-  // Only wait when there is a live human action (explicit false = not a human action)
-  if (task.humanActionPending === false) return false;
   return true;
 }
 

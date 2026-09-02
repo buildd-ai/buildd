@@ -939,12 +939,27 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Reopen a completed mission when a new open task is added to it.
+    // A task filed against a mission — by the dashboard, a plain API call, or an
+    // external MCP caller — is exactly the kind of silent work the mission feed
+    // used to miss. Attribute it, then reopen a completed mission if needed.
     // Fire-and-forget — idempotent; no-op when the mission is not completed.
+    // Lazily imported (like the reopen check below) so route modules that never
+    // touch a mission-linked task don't pull in mission-feed's db/schema deps.
     if (task.missionId) {
-      import('@/lib/mission-loop').then(m => m.reopenCompletedMission(task.missionId!)).catch(err =>
-        console.error('[task-create] mission reopen check failed:', err)
-      );
+      const missionId = task.missionId;
+      import('@/lib/mission-feed').then(async (feedMod) => {
+        const feedActor = await feedMod.resolveFeedActor({ user, apiAccount, actorWorkerId: createdByWorkerId ?? null });
+        await feedMod.postMissionFeedEvent({
+          missionId,
+          type: 'update',
+          title: `Task created: ${task.title}`,
+          body: `Task ${task.id}`,
+          actor: feedActor,
+          taskId: task.id,
+        });
+        const { reopenCompletedMission } = await import('@/lib/mission-loop');
+        await reopenCompletedMission(missionId, feedActor);
+      }).catch(err => console.error('[task-create] mission-feed/reopen failed:', err));
     }
 
     return NextResponse.json({ ...task, subjectIntakeOutcome: intake.outcome });

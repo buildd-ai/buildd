@@ -9,7 +9,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import type { MissionNoteType, MissionNoteAuthorType, MissionNoteStatus } from '@buildd/shared';
 
 const VALID_TYPES: MissionNoteType[] = ['decision', 'question', 'warning', 'suggestion', 'update', 'reply', 'guidance'];
-const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system'];
+const VALID_AUTHOR_TYPES: MissionNoteAuthorType[] = ['agent', 'user', 'system', 'mcp'];
 const VALID_STATUSES: MissionNoteStatus[] = ['open', 'answered', 'dismissed'];
 
 async function resolveMissionAccess(req: NextRequest, missionId: string) {

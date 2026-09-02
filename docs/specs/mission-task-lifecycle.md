@@ -2,12 +2,12 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-08-30
-summary: The coordination layer MUST allow only documented task, worker, and mission transitions, derive mission health from live tasks, name every claim gate, and refuse mission completion without a passing criteria verdict.
+last_verified: 2026-09-01
+summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/app/api/workers/[id]/route.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/condensed-timeline.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
-keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou]
 supersedes: []
 ---
 # Mission and Task Lifecycle
@@ -345,11 +345,13 @@ caller: the heartbeat's `missionComplete` signal, the heartbeat prepass, the
 dormancy check, the independent evaluation task, the on-demand criteria route,
 and the `on_mission_complete` release trigger. It returns
 `{ ok, code, reason, pendingDeliverables, pendingByStatus, pendingAllTasks,
-criteriaVerdict, ... }`, and `completeMissionIfVerified` performs the write.
+awaitingMerge, awaitingMergeDetails, criteriaVerdict, ... }`, and
+`completeMissionIfVerified` performs the write.
 
 Refusal order (first failure is the reported `code`): `mission_not_found` →
 `mission_not_active` → `pending_deliverables` → `no_deliverables` →
-`infra_stalled` → `criteria_failed` / `criteria_pending` / `criteria_unverified`.
+`infra_stalled` → `awaiting_merge` → `criteria_failed` / `criteria_pending` /
+`criteria_unverified`.
 
 **Invariants**:
 - No completion path is exempt from the predicate. In particular the heartbeat
@@ -372,6 +374,34 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   `attempt`, so a pending CI retry counts. Housekeeping rows (including a
   criterion's own verification task) MUST NOT block, or a `command` criterion
   would block on itself and the mission could never close.
+- **A task's terminal status is not its terminal state — its PR's state is**
+  (task facae217). A `completed` deliverable whose latest worker produced a PR
+  that has not merged (`prUrl` set, `mergedAt` null — open, conflicted,
+  CI-failing, or closed without merging) blocks completion with
+  `code = 'awaiting_merge'`, naming the task title and PR number in `reason`
+  and `awaitingMergeDetails`. This check runs BEFORE the `pending_deliverables`
+  short-circuit would otherwise matter and before criteria evaluation, because
+  `pending_deliverables` only ever sees non-terminal rows — a deliverable that
+  already reached `completed` with an unmerged PR sails past it. It also runs
+  regardless of whether criteria are stated or would pass: an unmerged PR means
+  the deliverable did not ship, independent of what the criteria say. Observed
+  as mission 50d29836 ("M4"): dormancy's own reason string read "All
+  deliverables terminal; mission states no goal criteria" while the sole
+  deliverable's PR sat open with a reviewer's "changes requested" verdict and a
+  retry queued — dormancy is not exempt from this check any more than the
+  heartbeat is; both route through the same predicate. The refusal note posts
+  unconditionally for `awaiting_merge` (not gated on `opts.proposed`), unlike
+  the criteria block notes, because dormancy never sets `proposed` and the
+  M4 refusal must still be visible in the feed.
+- The `awaiting_merge` gate does not distinguish "queued retry in flight" from
+  "nobody has looked at it yet" — both are an unmerged PR on a completed task,
+  and both block. A mission progress surface may render them differently (see
+  `mission-structure-view.md` / `CondensedTimeline.tsx`'s `waitingOnYou` group,
+  which every completed task with an unmerged PR enters unconditionally — no
+  merge-policy-tier or reviewer-verdict carve-out decides group placement,
+  after the same incident revealed one had silently reintroduced this bug at
+  the UI layer), but the completion predicate treats every unmerged-PR shape
+  the same way: blocked, no exceptions.
 - A mission with no deliverable rows at all MAY be completed only by an explicit
   proposal (`proposed: true`), never by dormancy: a monitoring mission's output
   is its heartbeat cycles, which are housekeeping rows.
@@ -476,6 +506,18 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
 - AC-11i: GIVEN a completed `command` verification task carrying no record that
   the command ran WHEN its outcome is handed back THEN the criterion is NOT set
   to `pass`.
+- AC-11o: GIVEN a mission with one `completed` deliverable whose latest worker
+  has `prUrl` set and `mergedAt` null, and no `goalCriteria` stated (the M4
+  shape) WHEN dormancy OR the heartbeat attempts completion THEN the mission
+  stays `active` with `code = 'awaiting_merge'`, the reason and
+  `awaitingMergeDetails` name the task title and PR number, and a feed note
+  posts even though nothing "proposed" completion.
+- AC-11p: GIVEN the same mission WHEN the PR merges (`mergedAt` set) THEN a
+  subsequent completion attempt with no other blockers succeeds.
+- AC-11q: GIVEN a mission with a `completed` deliverable whose PR was closed
+  without merging (`prLifecycleStatus = 'closed'`, `mergedAt` null) WHEN
+  completion is attempted THEN it is refused with `code = 'awaiting_merge'` —
+  a closed-unmerged PR is not a passing outcome either.
 
 ### Blocked-Verdict Consumer
 
@@ -554,7 +596,15 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
 - Prose criteria: `apps/web/src/lib/mission-criteria-prose.ts` —
   `resolveProseCriteria()`, `handleProseEvalOutcome()`
 - Pure evaluator + form validation: `packages/core/mission-helpers.ts` —
-  `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`
+  `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`,
+  `computeMissionProgress()` (`awaitingMerge` count, `MissionSegmentState`
+  `'half'` = awaiting merge / `'notch'` = closed-unmerged or failed —
+  `completedTasks` counts only `'solid'` segments, never `'half'`)
+- Timeline group placement: `apps/web/src/lib/condensed-timeline.ts` —
+  `isWaitingOnYou()` (every `completed` task with an unmerged, non-closed PR
+  enters `waitingOnYou`, unconditionally), consumed by
+  `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` and
+  `CondensedTimeline.tsx` (`PrStatusLine` renders closed-unmerged distinctly)
 - Callers: `apps/web/src/lib/mission-loop.ts`,
   `apps/web/src/app/api/cron/schedules/route.ts` (heartbeat prepass site),
   `apps/web/src/lib/mission-evaluation.ts`,

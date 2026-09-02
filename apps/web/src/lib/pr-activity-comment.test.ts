@@ -16,6 +16,17 @@ const mockGithubApi = mock(async (_installationId: number, path: string, options
 
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
+// ── Team timezone mock ────────────────────────────────────────────────────────
+
+let workspaceTimezone = 'UTC';
+const workspaceTimezoneCalls: Array<string | null | undefined> = [];
+mock.module('@/lib/team-timezone', () => ({
+  getWorkspaceTimezone: async (workspaceId?: string | null) => {
+    workspaceTimezoneCalls.push(workspaceId);
+    return workspaceTimezone;
+  },
+}));
+
 const {
   ACTIVITY_COMMENT_MARKER,
   SPINNER_PATH,
@@ -33,6 +44,8 @@ beforeEach(() => {
   calls.length = 0;
   listResponse = [];
   shouldThrow = false;
+  workspaceTimezone = 'UTC';
+  workspaceTimezoneCalls.length = 0;
   mockGithubApi.mockClear();
 });
 
@@ -241,5 +254,92 @@ describe('appendPrActivity', () => {
     });
 
     expect(result).toEqual({ action: 'failed' });
+  });
+});
+
+describe('timezone rendering', () => {
+  const entries = [
+    { kind: 'reviewing' as const, at: '2026-08-29T14:03:00.000Z' },
+    { kind: 'ci_fixing' as const, detail: 'attempt 1 of 3', at: '2026-08-29T15:20:00.000Z' },
+  ];
+
+  it('stamps in UTC when no zone is given (unchanged default)', () => {
+    const body = renderPrActivityComment(entries);
+    expect(body).toContain('`Aug 29, 14:03 UTC`');
+    expect(body).toContain('since Aug 29, 15:20 UTC');
+  });
+
+  it('stamps every line and the header in the requested zone', () => {
+    const body = renderPrActivityComment(entries, 'America/New_York');
+    expect(body).toContain('`Aug 29, 10:03 EDT`');
+    expect(body).toContain('`Aug 29, 11:20 EDT`');
+    expect(body).toContain('since Aug 29, 11:20 EDT');
+    expect(body).not.toContain('UTC');
+  });
+
+  it('falls back to UTC for a zone this runtime does not know', () => {
+    expect(renderPrActivityComment(entries, 'Mars/Olympus')).toContain('`Aug 29, 14:03 UTC`');
+  });
+
+  it('does not persist the zone in the state block — it is applied at render time', () => {
+    const body = renderPrActivityComment(entries, 'America/New_York');
+    const recovered = parsePrActivityState(body);
+    expect(recovered).toHaveLength(2);
+    expect(JSON.stringify(recovered)).not.toContain('New_York');
+    // Re-rendering the recovered entries in a different zone re-stamps them.
+    expect(renderPrActivityComment(recovered, 'Europe/Berlin')).toContain('`Aug 29, 16:03 ');
+  });
+
+  it('appendPrActivity stamps a new comment in the owning team zone', async () => {
+    workspaceTimezone = 'America/New_York';
+
+    await appendPrActivity({
+      installationId: 42,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 7,
+      entry: { kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' },
+      workspaceId: 'ws-1',
+    });
+
+    expect(workspaceTimezoneCalls).toEqual(['ws-1']);
+    const post = calls.find((c) => c.options.method === 'POST')!;
+    expect(bodyOf(post)).toContain('Aug 29, 10:03 EDT');
+  });
+
+  it('appendPrActivity re-stamps the whole log in the team zone when editing', async () => {
+    workspaceTimezone = 'Europe/Berlin';
+    listResponse = [
+      {
+        id: 55,
+        body: renderPrActivityComment([{ kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' }], 'UTC'),
+      },
+    ];
+
+    await appendPrActivity({
+      installationId: 42,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 7,
+      entry: { kind: 'ci_fixing', detail: 'attempt 1 of 3', at: '2026-08-29T15:20:00.000Z' },
+      workspaceId: 'ws-1',
+    });
+
+    const patch = calls.find((c) => c.options.method === 'PATCH')!;
+    const body = bodyOf(patch);
+    expect(body).toContain('`Aug 29, 16:03 ');
+    expect(body).toContain('`Aug 29, 17:20 ');
+    expect(body).not.toContain('UTC');
+  });
+
+  it('stamps in UTC when no workspace is supplied, without a lookup', async () => {
+    await appendPrActivity({
+      installationId: 42,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 7,
+      entry: { kind: 'reviewing', at: '2026-08-29T14:03:00.000Z' },
+    });
+
+    expect(workspaceTimezoneCalls).toEqual([]);
+    const post = calls.find((c) => c.options.method === 'POST')!;
+    expect(bodyOf(post)).toContain('Aug 29, 14:03 UTC');
   });
 });

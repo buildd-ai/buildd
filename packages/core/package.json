@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.194.1",
+  "version": "0.195.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -57,6 +57,7 @@
     "./auth-error-classifier": "./auth-error-classifier.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
+    "./timezone": "./timezone.ts",
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
     "./subject-anchor-observe": "./subject-anchor-observe.ts",
@@ -72,7 +73,7 @@
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.151.0",
+    "@openai/codex-sdk": "^0.152.0",
     "dotenv": "^17.0.0",
     "drizzle-orm": "^0.45.2",
     "zod": "^4.3.6"

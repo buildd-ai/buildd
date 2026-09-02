@@ -47,6 +47,7 @@ const STAGE_NODE_CLS: Record<Stage, string> = {
   REVIEWING:     'bg-status-info/10 border-status-info',
   OPEN:          'bg-accent/10 border-accent',
   CI:            'bg-accent/10 border-accent',
+  CI_FAILING:    'bg-status-error/8 border-status-error/40',
   MERGE:         'bg-accent/10 border-accent',
   VERIFY:        'bg-accent/10 border-accent',
   DONE:          'bg-status-success/10 border-status-success',

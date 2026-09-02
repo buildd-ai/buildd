@@ -272,20 +272,22 @@ describe('groupTimelineTasks', () => {
 
 // ─── WAITING ON YOU membership rule ──────────────────────────────────────────
 //
-// Unit test coverage for the 5 cases from the task spec:
-//   open+approved  → in  (humanActionPending: true, e.g. reviewer_approved note)
-//   open+unreviewed → out (humanActionPending: false, agent-review policy, no verdict yet)
+// A completed task's terminal state is its PR's state, not the task's (task
+// facae217) — group placement depends only on PR lifecycle, never on merge
+// policy tier or reviewer verdict (that carve-out buried M4's changes-requested
+// task, with a retry queued, in the "done" pile — mission 50d29836).
+//
+//   open (any prLifecycleStatus, incl. ci_failed/conflict/unreviewed) → in
 //   merged          → out (prLifecycleStatus: 'merged', even when mergedAt is null)
 //   closed          → out (prLifecycleStatus: 'closed')
-//   escalated       → in  (humanActionPending: true, e.g. reviewer_escalated note)
+//   escalated       → in
 
 describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
-  it('open+approved (humanActionPending: true) → waitingOnYou', () => {
+  it('open, CI green → waitingOnYou', () => {
     const task: CondensedTask = {
       id: 't1',
       status: 'completed',
       dependsOn: null,
-      humanActionPending: true,
       workers: [{
         id: 'w1', status: 'completed',
         prUrl: 'https://github.com/org/repo/pull/100',
@@ -300,12 +302,11 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
     expect(groups.done).toHaveLength(0);
   });
 
-  it('open+unreviewed (humanActionPending: false) → done, not waitingOnYou', () => {
+  it('open, not yet reviewed → waitingOnYou, never done (regression: M4)', () => {
     const task: CondensedTask = {
       id: 't1',
       status: 'completed',
       dependsOn: null,
-      humanActionPending: false,
       workers: [{
         id: 'w1', status: 'completed',
         prUrl: 'https://github.com/org/repo/pull/101',
@@ -316,8 +317,29 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
       }],
     };
     const groups = groupTimelineTasks([task], new Map([['t1', task]]));
-    expect(groups.waitingOnYou).toHaveLength(0);
-    expect(groups.done.map(t => t.id)).toContain('t1');
+    expect(groups.waitingOnYou.map(t => t.id)).toContain('t1');
+    expect(groups.done).toHaveLength(0);
+  });
+
+  it('open, changes requested with a retry already queued → still waitingOnYou (regression: M4)', () => {
+    // The exact M4 shape: PR open, reviewer requested changes, retry queued.
+    // A retry in flight must not make the reviewed task itself look done.
+    const task: CondensedTask = {
+      id: 't1',
+      status: 'completed',
+      dependsOn: null,
+      workers: [{
+        id: 'w1', status: 'completed',
+        prUrl: 'https://github.com/org/repo/pull/2020',
+        prNumber: 2020,
+        prLifecycleStatus: 'pr_open',
+        mergedAt: null,
+        completedAt: null, startedAt: null, currentAction: null, waitingFor: null, branch: null,
+      }],
+    };
+    const groups = groupTimelineTasks([task], new Map([['t1', task]]));
+    expect(groups.waitingOnYou.map(t => t.id)).toContain('t1');
+    expect(groups.done).toHaveLength(0);
   });
 
   it('merged (prLifecycleStatus=merged, mergedAt=null) → done, not waitingOnYou', () => {
@@ -326,7 +348,6 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
       id: 't1',
       status: 'completed',
       dependsOn: null,
-      humanActionPending: true,
       workers: [{
         id: 'w1', status: 'completed',
         prUrl: 'https://github.com/org/repo/pull/102',
@@ -346,7 +367,6 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
       id: 't1',
       status: 'completed',
       dependsOn: null,
-      humanActionPending: true,
       workers: [{
         id: 'w1', status: 'completed',
         prUrl: 'https://github.com/org/repo/pull/103',
@@ -361,12 +381,11 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
     expect(groups.done.map(t => t.id)).toContain('t1');
   });
 
-  it('escalated (humanActionPending: true) → waitingOnYou', () => {
+  it('escalated (open PR) → waitingOnYou', () => {
     const task: CondensedTask = {
       id: 't1',
       status: 'completed',
       dependsOn: null,
-      humanActionPending: true,
       workers: [{
         id: 'w1', status: 'completed',
         prUrl: 'https://github.com/org/repo/pull/104',

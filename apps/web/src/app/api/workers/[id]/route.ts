@@ -2964,6 +2964,7 @@ async function handleReviewerOutcomeIfNeeded(
             kind: 'review_approved_awaiting_human',
             detail: `confidence ${output.confidence.toFixed(2)} — ${output.summary}`,
           },
+          workspaceId,
         });
         console.log(`[reviewer] PR #${prNumber} approved (approve-only) — leaving merge to human`);
         break;
@@ -2991,6 +2992,7 @@ async function handleReviewerOutcomeIfNeeded(
           kind: 'review_approved',
           detail: `confidence ${output.confidence.toFixed(2)} — ${output.summary}`,
         },
+        workspaceId,
       });
 
       await tryAutoMergeWorkerPr({
@@ -3027,6 +3029,7 @@ async function handleReviewerOutcomeIfNeeded(
             kind: 'review_escalated',
             detail: `review loop hit its ${maxIterations}-iteration cap — needs a human`,
           },
+          workspaceId,
         });
         return;
       }
@@ -3109,6 +3112,7 @@ async function handleReviewerOutcomeIfNeeded(
             kind: 'review_changes_requested',
             detail: `iteration ${currentIteration + 1} of ${maxIterations} — ${output.feedback ?? output.summary ?? 'reviewer requested changes'}`,
           },
+          workspaceId,
         });
       }
       break;
@@ -3131,6 +3135,7 @@ async function handleReviewerOutcomeIfNeeded(
           kind: 'review_escalated',
           detail: output.escalationReason ?? output.summary,
         },
+        workspaceId,
       });
       console.log(`[reviewer] Escalated PR #${prNumber}: ${output.escalationReason ?? output.summary}`);
       break;

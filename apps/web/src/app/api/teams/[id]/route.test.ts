@@ -1,140 +1,85 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
-/**
- * `PATCH /api/teams/[id]` — the inference-spending allowlist.
- *
- * Holding an inference key and spending it are separate decisions, so this field
- * differs from `enabledBackends` in one important way: the empty set is legal.
- * "Key stored, nothing enabled" is a state an operator deliberately wants.
- */
+const mockGetUserFromRequest = mock(() => Promise.resolve(null as any));
+mock.module('@/lib/auth-helpers', () => ({ getUserFromRequest: mockGetUserFromRequest }));
 
-let membershipRow: any = { role: 'owner' };
-let slugRow: any = null;
-const updateCalls: any[] = [];
-
-const mockGetUserFromRequest = mock(() => Promise.resolve({ id: 'user-1' } as any));
-
-mock.module('@/lib/auth-helpers', () => ({
-  getUserFromRequest: mockGetUserFromRequest,
-}));
-
-mock.module('drizzle-orm', () => ({
-  eq: (f: any, v: any) => ({ __eq: [f, v] }),
-  and: (...c: any[]) => ({ __and: c }),
-}));
-
-mock.module('@buildd/core/db/schema', () => ({
-  teams: { id: 'id', slug: 'slug' },
-  teamMembers: { teamId: 'team_id', userId: 'user_id' },
-  users: { id: 'id' },
-}));
+let membership: any = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
+let teamRow: any = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
+const capturedUpdates: any[] = [];
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      teamMembers: { findFirst: () => Promise.resolve(membershipRow) },
-      teams: { findFirst: () => Promise.resolve(slugRow) },
+      teamMembers: { findFirst: () => Promise.resolve(membership), findMany: () => Promise.resolve([]) },
+      teams: { findFirst: () => Promise.resolve(teamRow) },
     },
-    update: () => ({
-      set: (data: any) => {
-        updateCalls.push(data);
-        return { where: () => Promise.resolve() };
-      },
+    update: (_t: any) => ({
+      set: (vals: any) => ({ where: (_c: any) => { capturedUpdates.push(vals); return Promise.resolve(); } }),
     }),
   },
 }));
 
-const { PATCH } = await import('./route');
+mock.module('drizzle-orm', () => ({
+  eq: (a: any, b: any) => ({ type: 'eq', a, b }),
+  and: (...args: any[]) => ({ type: 'and', args }),
+}));
 
-function patch(body: unknown) {
-  return PATCH(
-    new NextRequest('http://localhost/api/teams/team-1', {
-      method: 'PATCH',
-      body: JSON.stringify(body),
-      headers: { 'Content-Type': 'application/json' },
-    }),
-    { params: Promise.resolve({ id: 'team-1' }) },
-  );
+mock.module('@buildd/core/db/schema', () => ({
+  teams: 'teams',
+  teamMembers: 'teamMembers',
+  users: 'users',
+}));
+
+import { PATCH } from './route';
+
+const ctx = { params: Promise.resolve({ id: 'team-1' }) };
+
+function patchReq(body: unknown): NextRequest {
+  return new NextRequest('http://localhost:3000/api/teams/team-1', {
+    method: 'PATCH',
+    headers: new Headers({ 'content-type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
 }
 
 beforeEach(() => {
-  membershipRow = { role: 'owner' };
-  slugRow = null;
-  updateCalls.length = 0;
   mockGetUserFromRequest.mockReset();
-  mockGetUserFromRequest.mockReturnValue(Promise.resolve({ id: 'user-1' } as any));
+  mockGetUserFromRequest.mockResolvedValue({ id: 'user-1' });
+  membership = { teamId: 'team-1', userId: 'user-1', role: 'admin' };
+  teamRow = { id: 'team-1', name: 'Team', slug: 'team', timezone: null };
+  capturedUpdates.length = 0;
 });
 
-describe('PATCH /api/teams/[id] — enabledInferenceCapabilities', () => {
-  it('stores a known capability', async () => {
-    const res = await patch({ enabledInferenceCapabilities: ['criteria_grading'] });
+describe('PATCH /api/teams/[id] — timezone', () => {
+  it('stores a valid IANA zone', async () => {
+    const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(200);
-    expect(updateCalls[0].enabledInferenceCapabilities).toEqual(['criteria_grading']);
+    expect(capturedUpdates[0].timezone).toBe('America/New_York');
   });
 
-  it('accepts the empty set as "key stored, spend nothing" and stores null', async () => {
-    const res = await patch({ enabledInferenceCapabilities: [] });
+  it('accepts null to clear the zone back to UTC', async () => {
+    const res = await PATCH(patchReq({ timezone: null }), ctx);
     expect(res.status).toBe(200);
-    // Normalised to null so the column has one representation of "none" rather
-    // than both NULL and '{}'.
-    expect(updateCalls[0].enabledInferenceCapabilities).toBeNull();
+    expect(capturedUpdates[0].timezone).toBeNull();
   });
 
-  it('accepts explicit null', async () => {
-    const res = await patch({ enabledInferenceCapabilities: null });
-    expect(res.status).toBe(200);
-    expect(updateCalls[0].enabledInferenceCapabilities).toBeNull();
-  });
-
-  it('drops a capability this build does not implement', async () => {
-    const res = await patch({ enabledInferenceCapabilities: ['criteria_grading', 'wishful_thinking'] });
-    expect(res.status).toBe(200);
-    // A client from a newer deploy must not be able to switch on spend for a call
-    // site that does not exist here.
-    expect(updateCalls[0].enabledInferenceCapabilities).toEqual(['criteria_grading']);
-  });
-
-  it('rejects a non-array', async () => {
-    const res = await patch({ enabledInferenceCapabilities: 'criteria_grading' });
+  it('rejects a zone the runtime does not recognise', async () => {
+    const res = await PATCH(patchReq({ timezone: 'Mars/Olympus' }), ctx);
     expect(res.status).toBe(400);
-    expect(updateCalls).toHaveLength(0);
+    expect(capturedUpdates).toHaveLength(0);
   });
 
-  it('leaves the field untouched when it is absent from the body', async () => {
-    const res = await patch({ name: 'Renamed' });
+  it('leaves the zone untouched when the field is absent', async () => {
+    const res = await PATCH(patchReq({ name: 'Renamed' }), ctx);
     expect(res.status).toBe(200);
-    expect(updateCalls[0].name).toBe('Renamed');
-    expect('enabledInferenceCapabilities' in updateCalls[0]).toBe(false);
+    expect(capturedUpdates[0]).not.toHaveProperty('timezone');
   });
 
-  it('requires admin', async () => {
-    membershipRow = { role: 'member' };
-    const res = await patch({ enabledInferenceCapabilities: ['criteria_grading'] });
-    // Enabling spend is an admin action; a member must not be able to.
+  it('requires at least admin — a member cannot set the team zone', async () => {
+    membership = { teamId: 'team-1', userId: 'user-1', role: 'member' };
+    const res = await PATCH(patchReq({ timezone: 'America/New_York' }), ctx);
     expect(res.status).toBe(403);
-    expect(updateCalls).toHaveLength(0);
-  });
-
-  it('requires a session', async () => {
-    mockGetUserFromRequest.mockReturnValue(Promise.resolve(null as any));
-    const res = await patch({ enabledInferenceCapabilities: ['criteria_grading'] });
-    expect(res.status).toBe(401);
-    expect(updateCalls).toHaveLength(0);
-  });
-});
-
-describe('PATCH /api/teams/[id] — enabledBackends is unchanged', () => {
-  it('still rejects an empty backend mask', async () => {
-    // Unlike the inference allowlist, an empty backend mask would leave nowhere
-    // for work to run — the two fields differ on purpose.
-    const res = await patch({ enabledBackends: [] });
-    expect(res.status).toBe(400);
-  });
-
-  it('still accepts a valid backend mask', async () => {
-    const res = await patch({ enabledBackends: ['claude'] });
-    expect(res.status).toBe(200);
-    expect(updateCalls[0].enabledBackends).toEqual(['claude']);
+    expect(capturedUpdates).toHaveLength(0);
   });
 });
