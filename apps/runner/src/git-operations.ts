@@ -322,28 +322,47 @@ export async function setupWorktree(
     // concurrent worker but one failed setup and was silently degraded into the
     // shared role-clone root (no fs isolation, no CBM).  Fall back to the task's
     // own branch, which is unique per task, and report it.
-    let actualBranch = requestedBranch;
+    /** Why a branch cannot be the checkout target of a new worktree, if it cannot. */
+    const unusable = (candidate: string): 'default_branch' | 'checked_out' | null =>
+      candidate === defaultBranch
+        ? 'default_branch'
+        : branchOwners.has(candidate)
+          ? 'checked_out'
+          : null;
+
+    // Candidates in preference order. The task branch is NOT automatically a
+    // safe fallback: it can itself be held (a mission carries a stable
+    // `headBranch` across cycles, so two concurrent workers in one mission ask
+    // for the same branch) or, for a task cut against the default branch, be the
+    // default branch. Gating the guard on `requestedBranch !== branch` left both
+    // holes open — the same collision, one door along. The last candidate embeds
+    // the worker id, so it is unique per attempt by construction.
+    const uniqueBranch = `${branch}-w${workerId.slice(0, 8)}`;
+    const candidates = [...new Set([requestedBranch, branch, uniqueBranch])];
+
+    let actualBranch = candidates[candidates.length - 1];
     let sharedBranch: SetupWorktreeResult['sharedBranch'];
-    if (requestedBranch !== branch) {
-      const reason: 'default_branch' | 'checked_out' | null =
-        requestedBranch === defaultBranch
-          ? 'default_branch'
-          : branchOwners.has(requestedBranch)
-            ? 'checked_out'
-            : null;
-      if (reason) {
-        const holder = branchOwners.get(requestedBranch);
-        sharedBranch = { candidate: requestedBranch, reason, ...(holder ? { holder } : {}) };
-        actualBranch = branch;
-        console.warn(
-          `[Worker ${workerId}] Cannot check out "${requestedBranch}" in a worktree ` +
-          (reason === 'default_branch'
-            ? `— it is the repo default branch (held by the main checkout${holder ? ` at ${holder}` : ''}). `
-            : `— it is already checked out in worktree ${holder}. `) +
-          `Using the task branch "${branch}" instead (base stays ${base}). ` +
-          `Pushes will target "${branch}", so a new PR may be opened instead of updating an existing one.`,
-        );
+    for (const candidate of candidates) {
+      const reason = unusable(candidate);
+      if (!reason) { actualBranch = candidate; break; }
+      // Report the FIRST rejection: that is the branch the caller asked for and
+      // the one whose absence changes where pushes land.
+      if (!sharedBranch) {
+        const holder = branchOwners.get(candidate);
+        sharedBranch = { candidate, reason, ...(holder ? { holder } : {}) };
       }
+    }
+
+    if (sharedBranch) {
+      const { candidate, reason, holder } = sharedBranch;
+      console.warn(
+        `[Worker ${workerId}] Cannot check out "${candidate}" in a worktree ` +
+        (reason === 'default_branch'
+          ? `— it is the repo default branch (held by the main checkout${holder ? ` at ${holder}` : ''}). `
+          : `— it is already checked out in worktree ${holder}. `) +
+        `Using "${actualBranch}" instead (base stays ${base}). ` +
+        `Pushes will target "${actualBranch}", so a new PR may be opened instead of updating an existing one.`,
+      );
     }
 
     console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
@@ -352,7 +371,7 @@ export async function setupWorktree(
     // worktree holds — `git branch -D` on those always fails, and the resulting
     // "cannot delete branch 'X' used by worktree" noise used to be the first
     // symptom of this whole class of bug.
-    for (const candidate of actualBranch === branch ? [branch] : [actualBranch, branch]) {
+    for (const candidate of candidates) {
       if (branchOwners.has(candidate)) continue;
       try {
         execSync(`git branch -D "${candidate}"`, execOpts);

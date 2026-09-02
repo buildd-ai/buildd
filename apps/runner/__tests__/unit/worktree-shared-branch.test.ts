@@ -201,10 +201,45 @@ describe('setupWorktree — shared/default branch guard', () => {
     expect(add.cmd).toContain('"origin/buildd/prior-attempt"');
   });
 
+  // The task's own branch is NOT automatically a safe fallback. A mission
+  // carries a stable `headBranch` across cycles, so two concurrent workers in
+  // one mission are handed the SAME task branch; and a task cut against the
+  // default branch has `branch === defaultBranch`. Gating the guard on
+  // `requestedBranch !== branch` left both holes open — same collision, one
+  // door along — so the loser was still degraded into the shared clone root.
+  test('task branch itself already held → falls back to a per-worker unique branch', async () => {
+    worktrees.set('buildd/mission-cycle', '/repo/.buildd-worktrees/buildd_mission-cycle');
+
+    const result = await setupWorktree(
+      MAIN_WORKTREE, 'buildd/mission-cycle', DEFAULT_BRANCH, 'worker-b2',
+    );
+
+    expect(result).not.toBeNull();
+    // Own worktree, not the shared root — the whole point.
+    expect(result.path).not.toBe(MAIN_WORKTREE);
+    expect(result.branch).toBe('buildd/mission-cycle-wworker-b');
+    expect(result.sharedBranch.candidate).toBe('buildd/mission-cycle');
+    expect(result.sharedBranch.reason).toBe('checked_out');
+    expect(result.sharedBranch.holder).toBe('/repo/.buildd-worktrees/buildd_mission-cycle');
+    // The branch another worktree holds must never be deleted or re-created.
+    expect(syncCalls.some(c => c.cmd.includes('git branch -D "buildd/mission-cycle"'))).toBe(false);
+  });
+
+  test('task branch IS the default branch → per-worker unique branch, default branch untouched', async () => {
+    const result = await setupWorktree(MAIN_WORKTREE, DEFAULT_BRANCH, DEFAULT_BRANCH, 'worker-c3');
+
+    expect(result).not.toBeNull();
+    expect(result.branch).toBe(`${DEFAULT_BRANCH}-wworker-c`);
+    expect(result.sharedBranch.reason).toBe('default_branch');
+    expect(syncCalls.some(c => c.cmd.includes(`git worktree add -b "${DEFAULT_BRANCH}"`))).toBe(false);
+    expect(worktrees.get(DEFAULT_BRANCH)).toBe(MAIN_WORKTREE);
+  });
+
   test('legible failure: when worktree add still fails, the error names the branch and the holding worktree', async () => {
-    // The task's OWN branch is already held by a leftover worktree, so there is
-    // no substitute branch available and the add genuinely fails.
+    // Every candidate is held — the task branch AND the per-worker unique branch
+    // derived from it — so no substitute exists and the add genuinely fails.
     worktrees.set('buildd/task-a', '/repo/.buildd-worktrees/buildd_task-a-old');
+    worktrees.set('buildd/task-a-wworker-a', '/repo/.buildd-worktrees/buildd_task-a-uniq');
 
     const errors: string[] = [];
     const originalError = console.error;
@@ -218,6 +253,6 @@ describe('setupWorktree — shared/default branch guard', () => {
 
     const msg = errors.join('\n');
     expect(msg).toContain('buildd/task-a');
-    expect(msg).toContain('/repo/.buildd-worktrees/buildd_task-a-old');
+    expect(msg).toContain('/repo/.buildd-worktrees/buildd_task-a-uniq');
   });
 });
