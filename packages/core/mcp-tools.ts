@@ -379,7 +379,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
-    get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus release_tasks with task title, status, and prNumber.',
+    get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
     list_artifact_templates: '{ } — list available artifact templates with their JSON schemas for structured output',
     suggest_schedule_update: '{ scheduleId?, cronExpression?, enabled?, reason (required) } — propose a schedule change for human approval. scheduleId auto-resolved from task context if omitted. At least one of cronExpression or enabled required.',
     post_note: `{ type (required: ${NOTE_TYPES.join('|')}), title (required), body?, defaultChoice? (for questions — what you chose while waiting for user reply), workerId?, missionId? } — post a lightweight note to the current task or mission feed. Non-blocking — returns immediately. For questions, include defaultChoice so work continues without waiting for user reply. User replies are delivered on your next update_progress call. missionId auto-resolved from task context if omitted; tasks without a mission receive a task-scoped note.`,
@@ -3985,6 +3985,27 @@ export async function handleBuilddAction(
           `Strategy: ${data.strategy ?? 'unconfigured'} | CI on ${data.ref}: ${ci} | ${data.aheadBy} commit(s) ahead${prLine}` +
           (commits ? `\nWould ship:\n${commits}` : '\nNothing to ship.'),
       );
+    }
+
+    case 'list_releases': {
+      const wsId = await resolveWorkspaceId(api, params.workspaceId, ctx);
+      if (!wsId) throw new Error('Cannot resolve workspace. Pass workspaceId in params.');
+
+      const qs = new URLSearchParams({ workspaceId: wsId });
+      if (typeof params.missionId === 'string') qs.set('missionId', params.missionId);
+      if (typeof params.state === 'string') qs.set('state', params.state);
+      if (typeof params.limit === 'number') qs.set('limit', String(params.limit));
+
+      const data = await api(`/api/releases?${qs.toString()}`);
+      return text(JSON.stringify(data));
+    }
+
+    case 'get_release': {
+      if (!params.releaseId || typeof params.releaseId !== 'string') {
+        throw new Error('releaseId is required');
+      }
+      const data = await api(`/api/releases/${params.releaseId}`);
+      return text(JSON.stringify(data));
     }
 
     // ── Agent-Facing Interactive Actions ─────────────────────────────────────
