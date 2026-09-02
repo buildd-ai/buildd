@@ -80,7 +80,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The dashboard MUST let a user take a new team from empty to a running mission: create a workspace from an existing or newly created GitHub repo, then create a team-scoped mission, without leaving the app.
 - [Timeline Dependency Geometry — DAG Shapes](./timeline-dependency-geometry.md) · @builder — verified 2026-08-30
   The mission Timeline tab MUST render every dependency DAG shape with topological order within a section, elbow or named-blocker chips, and gate parity with the claim route so no phantom blocker is shown.
-- [Timezone Resolution](./timezone-resolution.md) · @max — verified 2026-08-30
+- [Timezone Resolution](./timezone-resolution.md) · @max — verified 2026-09-02
   buildd MUST store exactly two timezones — one detected per user and one canonical per team — and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
 
 ### tasks (6)

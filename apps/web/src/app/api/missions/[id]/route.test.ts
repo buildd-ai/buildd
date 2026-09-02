@@ -53,8 +53,14 @@ mock.module('@/lib/team-access', () => ({
   resolveAccountTeamIds: mockResolveAccountTeamIds,
 }));
 
+// Records the zone every recompute was asked for. A mission PATCH must never
+// recompute nextRunAt against a hardcoded UTC — see docs/specs/timezone-resolution.md.
+let computeNextRunAtCalls: Array<{ expr: string; timezone?: string }> = [];
 mock.module('@/lib/schedule-helpers', () => ({
-  computeNextRunAt: () => new Date('2026-01-01'),
+  computeNextRunAt: (expr: string, timezone?: string) => {
+    computeNextRunAtCalls.push({ expr, timezone });
+    return new Date('2026-01-01');
+  },
 }));
 
 mock.module('@buildd/core/db', () => ({
@@ -121,6 +127,7 @@ describe('PATCH /api/missions/[id]', () => {
     insertedScheduleValues = null;
     updatedScheduleData = null;
     deletedTables = [];
+    computeNextRunAtCalls = [];
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -232,6 +239,59 @@ describe('PATCH /api/missions/[id]', () => {
     expect(insertedScheduleValues.taskTemplate.context.heartbeat).toBe(true);
     // Schedule ID should be set on the objective
     expect(updatedSetData.scheduleId).toBe('sched-new');
+  });
+
+  // Regression: clearing startAt recomputed nextRunAt against a hardcoded 'UTC'
+  // even for a schedule stored in another zone, silently shifting every run.
+  it('recomputes nextRunAt in the schedule own stored zone when startAt is cleared', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Nightly',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+    mockScheduleFindFirst.mockReturnValue({
+      cronExpression: '0 3 * * *',
+      timezone: 'Asia/Tokyo',
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ startAt: null }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const recompute = computeNextRunAtCalls.find((c) => c.expr === '0 3 * * *');
+    expect(recompute).toBeDefined();
+    expect(recompute!.timezone).toBe('Asia/Tokyo');
+    expect(recompute!.timezone).not.toBe('UTC');
+  });
+
+  it('falls back to UTC when the schedule stores no zone', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Nightly',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      priority: 0,
+    });
+    mockScheduleFindFirst.mockReturnValue({ cronExpression: '0 3 * * *', timezone: null });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ startAt: null }),
+    });
+
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const recompute = computeNextRunAtCalls.find((c) => c.expr === '0 3 * * *');
+    expect(recompute!.timezone).toBe('UTC');
   });
 
   it('rejects activeHoursStart outside 0-23', async () => {

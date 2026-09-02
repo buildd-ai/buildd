@@ -2,11 +2,11 @@
 title: Timezone Resolution
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-09-02
 summary: buildd MUST store exactly two timezones — one detected per user and one canonical per team — and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
 domain: surfaces
 surfaces: [packages/core/timezone.ts, apps/web/src/lib/team-timezone.ts, apps/web/src/app/api/me/timezone/route.ts]
-verified_by: [packages/core/__tests__/timezone.test.ts, apps/web/src/lib/team-timezone.test.ts, apps/web/src/app/api/me/timezone/route.test.ts, apps/web/src/lib/pr-activity-comment.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts]
+verified_by: [packages/core/__tests__/timezone.test.ts, apps/web/src/lib/team-timezone.test.ts, apps/web/src/app/api/me/timezone/route.test.ts, apps/web/src/lib/pr-activity-comment.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/missions/[id]/route.test.ts, packages/core/__tests__/mcp-tools-create-schedule-timezone.test.ts]
 related: [webhook-dataflow, external-cron-triggers, team-namespace-scoping]
 keywords: [IANA, users.timezone, teams.timezone, task_schedules.timezone, activeHoursTimezone, Intl, UTC]
 supersedes: []

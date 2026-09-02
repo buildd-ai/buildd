@@ -512,9 +512,12 @@ export async function PATCH(
       if (nextRunAt === null) {
         const schedule = await db.query.taskSchedules.findFirst({
           where: eq(taskSchedules.id, existing.scheduleId),
-          columns: { cronExpression: true },
+          columns: { cronExpression: true, timezone: true },
         });
-        nextRunAt = schedule ? computeNextRunAt(schedule.cronExpression, 'UTC') : null;
+        // Same rule as the recompute above: the schedule's own stored zone, not UTC.
+        nextRunAt = schedule
+          ? computeNextRunAt(schedule.cronExpression, resolveTimezone(schedule.timezone))
+          : null;
       }
       await db.update(taskSchedules)
         .set({ nextRunAt, updatedAt: new Date() })

@@ -2006,7 +2006,10 @@ export async function handleBuilddAction(
         body: JSON.stringify({
           name: params.name,
           cronExpression: params.cronExpression,
-          timezone: params.timezone || 'UTC',
+          // Omitted on purpose when the caller gave none: the schedules route
+          // resolves an absent timezone to the team's zone. Sending 'UTC' here
+          // would pin every agent-created schedule to a clock nobody uses.
+          ...(params.timezone ? { timezone: params.timezone } : {}),
           taskTemplate,
         }),
       });
