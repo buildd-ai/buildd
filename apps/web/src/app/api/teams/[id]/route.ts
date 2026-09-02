@@ -4,6 +4,7 @@ import { db } from '@buildd/core/db';
 import { teams, teamMembers, users } from '@buildd/core/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getUserFromRequest } from '@/lib/auth-helpers';
+import { isValidTimezone } from '@buildd/core/timezone';
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -128,7 +129,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, slug, enabledBackends, enabledInferenceCapabilities } = body;
+    const { name, slug, enabledBackends, enabledInferenceCapabilities, timezone } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -164,6 +165,18 @@ export async function PATCH(
         );
       }
       updates.enabledInferenceCapabilities = normalizeInferenceCapabilities(enabledInferenceCapabilities);
+    }
+    if (timezone !== undefined) {
+      // The team's canonical working zone — used wherever a shared artifact needs a
+      // wall clock and there is no single known viewer (PR activity comments, new
+      // schedule defaults, mission active hours). `null` clears it back to UTC.
+      if (timezone !== null && !isValidTimezone(timezone)) {
+        return NextResponse.json(
+          { error: 'timezone must be a valid IANA zone name (e.g. America/New_York) or null' },
+          { status: 400 },
+        );
+      }
+      updates.timezone = timezone;
     }
     if (slug !== undefined) {
       // Validate slug format

@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { validateCronExpression, computeNextRunAt } from '@/lib/schedule-helpers';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
+import { getWorkspaceTimezone } from '@/lib/team-timezone';
 
 /**
  * Authenticate via session or API key.
@@ -75,7 +76,7 @@ export async function POST(
     const {
       name,
       cronExpression,
-      timezone = 'UTC',
+      timezone: requestedTimezone,
       taskTemplate,
       enabled = true,
       oneShot = false,
@@ -95,6 +96,11 @@ export async function POST(
     if (cronError) {
       return NextResponse.json({ error: `Invalid cron expression: ${cronError}` }, { status: 400 });
     }
+
+    // An omitted timezone means "the team's zone", not UTC. Schedules created
+    // through the API or by an agent otherwise silently run on a wall clock
+    // nobody on the team uses. The dashboard always sends an explicit zone.
+    const timezone = requestedTimezone ?? (await getWorkspaceTimezone(id));
 
     // Compute next run time
     const nextRunAt = enabled ? computeNextRunAt(cronExpression, timezone) : null;

@@ -16,6 +16,7 @@ import {
 import { wouldCreateCycle } from '@/lib/mission-dependency';
 import { maybePostWorkTrackerNote } from '@/lib/work-tracker';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
+import { getTeamTimezone } from '@/lib/team-timezone';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -315,7 +316,10 @@ export async function POST(req: NextRequest) {
     const effectiveCron = cronExpression || (effectiveHeartbeat ? DEFAULT_HEARTBEAT_CRON : null);
 
     if (effectiveCron) {
-      const nextRunAt = laterStartAt(computeNextRunAt(effectiveCron, 'UTC'), deferredStart.startAt);
+      // Mission crons run on the team's wall clock: "every morning" has to mean
+      // morning where the team is. Existing schedules keep their stored zone.
+      const scheduleTimezone = await getTeamTimezone(teamId);
+      const nextRunAt = laterStartAt(computeNextRunAt(effectiveCron, scheduleTimezone), deferredStart.startAt);
       const templateContext: Record<string, unknown> = {};
       if (skillSlugs?.length) templateContext.skillSlugs = skillSlugs;
       if (outputSchema) templateContext.outputSchema = outputSchema;
@@ -334,7 +338,7 @@ export async function POST(req: NextRequest) {
           workspaceId: workspaceId || null,
           name: `Mission: ${title}`,
           cronExpression: effectiveCron,
-          timezone: 'UTC',
+          timezone: scheduleTimezone,
           taskTemplate: {
             title: `Mission: ${title}`,
             mode: 'planning',

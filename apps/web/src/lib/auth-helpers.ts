@@ -10,6 +10,8 @@ export type CurrentUser = {
   email: string;
   name: string | null;
   image: string | null;
+  /** Zone detected from this user's browser; null until `<TimezoneSync />` reports one. */
+  timezone: string | null;
 };
 
 /**
@@ -31,6 +33,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
           email: realUser.email,
           name: realUser.name,
           image: realUser.image,
+          timezone: realUser.timezone,
         };
       }
       console.warn(`[auth-helpers] DEV_USER_EMAIL=${process.env.DEV_USER_EMAIL} not found in database, falling back to mock user`);
@@ -42,6 +45,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
       email: 'dev@localhost',
       name: 'Dev User',
       image: null,
+      timezone: null,
     };
   }
 
@@ -64,6 +68,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
     email: user.email,
     name: user.name,
     image: user.image,
+    timezone: user.timezone,
   };
 }
 
@@ -99,6 +104,7 @@ export async function getUserFromRequest(req: NextRequest): Promise<CurrentUser 
     email: u.email,
     name: u.name,
     image: u.image,
+    timezone: u.timezone,
   };
 }
 

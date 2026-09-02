@@ -6,6 +6,7 @@ import { AuthGuard } from '@/components/AuthGuard';
 import MissionsBottomNav from '@/components/MissionsBottomNav';
 import MissionsSidebar from '@/components/MissionsSidebar';
 import MobilePageHeader from '@/components/MobilePageHeader';
+import TimezoneSync from '@/components/TimezoneSync';
 import { NeedsInputProvider } from '@/components/NeedsInputProvider';
 import NeedsInputBanner from '@/components/NeedsInputBanner';
 import { ConnectorReconnectProvider } from '@/components/ConnectorReconnectProvider';
@@ -84,6 +85,9 @@ export default async function ProtectedLayout({
               </main>
             </div>
           </div>
+
+          {/* Silently keep users.timezone in step with the browser */}
+          {user && <TimezoneSync knownTimezone={user.timezone} />}
 
           {/* Mobile: bottom tab nav */}
           <MissionsBottomNav />

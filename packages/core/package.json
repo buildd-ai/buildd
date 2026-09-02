@@ -57,6 +57,7 @@
     "./auth-error-classifier": "./auth-error-classifier.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
+    "./timezone": "./timezone.ts",
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
     "./subject-anchor-observe": "./subject-anchor-observe.ts",

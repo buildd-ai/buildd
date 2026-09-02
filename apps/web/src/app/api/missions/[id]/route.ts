@@ -11,6 +11,8 @@ import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
+import { getTeamTimezone } from '@/lib/team-timezone';
+import { resolveTimezone } from '@buildd/core/timezone';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -458,10 +460,18 @@ export async function PATCH(
         };
 
         if (existing.scheduleId) {
+          // Recompute in the schedule's OWN stored zone. Using UTC here would shift
+          // every run of a non-UTC schedule the first time anything else about the
+          // mission was edited.
+          const currentSchedule = await db.query.taskSchedules.findFirst({
+            where: eq(taskSchedules.id, existing.scheduleId),
+            columns: { timezone: true },
+          });
+          const scheduleTimezone = resolveTimezone(currentSchedule?.timezone);
           const nextRunAt = updatedStartAt !== undefined
-            ? (updatedStartAt ?? (effectiveCron ? computeNextRunAt(effectiveCron, 'UTC') : null))
+            ? (updatedStartAt ?? (effectiveCron ? computeNextRunAt(effectiveCron, scheduleTimezone) : null))
             : cronExpression !== undefined
-              ? computeNextRunAt(cronExpression, 'UTC')
+              ? computeNextRunAt(cronExpression, scheduleTimezone)
               : undefined;
           await db
             .update(taskSchedules)
@@ -475,14 +485,15 @@ export async function PATCH(
             })
             .where(eq(taskSchedules.id, existing.scheduleId));
         } else {
-          const nextRunAt = computeNextRunAt(effectiveCron, 'UTC');
+          const scheduleTimezone = await getTeamTimezone(existing.teamId);
+          const nextRunAt = computeNextRunAt(effectiveCron, scheduleTimezone);
           const [schedule] = await db
             .insert(taskSchedules)
             .values({
               workspaceId: effectiveWorkspaceId,
               name: `Mission: ${title || existing.title}`,
               cronExpression: effectiveCron,
-              timezone: 'UTC',
+              timezone: scheduleTimezone,
               taskTemplate,
               nextRunAt,
               createdByUserId: user?.id || null,
@@ -501,9 +512,12 @@ export async function PATCH(
       if (nextRunAt === null) {
         const schedule = await db.query.taskSchedules.findFirst({
           where: eq(taskSchedules.id, existing.scheduleId),
-          columns: { cronExpression: true },
+          columns: { cronExpression: true, timezone: true },
         });
-        nextRunAt = schedule ? computeNextRunAt(schedule.cronExpression, 'UTC') : null;
+        // Same rule as the recompute above: the schedule's own stored zone, not UTC.
+        nextRunAt = schedule
+          ? computeNextRunAt(schedule.cronExpression, resolveTimezone(schedule.timezone))
+          : null;
       }
       await db.update(taskSchedules)
         .set({ nextRunAt, updatedAt: new Date() })

@@ -11,6 +11,7 @@ import VercelSection from './VercelSection';
 import RunnerTokensSection from './RunnerTokensSection';
 import AgentBackendsSection from './AgentBackendsSection';
 import NotificationsSection from './NotificationsSection';
+import TimezoneSection from './TimezoneSection';
 import ConnectorsSection from './ConnectorsSection';
 import WorkspaceMigrationSection from './WorkspaceMigrationSection';
 import WorkspaceGitFeaturesSection from './WorkspaceGitFeaturesSection';
@@ -79,6 +80,12 @@ export default async function SettingsPage() {
         {/* Notifications */}
         <NotificationsSection
           workspaces={filteredWorkspaces}
+          currentTeamId={currentTeamId}
+        />
+
+        {/* Timezone */}
+        <TimezoneSection
+          teams={userTeams.map(t => ({ id: t.id, name: t.name }))}
           currentTeamId={currentTeamId}
         />
 

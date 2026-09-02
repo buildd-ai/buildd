@@ -27,6 +27,13 @@ export const teams = pgTable('teams', {
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
   plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
+
+  // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
+  // teams that never set one behave exactly as before. Used for anything rendered to a
+  // shared or external surface — PR activity comments, new schedule defaults, mission
+  // active hours — where there is no single known viewer. Seeded from the detected zone
+  // of the first member to sign in. See packages/core/timezone.ts.
+  timezone: text('timezone'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 
@@ -84,6 +91,11 @@ export const users = pgTable('users', {
   email: text('email').notNull(),
   name: text('name'),
   image: text('image'),
+
+  // Derived silently from the browser (Intl.DateTimeFormat().resolvedOptions().timeZone),
+  // never asked for. The zone THIS person sees their own dashboard in; falls back to the
+  // team zone, then UTC.
+  timezone: text('timezone'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
