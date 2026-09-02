@@ -6,7 +6,7 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import { join } from 'path';
-import { resolveWorktreeBase, clearResumeContext, BranchFetchResult } from './worktree-utils';
+import { resolveWorktreeBase, clearResumeContext, parseWorktreeList, BranchFetchResult } from './worktree-utils';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -118,6 +118,35 @@ async function installWorkspaceDeps(worktreePath: string, workerId: string): Pro
 }
 
 /**
+ * Map every branch currently checked out in this repo's worktree set (including
+ * the main working copy) to the worktree path holding it.
+ *
+ * Git allows a branch to be checked out by at most ONE worktree, and all role
+ * clones are worktrees of a single repo sharing one branch namespace. Knowing
+ * who holds what is what lets setupWorktree avoid a guaranteed-fatal
+ * `git worktree add -b <held-branch>` and name the holder when it still fails.
+ *
+ * Best-effort: on any git error we return an empty map (guarding degrades to the
+ * old behaviour rather than blocking worktree creation).
+ */
+function listBranchOwners(
+  execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
+): Map<string, string> {
+  const owners = new Map<string, string>();
+  try {
+    const porcelain = String(
+      execSync('git worktree list --porcelain', { ...execOpts, timeout: 5000 }) ?? '',
+    );
+    for (const entry of parseWorktreeList(porcelain)) {
+      if (entry.branch) owners.set(entry.branch, entry.path);
+    }
+  } catch {
+    // No remote/unusual state — treat as "nothing known to be held".
+  }
+  return owners;
+}
+
+/**
  * Set up an isolated git worktree for a worker session.
  * Worktrees live in .buildd-worktrees/ inside the repo.
  */
@@ -133,6 +162,17 @@ export interface SetupWorktreeResult {
    *  causing a fresh start from the default branch.  Callers should surface
    *  this as a visible warning rather than silently degrading. */
   fallback?: { candidate: string; reason: 'missing' | 'diverged' };
+  /** Set when a resume/base candidate resolved to a branch that cannot be the
+   *  worktree's own checkout — the repo default branch, or a branch another
+   *  worktree already holds. The task's own `branch` was used instead, so the
+   *  worker keeps its isolated worktree (and CBM) instead of failing setup and
+   *  degrading into the shared repo root. `holder` is the worktree that owns the
+   *  branch, when known. */
+  sharedBranch?: {
+    candidate: string;
+    reason: 'default_branch' | 'checked_out';
+    holder?: string;
+  };
 }
 
 export async function setupWorktree(
@@ -264,29 +304,96 @@ export async function setupWorktree(
     // When the resume candidate was usable (no fallback), check out THAT branch
     // directly so the worker pushes to the existing PR's branch rather than
     // opening a new branch/PR.  On fallback, use the task's own branch (fresh).
-    const actualBranch =
+    const requestedBranch =
       resumeCandidate && !fallback && base === `origin/${resumeCandidate}`
         ? resumeCandidate
         : branch;
 
-    console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
+    // Which branches are already checked out somewhere in this repo? Computed
+    // AFTER the stale-worktree cleanup above so a path we just reclaimed isn't
+    // counted as a holder.
+    const branchOwners = listBranchOwners(execOpts);
 
-    // Delete actualBranch locally if stale from a previous run
-    try {
-      execSync(`git branch -D "${actualBranch}"`, execOpts);
-    } catch {
-      // Branch doesn't exist locally — that's fine
-    }
-    // When resuming, also clean up the task's own branch if it exists locally
-    if (actualBranch !== branch) {
-      try {
-        execSync(`git branch -D "${branch}"`, execOpts);
-      } catch {
-        // Doesn't exist locally — fine
+    // Shared-branch guard.  A worktree cannot be checked out onto the repo
+    // default branch (the main clone holds it) nor onto a branch another
+    // worktree already holds — git fails with "a branch named 'X' already
+    // exists" / "cannot delete branch 'X' used by worktree at …".  Tasks whose
+    // context carried baseBranch:"dev" used to hit exactly that: every
+    // concurrent worker but one failed setup and was silently degraded into the
+    // shared role-clone root (no fs isolation, no CBM).  Fall back to the task's
+    // own branch, which is unique per task, and report it.
+    /** Why a branch cannot be the checkout target of a new worktree, if it cannot. */
+    const unusable = (candidate: string): 'default_branch' | 'checked_out' | null =>
+      candidate === defaultBranch
+        ? 'default_branch'
+        : branchOwners.has(candidate)
+          ? 'checked_out'
+          : null;
+
+    // Candidates in preference order. The task branch is NOT automatically a
+    // safe fallback: it can itself be held (a mission carries a stable
+    // `headBranch` across cycles, so two concurrent workers in one mission ask
+    // for the same branch) or, for a task cut against the default branch, be the
+    // default branch. Gating the guard on `requestedBranch !== branch` left both
+    // holes open — the same collision, one door along. The last candidate embeds
+    // the worker id, so it is unique per attempt by construction.
+    const uniqueBranch = `${branch}-w${workerId.slice(0, 8)}`;
+    const candidates = [...new Set([requestedBranch, branch, uniqueBranch])];
+
+    let actualBranch = candidates[candidates.length - 1];
+    let sharedBranch: SetupWorktreeResult['sharedBranch'];
+    for (const candidate of candidates) {
+      const reason = unusable(candidate);
+      if (!reason) { actualBranch = candidate; break; }
+      // Report the FIRST rejection: that is the branch the caller asked for and
+      // the one whose absence changes where pushes land.
+      if (!sharedBranch) {
+        const holder = branchOwners.get(candidate);
+        sharedBranch = { candidate, reason, ...(holder ? { holder } : {}) };
       }
     }
 
-    execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, execOpts);
+    if (sharedBranch) {
+      const { candidate, reason, holder } = sharedBranch;
+      console.warn(
+        `[Worker ${workerId}] Cannot check out "${candidate}" in a worktree ` +
+        (reason === 'default_branch'
+          ? `— it is the repo default branch (held by the main checkout${holder ? ` at ${holder}` : ''}). `
+          : `— it is already checked out in worktree ${holder}. `) +
+        `Using "${actualBranch}" instead (base stays ${base}). ` +
+        `Pushes will target "${actualBranch}", so a new PR may be opened instead of updating an existing one.`,
+      );
+    }
+
+    console.log(`[Worker ${workerId}] Creating worktree: ${worktreePath} (branch: ${actualBranch}, base: ${base})`);
+
+    // Delete stale local branches from a previous run. Skip any branch a live
+    // worktree holds — `git branch -D` on those always fails, and the resulting
+    // "cannot delete branch 'X' used by worktree" noise used to be the first
+    // symptom of this whole class of bug.
+    for (const candidate of candidates) {
+      if (branchOwners.has(candidate)) continue;
+      try {
+        execSync(`git branch -D "${candidate}"`, execOpts);
+      } catch {
+        // Branch doesn't exist locally — that's fine
+      }
+    }
+
+    try {
+      execSync(`git worktree add -b "${actualBranch}" "${worktreePath}" "${base}"`, execOpts);
+    } catch (err) {
+      // Make the failure legible: name the branch and, when the branch namespace
+      // is the cause, the worktree that holds it. Re-probe rather than trusting
+      // the pre-flight map — another worker may have taken the branch in between.
+      const holder = listBranchOwners(execOpts).get(actualBranch) ?? branchOwners.get(actualBranch);
+      const detail = holder
+        ? `branch "${actualBranch}" is already checked out in worktree ${holder}`
+        : `branch "${actualBranch}" could not be created at ${worktreePath}`;
+      throw new Error(
+        `git worktree add failed: ${detail} (base ${base}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Register the repo's shared git hooks in this worktree. The package.json
     // `prepare` script also sets this during `bun install`, but that install is
@@ -311,7 +418,12 @@ export async function setupWorktree(
     await installWorkspaceDeps(worktreePath, workerId);
 
     console.log(`[Worker ${workerId}] Worktree ready at ${worktreePath}`);
-    return { path: worktreePath, branch: actualBranch, ...(fallback ? { fallback } : {}) };
+    return {
+      path: worktreePath,
+      branch: actualBranch,
+      ...(fallback ? { fallback } : {}),
+      ...(sharedBranch ? { sharedBranch } : {}),
+    };
   } catch (err) {
     console.error(`[Worker ${workerId}] Failed to set up worktree:`, err instanceof Error ? err.message : err);
     // Clean up partial worktree
