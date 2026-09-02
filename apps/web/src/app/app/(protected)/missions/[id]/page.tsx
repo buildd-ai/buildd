@@ -6,7 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -45,6 +45,10 @@ import MissionArtifacts from '@/components/missions/MissionArtifacts';
 import { resolveMissionBreadcrumb } from '@/lib/initiative-breadcrumb';
 import { SwipeProvider } from '@/components/SwipeableRow';
 import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
+import { loadReleaseFooterData } from '@/lib/release-footer';
+import { MissionReleaseSection, deriveReleaseNowState } from './MissionReleaseSection';
+import { getSecretsProvider } from '@buildd/core/secrets';
+import type { ReleaseStrategy, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,7 +70,7 @@ export default async function MissionDetailPage({
   let mission = await db.query.missions.findFirst({
     where: eq(missions.id, id),
     with: {
-      workspace: { columns: { id: true, name: true } },
+      workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
       initiative: { columns: { id: true, title: true } },
       tasks: {
         columns: {
@@ -163,7 +167,7 @@ export default async function MissionDetailPage({
           const refreshedMission = await db.query.missions.findFirst({
             where: eq(missions.id, id),
             with: {
-              workspace: { columns: { id: true, name: true } },
+              workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
               initiative: { columns: { id: true, title: true } },
               tasks: {
                 columns: {
@@ -332,26 +336,21 @@ export default async function MissionDetailPage({
   const missionCriteriaOverall = ((mission as any).goalCriteriaState as { overall?: string } | null)?.overall ?? null;
   const criteriaUnverified = Array.isArray(missionCriteria) && missionCriteria.length > 0 && missionCriteriaOverall !== 'pass';
 
-  // Human-readable blocking reason for the above-fold banner and Summary view.
-  // Used when criteriaUnverified is true and the mission is not yet complete.
-  const criteriaStateItems = ((mission as any).goalCriteriaState as { criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null)?.criteria ?? [];
-  let criteriaBlockingReason: string | null = null;
-  if (criteriaUnverified && !['completed', 'cancelled', 'archived'].includes(mission.status)) {
-    const failing = criteriaStateItems.filter(c => c.verdict === 'fail');
-    const notPassed = criteriaStateItems.filter(c => c.verdict !== 'pass');
-    if (failing.length > 0) {
-      const label = failing[0].label ?? failing[0].type ?? 'criterion';
-      criteriaBlockingReason = failing.length === 1
-        ? `criterion failing: ${label}`
-        : `${failing.length} criteria failing`;
-    } else if (notPassed.length > 0) {
-      criteriaBlockingReason = notPassed.length === 1
-        ? '1 criterion unverified — run verification'
-        : `${notPassed.length} criteria unverified — run verification`;
-    } else {
-      criteriaBlockingReason = 'goal criteria not yet verified';
-    }
-  }
+  // Shared presentation for the above-fold banner and Summary view — same
+  // helper the mission card pill and initiative KPI chip read from, so this
+  // page never invents its own vocabulary for the same verdict. `completionAttempted`
+  // is what separates a young/active mission's unevaluated criteria (quiet)
+  // from a mission whose work is otherwise done and completion has actually
+  // been refused (prominent) — see `deriveCriteriaGatePresentation`.
+  const criteriaStateItems = ((mission as any).goalCriteriaState as { criteria?: Array<{ verdict: string; label?: string; type?: string; evidence?: string }> } | null)?.criteria ?? [];
+  const criteriaGate = !['completed', 'cancelled', 'archived'].includes(mission.status)
+    ? deriveCriteriaGatePresentation({
+        criteriaCount: Array.isArray(missionCriteria) ? missionCriteria.length : 0,
+        overall: (missionCriteriaOverall as any) ?? null,
+        items: criteriaStateItems as any,
+        completionAttempted: progress !== undefined && progress >= 100,
+      })
+    : null;
 
   // Single derived display state for the header chip and CTA
   const displayState = deriveMissionDisplayState({
@@ -716,6 +715,31 @@ export default async function MissionDetailPage({
     limit: 50,
   }).then(rows => rows.map(r => ({ id: r.id, title: r.title, status: r.status, progress: 0 })));
 
+  // Release section (§8.5): reads the same workspace-scoped loader as the
+  // mission-card footer (lib/release-footer.ts) so the two surfaces cannot
+  // disagree about queue depth or deploy state (AC-41).
+  const releaseWorkspace = mission.workspace as
+    | { id: string; name: string; gitConfig: unknown; releaseConfig: WorkspaceReleaseConfig | null }
+    | null
+    | undefined;
+  const releaseFooterData = releaseWorkspace
+    ? await loadReleaseFooterData({
+        id: releaseWorkspace.id,
+        name: releaseWorkspace.name,
+        gitConfig: releaseWorkspace.gitConfig,
+        releaseConfig: releaseWorkspace.releaseConfig,
+      })
+    : null;
+  const releaseStrategy: ReleaseStrategy | null = releaseWorkspace?.releaseConfig?.enabled
+    ? (releaseWorkspace.releaseConfig.strategy ?? 'branch_merge')
+    : null;
+  let hasVercelToken: boolean | null = null;
+  if (releaseFooterData && releaseStrategy === 'branch_merge') {
+    const secrets = await getSecretsProvider().list(mission.teamId);
+    hasVercelToken = secrets.some((s) => s.purpose === 'vercel_token');
+  }
+  const releaseNowState = deriveReleaseNowState({ strategy: releaseStrategy, hasVercelToken });
+
   return (
     <SwipeProvider>
     <TaskPanelWrapper>
@@ -806,6 +830,17 @@ export default async function MissionDetailPage({
                   : `${completedTasks} of ${totalTasks} tasks complete`}
             </div>
           </div>
+        )}
+
+        {/* Release — §8.5: gated shows queue depth + oldest age, continuous shows
+            last deploy state; `none` archetype and a genuinely clean queue both
+            render nothing (§9.1). */}
+        {mission.workspaceId && (
+          <MissionReleaseSection
+            data={releaseFooterData}
+            workspaceId={mission.workspaceId}
+            releaseNowState={releaseNowState}
+          />
         )}
 
         {/* Budget exhausted banner */}
@@ -1017,12 +1052,23 @@ export default async function MissionDetailPage({
         />
       </div>
 
-      {/* ── Criteria blocking banner — visible above the fold on all tab views ── */}
-      {criteriaBlockingReason && (
-        <div className="mb-4 flex items-start gap-2 rounded border border-status-error/30 bg-status-error/5 px-3 py-2.5">
-          <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-error">Blocked</span>
+      {/* ── Criteria gate — visible above the fold on all tab views ──
+          'unverified' (young/active mission, criteria simply haven't run yet)
+          stays quiet — it is not a work-stopping state and must never read
+          BLOCKED. Only a failed criterion or a refused completion attempt
+          gets alarm styling, and names the criterion + evidence when known. */}
+      {criteriaGate && criteriaGate.state === 'unverified' && (
+        <p className="mb-4 text-[12px] text-text-muted">
+          Completion gated by {missionCriteria!.length} criteri{missionCriteria!.length === 1 ? 'on' : 'a'} · not yet verified — see Goal Criteria below ↓
+        </p>
+      )}
+      {criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
+        <div className={`mb-4 flex items-start gap-2 rounded border px-3 py-2.5 ${criteriaGate.tone === 'error' ? 'border-status-error/30 bg-status-error/5' : 'border-status-warning/30 bg-status-warning/5'}`}>
+          <span className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide ${CRITERIA_GATE_TONE_CLASS[criteriaGate.tone]}`}>
+            {criteriaGate.label}
+          </span>
           <span className="text-[12px] text-text-secondary">
-            {criteriaBlockingReason} — see Goal Criteria below ↓
+            {criteriaGate.detail ? `${criteriaGate.detail} — ` : ''}see Goal Criteria below ↓
           </span>
         </div>
       )}
@@ -1046,7 +1092,7 @@ export default async function MissionDetailPage({
             prsOpen={prsOpen}
             completedTasks={completedTasks}
             totalTasks={totalTasks}
-            criteriaBlockingReason={criteriaBlockingReason}
+            criteriaGate={criteriaGate}
           />
         ) : undefined}
         timelineContent={(
@@ -1064,7 +1110,7 @@ export default async function MissionDetailPage({
             prsOpen={prsOpen}
             completedTasks={completedTasks}
             totalTasks={totalTasks}
-            criteriaBlockingReason={criteriaBlockingReason}
+            criteriaGate={criteriaGate}
           />
         )}
         feedContent={<MissionFeed missionId={id} />}

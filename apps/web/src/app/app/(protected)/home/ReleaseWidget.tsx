@@ -2,6 +2,7 @@ import Link from 'next/link';
 import type { ReleaseReadinessItem } from '@/lib/release-readiness';
 import { computeReleaseWidgetDecision } from '@/lib/release-readiness';
 import { DerivedMetricDisplay } from '@/components/DerivedMetricDisplay';
+import { ReleaseActionButton } from './ReleaseActionButton';
 
 function daysAgo(isoDate: string): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
@@ -36,6 +37,9 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
                         {item.workspaceName}
                       </span>
+                    )}
+                    {item.baselineSource !== 'healthy' && (
+                      <span className="text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
                     )}
                     <span className="text-[13px] text-text-secondary">
                       <DerivedMetricDisplay
@@ -72,6 +76,9 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                       {item.workspaceName}
                     </span>
                   )}
+                  {item.baselineSource !== 'healthy' && (
+                    <span className="text-[10px] font-mono text-text-muted/70 block mb-0.5">no releases yet</span>
+                  )}
                   <span className="text-[13px] font-medium text-text-primary">
                     <DerivedMetricDisplay
                       metric={item.queueDepth}
@@ -87,14 +94,17 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
                     />
                   </span>
                 </div>
-                {releaseHref && (
-                  <Link
-                    href={releaseHref}
-                    className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
-                  >
-                    Release →
-                  </Link>
-                )}
+                <div className="flex items-center gap-3 shrink-0">
+                  <ReleaseActionButton workspaceId={item.workspaceId} />
+                  {releaseHref && (
+                    <Link
+                      href={releaseHref}
+                      className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
+                    >
+                      Release →
+                    </Link>
+                  )}
+                </div>
               </div>
             </div>
           );

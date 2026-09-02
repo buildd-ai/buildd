@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
-import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives, releases, tasks as tasksTable } from '@buildd/core/db/schema';
-import { inArray, desc, and, eq, sql, or, isNull, isNotNull } from 'drizzle-orm';
-import { detectArchetype } from '@buildd/core/release-archetype';
+import { missions, teams, workspaceSkills, accounts, workers, workspaces, initiatives } from '@buildd/core/db/schema';
+import { inArray, desc, and, eq, sql, or, isNull } from 'drizzle-orm';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
+import { loadReleaseFooterData } from '@/lib/release-footer';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
 import Link from 'next/link';
@@ -156,86 +156,19 @@ export default async function MissionsPage({
     if (ws?.id && !uniqueWorkspaces.has(ws.id)) uniqueWorkspaces.set(ws.id, ws as any);
   }
 
+  // Shared with mission detail's MissionReleaseSection (lib/release-footer.ts)
+  // so the two surfaces cannot disagree about queue depth or deploy state.
   const releaseFooterMap = new Map<string, ReleaseFooterData>();
-  const gatedWsIds: string[] = [];
-  const continuousWsIds: string[] = [];
-
-  for (const [wsId, ws] of uniqueWorkspaces) {
-    const archetype = detectArchetype({
-      name: ws.name as string | null,
-      releaseConfig: (ws.releaseConfig as any) ?? null,
-      gitConfig: (ws.gitConfig as any) ?? null,
-    });
-    if (archetype === 'gated') gatedWsIds.push(wsId);
-    else if (archetype === 'continuous') continuousWsIds.push(wsId);
-  }
-
-  if (gatedWsIds.length > 0) {
-    await Promise.all(gatedWsIds.map(async (wsId) => {
-      const [relRow] = await db
-        .select({ maxHealthyAt: sql<string | null>`MAX(healthy_at)::text` })
-        .from(releases)
-        .where(and(eq(releases.workspaceId, wsId), eq(releases.state, 'healthy')));
-      const hasRelease = relRow?.maxHealthyAt != null;
-
-      const [latestRelRow] = await db
-        .select({ id: releases.id })
-        .from(releases)
-        .where(eq(releases.workspaceId, wsId))
-        .orderBy(desc(releases.createdAt))
-        .limit(1);
-
-      // No COALESCE epoch fallback: when no healthy baseline row exists the
-      // comparison `mergedAt > NULL` returns NULL (no match) → count = 0.
-      const [queueRow] = await db
-        .select({
-          queueDepth: sql<number>`count(*)::int`,
-          oldestMergedAt: sql<string | null>`min(${workers.mergedAt})::text`,
-        })
-        .from(workers)
-        .innerJoin(tasksTable, eq(tasksTable.id, workers.taskId))
-        .where(and(
-          eq(tasksTable.workspaceId, wsId),
-          isNotNull(workers.mergedAt),
-          sql`${workers.mergedAt} > (SELECT MAX(healthy_at) FROM releases WHERE workspace_id = ${wsId}::uuid AND state = 'healthy')`,
-        ));
-
-      releaseFooterMap.set(wsId, {
-        archetype: 'gated',
-        queueDepth: queueRow?.queueDepth ?? 0,
-        oldestMergedAt: queueRow?.oldestMergedAt ?? null,
-        hasRelease,
-        releaseId: latestRelRow?.id ?? null,
-      });
-    }));
-  }
-
-  if (continuousWsIds.length > 0) {
-    await Promise.all(continuousWsIds.map(async (wsId) => {
-      const [lastRelease] = await db
-        .select({
-          id: releases.id,
-          state: releases.state,
-          deployedAt: sql<string | null>`deployed_at::text`,
-          healthyAt: sql<string | null>`healthy_at::text`,
-        })
-        .from(releases)
-        .where(eq(releases.workspaceId, wsId))
-        .orderBy(desc(releases.createdAt))
-        .limit(1);
-
-      releaseFooterMap.set(wsId, lastRelease
-        ? {
-            archetype: 'continuous',
-            state: lastRelease.state,
-            deployedAt: lastRelease.deployedAt ?? null,
-            healthyAt: lastRelease.healthyAt ?? null,
-            releaseId: lastRelease.id,
-          }
-        : null,
-      );
-    }));
-  }
+  await Promise.all(
+    Array.from(uniqueWorkspaces.values()).map(async (ws) => {
+      releaseFooterMap.set(ws.id, await loadReleaseFooterData({
+        id: ws.id,
+        name: ws.name,
+        gitConfig: ws.gitConfig,
+        releaseConfig: ws.releaseConfig,
+      }));
+    }),
+  );
 
   // Compute mission data
   const missionsList = allMissions.map((obj) => {

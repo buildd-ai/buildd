@@ -2,12 +2,12 @@
 title: Surface IA — Home, Missions, Initiatives
 status: draft
 owner: max
-last_verified: 2026-08-29
+last_verified: 2026-09-01
 summary: Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 domain: surfaces
 surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presentation.ts, apps/web/src/lib/initiative-presentation.ts, apps/web/src/app/app/(protected)/home/page.tsx]
-related: [mission-task-lifecycle, timeline-dependency-geometry]
-keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence]
+related: [mission-task-lifecycle, timeline-dependency-geometry, release-flow]
+keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline]
 supersedes: [missions-tab-triage]
 ---
 
@@ -74,19 +74,29 @@ This spec fixes placement (§1–§5) and collapses the duplicated data path (§
 `MUST` = renders when its signal is non-empty. `MUST NOT` = never rendered on
 that surface. `—` = not applicable.
 
-| Element | Home | Missions | Initiatives list | Initiative detail |
-|---|---|---|---|---|
-| Initiative card rail (160px cards) | MUST NOT | MUST NOT | MUST NOT | — |
-| Verdict label (§6.5) | as clause counts | MUST NOT | MUST (leads the row) | MUST (leads the page) |
-| Verdict evidence numbers | MUST NOT | MUST NOT | MUST NOT | MUST |
-| One-line initiative pulse (§2) | MUST | MUST NOT | MUST NOT | MUST NOT |
-| Arc headline (milestone crossing) | MUST | MUST NOT | MUST NOT | MUST NOT |
-| Initiative triage row (sparkline + pending counts + %) | MUST NOT | MUST NOT | MUST | MUST NOT |
-| Mission-state groups (`GROUP_ORDER`) | active subset only | MUST | MUST NOT | MUST NOT |
-| Workspace grouping header | MUST NOT | conditional (§3.3) | MUST NOT | MUST NOT |
-| 14-day effort sparkline | MUST NOT | MUST NOT | MUST (84×24) | MUST (≥168×32) |
-| Pending-action counts as links | MUST NOT | MUST NOT | MUST (subline) | MUST (strip) |
-| KPI panel, artifacts | MUST NOT | MUST NOT | MUST NOT | MUST |
+The matrix originally covered four surfaces. §8 adds **Mission detail** and
+**Task detail** because release (§8-10) is the first element whose natural
+home is inside a single mission or task, not a cross-mission list — the prior
+four columns have no row that needs them, which is why every pre-existing row
+is `—` there.
+
+| Element | Home | Missions | Initiatives list | Initiative detail | Mission detail | Task detail |
+|---|---|---|---|---|---|---|
+| Initiative card rail (160px cards) | MUST NOT | MUST NOT | MUST NOT | — | — | — |
+| Verdict label (§6.5) | as clause counts | MUST NOT | MUST (leads the row) | MUST (leads the page) | — | — |
+| Verdict evidence numbers | MUST NOT | MUST NOT | MUST NOT | MUST | — | — |
+| One-line initiative pulse (§2) | MUST | MUST NOT | MUST NOT | MUST NOT | — | — |
+| Arc headline (milestone crossing) | MUST | MUST NOT | MUST NOT | MUST NOT | — | — |
+| Initiative triage row (sparkline + pending counts + %) | MUST NOT | MUST NOT | MUST | MUST NOT | — | — |
+| Mission-state groups (`GROUP_ORDER`) | active subset only | MUST | MUST NOT | MUST NOT | — | — |
+| Workspace grouping header | MUST NOT | conditional (§3.3) | MUST NOT | MUST NOT | — | — |
+| 14-day effort sparkline | MUST NOT | MUST NOT | MUST (84×24) | MUST (≥168×32) | — | — |
+| Pending-action counts as links | MUST NOT | MUST NOT | MUST (subline) | MUST (strip) | — | — |
+| KPI panel, artifacts | MUST NOT | MUST NOT | MUST NOT | MUST | — | — |
+| Release ledger status (§8.1) | MUST (exception only, §8.2) | MUST (card footer, §8.3) | MUST NOT (§8.4) | MUST NOT (§8.4) | MUST (§8.5) | — |
+| Release trigger action (`Release now`, §10.1) | MUST (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST NOT (§10.2) | MUST (§10.2) | MUST NOT (§10.2) |
+| Task-level ship badge (§10.3) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST (per task row, §10.3) | MUST (§10.3) |
+| Fifth task-rail segment for release (§10.4) | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT | MUST NOT |
 
 ---
 
@@ -596,6 +606,258 @@ swap and MUST NOT be blocked on it.
 
 ---
 
+## 8. Release — placement
+
+### 8.0 Why release is here
+
+`docs/design/release-management-ui.md` and the initiative artifact "Spec:
+release as a first-class object" were both written and shipped (M1-M3, PR
+#1845-#1924) without ever being reconciled against this document. The result
+is four mounts with no host: `MissionReleaseFooter` on mission-list cards,
+`ReleaseWidget` on Home, a `Release now` button on
+`/app/workspaces/[id]/config`, and an orphan `/app/releases/[id]` with no
+index and no nav entry. This section is that reconciliation — it does not
+change what those components render, except where §8.5 and §10 explicitly say
+so.
+
+### 8.1 Release ledger status
+
+The signal already defined by the release initiative spec §9: for a gated
+workspace, queue depth and the age of the oldest unshipped merge; for a
+continuous workspace, the last deploy state; for `none` archetype, nothing
+(§9.1 formalizes this as the `none` empty state). This is a *read*, never an
+action — the trigger lives in a separate row (§10.1).
+
+### 8.2 Home
+
+`ReleaseWidget` (already shipped, PR #1877/#1905) is correct as built: it
+renders only the exception — queue depth over threshold **and** CI green on
+the source ref — never a standing "release available" card, per §9 of the
+release spec. This matrix entry formalizes that shipped behavior; no change.
+
+### 8.3 Missions
+
+`MissionReleaseFooter` on the mission-list card (already shipped, PR #1856) is
+correct as built. No change.
+
+### 8.4 Initiatives list and detail — MUST NOT
+
+An initiative-level release row would duplicate a signal the initiative
+surfaces already carry: `shippedThisWeek` is one of the four pending-action
+clauses in the Initiatives-list subline (§4.2) and one of the four chips on
+Initiative detail (§5.1). Two representations of the same count is exactly the
+divergence risk §0.3 and §6.2 exist to prevent — the initiative surfaces read
+*"how much shipped"* from the loader-backed rollup; they do not need a
+per-release ledger row to say it again.
+
+### 8.5 Mission detail — MUST (new)
+
+Mission detail today has **zero** release surface — `MissionReleaseFooter` is
+mounted only on the list-card grid (`MissionGrid.tsx`), never on
+`/app/missions/[id]/page.tsx`. This is the actual gap: mission detail is the
+page whose entire subject is "is this mission done," and it currently cannot
+answer whether the mission's merged work has shipped.
+
+Mission detail gains a release section — same data source as the card footer
+(`releases` + `release_tasks`, no denormalization, consistent with §6.2's
+single-loader discipline), rendered richer: gated shows queue depth, oldest
+age, and a link to the release detail page; continuous shows last deploy
+state and healthy-since. It carries the trigger action (§10.1-10.2). `none`
+archetype renders nothing, permanently (§9.1).
+
+### 8.6 Acceptance criteria
+
+- **AC-38**: GIVEN a gated workspace with 3 unshipped merges and CI green on
+  the source ref, WHEN Home renders, THEN the release widget is present;
+  GIVEN CI failing on the same ref, THEN the widget renders the CI-blocking
+  state, not the release link.
+- **AC-39**: GIVEN an initiative whose child missions have shipped 2 releases
+  this week, WHEN `/app/initiatives` and the initiative detail page render,
+  THEN neither page renders a release-ledger row — only the existing
+  `shippedThisWeek` clause/chip carries the count.
+- **AC-40**: GIVEN a gated mission with 4 merged tasks and no release yet,
+  WHEN `/app/missions/[id]` renders, THEN a release section is present
+  showing queue depth 4 and the oldest merge's age; GIVEN the mission's
+  archetype is `none`, THEN no release section is present in the DOM.
+- **AC-41**: GIVEN the same mission on both the missions-list card and its own
+  detail page in one request cycle, THEN both show the same queue depth and
+  age, because both read the same loader.
+
+---
+
+## 9. Release — empty-state doctrine
+
+### 9.1 The three states
+
+The code today collapses three distinct conditions into one blank render,
+which makes a built feature indistinguishable from an unbuilt one (the defect
+diagnosed and fixed for the Home widget and mission-card footer in the
+"Release surfaces render nothing before the first healthy release" task —
+that fix is the mechanism this section names and generalizes to every release
+surface, present and future).
+
+| State | Condition | Rendering |
+|---|---|---|
+| `none` | `detectArchetype()` returns `none` (§4 of the release spec — `releaseConfig` absent/disabled and no deploy signal) | Render nothing. **Permanently** — this is the only state that never resolves into something else. |
+| `unseeded` | Archetype ≠ `none`, but the workspace has zero `healthy` rows in `releases` (or, for a single mission, no release has ever attributed its tasks) | Render the queue against the baseline ladder: `MAX(healthy_at)` → `MAX(deployed_at)` → latest release row of any state → current prod-branch head. Normal on day one for every release-capable workspace — MUST NOT be hidden or treated as an error. |
+| `clean` | Archetype ≠ `none`, a baseline resolves (seeded or unseeded), and queue depth against that baseline is genuinely zero | Render nothing. This is the *correct* empty state — everything merged is already shipped — and MUST NOT be distinguished from `none` by any visible chrome, because a reader does not need to know *why* there is nothing to ship, only that there is nothing to ship. |
+
+`none` and `clean` render identically (nothing); they are named separately
+here because they must never be *computed* the same way. A surface that
+special-cases `none` (skip the query entirely, per `detectArchetype`) but
+falls through to `clean` for every other archetype cannot regress into the
+epoch-baseline bug (`c3ea1d05`, PR #1905) where a null baseline silently
+became "everything since 1970" instead of either `unseeded`'s ladder or a
+correct zero.
+
+### 9.2 Where this applies
+
+Every row in §1 marked `MUST` for "Release ledger status" (Home, Missions,
+Mission detail) and every future release surface MUST implement all three
+states via the shared baseline-ladder helper (one implementation, per §6.2's
+single-loader discipline extended to release data) — not a per-surface
+COALESCE-to-epoch or a per-surface "if no rows, hide" shortcut. Both of those
+shortcuts collapse `unseeded` into either `none` (undercounts) or a fabricated
+history (overcounts) — this is precisely the bug class `c3ea1d05` filed and
+the fix generalized here.
+
+### 9.3 Acceptance criteria
+
+- **AC-42**: GIVEN a workspace with `archetype: none`, WHEN any release
+  surface renders, THEN no release element appears, and no release query
+  (baseline or queue) is issued.
+- **AC-43**: GIVEN a gated workspace with zero rows in `releases` and 4
+  commits merged ahead of `prodBranch`, WHEN any release surface renders,
+  THEN the baseline ladder falls through to the prod-branch-head rung and the
+  surface reports 4 unshipped — never 0 (undercount-as-`none`) and never a
+  count keyed from an unbounded epoch (overcount, the `c3ea1d05` regression).
+- **AC-44**: GIVEN a gated workspace with a `healthy` release and zero merges
+  since, WHEN any release surface renders, THEN no release element appears —
+  the same DOM output as `none` (AC-42), but reached via the queue-depth-zero
+  branch, not the archetype-none branch.
+- **AC-45**: GIVEN two release surfaces (e.g. the mission card footer and the
+  mission detail section) rendered for the same mission in one request cycle,
+  THEN both classify the state (`none` / `unseeded` / `clean`) identically,
+  because both call the same baseline-ladder helper.
+
+---
+
+## 10. Release — action placement and task-level ship state
+
+### 10.1 Where the `Release now` action lives
+
+**Decision: Mission detail and the Home readiness widget. Not workspace
+config, not the missions list, not task detail.**
+
+### 10.2 Reasoning
+
+The release initiative spec's own §1 names the failure this whole effort
+exists to fix: *"a mission can reach 'all tasks complete, all PRs merged' and
+still not be shipped. Mission completion overstates reality."* That failure
+is a property of a **mission**, observed at the moment someone is looking at
+that mission. The affordance to fix it — fire the release — therefore
+belongs next to the work whose completeness it corrects, not three clicks
+away in workspace settings where nothing about *this mission's* unshipped
+state is visible.
+
+Concretely:
+
+- **Mission detail — MUST.** This is where §8.5 already puts the release
+  ledger status for the mission whose "done" claim is in question. The
+  trigger sits next to the read it acts on — press the button, watch the
+  section's own state advance from `unseeded`/queued to `dispatched`.
+- **Home — MUST.** The readiness widget already computes "queue depth over
+  threshold AND CI green" (§8.2) — the exact precondition for a safe release.
+  Surfacing the action where that precondition is already evaluated avoids a
+  second click through to a page that re-derives it. The widget gains the
+  button; it does not gain a second, competing surface.
+- **Missions list, Initiatives (list/detail), Task detail — MUST NOT.** List
+  surfaces render summaries, not side-effecting controls (§3.1's "nothing
+  else" doctrine for Missions applies equally here); an initiative spans many
+  missions so "release" has no single target; a task cannot release on its
+  own (§10.3).
+- **Workspace config — configuration only.** `ReleaseSection.tsx` on
+  `/app/workspaces/[id]/config` keeps the strategy selector, branch pickers,
+  trigger-policy selector, and read-only Vercel-token status — everything
+  that decides *how* a release runs. The `Release now` button that currently
+  lives there is **removed from that surface** and relocated to mission
+  detail and Home. Configuration and action were conflated in one card;
+  §5.2's own AC-13 ("Release now fires the release") never specified *where*
+  the button must live, so this is a relocation, not a spec violation of the
+  original design doc.
+
+### 10.3 Task-level ship state: badge only, no fifth rail segment
+
+**Decision: extend the existing task-detail badge (release-management-ui.md
+§5.2, AC-24-26) to carry a `Shipped` state. Do not add a fifth segment to the
+task rail.**
+
+This closes both halves of the twice-deferred question in one move, because
+they were never actually two separate questions — both are "does a task show
+whether it shipped," and they have the same answer for the same reason.
+
+**Why not the rail.** The release initiative spec §9 already gives the
+argument, and the current codebase confirms it holds: `SegmentStrip` (as used
+by `TaskCard`) renders one segment per entry in a task's *dependency chain* —
+a variable-length structure keyed to `deriveChainPosition`, not a fixed
+`code → review → ci → merge` pipeline. The same primitive renders mission
+progress (`MissionProgressBar`). Grafting a release stage onto it would mean
+either inventing a fixed-stage rail that doesn't exist today (a much larger
+change than this spec's scope) or adding a segment whose meaning
+("released") doesn't compose with what every other segment already means
+("this upstream task's state"). And the substantive objection stands
+regardless of implementation: **a task cannot ship alone.** Release is
+mission-shaped — it attributes a commit range to *all* the tasks that
+contributed, not one. A rail segment on an individual task would either be
+permanently dark (continuous repos, where "shipped" means nothing per-task)
+or read as N identical pending segments across every task in a gated mission
+that hasn't released yet — noise, not signal.
+
+**Why the badge.** A badge is mission-agnostic annotation, not a pipeline
+stage — it says "this task's work is part of release R," full stop, with no
+claim about the task's own progression. It also composes cleanly with the
+two badge states release-management-ui.md already specified:
+
+| Task state | Badge | Source |
+|---|---|---|
+| `tasks.release = 'false'` | `Skip release` (muted) | already spec'd, AC-24 |
+| `tasks.release = 'true'` | `Force release` (amber) | already spec'd, AC-25 |
+| `tasks.release = 'inherit'`, not yet attributed to a `healthy` release | none (default, no noise) | already spec'd, AC-26 — unchanged |
+| attributed to a `healthy` release via `release_tasks` | `Shipped` (muted success), links to the release detail page | **new — closes this section's question** |
+
+`Shipped` is additive: a task can show both `Force release` and `Shipped` at
+once (it was force-released, and that release is now healthy). The badge
+mounts everywhere `TaskCard`'s metadata row already mounts — mission detail's
+task list and the standalone task detail page — so mission detail and task
+detail get the same component, not two implementations to keep in sync.
+
+### 10.4 Acceptance criteria
+
+- **AC-46**: GIVEN a mission with unshipped merges and CI green, WHEN mission
+  detail renders, THEN a `Release now` button is present and enabled; GIVEN
+  the mission's Vercel token is missing, THEN the button is present but
+  disabled with a tooltip explaining why (mirrors release-management-ui.md
+  AC-16/AC-23, relocated).
+- **AC-47**: WHEN `/app/workspaces/[id]/config` renders the release section,
+  THEN no `Release now` button (or equivalent trigger control) is present in
+  the DOM — only strategy, branch, trigger-policy, and read-only token-status
+  fields.
+- **AC-48**: GIVEN a task whose PR was merged and later attributed (via
+  `release_tasks`) to a release in state `healthy`, WHEN the task detail page
+  or its `TaskCard` row on mission detail renders, THEN a `Shipped` badge is
+  present and links to `/app/releases/[releaseId]`.
+- **AC-49**: GIVEN a task with `tasks.release = 'inherit'` whose PR has not
+  yet been attributed to any release, WHEN the task renders on any surface,
+  THEN no ship-related badge is present (unchanged from the existing
+  `inherit`-is-silent rule).
+- **AC-50**: WHEN `TaskCard.tsx` or the task rail primitive (`SegmentStrip`)
+  is inspected, THEN it renders exactly the segments produced by
+  `deriveChainPosition` (or the mission-progress equivalent) and contains no
+  release/ship segment — the fifth-segment path was evaluated and rejected,
+  not merely unbuilt.
+
+---
+
 **Code surface**
 
 - `apps/web/src/app/app/(protected)/home/page.tsx` — Home; currently mounts the
@@ -639,6 +901,22 @@ swap and MUST NOT be blocked on it.
   verdicts that move `confidence` from `unverified` to `verified`.
 - `apps/web/src/app/app/(protected)/initiatives/[id]/InitiativeKPIPanel.tsx` —
   KPI editor the unverified verdict block links to.
+- `apps/web/src/components/MissionReleaseFooter.tsx` — mission-list card
+  footer (§8.3); the empty-state ladder (§9.1-9.2) becomes its shared
+  dependency rather than an inline COALESCE.
+- `apps/web/src/app/app/(protected)/home/ReleaseWidget.tsx` and
+  `apps/web/src/lib/release-readiness.ts` — Home exception widget (§8.2);
+  gains the trigger action (§10.2, AC-46).
+- `apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx`
+  — loses the `Release now` button (§10.2, AC-47); keeps strategy/branch/
+  trigger-policy/token-status fields.
+- `apps/web/src/app/app/(protected)/releases/[id]/page.tsx` — release detail;
+  gains inbound links from the mission detail section (§8.5) and the
+  `Shipped` task badge (§10.3, AC-48).
+- `apps/web/src/app/app/(protected)/tasks/[id]/` and
+  `apps/web/src/components/TaskCard.tsx` — gain the `Shipped` badge (§10.3);
+  `TaskCard`'s `SegmentStrip` usage stays dependency-chain-shaped, no release
+  segment (§10.4, AC-50).
 
 **New files**
 
@@ -648,6 +926,17 @@ swap and MUST NOT be blocked on it.
 - `apps/web/src/components/InitiativePulseLine.tsx` — the Home line (§2).
 - ~~`apps/web/src/app/app/(protected)/initiatives/InitiativeTriage.tsx`~~ — done
   (#1710); moved, not copied.
+- `apps/web/src/app/app/(protected)/missions/[id]/MissionReleaseSection.tsx`
+  — new (§8.5); mission detail's release ledger status + trigger action.
+  Reads the same loader as `MissionReleaseFooter`, does not fork the query.
+- `apps/web/src/lib/release-baseline.ts` — new (§9.2); the shared
+  `none` / `unseeded` / `clean` baseline-ladder helper. One implementation
+  for `MissionReleaseFooter`, `ReleaseWidget`/`release-readiness.ts`, and
+  `MissionReleaseSection` — none of the three may carry its own ladder or
+  COALESCE.
+- `apps/web/src/components/TaskShipBadge.tsx` — new (§10.3); renders
+  `Skip release` / `Force release` / `Shipped`, mounted by both `TaskCard`
+  and the standalone task detail page.
 
 **Out of scope**
 
@@ -667,5 +956,18 @@ swap and MUST NOT be blocked on it.
 - Verdict history and trend ("winning for 3 weeks"). Nothing stores a verdict
   time series today; `initiative_progress_seen` holds one percentage per user per
   initiative, which is a milestone tripwire, not history.
+- A releases index page (`/app/releases`) or a nav entry for it. §8-10 give
+  `/app/releases/[id]` inbound links from Home, mission cards, and mission
+  detail; a standalone list of every release across every workspace answers a
+  different question than any of the three primary surfaces (§0) and is not
+  scoped here.
+- Implementing §8-10 — this document only places the release object and
+  settles the two twice-deferred questions (§9, §10.3). `MissionReleaseFooter`
+  and `ReleaseWidget` already exist and need no change; `MissionReleaseSection`,
+  `TaskShipBadge`, and `release-baseline.ts` are new and are M4 build-task
+  scope, not this spec's.
+- Store-reviewed and published-package archetypes (§4 of the release spec) on
+  any of these surfaces. Every ledger-status row above assumes gated or
+  continuous; `pending_external` and registry states are unaddressed here.
 - Tuning `THRASH_RATIO` per workspace or per initiative. One constant, team-wide,
   until there is evidence it misclassifies.

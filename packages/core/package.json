@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.193.0",
+  "version": "0.194.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -64,6 +64,7 @@
     "./release-archetype": "./release-archetype.ts",
     "./release-attribution": "./release-attribution.ts",
     "./derived-metric": "./derived-metric.ts",
+    "./release-baseline": "./release-baseline.ts",
     "./initiative-metric-registry": "./initiative-metric-registry.ts"
   },
   "dependencies": {

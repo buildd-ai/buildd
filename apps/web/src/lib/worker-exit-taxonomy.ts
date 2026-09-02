@@ -83,6 +83,8 @@ export function classifyStaleExit(worker: {
   startedAt?: Date | string | null;
   turns?: number | null;
   costUsd?: string | number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
 }): { exitCause: WorkerExitCause; error: string } {
   if (!worker.startedAt) {
     return { exitCause: 'never_started', error: NEVER_STARTED_ERROR };
@@ -91,7 +93,14 @@ export function classifyStaleExit(worker: {
   const rawCost = worker.costUsd;
   const cost = typeof rawCost === 'string' ? parseFloat(rawCost) : (rawCost ?? 0);
   const spent = Number.isFinite(cost) ? cost : 0;
-  if (turns <= SILENT_START_MAX_TURNS && spent <= 0) {
+  // costUsd is only ever priced on the terminal PATCH path (see model-prices.ts /
+  // PATCH /api/workers/[id]) — the reaper's own kill path never writes it, so
+  // "costUsd === 0" is true for every worker it looks at, including ones that
+  // burned real tokens on turn 1 or 2. inputTokens/outputTokens ARE live-synced
+  // by the runner's periodic progress reports regardless of terminal state, so
+  // they are the signal that actually discriminates "did something" from "dead".
+  const tokensUsed = (worker.inputTokens ?? 0) > 0 || (worker.outputTokens ?? 0) > 0;
+  if (turns <= SILENT_START_MAX_TURNS && spent <= 0 && !tokensUsed) {
     return { exitCause: 'silent_start', error: SILENT_START_ERROR };
   }
   return { exitCause: 'infra_failure', error: STALE_EXPIRED_ERROR };

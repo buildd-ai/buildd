@@ -258,6 +258,18 @@ Already filed as **c3ea1d05** (release queue null baseline).
 
 **Depends on:** Task A merged.
 
+**Superseded (task ab31ef87):** rule 2 above hid the widget for every workspace
+that had never completed a `state='healthy'` release — the normal state for a
+brand-new gated workspace, and indistinguishable from an unbuilt feature.
+`resolveReleaseBaseline` (`packages/core/release-baseline.ts`, wired through
+`apps/web/src/lib/release-baseline.ts`) replaces the single null check with a
+most-trusted-first ladder — healthy release → deployed release → any release
+row → prod-branch HEAD (best-effort GitHub lookup, used only when the
+workspace has zero release rows) — and `queueDepth` is now `unavailable` only
+when every rung fails to resolve. `ReleaseReadinessItem.baselineSource` and
+`GatedReleaseFooter.baselineSource` expose which rung produced the value so
+the UI can badge "no releases yet" instead of implying a verified deploy.
+
 ---
 
 ### Path overlap check

@@ -1,10 +1,14 @@
 import Link from 'next/link';
+import type { DerivedMetric } from '@buildd/core/derived-metric';
+import type { ReleaseBaselineSource } from '@buildd/core/release-baseline';
 
 export type GatedReleaseFooter = {
   archetype: 'gated';
-  queueDepth: number;
-  oldestMergedAt: string | null;
-  hasRelease: boolean;
+  /** Unavailable only when no baseline could be established at all (rung 4 also failed). */
+  queueDepth: DerivedMetric<number>;
+  oldestMergedAt: DerivedMetric<string>;
+  /** Which rung of the baseline ladder produced queueDepth — drives the "no releases yet" badge. */
+  baselineSource: ReleaseBaselineSource;
   releaseId: string | null;
 };
 
@@ -18,11 +22,11 @@ export type ContinuousReleaseFooter = {
 
 export type ReleaseFooterData = GatedReleaseFooter | ContinuousReleaseFooter | null;
 
-function daysAgo(isoDate: string): number {
+export function daysAgo(isoDate: string): number {
   return Math.floor((Date.now() - new Date(isoDate).getTime()) / 86400000);
 }
 
-const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string }> = {
+export const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string }> = {
   healthy: { label: 'Healthy', cls: 'text-status-success border-status-success/30' },
   deploying: { label: 'Deploying', cls: 'text-status-info border-status-info/30' },
   dispatched: { label: 'Dispatched', cls: 'text-status-info border-status-info/30' },
@@ -35,12 +39,17 @@ export function MissionReleaseFooter({ data }: { data: ReleaseFooterData }) {
   if (!data) return null;
 
   if (data.archetype === 'gated') {
-    if (data.queueDepth === 0 && !data.hasRelease) return null;
-    const ageText = data.oldestMergedAt ? ` · oldest ${daysAgo(data.oldestMergedAt)}d ago` : '';
+    // Unavailable (no baseline resolvable at all) or genuinely nothing to ship
+    // both render nothing — neither implies a pipeline the workspace doesn't have.
+    if (data.queueDepth.kind === 'unavailable' || data.queueDepth.value === 0) return null;
+    const ageText =
+      data.oldestMergedAt.kind === 'value' ? ` · oldest ${daysAgo(data.oldestMergedAt.value)}d ago` : '';
+    const noReleaseYet = data.baselineSource !== 'healthy';
     return (
       <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
         <span className="text-[11px] font-mono text-text-muted">
-          {data.queueDepth} unshipped{ageText}
+          {noReleaseYet && <span className="text-text-muted/70">no releases yet · </span>}
+          {data.queueDepth.value} unshipped{ageText}
         </span>
         {data.releaseId && (
           <Link

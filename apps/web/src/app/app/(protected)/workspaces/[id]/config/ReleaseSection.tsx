@@ -98,10 +98,6 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const [releasing, setReleasing] = useState(false);
-  const [releaseError, setReleaseError] = useState<string | null>(null);
-  const [releaseSuccess, setReleaseSuccess] = useState<string | null>(null);
-
   const [lastRelease, setLastRelease] = useState<LastRelease | null>(null);
   const [recentReleases, setRecentReleases] = useState<RecentRelease[]>([]);
   const [loadingReleases, setLoadingReleases] = useState(false);
@@ -207,42 +203,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
     }
   }
 
-  async function handleReleaseNow() {
-    setReleasing(true);
-    setReleaseError(null);
-    setReleaseSuccess(null);
-
-    try {
-      const res = await fetch('/api/releases/trigger', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Release trigger failed');
-      setReleaseSuccess(data.runUrl ? `Release dispatched — run started` : 'Release triggered');
-      setTimeout(() => setReleaseSuccess(null), 8000);
-      // Start polling for updated status
-      setTimeout(() => fetchReleaseHistory(), 2000);
-      setTimeout(() => fetchReleaseHistory(), 8000);
-    } catch (err) {
-      setReleaseError(err instanceof Error ? err.message : 'Release trigger failed');
-    } finally {
-      setReleasing(false);
-    }
-  }
-
   const isReleaseEnabled = strategy !== 'none';
-  const needsVercel = strategy === 'branch_merge';
-  const vercelMissing = needsVercel && hasVercelToken === false;
-  const releaseNowDisabled = !isReleaseEnabled || vercelMissing || releasing;
-
-  let releaseNowTitle: string | undefined;
-  if (!isReleaseEnabled) releaseNowTitle = 'Select a release strategy first';
-  else if (vercelMissing) releaseNowTitle = 'Add Vercel token in Connections to release';
-  else if (strategy === 'branch_merge') releaseNowTitle = 'branch_merge releases automatically on task completion';
-
-  const isBranchMergeManualBlocked = strategy === 'branch_merge';
 
   if (!hasRepo) {
     return (
@@ -352,7 +313,7 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
                     {
                       value: 'manual' as ReleaseTrigger,
                       label: 'Manual only',
-                      help: "Nothing releases automatically. Use the 'Release now' button below or trigger_release via MCP.",
+                      help: "Nothing releases automatically. Use the 'Release now' action on mission detail or Home, or trigger_release via MCP.",
                     },
                     {
                       value: 'scheduled' as ReleaseTrigger,
@@ -445,32 +406,9 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
           {saveError && <span className="text-status-error text-sm">{saveError}</span>}
         </div>
 
-        {/* Release now + status strip */}
+        {/* Status strip */}
         {isReleaseEnabled && (
           <div className="card p-4 space-y-4">
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                onClick={handleReleaseNow}
-                disabled={releaseNowDisabled || isBranchMergeManualBlocked}
-                title={releaseNowTitle}
-                className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50 text-sm"
-              >
-                {releasing ? 'Triggering…' : 'Release now'}
-              </button>
-              {isBranchMergeManualBlocked && (
-                <span className="text-xs text-text-muted">
-                  branch_merge releases automatically on task completion.
-                </span>
-              )}
-              {releaseSuccess && (
-                <span className="text-status-success text-sm">{releaseSuccess}</span>
-              )}
-              {releaseError && (
-                <span className="text-status-error text-sm">{releaseError}</span>
-              )}
-            </div>
-
             {/* Last-release status strip */}
             <div>
               <div className="text-xs font-medium text-text-secondary mb-2">Last release</div>

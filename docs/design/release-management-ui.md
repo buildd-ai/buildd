@@ -90,13 +90,17 @@ follows it exactly:
 | **Per-task skip** | **Task-scoped** — `tasks.release` enum `'true' | 'false' | 'inherit'` | existing |
 
 The global header selects the active team (as in unified IA §A.3). The Release surface
-is a **section on the workspace config page** (`/app/workspaces/[id]/config`), so the
+is a **configuration-only section on the workspace config page** (`/app/workspaces/[id]/config`), so the
 workspace is already selected by route context — no additional workspace selector needed.
 
 Vercel token status is **read-only** on this surface (configured / missing) with a link to
 `/app/settings` (Connections) where it is managed — exactly as the task description requests
 and consistent with how credential status is displayed elsewhere (e.g., GitHub App status on
 the workspace config page).
+
+> **Note (2026-09-01):** The placement of the `Release now` action has been superseded by
+> `docs/specs/surface-ia-home-missions-initiatives.md §10`. The trigger action no longer
+> lives on the workspace config page. See §5.2 below.
 
 ---
 
@@ -337,27 +341,13 @@ Segmented control or dropdown with helptext per option:
 - AC-11: `scheduled` option shown as disabled with tooltip "Phase 2 — coming soon".
 - AC-12: Helptext is visible inline below the selector (not in a tooltip) to aid discoverability.
 
-#### 'Release now' button + last-release status
+#### 'Release now' button — RELOCATED (not on config page)
 
-'Release now' button: calls `POST /api/releases/trigger` (existing `trigger_release` route).
-Disabled when `strategy: none` or Vercel token missing.
-
-Last-release status strip (below the button):
-- Vercel deployment state badge: `READY` (green) | `BUILDING` (amber, animated) | `ERROR` (red) | `—` (no data).
-- Timestamp: "Released 3 minutes ago" (relative), ISO on hover.
-- Commit: short SHA with link to GitHub.
-- Deploy URL: link labeled "Open →" when available.
-
-Data source: `tasks.releaseResult` on the workspace's most recent completed release task.
-The existing `GET /api/releases/status` route returns this data — expose it here.
-
-**Acceptance criteria:**
-- AC-13: 'Release now' fires the release and shows a loading state while in progress.
-- AC-14: Last-release status auto-refreshes after 'Release now' is fired (poll every 10s
-  while `deployState` is not terminal; stop polling at READY/ERROR/TIMEOUT).
-- AC-15: Empty state when no release has ever run: "No releases yet" with a muted label.
-- AC-16: 'Release now' disabled when `releaseConfig.enabled === false` or token missing;
-  tooltip explains why.
+> **Superseded:** As of `docs/specs/surface-ia-home-missions-initiatives.md §10.2` (2026-09-01),
+> the `Release now` trigger action is no longer placed on the workspace config page.
+> The button now lives on **mission detail** and the **Home readiness widget**, where
+> the affordance sits next to the work it acts on. The workspace config page keeps
+> configuration only (strategy, branches, trigger policy, token status).
 
 #### Recent releases list *(optional — render if cheap)*
 
@@ -500,22 +490,28 @@ DEV_USER_EMAIL=your@email.com bun dev
 
 ---
 
-### Task 5 — 'Release now' button + last-release status
+### Task 5 — Last-release status display (workspace config, read-only)
 
 **Scope:** `ReleaseSection.tsx` (from Task 4), `apps/web/src/app/api/releases/` routes
 
 **Changes:**
-1. Add 'Release now' button wired to `POST /api/releases/trigger`.
-2. Add last-release status strip reading `GET /api/releases/status`.
-3. Poll every 10s while building; stop at terminal state.
-4. Add `skipRelease` badge to task detail page (separate small change).
+1. Add last-release status strip (read-only) reading `GET /api/releases/status`.
+   - Vercel deployment state badge: `READY` (green) | `BUILDING` (amber, animated) | `ERROR` (red) | `—` (no data).
+   - Timestamp: "Released 3 minutes ago" (relative), ISO on hover.
+   - Commit: short SHA with link to GitHub.
+   - Deploy URL: link labeled "Open →" when available.
+   Data source: `tasks.releaseResult` on the workspace's most recent completed release task.
+2. Poll every 10s while building; stop at terminal state.
+3. Add `skipRelease` badge to task detail page (separate small change).
+4. **Note:** The `Release now` button no longer lives here — it has been relocated to mission detail
+   and Home per `surface-ia-home-missions-initiatives.md §10.2`.
 
 **Dependencies:** Task 4
 
 **Verification:**
 ```bash
 DEV_USER_EMAIL=your@email.com bun dev
-# Fire 'Release now'; confirm loading state; confirm status strip updates
+# Navigate to workspace config; confirm last-release status strip displays
 # Check task detail for a task with release='false': 'Skip release' badge visible
 ```
 

@@ -1,19 +1,44 @@
 import { describe, it, expect, mock } from 'bun:test';
 
 let insertedTask: Record<string, unknown> | undefined;
+let insertedMissionNote: Record<string, unknown> | undefined;
+
+// Configurable per-test fixtures for supersedeReviewerTaskOnMerge.
+let reviewerTaskFindFirstResult: any = null;
+let taskUpdateReturning: any[] = [];
+let workerUpdateCalls: Array<{ set: any }> = [];
+
+function whereResult(rows: any[]) {
+  const p = Promise.resolve(rows) as Promise<any[]> & { returning: () => Promise<any[]> };
+  p.returning = () => Promise.resolve(rows);
+  return p;
+}
+
+const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'created' } as any));
 
 // reviewer.ts imports @buildd/core/db at the top level — stub the whole thing
 // so these pure-function tests don't need a database connection.
 mock.module('@buildd/core/db', () => ({
   db: {
-    insert: mock(() => ({
+    insert: mock((table: string) => ({
       values: mock((values: Record<string, unknown>) => {
-        insertedTask = values;
+        if (table === 'missionNotes') {
+          insertedMissionNote = values;
+        } else {
+          insertedTask = values;
+        }
         return { returning: mock(() => Promise.resolve([{ id: 'task-1' }])) };
+      }),
+    })),
+    update: mock((table: string) => ({
+      set: mock((values: Record<string, unknown>) => {
+        if (table === 'workers') workerUpdateCalls.push({ set: values });
+        return { where: mock(() => whereResult(taskUpdateReturning)) };
       }),
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
+      tasks: { findFirst: mock(() => Promise.resolve(reviewerTaskFindFirstResult)) },
     },
   },
 }));
@@ -28,6 +53,12 @@ mock.module('@buildd/core/db/schema', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b }),
   and: (...args: any[]) => args,
+  inArray: (a: any, b: any) => ({ a, b }),
+  desc: (a: any) => ({ desc: a }),
+}));
+
+mock.module('@/lib/pr-activity-comment', () => ({
+  appendPrActivity: mockAppendPrActivity,
 }));
 
 import {
@@ -35,6 +66,7 @@ import {
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
+  supersedeReviewerTaskOnMerge,
 } from './reviewer';
 import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
@@ -287,5 +319,112 @@ describe('resolvePolicy', () => {
     const files = [{ filename: 'packages/core/db/schema.ts' }];
     const result = preflightEscalationCheck(files, schemaPolicy);
     expect(result.shouldEscalate).toBe(true);
+  });
+});
+
+// ── supersedeReviewerTaskOnMerge (AC-4) ─────────────────────────────────────
+// A human merging a PR directly must cancel any still-pending or still-running
+// reviewer task for it, rather than letting the reviewer run against an
+// already-merged PR.
+
+function resetSupersedeFixtures() {
+  insertedMissionNote = undefined;
+  reviewerTaskFindFirstResult = null;
+  taskUpdateReturning = [];
+  workerUpdateCalls = [];
+  mockAppendPrActivity.mockClear();
+}
+
+describe('supersedeReviewerTaskOnMerge', () => {
+  it('cancels a PENDING reviewer task with no live worker', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = { id: 'reviewer-task-1', missionId: 'mission-1', workers: [] };
+    taskUpdateReturning = [{ id: 'reviewer-task-1' }];
+
+    const result = await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-1',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 2029,
+    });
+
+    expect(result).toEqual({ superseded: true, reviewerTaskId: 'reviewer-task-1' });
+    expect(workerUpdateCalls).toHaveLength(0); // no live worker → nothing to interrupt
+    expect(insertedMissionNote?.type).toBe('reviewer_superseded');
+    expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+  });
+
+  it('interrupts the live worker when the reviewer task is RUNNING', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = {
+      id: 'reviewer-task-2',
+      missionId: 'mission-1',
+      workers: [{ id: 'worker-9', status: 'running' }],
+    };
+    taskUpdateReturning = [{ id: 'reviewer-task-2' }];
+
+    const result = await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-2',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 3001,
+    });
+
+    expect(result.superseded).toBe(true);
+    expect(workerUpdateCalls).toHaveLength(1);
+    expect(workerUpdateCalls[0].set.status).toBe('failed');
+    expect(workerUpdateCalls[0].set.exitCause).toBe('condition_unmet');
+  });
+
+  it('is a no-op when no reviewer task exists for the merged PR', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = null;
+
+    const result = await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-3',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 4002,
+    });
+
+    expect(result).toEqual({ superseded: false, reviewerTaskId: null });
+    expect(insertedMissionNote).toBeUndefined();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+  });
+
+  it('does not record a supersession when the cancel write loses its CAS race', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = { id: 'reviewer-task-4', missionId: 'mission-1', workers: [] };
+    // Simulates another writer (e.g. the reviewer completing concurrently)
+    // already moved the task out of a cancellable status.
+    taskUpdateReturning = [];
+
+    const result = await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-4',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 5003,
+    });
+
+    expect(result).toEqual({ superseded: false, reviewerTaskId: null });
+    expect(insertedMissionNote).toBeUndefined();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+  });
+
+  it('skips the mission note when the reviewer task has no mission', async () => {
+    resetSupersedeFixtures();
+    reviewerTaskFindFirstResult = { id: 'reviewer-task-5', missionId: null, workers: [] };
+    taskUpdateReturning = [{ id: 'reviewer-task-5' }];
+
+    const result = await supersedeReviewerTaskOnMerge({
+      originalTaskId: 'task-5',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 6004,
+    });
+
+    expect(result.superseded).toBe(true);
+    expect(insertedMissionNote).toBeUndefined();
+    expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
   });
 });

@@ -4,6 +4,7 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { MissionSegment, MissionSkylineData } from '@buildd/core/mission-helpers';
+import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { MissionSkylineChart } from '@/components/MissionSkylineChart';
@@ -551,23 +552,14 @@ function FilterTabBar({
   );
 }
 
-/* ── Verification pill — compact indicator for goal criteria state ── */
+/* ── Verification pill — compact indicator for goal criteria state ──
+ * Reads the same `deriveCriteriaGatePresentation` as the mission detail
+ * banner and the initiative KPI chip, so this list never disagrees with
+ * either about what a given verdict means. */
 function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; overall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null }) {
+  // NOT_EVALUATED / PENDING carry meaning the shared gate collapses (never
+  // evaluated vs. in flight) — keep those two as list-only nuances.
   if (criteriaCount === 0) return null;
-  if (overall === 'pass') {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-success/40 text-status-success font-mono text-[10px] rounded-sm" title="All goal criteria verified">
-        ✓ Verified
-      </span>
-    );
-  }
-  if (overall === 'fail') {
-    return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-error/40 text-status-error font-mono text-[10px] rounded-sm" title="Goal criteria not met">
-        ✗ Not met
-      </span>
-    );
-  }
   if (overall === 'NOT_EVALUATED') {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-border-default text-text-muted/60 font-mono text-[10px] rounded-sm" title="Criteria set — no evaluator available">
@@ -582,10 +574,15 @@ function VerificationPill({ criteriaCount, overall }: { criteriaCount: number; o
       </span>
     );
   }
-  // null or UNVERIFIED
+
+  const gate = deriveCriteriaGatePresentation({ criteriaCount, overall });
+  if (!gate) return null;
+  const icon = gate.state === 'clear' ? '✓' : gate.state === 'failing' ? '✗' : '?';
+  const text = gate.state === 'clear' ? 'Verified' : gate.state === 'failing' ? 'Not met' : 'Needs verification';
+  const title = gate.state === 'clear' ? 'All goal criteria verified' : gate.state === 'failing' ? 'Goal criteria not met' : 'Goal criteria set but not yet verified';
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 border border-status-warning/40 text-status-warning font-mono text-[10px] rounded-sm" title="Goal criteria set but not yet verified">
-      ? Needs verification
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 border font-mono text-[10px] rounded-sm ${CRITERIA_GATE_TONE_CLASS[gate.tone]}`} title={title}>
+      {icon} {text}
     </span>
   );
 }

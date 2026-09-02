@@ -8,6 +8,7 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.map((i) => i.href)).toEqual([
       '/app/home',
       '/app/missions',
+      '/app/releases',
       '/app/initiatives',
       '/app/tasks',
       '/app/team',
@@ -16,6 +17,7 @@ describe('NAV_ITEMS', () => {
     expect(NAV_ITEMS.map((i) => i.label)).toEqual([
       'Home',
       'Missions',
+      'Releases',
       'Initiatives',
       'Activity',
       'Team',
@@ -23,8 +25,11 @@ describe('NAV_ITEMS', () => {
     ]);
   });
 
-  it('marks only Initiatives desktop-only (kept off the mobile bottom bar)', () => {
-    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual(['/app/initiatives']);
+  it('marks only Releases and Initiatives desktop-only (kept off the mobile bottom bar)', () => {
+    expect(NAV_ITEMS.filter((i) => i.desktopOnly).map((i) => i.href)).toEqual([
+      '/app/releases',
+      '/app/initiatives',
+    ]);
   });
 
   it('provides an icon for every item', () => {
@@ -64,6 +69,7 @@ describe('mobilePageTitle', () => {
     expect(mobilePageTitle('/app/home')).toBe('Home');
     expect(mobilePageTitle('/app/dashboard')).toBe('Home');
     expect(mobilePageTitle('/app/missions')).toBe('Missions');
+    expect(mobilePageTitle('/app/releases')).toBe('Releases');
     expect(mobilePageTitle('/app/initiatives')).toBe('Initiatives');
     expect(mobilePageTitle('/app/tasks')).toBe('Activity');
     expect(mobilePageTitle('/app/team')).toBe('Team');
