@@ -201,11 +201,13 @@ async function applyMetricsOnlyPatch(
   // partial report already on the row must not be erased by a later one that
   // happens to carry fewer keys.
   const incomingMeta = body.resultMeta;
+  const existingMeta = (worker.resultMeta && typeof worker.resultMeta === 'object' && !Array.isArray(worker.resultMeta))
+    ? worker.resultMeta as unknown as Record<string, unknown>
+    : {};
+  let mergedMeta: Record<string, unknown> = existingMeta;
   if (incomingMeta && typeof incomingMeta === 'object' && !Array.isArray(incomingMeta)) {
-    const existingMeta = (worker.resultMeta && typeof worker.resultMeta === 'object' && !Array.isArray(worker.resultMeta))
-      ? worker.resultMeta as unknown as Record<string, unknown>
-      : {};
-    updates.resultMeta = { ...existingMeta, ...incomingMeta } as typeof updates.resultMeta;
+    mergedMeta = { ...existingMeta, ...incomingMeta };
+    updates.resultMeta = mergedMeta as typeof updates.resultMeta;
   }
 
   /** Monotonic: returns the incoming value only when it beats what we have. */
@@ -214,7 +216,37 @@ async function applyMetricsOnlyPatch(
     return incoming > (existing ?? 0) ? incoming : null;
   };
 
-  const cost = raise(body.costUsd, Number(worker.costUsd ?? 0));
+  // Cost is measurement too — and on the seat/OAuth fleet it is DERIVED, not
+  // reported: costUsd arrives as 0 and the token totals are the only signal.
+  // The derivation normally happens in the status-transition block, which is
+  // gated on `wasTerminal === false`; for this cohort that block already ran at
+  // MCP-completion time with no tokens and no resultMeta, produced 0, and will
+  // never run again. Deriving here is the difference between "the tokens
+  // finally land" and "cost attribution finally works".
+  //
+  // Deliberately NOT done here: the teams.monthlyCostUsd accumulation and the
+  // budget-threshold notifications that sit beside that derivation. Those are
+  // spend CONSEQUENCES — back-filling spend that was never counted could cross a
+  // threshold and page on history rather than on activity. Making this cohort's
+  // spend consume budget is a separate, deliberate decision; see
+  // docs/specs/usage-and-cost-accounting.md.
+  const reportedCost = typeof body.costUsd === 'number' ? body.costUsd : 0;
+  let effectiveCost = reportedCost;
+  if (!(effectiveCost > 0)) {
+    const perModel = estimateCostUsd(
+      mergedMeta.modelUsage as Parameters<typeof estimateCostUsd>[0] | undefined,
+    );
+    effectiveCost = perModel > 0
+      ? perModel
+      : estimateCostUsdFromTotals(
+        mergedMeta.totalUsage as Parameters<typeof estimateCostUsdFromTotals>[0] | undefined,
+        resolveSessionActualModel(
+          body.actualModel,
+          mergedMeta as Parameters<typeof resolveSessionActualModel>[1],
+        ),
+      );
+  }
+  const cost = raise(effectiveCost, Number(worker.costUsd ?? 0));
   if (cost !== null) updates.costUsd = cost.toString();
   const inTokens = raise(body.inputTokens, worker.inputTokens);
   if (inTokens !== null) updates.inputTokens = inTokens;

@@ -407,6 +407,12 @@ export function teamKeyOf(task: Pick<BuilddTask, 'workspaceId' | 'workspace'> | 
  * `verificationEvidence`, `structuredOutput`, `reactivate`. Each of those is a
  * state change the server owns once the worker is terminal, and re-sending
  * them is how a finished worker gets resurrected.
+ *
+ * `actualModel` is here as an INPUT, not a stored column: `workers` has no
+ * actual_model field (it lives on task_outcomes), but the server needs the
+ * session's model to price seat/OAuth token totals, where costUsd is reported
+ * as 0 and the tokens are the only signal. Drop it and cost attribution for
+ * that cohort silently stays at zero.
  */
 export const METRICS_ONLY_FIELDS = [
   'resultMeta',
@@ -432,7 +438,9 @@ export const METRICS_ONLY_FIELDS = [
  * ADD knowledge — writing zeros over whatever the server already computed
  * would make the fix a second data-loss path.
  */
-export function metricsOnlyPayload(full: Record<string, unknown>): Record<string, unknown> {
+export function metricsOnlyPayload(
+  full: Record<string, unknown>,
+): Parameters<BuilddClient['updateWorker']>[1] {
   const out: Record<string, unknown> = { metricsOnly: true };
   for (const key of METRICS_ONLY_FIELDS) {
     const value = full[key];
@@ -441,7 +449,10 @@ export function metricsOnlyPayload(full: Record<string, unknown>): Record<string
     if (Array.isArray(value) && value.length === 0) continue;
     out[key] = value;
   }
-  return out;
+  // Cast, not `any`: METRICS_ONLY_FIELDS is a hand-maintained subset of the
+  // update type's own keys, so the narrowing lives here — at the one place that
+  // owns the field list — instead of at every call site.
+  return out as Parameters<BuilddClient['updateWorker']>[1];
 }
 
 export class WorkerManager {
@@ -1631,6 +1642,58 @@ export class WorkerManager {
     return true;
   }
 
+  /**
+   * Re-send the measurement half of a terminal PATCH the server refused.
+   *
+   * Called whenever a terminal PATCH comes back `abort: true`, which is the
+   * NORMAL outcome when the agent completed (or failed) the task itself through
+   * the buildd MCP: the server terminalises the row, pushes worker:completed,
+   * and the runner's PATCH arrives afterwards. Everything on it that is
+   * measurement rather than state — resultMeta with the CBM metrics and tool
+   * histogram, tokens, cost, model, git stats, subagent spans — used to be lost
+   * with the refused status write, and that cohort is the long-session one, so
+   * every usage rollup was biased toward short sessions.
+   *
+   * Retries once on a retryable conflict. The server's write is a CAS on the
+   * status it read, so a row moving underneath us returns
+   * `{conflict: true, retryable: true}` with NOTHING written — treating that as
+   * success would make the one log line an operator greps to confirm this fix
+   * report a dropped write.
+   *
+   * Never throws: this is bookkeeping about a session that is already over.
+   */
+  private async persistTerminalMetrics(
+    worker: LocalWorker,
+    terminalPayload: Record<string, unknown>,
+    actualStatus?: string,
+  ): Promise<void> {
+    const payload = metricsOnlyPayload(terminalPayload);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const res = await this.buildd.updateWorker(worker.id, payload) as
+          { abort?: boolean; conflict?: boolean; retryable?: boolean; reason?: string; updated?: string[] } | null | undefined;
+        if (res?.abort === true) {
+          // The server itself terminated this worker (expiry / reassign / takeover).
+          // Its late report does not describe the outcome that was recorded.
+          console.warn(`[Worker ${worker.id}] Terminal metrics rejected by server: ${res.reason || 'unknown'}`);
+          return;
+        }
+        if (res?.retryable === true) {
+          if (attempt < 2) continue;
+          console.warn(`[Worker ${worker.id}] Terminal metrics lost to contention after ${attempt} attempts — resultMeta NOT persisted`);
+          return;
+        }
+        console.log(
+          `[Worker ${worker.id}] Completion already recorded server-side (${actualStatus || 'terminal'})`
+          + ` — terminal metrics persisted (${(res?.updated ?? []).length} field(s))`,
+        );
+        return;
+      } catch (err) {
+        console.warn(`[Worker ${worker.id}] Failed to persist terminal metrics: ${err instanceof Error ? err.message : 'unknown'}`);
+        return;
+      }
+    }
+  }
 
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
@@ -3428,19 +3491,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // terminal worker without reviving status, and still refuses a worker
         // IT expired (stale cleanup / reassign / takeover).
         if (completionResult?.abort === true) {
-          const metricsPayload = metricsOnlyPayload(completionPayload);
-          try {
-            const metricsResult = await this.buildd.updateWorker(worker.id, metricsPayload as any) as
-              { abort?: boolean; reason?: string } | null | undefined;
-            if (metricsResult?.abort === true) {
-              console.warn(`[Worker ${worker.id}] Terminal metrics rejected by server: ${metricsResult.reason || 'unknown'}`);
-            } else {
-              console.log(`[Worker ${worker.id}] Completion was already recorded server-side (${completionResult.actualStatus || 'terminal'}) — terminal metrics persisted via metrics-only PATCH`);
-            }
-          } catch (err) {
-            // Never fail a finished task over its own bookkeeping.
-            console.warn(`[Worker ${worker.id}] Failed to persist terminal metrics: ${err instanceof Error ? err.message : 'unknown'}`);
-          }
+          await this.persistTerminalMetrics(worker, completionPayload, completionResult.actualStatus);
         }
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
@@ -3501,14 +3552,23 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.status = 'error';
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        await this.buildd.updateWorker(worker.id, {
+        const abortPayload = {
           status: 'failed',
           error: worker.error || 'Session aborted',
           ...(worker.sandboxMountGap && { sandboxMountGap: true }),
           // An aborted session still spent money before it was killed.
           ...this.terminalAttributionPayload(worker),
           ...spanPayload,
-        }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err));
+        };
+        const abortResult = await this.buildd.updateWorker(worker.id, abortPayload)
+          .catch(err => { console.error(`[Worker ${worker.id}] Failed to sync abort status:`, err); return null; }) as
+          { abort?: boolean; actualStatus?: string } | null;
+        // Same loss as the success path: an agent that reported its own failure
+        // through the MCP terminalises the row first, so this PATCH is refused
+        // and the spend it was carrying goes with it.
+        if (abortResult?.abort === true) {
+          await this.persistTerminalMetrics(worker, abortPayload, abortResult.actualStatus);
+        }
       } else {
         // Unexpected error
         const errMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -3546,7 +3606,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // stderr twice in worker_error_traces.
         const terminalTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
         if (terminalTraces) worker.pendingErrorTraces = [];
-        await this.buildd.updateWorker(worker.id, {
+        const errorPayload = {
           status: 'failed',
           error: worker.error,
           ...this.terminalAttributionPayload(worker),
@@ -3556,7 +3616,13 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(provisionFailure ? { resultMeta: { provisionFailure } } : {}),
           ...(mcpPreflightFailures ? { resultMeta: { mcpPreflightFailures } } : {}),
           ...spanPayload,
-        }).catch(err => console.error(`[Worker ${worker.id}] Failed to sync error status:`, err));
+        };
+        const errorResult = await this.buildd.updateWorker(worker.id, errorPayload)
+          .catch(err => { console.error(`[Worker ${worker.id}] Failed to sync error status:`, err); return null; }) as
+          { abort?: boolean; actualStatus?: string } | null;
+        if (errorResult?.abort === true) {
+          await this.persistTerminalMetrics(worker, errorPayload, errorResult.actualStatus);
+        }
       }
       if (!bwrapRetryAfterCleanup) {
         this.emit({ type: 'worker_update', worker });

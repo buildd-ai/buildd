@@ -975,6 +975,58 @@ describe('PATCH /api/workers/[id]', () => {
       expect((written.resultMeta as any).numTurns).toBe(4);
     });
 
+    // The seat/OAuth fleet reports costUsd: 0 — tokens are the only signal, and
+    // cost is DERIVED. That derivation lives in the status-transition block,
+    // which is gated on the worker not already being terminal; for this cohort
+    // it ran at MCP-completion time with no tokens and no resultMeta, produced
+    // 0, and never runs again. Without deriving here, the tokens land and the
+    // cost column stays at zero forever.
+    it('derives cost from token totals when the runner reports $0 (OAuth case)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'completed',
+        error: null,
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        costUsd: '0',
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          metricsOnly: true,
+          // Seat auth: cost is 0 and modelUsage/byModel is never populated.
+          costUsd: 0,
+          actualModel: 'claude-sonnet-5',
+          inputTokens: 1_000_000,
+          outputTokens: 100_000,
+          resultMeta: {
+            modelUsage: {},
+            totalUsage: {
+              inputTokens: 1_000_000,
+              outputTokens: 100_000,
+              cacheReadInputTokens: 0,
+              cacheCreationInputTokens: 0,
+            },
+          },
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const written = metricsSets[0];
+      // sonnet-5 list price: $2/MTok in, $10/MTok out => 1M in + 100k out = $3.00
+      expect(Number(written.costUsd)).toBeCloseTo(3.0, 6);
+    });
+
     it('never lowers a metric the server already recorded', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({

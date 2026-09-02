@@ -234,6 +234,18 @@ export class BuilddClient {
     // Incremental file paths touched since last check-in (from git diff --name-only).
     // Server accumulates into workers.observedTouches for passive collision detection (§6d).
     touchedPaths?: string[];
+    /**
+     * Measurement-only write: accepted on an ALREADY-TERMINAL worker, which is
+     * the only way the terminal payload survives when the agent completed the
+     * task itself through the MCP (the server terminalises the row first, so the
+     * runner's PATCH is otherwise refused with 409 {abort:true}).
+     *
+     * The server ignores every state field when this is set — it cannot revive a
+     * finished worker — and it still refuses a worker the server itself expired.
+     * Build the payload with metricsOnlyPayload() rather than by hand, so the
+     * field list stays in one place. See METRICS_ONLY_FIELDS in workers.ts.
+     */
+    metricsOnly?: boolean;
   }) {
     // Allow 409 (already completed) - just means worker finished on server
     return this.fetch(`/api/workers/${workerId}`, {

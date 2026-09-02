@@ -36,6 +36,29 @@ distinguishable from zero.
   written **only** from the `PATCH /api/workers/[id]` request body
   (`apps/web/src/app/api/workers/[id]/route.ts:383-388`). No server path derives
   usage from a transcript, a duration, or a model guess.
+- There are exactly **two** writers of that body, and the second one exists
+  because the first is unreachable for a whole cohort. When the agent completes
+  the task itself through the MCP `complete_task`, the server terminalises the
+  worker row first, so the runner's own terminal PATCH — the sole carrier of
+  `resultMeta`, tokens, cost, model and git stats — arrives on a terminal row and
+  is refused. `metricsOnly: true` is accepted there (`applyMetricsOnlyPatch`) and
+  writes **measurement only**: it cannot write `status`, `error`, `summary`,
+  `completedAt`, milestones, verification evidence or structured output, it does
+  not bump `turns`, and it still refuses a worker the server itself expired
+  (`isNonReactivatableError`). Values are **monotonic** — a late report may only
+  raise a number another writer already recorded — and `resultMeta` is **merged**,
+  never replaced. The write is a CAS on the status that was read, so a row moving
+  underneath it returns a retryable conflict rather than a stale write.
+- The metrics-only writer derives `costUsd` from token totals when the report
+  carries `costUsd: 0`, using the same list-price estimate as the status
+  transition. Seat/OAuth sessions always report `0`, so without this the tokens
+  land and the cost column stays at zero permanently for that cohort.
+- The metrics-only writer deliberately does **not** accumulate
+  `teams.monthlyCostUsd` or fire budget-threshold notifications. Those are spend
+  consequences, and back-filling spend that was never counted could cross a
+  threshold and page on history rather than on activity. Consequence: this
+  cohort's spend is visible per worker and in per-worker rollups, but does not
+  consume team budget. Making it consume budget is a separate, deliberate change.
 - Runner token totals resolve by precedence in `aggregateUsage`:
   `resultMeta.modelUsage` → `resultMeta.totalUsage` → the runner's per-turn
   tally. When every source is empty it returns `null` and the caller **omits**
@@ -194,6 +217,11 @@ NOT silently become a claim gate.
 - AC-8: GIVEN a worker reporting `costUsd: 0` with a populated
   `resultMeta.modelUsage` WHEN it completes THEN `teams.monthlyCostUsd`
   increases by the list-price estimate of that usage.
+- AC-8b: GIVEN a worker the agent already completed through the MCP WHEN the
+  runner's refused terminal PATCH is re-sent with `metricsOnly: true` THEN
+  `resultMeta`, tokens and a derived `costUsd` are persisted on the worker row,
+  `status`/`error`/`summary` are unchanged, and `teams.monthlyCostUsd` does
+  **not** move (see the Usage-capture invariant on spend consequences).
 - AC-9: GIVEN a team whose `budgetAlertsSent` already contains the threshold a
   new charge crosses WHEN the charge is applied THEN the total updates and no
   notification is sent.
