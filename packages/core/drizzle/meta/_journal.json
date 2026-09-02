@@ -960,6 +960,13 @@
       "when": 1788377007647,
       "tag": "0137_funny_puma",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1788385952956,
+      "tag": "0138_normal_namorita",
+      "breakpoints": true
     }
   ]
 }
