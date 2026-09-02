@@ -672,6 +672,14 @@ export default async function MissionDetailPage({
   const prsMerged = allWorkers.filter(w => w.prUrl && (w.mergedAt || w.prLifecycleStatus === 'merged')).length;
   const prsOpen = allWorkers.filter(w => w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'merged' && w.prLifecycleStatus !== 'closed').length;
 
+  // PRs with failing CI — surfaced in the all_prs_merged criterion panel (AC-3).
+  // Derived from the same worker state the Activity chip reads (no extra GitHub call).
+  const failingCiPrNumbers = allWorkers
+    .filter(w => w.prNumber && w.prLifecycleStatus === 'ci_failed')
+    .map(w => w.prNumber as number)
+    .filter((n, i, arr) => arr.indexOf(n) === i) // dedup
+    .sort((a, b) => a - b);
+
   // Collect all artifacts
   const allArtifacts = mission.tasks?.flatMap((t) =>
     t.workers?.flatMap((w) =>
@@ -1141,6 +1149,7 @@ export default async function MissionDetailPage({
               criteriaState={goalCriteriaState}
               autoVerify={autoVerify}
               readonly={isTerminalMission}
+              failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
             />
           </div>
         );
