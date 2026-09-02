@@ -40,6 +40,42 @@ export const WORKER_STALE_REAP_GRACE_MS = 5 * 60 * 1000;
 // runner-heartbeat rule in stale-workers.ts, not by this threshold.
 export const WORKER_STALE_REAP_MS = WORKER_HARD_TIMEOUT_MS + WORKER_STALE_REAP_GRACE_MS;
 
+// ─── Worker liveness leases ─────────────────────────────────────────────────
+//
+// The lease replaces INFERRED liveness with ASSERTED liveness. Everything above
+// derives from `workers.updatedAt`, which only advances as a side effect of the
+// runner syncing a state CHANGE — so a worker busy inside one long silent tool
+// call and a worker whose process died produce identical evidence (silence), and
+// any threshold is therefore simultaneously too short and too long.
+//
+// A lease is renewed by the runner's liveness TIMER (deterministic code, never
+// the agent loop), so it keeps ticking through a 20-minute silent tool call.
+// That decouples "is this worker alive" from "is this agent emitting messages"
+// and lets the reap window get much TIGHTER instead of looser.
+
+/**
+ * Lease lifetime granted on each renewal. Renewal rides the existing
+ * LIVENESS_PING_INTERVAL_MS (60s) heartbeat, so this tolerates 4 consecutive
+ * missed beats — enough for a Neon cold start or a brief network blip.
+ */
+export const WORKER_LEASE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Renewal cadence. Deliberately the same timer as the runner liveness ping so
+ * there is exactly one "I am alive" signal, now carrying worker identity rather
+ * than only a scalar count (the gap that left the server unable to tell WHICH
+ * of a live runner's workers a fresh heartbeat vouched for).
+ */
+export const WORKER_LEASE_RENEW_INTERVAL_MS = LIVENESS_PING_INTERVAL_MS;
+
+/**
+ * Renewals that may be missed before a lease lapses. Asserted in tests: a TTL at
+ * or below the renew interval would expire healthy workers between beats.
+ */
+export const WORKER_LEASE_MISSED_BEATS_TOLERATED = Math.floor(
+  WORKER_LEASE_TTL_MS / WORKER_LEASE_RENEW_INTERVAL_MS,
+) - 1;
+
 // Runner is "online" when its last beat arrived within 1.5× the interval.
 // Between 1.5× and 2.5× it shows as "stale" (beat is overdue but runner may recover).
 // Beyond 2.5× the interval the record is excluded from queries entirely.

@@ -762,9 +762,19 @@ export class WorkerManager {
       const activeCount = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'waiting'
       ).length;
+      // Worker-scoped lease renewal. This runs on a TIMER, so it keeps asserting
+      // liveness while a worker sits inside one long silent tool call — the case
+      // where `updatedAt` freezes and the server could not tell a busy worker
+      // from a dead one. Includes 'stale' because the runner still owns those and
+      // is still probing them; dropping them would lapse a lease the runner has
+      // not given up on. 'waiting' workers are owned too (their own
+      // waiting_input timeouts are separate and unaffected).
+      const activeWorkerIds = Array.from(this.workers.values())
+        .filter(w => w.status === 'working' || w.status === 'stale' || w.status === 'waiting')
+        .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
