@@ -71,7 +71,10 @@ mock.module('@buildd/core/db', () => ({
       },
     }),
     insert: () => ({
-      values: (v: any) => { insertedRows.push(v); return Promise.resolve([]); },
+      values: (v: any) => {
+        insertedRows.push(v);
+        return { returning: () => Promise.resolve([{ id: 'note-1', ...v }]) };
+      },
     }),
   },
 }));
@@ -82,6 +85,7 @@ mock.module('@/lib/pusher', () => ({
   events: {
     MISSION_LOOP_COMPLETED: 'mission:loop_completed',
     MISSION_COMPLETION_DECISION: 'mission:completion_decision',
+    MISSION_NOTE_POSTED: 'mission:note_posted',
   },
 }));
 

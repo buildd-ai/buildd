@@ -455,7 +455,7 @@ export function parseMergePolicy(val: unknown): MergePolicyParseResult {
   return { ok: true, policy: obj as unknown as MergePolicy };
 }
 
-export type MissionNoteAuthorType = 'agent' | 'user' | 'system';
+export type MissionNoteAuthorType = 'agent' | 'user' | 'system' | 'mcp';
 export type MissionNoteType =
   | 'decision'
   | 'question'
@@ -478,6 +478,9 @@ export interface MissionNote {
   type: MissionNoteType;
   title: string;
   body: string | null;
+  actorLabel: string | null;
+  collapseKey: string | null;
+  collapseCount: number;
   replyTo: string | null;
   defaultChoice: string | null;
   status: MissionNoteStatus;

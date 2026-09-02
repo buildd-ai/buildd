@@ -1263,10 +1263,25 @@ export const missionNotes = pgTable('mission_notes', {
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
   taskId: uuid('task_id'),
   workerId: uuid('worker_id'),
-  authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system'>(),
+  // 'mcp' is a caller that is NOT tied to a running task — an external script or
+  // agent hitting the API/MCP directly with an account token. 'agent' is a worker
+  // acting from inside a task (actorLabel names the task). Keeping them distinct
+  // is the point of this table: "System" must not absorb work a human or an
+  // outside caller did to the mission.
+  authorType: text('author_type').notNull().$type<'agent' | 'user' | 'system' | 'mcp'>(),
   type: text('type').notNull().$type<'decision' | 'question' | 'warning' | 'suggestion' | 'update' | 'reply' | 'guidance' | 'reviewer_approved' | 'reviewer_request_changes' | 'reviewer_escalated' | 'reviewer_superseded'>(),
   title: text('title').notNull(),
   body: text('body'),
+  // Human-readable actor detail: user email, "task \"<title>\" (<id>)", account
+  // name, or — for authorType='system' — the predicate that fired. Structured
+  // separately from `body` so the UI can render it in the feed header rather
+  // than requiring a reader to parse prose.
+  actorLabel: text('actor_label'),
+  // Groups repeated low-signal edits (config churn) from the same actor within a
+  // short window into one row instead of one row per field per edit. Null means
+  // "never collapse this entry" (status changes, task links, criteria edits).
+  collapseKey: text('collapse_key'),
+  collapseCount: integer('collapse_count').default(1).notNull(),
   replyTo: uuid('reply_to'),
   defaultChoice: text('default_choice'),
   status: text('status').notNull().default('open').$type<'open' | 'answered' | 'dismissed' | 'superseded'>(),
@@ -1288,6 +1303,7 @@ export const missionNotes = pgTable('mission_notes', {
   replyToIdx: index('mission_notes_reply_to_idx').on(t.replyTo),
   typeIdx: index('mission_notes_type_idx').on(t.type),
   statusIdx: index('mission_notes_status_idx').on(t.status),
+  collapseKeyIdx: index('mission_notes_collapse_key_idx').on(t.missionId, t.collapseKey, t.createdAt),
 }));
 
 // observations table removed — memory is now stored in external memory service
