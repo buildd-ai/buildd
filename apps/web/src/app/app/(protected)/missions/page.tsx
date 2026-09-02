@@ -33,7 +33,7 @@ export default async function MissionsPage({
     return (
       <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8">
         <div className="flex items-baseline justify-between mb-6">
-          <h1 className="text-xl font-semibold text-text-primary">Missions</h1>
+          <h1 className="hidden md:block text-xl font-semibold text-text-primary">Missions</h1>
           <span className="text-xs text-text-secondary font-light">0 active</span>
         </div>
         <div className="card p-8 text-center">

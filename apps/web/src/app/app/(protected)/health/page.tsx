@@ -128,7 +128,7 @@ export default async function HealthPage({
   if (teamIds.length === 0) {
     return (
       <div className="max-w-2xl mx-auto p-6">
-        <h1 className="text-2xl font-bold mb-2">Health</h1>
+        <h1 className="hidden md:block text-2xl font-bold mb-2">Health</h1>
         <p className="text-sm text-text-tertiary">No team found.</p>
       </div>
     );
@@ -148,7 +148,7 @@ export default async function HealthPage({
   if (teamWorkspaceIds.length === 0) {
     return (
       <div className="max-w-2xl mx-auto p-6">
-        <h1 className="text-2xl font-bold mb-2">Health</h1>
+        <h1 className="hidden md:block text-2xl font-bold mb-2">Health</h1>
         <p className="text-sm text-text-tertiary">No workspaces yet.</p>
       </div>
     );
