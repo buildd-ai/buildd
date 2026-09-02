@@ -207,7 +207,7 @@ async function applyMetricsOnlyPatch(
   let mergedMeta: Record<string, unknown> = existingMeta;
   if (incomingMeta && typeof incomingMeta === 'object' && !Array.isArray(incomingMeta)) {
     mergedMeta = { ...existingMeta, ...incomingMeta };
-    updates.resultMeta = mergedMeta as typeof updates.resultMeta;
+    updates.resultMeta = mergedMeta as unknown as typeof updates.resultMeta;
   }
 
   /** Monotonic: returns the incoming value only when it beats what we have. */
