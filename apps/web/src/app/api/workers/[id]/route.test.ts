@@ -814,6 +814,302 @@ describe('PATCH /api/workers/[id]', () => {
     expect(data.actualStatus).toBe('failed');
   });
 
+  // ── Metrics-only PATCH on a terminal worker (#result-meta-dropped) ─────────
+  //
+  // When the agent calls the buildd MCP `complete_task` itself — the documented
+  // worker workflow — the SERVER marks the worker terminal and pushes
+  // worker:completed. The runner's own completion PATCH, the sole carrier of
+  // resultMeta (CBM metrics, tool histogram, model attribution), then lands on
+  // an already-terminal row and is 409'd, so a large share of completed workers
+  // carried no result_meta, no cost and no token counts at all. That cohort was
+  // also the long-session one, which biased every adoption/cost rollup toward
+  // short sessions.
+  //
+  // `metricsOnly: true` is the escape hatch: pure measurement is accepted on a
+  // terminal worker, while status/error/summary are not writable through it.
+  describe('metrics-only PATCH', () => {
+    let metricsSets: any[] = [];
+
+    function captureUpdates() {
+      metricsSets = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          metricsSets.push(vals);
+          return {
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'completed' }]),
+            })),
+          };
+        }),
+      });
+    }
+
+    const terminalPayload = {
+      metricsOnly: true,
+      resultMeta: {
+        numTurns: 37,
+        durationMs: 1_234_567,
+        modelUsage: {},
+        cbm: { outcome: 'enforced', totalCbmCalls: 20, toolCalls: { search_graph: 20 } },
+        toolCounts: { Bash: 12, Read: 4 },
+      },
+      inputTokens: 500_000,
+      outputTokens: 20_000,
+      costUsd: 1.25,
+      filesChanged: 3,
+      linesAdded: 90,
+      linesRemoved: 10,
+      commitCount: 2,
+      lastCommitSha: 'abc1234',
+      subagentSpansObserved: 2,
+      backgroundAgentMs: 5000,
+    };
+
+    it('persists terminal metrics for a worker the agent completed server-side', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        // The agent's own complete_task already terminalised this row.
+        status: 'completed',
+        error: null,
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        costUsd: '0',
+        inputTokens: 0,
+        outputTokens: 0,
+        turns: 73,
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: terminalPayload,
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.metricsOnly).toBe(true);
+
+      expect(metricsSets.length).toBe(1);
+      const written = metricsSets[0];
+      // The whole point: the CBM/tool metrics reach the row.
+      expect((written.resultMeta as any).cbm.totalCbmCalls).toBe(20);
+      expect((written.resultMeta as any).toolCounts.Bash).toBe(12);
+      expect(written.inputTokens).toBe(500_000);
+      expect(written.outputTokens).toBe(20_000);
+      expect(Number(written.costUsd)).toBeCloseTo(1.25, 6);
+      expect(written.filesChanged).toBe(3);
+      expect(written.lastCommitSha).toBe('abc1234');
+    });
+
+    it('does not revive status, error or turns through a metrics-only PATCH', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'completed',
+        error: null,
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        costUsd: '0',
+        inputTokens: 0,
+        outputTokens: 0,
+        turns: 73,
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        // A stale/hostile payload: even carrying a status and an error, a
+        // metrics-only write must land neither — nor the per-PATCH turn
+        // increment that would inflate a finished worker's turn count.
+        body: { ...terminalPayload, status: 'running', error: 'should not land', summary: 'nope' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(metricsSets.length).toBe(1);
+      const written = metricsSets[0];
+      expect(written.status).toBeUndefined();
+      expect(written.error).toBeUndefined();
+      expect(written.turns).toBeUndefined();
+      expect(written.completedAt).toBeUndefined();
+      expect(written.summary).toBeUndefined();
+    });
+
+    it('merges into an existing resultMeta instead of replacing it', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'completed',
+        error: null,
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: { provisionFailure: { code: 'cbm_missing' } },
+        costUsd: '0',
+        inputTokens: 0,
+        outputTokens: 0,
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { metricsOnly: true, resultMeta: { numTurns: 4, toolCounts: { Bash: 1 } } },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const written = metricsSets[0];
+      expect((written.resultMeta as any).provisionFailure.code).toBe('cbm_missing');
+      expect((written.resultMeta as any).numTurns).toBe(4);
+    });
+
+    it('never lowers a metric the server already recorded', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'completed',
+        error: null,
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        // The PR route already recorded real diff stats and the server priced
+        // the session; a late runner report of smaller numbers must not win.
+        costUsd: '3.50',
+        inputTokens: 900_000,
+        outputTokens: 0,
+        filesChanged: 12,
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          metricsOnly: true,
+          costUsd: 1.25,
+          inputTokens: 500_000,
+          outputTokens: 20_000,
+          filesChanged: 0,
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const written = metricsSets[0];
+      expect(written.costUsd).toBeUndefined();
+      expect(written.inputTokens).toBeUndefined();
+      expect(written.filesChanged).toBeUndefined();
+      // …but a genuinely new value still lands.
+      expect(written.outputTokens).toBe(20_000);
+    });
+
+    it('rejects a metrics-only PATCH for a worker the server expired', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'failed',
+        // Server-owned termination (stale cleanup). The runner is gone; nothing
+        // it reports afterwards describes the outcome the server recorded.
+        error: 'Worker expired - no heartbeat',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        costUsd: '0',
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: terminalPayload,
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.abort).toBe(true);
+      expect(data.actualStatus).toBe('failed');
+      // Nothing was written.
+      expect(metricsSets.length).toBe(0);
+    });
+
+    it('rejects a metrics-only PATCH for a reassigned worker', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'failed',
+        error: 'Task was reassigned',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        costUsd: '0',
+      });
+      captureUpdates();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: terminalPayload,
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      expect(metricsSets.length).toBe(0);
+    });
+
+    it('reports a retryable conflict when the row moved under the write', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'completed',
+        error: null,
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        resultMeta: null,
+        costUsd: '0',
+      });
+      metricsSets = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          metricsSets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => []) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: terminalPayload,
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.retryable).toBe(true);
+      expect(data.abort).toBeUndefined();
+    });
+  });
+
   // ── Lost-update race (#worker-cas-race-false-abort) ────────────────────────
   // The runner fires several non-awaited startup PATCHes within ~1s. A
   // branch-only PATCH reads status='idle', does async work, and by write time a

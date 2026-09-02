@@ -393,6 +393,57 @@ export function teamKeyOf(task: Pick<BuilddTask, 'workspaceId' | 'workspace'> | 
   return task?.workspace?.teamId || task?.workspaceId || 'default';
 }
 
+/**
+ * Fields of the terminal PATCH that are pure MEASUREMENT — they describe how
+ * the session ran, never what it decided. The server accepts these on an
+ * already-terminal worker (`metricsOnly: true`), which is the only way they
+ * survive when the agent completed the task itself through the buildd MCP:
+ * the server terminalises the row on `complete_task`, so the runner's own
+ * completion PATCH arrives late and is refused with 409 {abort:true} —
+ * taking resultMeta (CBM metrics, tool histogram, model attribution), the
+ * token counts, the reported cost and the git stats down with it.
+ *
+ * Deliberately absent: `status`, `error`, `summary`, `milestones`,
+ * `verificationEvidence`, `structuredOutput`, `reactivate`. Each of those is a
+ * state change the server owns once the worker is terminal, and re-sending
+ * them is how a finished worker gets resurrected.
+ */
+export const METRICS_ONLY_FIELDS = [
+  'resultMeta',
+  'inputTokens',
+  'outputTokens',
+  'costUsd',
+  'actualModel',
+  'lastCommitSha',
+  'commitCount',
+  'filesChanged',
+  'linesAdded',
+  'linesRemoved',
+  'subagentSpans',
+  'subagentSpansObserved',
+  'backgroundAgentMs',
+] as const;
+
+/**
+ * Narrow a terminal PATCH payload down to its measurement half.
+ *
+ * Zero-valued numbers are dropped: every completion payload carries
+ * `subagentSpansObserved: 0` and friends, and a metrics-only PATCH exists to
+ * ADD knowledge — writing zeros over whatever the server already computed
+ * would make the fix a second data-loss path.
+ */
+export function metricsOnlyPayload(full: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { metricsOnly: true };
+  for (const key of METRICS_ONLY_FIELDS) {
+    const value = full[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === 'number' && !(value > 0)) continue;
+    if (Array.isArray(value) && value.length === 0) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export class WorkerManager {
   private config: LocalUIConfig;
   private workers = new Map<string, LocalWorker>();
@@ -3227,8 +3278,11 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Aggregate token counts: per-model breakdown → result totals → per-turn
         // tally. The fallbacks matter on OAuth, where byModel is never populated
         // and tokens are the only real consumption signal (cost is always 0).
-        const resultMeta = worker.resultMeta || undefined;
-        const totals = aggregateUsage(resultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
+        // Read for usage aggregation only. The cbm/toolCounts blocks below can
+        // CREATE worker.resultMeta, so this snapshot must never be what the
+        // PATCH sends — see the re-read after them.
+        const sdkResultMeta = worker.resultMeta || undefined;
+        const totals = aggregateUsage(sdkResultMeta, worker.tokenTally ?? { inputTokens: 0, outputTokens: 0 });
         const inputTokens = totals?.inputTokens;
         const outputTokens = totals?.outputTokens;
 
@@ -3283,6 +3337,14 @@ If something is missing or incomplete, describe what and fix it now.`;
           }
         }
 
+        // Re-read AFTER the two blocks above. Both can assign a brand-new
+        // object to worker.resultMeta (the SDK never emitted a result message,
+        // e.g. the provision-failure path), and the completion PATCH used to
+        // spread a const captured before them — so on exactly the path whose
+        // comment promises the metrics "travel with the completion payload",
+        // the cbm/toolCounts objects were built and then silently dropped.
+        const resultMeta = worker.resultMeta || undefined;
+
         // Loop-until-verified: run verification command and collect evidence (spec §2).
         // Only executes for loopConfig.exitCondition.type='command'; other types need no
         // runner work (pr_checks_green = server reads webhooks; structured_predicate =
@@ -3330,7 +3392,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         const subagentSpans = buildSubagentSpans(worker.subagentTasks);
         const backgroundAgentMs = computeBackgroundAgentMs(subagentSpans);
 
-        await this.buildd.updateWorker(worker.id, {
+        const completionPayload = {
           status: 'completed',
           milestones: worker.milestones,
           ...gitStats,
@@ -3350,7 +3412,36 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(subagentSpans.length > 0 ? { subagentSpans } : {}),
           subagentSpansObserved: worker.subagentTasksObservedCount ?? 0,
           backgroundAgentMs,
-        });
+        };
+        const completionResult = await this.buildd.updateWorker(worker.id, completionPayload) as
+          { abort?: boolean; actualStatus?: string; reason?: string } | null | undefined;
+
+        // The server refused the status write because the row is ALREADY
+        // terminal — the normal outcome when the agent called the buildd MCP
+        // `complete_task` itself: the server completed the worker, pushed
+        // worker:completed, and this PATCH arrives afterwards. Everything above
+        // that is measurement rather than state (resultMeta with the CBM
+        // metrics and tool histogram, tokens, cost, model, git stats, subagent
+        // spans) would be lost with it, and that cohort is the long-session
+        // one — which quietly biased every usage rollup toward short sessions.
+        // Re-send it as a metrics-only PATCH: the server accepts those on a
+        // terminal worker without reviving status, and still refuses a worker
+        // IT expired (stale cleanup / reassign / takeover).
+        if (completionResult?.abort === true) {
+          const metricsPayload = metricsOnlyPayload(completionPayload);
+          try {
+            const metricsResult = await this.buildd.updateWorker(worker.id, metricsPayload as any) as
+              { abort?: boolean; reason?: string } | null | undefined;
+            if (metricsResult?.abort === true) {
+              console.warn(`[Worker ${worker.id}] Terminal metrics rejected by server: ${metricsResult.reason || 'unknown'}`);
+            } else {
+              console.log(`[Worker ${worker.id}] Completion was already recorded server-side (${completionResult.actualStatus || 'terminal'}) — terminal metrics persisted via metrics-only PATCH`);
+            }
+          } catch (err) {
+            // Never fail a finished task over its own bookkeeping.
+            console.warn(`[Worker ${worker.id}] Failed to persist terminal metrics: ${err instanceof Error ? err.message : 'unknown'}`);
+          }
+        }
         // Set 'done' only after the server update so any poll of local status
         // reflects the server's task state (prevents getMission race in E2E tests).
         worker.status = 'done';
