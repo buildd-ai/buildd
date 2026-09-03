@@ -207,13 +207,19 @@ artifact→task action mobile regression.
 Acceptance criteria:
 - AC-1: Health shows watched projects for all team workspaces by default.
 - AC-2: WorkspaceFilter (shared component) narrows watched projects.
-- AC-3: Runners list visible on Health; Usage (30d) visible on Health.
-- AC-4: All four sections (Runners, Usage, Schedules, Watched Projects) render
-  identically on desktop and mobile; no Vercel section appears on either
-  viewport. Data-testid anchors (`health-section-runners`,
-  `health-section-usage`, `health-section-schedules`,
-  `health-section-watched-projects`) must be present on each `<section>`
-  element for E2E verification.
+- AC-3: Runners list visible on Health. **Superseded:** the Usage (30d) section
+  was retired by the Health restructure (`health-analytics-spec` §3.3) — the
+  per-role rollup it carried is identical to the one `/app/team` already
+  renders, so Health links there and keeps only the two lines `/app/team`
+  cannot serve (role-less task count, task completion total), under
+  `health-section-task-outcomes`.
+- AC-4: Every section renders identically on desktop and mobile; no Vercel
+  section appears on either viewport. Data-testid anchors
+  (`health-section-problems`, `health-section-state`, `health-section-trend`
+  for the three top-level sections, plus `health-section-runners`,
+  `health-section-schedules`, `health-section-task-outcomes`,
+  `health-section-watched-projects` for the panels inside them) must be present
+  for E2E verification.
 
 ### B.2 Settings 3-surface split
 

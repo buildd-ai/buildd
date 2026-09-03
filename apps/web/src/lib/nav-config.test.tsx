@@ -56,11 +56,21 @@ describe('HealthClient viewport parity', () => {
     expect(healthClientSrc).not.toMatch(/section-label[^>]*>Vercel/);
   });
 
-  it('has data-testid anchors on all four expected sections for E2E viewport assertions', () => {
+  it('has data-testid anchors on every expected section for E2E viewport assertions', () => {
+    // The three top-level sections, in Problems → State → Trend order …
     expect(healthClientSrc).toContain('data-testid="health-section-problems"');
+    expect(healthClientSrc).toContain('data-testid="health-section-state"');
+    expect(healthClientSrc).toContain('data-testid="health-section-trend"');
+    // … plus the panels nested inside them.
     expect(healthClientSrc).toContain('data-testid="health-section-runners"');
-    expect(healthClientSrc).toContain('data-testid="health-section-usage"');
     expect(healthClientSrc).toContain('data-testid="health-section-schedules"');
+    expect(healthClientSrc).toContain('data-testid="health-section-task-outcomes"');
+  });
+
+  it('no longer carries the retired Usage(30d) section', () => {
+    // `/app/team` already renders the identical per-role rollup; Health links
+    // there instead of publishing a second copy that can silently diverge.
+    expect(healthClientSrc).not.toContain('data-testid="health-section-usage"');
   });
 });
 

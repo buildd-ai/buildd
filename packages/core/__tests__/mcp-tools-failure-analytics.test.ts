@@ -49,7 +49,7 @@ function analytics(overrides: Record<string, unknown> = {}) {
     window: '7d',
     generatedAt: '2026-08-28T12:00:00.000Z',
     windowStart: '2026-08-21T12:00:00.000Z',
-    totals: { started: 100, completed: 70, failed: 30, failureRatePct: 30, diedEarly: 18, diedEarlySharePct: 60 },
+    totals: { started: 110, terminal: 100, stillRunning: 10, completed: 70, failed: 30, failureRatePct: 30, diedEarly: 18, diedEarlySharePct: 60 },
     byExitCause: [
       { exitCause: 'infra_failure', count: 20, sharePct: 67 },
       { exitCause: 'unclassified', count: 10, sharePct: 33 },
@@ -226,7 +226,9 @@ describe('get_failure_analytics overview mode', () => {
     mockApi.mockResolvedValueOnce({ analytics: analytics() });
     const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, {}, ctx());
     const out = res.content[0].text;
-    expect(out).toMatch(/30 of 100 workers failed \(30%\)/);
+    // Denominator is terminal workers, not everything started.
+    expect(out).toMatch(/30 of 100 terminal workers failed \(30%\)/);
+    expect(out).toMatch(/10 still running/);
     expect(out).toMatch(/died early: 18/);
     expect(out).toMatch(/infra_failure 20/);
     expect(out).toContain(STALE_SIGNATURE);
@@ -236,7 +238,7 @@ describe('get_failure_analytics overview mode', () => {
   it('says so plainly when the window has no failures', async () => {
     mockApi.mockResolvedValueOnce({
       analytics: analytics({
-        totals: { started: 40, completed: 40, failed: 0, failureRatePct: 0, diedEarly: 0, diedEarlySharePct: 0 },
+        totals: { started: 40, terminal: 40, stillRunning: 0, completed: 40, failed: 0, failureRatePct: 0, diedEarly: 0, diedEarlySharePct: 0 },
         byExitCause: [],
         signatures: [],
       }),
