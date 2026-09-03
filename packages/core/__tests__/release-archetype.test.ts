@@ -12,9 +12,9 @@ describe('detectArchetype', () => {
     expect(detectArchetype(input)).toBe('gated');
   });
 
-  it('moa-ops-shaped (requiresPR=false, no releaseConfig) → continuous', () => {
+  it('trunk-shaped (requiresPR=false, no releaseConfig) → continuous', () => {
     const input: ArchetypeInput = {
-      name: 'moa-ops',
+      name: 'trunk-ops',
       releaseConfig: null,
       gitConfig: { defaultBranch: 'main', requiresPR: false, branchingStrategy: 'trunk', commitStyle: 'conventional', autoCreatePR: false, useClaudeMd: true },
     };

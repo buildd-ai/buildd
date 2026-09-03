@@ -341,7 +341,7 @@ describe('sweepSubjectAnchoredTasks — termination of dead-subject tasks', () =
   });
 
   it('cancels the task when an exact/identifying anchor has a dead subject', async () => {
-    // The moa-ops "[CI Retry #1]" population: source system / confidence exact,
+    // The "[CI Retry #1]" population: source system / confidence exact,
     // anchored to a genuinely closed PR, left pending for days. Leaving it
     // pending also starves every dependent (deps-gate only treats completed or
     // cancelled deps as satisfied), so termination is what drains the chain.
