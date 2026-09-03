@@ -365,10 +365,19 @@ describe('HealthClient — Trend', () => {
     const html = render({ consumption: consumption() });
     expect((html.match(/data-testid="seat-auth-confession"/g) ?? []).length).toBe(1);
     // Per-stat reachability is a separate contract
-    // (docs/design/derived-metric-availability.md): the cost tile still renders
-    // its own em-dash with its own reason.
-    expect(html).toContain('not recorded');
+    // (docs/design/derived-metric-availability.md): the per-model block still
+    // renders its own absence with its own reason where it sits.
     expect(html).toContain('data-testid="consumption-by-model-absent"');
+  });
+
+  it('sends the per-task cost/turn/tool-call tiles to the drill-down instead of copying them', () => {
+    const html = render({ window: '30d', consumption: consumption({ window: '30d' }), wsFilter: 'ws-1' });
+    expect(html).not.toContain('Cost / task');
+    expect(html).not.toContain('Turns / task');
+    expect(html).toContain('data-testid="consumption-drilldown-link"');
+    // The header window and the workspace scope both survive the navigation;
+    // the drill-down clamps 24h itself rather than the link doing it.
+    expect(html).toContain('href="/app/health/usage?window=30d&amp;workspace=ws-1"');
   });
 
   it('says nothing about seat auth when every stat is measurable', () => {

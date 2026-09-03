@@ -17,9 +17,10 @@ import type {
   FailureWindow,
   CbmHealthSummary,
 } from './page';
-import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { getModelDisplayName } from '@buildd/core/model-display';
+import { Stat } from '@/components/StatTile';
 import { byModelAbsence, divergenceSummary, scanCaveat } from '@/lib/model-presentation';
+import { shortToolName, usageDrilldownHref } from '@/lib/usage-drilldown';
 import {
   coverageLabel,
   depletionProjection,
@@ -31,7 +32,6 @@ import {
   RUNNER_LIFETIME_LABEL,
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
-import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
@@ -1020,7 +1020,7 @@ export function HealthClient({
         )}
 
         {consumption && consumption.totals.tasks > 0 && (
-          <ConsumptionSection stats={consumption} />
+          <ConsumptionSection stats={consumption} workspaceId={wsFilter} />
         )}
 
         {cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
@@ -1085,20 +1085,19 @@ function fmtCost(n: number): string {
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
 }
 
-/** Strip the `mcp__server__` prefix for display; the server is shown separately. */
-function shortToolName(name: string): string {
-  if (name === '__other__') return 'other';
-  if (!name.startsWith('mcp__')) return name;
-  const parts = name.split('__');
-  return parts.slice(2).join('__') || name;
-}
-
 /**
  * What work costs, next to whether it landed. Medians (not means) lead every
  * row: one runaway task skews a mean badly enough to make the number useless.
  */
-function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
-  const { totals, perTask, tools, groups, window, byModel, modelDivergence, scan } = stats;
+function ConsumptionSection({
+  stats,
+  workspaceId,
+}: {
+  stats: ConsumptionStats;
+  /** Carried into the drill-down link so the scope survives the navigation. */
+  workspaceId: string | null;
+}) {
+  const { totals, tools, groups, window, byModel, modelDivergence, scan } = stats;
   const topTools = tools.byTool.slice(0, 5);
   const maxToolCalls = topTools[0]?.calls ?? 0;
   const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
@@ -1107,12 +1106,6 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
   // Qualifies every number in this section, not just the model rows: the page
   // reads worker rows directly and the read is capped.
   const caveat = scanCaveat(scan, timeAgo(scan.completeSince));
-
-  /** "n of m tasks" — the sample behind a median, so it is never read as all of them. */
-  const sampleNote = (metric: PerTaskMetric) => {
-    const n = perTask.contributing[metric];
-    return n < perTask.tasks ? `${n} of ${perTask.tasks} tasks` : `all ${perTask.tasks} tasks`;
-  };
 
   return (
     <div data-testid="health-section-consumption" className="mb-6">
@@ -1134,32 +1127,17 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
         )}
       </div>
       <div className="card p-4 space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <MetricStat
-            label="Tokens / task"
-            metric={perTask.inputTokens}
-            render={(d) => fmtTokens(d.median)}
-            sub={(d) => `p90 ${fmtTokens(d.p90)} · ${sampleNote('inputTokens')}`}
-          />
-          <MetricStat
-            label="Cost / task"
-            metric={perTask.costUsd}
-            render={(d) => fmtCost(d.median)}
-            sub={() => `${fmtCost(totals.costUsd)} total · ${sampleNote('costUsd')}`}
-          />
-          <MetricStat
-            label="Turns / task"
-            metric={perTask.turns}
-            render={(d) => `${Math.round(d.median)}`}
-            sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('turns')}`}
-          />
-          <MetricStat
-            label="Tool calls / task"
-            metric={perTask.toolCalls}
-            render={(d) => `${Math.round(d.median)}`}
-            sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('toolCalls')}`}
-          />
-        </div>
+        {/* The per-task cost/turn/tool-call tiles that used to sit here now live
+            on the usage drill-down, whole — not copied. Publishing them in two
+            places is how the same number ends up stated under two windows. */}
+        <a
+          data-testid="consumption-drilldown-link"
+          href={usageDrilldownHref({ window, workspaceId })}
+          className="flex items-baseline justify-between gap-3 text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <span>What a task costs — tokens, turns, tool calls, cost</span>
+          <span className="text-primary shrink-0">usage →</span>
+        </a>
 
         {topTools.length > 0 && (
           <div className="space-y-2 pt-1 border-t border-border-default">
@@ -1290,11 +1268,6 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
   );
 }
 
-/**
- * A stat tile over a `DerivedMetric`. On `unavailable` it shows an em-dash with
- * the reason as a tooltip — never a zero, which would read as "this task cost
- * nothing" instead of "we never recorded it".
- */
 /** Copy for each CBM state — the label carries the diagnosis, not just a colour. */
 const CBM_STATE: Record<
   CbmHealthSummary['state'],
@@ -1479,39 +1452,6 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function MetricStat({
-  label,
-  metric,
-  render,
-  sub,
-}: {
-  label: string;
-  metric: DerivedMetric<Distribution>;
-  render: (d: Distribution) => string;
-  sub: (d: Distribution) => string;
-}) {
-  if (metric.kind === 'unavailable') {
-    return (
-      <div title={metric.reason}>
-        <div className="text-xs text-text-muted">{label}</div>
-        <div className="text-lg text-text-muted tabular-nums">—</div>
-        <div className="text-xs text-text-muted">not recorded</div>
-      </div>
-    );
-  }
-  return <Stat label={label} value={render(metric.value)} sub={sub(metric.value)} />;
-}
-
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <div>
-      <div className="text-xs text-text-muted">{label}</div>
-      <div className="text-lg text-text-primary tabular-nums">{value}</div>
-      <div className="text-xs text-text-muted tabular-nums">{sub}</div>
     </div>
   );
 }
