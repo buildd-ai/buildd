@@ -117,10 +117,14 @@ export interface CredentialHealthItem {
 export default async function HealthPage({
   searchParams,
 }: {
-  searchParams: Promise<{ workspace?: string; failureWindow?: string }>;
+  searchParams: Promise<{ workspace?: string; window?: string; failureWindow?: string }>;
 }) {
-  const { workspace: wsFilter, failureWindow: rawFailureWindow } = await searchParams;
-  const failureWindow = parseFailureWindow(rawFailureWindow);
+  // `?window=` is the primary param (24h|7d|30d). `?failureWindow=` is the
+  // deprecated predecessor — still read as a fallback alias for old links, but
+  // never written by new navigation. No expiry is set for the alias (spec §7.7
+  // left this open deliberately).
+  const { workspace: wsFilter, window: rawWindow, failureWindow: rawFailureWindow } = await searchParams;
+  const failureWindow = parseFailureWindow(rawWindow ?? rawFailureWindow);
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 

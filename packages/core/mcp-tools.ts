@@ -450,6 +450,9 @@ const FAILURE_WINDOW_VALUES = Object.keys(
   { '24h': 1, '7d': 1, '30d': 1 } satisfies Record<FailureWindow, 1>,
 ) as FailureWindow[];
 
+/** Mirrors `USAGE_WINDOWS` in apps/web/src/lib/usage-stats.ts — kept local since that module lives in a different package. */
+const USAGE_WINDOW_VALUES = ['24h', '7d', '30d'] as const;
+
 // Agent context is finite. A small default, a hard ceiling, short lines.
 const FAILURE_SIGNATURES_DEFAULT = 5;
 const FAILURE_SIGNATURES_MAX = 15;
@@ -2977,11 +2980,16 @@ export async function handleBuilddAction(
     }
 
     case 'get_usage_stats': {
+      const rawWindow = typeof params.window === 'string' ? params.window : null;
+      if (rawWindow !== null && !(USAGE_WINDOW_VALUES as readonly string[]).includes(rawWindow)) {
+        return errorResult(`Invalid window "${rawWindow}". Expected one of ${USAGE_WINDOW_VALUES.join(', ')}.`);
+      }
+
       const rawWsId = typeof params.workspaceId === 'string' ? params.workspaceId : null;
       const wsId = rawWsId ? await resolveWorkspaceId(api, rawWsId, ctx) : null;
       const query = new URLSearchParams();
       if (wsId) query.set('workspace', wsId);
-      if (typeof params.window === 'string') query.set('window', params.window);
+      if (rawWindow) query.set('window', rawWindow);
       if (typeof params.groupBy === 'string') query.set('groupBy', params.groupBy);
 
       const data = await api(`/api/stats/usage${query.size > 0 ? `?${query}` : ''}`);

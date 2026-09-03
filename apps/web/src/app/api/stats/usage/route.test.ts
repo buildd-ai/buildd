@@ -208,13 +208,30 @@ describe('GET /api/stats/usage — aggregation', () => {
     expect(body.groups[0].successRate).toBe(1);
   });
 
-  it('falls back to the default window and role grouping on bad params', async () => {
-    const body = await (await GET(makeRequest({ window: 'banana', groupBy: 'sideways' }))).json();
-    expect(body.window).toBe('banana');
+  it('falls back to role grouping on a bad groupBy', async () => {
+    const body = await (await GET(makeRequest({ groupBy: 'sideways' }))).json();
     expect(body.groupBy).toBe('role');
     const ageMs = Date.now() - new Date(body.windowStart).getTime();
     expect(ageMs).toBeGreaterThan(6.9 * 24 * 3600_000);
     expect(ageMs).toBeLessThan(7.1 * 24 * 3600_000);
+  });
+
+  // Pre-existing bug: an unparsable window used to be echoed back verbatim and
+  // silently resolved to 7d data mislabelled with the caller's garbage string
+  // (`?window=banana` → 7-day data labelled "banana"). Reject it instead.
+  it('400s on a window outside the closed set instead of silently mislabeling 7d data', async () => {
+    const res = await GET(makeRequest({ window: 'banana' }));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/Invalid window/);
+    expect(body.error).toMatch(/24h, 7d, 30d/);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['24h', '7d', '30d'] as const)('accepts window=%s and labels the response with it', async (window) => {
+    mockWorkersFindMany.mockResolvedValue([worker()]);
+    const body = await (await GET(makeRequest({ window }))).json();
+    expect(body.window).toBe(window);
   });
 
   it('scans a single workspace when one is requested', async () => {
