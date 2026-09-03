@@ -24,7 +24,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-08-28
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
-- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-07-18
+- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-09-03
   The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
   A workspace MUST route tracker updates through one provider-dispatched WorkTrackerProvider interface, closing the linked Linear or GitHub issue on PR merge and creating tasks from labeled issues idempotently.
@@ -38,7 +38,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### mcp (2)
 
-- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-08-31
+- [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-09-03
   The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-08-30
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
@@ -87,7 +87,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-08-30
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
-- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-08-30
+- [Human-in-the-Loop Protocol](./human-in-the-loop-protocol.md) · @max — verified 2026-09-03
   Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 - [Model Routing and Tiers](./model-routing-and-tiers.md) · @max — verified 2026-08-30
   A claimed task MUST resolve to exactly one model id at claim time under a fixed precedence — explicit pin, role pin, task tier, then kind×complexity baseline under budget gates — recorded on tasks.predicted_model.

@@ -34,6 +34,22 @@ function makeMergeCommit(sha: string, prNumber: number) {
   };
 }
 
+function makeSquashCommit(sha: string, prNumber: number, subject = 'feat: add thing') {
+  return {
+    sha,
+    commit: { message: `${subject} (#${prNumber})` },
+    parents: [{ sha: 'parent-sha' }],
+  };
+}
+
+function makeBodyRefCommit(sha: string, issueNumber: number, subject = 'fix: bug') {
+  return {
+    sha,
+    commit: { message: `${subject}\n\nCloses #${issueNumber}` },
+    parents: [{ sha: 'parent-sha' }],
+  };
+}
+
 function makeCompare(commits: any[]) {
   return { commits };
 }
@@ -382,5 +398,161 @@ describe('attributeRelease — gated archetype', () => {
 
     expect(result.attributed).toBe(1);
     expect(result.skipped).toBe(1);
+  });
+});
+
+// ── squash-merge commit matching ────────────────────────────────────────────
+
+describe('attributeRelease — gated archetype, squash-merge commits', () => {
+  it('extracts a PR number from a squash-merge commit — trailing (#N) on the subject line', async () => {
+    const prNumber = 1855;
+    const sha = 'squash-sha-1855';
+    const worker = makeWorker({ prNumber, taskId: 'task-1855', mergedAt: new Date().toISOString() });
+    const capture: InsertCapture = { rows: [], onConflictCalled: false };
+    const db = makeMockDb([worker], capture);
+
+    const result = await attributeRelease({
+      releaseId: RELEASE_ID,
+      workspaceId: WORKSPACE_ID,
+      previousSha: PREV_SHA,
+      headSha: HEAD_SHA,
+      archetype: 'gated',
+      repoFullName: REPO,
+      githubInstallationId: 1,
+      db,
+      githubFetch: async () => makeCompare([makeSquashCommit(sha, prNumber, 'feat(x): add thing')]),
+    });
+
+    expect(result.attributed).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(capture.rows[0][0]).toMatchObject({
+      releaseId: RELEASE_ID,
+      taskId: 'task-1855',
+      prNumber,
+      commitSha: sha,
+    });
+  });
+
+  it('does not extract a PR/issue number that only appears in the commit body', async () => {
+    const sha = 'sha-body-ref-only';
+    const db = makeMockDb([]);
+    const calledPaths: string[] = [];
+
+    const result = await attributeRelease({
+      releaseId: RELEASE_ID,
+      workspaceId: WORKSPACE_ID,
+      previousSha: PREV_SHA,
+      headSha: HEAD_SHA,
+      archetype: 'gated',
+      repoFullName: REPO,
+      githubInstallationId: 1,
+      db,
+      githubFetch: async (path: string) => {
+        calledPaths.push(path);
+        if (path.includes('/compare/')) {
+          return makeCompare([makeBodyRefCommit(sha, 1234, 'fix: bug')]);
+        }
+        // Fallback lookup finds no associated PR either.
+        return [];
+      },
+    });
+
+    // The regex must not match "#1234" from the body — only the GitHub
+    // fallback lookup is a legitimate source, and here it comes up empty.
+    expect(calledPaths).toContain(`/repos/${REPO}/commits/${sha}/pulls`);
+    expect(result.attributed).toBe(0);
+    expect(result.skipped).toBe(0);
+  });
+
+  it('extracts PRs from a mixed range of squash and merge commits', async () => {
+    const workers = [
+      makeWorker({ id: 'w1', prNumber: 10, taskId: 'task-10', mergedAt: new Date().toISOString() }),
+      makeWorker({ id: 'w2', prNumber: 20, taskId: 'task-20', mergedAt: new Date().toISOString() }),
+    ];
+    const capture: InsertCapture = { rows: [], onConflictCalled: false };
+    const db = makeMockDb(workers, capture);
+
+    const result = await attributeRelease({
+      releaseId: RELEASE_ID,
+      workspaceId: WORKSPACE_ID,
+      previousSha: PREV_SHA,
+      headSha: HEAD_SHA,
+      archetype: 'gated',
+      repoFullName: REPO,
+      githubInstallationId: 1,
+      db,
+      githubFetch: async () =>
+        makeCompare([makeSquashCommit('squash-10', 10, 'feat: thing one'), makeMergeCommit('merge-20', 20)]),
+    });
+
+    expect(result.attributed).toBe(2);
+    expect(result.skipped).toBe(0);
+    const insertedPrs = capture.rows[0].map((r: any) => r.prNumber).sort();
+    expect(insertedPrs).toEqual([10, 20]);
+  });
+
+  it('falls back to GET /repos/{owner}/{repo}/commits/{sha}/pulls for commits matching neither pattern', async () => {
+    const prNumber = 77;
+    const unmatchedSha = 'sha-unmatched-msg';
+    const worker = makeWorker({ prNumber, taskId: 'task-77', mergedAt: new Date().toISOString() });
+    const capture: InsertCapture = { rows: [], onConflictCalled: false };
+    const db = makeMockDb([worker], capture);
+    const calledPaths: string[] = [];
+
+    const result = await attributeRelease({
+      releaseId: RELEASE_ID,
+      workspaceId: WORKSPACE_ID,
+      previousSha: PREV_SHA,
+      headSha: HEAD_SHA,
+      archetype: 'gated',
+      repoFullName: REPO,
+      githubInstallationId: 1,
+      db,
+      githubFetch: async (path: string) => {
+        calledPaths.push(path);
+        if (path.includes('/compare/')) {
+          return makeCompare([makeCommit(unmatchedSha, 'fix: some bug, no pr ref')]);
+        }
+        if (path === `/repos/${REPO}/commits/${unmatchedSha}/pulls`) {
+          return [{ number: prNumber }];
+        }
+        return [];
+      },
+    });
+
+    expect(calledPaths).toContain(`/repos/${REPO}/commits/${unmatchedSha}/pulls`);
+    expect(result.attributed).toBe(1);
+    expect(result.skipped).toBe(0);
+    expect(capture.rows[0][0]).toMatchObject({
+      releaseId: RELEASE_ID,
+      taskId: 'task-77',
+      prNumber,
+      commitSha: unmatchedSha,
+    });
+  });
+
+  it('does not call the fallback endpoint for commits already matched by regex', async () => {
+    const prNumber = 88;
+    const sha = 'squash-sha-88';
+    const worker = makeWorker({ prNumber, taskId: 'task-88', mergedAt: new Date().toISOString() });
+    const db = makeMockDb([worker]);
+    const calledPaths: string[] = [];
+
+    await attributeRelease({
+      releaseId: RELEASE_ID,
+      workspaceId: WORKSPACE_ID,
+      previousSha: PREV_SHA,
+      headSha: HEAD_SHA,
+      archetype: 'gated',
+      repoFullName: REPO,
+      githubInstallationId: 1,
+      db,
+      githubFetch: async (path: string) => {
+        calledPaths.push(path);
+        return makeCompare([makeSquashCommit(sha, prNumber)]);
+      },
+    });
+
+    expect(calledPaths).toEqual([`/repos/${REPO}/compare/${PREV_SHA}...${HEAD_SHA}`]);
   });
 });

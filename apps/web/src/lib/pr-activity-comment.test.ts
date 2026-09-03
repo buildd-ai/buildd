@@ -111,11 +111,34 @@ describe('the header spinner', () => {
   });
 
   it('falls back to a static icon once the state is terminal', () => {
-    for (const kind of ['ci_exhausted', 'review_escalated', 'human_review_required', 'review_approved_awaiting_human'] as const) {
+    for (const kind of [
+      'ci_exhausted',
+      'review_escalated',
+      'human_review_required',
+      'review_approved_awaiting_human',
+      'merged',
+      'closed_unmerged',
+    ] as const) {
       const body = renderPrActivityComment([{ kind, at: '2026-08-29T14:03:00.000Z' }]);
       // A finished PR must never keep spinning — movement means "on it right now".
       expect(body).not.toContain(SPINNER_PATH);
     }
+  });
+
+  it('stops spinning once the PR itself closes, whatever preceded it', () => {
+    // The spin-forever bug: a PR whose last buildd entry was a working state
+    // (review passed, waiting on checks) kept animating after the merge landed.
+    const working = { kind: 'review_approved' as const, at: '2026-08-29T14:03:00.000Z' };
+    expect(renderPrActivityComment([working])).toContain(SPINNER_PATH);
+
+    const merged = renderPrActivityComment([working, { kind: 'merged', at: '2026-08-29T14:31:00.000Z' }]);
+    expect(merged).not.toContain(SPINNER_PATH);
+    expect(merged).toContain('**Merged**');
+    expect(merged).toContain('since Aug 29, 14:31 UTC');
+
+    const closed = renderPrActivityComment([working, { kind: 'closed_unmerged', at: '2026-08-29T14:31:00.000Z' }]);
+    expect(closed).not.toContain(SPINNER_PATH);
+    expect(closed).toContain('**Closed without merging**');
   });
 
   it('points the spinner at a camo-reachable origin, never at localhost', () => {

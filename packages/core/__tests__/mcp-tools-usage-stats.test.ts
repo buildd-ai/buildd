@@ -119,6 +119,23 @@ describe('get_usage_stats', () => {
     expect(endpoint).toContain('groupBy=workspace');
   });
 
+  // Pre-existing bug (mirrors the route-level fix): this handler used to pass
+  // any string straight through to /api/stats/usage without validating it.
+  it('rejects a window outside the closed set before calling the endpoint', async () => {
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', { window: 'banana' }, ctx());
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toMatch(/Invalid window "banana"/);
+    expect(res.content[0].text).toMatch(/24h, 7d, 30d/);
+    expect(mockApi).not.toHaveBeenCalled();
+  });
+
+  it.each(['24h', '7d', '30d'] as const)('accepts window=%s', async (window) => {
+    mockApi.mockResolvedValueOnce({ ...statsPayload, window });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, 'get_usage_stats', { window }, ctx());
+    expect(res.isError).toBeFalsy();
+    expect(mockApi.mock.calls[0][0]).toContain(`window=${window}`);
+  });
+
   it('scopes to an explicit workspace when given', async () => {
     mockApi.mockResolvedValueOnce(statsPayload);
     await handleBuilddAction(

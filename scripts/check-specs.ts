@@ -115,7 +115,6 @@ export const VERIFIED_BY_DEBT = new Set([
   'db-migration-gates',
   'external-cron-triggers',
   'knowledge-store-retrieval',
-  'mcp-action-contracts',
   'mcp-connectors-and-roles',
   'mission-task-lifecycle',
   'provider-failover',

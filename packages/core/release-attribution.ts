@@ -57,20 +57,59 @@ async function defaultGithubFetch(db: DrizzleDb, installationId: number, path: s
   return response.json();
 }
 
-/** Extract PR numbers from merge commits using the standard GitHub merge commit message pattern. */
-function extractPrNumbers(commits: any[]): Map<number, string> {
+const MERGE_COMMIT_RE = /Merge pull request #(\d+)/;
+// GitHub squash-merges put the PR number in a trailing "(#N)" on the subject
+// line only — matching anywhere in the body would also catch issue refs like
+// "Closes #1234" from unrelated PRs.
+const SQUASH_COMMIT_RE = /\(#(\d+)\)\s*$/;
+
+/**
+ * Extract PR numbers from commits. Tries the standard merge-commit and
+ * squash-commit message patterns first; for anything neither pattern
+ * matches, falls back to GitHub's commits/{sha}/pulls endpoint (bounded to
+ * just the unmatched commits, not the whole range).
+ */
+async function extractPrNumbers(
+  commits: any[],
+  repoFullName: string,
+  doFetch: (path: string) => Promise<any>,
+): Promise<Map<number, string>> {
   const prToSha = new Map<number, string>();
+  const unmatched: any[] = [];
+
   for (const commit of commits) {
-    const match = (commit.commit?.message as string | undefined)?.match(
-      /Merge pull request #(\d+)/,
-    );
-    if (match) {
-      const pr = parseInt(match[1], 10);
+    const message = commit.commit?.message as string | undefined;
+    const subjectLine = message?.split('\n')[0];
+    const mergeMatch = message?.match(MERGE_COMMIT_RE);
+    const squashMatch = subjectLine?.match(SQUASH_COMMIT_RE);
+    const pr = mergeMatch ? parseInt(mergeMatch[1], 10) : squashMatch ? parseInt(squashMatch[1], 10) : null;
+
+    if (pr !== null) {
       if (!prToSha.has(pr)) {
         prToSha.set(pr, commit.sha as string);
       }
+    } else {
+      unmatched.push(commit);
     }
   }
+
+  if (unmatched.length > 0) {
+    await Promise.all(
+      unmatched.map(async (commit) => {
+        try {
+          const pulls = await doFetch(`/repos/${repoFullName}/commits/${commit.sha}/pulls`);
+          const pr = Array.isArray(pulls) ? pulls[0]?.number : undefined;
+          if (typeof pr === 'number' && !prToSha.has(pr)) {
+            prToSha.set(pr, commit.sha as string);
+          }
+        } catch {
+          // Best-effort fallback — a commit GitHub can't resolve to a PR is
+          // simply left unattributed rather than failing the whole job.
+        }
+      }),
+    );
+  }
+
   return prToSha;
 }
 
@@ -95,7 +134,7 @@ export async function attributeRelease(
     return attributeBySha({ releaseId, workspaceId, commits, db });
   }
 
-  return attributeByPr({ releaseId, workspaceId, commits, db });
+  return attributeByPr({ releaseId, workspaceId, commits, db, repoFullName, doFetch });
 }
 
 async function attributeBySha(params: {
@@ -146,10 +185,12 @@ async function attributeByPr(params: {
   workspaceId: string;
   commits: any[];
   db: DrizzleDb;
+  repoFullName: string;
+  doFetch: (path: string) => Promise<any>;
 }): Promise<{ attributed: number; skipped: number }> {
-  const { releaseId, workspaceId, commits, db } = params;
+  const { releaseId, workspaceId, commits, db, repoFullName, doFetch } = params;
 
-  const prToSha = extractPrNumbers(commits);
+  const prToSha = await extractPrNumbers(commits, repoFullName, doFetch);
   const prNumbers = [...prToSha.keys()];
 
   if (prNumbers.length === 0) {

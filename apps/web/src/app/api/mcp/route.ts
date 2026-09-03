@@ -238,6 +238,10 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
 **Note:** This is a remote MCP server. register_skill with filePath/repo is not supported — use content param instead.
 
+**Blocked?** Two different tools for two different situations — do not conflate them:
+- Hard block, no correct path forward (a required tool/credential is genuinely unavailable, the instruction is impossible as written): use the \`AskUserQuestion\` tool. This parks the task waiting for input — it is NOT recorded as a failure, is never auto-retried, and the owner is notified; answering resumes your work. Reserve it for cases where no amount of additional thinking produces a path forward — not for uncertainty, permission-seeking, or a design choice you are capable of making yourself.
+- Softer question where you can proceed under a sensible default: \`buildd\` action=post_note with type=question and defaultChoice set to what you chose. Non-blocking — work continues immediately: state your assumption and move on.
+
 **Knowledge:** Use \`recall\` to query prior lessons before starting work. Use \`learn\` to record gotchas, patterns, and decisions for future agents. Admin-level tokens can also use \`buildd\` action=consolidate_knowledge and action=memory_delete.
 
 **Artifacts:** Use \`buildd\` action=create_artifact to attach deliverables (summaries, reports, data) to your task.`,

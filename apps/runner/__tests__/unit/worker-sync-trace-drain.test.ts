@@ -78,6 +78,7 @@ function makeSync(worker: any) {
 }
 
 const TRACE = { pattern: 'cli_stderr', excerpt: 'bwrap: No permitted namespaces', source: 'stderr' };
+const ACTION_EVENT = { action: 'create_pr', ts: 1 };
 
 describe('WorkerSync append-buffer drain', () => {
   beforeEach(() => {
@@ -142,5 +143,38 @@ describe('WorkerSync append-buffer drain', () => {
     await makeSync(worker).syncWorkerToServer(worker);
     expect(seenPayloads[0].appendErrorTraces).toBeUndefined();
     expect(seenPayloads[0].appendMcpCalls).toBeUndefined();
+    expect(seenPayloads[0].appendActionEvents).toBeUndefined();
+  });
+
+  test('drains buildd action events once and clears the buffer', async () => {
+    const worker = makeWorker({ pendingActionEvents: [{ ...ACTION_EVENT }] });
+    await makeSync(worker).syncWorkerToServer(worker);
+
+    expect(seenPayloads).toHaveLength(1);
+    expect(seenPayloads[0].appendActionEvents).toHaveLength(1);
+    expect(worker.pendingActionEvents).toHaveLength(0);
+  });
+
+  test('two overlapping syncs do not file the same action event twice', async () => {
+    const worker = makeWorker({ pendingActionEvents: [{ ...ACTION_EVENT }] });
+    const sync = makeSync(worker);
+
+    updateBehaviour = 'gate';
+    const first = sync.syncWorkerToServer(worker);
+    updateBehaviour = 'ok';
+    await sync.syncWorkerToServer(worker);
+    resolveUpdate?.({});
+    await first;
+
+    const shipped = seenPayloads.flatMap(p => p.appendActionEvents ?? []);
+    expect(shipped).toHaveLength(1);
+  });
+
+  test('restores drained action events when the sync PATCH throws', async () => {
+    const worker = makeWorker({ pendingActionEvents: [{ ...ACTION_EVENT }] });
+    updateBehaviour = 'throw';
+    await makeSync(worker).syncWorkerToServer(worker).catch(() => {});
+    expect(worker.pendingActionEvents).toHaveLength(1);
+    expect(worker.pendingActionEvents[0].action).toBe(ACTION_EVENT.action);
   });
 });

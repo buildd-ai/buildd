@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -36,6 +36,7 @@ import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-mer
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -557,6 +558,7 @@ export async function PATCH(
     appendMilestones,
     appendMcpCalls,
     appendErrorTraces,
+    appendActionEvents,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -691,6 +693,30 @@ export async function PATCH(
         await db.insert(workerErrorTraces).values(rows);
       } catch (err) {
         console.error('[workers PATCH] failed to insert error traces', err);
+      }
+    }
+  }
+  // appendActionEvents: insert per-call buildd MCP action events into
+  // worker_action_events (health-analytics-spec §4.3 item 1 / WU-4). Action
+  // names are structured tokens (not prose), so isSensitive doesn't strip
+  // them — same treatment as `pattern` above, unlike `excerpt`. A hard cap
+  // per request bounds write volume the same way appendErrorTraces does;
+  // 200 rather than 50 because every buildd call lands here, not just errors.
+  if (appendActionEvents && Array.isArray(appendActionEvents) && appendActionEvents.length > 0) {
+    const rows = appendActionEvents
+      .filter((e: any) => e && typeof e.action === 'string' && e.action.length > 0 && typeof e.ts === 'number')
+      .slice(0, 200)
+      .map((e: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        action: String(e.action).slice(0, 100),
+        ts: new Date(e.ts),
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerActionEvents).values(rows);
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert action events', err);
       }
     }
   }
@@ -2256,6 +2282,9 @@ export async function PATCH(
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
         if (status !== 'completed' || loopDispatchResult?.kind === 'requeue') return;
         await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+        // AFTER the outcome is applied, so an on=merge callback sees the merge
+        // this verdict may just have triggered. Single-fire and best-effort.
+        await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
@@ -2879,6 +2908,40 @@ export async function PATCH(
 // ── Reviewer outcome handling (BT-7, BT-8, BT-9) ────────────────────────────
 
 /**
+ * Push the review outcome to the URL the requester supplied, if any.
+ *
+ * Only on-demand reviews (`request_pr_review` with a `callbackUrl`) carry one;
+ * for every other review this is a no-op read. Never throws — a caller waiting
+ * on a callback can still poll, but a failed notification must not fail the
+ * worker report.
+ */
+async function deliverReviewCallbackIfRequested(reviewerTaskId: string, workspaceId: string): Promise<void> {
+  try {
+    const reviewerTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, reviewerTaskId),
+      columns: { category: true, context: true },
+    });
+    const ctx = (reviewerTask?.context ?? {}) as Record<string, unknown>;
+    if (reviewerTask?.category !== 'review' || !ctx.reviewCallback) return;
+    const prNumber = typeof ctx.prNumber === 'number' ? ctx.prNumber : null;
+    if (!prNumber) return;
+
+    const { deliverPrReviewCallback } = await import('@/lib/pr-review-request');
+    const outcome = await deliverPrReviewCallback({
+      workspaceId,
+      prNumber,
+      repoFullName: typeof ctx.repoFullName === 'string' ? ctx.repoFullName : undefined,
+    });
+    console.log(`[pr-review] verdict callback for PR #${prNumber}: ${outcome}`);
+  } catch (error) {
+    console.warn(
+      `[pr-review] verdict callback for review task ${reviewerTaskId} failed:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
+
+/**
  * Called in the post-completion `runStep` sequence when a reviewer task finishes.
  * Reads `context.reviewerFor` to identify this as a reviewer task, then
  * dispatches the appropriate outcome: approve → auto-merge, request-changes →
@@ -2937,7 +3000,12 @@ async function handleReviewerOutcomeIfNeeded(
         : output.verdict === 'request-changes'
           ? `PR #${prNumber}: reviewer requested changes (iteration ${currentIteration + 1}/${maxIterations})`
           : `PR #${prNumber} escalated: ${output.escalationReason ?? 'see details'}`,
-      body: output.feedback ?? output.escalationReason ?? output.summary,
+      // Recommendation rides in the body behind a fixed marker so the escalation
+      // card can lead with it (see selectReviewerEvidence).
+      body: (output.feedback ?? output.escalationReason ?? output.summary)
+        + (output.verdict === 'escalate' && output.recommendation
+            ? `${RECOMMENDATION_MARKER}${output.recommendation}`
+            : ''),
       status: 'open',
     });
   }

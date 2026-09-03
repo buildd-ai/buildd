@@ -9,7 +9,8 @@
  * and dispatched to a connected runner via pusher.
  */
 
-const DEFAULT_MAX_ITERATIONS = 3;
+/** Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
+export const DEFAULT_MAX_CI_RETRIES = 3;
 
 export interface CIRetryParams {
   originalTask: {
@@ -66,7 +67,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
   const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
   // Priority: workspace gitConfig.maxCiRetries > task context.maxIterations > default 3.
   // maxCiRetries === 0 explicitly disables CI retries for the workspace.
-  const maxIterations = workspaceMaxCiRetries ?? (typeof ctx.maxIterations === 'number' ? ctx.maxIterations : DEFAULT_MAX_ITERATIONS);
+  const maxIterations = workspaceMaxCiRetries ?? (typeof ctx.maxIterations === 'number' ? ctx.maxIterations : DEFAULT_MAX_CI_RETRIES);
 
   // Honor the "retries disabled" switch regardless of commit authorship.
   if (maxIterations <= 0) {
@@ -93,7 +94,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
 
   return {
     title: `[CI Retry #${displayIteration}] ${cleanTitle}`,
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor),
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -147,6 +148,7 @@ function buildRetryDescription(
   ciRunUrl: string | null,
   foreignHeadSha?: boolean,
   foreignCommitAuthor?: string,
+  isFinalAttempt?: boolean,
 ): string {
   // Don't ship the full (verbose) log — point the agent at `gh run view`, which
   // returns only the failed steps' output, so it pulls just what it needs.
@@ -162,6 +164,24 @@ Grep or tail if the output is large — don't dump the whole thing.${ciRunUrl ? 
 
   const foreignNote = foreignHeadSha
     ? `> **Note:** This CI failure was triggered by a commit from ${foreignCommitAuthor ? `@${foreignCommitAuthor}` : 'an external contributor'}, not the buildd agent. Your retry budget is **not consumed** by this attempt.\n\n`
+    : '';
+
+  // On the last attempt the next reader is a human, not another agent. Ask for
+  // the handoff explicitly — Home's blocked card leads with this text, and
+  // without it the human inherits a red PR and no advice.
+  const handoffSection = isFinalAttempt
+    ? `
+## If you cannot get CI green
+
+This is the **final attempt** — no further retry will be dispatched, and a human
+picks this up next. Do not fail silently:
+
+- Call \`complete_task\` with \`nextSuggestion\` set to the specific next action a
+  human should take (root cause if you found it, what you ruled out, and the
+  concrete fix or decision needed). One or two sentences.
+- Report the failure through \`error\` as usual — \`nextSuggestion\` is the handoff,
+  not a substitute for it.
+`
     : '';
 
   return `CI checks failed on the PR for "${task.title}" (${repoFullName}).
@@ -182,5 +202,5 @@ ${logSection}## Instructions
 4. Run the verification command locally before completing
 5. Push your fixes to the existing branch (the PR will auto-update)
 
-${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
+${handoffSection}${task.description ? `## Original Task Description\n\n${task.description}` : ''}`;
 }

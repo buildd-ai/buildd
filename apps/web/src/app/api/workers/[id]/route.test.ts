@@ -250,6 +250,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectors: 'connectors',
   secrets: 'secrets',
   workerErrorTraces: { workerId: 'workerId' },
+  workerActionEvents: { workerId: 'workerId' },
   missions: 'missions',
   taskSchedules: 'taskSchedules',
   backendPauses: 'backendPauses',
@@ -1615,6 +1616,70 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.waitingFor.options[2].label).toBe('Use SAML');
   });
 
+  it('an AskUserQuestion abort (status=waiting_input, error=needs_input:...) never touches task status, never auto-retries, and still notifies the owner', async () => {
+    // Regression for the 4164ff29 incident: the runner used to report this
+    // exact scenario as status: 'failed', which fed the mission auto-retry
+    // gate (blind re-dispatch before any human answered) and the
+    // failure-analytics / success-rate-by-role aggregates. The runner now
+    // reports status: 'waiting_input' instead — this test locks in that the
+    // server-side task-touching block (auto-retry, exit-cause classification)
+    // is skipped entirely for a non-terminal status, while the existing
+    // owner-notification path still fires unconditionally on
+    // waitingFor.type === 'question'.
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1',
+              status: 'waiting_input',
+              accountId: 'account-1',
+              workspaceId: 'ws-1',
+              taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      pendingInstructions: null,
+    });
+    mockNotify.mockClear();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'waiting_input',
+        error: 'needs_input: Which auth method should I implement?',
+        waitingFor: { type: 'question', prompt: 'Which auth method should I implement?' },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    // Worker row itself lands on waiting_input, not failed.
+    expect(capturedSet.status).toBe('waiting_input');
+    // No exit-cause classification — that block only runs for status failed/error.
+    expect(capturedSet.exitCause).toBeUndefined();
+    // The task-touching block (auto-retry, task status update) never runs for
+    // a non-terminal status — no task row is ever mutated.
+    expect(mockTasksUpdate).not.toHaveBeenCalled();
+    // The owner is still reached through the existing notification path.
+    expect(mockNotify.mock.calls.some((c: any) =>
+      c[0]?.title === 'Agent needs your input' && c[0]?.url?.includes('/respond')
+    )).toBe(true);
+  });
+
   it('clears waitingFor when worker resumes running', async () => {
     let capturedSet: any = null;
     mockWorkersUpdate.mockReturnValue({
@@ -2616,6 +2681,96 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(capturedTaskSet).not.toBeNull();
       expect(capturedTaskSet.result.mcpServers).toEqual(['github', 'slack']);
+    });
+  });
+
+  describe('appendActionEvents', () => {
+    beforeEach(() => {
+      lastInsertTable = null;
+      lastInsertValues = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+    });
+
+    it('inserts buildd action events into worker_action_events', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendActionEvents: [
+            { action: 'create_pr', ts: 1000 },
+            { action: 'update_progress', ts: 1500 },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(2);
+      expect(lastInsertValues[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', action: 'create_pr' });
+      expect(lastInsertValues[0].ts).toBeInstanceOf(Date);
+      expect(lastInsertValues[1]).toMatchObject({ action: 'update_progress' });
+    });
+
+    it('drops malformed events (missing action or non-numeric ts)', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendActionEvents: [
+            { action: 'create_pr', ts: 1000 },
+            { action: '', ts: 1000 },
+            { ts: 1000 },
+            { action: 'no_timestamp' },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(1);
+      expect(lastInsertValues[0].action).toBe('create_pr');
+    });
+
+    it('caps action events at 200 per request', async () => {
+      const events = Array.from({ length: 250 }, (_, i) => ({ action: `action_${i}`, ts: i }));
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', appendActionEvents: events },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(200);
+    });
+
+    it('does not insert when appendActionEvents is absent', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeNull();
     });
   });
 

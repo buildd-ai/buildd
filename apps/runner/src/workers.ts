@@ -29,6 +29,7 @@ import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, cre
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
+import { extractBuilddAction } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
@@ -3201,21 +3202,33 @@ If something is missing or incomplete, describe what and fix it now.`;
         return;
       }
 
-      // inputAsRetry: AskUserQuestion triggered an abort — mark as failed with structured context.
-      // The waiting_input notification was already synced in handleMessage.
+      // inputAsRetry: AskUserQuestion triggered an abort. The worker is
+      // PARKED waiting_input, not failed — a hard blocker with a pending
+      // question is not a crash. Reporting this as 'failed' used to feed the
+      // server's generic mission auto-retry gate (blind re-dispatch into the
+      // same unanswered question before any human saw it) and the
+      // failure-analytics / success-rate-by-role aggregates, and hid the task
+      // behind deriveTaskPhase's failed-wins-over-waiting_input precedence
+      // (apps/web/src/lib/task-presentation.ts) instead of its dedicated
+      // 'waiting_input' phase. See docs/specs/human-in-the-loop-protocol.md.
+      // `/respond` and `cleanupStuckWaitingInput` own the eventual resolution
+      // (answer, or timeout after 4h/24h) — this path only parks.
       if (worker.error?.startsWith('needs_input')) {
-        console.log(`[Worker ${worker.id}] inputAsRetry: marking as failed — ${worker.error}`);
+        console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
         sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
         const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
-        worker.status = 'error';
+        // Mirrors the sibling non-abort branch's local 'waiting' state — the
+        // session is gone here, but 'waiting' + no live session is already a
+        // recognized local state elsewhere in this file.
+        worker.status = 'waiting';
         worker.currentAction = 'Needs input';
         worker.hasNewActivity = true;
-        worker.completedAt = Date.now();
+        // Not terminal — no completedAt. The worker is still open.
         // Re-send waitingFor so the dashboard can render the answer UI even
-        // if the earlier sync got 409'd. Server preserves it on failed state.
+        // if the earlier sync got 409'd.
         await this.buildd.updateWorker(worker.id, {
-          status: 'failed',
+          status: 'waiting_input',
           error: worker.error,
           milestones: worker.milestones,
           ...(worker.waitingFor ? { waitingFor: worker.waitingFor as any } : {}),
@@ -4149,6 +4162,20 @@ If something is missing or incomplete, describe what and fix it now.`;
           // is the complete histogram the usage rollups read.
           if (!worker.toolCounts) worker.toolCounts = {};
           recordToolCall(worker.toolCounts, toolName);
+
+          // Per-call event for the buildd MCP tool's decomposed action (see
+          // action-events.ts). The tool histogram above can only ever show one
+          // aggregate bar for this tool; RUNTIME-vs-WORK classification for an
+          // action like create_pr/create_artifact/merge_pr depends on the
+          // CALLING TASK's outputRequirement/loopConfig, not the action name
+          // alone, so it can't be resolved into a count at capture time — this
+          // buffers a raw event (action + when) for a later join, same pattern
+          // as pendingErrorTraces. No-ops for every other tool name.
+          const builddAction = extractBuilddAction(toolName, input);
+          if (builddAction) {
+            if (!worker.pendingActionEvents) worker.pendingActionEvents = [];
+            worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
+          }
 
           // CBM observability: count per-tool CBM calls and file-access tool calls.
           if (toolName.startsWith('mcp__codebase-memory__')) {

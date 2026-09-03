@@ -1228,6 +1228,49 @@ export const workerErrorTraces = pgTable('worker_error_traces', {
   patternIdx: index('worker_error_traces_pattern_idx').on(t.pattern),
 }));
 
+/**
+ * Per-call event stream for the buildd MCP tool's `action` param. The buildd
+ * MCP multiplexes ~55 actions (32 workerActions + 23 adminActions) through
+ * one SDK tool name (`mcp__buildd__buildd`), so the tool histogram
+ * (`workers.resultMeta.toolCounts`) can only ever show one aggregate bar for
+ * the whole surface. An aggregate count map can't decompose it either:
+ * whether a call like create_pr/create_artifact/upload_artifact/merge_pr is
+ * RUNTIME (the platform forces it, e.g. create_pr under
+ * outputRequirement='pr_required') or WORK (the agent chose it) depends on
+ * the CALLING TASK's outputRequirement/loopConfig, not the action name alone
+ * — so classification has to join each call to its task at query time, which
+ * needs a raw event per call, not a count. See health-analytics-spec §4.3
+ * item 1 / WU-4. No classification is stored here — that's computed later,
+ * by whoever builds the drill-down panel, from `taskId`.
+ *
+ * A dedicated, indexed table rather than a jsonb array on `workers` —
+ * `workers.mcp_calls` capped at the last 100 entries is exactly the failure
+ * mode this avoids: a capped in-place array can't be paginated, indexed by
+ * time, or pruned by age independently of the worker row. Pruned weekly past
+ * ACTION_EVENTS_RETENTION_DAYS by the task-archive cron (see
+ * apps/web/src/app/api/cron/task-archive/route.ts) — the drill-down this
+ * feeds only ever reads 7d/30d windows, so nothing needs unbounded retention.
+ *
+ * No backfill: this table has no rows before the runner release that started
+ * writing to it. Consumers must read `ACTION_EVENTS_CAPTURED_SINCE`
+ * (apps/web/src/lib/action-events.ts) and render "actions recorded since
+ * {date}" rather than treating a quiet window as zero activity.
+ */
+export const workerActionEvents = pgTable('worker_action_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // Bare action name off the buildd MCP call, e.g. 'create_pr', 'update_progress'.
+  action: text('action').notNull(),
+  // Runner-reported tool_use time, not insert time — sync can lag up to the
+  // 10s periodic flush (or longer on retry), so this is the honest ordering key.
+  ts: timestamp('ts', { withTimezone: true }).notNull(),
+}, (t) => ({
+  workerTsIdx: index('worker_action_events_worker_ts_idx').on(t.workerId, t.ts),
+  taskTsIdx: index('worker_action_events_task_ts_idx').on(t.taskId, t.ts),
+  actionTsIdx: index('worker_action_events_action_ts_idx').on(t.action, t.ts),
+}));
+
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),

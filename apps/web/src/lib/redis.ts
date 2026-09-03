@@ -125,3 +125,62 @@ export async function setCachedAccountWorkspaces<T>(accountId: string, perms: T,
 export async function invalidateCachedAccountWorkspaces(accountId: string): Promise<void> {
   await safe('del acct_ws', r => r.del(`buildd:acct_ws:${accountId}`), undefined);
 }
+
+// ── Cron due-queues ─────────────────────────────────────────────────────────
+//
+// key: buildd:due:{job} — a sorted set whose score is the epoch-ms at which a
+// row becomes actionable. Written by whatever code path already knows the due
+// time (it is inside a DB write anyway), read by the matching cron so a tick
+// with nothing due can return without touching Postgres — which is the whole
+// point: Neon autosuspends on idle, so an ungated sub-hourly cron bills idle
+// compute all day just to ask "anything to do?".
+//
+// `countDue` returns null — NOT 0 — when Redis is unavailable or erroring, so
+// callers can tell "nothing is due" apart from "I could not ask" and fail open
+// on the second. Treating them alike is how a monitoring job silently stops
+// monitoring while its logs stay green.
+
+const dueKey = (job: string) => `buildd:due:${job}`;
+
+/** True when a client is configured; false means every due-queue op no-ops. */
+export function isRedisConfigured(): boolean {
+  return redis !== null;
+}
+
+/** Upsert one member's due time (ZADD). Called from paths that already write the DB. */
+export async function markDue(job: string, member: string, dueAtMs: number): Promise<void> {
+  await safe('zadd due', r => r.zadd(dueKey(job), { score: dueAtMs, member }), undefined);
+}
+
+/** Drop members that no longer have pending work (ZREM). */
+export async function clearDue(job: string, members: string | string[]): Promise<void> {
+  const list = Array.isArray(members) ? members : [members];
+  if (list.length === 0) return;
+  await safe('zrem due', r => r.zrem(dueKey(job), ...list), undefined);
+}
+
+/** How many members are due at or before `nowMs`. `null` = Redis unavailable. */
+export async function countDue(job: string, nowMs: number = Date.now()): Promise<number | null> {
+  return safe<number | null>('zcount due', r => r.zcount(dueKey(job), '-inf', nowMs), null);
+}
+
+/**
+ * Replace the whole set with `entries` — the self-healing half of the pattern.
+ *
+ * A dropped ZADD would otherwise hide work forever. Runs only on ticks that
+ * already read the DB (the unconditional floor tick), so it costs no extra
+ * wake, and it bounds a lost write to one floor interval.
+ */
+export async function reseedDue(
+  job: string,
+  entries: Array<{ member: string; dueAtMs: number }>,
+): Promise<void> {
+  await safe('reseed due', async r => {
+    const key = dueKey(job);
+    await r.del(key);
+    // Destructured rather than spread so the first element types as required —
+    // zadd's signature demands at least one score/member pair.
+    const [first, ...rest] = entries.map(e => ({ score: e.dueAtMs, member: e.member }));
+    if (first) await r.zadd(key, first, ...rest);
+  }, undefined);
+}

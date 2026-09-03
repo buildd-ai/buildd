@@ -37,6 +37,7 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { deliverPrReviewCallback } from '@/lib/pr-review-request';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -498,6 +499,7 @@ async function handlePullRequestEvent(event: {
     draft?: boolean;
     merge_commit_sha?: string | null;
     head: { ref: string; sha: string };
+    base?: { ref: string };
     html_url: string;
     mergeable?: boolean | null;
   };
@@ -661,6 +663,35 @@ async function handlePullRequestEvent(event: {
     where: workerOwnsPr(repository.full_name, pr.number),
     with: { task: true },
   });
+
+  // Resolve the sticky activity comment: the PR closing is the last word, so a
+  // header left on a working state ("Review passed — merging once checks are
+  // green") must stop spinning even though no buildd step ran after it.
+  // onlyIfPresent: a PR buildd never announced on stays comment-free.
+  if (event.installation) {
+    await appendPrActivity({
+      installationId: event.installation.id,
+      repoFullName: repository.full_name,
+      prNumber: pr.number,
+      entry: pr.merged
+        ? { kind: 'merged', detail: pr.base?.ref ? `into \`${pr.base.ref}\`` : null }
+        : { kind: 'closed_unmerged' },
+      onlyIfPresent: true,
+      workspaceId: worker?.workspaceId ?? null,
+    });
+  }
+
+  // An on-demand review can be waiting on the PR itself rather than on the
+  // verdict (`callbackOn: 'merge'`), and a PR closed mid-review will never
+  // reach a verdict at all — either way the close is the moment to tell the
+  // requester. Single-fire and best-effort inside the helper.
+  if (worker?.workspaceId) {
+    await deliverPrReviewCallback({
+      workspaceId: worker.workspaceId,
+      prNumber: pr.number,
+      repoFullName: repository.full_name,
+    });
+  }
 
   if (worker) {
     if (pr.merged) {
@@ -1020,7 +1051,13 @@ async function handleCheckSuiteFailure(
           .update(tasks)
           .set({
             status: 'failed',
-            result: { summary: `CI retry stopped — ${exhaustionDetail}\n\n${failureContext}` },
+            // Merge, never replace: result.nextSuggestion is the agent's handoff
+            // advice and Home's blocked card leads with it. Overwriting the
+            // whole object here would delete the only guidance the human gets.
+            result: {
+              ...((task.result as Record<string, unknown> | null) ?? {}),
+              summary: `CI retry stopped — ${exhaustionDetail}\n\n${failureContext}`,
+            },
             updatedAt: new Date(),
           })
           .where(eq(tasks.id, task.id));

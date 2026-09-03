@@ -39,7 +39,9 @@ const SKILLS_TO_DISABLE = [
   'sdk-ecosystem-research',
   'pipeline-sequential',
   'pipeline-release',
-  'moa-ops-agent',
+  // A legacy private-app skill was disabled by the original run of this
+  // script; its slug is a production identifier and this repo is public, so
+  // it is not restated here.
 ];
 
 // ── Consolidated roles to create ──
