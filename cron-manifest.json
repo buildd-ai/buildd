@@ -66,10 +66,17 @@
       "method": "GET"
     },
     {
-      "$comment": "Heals workers whose PR merged on GitHub but whose row still says otherwise \u2014 a missed pull_request webhook delivery starves every dependent task until this corrects it, so the cadence has to be within the working hour, not the working day. Merge-state only: the dead-zone sweep (which spawns conflict-resolution tasks) stays on the daily job below. The sweep is capped and rate-limited per run, so a backlog drains across runs. Offset off :00 to stay clear of the schedules tick.",
+      "$comment": "Redis-gated fast tick for the SAME route as the hourly guard above, which stays the unconditional floor. Reads one sorted set (buildd:due:lease-expiry, written by /api/runner/credential-lease on acquire/heartbeat/release) and returns without querying Postgres unless a lease has actually lapsed \u2014 so */5 costs 288 Redis reads a day and zero extra Neon wake time. Why it needs to be this fast: the lease TTL is 5 minutes and the broker renews every 60s, so hourly detection was 12x coarser than the state it watches. Fail-open by design: if Redis is unconfigured or erroring the gate proceeds to the DB, because 'I could not ask' must never read as 'nothing to do'. See apps/web/src/lib/cron-due-queue.ts and docs/design/cron-wake-windows.md.",
+      "title": "Buildd: Lease Expiry Guard (gated)",
+      "path": "/api/cron/lease-expiry-guard?gate=due",
+      "schedule": "*/5 * * * *",
+      "method": "GET"
+    },
+    {
+      "$comment": "Heals workers whose PR merged on GitHub but whose row still says otherwise \u2014 a missed pull_request webhook delivery starves every dependent task until this corrects it, so the cadence has to be within the working hour, not the working day. Merge-state only: the dead-zone sweep (which spawns conflict-resolution tasks) stays on the daily job below. The sweep is capped and rate-limited per run, so a backlog drains across runs. Offset off :00 to stay clear of the schedules tick, but only by 10 minutes: Neon autosuspends after ~5 idle minutes, so a far-away offset opens a second wake window every hour for no benefit. Routes here cap at 60s.",
       "title": "Buildd: PR Merge-State Sweep",
       "path": "/api/cron/pr-reconcile?scope=merge-state",
-      "schedule": "20 * * * *",
+      "schedule": "10 * * * *",
       "method": "GET"
     },
     {
@@ -87,10 +94,10 @@
       "method": "GET"
     },
     {
-      "$comment": "Reclaims workers stuck in waiting_input (mission tasks 4h, standalone 24h) across ALL accounts. Exists because the sweep's only automatic driver was each runner's own 30-minute cleanup timer, and the sweep is now correctly account-scoped \u2014 so an account whose runners are all down had nothing to reclaim its stuck workers, which is precisely the case the timeout exists for. A runner-driven trigger cannot be the only trigger for a timeout about runners being unavailable. Hourly x the 4h floor puts worst-case detection ~5h, well inside the threshold's own tolerance. Do NOT make this sub-hourly: it is a DB-touching housekeeping sweep, and sub-hourly work never lets Neon's compute autosuspend. Daytime only (EST): the sweep FAILS a worker and CREATES a retry task, and a retry task queued at 03:00 needs a runner to claim it \u2014 the accounts this cron is for are exactly the ones with no live runner, so firing overnight buys nothing and the 8h night gap adds at most 8h to a wait that is already 4h+ by construction. Offset to :40 to stay clear of the schedules tick at :00 and the PR merge-state sweep at :20. ENABLED on first ship, deliberately: there is no accumulated backlog to detonate \u2014 the pre-fix sweep ran GLOBALLY on every runner's tick, so every account's past-threshold waiting_input worker has already been reaped by whichever runner ticked last. The only rows this can find are ones that accrued after the scoping fix, and each is bounded by the same 4h/24h thresholds that were already in force.",
+      "$comment": "Reclaims workers stuck in waiting_input (mission tasks 4h, standalone 24h) across ALL accounts. Exists because the sweep's only automatic driver was each runner's own 30-minute cleanup timer, and the sweep is now correctly account-scoped \u2014 so an account whose runners are all down had nothing to reclaim its stuck workers, which is precisely the case the timeout exists for. A runner-driven trigger cannot be the only trigger for a timeout about runners being unavailable. Hourly x the 4h floor puts worst-case detection ~5h, well inside the threshold's own tolerance. Do NOT make this sub-hourly: it is a DB-touching housekeeping sweep, and sub-hourly work never lets Neon's compute autosuspend. Daytime only (EST): the sweep FAILS a worker and CREATES a retry task, and a retry task queued at 03:00 needs a runner to claim it \u2014 the accounts this cron is for are exactly the ones with no live runner, so firing overnight buys nothing and the 8h night gap adds at most 8h to a wait that is already 4h+ by construction. Offset to :15 \u2014 clear of the schedules tick at :00 and the merge-state sweep at :10, while still inside the wake window they already opened. Spacing crons far apart buys nothing but idle compute. ENABLED on first ship, deliberately: there is no accumulated backlog to detonate \u2014 the pre-fix sweep ran GLOBALLY on every runner's tick, so every account's past-threshold waiting_input worker has already been reaped by whichever runner ticked last. The only rows this can find are ones that accrued after the scoping fix, and each is bounded by the same 4h/24h thresholds that were already in force.",
       "title": "Buildd: Waiting-Input Reclaim Sweep",
       "path": "/api/cron/waiting-input-sweep",
-      "schedule": "40 7-23 * * *",
+      "schedule": "15 7-23 * * *",
       "method": "POST"
     },
     {

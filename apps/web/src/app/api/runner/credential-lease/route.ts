@@ -3,6 +3,8 @@ import { db } from '@buildd/core/db';
 import { credentialLeases, secrets } from '@buildd/core/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
+import { markDue, clearDue } from '@/lib/redis';
+import { LEASE_DUE_QUEUE } from '@/lib/lease-due-queue';
 
 // Lease TTL — broker must heartbeat within this window or the lease becomes stealable.
 const LEASE_TTL_SECONDS = 5 * 60; // 5 minutes
@@ -82,6 +84,11 @@ export async function POST(req: NextRequest) {
     if (rows.length === 0) {
       return NextResponse.json({ acquired: false });
     }
+    // Publish the expiry so /api/cron/lease-expiry-guard's gated tick can find
+    // this lease without querying Postgres. Best-effort by construction: the
+    // guard's floor tick re-seeds from the table, so a lost write costs one
+    // floor interval, not a missed alert.
+    await markDue(LEASE_DUE_QUEUE, credentialId, Date.now() + LEASE_TTL_SECONDS * 1_000);
     return NextResponse.json({ acquired: true, leaseId: rows[0].id });
   }
 
@@ -108,6 +115,9 @@ export async function POST(req: NextRequest) {
     if (rows.length === 0) {
       return NextResponse.json({ ok: false, stolen: true }, { status: 404 });
     }
+    // Renewal pushes the due time out; the lease is only "due" once the runner
+    // stops heartbeating, which is exactly what the guard alerts on.
+    await markDue(LEASE_DUE_QUEUE, credentialId, Date.now() + LEASE_TTL_SECONDS * 1_000);
     return NextResponse.json({ ok: true });
   }
 
@@ -125,6 +135,8 @@ export async function POST(req: NextRequest) {
           eq(credentialLeases.heldByRunnerId, runnerId),
         ),
       );
+    // A released lease has no expiry to watch for.
+    await clearDue(LEASE_DUE_QUEUE, credentialId);
     return NextResponse.json({ ok: true });
   }
 
