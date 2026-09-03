@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -557,6 +557,7 @@ export async function PATCH(
     appendMilestones,
     appendMcpCalls,
     appendErrorTraces,
+    appendActionEvents,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -691,6 +692,30 @@ export async function PATCH(
         await db.insert(workerErrorTraces).values(rows);
       } catch (err) {
         console.error('[workers PATCH] failed to insert error traces', err);
+      }
+    }
+  }
+  // appendActionEvents: insert per-call buildd MCP action events into
+  // worker_action_events (health-analytics-spec §4.3 item 1 / WU-4). Action
+  // names are structured tokens (not prose), so isSensitive doesn't strip
+  // them — same treatment as `pattern` above, unlike `excerpt`. A hard cap
+  // per request bounds write volume the same way appendErrorTraces does;
+  // 200 rather than 50 because every buildd call lands here, not just errors.
+  if (appendActionEvents && Array.isArray(appendActionEvents) && appendActionEvents.length > 0) {
+    const rows = appendActionEvents
+      .filter((e: any) => e && typeof e.action === 'string' && e.action.length > 0 && typeof e.ts === 'number')
+      .slice(0, 200)
+      .map((e: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        action: String(e.action).slice(0, 100),
+        ts: new Date(e.ts),
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerActionEvents).values(rows);
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert action events', err);
       }
     }
   }
