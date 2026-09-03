@@ -673,6 +673,20 @@ export async function GET(req: NextRequest) {
           userComplexity: template.complexity ?? null,
         });
 
+        // Resolve mode: template overrides win. Otherwise, a mission-linked
+        // (orchestrator) cycle defaults to 'planning' — its job is to decompose
+        // the mission into child tasks, so it must always request the structured
+        // planning contract unless the template explicitly opts into something
+        // else. A bare/non-mission schedule defaults to 'execution' as before —
+        // it has no plan to materialize, just work to do.
+        // This asymmetry with mission-run.ts's manual-run path (which already
+        // defaulted to 'planning') was the actual bug: a schedule whose stored
+        // taskTemplate lost its `mode` key silently fell back to 'execution' on
+        // every cron-triggered heartbeat, so resolveOutputFormat() never
+        // requested structured output and the agent's "plan" was discarded prose
+        // — 35 clean-looking completions, zero child tasks.
+        const resolvedMode = template.mode || (linkedMission ? 'planning' : 'execution');
+
         // Create task from template
         const [task] = await db
           .insert(tasks)
@@ -682,8 +696,8 @@ export async function GET(req: NextRequest) {
             description: taskDescription,
             priority: template.priority || 0,
             status: 'pending',
-            mode: template.mode || 'execution',
-            taskClass: (template.mode === 'planning') ? 'bookkeeping' : 'work',
+            mode: resolvedMode,
+            taskClass: (resolvedMode === 'planning') ? 'bookkeeping' : 'work',
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,

@@ -793,6 +793,54 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues.outputSchema).toEqual(heartbeatSchema);
   });
 
+  // Regression: a mission-linked (orchestrator) cron cycle whose stored
+  // taskTemplate has lost its `mode` key must still default to 'planning', not
+  // 'execution'. Falling back to 'execution' meant resolveOutputFormat() never
+  // requested structured output, so the organizer's "plan" was free-form prose
+  // discarded on completion — the mission looked alive and created nothing.
+  it('defaults an orchestrator (mission-linked) cycle to mode=planning when the template omits mode', async () => {
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      taskTemplate: {
+        title: 'Mission: No Mode',
+        priority: 0,
+        context: { heartbeat: true },
+      },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace' });
+
+    await GET(makeRequest());
+
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.mode).toBe('planning');
+    expect(tasksInsertValues.taskClass).toBe('bookkeeping');
+    expect(tasksInsertValues.creationSource).toBe('orchestrator');
+  });
+
+  // A bare (non-mission) schedule with no explicit mode still defaults to
+  // 'execution' — it has no plan to materialize, only work to do. The
+  // planning-default above must not widen to every schedule.
+  it('keeps the execution default for a non-mission schedule when the template omits mode', async () => {
+    const schedule = makeSchedule({
+      workspaceId: 'ws-1',
+      taskTemplate: {
+        title: 'Bare schedule',
+        priority: 0,
+      },
+    });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'Test Workspace' });
+
+    await GET(makeRequest());
+
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.mode).toBe('execution');
+    expect(tasksInsertValues.creationSource).toBe('schedule');
+  });
+
   it('should record lastDeferralReason=concurrent_cap when maxConcurrentFromSchedule is hit', async () => {
     const schedule = makeSchedule({ maxConcurrentFromSchedule: 1 });
     mockTaskSchedulesFindMany.mockResolvedValue([schedule]);

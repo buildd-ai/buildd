@@ -806,7 +806,7 @@ export async function PATCH(
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1667,19 +1667,36 @@ export async function PATCH(
       // resolveOutputFormat() does receive mode:'planning' and does request the
       // schema. Other live candidates: the SDK returned no validated JSON, or
       // the task reached the runner through a path that bypasses claim.
+      //
+      // Also covers orchestrator/heartbeat cycles that never got mode='planning'
+      // in the first place. A mission's cron-fired organizer task is created with
+      // creationSource='orchestrator'; unless it carries its own outputSchema (a
+      // lightweight heartbeat-status contract, opted into explicitly), it is
+      // always meant to decompose the mission via the default planning schema.
+      // Without this branch, an orchestrator task that ends up mode!=='planning'
+      // (e.g. a schedule template edited to drop the mode field) requests no
+      // outputFormat at all, the agent free-writes a "plan" as prose, and the
+      // cycle completes cleanly having filed nothing — the exact silent failure
+      // this guard exists to catch, just reached through a different door.
+      const orchestratorTaskRow = terminalTaskRow[0];
+      const expectsStructuredPlan = Boolean(
+        orchestratorTaskRow?.mode === 'planning' ||
+        (orchestratorTaskRow?.creationSource === 'orchestrator' && !orchestratorTaskRow?.outputSchema)
+      );
       const planningContractViolation = (
         status === 'completed' &&
         !shouldAutoRetry &&
-        terminalTaskRow[0]?.mode === 'planning' &&
+        expectsStructuredPlan &&
         !body.structuredOutput
       );
       if (planningContractViolation) {
         console.error(
           `[planning-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
-          `overriding completed→failed: planning task returned no structuredOutput, ` +
-          `so the plan could not be materialized into child tasks. Cause is not ` +
-          `determined server-side — check whether the SDK returned validated JSON for ` +
-          `this session (see @buildd/shared resolveOutputFormat for the request side).`
+          `overriding completed→failed: orchestrator/planning task returned no ` +
+          `structuredOutput, so the plan could not be materialized into child tasks. ` +
+          `Cause is not determined server-side — check whether the SDK returned ` +
+          `validated JSON for this session (see @buildd/shared resolveOutputFormat ` +
+          `for the request side).`
         );
         // Also mark the worker row failed so UI shows the correct terminal state.
         updates.status = 'failed';
