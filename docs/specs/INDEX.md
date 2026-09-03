@@ -24,7 +24,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [External Cron Triggers](./external-cron-triggers.md) · @max — verified 2026-08-28
   Every /api/cron/* route MUST have exactly one trigger whose cadence is declared in version control, so a route that never fires is a reviewable diff rather than a silent production gap.
-- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-07-18
+- [Webhook Dataflow](./webhook-dataflow.md) · @max — verified 2026-09-03
   The coordination layer MUST emit a Pusher event on every task, worker, mission, and schedule state change, and MUST dispatch task webhooks and notifications best-effort so no delivery failure aborts the DB write.
 - [Work Tracker Integration](./work-tracker-integration.md) · @max — verified 2026-07-18
   A workspace MUST route tracker updates through one provider-dispatched WorkTrackerProvider interface, closing the linked Linear or GitHub issue on PR merge and creating tasks from labeled issues idempotently.

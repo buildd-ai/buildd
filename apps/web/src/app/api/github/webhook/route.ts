@@ -498,6 +498,7 @@ async function handlePullRequestEvent(event: {
     draft?: boolean;
     merge_commit_sha?: string | null;
     head: { ref: string; sha: string };
+    base?: { ref: string };
     html_url: string;
     mergeable?: boolean | null;
   };
@@ -661,6 +662,23 @@ async function handlePullRequestEvent(event: {
     where: workerOwnsPr(repository.full_name, pr.number),
     with: { task: true },
   });
+
+  // Resolve the sticky activity comment: the PR closing is the last word, so a
+  // header left on a working state ("Review passed — merging once checks are
+  // green") must stop spinning even though no buildd step ran after it.
+  // onlyIfPresent: a PR buildd never announced on stays comment-free.
+  if (event.installation) {
+    await appendPrActivity({
+      installationId: event.installation.id,
+      repoFullName: repository.full_name,
+      prNumber: pr.number,
+      entry: pr.merged
+        ? { kind: 'merged', detail: pr.base?.ref ? `into \`${pr.base.ref}\`` : null }
+        : { kind: 'closed_unmerged' },
+      onlyIfPresent: true,
+      workspaceId: worker?.workspaceId ?? null,
+    });
+  }
 
   if (worker) {
     if (pr.merged) {
