@@ -418,7 +418,7 @@ describe('WorkerManager — state transitions', () => {
   });
 
   describe('AskUserQuestion — inputAsRetry mode', () => {
-    test('aborts session and marks worker as error with needs_input reason', async () => {
+    test('aborts session and parks worker as waiting_input with needs_input reason (not failed)', async () => {
       mockMessages = [
         { type: 'system', subtype: 'init', session_id: 'sess-retry-1' },
         {
@@ -458,12 +458,24 @@ describe('WorkerManager — state transitions', () => {
       await new Promise(r => setTimeout(r, 200));
 
       const worker = manager.getWorker('w-retry-1');
-      expect(worker?.status).toBe('error');
+      // Local bookkeeping mirrors the sibling non-abort branch's 'waiting'
+      // state (session is gone, but this is a parked question, not a crash).
+      expect(worker?.status).toBe('waiting');
       expect(worker?.error).toContain('needs_input');
       expect(worker?.waitingFor?.prompt).toBe('Should I use TypeScript or JavaScript?');
+
+      // The server-facing PATCH must never report this as 'failed' — a hard
+      // blocker with a pending question is not a crash. Reporting it as
+      // 'failed' fed the generic mission auto-retry gate (blind re-dispatch
+      // into the same unanswered question) and hid the task behind
+      // deriveTaskPhase's failed-wins-over-waiting_input precedence.
+      const failedCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'failed'
+      );
+      expect(failedCalls.length).toBe(0);
     });
 
-    test('syncs waiting_input to server before marking failed', async () => {
+    test('syncs waiting_input to server and stays waiting_input (never marks failed)', async () => {
       mockMessages = [
         { type: 'system', subtype: 'init', session_id: 'sess-retry-2' },
         {
@@ -492,17 +504,26 @@ describe('WorkerManager — state transitions', () => {
       await manager.claimAndStart(makeTask());
       await new Promise(r => setTimeout(r, 200));
 
-      // Should have synced waiting_input status first (triggers notification)
+      // Should have synced waiting_input status at least twice: the transient
+      // sync before abort, and the post-loop cleanup — both preserve status
+      // waiting_input rather than ever dropping to failed.
       const waitingCalls = mockUpdateWorker.mock.calls.filter(
         (call: any[]) => call[1]?.status === 'waiting_input'
       );
-      expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
+      expect(waitingCalls.length).toBeGreaterThanOrEqual(2);
 
-      // Then should have synced failed status
+      // Never reports 'failed' for this scenario.
       const failedCalls = mockUpdateWorker.mock.calls.filter(
-        (call: any[]) => call[1]?.status === 'failed' && call[1]?.error?.includes('needs_input')
+        (call: any[]) => call[1]?.status === 'failed'
       );
-      expect(failedCalls.length).toBeGreaterThanOrEqual(1);
+      expect(failedCalls.length).toBe(0);
+
+      // The final waiting_input call still carries the needs_input error
+      // context for observability, even though status is not 'failed'.
+      const withNeedsInputError = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.error?.includes('needs_input')
+      );
+      expect(withNeedsInputError.length).toBeGreaterThanOrEqual(1);
     });
 
     test('preserves waiting behavior when inputAsRetry is false', async () => {
@@ -570,17 +591,69 @@ describe('WorkerManager — state transitions', () => {
       await manager.claimAndStart(makeTask());
       await new Promise(r => setTimeout(r, 200));
 
-      // The failed update should include waitingFor context
-      const failedCalls = mockUpdateWorker.mock.calls.filter(
-        (call: any[]) => call[1]?.status === 'failed' && call[1]?.error?.includes('needs_input')
+      // The final cleanup update stays waiting_input and includes waitingFor context
+      const finalWaitingCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.error?.includes('needs_input')
       );
-      expect(failedCalls.length).toBeGreaterThanOrEqual(1);
-      // The waitingFor should have been synced in the waiting_input call
+      expect(finalWaitingCalls.length).toBeGreaterThanOrEqual(1);
+      // The waitingFor should have been synced in the waiting_input call(s)
       const waitingCalls = mockUpdateWorker.mock.calls.filter(
         (call: any[]) => call[1]?.status === 'waiting_input' && call[1]?.waitingFor
       );
       expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
       expect(waitingCalls[0][1].waitingFor.prompt).toBe('What should I name the file?');
+      // Never reports 'failed' for this scenario.
+      const failedCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'failed'
+      );
+      expect(failedCalls.length).toBe(0);
+    });
+
+    // Misuse-boundary regression: waiting_input parking must stay scoped to the
+    // literal 'needs_input:' prefix (set only by the AskUserQuestion abort
+    // handler above). A different, unrelated session failure — no question was
+    // ever asked — must still be reported as an ordinary 'failed' worker, with
+    // no waitingFor and no waiting_input status anywhere in the sync history.
+    // If this ever starts passing with status 'waiting_input', the parking
+    // logic has widened past genuine blockers into swallowing real failures.
+    test('a normal session failure (no question asked) still reports failed, not waiting_input', async () => {
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-budget-not-question' },
+        {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'Starting work...' }] },
+        },
+        {
+          type: 'result',
+          subtype: 'error_max_budget_usd',
+          session_id: 'sess-budget-not-question',
+          total_cost_usd: 5.5,
+        },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-not-a-question',
+        branch: 'buildd/not-a-question',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      const worker = manager.getWorker('w-not-a-question');
+      expect(worker?.waitingFor).toBeFalsy();
+      expect(worker?.error).not.toContain('needs_input');
+
+      const waitingInputCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input'
+      );
+      expect(waitingInputCalls.length).toBe(0);
+
+      const failedCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'failed'
+      );
+      expect(failedCalls.length).toBeGreaterThanOrEqual(1);
     });
   });
 

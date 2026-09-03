@@ -2,13 +2,13 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-09-03
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/[id]/instruct/route.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/worker-sync.ts]
+surfaces: [apps/web/src/app/api/workers/[id]/instruct/route.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner]
-verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts]
+verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts]
 supersedes: []
 ---
 # Human-in-the-Loop Protocol
@@ -67,11 +67,19 @@ question — answering spawns a new worker", and that is literal.
 - **`waiting_input` does not imply a live session.** In the runner's default
   mode (`inputAsRetry !== false`) an `AskUserQuestion` tool call is terminal for
   the session: the runner awaits the `waiting_input` sync, then aborts the
-  subprocess, and the post-loop cleanup marks the worker `failed` with
-  `error: 'needs_input: …'` while `waitingFor` stays populated. Every surface
-  that offers an answer affordance MUST therefore key on `waitingFor`, not on a
-  live status — `RealTimeWorkerView` renders `worker-needs-input-banner` from
-  `worker.waitingFor` alone for exactly this reason.
+  subprocess. The post-loop cleanup PATCH keeps `status: 'waiting_input'`
+  (carrying `error: 'needs_input: …'` for observability) rather than dropping
+  to `failed` — a parked question is not a crash. Reporting it as `failed` here
+  used to feed the server's generic mission auto-retry gate (blind
+  re-dispatch into the same unanswered question before any human saw it) and
+  the failure-analytics / success-rate-by-role aggregates, and hid the task
+  behind `deriveTaskPhase`'s failed-wins-over-waiting_input precedence
+  (`apps/web/src/lib/task-presentation.ts`) instead of its dedicated
+  `waiting_input` phase — see the 4164ff29 incident. Every surface that offers
+  an answer affordance still keys on `waitingFor` rather than on a live
+  status — `RealTimeWorkerView` renders `worker-needs-input-banner` from
+  `worker.waitingFor` alone, which now agrees with `status` instead of
+  compensating for it.
 
 **Acceptance criteria**:
 - AC-HITL-1: GIVEN a runner PATCH with `status: 'waiting_input'` and
@@ -88,8 +96,8 @@ question — answering spawns a new worker", and that is literal.
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact),
   `:456` (notify with respond link), `:470` (auto-clear on resume)
-- `apps/runner/src/workers.ts:3929` (`AskUserQuestion` handling), `:3945`
-  (`inputAsRetry` abort branch)
+- `apps/runner/src/workers.ts:4265` (`AskUserQuestion` handling), `:3215`
+  (`inputAsRetry` abort branch — post-loop cleanup, parks as `waiting_input`)
 - `apps/web/src/app/api/tasks/waiting-input/route.ts`
 - `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx:331`
   (`worker-needs-input-banner`), fixtures at
