@@ -24,8 +24,15 @@ Two rules learned the hard way, both from real failures of the first version:
 
 The identifier list is NOT stored in this repo -- it would itself be a personal
 handle and private repo names committed to a public repository. It arrives via
-NO_PROD_DATA_IDENTIFIERS as a regex alternation. When unset, that half is
-skipped and the script says so rather than passing quietly.
+NO_PROD_DATA_IDENTIFIERS as a regex alternation, and it must come from a SECRET
+rather than an Actions variable: variable values are echoed unmasked into the
+step's env group, and Actions logs on a public repo are world-readable, so
+carrying the list in a variable would publish it on every run.
+
+When the list is absent this script FAILS. It used to warn and exit 0, which is
+how the identifier half -- the only half that reads added code -- ran on every PR
+against an empty pattern for its entire life without anyone noticing. A guard
+that cannot see anything must not report success.
 
 Escape hatch: a line STARTING with `no-prod-data: allow <reason>` in the PR body
 suppresses the count/UUID rules for that PR, and is reported. Documenting this
@@ -129,13 +136,35 @@ def mask(text: str) -> str:
 class Report:
     def __init__(self) -> None:
         self.failed = False
+        # Tracked separately so the epilogue only offers the escape hatch when
+        # the hatch would actually help. It suppresses the count/UUID rules and
+        # nothing else, so advertising it under a missing-secret failure sends
+        # the reader to a switch that cannot clear their error.
+        self.suppressible = False
 
     def hit(self, where: str, category: str, line_no: int, excerpt: str, advice: str) -> None:
         self.failed = True
+        self.suppressible = True
         # Masked, and truncated. Never the raw match.
         shown = mask(excerpt.strip())[:110]
         print(f"::error::{where}: possible {category} at line {line_no} — {advice}")
         print(f"   masked: {shown}")
+
+    def hit_identifier(self, where: str, line_no: int, excerpt: str) -> None:
+        """Report an identifier match with NO excerpt at all.
+
+        `mask` only redacts [0-9a-f], which is right for a count or a UUID --
+        digits are the payload there. A personal handle or a private repo name is
+        made of the other twenty letters, so masking leaves it readable
+        ('some-private-repo-name' -> 'som•-priv•t•-r•po-n•m•'). Echoing it here
+        would republish the exact string this check exists to keep out of a public
+        repo. The location is enough: whoever wrote the line knows what is on it.
+        """
+        self.failed = True
+        del excerpt  # deliberately unused -- see above
+        print(f"::error::{where}: possible personal handle or private repo name "
+              f"at line {line_no} — remove it; this repository is public. "
+              f"The match is not printed: this log is world-readable.")
 
 
 def scan_prose(text: str, where: str, rep: Report, check_counts: bool) -> None:
@@ -155,8 +184,7 @@ def scan_prose(text: str, where: str, rep: Report, check_counts: bool) -> None:
                 rep.hit(where, "UUID", i, line,
                         "row identifiers must not enter a public repo")
         if ident_re and ident_re.search(line):
-            rep.hit(where, "personal handle or private repo name", i, line,
-                    "remove it; this repository is public")
+            rep.hit_identifier(where, i, line)
 
 
 def main() -> int:
@@ -211,19 +239,25 @@ def main() -> int:
         rx = re.compile(ident, re.I)
         for i, line in enumerate(added, 1):
             if rx.search(line):
-                rep.hit("added code", "personal handle or private repo name", i, line,
-                        "remove it; this repository is public")
+                rep.hit_identifier("added code", i, line)
     else:
-        print("::warning::NO_PROD_DATA_IDENTIFIERS is not set — "
-              "handle and private-repo checks were skipped in code and prose.")
+        # Not a warning. With no pattern there is nothing to match, so the
+        # identifier half of this check silently passes every PR -- including one
+        # that adds a private repo name to a public file.
+        rep.failed = True
+        print("::error::NO_PROD_DATA_IDENTIFIERS is not set, so the handle and "
+              "private-repo checks scanned nothing. Set it as a repository "
+              "SECRET (not a variable -- variable values are printed in this "
+              "log) under Settings → Secrets and variables → Actions.")
 
     if rep.failed:
         print()
         print("This repository is public. See 'This Repo Is Public' in CLAUDE.md.")
-        print("Matches are shown masked on purpose: Actions logs on a public repo are")
-        print("world-readable, so printing the value would republish it.")
-        print("If a finding is a false positive, add a line to the PR body:")
-        print("  no-prod-data: allow <short reason>")
+        if rep.suppressible:
+            print("Matches are shown masked on purpose: Actions logs on a public repo are")
+            print("world-readable, so printing the value would republish it.")
+            print("If a finding is a false positive, add a line to the PR body:")
+            print("  no-prod-data: allow <short reason>")
         return 1
 
     print("no-prod-data: clean")

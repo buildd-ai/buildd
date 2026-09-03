@@ -66,6 +66,12 @@ Enforced by `.github/workflows/no-prod-data.yml`. If something slips through aft
 merge, fix the PR body and commit a correction — do **not** force-push a shared
 branch; GitHub keeps orphaned commits reachable by SHA, so it hides nothing.
 
+The handle/private-repo half of that check reads the repo **secret**
+`NO_PROD_DATA_IDENTIFIERS` (an ERE alternation). It must be a secret, not a
+variable: Actions echoes variable values into the step's env group and logs here
+are world-readable. With the secret absent the check fails rather than passing on
+an empty pattern.
+
 ## Git Workflow
 
 - **Default branch**: `dev`
