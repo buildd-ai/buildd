@@ -14,7 +14,15 @@
 //      comes back online can re-acquire the credential normally.
 //
 // Auth: Bearer CRON_SECRET or x-vercel-cron: 1 (Vercel native cron).
-// Schedule: every 10 minutes.
+//
+// Two triggers, both in cron-manifest.json (see lib/cron-due-queue.ts):
+//   - `?gate=due` every 5 minutes — reads the Redis due-queue and returns
+//     without touching Postgres unless a lease has actually lapsed. A 5-minute
+//     lease TTL renewed every 60s deserves minute-scale detection, and this is
+//     how it gets it without keeping Neon's compute awake all day.
+//   - no param, hourly — the unconditional floor tick. Queries regardless and
+//     re-seeds the due-queue from the table, so a dropped write costs an hour
+//     of latency instead of a permanently missed alert.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
@@ -23,6 +31,9 @@ import { eq, lt, sql } from 'drizzle-orm';
 import { refreshClaudeCredential } from '@/lib/claude-credential';
 import { refreshCodexCredential } from '@/lib/codex-credential';
 import { notifyTeam } from '@/lib/notify';
+import { gateOnDueQueue } from '@/lib/cron-due-queue';
+import { reseedDue } from '@/lib/redis';
+import { LEASE_DUE_QUEUE } from '@/lib/lease-due-queue';
 
 export const maxDuration = 60;
 
@@ -37,6 +48,11 @@ export async function GET(req: NextRequest) {
     if (token !== cronSecret) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+  }
+
+  const gate = await gateOnDueQueue(LEASE_DUE_QUEUE, req.nextUrl.searchParams);
+  if (!gate.proceed) {
+    return NextResponse.json({ checked: 0, alerted: 0, gated: true, reason: gate.reason });
   }
 
   const ALLOW_CONTROL_PLANE_REFRESH = process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH === 'true';
@@ -106,14 +122,32 @@ export async function GET(req: NextRequest) {
     await db.delete(credentialLeases).where(eq(credentialLeases.id, lease.id));
   }
 
+  // Floor tick only: rebuild the due-queue from the rows that survive, so a
+  // write lost by the lease endpoint (Redis blip, half-configured client) is
+  // healed within one floor interval. Runs after the deletes above, so expired
+  // rows we just handled are not re-published.
+  if (gate.reseed) {
+    const live = await db.query.credentialLeases.findMany({
+      columns: { credentialId: true, expiresAt: true },
+    });
+    // A non-finite score would be rejected by Redis and take the whole reseed
+    // with it, so drop unparseable rows rather than poison the set.
+    const entries = live
+      .map(l => ({ member: l.credentialId, dueAtMs: new Date(l.expiresAt).getTime() }))
+      .filter(e => Number.isFinite(e.dueAtMs));
+    await reseedDue(LEASE_DUE_QUEUE, entries);
+  }
+
   console.log(
     `[Cron] lease-expiry-guard: checked=${expiredLeases.length} alerted=${alerted}` +
+    ` gate=${gate.reason}` +
     (ALLOW_CONTROL_PLANE_REFRESH ? ` refreshed=${refreshed} refreshErrors=${refreshErrors}` : ''),
   );
 
   return NextResponse.json({
     checked: expiredLeases.length,
     alerted,
+    gate: gate.reason,
     ...(ALLOW_CONTROL_PLANE_REFRESH ? { refreshed, refreshErrors } : {}),
     details,
   });

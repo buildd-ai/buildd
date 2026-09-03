@@ -60,6 +60,16 @@ mock.module('drizzle-orm', () => ({
   ),
 }));
 
+// Redis due-queue — the lease endpoint publishes the expiry so the expiry
+// guard's gated tick can find it without querying Postgres.
+const mockMarkDue = mock((_job: string, _member: string, _dueAtMs: number) => Promise.resolve());
+const mockClearDue = mock((_job: string, _members: string | string[]) => Promise.resolve());
+
+mock.module('@/lib/redis', () => ({
+  markDue: mockMarkDue,
+  clearDue: mockClearDue,
+}));
+
 // ── imports (after mocks) ─────────────────────────────────────────────────────
 
 import { POST } from './route';
@@ -186,5 +196,60 @@ describe('POST /api/runner/credential-lease — release', () => {
     const body = await res.json() as { ok: boolean };
     expect(body.ok).toBe(true);
     expect(mockDbDeleteWhere.mock.calls.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Redis due-queue publication ───────────────────────────────────────────────
+
+describe('POST /api/runner/credential-lease — due-queue publication', () => {
+  beforeEach(() => {
+    mockMarkDue.mockReset();
+    mockClearDue.mockReset();
+    mockMarkDue.mockImplementation(() => Promise.resolve());
+    mockClearDue.mockImplementation(() => Promise.resolve());
+    mockAuthenticateApiKey.mockImplementation(() => Promise.resolve(ACCOUNT) as any);
+    mockSecretsQueryFindFirst.mockImplementation(
+      () => Promise.resolve({ id: CREDENTIAL_ID, teamId: TEAM_ID }) as any,
+    );
+  });
+
+  it('publishes the expiry when a lease is acquired', async () => {
+    mockDbExecute.mockImplementation(() => Promise.resolve({ rows: [{ id: LEASE_ID }] }) as any);
+    const before = Date.now();
+    await POST(makeRequest({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action: 'acquire' }));
+
+    expect(mockMarkDue.mock.calls.length).toBe(1);
+    const [job, member, dueAtMs] = mockMarkDue.mock.calls[0] as [string, string, number];
+    expect(job).toBe('lease-expiry');
+    expect(member).toBe(CREDENTIAL_ID);
+    // Score is the lease expiry (TTL 5 min), which is what the guard compares
+    // against now — publishing the acquire time instead would alert instantly.
+    expect(dueAtMs).toBeGreaterThanOrEqual(before + 4 * 60_000);
+    expect(dueAtMs).toBeLessThanOrEqual(Date.now() + 6 * 60_000);
+  });
+
+  it('does not publish when the lease was not acquired', async () => {
+    mockDbExecute.mockImplementation(() => Promise.resolve({ rows: [] }) as any);
+    await POST(makeRequest({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action: 'acquire' }));
+    expect(mockMarkDue.mock.calls.length).toBe(0);
+  });
+
+  it('pushes the expiry out on heartbeat', async () => {
+    mockDbUpdateReturning.mockImplementation(() => Promise.resolve([{ id: LEASE_ID }]) as any);
+    await POST(makeRequest({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action: 'heartbeat' }));
+    expect(mockMarkDue.mock.calls.length).toBe(1);
+  });
+
+  it('does not publish when the lease was stolen', async () => {
+    mockDbUpdateReturning.mockImplementation(() => Promise.resolve([]) as any);
+    const res = await POST(makeRequest({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action: 'heartbeat' }));
+    expect(res.status).toBe(404);
+    expect(mockMarkDue.mock.calls.length).toBe(0);
+  });
+
+  it('clears the entry on release', async () => {
+    await POST(makeRequest({ credentialId: CREDENTIAL_ID, runnerId: RUNNER_ID, action: 'release' }));
+    expect(mockClearDue.mock.calls.length).toBe(1);
+    expect(mockClearDue.mock.calls[0]).toEqual(['lease-expiry', CREDENTIAL_ID]);
   });
 });

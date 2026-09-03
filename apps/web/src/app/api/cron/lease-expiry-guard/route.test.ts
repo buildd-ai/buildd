@@ -48,15 +48,29 @@ mock.module('@/lib/claude-credential', () => ({ refreshClaudeCredential: mockRef
 mock.module('@/lib/codex-credential', () => ({ refreshCodexCredential: mockRefreshCodex }));
 mock.module('@/lib/notify', () => ({ notifyTeam: mockNotifyTeam }));
 
+// Redis due-queue. Default null = "could not ask", which the gate must treat as
+// fail-open, so every pre-existing test keeps exercising the DB path.
+const mockCountDue = mock((_job: string, _now?: number) => Promise.resolve(null as number | null));
+const mockReseedDue = mock((_job: string, _entries: any[]) => Promise.resolve());
+const mockMarkDue = mock(() => Promise.resolve());
+const mockClearDue = mock(() => Promise.resolve());
+
+mock.module('@/lib/redis', () => ({
+  countDue: mockCountDue,
+  reseedDue: mockReseedDue,
+  markDue: mockMarkDue,
+  clearDue: mockClearDue,
+}));
+
 import { GET } from './route';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeRequest(token?: string, vercelCron = false): NextRequest {
+function makeRequest(token?: string, vercelCron = false, query = ''): NextRequest {
   const headers: Record<string, string> = {};
   if (token) headers['authorization'] = `Bearer ${token}`;
   if (vercelCron) headers['x-vercel-cron'] = '1';
-  return new NextRequest('http://localhost/api/cron/lease-expiry-guard', { headers });
+  return new NextRequest(`http://localhost/api/cron/lease-expiry-guard${query}`, { headers });
 }
 
 const TEAM_ID = 'team-uuid-0001';
@@ -274,5 +288,79 @@ describe('GET /api/cron/lease-expiry-guard — response details', () => {
     expect(body.details[CRED_CLAUDE.id]).toBeDefined();
     expect(body.details[CRED_CLAUDE.id].runnerId).toBe('crashed-runner');
     expect(body.details[CRED_CLAUDE.id].purpose).toBe('claude_credential');
+  });
+});
+
+// ── Redis due-queue gate ──────────────────────────────────────────────────────
+//
+// `?gate=due` is the fast tick (*/5): it must return WITHOUT querying Postgres
+// when the due-queue is empty — that is the entire point, since Neon's compute
+// autosuspends on idle. The unconditional hourly tick (no param) is the floor
+// and must keep behaving exactly as it did before the gate existed.
+
+describe('GET /api/cron/lease-expiry-guard — due-queue gate', () => {
+  beforeEach(() => {
+    mockCountDue.mockReset();
+    mockReseedDue.mockReset();
+    mockReseedDue.mockImplementation(() => Promise.resolve());
+    mockLeaseFindMany.mockImplementation(() => []);
+  });
+
+  it('skips the DB entirely when nothing is due', async () => {
+    mockCountDue.mockImplementation(() => Promise.resolve(0));
+    const res = await GET(makeRequest('test-secret', false, '?gate=due'));
+    expect(res.status).toBe(200);
+    const body = await res.json() as any;
+    expect(body.gated).toBe(true);
+    expect(body.reason).toBe('nothing_due');
+    expect(mockLeaseFindMany.mock.calls.length).toBe(0);
+  });
+
+  it('queries when a lease has actually lapsed', async () => {
+    mockCountDue.mockImplementation(() => Promise.resolve(1));
+    mockLeaseFindMany.mockImplementation(() => [makeExpiredLease('lease-1', CRED_CLAUDE)]);
+    const res = await GET(makeRequest('test-secret', false, '?gate=due'));
+    const body = await res.json() as any;
+    expect(body.gate).toBe('work_due');
+    expect(body.alerted).toBe(1);
+  });
+
+  it('fails OPEN when Redis cannot answer', async () => {
+    // countDue returns null for "unconfigured or erroring" — never 0. Skipping
+    // here would silently retire the alert while the logs stayed green.
+    mockCountDue.mockImplementation(() => Promise.resolve(null));
+    mockLeaseFindMany.mockImplementation(() => [makeExpiredLease('lease-1', CRED_CLAUDE)]);
+    const res = await GET(makeRequest('test-secret', false, '?gate=due'));
+    const body = await res.json() as any;
+    expect(body.gate).toBe('redis_unavailable');
+    expect(mockLeaseFindMany.mock.calls.length).toBeGreaterThan(0);
+    expect(body.alerted).toBe(1);
+  });
+
+  it('never asks Redis on a floor tick, and re-seeds from the table', async () => {
+    mockLeaseFindMany.mockImplementation(() => []);
+    const res = await GET(makeRequest('test-secret'));
+    const body = await res.json() as any;
+    expect(body.gate).toBe('floor');
+    expect(mockCountDue.mock.calls.length).toBe(0);
+    expect(mockReseedDue.mock.calls.length).toBe(1);
+  });
+
+  it('does not re-seed on a gated tick', async () => {
+    // Re-seeding needs the full table read that gating exists to avoid.
+    mockCountDue.mockImplementation(() => Promise.resolve(1));
+    mockLeaseFindMany.mockImplementation(() => [makeExpiredLease('lease-1', CRED_CLAUDE)]);
+    await GET(makeRequest('test-secret', false, '?gate=due'));
+    expect(mockReseedDue.mock.calls.length).toBe(0);
+  });
+
+  it('drops rows whose expiry will not parse instead of poisoning the set', async () => {
+    mockLeaseFindMany.mockImplementation(() => [
+      { credentialId: 'cred-ok', expiresAt: '2026-09-03T10:00:00.000Z' },
+      { credentialId: 'cred-bad', expiresAt: 'not-a-date' },
+    ]);
+    await GET(makeRequest('test-secret'));
+    const entries = mockReseedDue.mock.calls[0]?.[1] as Array<{ member: string }>;
+    expect(entries.map(e => e.member)).toEqual(['cred-ok']);
   });
 });
