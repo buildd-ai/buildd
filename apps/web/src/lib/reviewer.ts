@@ -171,6 +171,12 @@ export interface CreateReviewerTaskParams {
   repoFullName: string;
   /** When set, the reviewer context uses intent sentences instead of raw glob lists. */
   policyConfig?: WorkspacePolicyConfig;
+  /**
+   * Where to push this review's outcome, for a requester waiting in code.
+   * Stored on the reviewer task so whichever handler reaches the terminal
+   * point can deliver it (see `deliverPrReviewCallback`).
+   */
+  reviewCallback?: { url: string; on: 'verdict' | 'merge' };
 }
 
 /**
@@ -237,6 +243,7 @@ export async function createReviewerTask(
         // iteration tracking for request-changes retry cap (stored in context, not a column)
         iteration: originalTask.iteration ?? 0,
         maxIterations: originalTask.maxIterations ?? 3,
+        ...(params.reviewCallback ? { reviewCallback: params.reviewCallback } : {}),
       },
       release: 'false', // reviewer tasks never trigger releases
       priority: 8,      // reviewer tasks are high priority

@@ -2282,6 +2282,9 @@ export async function PATCH(
         // Skip for loop requeue — reviewer logic only applies to terminal completions.
         if (status !== 'completed' || loopDispatchResult?.kind === 'requeue') return;
         await handleReviewerOutcomeIfNeeded(taskId, worker.workspaceId, body.structuredOutput);
+        // AFTER the outcome is applied, so an on=merge callback sees the merge
+        // this verdict may just have triggered. Single-fire and best-effort.
+        await deliverReviewCallbackIfRequested(taskId, worker.workspaceId);
       });
 
       // Notify on task completion/failure — routed to the OWNING team's channel.
@@ -2903,6 +2906,40 @@ export async function PATCH(
 }
 
 // ── Reviewer outcome handling (BT-7, BT-8, BT-9) ────────────────────────────
+
+/**
+ * Push the review outcome to the URL the requester supplied, if any.
+ *
+ * Only on-demand reviews (`request_pr_review` with a `callbackUrl`) carry one;
+ * for every other review this is a no-op read. Never throws — a caller waiting
+ * on a callback can still poll, but a failed notification must not fail the
+ * worker report.
+ */
+async function deliverReviewCallbackIfRequested(reviewerTaskId: string, workspaceId: string): Promise<void> {
+  try {
+    const reviewerTask = await db.query.tasks.findFirst({
+      where: eq(tasks.id, reviewerTaskId),
+      columns: { category: true, context: true },
+    });
+    const ctx = (reviewerTask?.context ?? {}) as Record<string, unknown>;
+    if (reviewerTask?.category !== 'review' || !ctx.reviewCallback) return;
+    const prNumber = typeof ctx.prNumber === 'number' ? ctx.prNumber : null;
+    if (!prNumber) return;
+
+    const { deliverPrReviewCallback } = await import('@/lib/pr-review-request');
+    const outcome = await deliverPrReviewCallback({
+      workspaceId,
+      prNumber,
+      repoFullName: typeof ctx.repoFullName === 'string' ? ctx.repoFullName : undefined,
+    });
+    console.log(`[pr-review] verdict callback for PR #${prNumber}: ${outcome}`);
+  } catch (error) {
+    console.warn(
+      `[pr-review] verdict callback for review task ${reviewerTaskId} failed:`,
+      error instanceof Error ? error.message : error,
+    );
+  }
+}
 
 /**
  * Called in the post-completion `runStep` sequence when a reviewer task finishes.

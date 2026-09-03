@@ -107,8 +107,10 @@ describe('verified_by ratchet', () => {
   });
 
   test('no new spec joins the debt list', () => {
-    // 19 pre-existing specs owed guards when the check landed on 2026-08-30. The
-    // number is asserted so growing it requires editing this test and explaining why.
-    expect(VERIFIED_BY_DEBT.size).toBeLessThanOrEqual(19);
+    // 19 pre-existing specs owed guards when the check landed on 2026-08-30, and
+    // mcp-action-contracts paid its debt off with the on-demand-review guards.
+    // The number is asserted so growing it requires editing this test and
+    // explaining why.
+    expect(VERIFIED_BY_DEBT.size).toBeLessThanOrEqual(18);
   });
 });

@@ -96,6 +96,48 @@ describe('createReviewerTask', () => {
     expect(insertedTask?.backend).toBe('codex');
   });
 
+  it('stores a review callback on the task so the verdict can be pushed back', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-3',
+      originalTask: { title: 'Adopted PR', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'fix/spinner' },
+      prNumber: 44,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/44',
+      headSha: 'ghi789',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      reviewCallback: { url: 'https://example.test/hook', on: 'merge' },
+    });
+
+    expect((insertedTask?.context as any).reviewCallback).toEqual({
+      url: 'https://example.test/hook',
+      on: 'merge',
+    });
+  });
+
+  it('leaves no callback key on the context when none was requested', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-4',
+      originalTask: { title: 'Plain review', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/plain' },
+      prNumber: 45,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/45',
+      headSha: 'jkl012',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect((insertedTask?.context as any).reviewCallback).toBeUndefined();
+  });
+
   it('never asks the reviewer to find a file named "**" in the diff', async () => {
     insertedTask = undefined;
 

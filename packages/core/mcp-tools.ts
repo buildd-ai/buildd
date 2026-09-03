@@ -160,7 +160,8 @@ export const workerActions = [
   // documented workflow (default-roles.ts instructs it to call spec_compare).
   'spec_compare',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
-  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'update_task', 'create_task', 'create_artifact',
+  'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'request_pr_review', 'get_pr_review',
+  'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events', 'get_error_traces',
   'list_artifact_templates',
@@ -338,10 +339,12 @@ export function buildParamsDescription(actions: readonly string[]): string {
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
-    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
+    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required.',
+    request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
+    get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind? (coordination|engineering|research|writing|design|analysis|observation — shape of the work), complexity? (simple|normal|complex), tier? (premium|standard|budget — hard override that skips the kind×complexity matrix), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
@@ -1522,7 +1525,38 @@ export async function handleBuilddAction(
         await mirrorWorkProduct(ctx, 'pr', prChunk);
       } catch { /* non-fatal */ }
 
-      return text(`Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`);
+      const created = `Pull request created!\n\n**PR #${data.pr.number}:** ${data.pr.title}\n**URL:** ${data.pr.url}\n**State:** ${data.pr.state}`;
+
+      // requestReview folds "open the PR" and "ask for a review" into one call.
+      // A failed review request never hides the PR — the PR exists either way,
+      // and the agent needs its number more than it needs the review.
+      if (!params.requestReview) return text(created);
+
+      try {
+        const review = await api('/api/github/pr/review', {
+          method: 'POST',
+          body: JSON.stringify({
+            prNumber: data.pr.number,
+            ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+            ...(params.reviewerRole != null ? { reviewerRole: params.reviewerRole } : {}),
+            ...(params.callbackUrl != null ? { callbackUrl: params.callbackUrl } : {}),
+            ...(params.callbackOn != null ? { callbackOn: params.callbackOn } : {}),
+          }),
+        });
+        const state = review.alreadyRequested
+          ? `already under review (${review.status?.state})`
+          : `reviewer role \`${review.reviewerRole}\``;
+        return text(
+          `${created}\n\n**Review requested** — ${state}, review task ${review.reviewTaskId}.\n` +
+          `Wait for the verdict: action=get_pr_review { prNumber: ${data.pr.number}, waitSeconds: 45 }.`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return text(
+          `${created}\n\n**Review NOT requested** — the review request failed: ${message}\n` +
+          `Retry with action=request_pr_review { prNumber: ${data.pr.number} }.`,
+        );
+      }
     }
 
     case 'close_pr': {
@@ -1607,6 +1641,74 @@ export async function handleBuilddAction(
         `URL: ${pr.url}`,
         bodyPreview,
       ].filter(Boolean).join('\n'));
+    }
+
+    case 'request_pr_review': {
+      if (!params.prNumber) throw new Error('prNumber is required');
+
+      const data = await api('/api/github/pr/review', {
+        method: 'POST',
+        body: JSON.stringify({
+          prNumber: Number(params.prNumber),
+          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          ...(params.reviewerRole != null ? { reviewerRole: params.reviewerRole } : {}),
+          ...(params.callbackUrl != null ? { callbackUrl: params.callbackUrl } : {}),
+          ...(params.callbackOn != null ? { callbackOn: params.callbackOn } : {}),
+          ...(params.force != null ? { force: params.force } : {}),
+        }),
+      });
+
+      const waitHint = `\n\nWait for the verdict: action=get_pr_review { prNumber: ${data.prNumber}, waitSeconds: 45 } (repeat while terminal is false).`;
+
+      if (data.alreadyRequested) {
+        return text(
+          `PR #${data.prNumber} is already under review — state: **${data.status?.state}** ` +
+          `(review task ${data.reviewTaskId}). Pass force=true to re-review a finished review.${waitHint}`,
+        );
+      }
+
+      const lines = [
+        `Review requested for **PR #${data.prNumber}** — reviewer role \`${data.reviewerRole}\` (review task ${data.reviewTaskId}).`,
+        data.adopted
+          ? `The PR was adopted as task ${data.taskId} (buildd did not open it), so the verdict, PR comment and merge policy now apply to it.`
+          : `Mapped to existing task ${data.taskId}.`,
+        data.autoMergeExpected
+          ? 'On approval buildd will merge it once checks are green.'
+          : 'On approval the merge is left to a human (merge policy).',
+        data.callback ? `Callback: ${data.callback.url} on ${data.callback.on}.` : null,
+      ].filter(Boolean);
+
+      return text(lines.join('\n') + waitHint);
+    }
+
+    case 'get_pr_review': {
+      if (!params.prNumber) throw new Error('prNumber is required');
+
+      const query = new URLSearchParams({ prNumber: String(Number(params.prNumber)) });
+      if (params.workspaceId != null) query.set('workspaceId', String(params.workspaceId));
+      if (params.waitFor != null) query.set('waitFor', String(params.waitFor));
+      if (params.waitSeconds != null) query.set('waitSeconds', String(params.waitSeconds));
+
+      const data = await api(`/api/github/pr/review?${query.toString()}`);
+      const s = data.status ?? {};
+
+      const lines = [
+        `**PR #${data.prNumber} review — ${s.state}** (terminal: ${s.terminal ? 'yes' : 'no'})`,
+        s.verdict ? `Verdict: ${s.verdict}${typeof s.confidence === 'number' ? ` (confidence ${s.confidence})` : ''}` : null,
+        s.summary ? `Summary: ${s.summary}` : null,
+        s.feedback ? `Feedback: ${s.feedback}` : null,
+        s.escalationReason ? `Escalation: ${s.escalationReason}` : null,
+        typeof s.iteration === 'number' && typeof s.maxIterations === 'number'
+          ? `Retry iteration: ${s.iteration}/${s.maxIterations}`
+          : null,
+        `PR: ${s.prState}${s.merged ? ' (merged)' : ''}`,
+        s.mergeBlocked === 'awaiting_human' ? 'Approved, but the merge policy leaves the merge to a human.' : null,
+        data.timedOut && !s.terminal
+          ? `The wait elapsed and the review is still ${s.state} — call again to keep waiting.`
+          : null,
+      ].filter(Boolean);
+
+      return text(lines.join('\n'));
     }
 
     case 'update_task': {

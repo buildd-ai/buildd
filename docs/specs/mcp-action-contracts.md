@@ -2,12 +2,13 @@
 title: MCP Action Contracts
 status: active
 owner: max
-last_verified: 2026-08-31
+last_verified: 2026-09-03
 summary: The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
 domain: mcp
-surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/lib/api-auth.ts, packages/core/memory-store.ts]
+surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
-keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405]
+keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405, request_pr_review, get_pr_review, adopted pr, waitfor]
+verified_by: [packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
 supersedes: []
 ---
 # MCP Action Contracts
@@ -97,6 +98,81 @@ the result as plain text.
 
 **Out of scope**: The full parameter contract for each action (that lives in the
 per-capability specs and in the `buildParamsDescription` strings).
+
+---
+
+## On-demand PR review — `request_pr_review` / `get_pr_review`
+
+**Capability statement**: An agent MUST be able to hand any open pull request in
+a GitHub-linked workspace to a reviewer agent by number — including a PR buildd
+did not open — and MUST be able to learn the outcome by polling, by bounded
+long-poll, or by an https callback.
+
+**Invariants**:
+- A PR with no buildd worker is **adopted** before review: one task (status
+  `completed`, `context.adoptedPr`) plus one worker row carrying `prNumber`,
+  `prUrl` and the PR's head branch. Adoption exists so the verdict handler, the
+  activity comment, auto-merge and the merge webhook all key off the same
+  "worker that owns this PR" they already use — no parallel review path.
+- Adoption MUST happen only after the PR reads back from GitHub as `open`. A
+  closed, merged, or non-existent PR MUST NOT leave an adopted task behind.
+- One reviewer per PR at a time. A pending/in-flight reviewer task MUST be
+  returned as-is (`alreadyRequested`), and `force` MUST NOT stack a second
+  reviewer onto it — two reviewers race each other's verdicts. `force` only
+  re-reviews a review that already finished.
+- On approval the effective `MergePolicy` decides whether buildd merges;
+  on-demand review grants no extra merge authority. The response MUST state
+  `autoMergeExpected` so a caller waiting on a merge knows whether waiting is
+  pointless (`approve-only` and tier `human` never auto-merge).
+- An explicitly requested `reviewerRole` that the workspace does not have MUST
+  be an error, never a silent substitution to another persona.
+- `terminal` is relative to `waitFor`: `verdict` settles at the verdict;
+  `merge` keeps waiting through a request-changes retry loop but settles on a
+  merge, a close, an escalation, a failed review, or an approval the policy
+  leaves to a human. A merged or closed PR is terminal for both.
+- A completed reviewer task with no `structuredOutput.verdict` MUST read as
+  `review_failed`, never as an approval.
+- `waitSeconds` is clamped to 45s — below the platform function limit — and a
+  clamped wait MUST return `timedOut: true` rather than being killed mid-flight.
+- A callback URL MUST be https (a verdict discusses unmerged code) and MUST be
+  delivered at most once, guarded by an atomic `UPDATE … WHERE marker IS NULL …
+  RETURNING` claim on the reviewer task, because both the verdict handler and
+  the PR-close webhook can reach the same terminal point.
+- Callback delivery is best-effort in both directions: a dead endpoint MUST NOT
+  fail the worker report or the webhook, and a caller can always fall back to
+  `get_pr_review`.
+
+**Acceptance criteria**:
+- AC-14: WHEN `request_pr_review` is called for an open PR with no buildd worker
+  THEN a task + worker mapped to that `prNumber` are created, a reviewer task is
+  dispatched, and the PR's activity comment shows "Reviewing changes".
+- AC-15: WHEN `request_pr_review` is called while a reviewer task for that PR is
+  pending or in progress THEN no second reviewer task is created, with or
+  without `force`.
+- AC-16: WHEN the PR is not open THEN the call returns HTTP 409 and no task or
+  worker row is inserted.
+- AC-17: GIVEN `waitSeconds: 600` WHEN `get_pr_review` long-polls a review that
+  never settles THEN it returns within 45s with `timedOut: true` and a
+  non-terminal status.
+- AC-18: GIVEN a review requested with `callbackOn: "merge"` WHEN the reviewer
+  approves but the PR has not merged THEN no callback is delivered; WHEN the PR
+  later merges THEN exactly one callback is POSTed.
+- AC-19: WHEN a requested `reviewerRole` is absent from the workspace THEN the
+  call returns HTTP 400 naming the available roles and dispatches nothing.
+
+**Code surface**:
+- Route: `apps/web/src/app/api/github/pr/review/route.ts`
+- Status mapping + role choice + callback POST:
+  `apps/web/src/lib/pr-review-status.ts`
+- DB reads, long-poll, single-fire callback claim:
+  `apps/web/src/lib/pr-review-request.ts`
+- Reviewer task creation: `apps/web/src/lib/reviewer.ts` — `createReviewerTask()`
+- Verdict-time delivery: `apps/web/src/app/api/workers/[id]/route.ts`
+- Close-time delivery: `apps/web/src/app/api/github/webhook/route.ts`
+
+**Out of scope**: Choosing what the reviewer agent looks for (that is the role's
+prompt and `docs/specs/scheduled-task-merge-policy.md`), and any merge authority
+beyond the workspace policy.
 
 ---
 
