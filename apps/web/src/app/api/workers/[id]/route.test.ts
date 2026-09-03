@@ -6735,6 +6735,123 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     // Still has to say what was actually observed, so the failure stays diagnosable.
     expect(failedUpdate.result.error.toLowerCase()).toContain('structuredoutput');
   });
+
+  // Regression: an orchestrator/heartbeat cycle whose task row never got
+  // mode='planning' (e.g. a schedule template that lost its `mode` key) must
+  // still be caught. creationSource='orchestrator' with no outputSchema means
+  // the task was always meant to decompose the mission via the default
+  // planning contract — free-form text ending in an unfulfilled promise to
+  // plan is exactly the silent failure this guard exists to catch.
+  it('overrides completed→failed for an orchestrator cycle (non-planning mode) that returns no structuredOutput', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-orchestrator-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+
+    // terminalTaskRow: mode drifted to 'execution', but creationSource is
+    // still 'orchestrator' and no outputSchema was ever set.
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{
+            outputRequirement: 'auto', missionId: 'mission-1', scheduleId: 'sched-1',
+            mode: 'execution', creationSource: 'orchestrator', outputSchema: null,
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Let me create the structured implementation plan:' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+    expect(failedUpdate).toBeDefined();
+    expect(taskSetCalls.some((u) => u.status === 'completed')).toBe(false);
+  });
+
+  // A cycle that genuinely has nothing to do must stay a clean success: valid
+  // structuredOutput with an empty plan is not the same as no structuredOutput
+  // at all, so the guard must not fire.
+  it('does not override an orchestrator cycle that reports valid structuredOutput with an empty plan', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-orchestrator-2',
+      pendingInstructions: null,
+      milestones: [],
+    });
+
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{
+            outputRequirement: 'auto', missionId: 'mission-1', scheduleId: 'sched-1',
+            mode: 'planning', creationSource: 'orchestrator', outputSchema: null,
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'completed',
+        summary: 'All in-flight work covers the mission goal; nothing new to file.',
+        structuredOutput: { plan: [], summary: 'Nothing to do this cycle.', missionComplete: false },
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
+  });
 });
 
 // ── §6d Passive overlap detection ─────────────────────────────────────────────
