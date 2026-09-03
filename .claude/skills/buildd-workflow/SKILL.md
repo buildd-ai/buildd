@@ -245,6 +245,27 @@ Know when to stop and involve a human:
 | Stuck for >2 attempts with no progress | Stop. Describe the problem and what you've tried. Ask for guidance. |
 | DB migration needed | Flag for human review before applying in production |
 
+### Two ways to bring in a human — pick the right one
+
+- **Hard block, no correct path forward** (a required tool/credential/service is
+  genuinely unavailable, an instruction is impossible to satisfy as written, or
+  you cannot proceed without a decision only a human can make): use the
+  **`AskUserQuestion`** tool. This ends your turn cleanly — the task is parked
+  waiting for input, NOT recorded as a failure, does not count against
+  success-rate metrics, and is never auto-retried into the same dead end. The
+  owner is notified and answering resumes the work from where you left off.
+- **Everything else** — uncertainty, permission-seeking, a design choice you're
+  capable of making, "should I do A or B": do **not** ask. Pick the more
+  reasonable option, do the work, and state your reasoning in the summary. If
+  you want to flag a choice for the record without waiting on it, use
+  `buildd action=post_note params={ type: "question", title, defaultChoice: "<what you chose>" }`
+  — this is non-blocking and work continues immediately under the default.
+- Asking `AskUserQuestion` because a task is hard, ambiguous, or you're not
+  sure your approach is right is a misuse of the escalation path — that is
+  exactly the "3+ failed attempts" or "stuck for >2 attempts" row above, not a
+  hard block. Reserve it for cases where no amount of additional thinking
+  produces a path forward.
+
 ## Anti-Shortcut Guardrails
 
 Thoughts that indicate you're about to take a shortcut:

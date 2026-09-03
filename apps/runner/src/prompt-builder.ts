@@ -428,7 +428,7 @@ export function buildPrompt(ctx: PromptContext): string {
   } else {
     if (inputAsRetry !== false) {
       // inputAsRetry (default): allow AskUserQuestion for genuine blockers — session aborts and user responds async
-      promptParts.push(`## Communication\nIf you hit a genuine blocker you cannot resolve autonomously, use AskUserQuestion. The session will end and the user will respond asynchronously. For everything else, make reasonable decisions autonomously and proceed.`);
+      promptParts.push(`## Communication\nIf you hit a genuine blocker you cannot resolve autonomously — no correct path forward, not just a hard task — use AskUserQuestion. The session will end, the task is parked waiting for your answer (this is NOT recorded as a failure and is never auto-retried into the same dead end), the owner is notified, and answering resumes your work from where you left off.\nThis is not for uncertainty, permission-seeking, or a design choice you are capable of making — decide, do the work, and explain your reasoning instead. If you want to flag a choice for the record without waiting on it, use \`buildd\` action=post_note with type=question and defaultChoice set to what you chose; that is non-blocking and work continues immediately.`);
     } else {
       // inputAsRetry explicitly disabled — hard block
       promptParts.push(`## Communication\nDo NOT use the AskUserQuestion tool. Do NOT ask the user questions or wait for input. Make reasonable decisions autonomously and proceed with the task. If you are unsure about something, pick the most sensible default and document your reasoning.`);

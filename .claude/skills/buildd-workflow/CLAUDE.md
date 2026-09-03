@@ -34,6 +34,13 @@ claim → understand → plan → implement (TDD) → verify → PR → document
 - 3+ failed fixes → question the approach, describe what you tried
 - Change spans >3 subsystems → present plan for review first
 - Stuck >2 attempts → stop, describe problem, ask for guidance
+- **Hard block, no correct path forward** → use `AskUserQuestion`. Parks the
+  task as waiting-for-input (not failed, not retried, not counted against
+  you); the owner is notified and answering resumes your work.
+- **Uncertainty, permission-seeking, a design choice you can make** → do NOT
+  ask. Decide, do the work, explain your reasoning. To flag a decision without
+  blocking, use `post_note type=question defaultChoice=<what you chose>`
+  (non-blocking, work continues immediately).
 
 ## Anti-Shortcuts
 
