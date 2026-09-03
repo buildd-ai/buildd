@@ -2,6 +2,8 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { ActionCardContextLine } from './ActionCardContextLine';
+import { AgentRecommendation } from './AgentRecommendation';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 
@@ -115,12 +117,11 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
         <div className="text-[13px] font-medium text-text-primary truncate mt-0.5">{item.taskTitle}</div>
       )}
 
-      {item.workspaceName && (
-        <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-      )}
+      <ActionCardContextLine item={item} className="mt-0.5" />
       {item.escalationReason && (
         <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">{item.escalationReason}</p>
       )}
+      <AgentRecommendation recommendation={item.recommendation} />
 
       {/* Confirm strip: full-width below the title, only when confirming */}
       {mergeState === 'confirming' && item.prNumber != null && (

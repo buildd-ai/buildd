@@ -33,6 +33,12 @@ export interface ReviewerTaskOutput {
   summary: string;
   feedback?: string;
   escalationReason?: string;
+  /**
+   * What the human should actually do next. Requested on escalate because the
+   * escalation lands on someone's Home queue as a decision they did not make —
+   * a reason without a next step makes it a chore.
+   */
+  recommendation?: string;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -61,6 +67,11 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
     escalationReason: {
       type: 'string',
       description: 'Why this PR needs human review (for escalate only)',
+    },
+    recommendation: {
+      type: 'string',
+      description:
+        'The concrete next action the human should take (for escalate only) — one or two sentences, e.g. what to verify, what decision is needed, what you already ruled out',
     },
   },
   additionalProperties: false,
@@ -429,6 +440,7 @@ Use your outputSchema to return:
 - \`summary\`: one sentence
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide; include any proposed policy additions
+- \`recommendation\`: (escalate only) what the human should DO next — the specific action, decision, or check. Never leave this empty on an escalation: it is the first line they read on their queue.
 `.trim();
 }
 

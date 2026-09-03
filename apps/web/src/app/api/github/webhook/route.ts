@@ -1038,7 +1038,13 @@ async function handleCheckSuiteFailure(
           .update(tasks)
           .set({
             status: 'failed',
-            result: { summary: `CI retry stopped — ${exhaustionDetail}\n\n${failureContext}` },
+            // Merge, never replace: result.nextSuggestion is the agent's handoff
+            // advice and Home's blocked card leads with it. Overwriting the
+            // whole object here would delete the only guidance the human gets.
+            result: {
+              ...((task.result as Record<string, unknown> | null) ?? {}),
+              summary: `CI retry stopped — ${exhaustionDetail}\n\n${failureContext}`,
+            },
             updatedAt: new Date(),
           })
           .where(eq(tasks.id, task.id));

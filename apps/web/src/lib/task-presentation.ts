@@ -39,6 +39,13 @@ export const PROGRESS_THRESHOLD_MS = 60 * 60 * 1000;
 export const LIVE_WORKER_STATUSES = ['idle', 'running', 'starting', 'waiting_input'] as const;
 export type LiveWorkerStatus = (typeof LIVE_WORKER_STATUSES)[number];
 
+/**
+ * Task statuses that mean "an agent still owns this" — dispatched or running,
+ * not yet terminal. Use for "is someone already working on it" checks.
+ */
+export const LIVE_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
+export type LiveTaskStatus = (typeof LIVE_TASK_STATUSES)[number];
+
 // ─── Display status ───────────────────────────────────────────────────────────
 
 /**
