@@ -94,10 +94,10 @@
       "method": "POST"
     },
     {
-      "$comment": "Post-deploy health watch window: probes the verificationUrl of every release that reached `healthy` within the last 30 minutes. On non-2xx or error, transitions the release to `degraded` and auto-files a workspace task. Every 2 minutes keeps the degradation window tight relative to the 30-minute watch window (at most ~2min latency before detection). Sub-hourly by design \u2014 this is time-critical production monitoring, not a housekeeping sweep.",
+      "$comment": "Two jobs in one route: (a) post-deploy health watch \u2014 probes the verificationUrl of every release that recently reached `healthy` and transitions it to `degraded` (auto-filing a workspace task) on non-2xx; (b) stale-`deploying` sweep \u2014 retries verification, then hard-fails to a terminal state. Cadence */2 -> hourly: both DB queries run unconditionally on every tick, so at */2 this single job kept Neon's compute awake 24/7 by itself (720 wakes/day) \u2014 the exact cost the other jobs here are spaced out to avoid. The watch window is NOT hardcoded against this number: apps/web/src/lib/cron-cadence.ts derives it from this expression (interval \u00d7 LOOKAHEAD_SAFETY_FACTOR), so retuning here retunes the window and no release falls in the gap. Accepted tradeoff: degradation detection latency goes ~2min -> <=~1h; minute-granularity prod alerting belongs in uptime monitoring, not in a Neon-touching cron. Must stay an EVEN interval (all 24 hours, no `7-23` range): cronIntervalMinutes() throws on hour-restricted forms because their real gap is the 8h overnight one, and releases are cut at any hour. Offset to :05, NOT :50: Neon autosuspends after ~5 idle minutes, so a tick 50 minutes away from the :00 cluster opens a SECOND wake window every hour, while :05 lands inside the one the schedules tick already opened. Every route here caps at 60s, so 5 minutes is clear of a collision with room to spare. Spacing crons far apart costs wake time; spacing them a few minutes apart costs nothing.",
       "title": "Buildd: Release Health Check",
       "path": "/api/cron/release-health-check",
-      "schedule": "*/2 * * * *",
+      "schedule": "5 * * * *",
       "method": "GET"
     }
   ]

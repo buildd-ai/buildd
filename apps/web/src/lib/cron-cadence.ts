@@ -19,6 +19,7 @@
 /** Mirrors cron-manifest.json. Pinned by cron-cadence.test.ts. */
 export const CRON_SCHEDULES = {
   'codex-token-refresh': '0 */4 * * *',
+  'release-health-check': '5 * * * *',
 } as const;
 
 /** A sweep must cover its own poll interval, plus margin for a late tick. */
@@ -89,5 +90,24 @@ export function sweepLookaheadMinutes(
 ): number {
   const override = Number(process.env[LOOKAHEAD_ENV]);
   if (Number.isFinite(override) && override > 0) return override;
+  return Math.ceil(cronIntervalMinutes(schedule) * LOOKAHEAD_SAFETY_FACTOR);
+}
+
+/**
+ * How far back the post-deploy health watch looks, in minutes.
+ *
+ * Same rule as the credential sweep: a window narrower than the poll interval
+ * has a hole in it. The watch used a hand-typed 30 minutes while the cron ran
+ * every 2 minutes — fine — but the moment the cron moved to hourly (to let
+ * Neon's compute autosuspend) that 30-minute window would have meant a release
+ * healthy at :10 was already outside the window at the next :05 tick and
+ * never probed at all. So it derives from the declared cadence instead.
+ *
+ * The releases detail page renders the remaining watch time from this same
+ * function, so the countdown a user sees is the window the cron actually uses.
+ */
+export function releaseWatchWindowMinutes(
+  schedule: string = CRON_SCHEDULES['release-health-check'],
+): number {
   return Math.ceil(cronIntervalMinutes(schedule) * LOOKAHEAD_SAFETY_FACTOR);
 }
