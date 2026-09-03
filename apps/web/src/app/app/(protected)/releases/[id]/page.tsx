@@ -6,6 +6,7 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
 import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
+import { deriveReleaseAttributionState } from '@/lib/release-attribution-state';
 import ReleaseAutoRefresh from './ReleaseAutoRefresh';
 
 export const dynamic = 'force-dynamic';
@@ -124,6 +125,13 @@ export default async function ReleaseDetailPage({
   const stateBadge = STATE_BADGE[release.state] ?? { label: release.state, cls: 'text-text-muted border-border-default' };
   const ciBadge = release.ciStateAtDispatch ? CI_BADGE[release.ciStateAtDispatch] : null;
 
+  const attributionState = deriveReleaseAttributionState({
+    commitsAheadAtDispatch: release.commitsAheadAtDispatch,
+    previousSha: release.previousSha,
+    headSha: release.headSha,
+    attributedCount: edges.length,
+  });
+
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-3xl">
       {/* Breadcrumb */}
@@ -208,7 +216,7 @@ export default async function ReleaseDetailPage({
                 {release.commitsAheadAtDispatch} commit{release.commitsAheadAtDispatch !== 1 ? 's' : ''} ahead at dispatch
               </span>
             )}
-            {commitRangeUrl && (
+            {commitRangeUrl ? (
               <a
                 href={commitRangeUrl}
                 target="_blank"
@@ -217,9 +225,12 @@ export default async function ReleaseDetailPage({
               >
                 {release.previousSha?.slice(0, 7)}...{release.headSha?.slice(0, 7)} →
               </a>
-            )}
-            {!commitRangeUrl && release.headSha && (
-              <span className="text-[11px] font-mono text-text-secondary">{release.headSha.slice(0, 7)}</span>
+            ) : attributionState === 'clean' ? (
+              <span className="text-[11px] font-mono text-text-muted">Nothing shipped in this range</span>
+            ) : (
+              <span className="text-[11px] font-mono text-text-muted">
+                Commit range unavailable{release.headSha ? ` (${release.headSha.slice(0, 7)})` : ''}
+              </span>
             )}
           </div>
         </div>
@@ -367,9 +378,23 @@ export default async function ReleaseDetailPage({
         </div>
       )}
 
-      {edges.length === 0 && missionRows.length === 0 && (
+      {attributionState === 'unseeded' && (
         <div className="card p-6 text-center">
-          <p className="text-sm text-text-secondary">No tasks attributed to this release yet.</p>
+          <p className="text-sm text-text-secondary">Attribution hasn&apos;t run for this release yet.</p>
+          <p className="text-[11px] text-text-muted mt-1">
+            The commit range is missing or incomplete, so tasks can&apos;t be matched. This is normal shortly after
+            dispatch — check back once the range resolves.
+          </p>
+        </div>
+      )}
+
+      {attributionState === 'unmatched' && (
+        <div className="card p-6 text-center">
+          <p className="text-sm text-text-secondary">Attribution ran but matched no tasks.</p>
+          <p className="text-[11px] text-text-muted mt-1">
+            This release has a valid commit range, so a blank result likely means the matcher missed the commits in
+            this range — worth investigating.
+          </p>
         </div>
       )}
 

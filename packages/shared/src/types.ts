@@ -1492,11 +1492,20 @@ export type FailureWindow = '24h' | '7d' | '30d';
 export type FailureExitCauseBucket = WorkerExitCause | 'unclassified';
 
 export interface FailureTotals {
-  /** Workers created inside the window (the denominator for failureRatePct). */
+  /** Workers created inside the window. NOT the failure-rate denominator. */
   started: number;
+  /**
+   * Workers created inside the window that have since reached a terminal status
+   * (completed / failed / error / anything not still in flight). This is the
+   * failure-rate denominator: an in-flight worker has not had the chance to fail
+   * yet, so counting it biases the rate down and makes it drift as work lands.
+   */
+  terminal: number;
+  /** started − terminal — workers still in flight, a STATE, not a trend. */
+  stillRunning: number;
   completed: number;
   failed: number;
-  /** failed / started, 0-100, rounded. */
+  /** failed / terminal, 0-100, rounded. */
   failureRatePct: number;
   /** Failures with turns <= 2 AND costUsd === 0 — consumed a slot, produced nothing. */
   diedEarly: number;
@@ -1536,7 +1545,10 @@ export interface FailureRoleRow {
   /** Role slug, or '(no role)' for workers whose task had no role. */
   roleSlug: string;
   started: number;
+  /** Terminal subset of `started` — the failure-rate denominator. */
+  terminal: number;
   failed: number;
+  /** failed / terminal, 0-100, rounded. */
   failureRatePct: number;
 }
 
@@ -1544,7 +1556,10 @@ export interface FailureWorkspaceRow {
   workspaceId: string;
   workspaceName: string;
   started: number;
+  /** Terminal subset of `started` — the failure-rate denominator. */
+  terminal: number;
   failed: number;
+  /** failed / terminal, 0-100, rounded. */
   failureRatePct: number;
 }
 

@@ -148,22 +148,31 @@ describe('detectCbmEnforcedUnused', () => {
     process.env.OPS_ALERTS_ENABLED = '1';
   });
 
-  const mountedUnused = () => ({ resultMeta: { cbm: { outcome: 'enforced', toolCalls: {} } } });
-  const mountedUsed = () => ({ resultMeta: { cbm: { outcome: 'enforced', toolCalls: { search_graph: 2 } } } });
+  /** Navigated enough to count as having gone looking for code. */
+  const NAV = { readCount: 4, grepCount: 2, globCount: 0 };
+  const mountedUnused = () => ({ resultMeta: { cbm: { outcome: 'enforced', toolCalls: {}, ...NAV } } });
+  const mountedUsed = () => ({ resultMeta: { cbm: { outcome: 'enforced', toolCalls: { search_graph: 2 }, ...NAV } } });
+  /** A coordination/observation task: mounted, but it barely opened a file. */
+  const barelyNavigated = () => ({
+    resultMeta: { cbm: { outcome: 'enforced', toolCalls: {}, readCount: 1, grepCount: 0, globCount: 0 } },
+  });
 
   it('alerts when a full streak of enforced workers never queried the graph', async () => {
     findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect(reportOpsCalls.length).toBe(1);
     const call = reportOpsCalls[0] as Record<string, unknown>;
     expect(call.source).toBe('cbm-health');
-    expect(call.dedupeKey).toBe(`cbm-enforced-unused:${WS}`);
+    // Date-stamped so a multi-day trend pages daily, not every throttle window.
+    expect(String(call.dedupeKey)).toMatch(
+      new RegExp(`^cbm-enforced-unused:${WS}:\\d{4}-\\d{2}-\\d{2}$`),
+    );
     expect(String(call.message)).toContain('never queried');
   });
 
   it('stays silent when the current worker did call a graph tool', async () => {
     findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: { trace_path: 1 } });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: { trace_path: 1 }, ...NAV });
     expect(reportOpsCalls.length).toBe(0);
   });
 
@@ -172,8 +181,41 @@ describe('detectCbmEnforcedUnused', () => {
       ...Array.from({ length: CBM_UNUSED_THRESHOLD - 2 }, mountedUnused),
       mountedUsed(),
     ];
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect(reportOpsCalls.length).toBe(0);
+  });
+
+  // The reason this alert became noise: most CBM-enforced workers are
+  // coordination/observation tasks that never open a file, so they satisfied
+  // "made zero graph calls" trivially and the streak was always full.
+  it('stays silent when the current worker barely navigated — it had nothing to ask', async () => {
+    findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
+    await detectCbmEnforcedUnused(WS, {
+      outcome: 'enforced', toolCalls: {}, readCount: 1, grepCount: 0, globCount: 0,
+    });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
+  it('does not count barely-navigating workers as streak members', async () => {
+    // A full window of coordination tasks plus one real navigator: not a streak.
+    findManyResult = [
+      ...Array.from({ length: CBM_UNUSED_THRESHOLD * 4 }, barelyNavigated),
+      mountedUnused(),
+    ];
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
+    expect(reportOpsCalls.length).toBe(0);
+  });
+
+  it('scans far enough back to find eligible workers among the coordination traffic', async () => {
+    // Eligible rows are a small minority, so the streak must still be reachable
+    // when they are sparsely interleaved with ineligible ones.
+    const padded: Array<unknown> = [];
+    for (let i = 0; i < CBM_UNUSED_THRESHOLD - 1; i++) {
+      padded.push(barelyNavigated(), barelyNavigated(), mountedUnused());
+    }
+    findManyResult = padded;
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
+    expect(reportOpsCalls.length).toBe(1);
   });
 
   it('does not fire for disabled workers — that is the other detector', async () => {
@@ -187,7 +229,7 @@ describe('detectCbmEnforcedUnused', () => {
     // banner. This alert fired in production and was never seen. Adoption being
     // zero is worth waking up for; if it is not, the alert should not exist.
     findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect((reportOpsCalls[0] as Record<string, unknown>).severity).toBe('error');
   });
 
@@ -215,7 +257,7 @@ describe('detectCbmEnforcedUnused', () => {
       { resultMeta: { stopReason: 'end_turn' } },
       { resultMeta: { stopReason: 'end_turn' } },
     ];
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect(reportOpsCalls.length).toBe(1);
   });
 
@@ -224,20 +266,20 @@ describe('detectCbmEnforcedUnused', () => {
       ...Array.from({ length: 3 }, mountedUnused),
       ...Array.from({ length: 20 }, () => ({ resultMeta: { stopReason: 'end_turn' } })),
     ];
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect(reportOpsCalls.length).toBe(0);
   });
 
   it('stays silent without enough history', async () => {
     findManyResult = Array.from({ length: 2 }, mountedUnused);
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect(reportOpsCalls.length).toBe(0);
   });
 
 
   it('stays scoped to completed workers — a crashed session makes no graph calls', async () => {
     findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     const where = JSON.stringify(findManyArgs[0]?.where);
     expect(where).toContain('completed');
     expect(where).not.toContain('failed');
@@ -246,7 +288,7 @@ describe('detectCbmEnforcedUnused', () => {
   it('is a no-op when ops alerting is disabled', async () => {
     delete process.env.OPS_ALERTS_ENABLED;
     findManyResult = Array.from({ length: CBM_UNUSED_THRESHOLD - 1 }, mountedUnused);
-    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {} });
+    await detectCbmEnforcedUnused(WS, { outcome: 'enforced', toolCalls: {}, ...NAV });
     expect(reportOpsCalls.length).toBe(0);
   });
 });

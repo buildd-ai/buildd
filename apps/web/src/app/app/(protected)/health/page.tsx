@@ -24,7 +24,8 @@ import {
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
-import { aggregateCbm, summarizeCbm, type CbmHealthSummary, type CbmRow } from '@/lib/cbm-insight';
+import type { CbmHealthSummary } from '@/lib/cbm-insight';
+import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { HealthClient } from './HealthClient';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
@@ -43,19 +44,31 @@ export interface ScheduleRow {
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastError: string | null;
+  /** LIFETIME streak — renders `{N} in a row`, never a window. */
   consecutiveFailures: number;
+  /** LIFETIME counter — renders `{N} runs since created`, never a window. */
   totalRuns: number;
+  /** The anchor `totalRuns` counts from. */
+  createdAt: string | null;
   taskTitle: string;
   missionTitle: string | null;
   isHeartbeat: boolean;
 }
 
+/**
+ * Task-keyed totals over the page window.
+ *
+ * Deliberately NOT a per-role rollup: `/app/team` already renders an identical
+ * per-role done/failed breakdown, so Health links there instead of publishing a
+ * second copy. What survives here is only what `/app/team` cannot serve — it
+ * filters `roleSlug IS NOT NULL`, so role-less tasks are invisible there, and it
+ * is team-wide, so it cannot honour Health's `?workspace=` scoping.
+ */
 export interface UsageStats {
   total: number;
   completed: number;
   failed: number;
   unassigned: number;
-  byRole: { slug: string; name: string; color: string; completed: number; failed: number; total: number }[];
 }
 
 /**
@@ -106,7 +119,12 @@ export interface StrandedBackendRow {
 export interface CredentialHealthItem {
   id: string;
   purpose: string;
-  healthStatus: 'degraded' | 'revoked';
+  /**
+   * Every backend credential is returned, not only the broken ones: Problems
+   * lists the `degraded`/`revoked` rows, and State renders credential health as
+   * a STATE with its own freshness — which needs the healthy rows too.
+   */
+  healthStatus: 'healthy' | 'degraded' | 'revoked' | 'unknown';
   consecutiveAuthFailures: number;
   lastFailureAt: string | null;
   lastFailureMessage: string | null;
@@ -124,7 +142,11 @@ export default async function HealthPage({
   // never written by new navigation. No expiry is set for the alias (spec §7.7
   // left this open deliberately).
   const { workspace: wsFilter, window: rawWindow, failureWindow: rawFailureWindow } = await searchParams;
-  const failureWindow = parseFailureWindow(rawWindow ?? rawFailureWindow);
+  // ONE window for the whole page. Every TREND section reads it; the three
+  // sections that structurally cannot (Problems' 24h triage feed, the budget
+  // forecast's provider session window, and every LIFETIME counter) say so
+  // inline rather than silently ignoring it — see spec §2.3.
+  const window = parseFailureWindow(rawWindow ?? rawFailureWindow);
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 
@@ -183,14 +205,14 @@ export default async function HealthPage({
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
       .catch(() => [] as RunnerHeartbeat[]),
 
-    // Usage stats (last 30 days)
+    // Task-keyed totals over the page window (was a fixed 30d role rollup).
     // Exclude attempt tasks (parentTaskId IS NOT NULL) so CI retries don't inflate counts.
     (async (): Promise<UsageStats | null> => {
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const windowStart = new Date(Date.now() - parseWindowMs(window));
       const recentTasks = await db.query.tasks.findMany({
         where: and(
           inArray(tasks.workspaceId, scopedWsIds),
-          sql`${tasks.createdAt} >= ${thirtyDaysAgo}`,
+          sql`${tasks.createdAt} >= ${windowStart}`,
           isNull(tasks.parentTaskId),
         ),
         columns: { roleSlug: true, status: true },
@@ -198,54 +220,16 @@ export default async function HealthPage({
 
       if (recentTasks.length === 0) return null;
 
-      const byRole: Record<string, { completed: number; failed: number; total: number }> = {};
-      let totalCompleted = 0;
-      let totalFailed = 0;
+      let completed = 0;
+      let failed = 0;
       let unassigned = 0;
-
       for (const t of recentTasks) {
-        if (t.status === 'completed') totalCompleted++;
-        if (t.status === 'failed') totalFailed++;
-        if (t.roleSlug) {
-          if (!byRole[t.roleSlug]) byRole[t.roleSlug] = { completed: 0, failed: 0, total: 0 };
-          byRole[t.roleSlug].total++;
-          if (t.status === 'completed') byRole[t.roleSlug].completed++;
-          if (t.status === 'failed') byRole[t.roleSlug].failed++;
-        } else {
-          unassigned++;
-        }
+        if (t.status === 'completed') completed++;
+        if (t.status === 'failed') failed++;
+        if (!t.roleSlug) unassigned++;
       }
 
-      const roleSlugs = Object.keys(byRole);
-      let roleInfo: Record<string, { name: string; color: string }> = {};
-      if (roleSlugs.length > 0) {
-        const skills = await db.query.workspaceSkills.findMany({
-          where: and(
-            inArray(workspaceSkills.workspaceId, scopedWsIds),
-            eq(workspaceSkills.isRole, true),
-            inArray(workspaceSkills.slug, roleSlugs),
-          ),
-          columns: { slug: true, name: true, color: true },
-        });
-        for (const s of skills) {
-          roleInfo[s.slug] = { name: s.name, color: s.color ?? '#888' };
-        }
-      }
-
-      return {
-        total: recentTasks.length,
-        completed: totalCompleted,
-        failed: totalFailed,
-        unassigned,
-        byRole: Object.entries(byRole)
-          .sort((a, b) => b[1].total - a[1].total)
-          .map(([slug, stats]) => ({
-            slug,
-            name: roleInfo[slug]?.name || slug,
-            color: roleInfo[slug]?.color || '#888',
-            ...stats,
-          })),
-      };
+      return { total: recentTasks.length, completed, failed, unassigned };
     })().catch(() => null),
 
     // Schedules across the scoped workspaces, with mission linkage
@@ -306,15 +290,13 @@ export default async function HealthPage({
       }));
     })().catch(() => [] as RecentFailure[]),
 
-    // Unhealthy backend credentials for this team
+    // Backend credentials for this team — ALL of them, not just the broken
+    // ones. Problems renders the degraded/revoked rows; State renders credential
+    // health as a STATE with its own freshness, which needs the healthy rows.
     (async (): Promise<CredentialHealthItem[]> => {
       const credRows = await db.query.secrets.findMany({
         where: and(
           eq(secrets.teamId, activeTeamId),
-          or(
-            eq(secrets.healthStatus, 'revoked'),
-            eq(secrets.healthStatus, 'degraded'),
-          ),
           or(
             eq(secrets.purpose, 'oauth_token'),
             eq(secrets.purpose, 'anthropic_api_key'),
@@ -335,7 +317,7 @@ export default async function HealthPage({
       return (credRows as any[]).map((r: any) => ({
         id: r.id,
         purpose: r.purpose,
-        healthStatus: r.healthStatus as 'degraded' | 'revoked',
+        healthStatus: r.healthStatus as CredentialHealthItem['healthStatus'],
         consecutiveAuthFailures: r.consecutiveAuthFailures,
         lastFailureAt: r.lastFailureAt ? r.lastFailureAt.toISOString() : null,
         lastFailureMessage: r.lastFailureMessage ?? null,
@@ -347,11 +329,10 @@ export default async function HealthPage({
     // Budget forecast
     getBudgetForecast(activeTeamId, scopedWsIds).catch(() => null as BudgetForecast | null),
 
-    // Consumption (7d): tokens / cost / turns / tool calls per task, by role.
-    // Shorter window than the 30d role block above — spend shifts with model and
-    // prompt changes, so a month-long average hides the thing you'd act on.
+    // Consumption: tokens / cost / turns / tool calls per task, by role. TREND —
+    // obeys the page window (it used to be pinned to 7d while the section above
+    // it was pinned to 30d, so the page published two windows and named neither).
     (async (): Promise<ConsumptionStats | null> => {
-      const window = '7d';
       const windowStart = new Date(Date.now() - parseWindowMs(window));
       const rows = await fetchUsageRows({ workspaceIds: scopedWsIds, windowStart });
       if (rows.length === 0) return null;
@@ -384,7 +365,7 @@ export default async function HealthPage({
     })().catch(() => null),
 
     // Aggregated worker failure analytics for the selected window
-    getFailureAnalytics(scopedWsIds, failureWindow).catch(() => null as FailureAnalytics | null),
+    getFailureAnalytics(scopedWsIds, window).catch(() => null as FailureAnalytics | null),
 
     // Backends stranding pending work: a credential nobody configured means
     // those tasks can never be claimed, and the Problems list would otherwise
@@ -392,28 +373,16 @@ export default async function HealthPage({
     getBackendStrandSummary({ teamId: activeTeamId, workspaceIds: scopedWsIds })
       .catch(() => null),
 
-    // Codebase graph (CBM), 7d. Same aggregation the /api/cbm/metrics endpoint
-    // returns — the page used to show CBM only as rows in the generic top-tools
-    // list, which cannot distinguish "mounted and never queried" from healthy.
-    (async (): Promise<CbmHealthSummary | null> => {
-      const windowStart = new Date(Date.now() - parseWindowMs('7d'));
-      const rows = await db.query.workers.findMany({
-        where: and(
-          eq(workers.status, 'completed'),
-          sql`${workers.completedAt} >= ${windowStart}`,
-          scopedWsIds.length > 0 ? inArray(workers.workspaceId, scopedWsIds) : sql`false`,
-        ),
-        columns: { inputTokens: true, resultMeta: true },
-        limit: 5000,
-      });
-      const cbmRows: CbmRow[] = [];
-      for (const r of rows as any[]) {
-        const cbm = r.resultMeta?.cbm;
-        if (cbm) cbmRows.push({ inputTokens: r.inputTokens ?? 0, cbm });
-      }
-      if (cbmRows.length === 0) return null;
-      return summarizeCbm(aggregateCbm(cbmRows, '7d', windowStart));
-    })().catch(() => null),
+    // Codebase graph (CBM). TREND — obeys the page window (was pinned to 7d).
+    // Same aggregation the /api/cbm/metrics endpoint returns — the page used to
+    // show CBM only as rows in the generic top-tools list, which cannot
+    // distinguish "mounted and never queried" from healthy. Shared with the
+    // usage drill-down, which runs the same cohort rules on its own window.
+    fetchCbmSummary({
+      workspaceIds: scopedWsIds,
+      window,
+      windowStart: new Date(Date.now() - parseWindowMs(window)),
+    }).catch(() => null),
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -440,6 +409,7 @@ export default async function HealthPage({
       lastError: s.lastError,
       consecutiveFailures: s.consecutiveFailures,
       totalRuns: s.totalRuns,
+      createdAt: s.createdAt ? s.createdAt.toISOString() : null,
       taskTitle: s.taskTemplate?.title ?? '',
       missionTitle: s.missionTitle,
       isHeartbeat: !!s.isHeartbeat,
@@ -462,7 +432,7 @@ export default async function HealthPage({
       wsFilter={wsFilter ?? null}
       budgetForecast={budgetForecast ?? null}
       failureAnalytics={failureAnalytics ?? null}
-      failureWindow={failureWindow}
+      window={window}
       cbm={cbmSummary ?? null}
     />
   );

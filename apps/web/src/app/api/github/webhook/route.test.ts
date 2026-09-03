@@ -294,6 +294,9 @@ mock.module('@/lib/release-verification', () => ({
 
 // Import handler AFTER mocks
 import { POST } from './route';
+// Real renderer (not mocked) — the tests below assert on comment bodies the
+// route hands to GitHub, so they build fixtures with the same code path.
+import { renderPrActivityComment, SPINNER_PATH } from '@/lib/pr-activity-comment';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function createWebhookRequest(event: string, payload: any, validSig = true): NextRequest {
@@ -742,13 +745,14 @@ describe('POST /api/github/webhook', () => {
   // ── Check suite handling ────────────────────────────────────────────────
   describe('check_suite handling', () => {
     // Helpers for the CI-failure → retry-task path.
-    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string; foreignCommit?: boolean } = {}) {
+    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string; foreignCommit?: boolean; taskResult?: Record<string, unknown> } = {}) {
       mockWorkersFindFirst.mockReturnValue({
         id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
         task: {
           id: 't1', title: 'Fix the thing', description: 'orig desc',
           workspaceId: 'ws1', missionId: opts.missionId !== undefined ? opts.missionId : 'm1',
           context: opts.taskCtx ?? {},
+          result: opts.taskResult ?? null,
           status: opts.status ?? 'in_progress',
         },
       });
@@ -850,6 +854,25 @@ describe('POST /api/github/webhook', () => {
       expect(insertCalls.length).toBe(0);
       expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves the agent handoff recommendation when it fails the exhausted task', async () => {
+      // Home's blocked card leads with result.nextSuggestion — overwriting the
+      // whole result object on exhaustion would destroy the only advice the
+      // human gets, at exactly the moment they inherit the PR.
+      withFailedWorkerPr({
+        taskCtx: { iteration: 3 },
+        gitConfig: { maxCiRetries: 3 },
+        taskResult: { summary: 'Fixed lint, tests still red', nextSuggestion: 'Backfill migration 0071 by hand, then re-run CI.' },
+      });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      expect(failUpdate).toBeDefined();
+      const result = (failUpdate!.setValues as any).result;
+      expect(result.nextSuggestion).toBe('Backfill migration 0071 by hand, then re-run CI.');
+      expect(result.summary).toContain('CI retry stopped');
     });
 
     it('tells the PR a human is needed once CI retries are exhausted', async () => {
@@ -1871,6 +1894,127 @@ describe('POST /api/github/webhook', () => {
       // The task must NOT be auto-completed on a non-merged close
       const taskUpdate = updateCalls.find((c) => (c.setValues as any).status === 'completed');
       expect(taskUpdate).toBeUndefined();
+    });
+
+    it('resolves the sticky activity comment when the PR merges', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-merged',
+        workspaceId: 'ws1',
+        taskId: 'task-merged',
+        prNumber: 55,
+        task: {
+          id: 'task-merged',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+      // Sticky comment left mid-flight: "Review passed", still spinning.
+      const stickyBody = renderPrActivityComment([{ kind: 'review_approved', at: '2026-08-29T14:03:00.000Z' }]);
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (url.includes('/issues/55/comments')) return Promise.resolve([{ id: 77, body: stickyBody }]);
+        return Promise.resolve({});
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 55,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-55' },
+          base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/55',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      const patch = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/test-org/test-repo/issues/comments/77' && c[2]?.method === 'PATCH',
+      );
+      expect(patch).toBeDefined();
+      const body = JSON.parse(patch[2].body).body as string;
+      expect(body).toContain('**Merged**');
+      expect(body).not.toContain(SPINNER_PATH);
+    });
+
+    it('marks the sticky activity comment closed when the PR is abandoned', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-closed',
+        workspaceId: 'ws1',
+        taskId: 'task-closed',
+        prNumber: 60,
+        task: {
+          id: 'task-closed',
+          status: 'in_progress',
+          workspaceId: 'ws1',
+          release: 'false',
+          missionId: null,
+        },
+      });
+      const stickyBody = renderPrActivityComment([{ kind: 'ci_fixing', at: '2026-08-29T14:03:00.000Z' }]);
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (url.includes('/issues/60/comments')) return Promise.resolve([{ id: 88, body: stickyBody }]);
+        return Promise.resolve({});
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 60,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc-fix', sha: 'sha-60' },
+          base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/60',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      const patch = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/test-org/test-repo/issues/comments/88' && c[2]?.method === 'PATCH',
+      );
+      expect(patch).toBeDefined();
+      const body = JSON.parse(patch[2].body).body as string;
+      expect(body).toContain('**Closed without merging**');
+      expect(body).not.toContain(SPINNER_PATH);
+    });
+
+    it('does not post an activity comment on a merged PR buildd never touched', async () => {
+      mockWorkersFindFirst.mockReturnValue(null);
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (url.includes('/comments')) return Promise.resolve([{ id: 1, body: 'a human comment' }]);
+        return Promise.resolve({});
+      });
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 61,
+          merged: true,
+          draft: false,
+          head: { ref: 'human/branch', sha: 'sha-61' },
+          base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/61',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      const post = (mockGithubApi.mock.calls as any[]).find(
+        (c) => c[1] === '/repos/test-org/test-repo/issues/61/comments' && c[2]?.method === 'POST',
+      );
+      expect(post).toBeUndefined();
     });
 
     it('sets prLifecycleStatus=ci_running on check_suite requested', async () => {

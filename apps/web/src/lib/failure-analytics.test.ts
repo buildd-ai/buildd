@@ -228,6 +228,8 @@ describe('computeFailureAnalytics — totals', () => {
     const a = computeFailureAnalytics({ window: '7d', now: NOW, workers: [] });
     expect(a.totals).toEqual({
       started: 0,
+      terminal: 0,
+      stillRunning: 0,
       completed: 0,
       failed: 0,
       failureRatePct: 0,
@@ -239,7 +241,7 @@ describe('computeFailureAnalytics — totals', () => {
     expect(a.repeatFailureTasks).toEqual([]);
   });
 
-  it('counts started / completed / failed and the failure rate over all workers', () => {
+  it('divides the failure rate by terminal workers, not by everything started', () => {
     const workers = [
       ...Array.from({ length: 3 }, () => worker({ status: 'completed', error: null, exitCause: null })),
       worker({ status: 'failed' }),
@@ -247,9 +249,47 @@ describe('computeFailureAnalytics — totals', () => {
     ];
     const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
     expect(a.totals.started).toBe(5);
+    expect(a.totals.terminal).toBe(4);
+    expect(a.totals.stillRunning).toBe(1);
     expect(a.totals.completed).toBe(3);
     expect(a.totals.failed).toBe(1);
-    expect(a.totals.failureRatePct).toBe(20);
+    // 1/4, not 1/5 — the in-flight worker has not had the chance to fail yet.
+    expect(a.totals.failureRatePct).toBe(25);
+  });
+
+  it('excludes every in-flight status from the denominator', () => {
+    const inFlight = ['idle', 'starting', 'running', 'waiting_input', 'paused'];
+    const workers = [
+      worker({ status: 'failed' }),
+      worker({ status: 'completed', error: null, exitCause: null }),
+      ...inFlight.map(status => worker({ status, error: null, exitCause: null })),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.totals.started).toBe(2 + inFlight.length);
+    expect(a.totals.terminal).toBe(2);
+    expect(a.totals.stillRunning).toBe(inFlight.length);
+    expect(a.totals.failureRatePct).toBe(50);
+  });
+
+  it('counts an unrecognised status as terminal — unknown terminal states must not deflate the rate', () => {
+    const workers = [
+      worker({ status: 'failed' }),
+      worker({ status: 'cancelled', error: null, exitCause: null }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.totals.terminal).toBe(2);
+    expect(a.totals.failureRatePct).toBe(50);
+  });
+
+  it('reports a 0% rate rather than dividing by zero when nothing has landed yet', () => {
+    const a = computeFailureAnalytics({
+      window: '7d',
+      now: NOW,
+      workers: [worker({ status: 'running', error: null, exitCause: null })],
+    });
+    expect(a.totals.terminal).toBe(0);
+    expect(a.totals.stillRunning).toBe(1);
+    expect(a.totals.failureRatePct).toBe(0);
   });
 
   it('treats the legacy "error" status as a failure', () => {
@@ -425,12 +465,14 @@ describe('computeFailureAnalytics — per-role and per-workspace rates', () => {
       worker({ status: 'failed', roleSlug: 'builder' }),
       worker({ status: 'failed', roleSlug: 'builder' }),
       worker({ status: 'failed', roleSlug: null }),
+      // Still running: counted in `started`, excluded from the rate.
+      worker({ status: 'running', roleSlug: 'builder', error: null, exitCause: null }),
     ];
     const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
     expect(a.byRole).toEqual([
-      { roleSlug: 'reviewer', started: 3, failed: 2, failureRatePct: 67 },
-      { roleSlug: 'builder', started: 4, failed: 2, failureRatePct: 50 },
-      { roleSlug: '(no role)', started: 1, failed: 1, failureRatePct: 100 },
+      { roleSlug: 'reviewer', started: 3, terminal: 3, failed: 2, failureRatePct: 67 },
+      { roleSlug: 'builder', started: 5, terminal: 4, failed: 2, failureRatePct: 50 },
+      { roleSlug: '(no role)', started: 1, terminal: 1, failed: 1, failureRatePct: 100 },
     ]);
   });
 
@@ -447,8 +489,8 @@ describe('computeFailureAnalytics — per-role and per-workspace rates', () => {
       workspaceNames: { 'ws-1': 'alpha' },
     });
     expect(a.byWorkspace).toEqual([
-      { workspaceId: 'ws-1', workspaceName: 'alpha', started: 2, failed: 1, failureRatePct: 50 },
-      { workspaceId: 'ws-2', workspaceName: '(unknown)', started: 1, failed: 0, failureRatePct: 0 },
+      { workspaceId: 'ws-1', workspaceName: 'alpha', started: 2, terminal: 2, failed: 1, failureRatePct: 50 },
+      { workspaceId: 'ws-2', workspaceName: '(unknown)', started: 1, terminal: 1, failed: 0, failureRatePct: 0 },
     ]);
   });
 });

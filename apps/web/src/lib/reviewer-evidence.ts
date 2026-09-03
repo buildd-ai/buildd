@@ -7,11 +7,28 @@ type ReviewerNote = {
   createdAt?: Date | null;
 };
 
+/**
+ * Separator the reviewer verdict handler uses to append its recommendation to a
+ * note body. Kept in one place so the writer and this reader cannot drift.
+ */
+export const RECOMMENDATION_MARKER = '\n\n**Recommended next step:** ';
+
 const GATE_EVIDENCE_PATTERN =
   /(?:gate condition|auto-merge blocked|awaiting human merge)/i;
 
 function noteText(note: ReviewerNote): string {
   return note.body ?? note.title;
+}
+
+/** Splits a note body into its reason and the reviewer's recommended next step. */
+function splitRecommendation(text: string): { reason: string; recommendation: string | null } {
+  const idx = text.indexOf(RECOMMENDATION_MARKER);
+  if (idx === -1) return { reason: text, recommendation: null };
+  const recommendation = text.slice(idx + RECOMMENDATION_MARKER.length).trim();
+  return {
+    reason: text.slice(0, idx).trim(),
+    recommendation: recommendation.length > 0 ? recommendation : null,
+  };
 }
 
 function isGateEvidence(note: ReviewerNote): boolean {
@@ -54,10 +71,10 @@ export function selectReviewerEvidence(notes: ReviewerNote[]) {
 
   return {
     escalationMap: new Map(
-      [...escalations].map(([taskId, note]) => [
-        taskId,
-        { reason: noteText(note), notedAt: note.createdAt ?? new Date(0) },
-      ]),
+      [...escalations].map(([taskId, note]) => {
+        const { reason, recommendation } = splitRecommendation(noteText(note));
+        return [taskId, { reason, recommendation, notedAt: note.createdAt ?? new Date(0) }] as const;
+      }),
     ),
     approvalMap: new Map(
       [...approvals].map(([taskId, note]) => [

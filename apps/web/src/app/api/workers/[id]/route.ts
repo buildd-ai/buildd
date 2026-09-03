@@ -36,6 +36,7 @@ import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-mer
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -2962,7 +2963,12 @@ async function handleReviewerOutcomeIfNeeded(
         : output.verdict === 'request-changes'
           ? `PR #${prNumber}: reviewer requested changes (iteration ${currentIteration + 1}/${maxIterations})`
           : `PR #${prNumber} escalated: ${output.escalationReason ?? 'see details'}`,
-      body: output.feedback ?? output.escalationReason ?? output.summary,
+      // Recommendation rides in the body behind a fixed marker so the escalation
+      // card can lead with it (see selectReviewerEvidence).
+      body: (output.feedback ?? output.escalationReason ?? output.summary)
+        + (output.verdict === 'escalate' && output.recommendation
+            ? `${RECOMMENDATION_MARKER}${output.recommendation}`
+            : ''),
       status: 'open',
     });
   }

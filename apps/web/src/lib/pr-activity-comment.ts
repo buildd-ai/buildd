@@ -57,7 +57,9 @@ export type PrActivityKind =
   | 'ci_fixing'
   | 'ci_exhausted'
   | 'changes_pushed'
-  | 'review_superseded_by_merge';
+  | 'review_superseded_by_merge'
+  | 'merged'
+  | 'closed_unmerged';
 
 export interface PrActivityEntry {
   kind: PrActivityKind;
@@ -143,6 +145,21 @@ const PRESENTATION: Record<PrActivityKind, Presentation> = {
     working: false,
     label: 'Review superseded — merged by a human',
     status: 'A human merged this PR before the reviewer got to it. The pending review was cancelled.',
+  },
+  // The PR's own close is always the last word: whatever buildd was mid-flight
+  // on (review passed, waiting on checks, fixing CI) is over once the PR is
+  // merged or abandoned, so these two kinds exist to stop the spinner.
+  merged: {
+    icon: '🏁',
+    working: false,
+    label: 'Merged',
+    status: 'This PR is merged — buildd is done here.',
+  },
+  closed_unmerged: {
+    icon: '🗑️',
+    working: false,
+    label: 'Closed without merging',
+    status: 'This PR was closed without merging — buildd stopped work on it.',
   },
 };
 

@@ -17,10 +17,21 @@ import type {
   FailureWindow,
   CbmHealthSummary,
 } from './page';
-import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { getModelDisplayName } from '@buildd/core/model-display';
+import { Stat } from '@/components/StatTile';
 import { byModelAbsence, divergenceSummary, scanCaveat } from '@/lib/model-presentation';
-import type { Distribution, PerTaskMetric } from '@/lib/usage-stats';
+import { shortToolName, usageDrilldownHref } from '@/lib/usage-drilldown';
+import {
+  coverageLabel,
+  depletionProjection,
+  failureStreak,
+  freshness,
+  groupFailuresBySignature,
+  lifetimeRuns,
+  monthlyAnchor,
+  RUNNER_LIFETIME_LABEL,
+  sectionDenominator,
+} from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
@@ -171,10 +182,25 @@ interface Props {
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
-  failureWindow: FailureWindow;
+  /** The one page window (`?window=`) every TREND section reads. */
+  window: FailureWindow;
   cbm: CbmHealthSummary | null;
 }
 
+/**
+ * Health, in three sections: Problems → State → Trend.
+ *
+ * The ordering is the argument. What is broken now comes first; what is true
+ * now comes second; what is only true over a period comes last, under a single
+ * window control. Each section declares its OWN denominator (`over {N} …`),
+ * because the page counts four different populations — workers, terminal worker
+ * sessions, tasks, and runners — and one page-wide denominator would be false
+ * for three of them.
+ *
+ * The rendering grammar for each class of number lives in
+ * `@/lib/health-metric-grammar`; see its header for the STATE/TREND/LIFETIME/
+ * PROJECTION contract this file is an application of.
+ */
 export function HealthClient({
   runners,
   usageStats,
@@ -187,7 +213,7 @@ export function HealthClient({
   wsFilter,
   budgetForecast,
   failureAnalytics,
-  failureWindow,
+  window: activeWindow,
   cbm,
 }: Props) {
   const router = useRouter();
@@ -197,7 +223,6 @@ export function HealthClient({
   const [showPausedSchedules, setShowPausedSchedules] = useState(false);
   const [showHeartbeatSchedules, setShowHeartbeatSchedules] = useState(false);
   const [expandedCronId, setExpandedCronId] = useState<string | null>(null);
-  const [showMoreRoles, setShowMoreRoles] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [scheduleBusyId, setScheduleBusyId] = useState<string | null>(null);
   const [scheduleToDelete, setScheduleToDelete] = useState<ScheduleRow | null>(null);
@@ -328,7 +353,21 @@ export function HealthClient({
     }
   };
 
+  // One clock read for every freshness string on the page. Freshness is measured
+  // from each stat's OWN last-observed timestamp — this is only the instant we
+  // measure against, never a substitute for a missing timestamp.
+  const now = Date.now();
+
   // Derive problems
+  //
+  // Credentials arrive whole (healthy ones included) because State renders them
+  // as a STATE; only the broken ones are a Problem.
+  const brokenCredentials = credentialHealth.filter(
+    c => c.healthStatus === 'degraded' || c.healthStatus === 'revoked',
+  );
+  // Grouped on `normalizeErrorSignature` — the same key the failure-signature
+  // table under Trend ranks on, so one incident is one count on both.
+  const failureGroups = useMemo(() => groupFailuresBySignature(recentFailures, 5), [recentFailures]);
   const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt));
   // Every online runner whose sandbox posture is not actually enforced — bwrap
   // denied, or bwrap available with the mount allowlist off. Both are degraded;
@@ -336,9 +375,22 @@ export function HealthClient({
   const degradedSandboxRunners = runners.filter(
     r => isRunnerOnline(r.lastHeartbeatAt) && deriveSandboxPosture(r).tier === 'warning',
   );
+  // The four seat-auth confessions collapse into ONE page-level sentence. The
+  // per-stat markers stay where they are; this only names the shared cause once
+  // instead of four times.
+  const seatAuthConfession = useMemo(() => {
+    if (!consumption) return null;
+    const perModelAbsent = consumption.byModel.length === 0 && consumption.totals.inputTokens > 0;
+    const costAbsent = consumption.perTask.costUsd.kind === 'unavailable';
+    const divergenceAbsent = consumption.modelDivergence.kind === 'unavailable';
+    if (!perModelAbsent && !costAbsent && !divergenceAbsent) return null;
+    return 'Seat-based (OAuth) auth reports no per-model usage and no cost, so some numbers below '
+      + 'are absent rather than zero. Each one still carries its own reason where it sits.';
+  }, [consumption]);
+
   const failedSchedules = schedules.filter(s => s.enabled && !!s.lastError);
   const hasProblems =
-    credentialHealth.length > 0 ||
+    brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
     degradedSandboxRunners.length > 0 ||
@@ -353,19 +405,32 @@ export function HealthClient({
 
   return (
     <div className="max-w-2xl mx-auto px-4 pt-14 pb-24 md:pt-6">
-      {/* Header */}
+      {/* Header — one window control for the whole page, not one per section. */}
       <div className="mb-6">
         <div className="flex items-center justify-between gap-3">
           <h1 className="hidden md:block text-2xl font-bold">Health</h1>
-          <span className="hidden md:block">
-            <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
-          </span>
+          <div className="flex items-center gap-2 ml-auto">
+            <WindowPicker window={activeWindow} />
+            <span className="hidden md:block">
+              <WorkspaceFilter workspaces={teamWorkspaces} selectedId={wsFilter} />
+            </span>
+          </div>
         </div>
       </div>
 
       {/* 1. Problems now */}
       <section data-testid="health-section-problems" className="mb-6">
-        <h2 className="section-label mb-3">Problems</h2>
+        <div className="flex items-baseline justify-between gap-3 mb-3">
+          <h2 className="section-label">Problems</h2>
+          {failureGroups.total > 0 && (
+            <span data-testid="problems-denominator" className="text-[11px] text-text-muted">
+              {sectionDenominator(
+                failureGroups.total,
+                failureGroups.total === 1 ? 'failed worker' : 'failed workers',
+              )} · last 24h
+            </span>
+          )}
+        </div>
         {!hasProblems ? (
           <div className="card px-4 py-3 flex items-center gap-2">
             <span className="glow-dot glow-dot-success" />
@@ -374,7 +439,7 @@ export function HealthClient({
         ) : (
           <div className="card divide-y divide-border-default">
             {/* Revoked / degraded credentials */}
-            {credentialHealth.map((cred) => {
+            {brokenCredentials.map((cred) => {
               const purposeLabel =
                 cred.purpose === 'oauth_token' ? 'Claude OAuth token'
                 : cred.purpose === 'anthropic_api_key' ? 'Anthropic API key'
@@ -395,8 +460,11 @@ export function HealthClient({
                           {isRevoked ? 'revoked' : 'degraded'}
                         </span>
                         {cred.consecutiveAuthFailures > 0 && (
-                          <span className="text-[10px] text-text-muted">
-                            {cred.consecutiveAuthFailures} consecutive failure{cred.consecutiveAuthFailures !== 1 ? 's' : ''}
+                          <span
+                            className="text-[10px] text-text-muted"
+                            title="Consecutive auth failures — a lifetime streak, reset by the next success. It does not obey the page window."
+                          >
+                            auth failures {failureStreak(cred.consecutiveAuthFailures)}
                           </span>
                         )}
                       </div>
@@ -508,42 +576,76 @@ export function HealthClient({
               </div>
             ))}
 
-            {/* Recent failures (24h) */}
-            {recentFailures.map((f) => (
-              <div key={f.workerId} className="px-4 py-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    {f.taskId ? (
-                      <a
-                        href={`/app/tasks/${f.taskId}`}
-                        className="text-sm text-text-primary hover:text-primary truncate block"
-                      >
-                        {f.taskTitle}
-                      </a>
-                    ) : (
-                      <p className="text-sm text-text-primary truncate">{f.taskTitle}</p>
-                    )}
-                    <p className="text-xs text-text-muted mt-0.5">{f.workspaceName} · {timeAgo(f.completedAt)}</p>
-                    {f.error && (
-                      <p className="text-xs text-status-error mt-1 truncate" title={f.error}>{f.error}</p>
-                    )}
+            {/* Recent failures, grouped by error signature.
+                Fixed 24h regardless of `?window=` — documented exception (spec
+                §2.3): this is a triage feed, not a trend, and at 30d it would be
+                a 20-row-capped dump of month-old failures. */}
+            {failureGroups.groups.map((g) => {
+              const sample = g.sample;
+              return (
+                <div key={g.signature} className="px-4 py-3" data-testid="problem-failure-group">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xs font-mono font-bold tabular-nums text-status-error shrink-0">
+                          {g.count}×
+                        </span>
+                        <span
+                          className="text-sm text-text-primary truncate"
+                          title={sample.error ?? g.signature}
+                        >
+                          {g.signature}
+                        </span>
+                      </div>
+                      <p className="text-xs text-text-muted mt-0.5">
+                        last {timeAgo(g.lastSeen)} · {sample.workspaceName}
+                        {' · '}
+                        {sample.taskId ? (
+                          <a href={`/app/tasks/${sample.taskId}`} className="hover:text-primary">
+                            {sample.taskTitle}
+                          </a>
+                        ) : (
+                          sample.taskTitle
+                        )}
+                      </p>
+                    </div>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">
+                      last 24h
+                    </span>
                   </div>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-status-error/10 text-status-error font-medium shrink-0">failed</span>
                 </div>
+              );
+            })}
+
+            {failureGroups.hiddenFailures > 0 && (
+              <div className="px-4 py-2.5">
+                <span className="text-xs text-text-muted">
+                  +{failureGroups.hiddenFailures} more failure
+                  {failureGroups.hiddenFailures === 1 ? '' : 's'} in{' '}
+                  {failureGroups.hiddenGroups} other group
+                  {failureGroups.hiddenGroups === 1 ? '' : 's'} — see Worker failures below
+                </span>
               </div>
-            ))}
+            )}
           </div>
         )}
       </section>
 
-      {/* 1b. Failure analytics — aggregated, so systemic patterns are visible */}
-      {failureAnalytics && (
-        <FailureAnalyticsSection analytics={failureAnalytics} window={failureWindow} />
-      )}
+      {/* 2. State — what is true right now. Every number here renders its own
+          freshness (`as of {N}h ago`) from the stat's own timestamp, and never
+          the page window: a window does not make a state more true. */}
+      <section data-testid="health-section-state" className="mb-6">
+        <h2 className="section-label mb-3">State</h2>
 
-      {/* 2. Capacity — runners */}
-      <section data-testid="health-section-runners" className="mb-6">
-        <h2 className="section-label mb-3">Capacity</h2>
+      <div data-testid="health-section-runners" className="mb-6">
+        <div className="flex items-baseline justify-between gap-3 mb-3">
+          <h3 className="text-xs font-medium text-text-secondary">Capacity</h3>
+          {runners.length > 0 && (
+            <span className="text-[11px] text-text-muted">
+              {sectionDenominator(runners.length, runners.length === 1 ? 'runner' : 'runners')}
+            </span>
+          )}
+        </div>
         <div className="card">
           {runners.length === 0 ? (
             <div className="p-4 text-center">
@@ -592,7 +694,8 @@ export function HealthClient({
                           </span>
                         </div>
                         <p className="text-xs text-text-muted">
-                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers · last beat {timeAgo(hb.lastHeartbeatAt)}
+                          {hb.activeWorkerCount}/{hb.maxConcurrentWorkers} workers ·{' '}
+                          {freshness(hb.lastHeartbeatAt, now)}
                         </p>
                       </div>
                       <button
@@ -645,7 +748,16 @@ export function HealthClient({
                         )}
                         {health.historyStats && (
                           <div className={health.doctor ? 'border-t border-border-default pt-3' : 'pt-3'}>
-                            <p className="text-[11px] font-medium text-text-secondary mb-2 uppercase tracking-wide">Session history</p>
+                            {/* LIFETIME, and runner-local: this comes from the
+                                runner's own SQLite, which has no team or
+                                workspace predicate at all. It cannot obey the
+                                page window and must not look like it does. */}
+                            <p className="text-[11px] font-medium text-text-secondary mb-2 uppercase tracking-wide">
+                              Session history
+                              <span className="ml-2 font-normal normal-case text-text-muted">
+                                {RUNNER_LIFETIME_LABEL}
+                              </span>
+                            </p>
                             <div className="flex gap-4 flex-wrap">
                               <div>
                                 <span className="text-xs text-text-muted">Sessions</span>
@@ -674,78 +786,19 @@ export function HealthClient({
             </div>
           )}
         </div>
-      </section>
+      </div>
 
       {budgetForecast && <BudgetForecastSection forecast={budgetForecast} />}
 
-      {/* Usage (30d) */}
-      {usageStats && usageStats.total > 0 && (
-        <section data-testid="health-section-usage" className="mb-6">
-          <h2 className="section-label mb-3">Usage (30d)</h2>
-          <div className="card p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-text-secondary">{usageStats.total} tasks</span>
-              <div className="flex items-center gap-3 text-xs">
-                <span className="text-status-success">{usageStats.completed} done</span>
-                {usageStats.failed > 0 && (
-                  <span className="text-status-error">{usageStats.failed} failed</span>
-                )}
-              </div>
-            </div>
-            {usageStats.byRole.length > 0 && (
-              <div className="space-y-2 pt-1">
-                {usageStats.byRole.slice(0, 3).map((r) => (
-                  <div key={r.slug} className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
-                    <span className="text-xs text-text-primary flex-1 truncate">{r.name}</span>
-                    <span className="text-xs text-text-muted tabular-nums">
-                      {r.completed} done{r.failed > 0 ? ` / ${r.failed} failed` : ''}
-                    </span>
-                  </div>
-                ))}
-                {usageStats.byRole.length > 3 && (
-                  <>
-                    {showMoreRoles && usageStats.byRole.slice(3).map((r) => (
-                      <div key={r.slug} className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: r.color }} />
-                        <span className="text-xs text-text-primary flex-1 truncate">{r.name}</span>
-                        <span className="text-xs text-text-muted tabular-nums">
-                          {r.completed} done{r.failed > 0 ? ` / ${r.failed} failed` : ''}
-                        </span>
-                      </div>
-                    ))}
-                    <button
-                      onClick={() => setShowMoreRoles(p => !p)}
-                      className="text-xs text-text-muted hover:text-text-secondary transition-colors"
-                    >
-                      {showMoreRoles
-                        ? 'Show less'
-                        : `+${usageStats.byRole.length - 3} more role${usageStats.byRole.length - 3 !== 1 ? 's' : ''}`}
-                    </button>
-                  </>
-                )}
-                {usageStats.unassigned > 0 && (
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full shrink-0 bg-text-muted" />
-                    <span className="text-xs text-text-muted flex-1">No role</span>
-                    <span className="text-xs text-text-muted tabular-nums">{usageStats.unassigned}</span>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
+      {credentialHealth.length > 0 && (
+        <CredentialStateSection credentials={credentialHealth} now={now} />
       )}
 
-      {consumption && consumption.totals.tasks > 0 && (
-        <ConsumptionSection stats={consumption} />
-      )}
-
-      {cbm && <CodebaseGraphSection cbm={cbm} />}
-
-      {/* 4. Schedules — collapsed by default */}
+      {/* Schedules — collapsed by default. Lives under State because what it
+          carries is a STATE (enabled, next run) plus two LIFETIME counters
+          (total runs, consecutive failures), none of which obey the window. */}
       {schedules.length > 0 && (
-        <section data-testid="health-section-schedules" className="mb-6">
+        <div data-testid="health-section-schedules" className="mb-6">
           <button
             onClick={() => setShowSchedules(p => !p)}
             className="flex items-center gap-2 section-label mb-3 hover:text-text-primary transition-colors w-full text-left"
@@ -834,10 +887,19 @@ export function HealthClient({
                             <span className="mx-1">·</span>
                             <span>{s.workspaceName}</span>
                           </div>
+                          {/* `{N} runs since created` / `{N} in a row` — both
+                              LIFETIME. Rendered with their own anchor so neither
+                              reads as a count over the page window. */}
                           <p className="text-xs text-text-tertiary mt-0.5">
-                            {s.enabled ? `next ${timeUntil(s.nextRunAt)}` : 'paused'} · last {timeAgo(s.lastRunAt)} · {s.totalRuns} runs
+                            {s.enabled ? `next ${timeUntil(s.nextRunAt)}` : 'paused'} · last {timeAgo(s.lastRunAt)}
+                            {' · '}
+                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt)} — an all-time counter, not a windowed one` : undefined}>
+                              {lifetimeRuns(s.totalRuns)}
+                            </span>
                             {s.consecutiveFailures > 0 && (
-                              <span className="text-status-error"> · {s.consecutiveFailures} consecutive failures</span>
+                              <span className="text-status-error" title="Consecutive failed runs — a streak, reset by the next success">
+                                {' · '}{failureStreak(s.consecutiveFailures)} failed
+                              </span>
                             )}
                           </p>
                           {s.lastError && (
@@ -927,8 +989,42 @@ export function HealthClient({
               })()}
             </>
           )}
-        </section>
+        </div>
       )}
+      </section>
+
+      {/* 3. Trend — only meaningful aggregated over a period. Everything here
+          obeys `?window=` and says so; nothing here renders freshness. */}
+      <section data-testid="health-section-trend" className="mb-6">
+        <div className="flex items-baseline justify-between gap-3 mb-3">
+          <h2 className="section-label">Trend</h2>
+          <span className="text-[11px] text-text-muted">last {activeWindow}</span>
+        </div>
+
+        {/* ONE page-level statement of the shared root cause. The per-stat
+            em-dashes and tooltips below stay exactly as they were — the collapse
+            is of the explanation, not of the markers, which
+            docs/design/derived-metric-availability.md requires at each stat. */}
+        {seatAuthConfession && (
+          <p data-testid="seat-auth-confession" className="text-[11px] text-text-muted mb-3">
+            {seatAuthConfession}
+          </p>
+        )}
+
+        {failureAnalytics && (
+          <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} />
+        )}
+
+        {usageStats && usageStats.total > 0 && (
+          <TaskOutcomesSection stats={usageStats} window={activeWindow} />
+        )}
+
+        {consumption && consumption.totals.tasks > 0 && (
+          <ConsumptionSection stats={consumption} workspaceId={wsFilter} />
+        )}
+
+        {cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
+      </section>
 
       {/* Delete schedule confirm modal */}
       {scheduleToDelete && (
@@ -989,20 +1085,19 @@ function fmtCost(n: number): string {
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
 }
 
-/** Strip the `mcp__server__` prefix for display; the server is shown separately. */
-function shortToolName(name: string): string {
-  if (name === '__other__') return 'other';
-  if (!name.startsWith('mcp__')) return name;
-  const parts = name.split('__');
-  return parts.slice(2).join('__') || name;
-}
-
 /**
  * What work costs, next to whether it landed. Medians (not means) lead every
  * row: one runaway task skews a mean badly enough to make the number useless.
  */
-function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
-  const { totals, perTask, tools, groups, window, byModel, modelDivergence, scan } = stats;
+function ConsumptionSection({
+  stats,
+  workspaceId,
+}: {
+  stats: ConsumptionStats;
+  /** Carried into the drill-down link so the scope survives the navigation. */
+  workspaceId: string | null;
+}) {
+  const { totals, tools, groups, window, byModel, modelDivergence, scan } = stats;
   const topTools = tools.byTool.slice(0, 5);
   const maxToolCalls = topTools[0]?.calls ?? 0;
   const coverageGap = tools.coverage.tasks - tools.coverage.histogram;
@@ -1012,16 +1107,15 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
   // reads worker rows directly and the read is capped.
   const caveat = scanCaveat(scan, timeAgo(scan.completeSince));
 
-  /** "n of m tasks" — the sample behind a median, so it is never read as all of them. */
-  const sampleNote = (metric: PerTaskMetric) => {
-    const n = perTask.contributing[metric];
-    return n < perTask.tasks ? `${n} of ${perTask.tasks} tasks` : `all ${perTask.tasks} tasks`;
-  };
-
   return (
-    <section data-testid="health-section-consumption" className="mb-6">
+    <div data-testid="health-section-consumption" className="mb-6">
       <div className="flex items-baseline justify-between gap-3 mb-3">
-        <h2 className="section-label">Consumption ({window})</h2>
+        <h3 className="text-xs font-medium text-text-secondary">
+          Consumption
+          <span className="ml-2 font-normal text-text-muted">
+            {sectionDenominator(totals.tasks, totals.tasks === 1 ? 'task' : 'tasks')} ({window})
+          </span>
+        </h3>
         {caveat && (
           <span
             data-testid="consumption-scan-caveat"
@@ -1033,32 +1127,17 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
         )}
       </div>
       <div className="card p-4 space-y-4">
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <MetricStat
-            label="Tokens / task"
-            metric={perTask.inputTokens}
-            render={(d) => fmtTokens(d.median)}
-            sub={(d) => `p90 ${fmtTokens(d.p90)} · ${sampleNote('inputTokens')}`}
-          />
-          <MetricStat
-            label="Cost / task"
-            metric={perTask.costUsd}
-            render={(d) => fmtCost(d.median)}
-            sub={() => `${fmtCost(totals.costUsd)} total · ${sampleNote('costUsd')}`}
-          />
-          <MetricStat
-            label="Turns / task"
-            metric={perTask.turns}
-            render={(d) => `${Math.round(d.median)}`}
-            sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('turns')}`}
-          />
-          <MetricStat
-            label="Tool calls / task"
-            metric={perTask.toolCalls}
-            render={(d) => `${Math.round(d.median)}`}
-            sub={(d) => `p90 ${Math.round(d.p90)} · ${sampleNote('toolCalls')}`}
-          />
-        </div>
+        {/* The per-task cost/turn/tool-call tiles that used to sit here now live
+            on the usage drill-down, whole — not copied. Publishing them in two
+            places is how the same number ends up stated under two windows. */}
+        <a
+          data-testid="consumption-drilldown-link"
+          href={usageDrilldownHref({ window, workspaceId })}
+          className="flex items-baseline justify-between gap-3 text-xs text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <span>What a task costs — tokens, turns, tool calls, cost</span>
+          <span className="text-primary shrink-0">usage →</span>
+        </a>
 
         {topTools.length > 0 && (
           <div className="space-y-2 pt-1 border-t border-border-default">
@@ -1066,10 +1145,18 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
               <span className="text-xs text-text-secondary">Top tools</span>
               {coverageGap > 0 && (
                 <span
+                  data-testid="tool-coverage"
                   className="text-xs text-text-muted"
-                  title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log, so their counts are a floor."
+                  title="Exact per-tool counts exist only for workers that ran after the tool histogram shipped. Older tasks are reconstructed from a capped MCP call log, so their counts are a floor — which is what the ≥ marks. Orthogonal to the scan cap noted above, which truncates the population rather than the attribution."
                 >
-                  {tools.coverage.histogram}/{tools.coverage.tasks} tasks measured exactly
+                  {/* `≥` when any counted row is reconstructed rather than
+                      measured: without it, a floor reads as an exact count. */}
+                  {coverageLabel({
+                    covered: tools.coverage.histogram,
+                    population: tools.coverage.tasks,
+                    hasDerived: tools.coverage.derived > 0,
+                  })}{' '}
+                  tasks measured exactly
                 </span>
               )}
             </div>
@@ -1177,15 +1264,10 @@ function ConsumptionSection({ stats }: { stats: ConsumptionStats }) {
           </div>
         )}
       </div>
-    </section>
+    </div>
   );
 }
 
-/**
- * A stat tile over a `DerivedMetric`. On `unavailable` it shows an em-dash with
- * the reason as a tooltip — never a zero, which would read as "this task cost
- * nothing" instead of "we never recorded it".
- */
 /** Copy for each CBM state — the label carries the diagnosis, not just a colour. */
 const CBM_STATE: Record<
   CbmHealthSummary['state'],
@@ -1231,26 +1313,34 @@ function pct(v: number | null): string {
  * was unused or absent. The question this answers first is adoption: mounted, warm,
  * and never queried is the failure mode that hid for weeks.
  */
-function CodebaseGraphSection({ cbm }: { cbm: CbmHealthSummary }) {
+function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: FailureWindow }) {
   const state = CBM_STATE[cbm.state];
   const deltaSuppressed = cbm.deltasSuppressedBecause;
 
   return (
-    <section data-testid="health-section-cbm" className="mb-6">
-      <h2 className="section-label mb-3">Codebase Graph</h2>
+    <div data-testid="health-section-cbm" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Codebase Graph</h3>
+        {/* Sessions, not tasks: these rows are workers, with no dedup by task,
+            so a retried task counts once per attempt. */}
+        <span className="text-[11px] text-text-muted">
+          {sectionDenominator(
+            cbm.activeCount,
+            cbm.activeCount === 1 ? 'CBM-enabled session' : 'CBM-enabled sessions',
+          )} ({window})
+        </span>
+      </div>
       <div className="card p-4 space-y-4">
 
-        {/* Adoption first: the number that decides whether any of the rest matters. */}
+        {/* The alarm, not the adoption percentage. "Mounted, warm, and never
+            queried" is the regression this panel exists to catch; the adoption
+            RATIO itself lives on the usage drill-down, so the same number is not
+            published twice under two different windows. */}
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className={`text-sm font-medium ${state.tone}`} data-testid="cbm-state">
-                {state.label}
-              </span>
-              <span className="text-xs text-text-muted tabular-nums">
-                {pct(cbm.adoptionRate)} of {cbm.activeCount} task{cbm.activeCount !== 1 ? 's' : ''}
-              </span>
-            </div>
+            <span className={`text-sm font-medium ${state.tone}`} data-testid="cbm-state">
+              {state.label}
+            </span>
             <p className="text-xs text-text-secondary max-w-prose">{state.hint}</p>
           </div>
           <span className="text-xs text-text-muted tabular-nums shrink-0" title="Graph tool calls in the window">
@@ -1261,12 +1351,12 @@ function CodebaseGraphSection({ cbm }: { cbm: CbmHealthSummary }) {
         {/* What agents did instead — the substitution the graph is meant to replace. */}
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 pt-3 border-t border-border-default">
           <Stat
-            label="Graph calls / task"
+            label="Graph calls / session"
             value={cbm.avgGraphCallsOnActive === null ? '—' : cbm.avgGraphCallsOnActive.toFixed(1)}
-            sub="on CBM tasks"
+            sub="on CBM sessions"
           />
           <Stat
-            label="File reads / task"
+            label="File reads / session"
             value={cbm.avgFileAccessOnActive === null ? '—' : Math.round(cbm.avgFileAccessOnActive).toString()}
             sub="Read + Grep + Glob"
           />
@@ -1288,7 +1378,7 @@ function CodebaseGraphSection({ cbm }: { cbm: CbmHealthSummary }) {
             {cbm.binaryAbsent > 0 && (
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-error">Binary absent from the runner image</span>
-                <span className="text-xs text-text-muted tabular-nums">{cbm.binaryAbsent} task(s)</span>
+                <span className="text-xs text-text-muted tabular-nums">{cbm.binaryAbsent} session(s)</span>
               </div>
             )}
             {cbm.mountUnavailable > 0 && (
@@ -1299,7 +1389,7 @@ function CodebaseGraphSection({ cbm }: { cbm: CbmHealthSummary }) {
                 >
                   Sandbox mount unavailable
                 </span>
-                <span className="text-xs text-text-muted tabular-nums">{cbm.mountUnavailable} task(s)</span>
+                <span className="text-xs text-text-muted tabular-nums">{cbm.mountUnavailable} session(s)</span>
               </div>
             )}
             {cbm.topIndexFailReason && (
@@ -1356,45 +1446,12 @@ function CodebaseGraphSection({ cbm }: { cbm: CbmHealthSummary }) {
             {cbm.topTools.map((t) => (
               <div key={t.tool} className="flex items-center justify-between gap-2">
                 <span className="text-xs text-text-primary truncate">{t.tool}</span>
-                <span className="text-xs text-text-muted tabular-nums">{t.avgCalls.toFixed(1)} / task</span>
+                <span className="text-xs text-text-muted tabular-nums">{t.avgCalls.toFixed(1)} / session</span>
               </div>
             ))}
           </div>
         )}
       </div>
-    </section>
-  );
-}
-
-function MetricStat({
-  label,
-  metric,
-  render,
-  sub,
-}: {
-  label: string;
-  metric: DerivedMetric<Distribution>;
-  render: (d: Distribution) => string;
-  sub: (d: Distribution) => string;
-}) {
-  if (metric.kind === 'unavailable') {
-    return (
-      <div title={metric.reason}>
-        <div className="text-xs text-text-muted">{label}</div>
-        <div className="text-lg text-text-muted tabular-nums">—</div>
-        <div className="text-xs text-text-muted">not recorded</div>
-      </div>
-    );
-  }
-  return <Stat label={label} value={render(metric.value)} sub={sub(metric.value)} />;
-}
-
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
-  return (
-    <div>
-      <div className="text-xs text-text-muted">{label}</div>
-      <div className="text-lg text-text-primary tabular-nums">{value}</div>
-      <div className="text-xs text-text-muted tabular-nums">{sub}</div>
     </div>
   );
 }
@@ -1434,8 +1491,14 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
   const learningSessions = forecast.oauthSessions.filter(s => s.state === 'learning');
 
   return (
-    <section data-testid="health-section-budget-forecast" className="mb-6">
-      <h2 className="section-label mb-3">Budget Forecast</h2>
+    <div data-testid="health-section-budget-forecast" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Budget forecast</h3>
+        {/* Documented exception: pinned to the provider's own session window and
+            the calendar month. It cannot obey `?window=`, so it says what it
+            does obey instead of quietly ignoring the control. */}
+        <span className="text-[11px] text-text-muted">provider session window · not {'?window='}</span>
+      </div>
       <div className="card divide-y divide-border-default">
 
         {/* Active OAuth session rows — labeled by account name */}
@@ -1497,19 +1560,23 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm text-text-primary">Monthly budget</span>
               <div className="flex items-center gap-2 text-xs text-text-secondary">
+                {/* LIFETIME (calendar): spend accumulates from the 1st, so it is
+                    labelled with that anchor rather than left to look windowed. */}
                 <span className="tabular-nums font-medium text-text-primary">
                   ${forecast.monthly.spentUsd.toFixed(2)} / ${forecast.monthly.budgetUsd.toFixed(0)}
                 </span>
                 <span className="text-text-muted">·</span>
+                <span data-testid="monthly-anchor">{monthlyAnchor(forecast.monthly.resetsAt)}</span>
+                <span className="text-text-muted">·</span>
                 <span>{formatReset(forecast.monthly.resetsAt)}</span>
-                {forecast.monthly.daysToDepletion !== null && (
+                {/* PROJECTION: the runway and the window its burn rate came from
+                    are ONE string, so the value can never be read as windowed by
+                    the page control. */}
+                {depletionProjection(forecast.monthly.daysToDepletion, '24h') && (
                   <>
                     <span className="text-text-muted">·</span>
-                    <span>
-                      depletes in {forecast.monthly.daysToDepletion < 1
-                        ? `${Math.round(forecast.monthly.daysToDepletion * 24)}h`
-                        : `${forecast.monthly.daysToDepletion.toFixed(1)}d`
-                      }
+                    <span data-testid="budget-runway">
+                      {depletionProjection(forecast.monthly.daysToDepletion, '24h')}
                     </span>
                   </>
                 )}
@@ -1583,7 +1650,140 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
           </div>
         ))}
       </div>
-    </section>
+    </div>
+  );
+}
+
+// ── Credential health (STATE) ────────────────────────────────────────────────
+
+const CREDENTIAL_PURPOSE_LABELS: Record<string, string> = {
+  oauth_token: 'Claude OAuth token',
+  anthropic_api_key: 'Anthropic API key',
+  codex_credential: 'Codex credential',
+};
+
+const CREDENTIAL_TONE: Record<CredentialHealthItem['healthStatus'], string> = {
+  healthy: 'text-status-success',
+  degraded: 'text-status-warning',
+  revoked: 'text-status-error',
+  unknown: 'text-text-muted',
+};
+
+/**
+ * Backend credentials as a STATE, with each row's own freshness.
+ *
+ * Freshness comes from the credential's last verification, not from page-render
+ * time: a credential last checked three days ago is "healthy as of 3d ago", and
+ * one never checked reads `never observed` rather than borrowing the clock.
+ *
+ * The broken rows also appear under Problems — there as something to fix, here
+ * as something to read. The LIFETIME streak sits beside the status rather than
+ * merged into it, because a streak is not a state.
+ */
+function CredentialStateSection({
+  credentials,
+  now,
+}: {
+  credentials: CredentialHealthItem[];
+  now: number;
+}) {
+  return (
+    <div data-testid="health-section-credentials" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Credentials</h3>
+        <span className="text-[11px] text-text-muted">
+          {sectionDenominator(
+            credentials.length,
+            credentials.length === 1 ? 'backend credential' : 'backend credentials',
+          )}
+        </span>
+      </div>
+      <div className="card divide-y divide-border-default">
+        {credentials.map((c) => (
+          <div key={c.id} className="px-4 py-2.5 flex items-center justify-between gap-2">
+            <span className="text-sm text-text-primary truncate">
+              {CREDENTIAL_PURPOSE_LABELS[c.purpose] ?? c.purpose}
+            </span>
+            <div className="flex items-center gap-2 text-xs shrink-0">
+              <span className={`font-medium ${CREDENTIAL_TONE[c.healthStatus] ?? 'text-text-muted'}`}>
+                {c.healthStatus}
+              </span>
+              {c.consecutiveAuthFailures > 0 && (
+                <>
+                  <span className="text-text-muted">·</span>
+                  <span
+                    className="text-status-warning"
+                    title="Consecutive auth failures — a lifetime streak, reset by the next success. Not a count over the page window."
+                  >
+                    {failureStreak(c.consecutiveAuthFailures)}
+                  </span>
+                </>
+              )}
+              <span className="text-text-muted">·</span>
+              <span
+                className="text-text-muted"
+                title="Measured from this credential's own last verification, not from when the page rendered."
+              >
+                {freshness(c.lastVerifiedAt ?? c.lastSuccessAt, now)}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── Task outcomes (TREND) ────────────────────────────────────────────────────
+
+/**
+ * What Usage(30d) uniquely carried, and nothing it duplicated.
+ *
+ * The per-role done/failed rollup is gone: `/app/team` already renders an
+ * identical one, so this links there instead of publishing a second copy that
+ * can silently diverge. The two lines that survive are the two `/app/team`
+ * cannot serve — it filters `roleSlug IS NOT NULL`, so role-less tasks are
+ * invisible there, and it is team-wide, so it cannot honour `?workspace=`.
+ *
+ * Both are worded TASK-keyed on purpose. The failure rate immediately above is
+ * worker-keyed over a different population, and the page does not claim one
+ * page-wide failure statement — each section names what it counted.
+ */
+function TaskOutcomesSection({ stats, window }: { stats: UsageStats; window: FailureWindow }) {
+  return (
+    <div data-testid="health-section-task-outcomes" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Task outcomes</h3>
+        <span className="text-[11px] text-text-muted">
+          {sectionDenominator(stats.total, stats.total === 1 ? 'task' : 'tasks')} ({window})
+        </span>
+      </div>
+      <div className="card px-4 py-3 space-y-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-sm text-text-secondary">
+            {stats.completed}/{stats.total} tasks completed ({window})
+          </span>
+          {stats.failed > 0 && (
+            <span className="text-xs text-status-error tabular-nums">{stats.failed} failed</span>
+          )}
+        </div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span
+            className="text-sm text-text-secondary"
+            title="Tasks that ran with no role assigned — a routing-health signal, and the one number /app/team cannot show, because its query filters roleSlug IS NOT NULL."
+          >
+            {stats.unassigned} task{stats.unassigned === 1 ? '' : 's'} ran with no role ({window})
+          </span>
+        </div>
+        <a
+          href="/app/team"
+          data-testid="per-role-link"
+          className="inline-block text-xs text-accent hover:underline"
+        >
+          per role →
+        </a>
+      </div>
+    </div>
   );
 }
 
@@ -1597,7 +1797,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
 // and every bar is directly labelled with its count.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const FAILURE_WINDOW_OPTIONS: { value: FailureWindow; label: string }[] = [
+const WINDOW_OPTIONS: { value: FailureWindow; label: string }[] = [
   { value: '24h', label: '24h' },
   { value: '7d', label: '7d' },
   { value: '30d', label: '30d' },
@@ -1624,8 +1824,16 @@ function exitCauseLabel(cause: string): string {
   return EXIT_CAUSE_LABELS[cause] ?? cause;
 }
 
-/** URL-state window picker (?failureWindow=), so the view is shareable. */
-function FailureWindowPicker({ window: current }: { window: FailureWindow }) {
+/**
+ * The page's ONE window control, in URL state (`?window=`) so the view is
+ * shareable. It used to be a per-section control on Worker failures while three
+ * other sections were hardcoded to windows of their own.
+ *
+ * Always writes `window` and always clears `failureWindow`: the deprecated alias
+ * is read on entry for old links (`page.tsx`), but a leftover copy of it must not
+ * be able to outlive a selection made here.
+ */
+function WindowPicker({ window: current }: { window: FailureWindow }) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -1634,8 +1842,8 @@ function FailureWindowPicker({ window: current }: { window: FailureWindow }) {
   const select = (value: FailureWindow) => {
     if (value === current) return;
     const params = new URLSearchParams(searchParams.toString());
-    if (value === '7d') params.delete('failureWindow');
-    else params.set('failureWindow', value);
+    params.set('window', value);
+    params.delete('failureWindow');
     const qs = params.toString();
     startTransition(() => router.replace(`${pathname}${qs ? `?${qs}` : ''}`, { scroll: false }));
   };
@@ -1643,11 +1851,11 @@ function FailureWindowPicker({ window: current }: { window: FailureWindow }) {
   return (
     <div
       role="group"
-      aria-label="Failure window"
-      data-testid="failure-window-picker"
+      aria-label="Window"
+      data-testid="health-window-picker"
       className={`flex border-2 border-border-strong bg-surface-2 ${pending ? 'opacity-60' : ''}`}
     >
-      {FAILURE_WINDOW_OPTIONS.map((o) => (
+      {WINDOW_OPTIONS.map((o) => (
         <button
           key={o.value}
           type="button"
@@ -1679,13 +1887,16 @@ function FailureAnalyticsSection({
   const { totals, byExitCause, signatures, byRole, byWorkspace, repeatFailureTasks } = analytics;
   const topSignatureCount = signatures[0]?.count ?? 0;
   const topCauseCount = byExitCause[0]?.count ?? 0;
-  const stillRunning = Math.max(0, totals.started - totals.completed - totals.failed);
 
   return (
-    <section data-testid="health-section-failure-analytics" className="mb-6">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="section-label">Worker failures</h2>
-        <FailureWindowPicker window={activeWindow} />
+    <div data-testid="health-section-failure-analytics" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Worker failures</h3>
+        {/* This section's own population — terminal worker sessions — stated
+            here rather than page-wide, because the sections below count tasks. */}
+        <span data-testid="failure-denominator" className="text-[11px] text-text-muted">
+          {sectionDenominator(totals.terminal, 'terminal worker sessions')} ({activeWindow})
+        </span>
       </div>
 
       {totals.started === 0 ? (
@@ -1695,9 +1906,12 @@ function FailureAnalyticsSection({
       ) : (
         <div className="card divide-y divide-border-default">
           {/* Headline stat tiles */}
-          <div className="px-4 py-3 grid grid-cols-3 gap-3" data-testid="failure-headline">
+          <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="failure-headline">
             <div>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+              <span
+                className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator — they have not had the chance to fail yet, and counting them made this number drift downward as work landed."
+              >
                 Failure rate
               </span>
               <p
@@ -1707,7 +1921,7 @@ function FailureAnalyticsSection({
                 {totals.failureRatePct}%
               </p>
               <p className="text-xs text-text-muted tabular-nums">
-                {totals.failed} of {totals.started} workers
+                {totals.failed} of {totals.terminal} terminal
               </p>
             </div>
             <div>
@@ -1729,6 +1943,10 @@ function FailureAnalyticsSection({
                 {totals.diedEarlySharePct}% of failures · ≤2 turns, $0
               </p>
             </div>
+            {/* Two classes, so two tiles. `completed` is a TREND (it counts a
+                window); `still running` is a STATE (it is true right now and a
+                window cannot make it more true). One tile could only lie about
+                one of them. */}
             <div>
               <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
                 Completed
@@ -1736,7 +1954,21 @@ function FailureAnalyticsSection({
               <p className="text-xl font-bold tabular-nums leading-tight text-text-primary">
                 {totals.completed}
               </p>
-              <p className="text-xs text-text-muted tabular-nums">{stillRunning} still running</p>
+              <p className="text-xs text-text-muted tabular-nums">
+                of {totals.terminal} terminal ({activeWindow})
+              </p>
+            </div>
+            <div>
+              <span className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
+                Still running
+              </span>
+              <p
+                data-testid="failure-still-running"
+                className="text-xl font-bold tabular-nums leading-tight text-text-primary"
+              >
+                {totals.stillRunning}
+              </p>
+              <p className="text-xs text-text-muted tabular-nums">as of now</p>
             </div>
           </div>
 
@@ -1872,7 +2104,7 @@ function FailureAnalyticsSection({
                           <span className="text-xs text-text-primary truncate">{r.roleSlug}</span>
                           <span className="text-xs tabular-nums shrink-0">
                             <span className={failureRateClass(r.failureRatePct)}>{r.failureRatePct}%</span>
-                            <span className="text-text-muted"> · {r.failed}/{r.started}</span>
+                            <span className="text-text-muted"> · {r.failed}/{r.terminal}</span>
                           </span>
                         </div>
                       ))}
@@ -1889,7 +2121,7 @@ function FailureAnalyticsSection({
                           <span className="text-xs text-text-primary truncate">{w.workspaceName}</span>
                           <span className="text-xs tabular-nums shrink-0">
                             <span className={failureRateClass(w.failureRatePct)}>{w.failureRatePct}%</span>
-                            <span className="text-text-muted"> · {w.failed}/{w.started}</span>
+                            <span className="text-text-muted"> · {w.failed}/{w.terminal}</span>
                           </span>
                         </div>
                       ))}
@@ -1925,6 +2157,6 @@ function FailureAnalyticsSection({
           )}
         </div>
       )}
-    </section>
+    </div>
   );
 }

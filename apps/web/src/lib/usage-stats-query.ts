@@ -6,7 +6,7 @@
 
 import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
-import { and, desc, gte, inArray } from 'drizzle-orm';
+import { and, desc, gte, inArray, lt } from 'drizzle-orm';
 import type { UsageWorkerRow } from './usage-stats';
 
 /** Cap on worker rows scanned per request. Keeps a 30d team-wide window bounded. */
@@ -26,6 +26,12 @@ export const USAGE_ROW_LIMIT = 5000;
 export async function fetchUsageRows(opts: {
   workspaceIds: string[];
   windowStart: Date;
+  /**
+   * Exclusive upper bound, for reading a PREVIOUS period of equal length beside
+   * the current one. Exclusive so a worker sitting exactly on the boundary is
+   * counted in the newer period only, never in both.
+   */
+  windowEnd?: Date;
   limit?: number;
 }): Promise<UsageWorkerRow[]> {
   if (opts.workspaceIds.length === 0) return [];
@@ -34,6 +40,7 @@ export async function fetchUsageRows(opts: {
     where: and(
       inArray(workers.workspaceId, opts.workspaceIds),
       gte(workers.completedAt, opts.windowStart),
+      opts.windowEnd ? lt(workers.completedAt, opts.windowEnd) : undefined,
     ),
     columns: {
       id: true,
