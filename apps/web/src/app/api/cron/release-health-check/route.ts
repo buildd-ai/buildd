@@ -1,9 +1,13 @@
 // GET /api/cron/release-health-check
 //
 // Post-deploy health watch window: for every release that reached `healthy`
-// within the last 30 minutes with an http verification strategy, probe the
+// within the watch window with an http verification strategy, probe the
 // workspace's verificationUrl once. On non-2xx or network error, transition
 // the release to `degraded` and auto-file a degradation task in the workspace.
+//
+// The window is derived from this job's declared cadence, not hand-typed: a
+// window narrower than the poll interval silently skips every release that
+// lands in the gap (see apps/web/src/lib/cron-cadence.ts).
 //
 // Also sweeps releases stuck in `deploying`: verifyReleaseDeployment only ever
 // runs once, fire-and-forget, when a release enters `deploying` (see
@@ -15,7 +19,8 @@
 // (state='failed') for ones stuck past HARD_FAIL_STALE_HOURS so the release
 // reaches a terminal state instead of hanging indefinitely.
 //
-// Runs every 2 minutes via Vercel Cron (vercel.json).
+// Trigger: cron-manifest.json (external scheduler). Vercel-native crons do not
+// fire in this project, so nothing may be parked in vercel.json.
 // Auth: Bearer token matching CRON_SECRET env var.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -24,11 +29,16 @@ import { releases, workspaces } from '@buildd/core/db/schema';
 import { eq, and, gte, lt, sql } from 'drizzle-orm';
 import { probeAndDegrade } from '@/lib/release-health-watcher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
+import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 
 export const maxDuration = 60;
 
-const WATCH_WINDOW_MINUTES = 30;
+const WATCH_WINDOW_MINUTES = releaseWatchWindowMinutes();
+// Retry cutoff, not a cadence: a release still in `deploying` this long after
+// dispatch has missed its one fire-and-forget verification attempt. The actual
+// retry lands on the next tick, so worst-case retry latency is this plus the
+// poll interval.
 const RETRY_STALE_MINUTES = 10;
 const HARD_FAIL_STALE_HOURS = 24;
 

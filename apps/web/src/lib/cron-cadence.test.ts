@@ -4,6 +4,7 @@ import { resolve } from 'path';
 import {
   CRON_SCHEDULES,
   cronIntervalMinutes,
+  releaseWatchWindowMinutes,
   sweepLookaheadMinutes,
   LOOKAHEAD_SAFETY_FACTOR,
 } from './cron-cadence';
@@ -99,5 +100,23 @@ describe('sweepLookaheadMinutes', () => {
     expect(sweepLookaheadMinutes()).toBe(300);
     process.env[KEY] = '-5';
     expect(sweepLookaheadMinutes()).toBe(300);
+  });
+});
+
+describe('releaseWatchWindowMinutes', () => {
+  it('covers a full poll interval, so no healthy release falls in a gap', () => {
+    // A 30-minute window on an hourly cron would leave a release that turned
+    // healthy at :10 outside the window by the next :05 tick — never probed.
+    const interval = cronIntervalMinutes(CRON_SCHEDULES['release-health-check']);
+    expect(releaseWatchWindowMinutes()).toBeGreaterThanOrEqual(interval);
+  });
+
+  it('is 75min at the current hourly cadence', () => {
+    expect(releaseWatchWindowMinutes()).toBe(75);
+  });
+
+  it('tracks the cadence in both directions', () => {
+    expect(releaseWatchWindowMinutes('*/2 * * * *')).toBe(3);
+    expect(releaseWatchWindowMinutes('0 */4 * * *')).toBe(300);
   });
 });

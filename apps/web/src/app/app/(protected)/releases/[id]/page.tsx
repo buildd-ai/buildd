@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
+import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import ReleaseAutoRefresh from './ReleaseAutoRefresh';
 
 export const dynamic = 'force-dynamic';
@@ -114,7 +115,8 @@ export default async function ReleaseDetailPage({
     .limit(1);
   const degradationTaskId = degradationTaskRow?.id ?? null;
 
-  const WATCH_WINDOW_MS = 30 * 60 * 1000;
+  // Same window the cron actually probes with, derived from its cadence.
+  const WATCH_WINDOW_MS = releaseWatchWindowMinutes() * 60 * 1000;
   const watchRemainingMin = release.healthyAt
     ? Math.max(0, Math.floor((WATCH_WINDOW_MS - (Date.now() - new Date(String(release.healthyAt)).getTime())) / 60000))
     : 0;
