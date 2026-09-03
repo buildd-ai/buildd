@@ -341,6 +341,7 @@ export function HealthClient({
     credentialHealth.length > 0 ||
     strandedBackends.length > 0 ||
     offlineRunners.length > 0 ||
+    degradedSandboxRunners.length > 0 ||
     failedSchedules.length > 0 ||
     recentFailures.length > 0;
 
