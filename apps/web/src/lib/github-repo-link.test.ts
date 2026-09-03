@@ -94,7 +94,7 @@ beforeEach(() => {
 
 describe('syncInstallationRepos', () => {
   it('upserts every repo on the installation and returns back-linked workspace ids', async () => {
-    ghRepos = [makeGhRepo(), makeGhRepo({ id: 2, full_name: 'maxjacu/wix-moa-market', name: 'wix-moa-market' })];
+    ghRepos = [makeGhRepo(), makeGhRepo({ id: 2, full_name: 'maxjacu/second-app', name: 'second-app' })];
     executeRows = [{ id: 'ws-sibling-app' }];
 
     const result = await syncInstallationRepos({ id: 'inst-row-1', installationId: 155534927 });
@@ -116,7 +116,7 @@ describe('syncInstallationRepos', () => {
   });
 
   it('issues exactly one back-link statement per sync', async () => {
-    ghRepos = [makeGhRepo(), makeGhRepo({ id: 2, full_name: 'maxjacu/recut', name: 'recut' })];
+    ghRepos = [makeGhRepo(), makeGhRepo({ id: 2, full_name: 'maxjacu/legacy-app', name: 'legacy-app' })];
     await syncInstallationRepos({ id: 'inst-row-1', installationId: 155534927 });
 
     // One multi-row upsert + one UPDATE ... FROM, regardless of repo count.

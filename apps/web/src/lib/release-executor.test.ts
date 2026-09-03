@@ -420,7 +420,7 @@ describe('executeRelease — releases row creation', () => {
   }
   function setupContinuousWorkspace() {
     mockWorkspacesFindFirst.mockResolvedValue({
-      name: 'moa-ops',
+      name: 'trunk-ops',
       releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' },
       gitConfig: { requiresPR: false, defaultBranch: 'main' },
       githubRepoId: 'repo-1',

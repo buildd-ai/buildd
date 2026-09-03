@@ -18,22 +18,36 @@ import { createHash } from 'crypto';
 const client = neon(config.databaseUrl);
 const db = drizzle(client);
 
-// Origin for the private sibling app's MCP endpoints. Deliberately NOT
-// hardcoded: this repo is public and the host is resolvable. The role slugs and
-// ${MOA_OPS_API_KEY} env contract below are unchanged, because the MCPS keys
-// become MCP server names in the DB and feed the `mcp__moa-ops__*` tool-name
-// regex in packages/core/mcp-tools.ts — renaming them would break notification
-// hint detection and require a re-seed.
+// Origin AND name for the private sibling app's MCP endpoints. Neither is
+// hardcoded: this repo is public, and both the host and the connector name are
+// production identifiers. The name is load-bearing in three places at once --
+// it becomes the MCP server key in the DB (and therefore the `mcp__<name>__*`
+// tool names the agent sees), the ${...}_API_KEY env contract, and the secret
+// label -- so all three are derived from one variable rather than restated as
+// literals. Both vars are REQUIRED: defaulting would silently seed a connector
+// under the wrong name, which reads as a working run.
 const SIBLING_MCP_ORIGIN = process.env.SIBLING_MCP_ORIGIN;
-if (!SIBLING_MCP_ORIGIN) {
-  console.error('SIBLING_MCP_ORIGIN is not set — required for the sibling-app MCP entries.');
-  console.error('Example: SIBLING_MCP_ORIGIN=https://<host> bun scripts/seed-role-mcps.ts');
+const SIBLING_MCP_NAME = process.env.SIBLING_MCP_NAME;
+if (!SIBLING_MCP_ORIGIN || !SIBLING_MCP_NAME) {
+  console.error('SIBLING_MCP_ORIGIN and SIBLING_MCP_NAME are both required for the sibling-app MCP entries.');
+  console.error('Example: SIBLING_MCP_ORIGIN=https://<host> SIBLING_MCP_NAME=<name> bun scripts/seed-role-mcps.ts');
   process.exit(1);
 }
 
+// Derived, so the connector name exists in exactly one place.
+const SIBLING_FINANCE_NAME = `${SIBLING_MCP_NAME}-finance`;
+const SIBLING_ENV_VAR = `${SIBLING_MCP_NAME.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_API_KEY`;
+const SIBLING_SECRET_LABEL = `${SIBLING_MCP_NAME}-api-key`;
+
 // ── MCP Server Templates (using ${VAR} interpolation for secrets) ──
 
-const MCPS = {
+interface McpServerTemplate {
+  type: string;
+  url: string;
+  headers: Record<string, string>;
+}
+
+const MCPS: Record<string, McpServerTemplate> = {
   buildd: {
     type: 'http',
     url: 'https://buildd.dev/api/mcp',
@@ -44,15 +58,15 @@ const MCPS = {
     url: 'https://dispatch.buildd.dev/api/mcp',
     headers: { 'x-api-key': '${DISPATCH_API_KEY}' },
   },
-  'moa-ops': {
+  [SIBLING_MCP_NAME]: {
     type: 'http',
     url: `${SIBLING_MCP_ORIGIN}/api/mcp`,
-    headers: { Authorization: 'Bearer ${MOA_OPS_API_KEY}' },
+    headers: { Authorization: `Bearer \${${SIBLING_ENV_VAR}}` },
   },
-  'moa-ops-finance': {
+  [SIBLING_FINANCE_NAME]: {
     type: 'http',
     url: `${SIBLING_MCP_ORIGIN}/api/mcp/finance`,
-    headers: { Authorization: 'Bearer ${MOA_OPS_API_KEY}' },
+    headers: { Authorization: `Bearer \${${SIBLING_ENV_VAR}}` },
   },
 };
 
@@ -83,15 +97,15 @@ const ROLE_UPDATES: RoleUpdate[] = [
   },
   {
     slug: 'ops',
-    mcpServers: { buildd: MCPS.buildd, 'moa-ops': MCPS['moa-ops'] },
-    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key', MOA_OPS_API_KEY: 'moa-ops-api-key' },
+    mcpServers: { buildd: MCPS.buildd, [SIBLING_MCP_NAME]: MCPS[SIBLING_MCP_NAME] },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key', [SIBLING_ENV_VAR]: SIBLING_SECRET_LABEL },
     allowedTools: [], // all tools
     canDelegateTo: ['builder'],
   },
   {
     slug: 'finance',
-    mcpServers: { buildd: MCPS.buildd, 'moa-ops-finance': MCPS['moa-ops-finance'], dispatch: MCPS.dispatch },
-    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key', MOA_OPS_API_KEY: 'moa-ops-api-key', DISPATCH_API_KEY: 'dispatch-api-key' },
+    mcpServers: { buildd: MCPS.buildd, [SIBLING_FINANCE_NAME]: MCPS[SIBLING_FINANCE_NAME], dispatch: MCPS.dispatch },
+    requiredEnvVars: { BUILDD_API_KEY: 'buildd-api-key', [SIBLING_ENV_VAR]: SIBLING_SECRET_LABEL, DISPATCH_API_KEY: 'dispatch-api-key' },
     allowedTools: ['Read', 'Grep', 'Glob', 'WebSearch', 'WebFetch', 'Agent'],
     canDelegateTo: [],
   },
@@ -251,7 +265,7 @@ async function main() {
   console.log('\nReminder: Ensure these secrets exist in the secrets table with purpose=\'mcp_credential\':');
   console.log('  - label: buildd-api-key');
   console.log('  - label: dispatch-api-key');
-  console.log('  - label: moa-ops-api-key');
+  console.log(`  - label: ${SIBLING_SECRET_LABEL}`);
   process.exit(0);
 }
 
