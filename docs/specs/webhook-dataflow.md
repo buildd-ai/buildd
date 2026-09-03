@@ -242,7 +242,8 @@ watching GitHub can see an agent is on it without opening the dashboard.
   `scripts/generate-pr-spinner-gif.ts`
 - Callers: `apps/web/src/app/api/github/webhook/route.ts` (reviewer dispatch,
   pre-flight escalation, CI retry/exhaustion, branch pushes, PR close),
-  `apps/web/src/app/api/workers/[id]/route.ts` (reviewer verdicts)
+  `apps/web/src/app/api/workers/[id]/route.ts` (reviewer verdicts),
+  `apps/web/src/app/api/github/pr/review/route.ts` (on-demand review requests)
 - Timezone resolution: `packages/core/timezone.ts`,
   `apps/web/src/lib/team-timezone.ts`
 

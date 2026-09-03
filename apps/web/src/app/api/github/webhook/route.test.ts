@@ -292,6 +292,12 @@ mock.module('@/lib/release-verification', () => ({
   verifyReleaseDeployment: mock(() => Promise.resolve()),
 }));
 
+// On-demand review callbacks — asserted below, stubbed here.
+const mockDeliverPrReviewCallback = mock(() => Promise.resolve('fired' as const));
+mock.module('@/lib/pr-review-request', () => ({
+  deliverPrReviewCallback: mockDeliverPrReviewCallback,
+}));
+
 // Import handler AFTER mocks
 import { POST } from './route';
 // Real renderer (not mocked) — the tests below assert on comment bodies the
@@ -2015,6 +2021,67 @@ describe('POST /api/github/webhook', () => {
         (c) => c[1] === '/repos/test-org/test-repo/issues/61/comments' && c[2]?.method === 'POST',
       );
       expect(post).toBeUndefined();
+    });
+
+    it('delivers a pending review callback when the PR merges', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-cb',
+        workspaceId: 'ws1',
+        taskId: 'task-cb',
+        prNumber: 70,
+        task: { id: 'task-cb', status: 'completed', workspaceId: 'ws1', release: 'false', missionId: null },
+      });
+      mockDeliverPrReviewCallback.mockClear();
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 70,
+          merged: true,
+          draft: false,
+          head: { ref: 'fix/thing', sha: 'sha-70' },
+          base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/70',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+      expect(mockDeliverPrReviewCallback).toHaveBeenCalledTimes(1);
+      expect(mockDeliverPrReviewCallback.mock.calls[0][0]).toMatchObject({
+        workspaceId: 'ws1',
+        prNumber: 70,
+        repoFullName: 'test-org/test-repo',
+      });
+    });
+
+    it('delivers the callback on a close without merge too — nothing will land', async () => {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w-cb2',
+        workspaceId: 'ws1',
+        taskId: 'task-cb2',
+        prNumber: 71,
+        task: { id: 'task-cb2', status: 'completed', workspaceId: 'ws1', release: 'false', missionId: null },
+      });
+      mockDeliverPrReviewCallback.mockClear();
+
+      await POST(createWebhookRequest('pull_request', {
+        action: 'closed',
+        pull_request: {
+          number: 71,
+          merged: false,
+          draft: false,
+          head: { ref: 'fix/thing', sha: 'sha-71' },
+          base: { ref: 'dev' },
+          html_url: 'https://github.com/test-org/test-repo/pull/71',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      }));
+
+      expect(mockDeliverPrReviewCallback).toHaveBeenCalledTimes(1);
     });
 
     it('sets prLifecycleStatus=ci_running on check_suite requested', async () => {

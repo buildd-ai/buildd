@@ -37,6 +37,7 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { deliverPrReviewCallback } from '@/lib/pr-review-request';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -677,6 +678,18 @@ async function handlePullRequestEvent(event: {
         : { kind: 'closed_unmerged' },
       onlyIfPresent: true,
       workspaceId: worker?.workspaceId ?? null,
+    });
+  }
+
+  // An on-demand review can be waiting on the PR itself rather than on the
+  // verdict (`callbackOn: 'merge'`), and a PR closed mid-review will never
+  // reach a verdict at all — either way the close is the moment to tell the
+  // requester. Single-fire and best-effort inside the helper.
+  if (worker?.workspaceId) {
+    await deliverPrReviewCallback({
+      workspaceId: worker.workspaceId,
+      prNumber: pr.number,
+      repoFullName: repository.full_name,
     });
   }
 
