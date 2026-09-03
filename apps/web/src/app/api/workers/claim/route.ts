@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
+import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -45,6 +45,7 @@ import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { isBudgetExhausted } from '@/lib/budget-errors';
 import { attachMcpConnectors } from './mcp-connector-injection';
+import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
 import {
   attachClaudeCredentials,
   attachCodexCredentials,
@@ -1956,152 +1957,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Resolve skill bundles for claimed workers
-  for (const cw of claimedWorkers) {
-    const ctx = (cw.task as any)?.context as { skillSlugs?: string[] } | undefined;
-    if (!ctx?.skillSlugs || ctx.skillSlugs.length === 0) continue;
-
-    const taskObj = filteredTasks.find(t => t.id === cw.taskId);
-    const wsId = taskObj?.workspaceId;
-    if (!wsId) continue;
-
-    const slugs = ctx.skillSlugs;
-    const bundles: SkillBundle[] = [];
-
-    // Look up workspace-level skills (enabled only)
-    if (slugs.length > 0) {
-      const wsSkills = await db.query.workspaceSkills.findMany({
-        where: and(
-          eq(workspaceSkills.workspaceId, wsId),
-          inArray(workspaceSkills.slug, slugs),
-          eq(workspaceSkills.enabled, true),
-        ),
-      });
-
-      const foundSlugs = new Set<string>();
-      for (const ws of wsSkills) {
-        foundSlugs.add(ws.slug);
-        const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
-        bundles.push({
-          slug: ws.slug,
-          name: ws.name,
-          description: ws.description || undefined,
-          content: ws.content,
-          ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
-          model: (ws.model ?? 'inherit') as string,
-          allowedTools: (ws.allowedTools as string[]) || [],
-          canDelegateTo: (ws.canDelegateTo as string[]) || [],
-          background: ws.background ?? false,
-          maxTurns: ws.maxTurns ?? null,
-          mcpServers: (ws.mcpServers as string[]) || [],
-          requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
-        });
-      }
-
-      // Fallback: account-level skills for slugs not found at workspace level
-      const missingSlugs = slugs.filter(s => !foundSlugs.has(s));
-      if (missingSlugs.length > 0) {
-        const acctSkills = await db.query.workspaceSkills.findMany({
-          where: and(
-            eq(workspaceSkills.accountId, account.id),
-            inArray(workspaceSkills.slug, missingSlugs),
-            eq(workspaceSkills.enabled, true),
-          ),
-        });
-        for (const ws of acctSkills) {
-          const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
-          bundles.push({
-            slug: ws.slug,
-            name: ws.name,
-            description: ws.description || undefined,
-            content: ws.content,
-            ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
-            model: (ws.model ?? 'inherit') as string,
-            allowedTools: (ws.allowedTools as string[]) || [],
-            canDelegateTo: (ws.canDelegateTo as string[]) || [],
-            background: ws.background ?? false,
-            maxTurns: ws.maxTurns ?? null,
-            mcpServers: (ws.mcpServers as string[]) || [],
-            requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
-          });
-        }
-      }
-    }
-
-    if (bundles.length > 0) {
-      (cw as any).skillBundles = bundles;
-    }
-  }
-
-  // Enrich claimed workers with role config (for role-based task routing)
-  if (isStorageConfigured()) {
-    for (const cw of claimedWorkers) {
-      const task = filteredTasks.find(t => t.id === cw.taskId);
-      const roleSlug = (task as any)?.roleSlug as string | null;
-      if (!roleSlug) continue;
-
-      const wsId = task?.workspaceId;
-      if (!wsId) continue;
-
-      // Look up the role: workspace override > team default (§C.2 precedence).
-      const teamId = (task as any).workspace?.teamId as string | undefined;
-      let role;
-
-      if (teamId) {
-        const rows = await db.select()
-          .from(workspaceSkills)
-          .where(and(
-            eq(workspaceSkills.teamId, teamId),
-            eq(workspaceSkills.slug, roleSlug),
-            eq(workspaceSkills.enabled, true),
-            eq(workspaceSkills.isRole, true),
-            or(
-              isNull(workspaceSkills.workspaceId),
-              eq(workspaceSkills.workspaceId, wsId),
-            ),
-          ))
-          .orderBy(sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`)
-          .limit(1);
-        role = rows[0];
-      }
-
-      // Legacy account-level fallback
-      if (!role) {
-        role = await db.query.workspaceSkills.findFirst({
-          where: and(
-            eq(workspaceSkills.accountId, account.id),
-            eq(workspaceSkills.slug, roleSlug),
-            eq(workspaceSkills.enabled, true),
-            eq(workspaceSkills.isRole, true),
-          ),
-        });
-      }
-
-      if (role?.configStorageKey && role?.configHash) {
-        const configUrl = await generateDownloadUrl(role.configStorageKey);
-        (cw as any).roleConfig = {
-          slug: role.slug,
-          configHash: role.configHash,
-          configUrl,
-          type: role.repoUrl ? 'builder' : 'service',
-          repoUrl: role.repoUrl || undefined,
-          model: role.model,
-          allowedTools: (role.allowedTools as string[]) || [],
-          canDelegateTo: (role.canDelegateTo as string[]) || [],
-          background: role.background ?? false,
-          maxTurns: role.maxTurns ?? null,
-        };
-      }
-
-      // CBM escape hatch: a role opts out of CBM enforcement by setting
-      // mcpServers['codebase-memory'] = false in its skill record (DB).
-      // Checked independently of configStorageKey so opt-out works without R2.
-      const roleMcpServers = role?.mcpServers as Record<string, unknown> | null | undefined;
-      if (roleMcpServers?.['codebase-memory'] === false) {
-        (cw as any).cbmDisabled = true;
-      }
-    }
-  }
+  // Resolve the skill bundles the task asked for, and the role config its agent
+  // runs under (workspace override > team default). See ./skill-and-role-injection.
+  await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
+  await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
 
   // Resolve context providers — fetch external context at claim time for prompt injection
   for (const cw of claimedWorkers) {
