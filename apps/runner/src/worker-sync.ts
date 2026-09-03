@@ -287,8 +287,10 @@ export class WorkerSync {
       // Restored below if the PATCH throws, so nothing is lost.
       const drainedMcpCalls = worker.pendingMcpCalls?.length ? worker.pendingMcpCalls : null;
       const drainedErrorTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
+      const drainedActionEvents = worker.pendingActionEvents?.length ? worker.pendingActionEvents : null;
       if (drainedMcpCalls) worker.pendingMcpCalls = [];
       if (drainedErrorTraces) worker.pendingErrorTraces = [];
+      if (drainedActionEvents) worker.pendingActionEvents = [];
 
       // Passive observed-touches: compute files touched on the branch for §6d.
       // ~5ms shell call; fail-open (returns [] on error). Only computed when a worktree exists.
@@ -304,6 +306,7 @@ export class WorkerSync {
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
         ...(drainedMcpCalls ? { appendMcpCalls: drainedMcpCalls } : {}),
         ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
+        ...(drainedActionEvents ? { appendActionEvents: drainedActionEvents } : {}),
         // Paths written while path-claim endpoint was unreachable; server registers retroactively.
         // Included on every sync while the queue is non-empty — the hook clears it on the next
         // successful claim call, so this is a safety net, not the primary flush path.
@@ -331,6 +334,7 @@ export class WorkerSync {
         // sync ships them. (The outbox handles retry for the rest of the payload.)
         if (drainedMcpCalls) worker.pendingMcpCalls = [...drainedMcpCalls, ...(worker.pendingMcpCalls ?? [])];
         if (drainedErrorTraces) worker.pendingErrorTraces = [...drainedErrorTraces, ...(worker.pendingErrorTraces ?? [])];
+        if (drainedActionEvents) worker.pendingActionEvents = [...drainedActionEvents, ...(worker.pendingActionEvents ?? [])];
         throw err;
       }
 

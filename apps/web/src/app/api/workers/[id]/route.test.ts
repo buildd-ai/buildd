@@ -250,6 +250,7 @@ mock.module('@buildd/core/db/schema', () => ({
   connectors: 'connectors',
   secrets: 'secrets',
   workerErrorTraces: { workerId: 'workerId' },
+  workerActionEvents: { workerId: 'workerId' },
   missions: 'missions',
   taskSchedules: 'taskSchedules',
   backendPauses: 'backendPauses',
@@ -2616,6 +2617,96 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(capturedTaskSet).not.toBeNull();
       expect(capturedTaskSet.result.mcpServers).toEqual(['github', 'slack']);
+    });
+  });
+
+  describe('appendActionEvents', () => {
+    beforeEach(() => {
+      lastInsertTable = null;
+      lastInsertValues = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+    });
+
+    it('inserts buildd action events into worker_action_events', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendActionEvents: [
+            { action: 'create_pr', ts: 1000 },
+            { action: 'update_progress', ts: 1500 },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(2);
+      expect(lastInsertValues[0]).toMatchObject({ workerId: 'worker-1', taskId: 'task-1', action: 'create_pr' });
+      expect(lastInsertValues[0].ts).toBeInstanceOf(Date);
+      expect(lastInsertValues[1]).toMatchObject({ action: 'update_progress' });
+    });
+
+    it('drops malformed events (missing action or non-numeric ts)', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendActionEvents: [
+            { action: 'create_pr', ts: 1000 },
+            { action: '', ts: 1000 },
+            { ts: 1000 },
+            { action: 'no_timestamp' },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(1);
+      expect(lastInsertValues[0].action).toBe('create_pr');
+    });
+
+    it('caps action events at 200 per request', async () => {
+      const events = Array.from({ length: 250 }, (_, i) => ({ action: `action_${i}`, ts: i }));
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', appendActionEvents: events },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(200);
+    });
+
+    it('does not insert when appendActionEvents is absent', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeNull();
     });
   });
 

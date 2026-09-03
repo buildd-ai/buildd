@@ -153,6 +153,7 @@ export class BuilddClient {
     milestones?: any[];
     appendMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;
     appendErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;
+    appendActionEvents?: Array<{ action: string; ts: number }>;
     // Transient subagent progress (forwarded over Pusher, never persisted).
     // agentId/parentAgentId (SDK v0.3.202+) carry the agent-tree hierarchy.
     taskProgress?: Array<{

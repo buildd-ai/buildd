@@ -29,6 +29,7 @@ import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, cre
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
+import { extractBuilddAction } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
@@ -4149,6 +4150,20 @@ If something is missing or incomplete, describe what and fix it now.`;
           // is the complete histogram the usage rollups read.
           if (!worker.toolCounts) worker.toolCounts = {};
           recordToolCall(worker.toolCounts, toolName);
+
+          // Per-call event for the buildd MCP tool's decomposed action (see
+          // action-events.ts). The tool histogram above can only ever show one
+          // aggregate bar for this tool; RUNTIME-vs-WORK classification for an
+          // action like create_pr/create_artifact/merge_pr depends on the
+          // CALLING TASK's outputRequirement/loopConfig, not the action name
+          // alone, so it can't be resolved into a count at capture time — this
+          // buffers a raw event (action + when) for a later join, same pattern
+          // as pendingErrorTraces. No-ops for every other tool name.
+          const builddAction = extractBuilddAction(toolName, input);
+          if (builddAction) {
+            if (!worker.pendingActionEvents) worker.pendingActionEvents = [];
+            worker.pendingActionEvents.push({ action: builddAction, ts: Date.now() });
+          }
 
           // CBM observability: count per-tool CBM calls and file-access tool calls.
           if (toolName.startsWith('mcp__codebase-memory__')) {
