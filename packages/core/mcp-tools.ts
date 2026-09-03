@@ -554,7 +554,7 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
  * Looks at task template skillSlugs and description/title for known notification
  * patterns. Returns null when nothing recognisable matches.
  */
-function describeOutputChannel(taskTemplate: unknown): string | null {
+export function describeOutputChannel(taskTemplate: unknown): string | null {
   if (!taskTemplate || typeof taskTemplate !== 'object') return null;
   const tpl = taskTemplate as Record<string, unknown>;
   const ctx = (tpl.context as Record<string, unknown> | undefined) ?? {};
@@ -566,7 +566,11 @@ function describeOutputChannel(taskTemplate: unknown): string | null {
   ].join(' ').toLowerCase();
 
   const hints: string[] = [];
-  if (/pushover|send_pushover|send_notification|mcp__dispatch|mcp__moa-ops|moa_ops__send_pushover/.test(haystack)) {
+  // Matches the CAPABILITY, never a connector's name: this repo is public and
+  // connector names are production identifiers. A real tool name carries the
+  // verb (`mcp__<connector>__send_pushover`), which `send_pushover` already
+  // covers. See mcp-tools-output-channel.test.ts.
+  if (/pushover|send_pushover|send_notification|mcp__dispatch/.test(haystack)) {
     hints.push('pushover');
   }
   if (/dispatch|cue\.buildd\.dev/.test(haystack)) hints.push('dispatch');
