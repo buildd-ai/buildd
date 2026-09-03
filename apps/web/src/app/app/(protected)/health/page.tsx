@@ -24,7 +24,8 @@ import {
   type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
-import { aggregateCbm, summarizeCbm, type CbmHealthSummary, type CbmRow } from '@/lib/cbm-insight';
+import type { CbmHealthSummary } from '@/lib/cbm-insight';
+import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { HealthClient } from './HealthClient';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
@@ -375,26 +376,13 @@ export default async function HealthPage({
     // Codebase graph (CBM). TREND — obeys the page window (was pinned to 7d).
     // Same aggregation the /api/cbm/metrics endpoint returns — the page used to
     // show CBM only as rows in the generic top-tools list, which cannot
-    // distinguish "mounted and never queried" from healthy.
-    (async (): Promise<CbmHealthSummary | null> => {
-      const windowStart = new Date(Date.now() - parseWindowMs(window));
-      const rows = await db.query.workers.findMany({
-        where: and(
-          eq(workers.status, 'completed'),
-          sql`${workers.completedAt} >= ${windowStart}`,
-          scopedWsIds.length > 0 ? inArray(workers.workspaceId, scopedWsIds) : sql`false`,
-        ),
-        columns: { inputTokens: true, resultMeta: true },
-        limit: 5000,
-      });
-      const cbmRows: CbmRow[] = [];
-      for (const r of rows as any[]) {
-        const cbm = r.resultMeta?.cbm;
-        if (cbm) cbmRows.push({ inputTokens: r.inputTokens ?? 0, cbm });
-      }
-      if (cbmRows.length === 0) return null;
-      return summarizeCbm(aggregateCbm(cbmRows, window, windowStart));
-    })().catch(() => null),
+    // distinguish "mounted and never queried" from healthy. Shared with the
+    // usage drill-down, which runs the same cohort rules on its own window.
+    fetchCbmSummary({
+      workspaceIds: scopedWsIds,
+      window,
+      windowStart: new Date(Date.now() - parseWindowMs(window)),
+    }).catch(() => null),
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
