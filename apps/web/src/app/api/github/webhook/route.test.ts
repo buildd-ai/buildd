@@ -742,13 +742,14 @@ describe('POST /api/github/webhook', () => {
   // ── Check suite handling ────────────────────────────────────────────────
   describe('check_suite handling', () => {
     // Helpers for the CI-failure → retry-task path.
-    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string; foreignCommit?: boolean } = {}) {
+    function withFailedWorkerPr(opts: { taskCtx?: Record<string, unknown>; gitConfig?: Record<string, unknown>; missionId?: string | null; status?: string; foreignCommit?: boolean; taskResult?: Record<string, unknown> } = {}) {
       mockWorkersFindFirst.mockReturnValue({
         id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
         task: {
           id: 't1', title: 'Fix the thing', description: 'orig desc',
           workspaceId: 'ws1', missionId: opts.missionId !== undefined ? opts.missionId : 'm1',
           context: opts.taskCtx ?? {},
+          result: opts.taskResult ?? null,
           status: opts.status ?? 'in_progress',
         },
       });
@@ -850,6 +851,25 @@ describe('POST /api/github/webhook', () => {
       expect(insertCalls.length).toBe(0);
       expect(updateCalls.some(c => (c.setValues as any).status === 'failed')).toBe(true);
       expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves the agent handoff recommendation when it fails the exhausted task', async () => {
+      // Home's blocked card leads with result.nextSuggestion — overwriting the
+      // whole result object on exhaustion would destroy the only advice the
+      // human gets, at exactly the moment they inherit the PR.
+      withFailedWorkerPr({
+        taskCtx: { iteration: 3 },
+        gitConfig: { maxCiRetries: 3 },
+        taskResult: { summary: 'Fixed lint, tests still red', nextSuggestion: 'Backfill migration 0071 by hand, then re-run CI.' },
+      });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      const failUpdate = updateCalls.find(c => (c.setValues as any).status === 'failed');
+      expect(failUpdate).toBeDefined();
+      const result = (failUpdate!.setValues as any).result;
+      expect(result.nextSuggestion).toBe('Backfill migration 0071 by hand, then re-run CI.');
+      expect(result.summary).toContain('CI retry stopped');
     });
 
     it('tells the PR a human is needed once CI retries are exhausted', async () => {

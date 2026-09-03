@@ -213,3 +213,45 @@ describe('buildCIRetryTask', () => {
     expect(t!.context.foreignCommitAuthor).toBeUndefined();
   });
 });
+
+describe('final-attempt handoff request', () => {
+  function params(overrides: Record<string, unknown> = {}) {
+    return {
+      originalTask: {
+        id: 'task-1',
+        title: 'Health tab restructure',
+        description: 'Restructure the health tab.',
+        workspaceId: 'ws-1',
+        context: { iteration: 2, maxIterations: 3 },
+        missionId: 'mis-1',
+      },
+      worker: { id: 'w-1', branch: 'feat/health', prNumber: 2054 },
+      failureContext: 'bun test failed: 3 files',
+      repoFullName: 'org/repo',
+      ...overrides,
+    } as Parameters<typeof buildCIRetryTask>[0];
+  }
+
+  it('asks the final attempt to hand off a recommendation if it cannot fix CI', () => {
+    const task = buildCIRetryTask(params());
+    expect(task).not.toBeNull();
+    expect(task!.title).toContain('#3');
+    expect(task!.description).toContain('final attempt');
+    expect(task!.description).toContain('nextSuggestion');
+  });
+
+  it('does not ask for a handoff on a non-final attempt', () => {
+    const task = buildCIRetryTask(params({
+      originalTask: { ...params().originalTask, context: { iteration: 0, maxIterations: 3 } },
+    }));
+    expect(task!.description).not.toContain('nextSuggestion');
+  });
+
+  it('asks for a handoff when the workspace allows only one attempt', () => {
+    const task = buildCIRetryTask(params({
+      originalTask: { ...params().originalTask, context: { iteration: 0 } },
+      workspaceMaxCiRetries: 1,
+    }));
+    expect(task!.description).toContain('nextSuggestion');
+  });
+});

@@ -15,6 +15,11 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue } from '@/lib/action-queue';
+import { resolveActionCardContext } from '@/lib/action-card-context';
+import { isActionableChip } from '@/lib/action-queue';
+import { resolveCiGate } from '@/lib/ci-gate';
+import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
+import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
 import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
@@ -34,6 +39,8 @@ import { InterruptReviewButton } from './InterruptReviewButton';
 import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
+import { AgentHandledCard } from '@/components/AgentHandledCard';
+import { AgentRecommendation } from '@/components/AgentRecommendation';
 import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
@@ -51,7 +58,7 @@ import {
   type MissionHealth,
   type MissionGroup,
 } from '@/lib/mission-helpers';
-import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveReviewerGate } from '@/lib/reviewer-gate';
 import { StageChip } from '@/components/StageChip';
@@ -207,6 +214,10 @@ export default async function HomePage({
     prNumber: number | null;
     prUrl: string | null;
     policyTier: string;
+    missionId: string | null;
+    missionTitle: string | null;
+    ciGate: CiGate | null;
+    recommendation: string | null;
     leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human';
     escalationReason: string | null;
     verdictSummary: string | null;
@@ -843,8 +854,8 @@ export default async function HomePage({
             columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, completedAt: true },
             with: {
               task: {
-                columns: { id: true, title: true, missionId: true, status: true, requiresReview: true },
-                with: { mission: { columns: { id: true, mergePolicy: true, requiresReview: true } } },
+                columns: { id: true, title: true, missionId: true, status: true, requiresReview: true, result: true },
+                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true } } },
               },
             },
           });
@@ -915,6 +926,12 @@ export default async function HomePage({
             const escalatedMap = new Map(
               [...reviewerEscalationMap].map(([taskId, evidence]) => [taskId, evidence.reason]),
             );
+            // The reviewer's own advice on what the human should do next.
+            const reviewerRecommendationMap = new Map(
+              [...reviewerEscalationMap]
+                .filter(([, evidence]) => evidence.recommendation)
+                .map(([taskId, evidence]) => [taskId, evidence.recommendation as string]),
+            );
             const approvedMap = new Map(
               [...reviewerApprovalMap].map(([taskId, evidence]) => [taskId, evidence.summary]),
             );
@@ -975,6 +992,62 @@ export default async function HomePage({
               }
             }
             // ───────────────────────────────────────────────────────────────────
+
+            // ── CI fix-attempt detection ────────────────────────────────────────
+            // A red PR is only waiting on the human once no [CI Retry] agent is
+            // left working on it (lib/ci-retry.ts). Attempts chain parent→child,
+            // so they are matched on context.prNumber rather than parentTaskId.
+            const ciAttemptMap = new Map<string, {
+              liveTaskId: string | null;
+              liveIteration: number | null;
+              attemptsConsumed: number;
+              recommendation: string | null;
+            }>();
+            {
+              const ciPrNumbers = [...new Set(
+                openPrWorkers.map(w => w.prNumber).filter((n): n is number => n != null),
+              )];
+              if (ciPrNumbers.length > 0) {
+                const attemptTasks = await db.query.tasks.findMany({
+                  where: and(
+                    inArray(tasks.workspaceId, wsIds),
+                    eq(tasks.taskClass, 'attempt'),
+                    sql`(${tasks.context}->>'prNumber') IN (${sql.join(
+                      ciPrNumbers.map(n => sql`${String(n)}`),
+                      sql`, `,
+                    )})`,
+                  ),
+                  columns: { id: true, workspaceId: true, status: true, context: true, result: true },
+                  orderBy: [desc(tasks.createdAt)],
+                });
+                for (const t of attemptTasks) {
+                  const ctx = (t.context ?? {}) as Record<string, unknown>;
+                  const prNumber = Number(ctx.prNumber);
+                  if (!Number.isFinite(prNumber)) continue;
+                  const key = `${t.workspaceId}:${prNumber}`;
+                  const entry = ciAttemptMap.get(key) ?? {
+                    liveTaskId: null, liveIteration: null, attemptsConsumed: 0, recommendation: null,
+                  };
+                  const iteration = typeof ctx.iteration === 'number' ? ctx.iteration : null;
+                  if ((LIVE_TASK_STATUSES as readonly string[]).includes(t.status)) {
+                    // Rows arrive newest-first, so the first live row is the current attempt.
+                    if (!entry.liveTaskId) {
+                      entry.liveTaskId = t.id;
+                      entry.liveIteration = iteration;
+                    }
+                  } else {
+                    // context.iteration is the retry budget counter — foreign-push
+                    // retries deliberately do not advance it, so max() is the
+                    // number of attempts actually charged to the agent.
+                    entry.attemptsConsumed = Math.max(entry.attemptsConsumed, iteration ?? 0);
+                    const suggestion = (t.result as { nextSuggestion?: string } | null)?.nextSuggestion;
+                    if (!entry.recommendation && suggestion) entry.recommendation = suggestion;
+                  }
+                  ciAttemptMap.set(key, entry);
+                }
+              }
+            }
+            // ─────────────────────────────────────────────────────────────────────
 
             // ── Dead zone exhausted detection ────────────────────────────────────
             // Workers where: task is terminal + PR went dirty (prLifecycleStatus='conflict')
@@ -1093,6 +1166,16 @@ export default async function HomePage({
                   : 'pending_human';
                 const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
                 const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
+                const ciAttempts = w.prNumber != null ? ciAttemptMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
+                const ciGate = resolveCiGate({
+                  prLifecycleStatus: w.prLifecycleStatus as PrLifecycle,
+                  liveFixTaskId: ciAttempts?.liveTaskId ?? null,
+                  liveFixIteration: ciAttempts?.liveIteration ?? null,
+                  maxCiRetries: ws?.gitConfig?.maxCiRetries ?? DEFAULT_MAX_CI_RETRIES,
+                  attemptsConsumed: ciAttempts?.attemptsConsumed ?? 0,
+                  recommendation: ciAttempts?.recommendation
+                    ?? ((w.task as any)?.result?.nextSuggestion ?? null),
+                });
                 return {
                   workerId: w.id,
                   taskId: w.taskId ?? '',
@@ -1102,6 +1185,14 @@ export default async function HomePage({
                   prNumber: w.prNumber,
                   prUrl: w.prUrl,
                   policyTier: policy.tier,
+                  missionId: (w.task as any)?.missionId ?? null,
+                  missionTitle: (w.task as any)?.mission?.title ?? null,
+                  ciGate,
+                  // CI block leads with the fixing agent's handoff; otherwise the
+                  // reviewer's recommendation is what the human needs to read.
+                  recommendation: ciGate?.kind === 'blocked'
+                    ? ciGate.recommendation
+                    : (w.taskId ? reviewerRecommendationMap.get(w.taskId) ?? null : null),
                   leaseState,
                   escalationReason: deadZoneInfo
                     ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
@@ -1113,6 +1204,14 @@ export default async function HomePage({
                   deadZoneExhausted: !!deadZoneInfo,
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
                 };
+              })
+              .sort((a, b) => {
+                const handled = (k?: string) => (k === 'fixing' || k === 'running' ? 1 : 0);
+                const handledDiff = handled(a.ciGate?.kind) - handled(b.ciGate?.kind);
+                if (handledDiff !== 0) return handledDiff;
+                const arcDiff = Number(!!b.missionId) - Number(!!a.missionId);
+                if (arcDiff !== 0) return arcDiff;
+                return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
               })
               .slice(0, 10);
           }
@@ -1458,8 +1557,9 @@ export default async function HomePage({
   const shipClause = completedLast12h > 0
     ? `${completedLast12h} ship${completedLast12h === 1 ? '' : 's'} ${timePeriod}`
     : null;
-  // RESOLVING items are informational — agent is handling it, not the human.
-  const actionableCount = actionQueue.filter(i => i.chip !== 'RESOLVING').length;
+  // RESOLVING / FIXING_CI / CI_RUNNING are informational — an agent is handling
+  // it, so they stay visible but never inflate the human's count.
+  const actionableCount = actionQueue.filter(i => isActionableChip(i.chip)).length;
   const waitClause = actionableCount > 0 ? `${actionableCount} waiting on you` : null;
   const subParts = [shipClause, waitClause].filter(Boolean) as string[];
   const subheading = subParts.length > 0 ? subParts.join(' · ') : 'Your agents are standing by';
@@ -1509,10 +1609,10 @@ export default async function HomePage({
               <div className="mb-8">
                 <div className="flex items-center justify-between mb-4">
                   <div className="section-label">Waiting on You</div>
-                  {/* Badge excludes RESOLVING — those are agent-handled, not human tasks */}
-                  {filteredActionQueue.filter(i => i.chip !== 'RESOLVING').length > 0 && (
+                  {/* Badge counts human work only — agent-handled cards excluded */}
+                  {filteredActionQueue.filter(i => isActionableChip(i.chip)).length > 0 && (
                     <span className="flex items-center justify-center min-w-[20px] h-5 px-1.5 text-[11px] font-bold rounded-full bg-primary text-white">
-                      {filteredActionQueue.filter(i => i.chip !== 'RESOLVING').length}
+                      {filteredActionQueue.filter(i => isActionableChip(i.chip)).length}
                     </span>
                   )}
                 </div>
@@ -1527,6 +1627,7 @@ export default async function HomePage({
                 )}
                 <div className="space-y-2">
                   {filteredActionQueue.map((item) => {
+                    const arc = resolveActionCardContext(item);
                     if (item.chip === 'MERGE') {
                       return (
                         <SwipeableRow
@@ -1562,8 +1663,8 @@ export default async function HomePage({
                             <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
                               Question
                             </span>
-                            {item.missionTitle && (
-                              <span className="text-[11px] text-text-muted">{item.missionTitle}</span>
+                            {arc && arc.kind !== 'workspace' && (
+                              <span className="text-[11px] text-text-muted">{arc.label}</span>
                             )}
                           </div>
                           <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
@@ -1604,8 +1705,8 @@ export default async function HomePage({
                             <span className="text-[10px] font-mono font-medium text-accent-text tracking-wide uppercase">
                               Approve Plan
                             </span>
-                            {item.missionTitle && (
-                              <span className="text-[11px] text-text-muted">{item.missionTitle}</span>
+                            {arc && arc.kind !== 'workspace' && (
+                              <span className="text-[11px] text-text-muted">{arc.label}</span>
                             )}
                           </div>
                           <div className="text-[13px] font-medium text-text-primary truncate">
@@ -1657,6 +1758,9 @@ export default async function HomePage({
                         </div>
                       );
                     }
+                    if (item.chip === 'FIXING_CI' || item.chip === 'CI_RUNNING') {
+                      return <AgentHandledCard key={item.subjectKey} item={item} />;
+                    }
                     if (item.chip === 'BLOCKED') {
                       return (
                         <div
@@ -1669,8 +1773,8 @@ export default async function HomePage({
                                 <span className="text-[10px] font-mono font-medium text-status-error tracking-wide uppercase">
                                   Blocked
                                 </span>
-                                {item.workspaceName && (
-                                  <span className="text-[11px] text-text-muted">{item.workspaceName}</span>
+                                {arc && (
+                                  <span className="text-[11px] text-text-muted">{arc.label}</span>
                                 )}
                               </div>
                               {item.taskTitle && (
@@ -1685,6 +1789,14 @@ export default async function HomePage({
                               <p className="text-[12px] text-text-secondary mt-0.5">
                                 {item.escalationReason ?? 'Conflict-resolution retries exhausted — manual intervention required'}
                               </p>
+                              {/* The human is being asked to decide something an
+                                  agent already failed at — lead with what that
+                                  agent said to do next, not with a merge button. */}
+                              <AgentRecommendation
+                                recommendation={item.recommendation}
+                                expected={item.ciGate?.kind === 'blocked'}
+                                tone="error"
+                              />
                               {item.prUrl && (
                                 <a
                                   href={item.prUrl}

@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation';
 import ExternalLink from './ExternalLink';
 import { resolveWaitingCardState } from '@/lib/waiting-card-state';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
+import { ActionCardContextLine } from './ActionCardContextLine';
+import { AgentRecommendation } from './AgentRecommendation';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 interface WaitingOnYouMergeCardProps {
@@ -244,7 +246,10 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
         {item.unblockCount != null && item.unblockCount > 0 && (
           <span className="text-text-secondary font-normal">
             {' '}→ unblocks {item.unblockCount} task{item.unblockCount !== 1 ? 's' : ''}
-            {item.missionTitle && ` in ${item.missionTitle}`}
+            {/* Named only when the blocked work lives in a different mission than
+                the PR's own — otherwise the context line below already says it. */}
+            {item.unblockMissionTitle && item.unblockMissionTitle !== item.missionTitle &&
+              ` in ${item.unblockMissionTitle}`}
           </span>
         )}
       </div>
@@ -254,9 +259,8 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           {item.escalationReason}
         </p>
       )}
-      {item.workspaceName && (
-        <div className="text-[11px] text-text-muted mt-0.5">{item.workspaceName}</div>
-      )}
+      <AgentRecommendation recommendation={item.recommendation} />
+      <ActionCardContextLine item={item} className="mt-0.5" />
 
       {/* Confirm strip: full-width below the title, only when confirming */}
       {mergeState === 'confirming' && item.prNumber != null && (

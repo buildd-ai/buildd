@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, partitionEscalations } from './action-queue';
+import { buildActionQueue, partitionEscalations, isActionableChip } from './action-queue';
 import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
@@ -324,3 +324,209 @@ describe('partitionEscalations', () => {
     expect(resolved[0]).toEqual(item);
   });
 });
+
+describe('buildActionQueue — mission context', () => {
+  it('carries missionId/missionTitle from an escalation-only item', () => {
+    const result = buildActionQueue([], [
+      escalationItem({ missionId: 'mission-9', missionTitle: 'Health analytics restructure' }),
+    ]);
+    expect(result[0].missionId).toBe('mission-9');
+    expect(result[0].missionTitle).toBe('Health analytics restructure');
+  });
+
+  it('leaves mission fields undefined when the escalation has no mission', () => {
+    const result = buildActionQueue([], [escalationItem()]);
+    expect(result[0].missionId ?? null).toBeNull();
+    expect(result[0].missionTitle ?? null).toBeNull();
+  });
+
+  it('prefers the escalation mission when both sides carry one', () => {
+    const result = buildActionQueue(
+      [mergeItem({ missionId: 'mission-woy', missionTitle: 'From blocker query' })],
+      [escalationItem({ missionId: 'mission-esc', missionTitle: 'From worker task' })],
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].missionTitle).toBe('From worker task');
+  });
+
+  it('ranks mission-linked MERGE items above unlinked ones at equal impact', () => {
+    const esc: EscalationRawItem[] = [
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/798',
+        prNumber: 798,
+        taskId: 'orphan',
+        missionId: null,
+        missionTitle: null,
+      }),
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/2052',
+        prNumber: 2052,
+        taskId: 'mission-task',
+        missionId: 'mission-1',
+        missionTitle: 'Release attribution',
+      }),
+    ];
+    const result = buildActionQueue([], esc);
+    expect(result.map(r => r.prNumber)).toEqual([2052, 798]);
+  });
+
+  it('breaks remaining MERGE ties by freshness (least waiting first)', () => {
+    const esc: EscalationRawItem[] = [
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/798',
+        prNumber: 798,
+        taskId: 'ancient',
+        waitingMinutes: 129_360,
+      }),
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/2052',
+        prNumber: 2052,
+        taskId: 'recent',
+        waitingMinutes: 20,
+      }),
+    ];
+    const result = buildActionQueue([], esc);
+    expect(result.map(r => r.prNumber)).toEqual([2052, 798]);
+  });
+
+  it('keeps unblockCount as the dominant MERGE sort key', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      mergeItem({
+        prUrl: 'https://github.com/org/repo/pull/2040',
+        prNumber: 2040,
+        upstreamTaskId: 'u-2040',
+        unblockCount: 1,
+        missionId: null,
+        missionTitle: null,
+      }),
+    ];
+    const esc: EscalationRawItem[] = [
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/2052',
+        prNumber: 2052,
+        taskId: 'fresh-mission',
+        missionId: 'mission-1',
+        missionTitle: 'Release attribution',
+        waitingMinutes: 1,
+      }),
+    ];
+    const result = buildActionQueue(woy, esc);
+    expect(result.map(r => r.prNumber)).toEqual([2040, 2052]);
+  });
+});
+
+describe('buildActionQueue — unblocked mission vs own mission', () => {
+  it('keeps the blocked mission separate from the PR own mission', () => {
+    const result = buildActionQueue(
+      [mergeItem({ missionId: 'mission-blocked', missionTitle: 'Downstream mission' })],
+      [escalationItem({ missionId: 'mission-own', missionTitle: 'Owning mission' })],
+    );
+    expect(result[0].missionTitle).toBe('Owning mission');
+    expect(result[0].unblockMissionTitle).toBe('Downstream mission');
+  });
+
+  it('sets unblockMissionTitle on a blocker-only merge item', () => {
+    const result = buildActionQueue([mergeItem()], []);
+    expect(result[0].unblockMissionTitle).toBe('Mission Alpha');
+    expect(result[0].missionTitle).toBe('Mission Alpha');
+  });
+});
+
+describe('buildActionQueue — CI gate', () => {
+  it('renders a live CI fix as an informational FIXING_CI card', () => {
+    const result = buildActionQueue([], [escalationItem({
+      ciGate: { kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' },
+    })]);
+    expect(result[0].chip).toBe('FIXING_CI');
+    expect(result[0].ciGate).toEqual({ kind: 'fixing', label: 'Fixing CI · attempt 2 of 3', taskId: 'fix-1' });
+    expect(isActionableChip(result[0].chip)).toBe(false);
+  });
+
+  it('renders a pending suite as an informational CI_RUNNING card', () => {
+    const result = buildActionQueue([], [escalationItem({
+      ciGate: { kind: 'running', label: 'CI running' },
+    })]);
+    expect(result[0].chip).toBe('CI_RUNNING');
+    expect(isActionableChip(result[0].chip)).toBe(false);
+  });
+
+  it('renders a red PR with no fixer as an actionable BLOCKED card carrying the recommendation', () => {
+    const result = buildActionQueue([], [escalationItem({
+      ciGate: {
+        kind: 'blocked',
+        reason: 'CI failing — 3 fix attempts exhausted',
+        recommendation: 'Migration 0071 needs a manual backfill before CI can pass.',
+      },
+    })]);
+    expect(result[0].chip).toBe('BLOCKED');
+    expect(result[0].escalationReason).toBe('CI failing — 3 fix attempts exhausted');
+    expect(result[0].recommendation).toBe('Migration 0071 needs a manual backfill before CI can pass.');
+    expect(isActionableChip(result[0].chip)).toBe(true);
+  });
+
+  it('keeps a conflict retry ahead of the CI gate — the conflict is why CI cannot run', () => {
+    const result = buildActionQueue([], [escalationItem({
+      conflictRetryTaskId: 'conflict-1',
+      ciGate: { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: null },
+    })]);
+    expect(result[0].chip).toBe('RESOLVING');
+  });
+
+  it('sorts informational CI cards below every actionable card', () => {
+    const esc: EscalationRawItem[] = [
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/1',
+        prNumber: 1,
+        taskId: 'fixing',
+        ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1' },
+      }),
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/2',
+        prNumber: 2,
+        taskId: 'green',
+      }),
+      escalationItem({
+        prUrl: 'https://github.com/org/repo/pull/3',
+        prNumber: 3,
+        taskId: 'red',
+        ciGate: { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: null },
+      }),
+    ];
+    const result = buildActionQueue([], esc);
+    expect(result.map(r => r.chip)).toEqual(['MERGE', 'BLOCKED', 'FIXING_CI']);
+  });
+
+  it('never offers a merge on a CI-gated card', () => {
+    const gated = buildActionQueue([], [escalationItem({
+      ciGate: { kind: 'fixing', label: 'Fixing CI', taskId: 'fix-1' },
+    })]);
+    expect(gated[0].chip).not.toBe('MERGE');
+    expect(gated[0].chip).not.toBe('REVIEW');
+  });
+});
+
+describe('isActionableChip', () => {
+  it('counts human-gated chips and excludes agent-handled ones', () => {
+    expect(['MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE'].map(isActionableChip))
+      .toEqual([true, true, true, true, true, true]);
+    expect(['RESOLVING', 'FIXING_CI', 'CI_RUNNING'].map(isActionableChip))
+      .toEqual([false, false, false]);
+  });
+});
+
+describe('buildActionQueue — recommendations', () => {
+  it('carries a reviewer recommendation onto the escalation card', () => {
+    const result = buildActionQueue([], [escalationItem({
+      recommendation: 'Confirm the token refresh lock by hand, then merge.',
+    })]);
+    expect(result[0].recommendation).toBe('Confirm the token refresh lock by hand, then merge.');
+  });
+
+  it('prefers the CI handoff over the reviewer recommendation when CI is the blocker', () => {
+    const result = buildActionQueue([], [escalationItem({
+      recommendation: 'Reviewer advice',
+      ciGate: { kind: 'blocked', reason: 'CI failing — no fix in flight', recommendation: 'CI handoff advice' },
+    })]);
+    expect(result[0].recommendation).toBe('CI handoff advice');
+  });
+})
