@@ -10,6 +10,7 @@ import {
   describeScan,
   parseWindowMs,
   UNASSIGNED_ROLE,
+  USAGE_WINDOWS,
   type GroupDimension,
 } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
@@ -43,7 +44,14 @@ export async function GET(req: NextRequest) {
   }
 
   const url = new URL(req.url);
-  const windowParam = url.searchParams.get('window') ?? '7d';
+  const rawWindow = url.searchParams.get('window');
+  if (rawWindow !== null && !(USAGE_WINDOWS as readonly string[]).includes(rawWindow)) {
+    return NextResponse.json(
+      { error: `Invalid window: "${rawWindow}". Expected one of ${USAGE_WINDOWS.join(', ')}.` },
+      { status: 400 },
+    );
+  }
+  const windowParam = rawWindow ?? '7d';
   const workspaceParam = url.searchParams.get('workspace');
   const groupByParam = url.searchParams.get('groupBy') ?? 'role';
   const groupBy: GroupDimension = GROUP_DIMENSIONS.includes(groupByParam as GroupDimension)

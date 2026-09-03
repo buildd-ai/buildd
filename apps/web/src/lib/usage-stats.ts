@@ -746,7 +746,17 @@ export function computeUsageStats(
   };
 }
 
-/** Parse a window string like "24h", "7d", "30d" into milliseconds. Defaults to 7d. */
+/** The closed set of windows callers may request. Anything else should be rejected before reaching this module. */
+export const USAGE_WINDOWS = ['24h', '7d', '30d'] as const;
+export type UsageWindow = typeof USAGE_WINDOWS[number];
+
+/**
+ * Parse a window string like "24h", "7d", "30d" into milliseconds. Defaults to 7d.
+ *
+ * Accepts any `^(\d+)([hd])$` string, not just `USAGE_WINDOWS` — callers that
+ * need the closed set enforced (anything reachable from an untrusted query
+ * param) must validate against `USAGE_WINDOWS` themselves before calling this.
+ */
 export function parseWindowMs(window: string): number {
   const match = /^(\d+)([hd])$/.exec(window);
   if (!match) return 7 * 24 * 60 * 60 * 1000;
