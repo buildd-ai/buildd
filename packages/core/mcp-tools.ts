@@ -514,7 +514,11 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
 
   const lines: string[] = [
     `Worker failures — last ${window} (since ${analytics.windowStart})`,
-    `${totals.failed} of ${totals.started} workers failed (${totals.failureRatePct}%) · died early: ${totals.diedEarly} (${totals.diedEarlySharePct}% of failures)`,
+    // Denominator is TERMINAL workers, not everything started — in-flight
+    // workers have not had the chance to fail yet.
+    `${totals.failed} of ${totals.terminal} terminal workers failed (${totals.failureRatePct}%)`
+      + `${totals.stillRunning > 0 ? ` · ${totals.stillRunning} still running` : ''}`
+      + ` · died early: ${totals.diedEarly} (${totals.diedEarlySharePct}% of failures)`,
   ];
 
   if (analytics.byExitCause.length > 0) {

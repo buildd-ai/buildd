@@ -50,6 +50,22 @@ const WINDOW_MS: Record<FailureWindow, number> = {
 /** Worker statuses that count as a failure. `error` is the legacy spelling. */
 export const FAILED_WORKER_STATUSES = ['failed', 'error'] as const;
 
+/**
+ * Worker statuses that are still in flight.
+ *
+ * The failure rate divides by TERMINAL workers, and terminal is defined as the
+ * complement of this list rather than as an allow-list of finished statuses: an
+ * unrecognised status is far more likely to be a new terminal outcome than a new
+ * in-flight one, and treating it as in-flight would silently deflate the rate.
+ */
+export const IN_FLIGHT_WORKER_STATUSES = [
+  'idle',
+  'starting',
+  'running',
+  'waiting_input',
+  'paused',
+] as const;
+
 /** A failure at or under this many turns, at zero cost, never did any work. */
 export const DIED_EARLY_MAX_TURNS = 2;
 
@@ -181,6 +197,11 @@ function isFailure(status: string): boolean {
   return (FAILED_WORKER_STATUSES as readonly string[]).includes(status);
 }
 
+/** Has this worker had the chance to fail yet? See IN_FLIGHT_WORKER_STATUSES. */
+export function isTerminalWorkerStatus(status: string): boolean {
+  return !(IN_FLIGHT_WORKER_STATUSES as readonly string[]).includes(status);
+}
+
 /** A failure that burned a slot without doing any billable work. */
 export function isDiedEarly(row: FailureWorkerRow): boolean {
   return isFailure(row.status) && row.turns <= DIED_EARLY_MAX_TURNS && row.costUsd === 0;
@@ -266,12 +287,18 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
 
   const failures = rows.filter(r => isFailure(r.status));
   const diedEarlyRows = failures.filter(isDiedEarly);
+  const terminal = rows.filter(r => isTerminalWorkerStatus(r.status)).length;
 
   const totals: FailureTotals = {
     started: rows.length,
+    terminal,
+    stillRunning: rows.length - terminal,
     completed: rows.filter(r => r.status === 'completed').length,
     failed: failures.length,
-    failureRatePct: pct(failures.length, rows.length),
+    // Terminal, not started: an in-flight worker cannot have failed yet, so
+    // including it drags the rate down and makes the published number drift
+    // downward purely because work is still running.
+    failureRatePct: pct(failures.length, terminal),
     diedEarly: diedEarlyRows.length,
     diedEarlySharePct: pct(diedEarlyRows.length, failures.length),
   };
@@ -287,27 +314,33 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
     .sort((a, b) => b.count - a.count || a.exitCause.localeCompare(b.exitCause));
 
   // ── Per-role and per-workspace rates ───────────────────────────────────────
-  const roleTallies = new Map<string, { started: number; failed: number }>();
-  const wsTallies = new Map<string, { started: number; failed: number }>();
+  const roleTallies = new Map<string, { started: number; terminal: number; failed: number }>();
+  const wsTallies = new Map<string, { started: number; terminal: number; failed: number }>();
   for (const r of rows) {
+    const isTerminal = isTerminalWorkerStatus(r.status);
     const roleKey = r.roleSlug ?? NO_ROLE;
-    const role = roleTallies.get(roleKey) ?? { started: 0, failed: 0 };
+    const role = roleTallies.get(roleKey) ?? { started: 0, terminal: 0, failed: 0 };
     role.started += 1;
+    if (isTerminal) role.terminal += 1;
     if (isFailure(r.status)) role.failed += 1;
     roleTallies.set(roleKey, role);
 
-    const ws = wsTallies.get(r.workspaceId) ?? { started: 0, failed: 0 };
+    const ws = wsTallies.get(r.workspaceId) ?? { started: 0, terminal: 0, failed: 0 };
     ws.started += 1;
+    if (isTerminal) ws.terminal += 1;
     if (isFailure(r.status)) ws.failed += 1;
     wsTallies.set(r.workspaceId, ws);
   }
 
+  // Same denominator as the headline: a per-role rate computed over a different
+  // population than the number above it is a new inconsistency, not a fix.
   const byRole: FailureRoleRow[] = [...roleTallies.entries()]
     .map(([roleSlug, t]) => ({
       roleSlug,
       started: t.started,
+      terminal: t.terminal,
       failed: t.failed,
-      failureRatePct: pct(t.failed, t.started),
+      failureRatePct: pct(t.failed, t.terminal),
     }))
     .sort((a, b) => b.failed - a.failed || b.failureRatePct - a.failureRatePct || a.roleSlug.localeCompare(b.roleSlug));
 
@@ -316,8 +349,9 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
       workspaceId,
       workspaceName: workspaceNames[workspaceId] ?? UNKNOWN_WORKSPACE,
       started: t.started,
+      terminal: t.terminal,
       failed: t.failed,
-      failureRatePct: pct(t.failed, t.started),
+      failureRatePct: pct(t.failed, t.terminal),
     }))
     .sort((a, b) => b.failed - a.failed || b.failureRatePct - a.failureRatePct || a.workspaceName.localeCompare(b.workspaceName));
 
