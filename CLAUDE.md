@@ -13,6 +13,7 @@
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
   - Worker runner: `packages/core/worker-runner.ts`
+- **Codebase graph**: `codebase-memory` MCP is indexed for this repo — load via `ToolSearch` for structural questions (who calls/depends on X, architecture orientation) over grep.
 
 ## Architecture
 
