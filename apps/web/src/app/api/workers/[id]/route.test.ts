@@ -6933,6 +6933,7 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
           limit: mock(() => [{
             outputRequirement: 'auto', missionId: 'mission-1', scheduleId: 'sched-1',
             mode: 'execution', creationSource: 'orchestrator', outputSchema: null,
+            taskClass: 'bookkeeping',
           }]),
         })),
       })),
@@ -7001,6 +7002,68 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
         summary: 'All in-flight work covers the mission goal; nothing new to file.',
         structuredOutput: { plan: [], summary: 'Nothing to do this cycle.', missionComplete: false },
       },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
+  });
+
+  // Regression: approvePlan() (approve-plan.ts) stamps creationSource='orchestrator'
+  // on EVERY auto-approved mission builder child — taskClass='work', mode='execution',
+  // no outputSchema, exactly like a genuine orchestrator/heartbeat cycle. Without a
+  // taskClass check, an ordinary builder task that completes with just a summary (the
+  // normal, expected shape for plain work) was misclassified as a broken plan-cycle and
+  // force-failed. Only the organizer's own decompose/heartbeat/evaluation cycles are
+  // taskClass='bookkeeping' — that is the real "this task must emit a plan" signal.
+  it('does not override completed→failed for an auto-approved mission builder child (taskClass=work)', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-builder-child-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+
+    // terminalTaskRow: auto-approved builder child — creationSource='orchestrator'
+    // (approvePlan's autoApproved stamp) but taskClass='work', not 'bookkeeping'.
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{
+            outputRequirement: 'auto', missionId: 'mission-1', scheduleId: null,
+            mode: 'execution', creationSource: 'orchestrator', outputSchema: null,
+            taskClass: 'work',
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      // Ordinary builder completion: a prose summary, no structuredOutput — this
+      // is the normal shape for plain work, not a contract violation.
+      body: { status: 'completed', summary: 'Fixed the header crowding bug and opened a PR.' },
     });
     const res = await PATCH(req, { params: mockParams });
 

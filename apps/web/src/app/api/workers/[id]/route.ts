@@ -59,8 +59,16 @@ import { markInstructionsDelivered } from '@/lib/worker-instructions';
  * Worker statuses from which no further live update is legal. Every optimistic
  * write in this handler is guarded against these — resurrecting a terminated
  * worker would let a stale in-flight PATCH overwrite a real outcome.
+ *
+ * `superseded` (POST /api/workers/[id]/respond) is included even though that
+ * route writes it directly rather than through this handler's own CAS: once a
+ * human has answered the worker's question and a continuation task exists,
+ * this row is done — an in-flight runner PATCH for the same worker that reads
+ * stale-but-not-yet-superseded state must still find the row terminal by the
+ * time its own write lands, so it 409s instead of silently overwriting the
+ * answer's outcome.
  */
-const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error'];
+const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error', 'superseded'];
 
 function isTerminalWorkerStatus(status: string | null | undefined): boolean {
   return !!status && TERMINAL_WORKER_STATUSES.includes(status);
@@ -832,7 +840,7 @@ export async function PATCH(
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, taskClass: tasks.taskClass })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -1704,10 +1712,24 @@ export async function PATCH(
       // outputFormat at all, the agent free-writes a "plan" as prose, and the
       // cycle completes cleanly having filed nothing — the exact silent failure
       // this guard exists to catch, just reached through a different door.
+      //
+      // taskClass !== 'work' is required alongside creationSource==='orchestrator':
+      // approvePlan() (approve-plan.ts) also stamps creationSource='orchestrator'
+      // on every ordinary builder task it auto-approves from a mission plan —
+      // those are taskClass='work', mode='execution', and never carry an
+      // outputSchema (plain work has no structured-output contract). Without this
+      // check, EVERY auto-approved mission child that completes with just a
+      // summary (i.e. almost all of them) was misclassified as a broken plan-cycle
+      // and force-failed. Only the organizer's own decompose/heartbeat/evaluation
+      // cycles are taskClass='bookkeeping' (mission-run.ts, mission-criteria-*.ts,
+      // mission-evaluation.ts) — that is the actual "this task's job is to emit a
+      // plan" signal, not creationSource alone.
       const orchestratorTaskRow = terminalTaskRow[0];
       const expectsStructuredPlan = Boolean(
         orchestratorTaskRow?.mode === 'planning' ||
-        (orchestratorTaskRow?.creationSource === 'orchestrator' && !orchestratorTaskRow?.outputSchema)
+        (orchestratorTaskRow?.creationSource === 'orchestrator' &&
+          orchestratorTaskRow?.taskClass !== 'work' &&
+          !orchestratorTaskRow?.outputSchema)
       );
       const planningContractViolation = (
         status === 'completed' &&

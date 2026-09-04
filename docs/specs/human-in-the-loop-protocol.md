@@ -2,7 +2,7 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-09-03
+last_verified: 2026-09-04
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
 surfaces: [apps/web/src/app/api/workers/[id]/instruct/route.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts]
@@ -38,7 +38,7 @@ ignored my answer" incidents.
 | UI entry | needs-input banner, `/app/tasks/[id]/respond` | instruct form, `TaskQuestionFeed` reply |
 | MCP entry | none | `send_agent_message` (admin) |
 | Precondition | `workers.waitingFor` is non-null — **any** status | worker status not `completed`/`failed` |
-| Effect | new `pending` task; old worker `completed` | message queued or pushed to the same session |
+| Effect | new `pending` task; old worker `superseded` | message queued or pushed to the same session |
 | Durability | a DB row; survives a dead runner | at-most-once; no acknowledgement |
 | Session continuity | new session, `baseBranch` = old branch | same session, same context window |
 
@@ -118,13 +118,44 @@ question — answering spawns a new worker", and that is literal.
   `context` carries `baseBranch` (the dead worker's branch), `userInput`,
   `previousAttempt.workerId` and `iteration + 1`. Branch continuity is what
   makes the answer resumable rather than a restart.
-- The answering worker MUST be marked `completed` with `waitingFor = null` — the
-  worker is superseded, not failed, so it does not consume a retry attempt.
+- The answering worker MUST be marked `superseded` (not `completed`, not
+  `failed`) with `waitingFor = null` — it did not finish its task, it was
+  replaced by the continuation task, so it must not count as either a success
+  or a failure. `superseded` is included in `IN_FLIGHT_WORKER_STATUSES`
+  (`apps/web/src/lib/failure-analytics.ts`) so it is excluded from both the
+  success and failure buckets of `get_failure_analytics` /
+  success-rate-by-role, and in `TERMINAL_WORKER_STATUSES`
+  (`apps/web/src/app/api/workers/[id]/route.ts`) so a late runner PATCH for the
+  same worker is rejected (409) rather than resurrecting or overwriting it.
+- The continuation task MUST inherit the fields that describe what the work
+  must deliver — `mode`, `taskClass`, `priority`, `outputRequirement`,
+  `outputSchema`, `category`, `pathManifest`, `backend` — since none of those
+  change because a question was asked. It MUST NOT inherit `dependsOn` (the
+  parent's prerequisites were already satisfied before the parent could run),
+  `subjectAnchor` (drives a dedup/supersession subsystem this path is not
+  part of), or `creationSource` (this row was created by whoever answered the
+  question via this route, not by the orchestrator).
+- `context.baseBranch` is honoured by the runner's worktree setup only when
+  that branch already exists on the remote — i.e. the original worker had
+  already pushed (for example, a PR was already open). If the question was
+  asked before anything was pushed, the runner falls back to a fresh worktree
+  from the default branch; the server cannot detect at `/respond` time which
+  case applies, so "resumes the existing work" is not a guarantee.
 - An answer for a worker with no `waitingFor` MUST be refused with HTTP 400. This
   refusal is the only defence against a second person answering the same prompt.
 - Authorisation: a session user with workspace access, or an API key whose
   account **owns the worker** (`workers.accountId`). A key for another account
   gets 403, not 404 — the worker exists, the caller may not act on it.
+- Known residual race: this route's claim write and an in-flight runner PATCH
+  for the same worker use independent, uncoordinated CAS predicates (this one
+  gates on `waitingFor`; the PATCH route's terminal-transition reservation
+  gates on `status`). A worker read fresh after this commits is correctly
+  rejected as terminal; a runner PATCH already mid-flight when this commits can
+  still land after it and overwrite `status`. Closing this fully needs a shared
+  reservation primitive between the two routes — not implemented here, because
+  the alternative (gating this claim on worker status) would break the
+  deliberate contract above that `error`/`failed` with `waitingFor` set must
+  still be accepted.
 
 **Acceptance criteria**:
 - AC-HITL-4: GIVEN a worker with `status: 'failed'`, `error: 'needs_input: …'`
@@ -137,6 +168,21 @@ question — answering spawns a new worker", and that is literal.
 - AC-HITL-7: GIVEN a successful `/respond` THEN the new task's
   `context.baseBranch` equals the answered worker's `branch` and
   `context.iteration` is the previous iteration + 1.
+- AC-HITL-29: GIVEN a successful `/respond` THEN the answered worker's `status`
+  is `superseded`, never `completed`.
+- AC-HITL-30: GIVEN a parent task with `priority`, `outputRequirement`,
+  `outputSchema`, `category`, `pathManifest`, `backend` set WHEN `/respond`
+  creates the continuation THEN all six are copied onto it, and `dependsOn`,
+  `subjectAnchor`, `creationSource` are NOT copied.
+- AC-HITL-31: GIVEN a task with `mode: 'execution'`, `creationSource:
+  'orchestrator'`, `taskClass: 'work'` (an auto-approved mission builder child,
+  not the organizer's own decompose cycle) WHEN its worker completes with a
+  prose summary and no `structuredOutput` THEN the planning-contract guard in
+  `apps/web/src/app/api/workers/[id]/route.ts` MUST NOT override it to
+  `failed` — `taskClass !== 'work'` is required alongside
+  `creationSource === 'orchestrator'` for that guard's orchestrator-fallback
+  branch, precisely because `approve-plan.ts` stamps every auto-approved
+  builder child with `creationSource: 'orchestrator'` too.
 
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/respond/route.ts:49` (the `waitingFor`

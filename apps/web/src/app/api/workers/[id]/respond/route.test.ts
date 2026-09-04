@@ -15,7 +15,7 @@ const mockInsert = mock(() => ({
   values: mockInsertValues,
 }));
 
-const mockWorkersUpdateReturning = mock(() => [{ id: 'worker-1', status: 'completed' }]);
+const mockWorkersUpdateReturning = mock(() => [{ id: 'worker-1', status: 'superseded' }]);
 const mockWorkersUpdateWhere = mock(() => ({
   returning: mockWorkersUpdateReturning,
 }));
@@ -115,6 +115,16 @@ const baseWorker = {
     missionId: 'mission-1',
     roleSlug: 'frontend-dev',
     mode: 'execution',
+    taskClass: 'work',
+    priority: 7,
+    outputRequirement: 'pr_required',
+    outputSchema: null,
+    category: 'bug',
+    pathManifest: ['apps/web/src/lib/auth.ts'],
+    backend: 'claude',
+    dependsOn: ['some-other-task-id'],
+    subjectAnchor: { kind: 'ci_retry', prNumber: 42 },
+    creationSource: 'orchestrator',
   },
 };
 
@@ -139,7 +149,7 @@ describe('POST /api/workers/[id]/respond', () => {
       return { returning: mockInsertReturning };
     }) as any);
     mockInsert.mockReturnValue({ values: mockInsertValues });
-    mockWorkersUpdateReturning.mockReturnValue([{ id: 'worker-1', status: 'completed' }]);
+    mockWorkersUpdateReturning.mockReturnValue([{ id: 'worker-1', status: 'superseded' }]);
     mockWorkersUpdateWhere.mockReturnValue({ returning: mockWorkersUpdateReturning });
     mockWorkersUpdateSet.mockImplementation((() => {
       callOrder.push('update');
@@ -302,7 +312,12 @@ describe('POST /api/workers/[id]/respond', () => {
     expect(insertedValues.parentTaskId).toBe('task-1');
   });
 
-  it('marks original worker as completed after respond', async () => {
+  // Regression: an answered worker did not complete its task — it was replaced
+  // by the continuation task. Recording 'completed' counted answered questions
+  // as clean successes in get_failure_analytics / success-rate-by-role.
+  // 'superseded' is excluded from both the success and failure buckets (see
+  // IN_FLIGHT_WORKER_STATUSES in lib/failure-analytics.ts).
+  it('marks original worker as superseded (not completed) after respond', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     mockAuthenticateApiKey.mockResolvedValue(null);
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -313,10 +328,11 @@ describe('POST /api/workers/[id]/respond', () => {
 
     expect(res.status).toBe(200);
 
-    // Verify worker was updated to completed
+    // Verify worker was updated to superseded, not completed
     expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
     const setValues = mockWorkersUpdateSet.mock.calls[0][0];
-    expect(setValues.status).toBe('completed');
+    expect(setValues.status).toBe('superseded');
+    expect(setValues.status).not.toBe('completed');
     expect(setValues.waitingFor).toBeNull();
     expect(setValues.completedAt).toBeInstanceOf(Date);
   });
@@ -401,6 +417,70 @@ describe('POST /api/workers/[id]/respond', () => {
     const insertedValues = mockInsertValues.mock.calls[0][0];
     expect(insertedValues.roleSlug).toBe('frontend-dev');
     expect(insertedValues.mode).toBe('execution');
+  });
+
+  // Defect 3: the continuation's job is the parent's job, so what-must-it-deliver
+  // fields carry over. Verified field by field rather than a blanket copy.
+  it('copies priority, outputRequirement, outputSchema, category, pathManifest, backend from the parent task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    expect(insertedValues.priority).toBe(7);
+    expect(insertedValues.outputRequirement).toBe('pr_required');
+    expect(insertedValues.category).toBe('bug');
+    expect(insertedValues.pathManifest).toEqual(['apps/web/src/lib/auth.ts']);
+    expect(insertedValues.backend).toBe('claude');
+  });
+
+  it('copies a custom outputSchema from the parent task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    const customSchema = { type: 'object', properties: { verdict: { type: 'string' } } };
+    mockWorkersFindFirst.mockResolvedValue({
+      ...baseWorker,
+      task: { ...baseWorker.task, outputSchema: customSchema },
+    });
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    expect(insertedValues.outputSchema).toEqual(customSchema);
+  });
+
+  // Defect 3: dependsOn/subjectAnchor describe the PARENT's gating and dedup
+  // identity, not the continuation's — copying them would either re-gate on
+  // already-satisfied prerequisites or collide with a dedup subsystem this
+  // route isn't part of. creationSource intentionally defaults to 'api' — this
+  // row was created by a human/API caller answering a question, not by the
+  // orchestrator (see the planning-contract guard's taskClass check for why
+  // that distinction matters).
+  it('does not copy dependsOn, subjectAnchor, or creationSource from the parent task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
+
+    const req = createMockRequest({ message: 'Use JWT tokens' });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+
+    const insertedValues = mockInsertValues.mock.calls[0][0];
+    expect(insertedValues.dependsOn).toBeUndefined();
+    expect(insertedValues.subjectAnchor).toBeUndefined();
+    expect(insertedValues.creationSource).toBeUndefined();
   });
 
   it('preserves missionId on retry task', async () => {
