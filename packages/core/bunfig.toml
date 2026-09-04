@@ -1,0 +1,5 @@
+# Bun reads bunfig.toml from the cwd only — it does not walk up to the repo root.
+# CLAUDE.md tells contributors to `cd packages/core` for `bun db:generate` /
+# `bun db:migrate`, and root package.json's `seed:cue-connector` does the same, so
+# this directory needs its own copy of the root preload. See the module header.
+preload = ["../../scripts/stub-server-only.ts"]
