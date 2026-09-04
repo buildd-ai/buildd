@@ -21,10 +21,9 @@ import {
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { authenticateApiKey } from "@/lib/api-auth";
-import { resolveWorkspace } from "@/lib/workspace-resolver";
 import { db } from "@buildd/core/db";
-import { workspaces, teams, workers as workersTable, tasks } from "@buildd/core/db/schema";
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
+import { and, eq, sql } from "drizzle-orm";
 import {
   checkPathClaimConflict,
   insertClaims,
@@ -36,19 +35,10 @@ import {
   handleMemoryAction,
   handleRecallAction,
   handleLearnAction,
-  recallToolDefinition,
-  learnToolDefinition,
-  triggerActions,
-  workerActions,
-  adminActions,
-  allActions as allActionsList,
-  memoryActions,
-  buildToolDescription,
-  buildParamsDescription,
-  buildMemoryDescription,
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
+import { listMcpTools } from "./registry/tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { normalizeProject, workspaceProjectKey } from "@buildd/core/project-scope";
@@ -85,17 +75,6 @@ function createApi(apiKey: string): ApiFn {
 
     return response.json();
   };
-}
-
-// ── Account Level ────────────────────────────────────────────────────────────
-
-async function getAccountLevel(api: ApiFn): Promise<'trigger' | 'worker' | 'admin'> {
-  try {
-    const data = await api('/api/accounts/me');
-    return data.level || 'worker';
-  } catch {
-    return 'worker';
-  }
 }
 
 // ── Memory Helper ────────────────────────────────────────────────────────────
@@ -159,12 +138,6 @@ async function resolveWorkspaceDataClass(workspaceId: string | null | undefined)
 // ── Server Factory ───────────────────────────────────────────────────────────
 
 function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin', workspaceId?: string, repoName?: string, accountTeamId?: string, workerId?: string, authType?: 'api' | 'oauth', appBaseUrl?: string, isSensitive?: boolean) {
-  const filteredActions = accountLevel === 'admin'
-    ? [...allActionsList]
-    : accountLevel === 'trigger'
-    ? [...triggerActions]
-    : [...workerActions];
-
   // Lazy workspace resolver: if URL param didn't resolve, try the account's workspaces
   let resolvedWorkspaceId: string | null = workspaceId || null;
   const getWorkspaceId = async (): Promise<string | null> => {
@@ -250,144 +223,9 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
 
   // ── Tools ────────────────────────────────────────────────────────────────
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    const tools: object[] = [
-      {
-        name: "buildd",
-        description: buildToolDescription(filteredActions),
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: false,
-          openWorldHint: true,
-        },
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            action: {
-              type: "string" as const,
-              description: `Action to perform: ${filteredActions.join(", ")}`,
-              enum: filteredActions,
-            },
-            params: {
-              type: "object" as const,
-              description: buildParamsDescription(filteredActions),
-            },
-          },
-          required: ["action"],
-        },
-      },
-    ];
-
-    // check_path_claim is available to worker and admin tokens (not trigger-only tokens).
-    // Trigger tokens don't run agent work so they never need mid-task path expansion.
-    if (accountLevel === 'worker' || accountLevel === 'admin') {
-      tools.push({
-        name: "check_path_claim",
-        description: `Mid-task path-claim check. Call this when you discover you need to touch a file outside your declared pathManifest.
-
-If the path is unclaimed by any active sibling task, your task's pathManifest is atomically extended and you can proceed.
-If the path is already claimed by a sibling task, you receive blockingTaskId and must report blocked so a dependsOn edge can be added.
-
-Requires a worker context (?worker=<workerId> in the MCP URL).`,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: false,
-          openWorldHint: false,
-        },
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            paths: {
-              type: "array" as const,
-              items: { type: "string" as const },
-              description: "File paths (or directory prefixes) you need to claim. Non-empty array of strings.",
-            },
-          },
-          required: ["paths"],
-        },
-      });
-    }
-
-    // send_worker_message is available to worker and admin tokens (not trigger-only tokens).
-    if (accountLevel === 'worker' || accountLevel === 'admin') {
-      tools.push({
-        name: "send_worker_message",
-        description: `Send a structured message to another active task worker in the same workspace.
-
-Use when you discover a path conflict (path_blocked_on_you), need to ask a clarifying question about a sibling's changes (question), or are answering another worker's question (answer).
-
-Messages are delivered on the recipient's next update_progress check-in as pendingMessages[].
-Sender is resolved automatically from your ?worker= context — do not pass it as a parameter.
-Cross-workspace targeting is rejected (data isolation rule, not a nicety).
-Recipient terminal → returns { delivered: false, reason: "recipient_terminal" }.
-Rate limit: 5 messages per sender per minute per recipient task (retryAfter in error).
-Body size limit: 2 KB. Hop cap: 5 (prevents ping-pong loops — messages with hopCount >= 5 are dropped).
-
-Requires a worker context (?worker=<workerId> in the MCP URL).`,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: false,
-          openWorldHint: false,
-        },
-        inputSchema: {
-          type: "object" as const,
-          properties: {
-            recipientTaskId: {
-              type: "string" as const,
-              description: "Task ID of the recipient. Must share a workspaceId with your task.",
-            },
-            type: {
-              type: "string" as const,
-              enum: ["path_blocked_on_you", "path_released", "question", "answer"],
-              description: "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
-            },
-            body: {
-              type: "object" as const,
-              description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
-            },
-            hopCount: {
-              type: "number" as const,
-              description: "Hop count for forwarded messages (0-based). Omit for new messages. Messages with hopCount >= 5 are dropped to prevent loops.",
-            },
-          },
-          required: ["recipientTaskId", "type", "body"],
-        },
-      });
-    }
-
-    if (!isSensitive) {
-      tools.push(
-        {
-          name: "buildd_memory",
-          description: `Legacy knowledge tool; recall (query) and learn (write) are the current interface — use those in new sessions. Kept callable for compatibility. Actions: ${[...memoryActions].join(', ')}`,
-          annotations: {
-            readOnlyHint: false,
-            destructiveHint: false,
-            openWorldHint: true,
-          },
-          inputSchema: {
-            type: "object" as const,
-            properties: {
-              action: {
-                type: "string" as const,
-                description: `Action: ${[...memoryActions].join(', ')}`,
-                enum: [...memoryActions],
-              },
-              params: {
-                type: "object" as const,
-                description: buildMemoryDescription(memoryActions),
-              },
-            },
-            required: ["action"],
-          },
-        },
-        recallToolDefinition,
-        learnToolDefinition,
-      );
-    }
-
-    return { tools };
-  });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: listMcpTools({ accountLevel, isSensitive: isSensitive === true }),
+  }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
