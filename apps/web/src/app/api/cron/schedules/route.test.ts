@@ -903,6 +903,75 @@ describe('GET /api/cron/schedules', () => {
     (isWithinActiveHours as ReturnType<typeof mock>).mockReturnValue(true);
   });
 
+  // --- Mission cost-budget deferral ---
+  //
+  // A schedule under a mission that spent its cost budget must be DEFERRED,
+  // not disabled: `budget_exhausted` is cleared by a human raising
+  // costBudgetUsd (the auto-resume branch in api/missions/[id] flips the
+  // mission back to `active`), and that branch does NOT re-enable schedules.
+  // So a disabled schedule never fires again even after the budget is raised —
+  // the mission just goes quiet forever with nothing in the response body or
+  // on the schedule row to say why. Deferral keeps enabled=true, advances
+  // nextRunAt, and records the reason MissionGrid renders.
+
+  it('defers a schedule with lastDeferralReason=budget_exhausted when its mission spent its cost budget', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'budget_exhausted',
+      maxConcurrentTasks: null,
+    });
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    // Deferred, not dispatched.
+    expect(body.skipped).toBe(1);
+    expect(body.created).toBe(0);
+    expect(tasksInsertValues).toBeNull();
+
+    const deferral = taskSchedulesUpdateCalls.find(c =>
+      c.set?.lastDeferralReason === 'budget_exhausted'
+    );
+    expect(deferral).toBeDefined();
+    expect(deferral.set.lastDeferredAt).toBeInstanceOf(Date);
+    expect(deferral.set.nextRunAt).toBeInstanceOf(Date);
+
+    // The schedule must stay enabled. Disabling it here is unrecoverable:
+    // raising the budget resumes the mission but leaves enabled=false, and the
+    // due-schedule query only ever looks at enabled=true rows.
+    const disabled = taskSchedulesUpdateCalls.find(c => c.set?.enabled === false);
+    expect(disabled).toBeUndefined();
+  });
+
+  it('dispatches the same schedule once the mission has budget room again', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      maxConcurrentTasks: null,
+    });
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(body.created).toBe(1);
+    expect(body.skipped).toBe(0);
+    expect(tasksInsertValues).not.toBeNull();
+    expect(tasksInsertValues.missionId).toBe('mission-1');
+
+    const deferral = taskSchedulesUpdateCalls.find(c =>
+      c.set?.lastDeferralReason === 'budget_exhausted'
+    );
+    expect(deferral).toBeUndefined();
+  });
+
   // --- Overdue heartbeat alerts ---
 
   function makeOverdueHeartbeatSchedule(overrides: Partial<any> = {}): any {

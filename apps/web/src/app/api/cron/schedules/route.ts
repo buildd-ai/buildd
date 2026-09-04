@@ -1,24 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { archiveStaleDoneMissions } from '@/lib/mission-archive';
 import { db } from '@buildd/core/db';
-import { taskSchedules, tasks, workspaces, missions, workers, workerHeartbeats, accounts, accountWorkspaces } from '@buildd/core/db/schema';
+import { taskSchedules, tasks, workspaces, missions, workers, accounts, accountWorkspaces } from '@buildd/core/db/schema';
 import type { ScheduleTrigger } from '@buildd/core/db/schema';
 import { reportOps } from '@buildd/core/report-ops';
 import { describeError } from '@buildd/core/describe-error';
-import { eq, and, lte, lt, sql, inArray } from 'drizzle-orm';
+import { eq, and, lte, sql, inArray } from 'drizzle-orm';
 import { computeNextRunAt, classifyScheduleCadence } from '@/lib/schedule-helpers';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { buildMissionContext, isWithinActiveHours } from '@/lib/mission-context';
 import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { runHealthWatcher } from '@/lib/health-watcher';
-import { HEARTBEAT_STALE_MS } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
-import { isOverdue, estimateCronIntervalMs } from '@/lib/heartbeat-helpers';
-import { notify } from '@/lib/pushover';
+import { runStaleWorkerCleanup } from './maintenance/stale-workers';
+import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
+import { runMissionArchive } from './maintenance/archive-missions';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -451,6 +450,24 @@ export async function GET(req: NextRequest) {
           }
         }
 
+        // Skip if linked mission has exhausted its cost budget — defer until budget is raised.
+        // MUST precede the `status !== 'active'` branch below, which would
+        // otherwise swallow this case and auto-DISABLE the schedule. Disabling
+        // is unrecoverable here: the auto-resume branch in api/missions/[id]
+        // flips the mission back to `active` when a human raises costBudgetUsd
+        // but never re-enables schedules, and the due-schedule query only reads
+        // enabled=true rows — so the mission would go silently dead forever.
+        if (linkedMission && linkedMission.status === 'budget_exhausted') {
+          const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+          const nextRunAt = rawNext;
+          await db
+            .update(taskSchedules)
+            .set({ nextRunAt, lastDeferralReason: 'budget_exhausted', lastDeferredAt: now, updatedAt: now })
+            .where(eq(taskSchedules.id, schedule.id));
+          skipped++;
+          continue;
+        }
+
         // Skip if linked mission is no longer active
         if (linkedMission && linkedMission.status !== 'active') {
           // Auto-disable the schedule so it stops firing
@@ -468,18 +485,6 @@ export async function GET(req: NextRequest) {
           await db
             .update(taskSchedules)
             .set({ nextRunAt, lastDeferralReason: 'orchestration_manual', lastDeferredAt: now, updatedAt: now })
-            .where(eq(taskSchedules.id, schedule.id));
-          skipped++;
-          continue;
-        }
-
-        // Skip if linked mission has exhausted its cost budget — defer until budget is raised
-        if (linkedMission && linkedMission.status === 'budget_exhausted') {
-          const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-          const nextRunAt = rawNext;
-          await db
-            .update(taskSchedules)
-            .set({ nextRunAt, lastDeferralReason: 'budget_exhausted', lastDeferredAt: now, updatedAt: now })
             .where(eq(taskSchedules.id, schedule.id));
           skipped++;
           continue;
@@ -821,64 +826,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Lightweight stale-worker cleanup: mark workers as failed when their
-    // runner heartbeat expired.  Runs every cron tick (~1 min) so stale
-    // workers are caught quickly instead of waiting 30 min for a runner to
-    // call /api/tasks/cleanup.  Threshold matches stale-workers.ts (150 min
-    // = 2.5× the 60-min poll cycle) so one missed beat doesn't kill live workers.
-    let heartbeatOrphans = 0;
-    try {
-      const heartbeatCutoff = new Date(now.getTime() - HEARTBEAT_STALE_MS);
-      const staleHBs = await db.query.workerHeartbeats.findMany({
-        where: lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
-        columns: { id: true, accountId: true },
-      });
-      if (staleHBs.length > 0) {
-        const staleAccountIds = staleHBs.map(hb => hb.accountId);
-        const orphanedWorkers = await db.query.workers.findMany({
-          where: and(
-            inArray(workers.accountId, staleAccountIds),
-            inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-          ),
-          columns: { id: true, taskId: true },
-        });
-        if (orphanedWorkers.length > 0) {
-          await db
-            .update(workers)
-            .set({
-              status: 'failed',
-              error: 'Worker runner went offline (heartbeat expired)',
-              completedAt: now,
-              updatedAt: now,
-            })
-            .where(inArray(workers.id, orphanedWorkers.map(w => w.id)));
-
-          const orphanTaskIds = orphanedWorkers.map(w => w.taskId).filter(Boolean) as string[];
-          if (orphanTaskIds.length > 0) {
-            await db
-              .update(tasks)
-              .set({ status: 'pending', claimedBy: null, claimedAt: null, updatedAt: now })
-              .where(inArray(tasks.id, orphanTaskIds));
-          }
-          heartbeatOrphans = orphanedWorkers.length;
-        }
-        // Alert that a runner went offline — fires even when it had no active
-        // workers (the orphan-failover above only covers running workers, so an
-        // idle-but-wedged runner — e.g. one stuck on an unreachable server URL —
-        // would otherwise vanish silently). reportOps dedups by source|message
-        // for ~1h, so the per-minute cron won't spam.
-        void reportOps({
-          source: 'runner-offline',
-          severity: 'error',
-          message: 'Runner heartbeat stale — runner offline or not reaching the server',
-          detail: `${staleHBs.length} stale heartbeat(s); accounts: ${[...new Set(staleAccountIds)].join(', ')}; orphaned workers failed: ${heartbeatOrphans}`,
-        });
-        // Delete stale heartbeat records
-        await db.delete(workerHeartbeats).where(lt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff));
-      }
-    } catch (cleanupErr) {
-      console.warn('[Cron] Stale worker cleanup failed:', cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
-    }
+    const heartbeatOrphans = await runStaleWorkerCleanup(now);
 
     let healthWatcher: Awaited<ReturnType<typeof runHealthWatcher>> | { error: string } = { checked: 0, fired: 0, errors: 0, skipped: 0 };
     try {
@@ -889,66 +837,9 @@ export async function GET(req: NextRequest) {
       healthWatcher = { error: message };
     }
 
-    // Check for heartbeat missions whose nextRunAt is still far in the past
-    // (>2x their interval) — meaning the cron hasn't fired them recently.
-    // Alert the owner so they know monitoring has stalled.
-    let overdueHeartbeatAlerts = 0;
-    try {
-      const stuckSchedules = await db.query.taskSchedules.findMany({
-        where: and(
-          eq(taskSchedules.enabled, true),
-          lt(taskSchedules.nextRunAt, now),
-        ),
-      });
+    const overdueHeartbeatAlerts = await runOverdueHeartbeatAlerts(now);
 
-      for (const schedule of stuckSchedules) {
-        const ctx = schedule.taskTemplate?.context as Record<string, unknown> | undefined;
-        if (ctx?.heartbeat !== true) continue;
-        if (!schedule.nextRunAt) continue;
-        if (!isOverdue(schedule.nextRunAt, schedule.cronExpression)) continue;
-
-        const intervalMs = estimateCronIntervalMs(schedule.cronExpression);
-        if (
-          schedule.lastOverdueAlertAt &&
-          now.getTime() - new Date(schedule.lastOverdueAlertAt).getTime() < intervalMs
-        ) continue;
-
-        const linkedMission = await db.query.missions.findFirst({
-          where: eq(missions.scheduleId, schedule.id),
-          columns: { id: true, title: true },
-        });
-
-        const missionTitle = linkedMission?.title ?? schedule.name;
-        const overdueMin = Math.round((now.getTime() - new Date(schedule.nextRunAt).getTime()) / 60_000);
-
-        notify({
-          app: 'alerts',
-          title: `Heartbeat overdue: ${missionTitle}`,
-          message: `Mission heartbeat is ${overdueMin}m overdue — monitoring may have stalled`,
-          priority: 0,
-        });
-
-        await db
-          .update(taskSchedules)
-          .set({ lastOverdueAlertAt: now, updatedAt: now })
-          .where(eq(taskSchedules.id, schedule.id));
-
-        overdueHeartbeatAlerts++;
-      }
-    } catch (overdueErr) {
-      console.warn('[Cron] Overdue heartbeat check failed:', overdueErr instanceof Error ? overdueErr.message : overdueErr);
-    }
-
-    // Best-effort: archive done missions quiet for >24h (the "Awaiting
-    // review" group's TTL — see lib/mission-archive.ts).
-    let archivedMissions: string[] | { error: string } = [];
-    try {
-      archivedMissions = await archiveStaleDoneMissions(now);
-    } catch (archiveErr) {
-      const message = archiveErr instanceof Error ? archiveErr.message : String(archiveErr);
-      console.warn('[Cron] mission archive failed:', message);
-      archivedMissions = { error: message };
-    }
+    const archivedMissions = await runMissionArchive(now);
 
     return NextResponse.json({
       processed,
