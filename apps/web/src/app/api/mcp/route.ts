@@ -38,7 +38,7 @@ import {
   type ApiFn,
   type ActionContext,
 } from "@buildd/core/mcp-tools";
-import { listMcpTools } from "./registry/tools";
+import { listMcpTools } from "./tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { normalizeProject, workspaceProjectKey } from "@buildd/core/project-scope";
