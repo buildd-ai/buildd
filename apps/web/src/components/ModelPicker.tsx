@@ -16,7 +16,7 @@ const TIER_OPTIONS = [
   { value: 'budget', label: 'Budget' },
 ] as const;
 
-export const KNOWN_TIERS = new Set(['inherit', 'premium', 'standard', 'budget']);
+export const KNOWN_TIERS = new Set(['inherit', 'premium-plus', 'premium', 'standard', 'budget']);
 
 /** Converts legacy alias values to their canonical tier. Pass-through for all other values. */
 export function normalizeAlias(value: string): string {

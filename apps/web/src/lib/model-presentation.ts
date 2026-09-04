@@ -25,7 +25,7 @@ const ALIAS_TO_TIER: Record<string, string> = {
   haiku: 'budget',
 };
 
-const TIER_WORDS = new Set(['premium', 'standard', 'budget']);
+const TIER_WORDS = new Set(['premium-plus', 'premium', 'standard', 'budget']);
 
 const titleCase = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 

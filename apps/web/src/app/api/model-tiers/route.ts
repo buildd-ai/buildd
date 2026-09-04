@@ -5,7 +5,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
-import { resolveAllTiers, invalidateTierCache, type Tier } from '@buildd/core/model-tier-registry';
+import { resolveAllTiers, invalidateTierCache, TIERS, type Tier } from '@buildd/core/model-tier-registry';
 
 // Resolve the teamId for a given workspaceId.
 async function getTeamIdForWorkspace(workspaceId: string): Promise<string | null> {
@@ -107,8 +107,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { tier, provider, model, workspaceId, defaultEffort, defaultMaxTurns } = body;
 
-    if (!tier || !['premium', 'standard', 'budget'].includes(tier)) {
-      return NextResponse.json({ error: 'tier must be premium, standard, or budget' }, { status: 400 });
+    if (!tier || !TIERS.includes(tier as Tier)) {
+      return NextResponse.json({ error: `tier must be one of ${TIERS.join(', ')}` }, { status: 400 });
     }
     if (!provider || !['anthropic', 'openai-codex', 'openrouter'].includes(provider)) {
       return NextResponse.json({ error: 'provider must be anthropic, openai-codex, or openrouter' }, { status: 400 });
@@ -201,8 +201,8 @@ export async function DELETE(req: NextRequest) {
   const tier = searchParams.get('tier');
   const workspaceId = searchParams.get('workspaceId') || null;
 
-  if (!tier || !['premium', 'standard', 'budget'].includes(tier)) {
-    return NextResponse.json({ error: 'tier must be premium, standard, or budget' }, { status: 400 });
+  if (!tier || !TIERS.includes(tier as Tier)) {
+    return NextResponse.json({ error: `tier must be one of ${TIERS.join(', ')}` }, { status: 400 });
   }
 
   try {

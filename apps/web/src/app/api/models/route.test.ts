@@ -13,12 +13,18 @@ import { NextRequest } from 'next/server';
 const mockGetCurrentUser = mock(() => Promise.resolve(null as any));
 const mockResolveActiveTeamId = mock(() => Promise.resolve('team-1' as string | null));
 const mockResolveAnthropicAuth = mock(() => Promise.resolve(null as any));
-const mockResolveAllTiers = mock(() => Promise.resolve({
+const DEFAULT_TIERS = {
+  'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1', source: 'default' },
   premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'default' },
   standard: { provider: 'anthropic', model: 'claude-sonnet-4-6', source: 'default' },
   budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
-} as any));
+};
+const mockResolveAllTiers = mock(() => Promise.resolve(DEFAULT_TIERS as any));
 const mockFetch = mock(() => Promise.resolve(null as any));
+// The public OpenRouter catalog. Mocked at module level so no test touches the
+// network, and so `globalThis.fetch` assertions still speak only for Anthropic.
+const mockFetchOpenRouterCatalog = mock(() => Promise.resolve([] as any[]));
+const mockSetCatalogPrices = mock((_: any) => {});
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -34,6 +40,15 @@ mock.module('@/lib/claude-credential', () => ({
 
 mock.module('@buildd/core/model-tier-registry', () => ({
   resolveAllTiers: mockResolveAllTiers,
+  TIERS: ['premium-plus', 'premium', 'standard', 'budget'],
+}));
+
+mock.module('@buildd/core/model-catalog', () => ({
+  fetchOpenRouterCatalog: mockFetchOpenRouterCatalog,
+}));
+
+mock.module('@buildd/core/model-prices', () => ({
+  setCatalogPrices: mockSetCatalogPrices,
 }));
 
 // Static import after mocks
@@ -66,6 +81,13 @@ describe('GET /api/models', () => {
     mockResolveAnthropicAuth.mockReset();
     mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(null));
     mockFetch.mockReset();
+    // Must be reset like every other mock: an override here used to leak into
+    // all subsequent tests.
+    mockResolveAllTiers.mockReset();
+    mockResolveAllTiers.mockReturnValue(Promise.resolve(DEFAULT_TIERS as any));
+    mockFetchOpenRouterCatalog.mockReset();
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([]));
+    mockSetCatalogPrices.mockReset();
     globalThis.fetch = mockFetch as any;
     _resetCache();
   });
@@ -90,11 +112,12 @@ describe('GET /api/models', () => {
     // Previously []. An empty list is what produced the "check your Anthropic API
     // key in Settings" dead end.
     expect(data.models.map((m: any) => m.id)).toEqual([
+      'claude-fable-5-1',
       'claude-opus-5',
       'claude-sonnet-4-6',
       'claude-haiku-4-5-20251001',
     ]);
-    expect(data.models[0]).toMatchObject({ tier: 'premium', provider: 'anthropic' });
+    expect(data.models[0]).toMatchObject({ tier: 'premium-plus', provider: 'anthropic' });
     // The catalog is NOT complete, so absence from this list means nothing.
     expect(data.catalogComplete).toBe(false);
     // No credential means no outbound call at all.
@@ -121,7 +144,7 @@ describe('GET /api/models', () => {
     expect(data.catalogComplete).toBe(true);
     const ids = data.models.map((m: any) => m.id);
     // Tier models lead; catalog entries follow.
-    expect(ids.slice(0, 3)).toEqual(['claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
+    expect(ids.slice(0, 4)).toEqual(['claude-fable-5-1', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001']);
     expect(ids).toContain('claude-sonnet-5');
     // claude-opus-5 is in both; it appears once, keeping its tier label.
     expect(ids.filter((i: string) => i === 'claude-opus-5')).toHaveLength(1);
@@ -176,7 +199,7 @@ describe('GET /api/models', () => {
     mockFetch.mockReturnValue(Promise.resolve(new Response('nope', { status: 401 })));
 
     const data = await (await GET(req())).json();
-    expect(data.models).toHaveLength(3);
+    expect(data.models).toHaveLength(4);
     // A dead credential must not be reported as a complete catalog, or the client
     // would warn that every pinned model has been retired.
     expect(data.catalogComplete).toBe(false);
@@ -187,7 +210,7 @@ describe('GET /api/models', () => {
     mockFetch.mockImplementation(() => Promise.reject(new Error('network error')));
 
     const data = await (await GET(req())).json();
-    expect(data.models).toHaveLength(3);
+    expect(data.models).toHaveLength(4);
     expect(data.catalogComplete).toBe(false);
   });
 
@@ -250,6 +273,7 @@ describe('GET /api/models', () => {
       { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' },
       { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6' },
       { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
+      { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
       { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5' },
     ])));
 
@@ -264,13 +288,13 @@ describe('GET /api/models', () => {
 
   it('flags a tier pinned to a model the API no longer returns', async () => {
     mockResolveAllTiers.mockReturnValue(Promise.resolve({
-      premium: { provider: 'anthropic', model: 'claude-opus-5', source: 'default' },
+      ...DEFAULT_TIERS,
       standard: { provider: 'anthropic', model: 'claude-sonnet-retired', source: 'team' },
-      budget: { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
     } as any));
     mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
     mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
       { id: 'claude-opus-5' },
+      { id: 'claude-fable-5-1' },
       { id: 'claude-haiku-4-5-20251001' },
     ])));
 
@@ -281,9 +305,104 @@ describe('GET /api/models', () => {
     ]);
   });
 
+  // ── Public catalog (OpenRouter, no credential) ─────────────────────────────
+  //
+  // The reason this source exists: `auditTierModels` only ever ran where an
+  // Anthropic credential was stored, which is not the OAuth deployments. The
+  // public list needs no key and covers both vendors.
+
+  const publicEntry = (id: string, provider = 'anthropic', displayName?: string) => ({
+    id,
+    canonicalId: null,
+    openRouterId: `${provider}/${id}`,
+    provider,
+    displayName: displayName ?? id,
+    contextLength: 1_000_000,
+    created: 1_780_000_000,
+    input: 2,
+    output: 10,
+    cacheRead: 0.2,
+    cacheWrite: 2.5,
+  });
+
+  it('audits the tiers off the public catalog when there is NO credential', async () => {
+    // This is the regression that mattered: no credential used to mean no audit.
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      publicEntry('claude-sonnet-5'),
+      publicEntry('claude-sonnet-4-6'),
+      publicEntry('claude-opus-5'),
+      publicEntry('claude-fable-5-1'),
+      publicEntry('claude-haiku-4-5-20251001'),
+    ]));
+
+    const data = await (await GET(req())).json();
+
+    expect(mockResolveAnthropicAuth).toHaveBeenCalledTimes(1);
+    expect(mockFetch).not.toHaveBeenCalled(); // no Anthropic call happened
+    expect(data.tierAudit.checked).toBe(true);
+    expect(data.tierAudit.superseded).toEqual([
+      { tier: 'standard', model: 'claude-sonnet-4-6', newer: 'claude-sonnet-5' },
+    ]);
+  });
+
+  it('reports the catalog as INCOMPLETE even with a public catalog loaded', async () => {
+    // OpenRouter does not resell every model or any dated snapshot, so absence
+    // from it cannot justify a "your pinned model is gone" warning.
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([publicEntry('claude-opus-5')]));
+
+    const data = await (await GET(req())).json();
+
+    expect(data.catalogComplete).toBe(false);
+    expect(data.catalogSources).toMatchObject({ openRouter: true, anthropic: false });
+  });
+
+  it('merges public models into the picker and publishes their prices', async () => {
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([
+      publicEntry('gpt-5.6-terra', 'openai', 'OpenAI: GPT-5.6 Terra'),
+    ]));
+
+    const data = await (await GET(req())).json();
+    const gpt = data.models.find((m: any) => m.id === 'gpt-5.6-terra');
+
+    expect(gpt).toMatchObject({ provider: 'openai', displayName: 'OpenAI: GPT-5.6 Terra' });
+    // Prices reach model-prices, which is what fixes GPT cost math.
+    expect(mockSetCatalogPrices).toHaveBeenCalled();
+  });
+
+  it('prefers the credentialed catalog for the audit when both are present', async () => {
+    // The Anthropic list is authoritative (dated snapshots, unreselled models);
+    // the public one is the fallback, not an override.
+    mockResolveAnthropicAuth.mockReturnValue(Promise.resolve(OAUTH_AUTH));
+    mockFetch.mockReturnValue(Promise.resolve(makeAnthropicResponse([
+      { id: 'claude-opus-5' },
+      { id: 'claude-sonnet-4-6' },
+      { id: 'claude-fable-5-1' },
+      { id: 'claude-haiku-4-5-20251001' },
+    ])));
+    // The public catalog knows sonnet-5; the credentialed one does not. The
+    // audit must follow the credentialed list and report no supersession.
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([publicEntry('claude-sonnet-5')]));
+
+    const data = await (await GET(req())).json();
+
+    expect(data.catalogComplete).toBe(true);
+    expect(data.tierAudit.superseded).toEqual([]);
+  });
+
+  it('a failed public catalog read degrades to the previous behaviour', async () => {
+    mockFetchOpenRouterCatalog.mockReturnValue(Promise.resolve([]));
+
+    const data = await (await GET(req())).json();
+
+    expect(data.models).toHaveLength(4); // tier floor intact
+    expect(data.tierAudit.checked).toBe(false);
+    expect(data.catalogSources.openRouter).toBe(false);
+  });
+
   it('audits nothing when the catalog is incomplete, rather than condemning every tier', async () => {
-    // No credential => catalog is null. Warning here would flag all three tiers
-    // as retired off an empty set — the inverse of a gate that passes vacuously.
+    // No credential AND an empty public catalog => nothing to audit against.
+    // Warning here would flag every tier as retired off an empty set — the
+    // inverse of a gate that passes vacuously.
     const data = await (await GET(req())).json();
 
     expect(data.catalogComplete).toBe(false);

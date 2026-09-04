@@ -1,6 +1,8 @@
-import { describe, it, expect } from 'bun:test';
-import { estimateCostUsd, estimateCostUsdFromTotals, priceForModel } from '../model-prices';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { estimateCostUsd, estimateCostUsdFromTotals, priceForModel, setCatalogPrices } from '../model-prices';
+import { normalizeCatalog } from '../model-catalog';
 import type { ModelUsage } from '../db/schema';
+import fixture from './fixtures/openrouter-models.json';
 
 function usage(overrides: Partial<ModelUsage> = {}): ModelUsage {
   return {
@@ -15,9 +17,34 @@ function usage(overrides: Partial<ModelUsage> = {}): ModelUsage {
 
 describe('priceForModel', () => {
   it('maps model IDs to the right tier', () => {
-    expect(priceForModel('claude-opus-4-8').input).toBe(15);
+    expect(priceForModel('claude-opus-4-8').input).toBe(5);
     expect(priceForModel('claude-sonnet-4-6').input).toBe(3);
     expect(priceForModel('claude-haiku-4-5-20251001').input).toBe(1);
+  });
+
+  it('prices the current Opus generation at $5/$25, not the retired $15/$75', () => {
+    // Regression: this table carried $15/$75 for ALL opus, which is Opus 4.1-era
+    // pricing. Opus 4.5 onward is $5/$25. Because dailyBudgetPct is derived from
+    // these numbers, a 3x overstatement trips the router's budget downshift (70%)
+    // and its priority-0 pause (95%) on spend that never happened.
+    for (const id of ['claude-opus-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5']) {
+      expect(priceForModel(id).input).toBe(5);
+      expect(priceForModel(id).output).toBe(25);
+    }
+  });
+
+  it('still prices the genuinely-$15 Opus 4 / 4.1 at the legacy rate', () => {
+    expect(priceForModel('claude-opus-4-1').input).toBe(15);
+    expect(priceForModel('claude-opus-4').input).toBe(15);
+    expect(priceForModel('claude-opus-4-20250514').input).toBe(15);
+  });
+
+  it('prices Fable at the frontier rate instead of defaulting to sonnet', () => {
+    // Fable is $10/$50. Falling through to the sonnet default billed it at
+    // $3/$15 — a 3.3x UNDERstatement, the opposite failure to the opus row.
+    expect(priceForModel('claude-fable-5-1').input).toBe(10);
+    expect(priceForModel('claude-fable-5-1').output).toBe(50);
+    expect(priceForModel('claude-mythos-5-1').input).toBe(10);
   });
 
   it('defaults unknown models to sonnet pricing', () => {
@@ -39,6 +66,32 @@ describe('priceForModel', () => {
   });
 });
 
+describe('priceForModel with a live catalog loaded', () => {
+  afterEach(() => setCatalogPrices([]));
+
+  it('prices GPT models, which the static table cannot do at all', () => {
+    // Without the catalog every GPT id falls through to the sonnet default
+    // ($3/$15). gpt-5.6-luna is $0.20/$1.20 — a 15x overstatement on input.
+    expect(priceForModel('gpt-5.6-luna').input).toBe(3); // static fallback
+    setCatalogPrices(normalizeCatalog(fixture));
+    expect(priceForModel('gpt-5.6-luna').input).toBeCloseTo(0.2, 6);
+    expect(priceForModel('gpt-5.6-luna').output).toBeCloseTo(1.2, 6);
+  });
+
+  it('a model the catalog does not carry still falls back to the static table', () => {
+    setCatalogPrices(normalizeCatalog(fixture));
+    // Not in the fixture; the static opus row must still answer.
+    expect(priceForModel('claude-opus-4-7').input).toBe(5);
+  });
+
+  it('clearing the catalog restores the static table', () => {
+    setCatalogPrices(normalizeCatalog(fixture));
+    expect(priceForModel('gpt-5.6-luna').input).toBeCloseTo(0.2, 6);
+    setCatalogPrices([]);
+    expect(priceForModel('gpt-5.6-luna').input).toBe(3);
+  });
+});
+
 describe('estimateCostUsd', () => {
   it('returns 0 for missing usage', () => {
     expect(estimateCostUsd(null)).toBe(0);
@@ -55,19 +108,19 @@ describe('estimateCostUsd', () => {
   });
 
   it('prices cache tokens at discounted/premium rates', () => {
-    // 1M opus cache-read ($1.50) + 1M opus cache-write ($18.75) = $20.25
+    // 1M opus cache-read ($0.50) + 1M opus cache-write ($6.25) = $6.75
     const cost = estimateCostUsd({
       'claude-opus-4-8': usage({ cacheReadInputTokens: 1_000_000, cacheCreationInputTokens: 1_000_000 }),
     });
-    expect(cost).toBeCloseTo(20.25, 6);
+    expect(cost).toBeCloseTo(6.75, 6);
   });
 
   it('sums across multiple models', () => {
     const cost = estimateCostUsd({
       'claude-haiku-4-5': usage({ inputTokens: 1_000_000 }), // $1
-      'claude-opus-4-8': usage({ outputTokens: 1_000_000 }), // $75
+      'claude-opus-4-8': usage({ outputTokens: 1_000_000 }), // $25
     });
-    expect(cost).toBeCloseTo(76, 6);
+    expect(cost).toBeCloseTo(26, 6);
   });
 });
 
@@ -101,9 +154,9 @@ describe('estimateCostUsdFromTotals (seat/OAuth path)', () => {
     expect(cost).toBeCloseTo(3.75, 6);
   });
 
-  it('honours the model tier — opus costs 5x sonnet on input', () => {
+  it('honours the model tier — opus costs 5x haiku on input', () => {
     const totals = { inputTokens: 1_000_000, outputTokens: 0 };
-    expect(estimateCostUsdFromTotals(totals, 'claude-opus-4-8')).toBeCloseTo(15, 6);
+    expect(estimateCostUsdFromTotals(totals, 'claude-opus-4-8')).toBeCloseTo(5, 6);
     expect(estimateCostUsdFromTotals(totals, 'claude-haiku-4-5')).toBeCloseTo(1, 6);
   });
 

@@ -6,7 +6,15 @@
  * The authoritative source of truth is the model_tier_registry table.
  */
 
-export type Tier = 'premium' | 'standard' | 'budget';
+export type Tier = 'premium-plus' | 'premium' | 'standard' | 'budget';
+
+/**
+ * Every tier, most to least capable. Validation sites import this rather than
+ * inlining the list — the four separate hardcoded copies of
+ * `['premium','standard','budget']` are exactly why adding a tier used to mean
+ * hunting through routes and MCP handlers.
+ */
+export const TIERS: readonly Tier[] = ['premium-plus', 'premium', 'standard', 'budget'];
 export type TierProvider = 'anthropic' | 'openai-codex' | 'openrouter';
 
 export interface TierEntry {
@@ -18,9 +26,13 @@ export interface TierEntry {
 }
 
 export const TIER_DEFAULTS: Record<Tier, TierEntry> = {
-  premium:  { provider: 'anthropic', model: 'claude-opus-5',             source: 'default' },
-  standard: { provider: 'anthropic', model: 'claude-sonnet-5',           source: 'default' },
-  budget:   { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
+  // Opt-in only: nothing routes here on its own. The kind×complexity matrix in
+  // model-router.ts tops out at `premium`, so premium-plus is reached solely by
+  // an explicit `tier` on a task or a role. Fable is ~2x premium per token.
+  'premium-plus': { provider: 'anthropic', model: 'claude-fable-5-1',      source: 'default' },
+  premium:        { provider: 'anthropic', model: 'claude-opus-5',         source: 'default' },
+  standard:       { provider: 'anthropic', model: 'claude-sonnet-5',       source: 'default' },
+  budget:         { provider: 'anthropic', model: 'claude-haiku-4-5-20251001', source: 'default' },
 };
 
 // Which model backs a tier is a policy call, so it is hand-maintained here and

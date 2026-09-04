@@ -7,12 +7,15 @@
  * on a deployment where that env var is never set. It also silently disabled the
  * stale-pin warning, because an empty catalog makes every pin look valid.
  *
- * Now there are two sources and the response says which it got:
+ * Now there are three sources and the response says which it got:
  * - The team's tier registry, always. These are the models this team actually
  *   routes to, across every provider, and it needs no credential at all.
+ * - The PUBLIC OpenRouter catalog, always. No key, both vendors, and it carries
+ *   pricing — so the tier audit below finally runs on every deployment instead
+ *   of only where an Anthropic credential happens to be stored.
  * - The live Anthropic catalog, when the team has a stored credential
- *   (`resolveAnthropicAuth`). This is what makes pinning a specific dated release
- *   possible, and it is additive — never a precondition for the route working.
+ *   (`resolveAnthropicAuth`). Still worth fetching: it is authoritative for
+ *   dated snapshot ids and for models OpenRouter does not resell.
  *
  * `catalogComplete` tells the client whether absence from the list means anything.
  * Only a complete catalog can justify a "your pinned model is gone" warning.
@@ -22,8 +25,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveActiveTeamId } from '@/lib/team-access';
 import { resolveAnthropicAuth } from '@/lib/claude-credential';
-import { resolveAllTiers, type Tier } from '@buildd/core/model-tier-registry';
+import { resolveAllTiers, TIERS, type Tier } from '@buildd/core/model-tier-registry';
 import { auditTierModels } from '@buildd/core/model-tier-liveness';
+import { fetchOpenRouterCatalog, type CatalogEntry } from '@buildd/core/model-catalog';
+import { setCatalogPrices } from '@buildd/core/model-prices';
 
 interface AnthropicModel {
   id: string;
@@ -48,11 +53,12 @@ interface CachedCatalog {
 const catalogCache = new Map<string, CachedCatalog>();
 const CACHE_TTL = 24 * 60 * 60 * 1000;
 
-const TIER_ORDER: Tier[] = ['premium', 'standard', 'budget'];
+const TIER_ORDER: readonly Tier[] = TIERS;
 
-/** Exposed for tests only — resets the in-memory cache. */
+/** Exposed for tests only — resets the in-memory caches. */
 export function _resetCache() {
   catalogCache.clear();
+  publicCatalog = null;
 }
 
 /**
@@ -118,6 +124,30 @@ async function liveCatalog(teamId: string): Promise<ModelEntry[] | null> {
   }
 }
 
+/**
+ * The public OpenRouter catalog. No credential, both vendors, carries pricing.
+ *
+ * Cached team-independently — it is the same public list for everyone, so unlike
+ * the credentialed Anthropic catalog there is nothing to leak between teams.
+ *
+ * Side effect on purpose: publishing prices into `model-prices` is what makes
+ * cost math correct for GPT models and for any model released after the static
+ * table was last touched.
+ */
+let publicCatalog: { entries: CatalogEntry[]; fetchedAt: number } | null = null;
+
+async function getPublicCatalog(): Promise<CatalogEntry[]> {
+  if (publicCatalog && Date.now() - publicCatalog.fetchedAt < CACHE_TTL) {
+    return publicCatalog.entries;
+  }
+  const entries = await fetchOpenRouterCatalog();
+  if (entries.length > 0) {
+    publicCatalog = { entries, fetchedAt: Date.now() };
+    setCatalogPrices(entries);
+  }
+  return entries;
+}
+
 async function getCachedCatalog(teamId: string): Promise<ModelEntry[] | null> {
   const hit = catalogCache.get(teamId);
   if (hit && Date.now() - hit.fetchedAt < CACHE_TTL) return hit.models;
@@ -142,31 +172,48 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ models: [], catalogComplete: false });
   }
 
-  const [tierEntries, catalog] = await Promise.all([
+  const [tierEntries, catalog, publicEntries] = await Promise.all([
     registryModels(teamId),
     getCachedCatalog(teamId),
+    getPublicCatalog(),
   ]);
 
-  // Tier entries first — they are the models this team actually uses, and one of
-  // them is almost always the right answer. The live catalog fills in the exact
-  // releases behind them, deduplicated by id so a tier model that also appears in
-  // the catalog keeps its tier label.
-  const seen = new Set(tierEntries.map(m => m.id));
-  const models = [
-    ...tierEntries,
-    ...(catalog ?? []).filter(m => !seen.has(m.id)),
-  ];
+  const publicModels: ModelEntry[] = publicEntries.map(e => ({
+    id: e.id,
+    displayName: e.displayName,
+    provider: e.provider,
+  }));
 
-  // Audit the team's TIER CONFIG against the live catalog. `detectStalePin` on the
-  // client covers a different case (a model the *user* pinned that no longer
-  // exists); nothing checked the tiers themselves, so `standard` sat a generation
-  // behind a cheaper model with no signal anywhere. Only a complete catalog can
-  // justify either verdict — an empty list would condemn every model at once.
+  // Tier entries first — they are the models this team actually uses, and one of
+  // them is almost always the right answer. The catalogs fill in the exact
+  // releases behind them, deduplicated by id so a tier model that also appears in
+  // a catalog keeps its tier label. Credentialed Anthropic entries come before
+  // public ones: they carry the dated snapshot ids you cannot pin otherwise.
+  const seen = new Set(tierEntries.map(m => m.id));
+  const models: ModelEntry[] = [...tierEntries];
+  for (const m of [...(catalog ?? []), ...publicModels]) {
+    if (seen.has(m.id)) continue;
+    seen.add(m.id);
+    models.push(m);
+  }
+
+  // Audit the team's TIER CONFIG. `detectStalePin` on the client covers a
+  // different case (a model the *user* pinned that no longer exists); nothing
+  // checked the tiers themselves, so `standard` sat a generation behind a
+  // cheaper model with no signal anywhere. Only a complete catalog can justify
+  // either verdict — an empty list would condemn every model at once.
+  //
+  // The audit list is the credentialed catalog when we have one, else the public
+  // one. That "else" is the point: the audit previously did nothing at all
+  // without an Anthropic credential, which is every deployment that runs on
+  // OAuth. Anthropic ids from OpenRouter are normalized to native form
+  // (`claude-haiku-4-5`, not `4.5`), so `auditTierModels` can match them.
+  const auditList = catalog ?? publicModels.filter(m => m.provider === 'anthropic');
   const tierAudit = auditTierModels(
     Object.fromEntries(
       tierEntries.map(m => [m.tier ?? m.id, { provider: m.provider, model: m.id }]),
     ),
-    catalog ?? [],
+    auditList,
   );
   for (const { tier, model } of tierAudit.unknown) {
     console.warn(`[api/models] tier "${tier}" is pinned to ${model}, which the models API does not return — retired, renamed, or a typo`);
@@ -175,5 +222,18 @@ export async function GET(req: NextRequest) {
     console.warn(`[api/models] tier "${tier}" is on ${model}; ${newer} is newer in the same family — check price and capability before switching`);
   }
 
-  return NextResponse.json({ models, catalogComplete: catalog !== null, tierAudit });
+  return NextResponse.json({
+    models,
+    // A public-catalog-only answer is still incomplete for pin validation:
+    // OpenRouter does not resell every model (no dated snapshots, and nothing
+    // that is not on their platform), so absence from it does not prove a pin
+    // is dead. Only the credentialed catalog can justify that warning.
+    catalogComplete: catalog !== null,
+    catalogSources: {
+      registry: tierEntries.length > 0,
+      anthropic: catalog !== null,
+      openRouter: publicEntries.length > 0,
+    },
+    tierAudit,
+  });
 }
