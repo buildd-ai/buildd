@@ -193,19 +193,24 @@ function daysSince(iso: string): number | null {
 
 // Pull file paths out of the `Code surface:` section so we can confirm they
 // still exist (SPEC-FORMAT rule #4, previously unenforced).
-function codeSurfacePaths(body: string): string[] {
+export function codeSurfacePaths(body: string): string[] {
   // Three spellings occur in the wild: `**Code surface**:`, `Code surface:`, and a
   // `## Code surface` heading. Missing the heading form meant one spec's dead path
   // sat unnoticed — the check silently found zero paths and passed.
-  const start = body.search(/\*\*Code surface\*\*|^#{2,4} Code surface|Code surface:/im);
-  if (start === -1) return [];
-  // Stop at the next bold label or heading, but not on the heading we just matched.
-  const rest = body.slice(start);
-  const section = rest.slice(0, 1) + rest.slice(1).split(/\n\*\*|\n#{2,4} /)[0];
+  //
+  // EVERY occurrence, not just the first. A multi-section spec repeats the label
+  // once per section, and reading only the first match left sections 2..N entirely
+  // unchecked: work-tracker-integration.md carries three, and its §3 named a route
+  // that does not exist while this check reported zero errors.
   const paths = new Set<string>();
-  for (const m of section.matchAll(/`([^`]+)`/g)) {
-    const token = m[1].split(/[\s:#]/)[0]; // strip `:symbol` / line refs
-    if (/^(apps|packages|docs|scripts)\//.test(token)) paths.add(token);
+  for (const label of body.matchAll(/\*\*Code surface\*\*|^#{2,4} Code surface|Code surface:/gim)) {
+    // Stop at the next bold label or heading, but not on the heading we just matched.
+    const rest = body.slice(label.index);
+    const section = rest.slice(0, 1) + rest.slice(1).split(/\n\*\*|\n#{2,4} /)[0];
+    for (const m of section.matchAll(/`([^`]+)`/g)) {
+      const token = m[1].split(/[\s:#]/)[0]; // strip `:symbol` / line refs
+      if (/^(apps|packages|docs|scripts)\//.test(token)) paths.add(token);
+    }
   }
   return [...paths];
 }
