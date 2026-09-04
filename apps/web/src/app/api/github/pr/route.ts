@@ -54,6 +54,12 @@ async function resolveWorkerByPrNumber(
       );
       if (match) narrowedWsId = match.id;
     }
+    // A supplied workspaceId that resolves to nothing (typo, or a workspace the
+    // caller can't access) must reject — falling back to wsIds here would silently
+    // widen the search back to every accessible workspace instead of disambiguating.
+    if (!narrowedWsId) {
+      return { error: `Workspace "${workspaceId}" not found or not accessible`, status: 404 };
+    }
   }
 
   const searchIds = narrowedWsId ? [narrowedWsId] : wsIds;
