@@ -1,4 +1,5 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const mockWorkersFindMany = mock(() => [] as any[]);
 
@@ -61,5 +62,33 @@ describe('checkWorkspaceCap', () => {
     mockWorkersFindMany.mockResolvedValue([{ id: 'w1' }, { id: 'w2' }, { id: 'w3' }]);
     const result = await checkWorkspaceCap(WORKSPACE_ID, 3, null);
     expect(result).toEqual({ active: 3, cap: 3 });
+  });
+});
+
+// ─── What gets counted ───────────────────────────────────────────────────────
+//
+// Every test above feeds the active-worker count straight in from the mock, so
+// the query that produces that count was never observed. Two mutations to it
+// were silent, and both are outages:
+//
+//   - dropping `eq(workers.workspaceId, workspaceId)` counts the active workers
+//     of EVERY workspace on the instance against this one workspace's cap of
+//     3 — the whole fleet wedges at workspace_cap and no task ever starts.
+//   - dropping 'idle' from the status list under-counts held-open workers, so
+//     the workspace admits more concurrent tasks than its cap allows.
+//
+// Neither shows up as an error; both look exactly like a quiet queue.
+
+describe('checkWorkspaceCap — the active-worker query', () => {
+  it('counts only this workspace, and only running/starting/idle workers', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await checkWorkspaceCap(WORKSPACE_ID, 3);
+
+    const args = mockWorkersFindMany.mock.calls.at(-1)![0] as { where: any };
+    const { sql: text, params } = new PgDialect().sqlToQuery(args.where);
+
+    expect(text).toContain('"workers"."workspace_id" = $1');
+    expect(text).toContain('"workers"."status" in ($2, $3, $4)');
+    expect(params).toEqual([WORKSPACE_ID, 'running', 'starting', 'idle']);
   });
 });
