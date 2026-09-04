@@ -4,11 +4,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useLocalUiHealth } from '../useLocalUiHealth';
 import { subscribeToChannel, unsubscribeFromChannel, getSubscribedChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import Spinner from '@/components/Spinner';
 
 interface Props {
   taskId: string;
   workspaceId: string;
 }
+
+export type StartStatus = 'idle' | 'starting' | 'waiting' | 'accepted' | 'failed' | 'queued' | 'gated';
 
 // How long to show the optimistic "Start requested" state before degrading to
 // "queued at front" panel. NOT a deadline for the task — /start writes
@@ -18,12 +21,47 @@ interface Props {
 // queued panel with fleet liveness info, never a failure.
 const ASSIGNMENT_TIMEOUT_MS = 10_000;
 
+// Requirement C: gated (422) and hard-failure outcomes require a decision and
+// stay a dialog. Requirement B: every other outcome (200 — waiting/queued/
+// accepted — and idle) renders inline, in place, with no dialog.
+export function isDialogStatus(status: StartStatus): boolean {
+  return status === 'gated' || status === 'failed';
+}
+
+// Pure shell: routes between the inline (in-page) presentation and the
+// decision dialog based on status alone, so the branch itself is directly
+// testable without driving the stateful fetch flow above it.
+export function StartTaskShell({
+  status,
+  onBackdropClick,
+  modal,
+  children,
+}: {
+  status: StartStatus;
+  onBackdropClick: () => void;
+  modal: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      {children}
+      {isDialogStatus(status) && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={(e) => e.target === e.currentTarget && onBackdropClick()}
+        >
+          <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-md">{modal}</div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function StartTaskButton({ taskId, workspaceId }: Props) {
-  const [showModal, setShowModal] = useState(false);
   const [loading, setLoading] = useState(false);
   const { available: activeLocalUis } = useLocalUiHealth(workspaceId);
   const [selectedLocalUi, setSelectedLocalUi] = useState<string>('');
-  const [status, setStatus] = useState<'idle' | 'starting' | 'waiting' | 'accepted' | 'failed' | 'queued' | 'gated'>('idle');
+  const [status, setStatus] = useState<StartStatus>('idle');
   const [error, setError] = useState('');
   const [runnerFleet, setRunnerFleet] = useState<{ count: number; lastSeenSecs: number | null } | null>(null);
   const [claimedWorker, setClaimedWorker] = useState<{ id: string; localUiUrl: string | null } | null>(null);
@@ -48,6 +86,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
   const [switchingBackend, setSwitchingBackend] = useState<string | null>(null);
   const [raisingCap, setRaisingCap] = useState(false);
   const [capRaiseTarget, setCapRaiseTarget] = useState<number | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const router = useRouter();
 
@@ -235,7 +274,6 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
       clearInterval(pollIntervalRef.current);
     }
     releaseChannel();
-    setShowModal(false);
     setStatus('idle');
     setError('');
     setSelectedLocalUi('');
@@ -247,11 +285,11 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setCapRaiseTarget(null);
     setRunnerFleet(null);
     setSwitchingBackend(null);
+    setPickerOpen(false);
   };
 
   const handleViewInDashboard = () => {
     router.refresh();
-    setShowModal(false);
   };
 
   const handleRetry = () => {
@@ -303,408 +341,367 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     }
   };
 
-  return (
-    <>
-      <button
-        onClick={() => setShowModal(true)}
-        className="px-4 py-2 text-sm bg-status-success text-white rounded-md hover:opacity-90"
-      >
-        Start Task
-      </button>
-
-      {showModal && (
-        <div
-          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
-          onClick={(e) => e.target === e.currentTarget && handleClose()}
-        >
-          <div className="bg-surface-2 rounded-lg shadow-xl w-full max-w-md">
-            {status === 'waiting' ? (
-              <div className="p-6 text-center">
-                <div className="animate-spin w-8 h-8 border-2 border-status-success border-t-transparent rounded-full mx-auto mb-4" />
-                <p className="text-text-primary mb-2">
-                  Start requested
-                </p>
-                <p className="text-sm text-text-secondary">
-                  A worker will pick this up — you can close this.
-                </p>
-                <button
-                  onClick={handleClose}
-                  className="mt-4 px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
-                >
-                  Close
-                </button>
-              </div>
-            ) : status === 'accepted' ? (
-              <div className="p-6">
-                <div className="text-center mb-4">
-                  <div className="w-10 h-10 bg-status-success/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <svg className="w-6 h-6 text-status-success" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                    </svg>
-                  </div>
-                  <p className="text-text-primary font-medium">
-                    Task started!
-                  </p>
-                  <p className="text-sm text-text-secondary mt-1">
-                    A worker has picked up your task
-                  </p>
-                </div>
-                <div className="space-y-2">
-                  <button
-                    onClick={handleViewInDashboard}
-                    className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-primary text-white rounded-md hover:bg-primary-hover transition-opacity"
-                  >
-                    View in Dashboard
-                  </button>
-                </div>
-              </div>
-            ) : status === 'queued' ? (
-              <div className="p-6">
-                <div className="text-center mb-4">
-                  <div className="w-10 h-10 bg-status-warning/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                  </div>
-                  <p className="text-text-primary font-medium mb-1">Queued at front — auto-starts</p>
-                  <p className="text-sm text-text-secondary">
-                    No runner responded yet. The task is prioritized at the front of the
-                    queue and will start automatically on the next claim cycle.
-                  </p>
-                </div>
-                {runnerFleet !== null && (
-                  <div className="mb-4 p-3 bg-surface-3 rounded border border-border-default text-xs text-text-secondary">
-                    {runnerFleet.count === 0 ? (
-                      <span className="text-status-warning">No runners online — task will start when a runner comes online.</span>
-                    ) : (
-                      <span>
-                        <span className="text-text-primary font-medium">{runnerFleet.count} runner{runnerFleet.count !== 1 ? 's' : ''} online</span>
-                        {runnerFleet.lastSeenSecs !== null && (
-                          <>, last seen {runnerFleet.lastSeenSecs < 60
-                            ? `${runnerFleet.lastSeenSecs}s ago`
-                            : `${Math.floor(runnerFleet.lastSeenSecs / 60)}m ago`}
-                          </>
-                        )}
-                        {' — runner may be mid-task; this task will be claimed on the next poll.'}
-                      </span>
-                    )}
-                  </div>
-                )}
-                <div className="flex justify-center gap-2">
-                  <button
-                    onClick={handleRetry}
-                    className="px-4 py-2 text-sm bg-surface-3 rounded hover:bg-surface-4"
-                  >
-                    Poke workers again
-                  </button>
-                  <button
-                    onClick={handleClose}
-                    className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            ) : status === 'gated' ? (
-              <div className="p-6">
-                <div className="text-center mb-4">
-                  <div className="w-10 h-10 bg-status-warning/10 rounded-full flex items-center justify-center mx-auto mb-3">
-                    <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
-                    </svg>
-                  </div>
-                  <p className="text-text-primary font-medium mb-1">
-                    {gateData?.gateReason === 'deferred_start' && deferredStartAt
-                      ? `Starts at ${new Date(deferredStartAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
-                      : gateData?.gateReason === 'unmerged_dep_pr'
-                      ? 'Blocked: dependency PR not merged'
-                      : gateData?.gateReason === 'mission_held'
-                      ? 'Blocked: parent mission is held'
-                      : gateData?.gateReason === 'subject_dead'
-                      ? 'Blocked: subject PR is closed'
-                      : gateData?.gateReason === 'connector_routing_mismatch'
-                      ? 'Blocked: required connectors not available'
-                      : gateData?.gateReason === 'mission_budget_exhausted'
-                      ? 'Blocked: mission budget exhausted'
-                      : gateData?.gateReason === 'capability_mismatch'
-                      ? `Blocked: no ${gateData.backend ?? 'backend'} credential available`
-                      : gateData?.gateReason === 'workspace_cap_reached'
-                      ? `Workspace full (${gateData.active}/${gateData.cap} running)`
-                      : 'Blocked'}
-                  </p>
-                  <p className="text-sm text-text-secondary mb-3">
-                    {gateData?.gateReason === 'deferred_start'
-                      ? 'This task is intentionally deferred. Start now anyway to override its scheduled time.'
-                      : gateData?.gateReason === 'unmerged_dep_pr'
-                      ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
-                      : gateData?.gateReason === 'mission_held'
-                      ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
-                      : gateData?.gateReason === 'mission_budget_exhausted'
-                      ? 'The parent mission has spent its cost budget, so no worker will claim any of its tasks. Raise the mission budget to release them all, or force-start this one task.'
-                      : gateData?.gateReason === 'connector_routing_mismatch'
-                      ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Consider re-filing with role: ${gateData.alternativeRole}.` : ''}`
-                      : gateData?.gateReason === 'capability_mismatch'
-                      ? `The configured backend has no server credentials and cannot run this task. Switch to an available backend to start it.`
-                      : gateData?.gateReason === 'workspace_cap_reached'
-                      ? `This task is queued and will start automatically as soon as a slot opens — you don't need to do anything.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
-                      : gateData?.error || 'This task cannot be started right now.'}
-                  </p>
-                  {gateData?.gateReason === 'unmerged_dep_pr' && (
-                    <div className="space-y-2 text-left">
-                      {blockingDeps.map((dep, i) => (
-                        <div key={i} className="p-2 bg-surface-3 rounded border border-border-default text-sm">
-                          {dep.taskTitle && (
-                            <p className="text-text-secondary text-xs mb-1 truncate">{dep.taskTitle}</p>
-                          )}
-                          {dep.prUrl ? (
-                            <a
-                              href={dep.prUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary-400 hover:underline"
-                            >
-                              PR #{dep.prNumber ?? '?'} →
-                            </a>
-                          ) : (
-                            <span className="text-text-muted">No PR URL</span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {gateData?.gateReason === 'workspace_cap_reached' && (
-                    <div className="mt-1 p-3 bg-surface-3 rounded border border-border-default text-sm space-y-3">
-                      <div>
-                        <p className="text-xs text-text-secondary font-medium mb-1.5">Raise limit for this workspace</p>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => setCapRaiseTarget(t => Math.max((gateData.cap ?? 3), (t ?? gateData.cap ?? 3) - 1))}
-                            disabled={loading || raisingCap || (capRaiseTarget ?? gateData.cap ?? 3) <= (gateData.cap ?? 3)}
-                            className="w-7 h-7 flex items-center justify-center rounded border border-border-default hover:border-text-muted disabled:opacity-40 text-text-primary font-medium"
-                          >−</button>
-                          <span className="w-8 text-center font-mono text-sm text-text-primary">
-                            {capRaiseTarget ?? gateData.cap ?? 3}
-                          </span>
-                          <button
-                            onClick={() => setCapRaiseTarget(t => Math.min(20, (t ?? gateData.cap ?? 3) + 1))}
-                            disabled={loading || raisingCap || (capRaiseTarget ?? gateData.cap ?? 3) >= 20}
-                            className="w-7 h-7 flex items-center justify-center rounded border border-border-default hover:border-text-muted disabled:opacity-40 text-text-primary font-medium"
-                          >+</button>
-                          <button
-                            onClick={() => handleRaiseCapAndStart(capRaiseTarget ?? (gateData.cap ?? 3) + 1)}
-                            disabled={loading || raisingCap || (capRaiseTarget ?? 0) <= (gateData.cap ?? 3)}
-                            className="ml-1 px-3 py-1 text-xs bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-40"
-                          >
-                            {raisingCap ? 'Updating…' : 'Save & start'}
-                          </button>
-                        </div>
-                        <p className="text-xs text-text-muted mt-1">Current limit: {gateData.cap}. Set higher to start this task now and allow more concurrent agents going forward.</p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-col gap-2 mt-3">
-                  {gateData?.gateReason === 'capability_mismatch' && gateData.availableBackends && gateData.availableBackends.length > 0 && (
-                    <div className="flex flex-col gap-2">
-                      {gateData.availableBackends.map(backend => (
-                        <button
-                          key={backend}
-                          onClick={() => handleSwitchBackendAndStart(backend)}
-                          disabled={loading || switchingBackend !== null}
-                          className="px-4 py-2 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50 font-medium"
-                        >
-                          {switchingBackend === backend
-                            ? 'Switching…'
-                            : `Switch to ${backend === 'claude' ? 'Claude (default)' : backend} and start`}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {gateData?.gateReason === 'workspace_cap_reached' && gateData.canExempt && (
-                    <button
-                      onClick={() => handleStart(false, true)}
-                      disabled={loading || raisingCap}
-                      className="px-4 py-2 text-sm bg-surface-3 border border-border-default text-text-primary rounded hover:bg-surface-4 disabled:opacity-50 font-medium"
-                    >
-                      Start anyway (this once)
-                    </button>
-                  )}
-                  {gateData?.canForce && gateData?.blockClass !== 'capability' && gateData?.gateReason !== 'workspace_cap_reached' && (
-                    <button
-                      onClick={() => handleStart(true)}
-                      disabled={loading}
-                      className="px-4 py-2 text-sm bg-status-warning text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
-                    >
-                      {gateData?.gateReason === 'deferred_start' ? 'Start now anyway' : 'Force start (bypass gate)'}
-                    </button>
-                  )}
-                  <button
-                    onClick={handleClose}
-                    className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
-                  >
-                    {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : gateData?.canForce && gateData?.blockClass !== 'capability' ? 'Cancel' : 'Close'}
-                  </button>
-                </div>
-              </div>
-            ) : status === 'failed' ? (
-              <div className="p-6">
-                <div className="text-center mb-4">
-                  <div className="w-8 h-8 bg-status-error/10 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg className="w-5 h-5 text-status-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </div>
-                  <p className="text-status-error text-sm">{error}</p>
-                </div>
-                <div className="flex justify-center gap-2">
-                  <button
-                    onClick={handleRetry}
-                    className="px-4 py-2 text-sm bg-surface-3 rounded hover:bg-surface-4"
-                  >
-                    Try Again
-                  </button>
-                  <button
-                    onClick={handleClose}
-                    className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="p-4 border-b border-border-default">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-medium">Start Task</h3>
-                    <button
-                      onClick={handleClose}
-                      className="text-text-muted hover:text-text-secondary"
-                    >
-                      &times;
-                    </button>
-                  </div>
-                </div>
-
-                <div className="p-4 space-y-4">
-                  {error && (
-                    <div className="p-2 text-sm bg-status-error/10 text-status-error rounded">
-                      {error}
-                    </div>
-                  )}
-
-                  <div>
-                    <label className="block text-sm text-text-secondary mb-2">
-                      Select a worker
-                    </label>
-                    <div className="space-y-2 max-h-48 overflow-y-auto">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedLocalUi('')}
-                        disabled={loading}
-                        className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
-                          selectedLocalUi === ''
-                            ? 'border-primary bg-primary-subtle'
-                            : 'border-border-default hover:border-text-muted'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm font-medium">Any available worker</span>
-                          {selectedLocalUi === '' && (
-                            <svg className="w-4 h-4 text-primary" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
-                          )}
-                        </div>
-                        <p className="text-xs text-text-muted mt-0.5">Queued for the next available worker</p>
-                      </button>
-
-                      {activeLocalUis.map((ui) => (
-                        <button
-                          key={ui.localUiUrl}
-                          type="button"
-                          onClick={() => setSelectedLocalUi(ui.localUiUrl)}
-                          disabled={loading}
-                          className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
-                            selectedLocalUi === ui.localUiUrl
-                              ? 'border-primary bg-primary-subtle'
-                              : 'border-border-default hover:border-text-muted'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-sm font-medium">{ui.accountName}</span>
-                            <div className="flex items-center gap-2">
-                              {ui.live && (
-                                <span className="flex items-center gap-1 text-xs text-status-success">
-                                  <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
-                                  Live
-                                </span>
-                              )}
-                              {selectedLocalUi === ui.localUiUrl && (
-                                <svg className="w-4 h-4 text-primary" fill="currentColor" viewBox="0 0 20 20">
-                                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                </svg>
-                              )}
-                            </div>
-                          </div>
-                          <p className="text-xs text-text-muted mt-0.5">
-                            {ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available
-                          </p>
-                          {ui.environment && (
-                            <div className="mt-1.5 space-y-0.5">
-                              {ui.environment.tools.length > 0 && (
-                                <p className="text-[11px] text-text-muted truncate">
-                                  <span className="text-text-secondary">Tools:</span>{' '}
-                                  {ui.environment.tools.map(t => t.version ? `${t.name} ${t.version}` : t.name).join(', ')}
-                                </p>
-                              )}
-                              {ui.environment.envKeys.length > 0 && (
-                                <p className="text-[11px] text-text-muted truncate">
-                                  <span className="text-text-secondary">Env:</span>{' '}
-                                  {ui.environment.envKeys.length <= 3
-                                    ? ui.environment.envKeys.join(', ')
-                                    : `${ui.environment.envKeys.slice(0, 3).join(', ')} +${ui.environment.envKeys.length - 3} more`}
-                                </p>
-                              )}
-                              {ui.environment.mcp.length > 0 && (
-                                <p className="text-[11px] text-text-muted truncate">
-                                  <span className="text-text-secondary">MCP:</span>{' '}
-                                  {ui.environment.mcp.join(', ')}
-                                </p>
-                              )}
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                    {activeLocalUis.length === 0 && (
-                      <p className="mt-2 text-xs text-status-warning">
-                        No workers with capacity detected. The task will be queued for the next available worker.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                <div className="p-4 border-t border-border-default flex justify-end gap-2">
-                  <button
-                    onClick={handleClose}
-                    disabled={loading}
-                    className="px-4 py-2 text-sm text-text-secondary hover:bg-surface-3 rounded"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => handleStart()}
-                    disabled={loading}
-                    className="px-4 py-2 text-sm bg-status-success text-white rounded hover:opacity-90 disabled:opacity-50"
-                  >
-                    {loading ? 'Starting...' : 'Start'}
-                  </button>
-                </div>
-              </>
-            )}
+  const inlineStrip = () => {
+    if (status === 'waiting') {
+      return (
+        <div className="flex items-center gap-3 px-4 py-2.5 bg-surface-2 border border-border-default rounded-md max-w-md" role="status">
+          <Spinner size="sm" className="text-status-success flex-shrink-0" aria-label="Start requested" />
+          <div>
+            <p className="text-sm text-text-primary">Start requested</p>
+            <p className="text-xs text-text-secondary">A worker will pick this up.</p>
           </div>
         </div>
+      );
+    }
+
+    if (status === 'queued') {
+      return (
+        <div className="flex flex-col gap-2 px-4 py-3 bg-surface-2 border border-border-default rounded-md max-w-md" role="status">
+          <div className="flex items-center gap-3">
+            <Spinner size="sm" className="text-status-warning flex-shrink-0" aria-label="Queued at front" />
+            <div>
+              <p className="text-sm text-text-primary font-medium">Queued at front — auto-starts</p>
+              <p className="text-xs text-text-secondary">
+                No runner responded yet. The task is prioritized at the front of the queue
+                and will start automatically on the next claim cycle.
+              </p>
+            </div>
+          </div>
+          {runnerFleet !== null && (
+            <div className="p-2.5 bg-surface-3 rounded border border-border-default text-xs text-text-secondary">
+              {runnerFleet.count === 0 ? (
+                <span className="text-status-warning">No runners online — task will start when a runner comes online.</span>
+              ) : (
+                <span>
+                  <span className="text-text-primary font-medium">{runnerFleet.count} runner{runnerFleet.count !== 1 ? 's' : ''} online</span>
+                  {runnerFleet.lastSeenSecs !== null && (
+                    <>, last seen {runnerFleet.lastSeenSecs < 60
+                      ? `${runnerFleet.lastSeenSecs}s ago`
+                      : `${Math.floor(runnerFleet.lastSeenSecs / 60)}m ago`}
+                    </>
+                  )}
+                  {' — runner may be mid-task; this task will be claimed on the next poll.'}
+                </span>
+              )}
+            </div>
+          )}
+          <button
+            onClick={handleRetry}
+            className="self-start px-3 py-1.5 text-xs bg-surface-3 rounded hover:bg-surface-4"
+          >
+            Poke workers again
+          </button>
+        </div>
+      );
+    }
+
+    if (status === 'accepted') {
+      return (
+        <div className="flex items-center gap-3 px-4 py-2.5 bg-status-success/5 border border-status-success/30 rounded-md max-w-md" role="status">
+          <svg className="w-5 h-5 text-status-success flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+          <div className="flex-1">
+            <p className="text-sm text-text-primary font-medium">Task started!</p>
+            <p className="text-xs text-text-secondary">A worker has picked up your task</p>
+          </div>
+          <button
+            onClick={handleViewInDashboard}
+            className="px-3 py-1.5 text-xs bg-primary text-white rounded hover:bg-primary-hover transition-opacity"
+          >
+            View in Dashboard
+          </button>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
+  const inline = inlineStrip();
+
+  const idleContent = (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => handleStart()}
+          disabled={loading}
+          className="px-4 py-2 text-sm bg-status-success text-white rounded-md hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
+        >
+          {loading && <Spinner size="sm" className="text-white" aria-label="Starting" />}
+          {loading ? 'Starting…' : 'Start Task'}
+        </button>
+        {activeLocalUis.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setPickerOpen((o) => !o)}
+            disabled={loading}
+            className="px-3 py-2 text-sm text-text-secondary hover:text-text-primary border border-border-default rounded-md disabled:opacity-50"
+          >
+            {selectedLocalUi
+              ? activeLocalUis.find((ui) => ui.localUiUrl === selectedLocalUi)?.accountName ?? 'Worker'
+              : 'Any available worker'}{' '}
+            {pickerOpen ? '▲' : '▾'}
+          </button>
+        )}
+      </div>
+
+      {pickerOpen && (
+        <div className="max-w-md space-y-2 max-h-48 overflow-y-auto border border-border-default rounded-lg p-2">
+          <button
+            type="button"
+            onClick={() => { setSelectedLocalUi(''); setPickerOpen(false); }}
+            disabled={loading}
+            className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
+              selectedLocalUi === ''
+                ? 'border-primary bg-primary-subtle'
+                : 'border-border-default hover:border-text-muted'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium">Any available worker</span>
+              {selectedLocalUi === '' && (
+                <svg className="w-4 h-4 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                </svg>
+              )}
+            </div>
+            <p className="text-xs text-text-muted mt-0.5">Queued for the next available worker</p>
+          </button>
+
+          {activeLocalUis.map((ui) => (
+            <button
+              key={ui.localUiUrl}
+              type="button"
+              onClick={() => { setSelectedLocalUi(ui.localUiUrl); setPickerOpen(false); }}
+              disabled={loading}
+              className={`w-full text-left px-3 py-2.5 rounded-lg border transition-colors ${
+                selectedLocalUi === ui.localUiUrl
+                  ? 'border-primary bg-primary-subtle'
+                  : 'border-border-default hover:border-text-muted'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">{ui.accountName}</span>
+                <div className="flex items-center gap-2">
+                  {ui.live && (
+                    <span className="flex items-center gap-1 text-xs text-status-success">
+                      <span className="w-1.5 h-1.5 rounded-full bg-status-success" />
+                      Live
+                    </span>
+                  )}
+                  {selectedLocalUi === ui.localUiUrl && (
+                    <svg className="w-4 h-4 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-text-muted mt-0.5">
+                {ui.capacity} slot{ui.capacity !== 1 ? 's' : ''} available
+              </p>
+              {ui.environment && (
+                <div className="mt-1.5 space-y-0.5">
+                  {ui.environment.tools.length > 0 && (
+                    <p className="text-[11px] text-text-muted truncate">
+                      <span className="text-text-secondary">Tools:</span>{' '}
+                      {ui.environment.tools.map(t => t.version ? `${t.name} ${t.version}` : t.name).join(', ')}
+                    </p>
+                  )}
+                  {ui.environment.envKeys.length > 0 && (
+                    <p className="text-[11px] text-text-muted truncate">
+                      <span className="text-text-secondary">Env:</span>{' '}
+                      {ui.environment.envKeys.length <= 3
+                        ? ui.environment.envKeys.join(', ')
+                        : `${ui.environment.envKeys.slice(0, 3).join(', ')} +${ui.environment.envKeys.length - 3} more`}
+                    </p>
+                  )}
+                  {ui.environment.mcp.length > 0 && (
+                    <p className="text-[11px] text-text-muted truncate">
+                      <span className="text-text-secondary">MCP:</span>{' '}
+                      {ui.environment.mcp.join(', ')}
+                    </p>
+                  )}
+                </div>
+              )}
+            </button>
+          ))}
+        </div>
       )}
-    </>
+    </div>
+  );
+
+  const modalContent = status === 'gated' ? (
+    <div className="p-6">
+      <div className="text-center mb-4">
+        <div className="w-10 h-10 bg-status-warning/10 rounded-full flex items-center justify-center mx-auto mb-3">
+          <svg className="w-6 h-6 text-status-warning" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+          </svg>
+        </div>
+        <p className="text-text-primary font-medium mb-1">
+          {gateData?.gateReason === 'deferred_start' && deferredStartAt
+            ? `Starts at ${new Date(deferredStartAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+            : gateData?.gateReason === 'unmerged_dep_pr'
+            ? 'Blocked: dependency PR not merged'
+            : gateData?.gateReason === 'mission_held'
+            ? 'Blocked: parent mission is held'
+            : gateData?.gateReason === 'subject_dead'
+            ? 'Blocked: subject PR is closed'
+            : gateData?.gateReason === 'connector_routing_mismatch'
+            ? 'Blocked: required connectors not available'
+            : gateData?.gateReason === 'mission_budget_exhausted'
+            ? 'Blocked: mission budget exhausted'
+            : gateData?.gateReason === 'capability_mismatch'
+            ? `Blocked: no ${gateData.backend ?? 'backend'} credential available`
+            : gateData?.gateReason === 'workspace_cap_reached'
+            ? `Workspace full (${gateData.active}/${gateData.cap} running)`
+            : 'Blocked'}
+        </p>
+        <p className="text-sm text-text-secondary mb-3">
+          {gateData?.gateReason === 'deferred_start'
+            ? 'This task is intentionally deferred. Start now anyway to override its scheduled time.'
+            : gateData?.gateReason === 'unmerged_dep_pr'
+            ? `The following ${blockingDeps.length === 1 ? 'PR is' : 'PRs are'} blocking this task. Workers will not claim it until ${blockingDeps.length === 1 ? 'it merges' : 'they merge'}.`
+            : gateData?.gateReason === 'mission_held'
+            ? 'The parent mission is held — no tasks can be claimed until the mission is armed. Use "Force start" to bypass for this task only.'
+            : gateData?.gateReason === 'mission_budget_exhausted'
+            ? 'The parent mission has spent its cost budget, so no worker will claim any of its tasks. Raise the mission budget to release them all, or force-start this one task.'
+            : gateData?.gateReason === 'connector_routing_mismatch'
+            ? `The role requires connectors that are not available in this workspace.${gateData.missingConnectors?.length ? ` Missing: ${gateData.missingConnectors.join(', ')}.` : ''} Contact your workspace admin.${gateData.alternativeRole ? ` Consider re-filing with role: ${gateData.alternativeRole}.` : ''}`
+            : gateData?.gateReason === 'capability_mismatch'
+            ? `The configured backend has no server credentials and cannot run this task. Switch to an available backend to start it.`
+            : gateData?.gateReason === 'workspace_cap_reached'
+            ? `This task is queued and will start automatically as soon as a slot opens — you don't need to do anything.${typeof gateData.queuePosition === 'number' && gateData.queuePosition > 0 ? ` ${gateData.queuePosition} other pending task${gateData.queuePosition === 1 ? '' : 's'} ahead of it.` : ''}`
+            : gateData?.error || 'This task cannot be started right now.'}
+        </p>
+        {gateData?.gateReason === 'unmerged_dep_pr' && (
+          <div className="space-y-2 text-left">
+            {blockingDeps.map((dep, i) => (
+              <div key={i} className="p-2 bg-surface-3 rounded border border-border-default text-sm">
+                {dep.taskTitle && (
+                  <p className="text-text-secondary text-xs mb-1 truncate">{dep.taskTitle}</p>
+                )}
+                {dep.prUrl ? (
+                  <a
+                    href={dep.prUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary-400 hover:underline"
+                  >
+                    PR #{dep.prNumber ?? '?'} →
+                  </a>
+                ) : (
+                  <span className="text-text-muted">No PR URL</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {gateData?.gateReason === 'workspace_cap_reached' && (
+          <div className="mt-1 p-3 bg-surface-3 rounded border border-border-default text-sm space-y-3">
+            <div>
+              <p className="text-xs text-text-secondary font-medium mb-1.5">Raise limit for this workspace</p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCapRaiseTarget(t => Math.max((gateData.cap ?? 3), (t ?? gateData.cap ?? 3) - 1))}
+                  disabled={loading || raisingCap || (capRaiseTarget ?? gateData.cap ?? 3) <= (gateData.cap ?? 3)}
+                  className="w-7 h-7 flex items-center justify-center rounded border border-border-default hover:border-text-muted disabled:opacity-40 text-text-primary font-medium"
+                >−</button>
+                <span className="w-8 text-center font-mono text-sm text-text-primary">
+                  {capRaiseTarget ?? gateData.cap ?? 3}
+                </span>
+                <button
+                  onClick={() => setCapRaiseTarget(t => Math.min(20, (t ?? gateData.cap ?? 3) + 1))}
+                  disabled={loading || raisingCap || (capRaiseTarget ?? gateData.cap ?? 3) >= 20}
+                  className="w-7 h-7 flex items-center justify-center rounded border border-border-default hover:border-text-muted disabled:opacity-40 text-text-primary font-medium"
+                >+</button>
+                <button
+                  onClick={() => handleRaiseCapAndStart(capRaiseTarget ?? (gateData.cap ?? 3) + 1)}
+                  disabled={loading || raisingCap || (capRaiseTarget ?? 0) <= (gateData.cap ?? 3)}
+                  className="ml-1 px-3 py-1 text-xs bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-40"
+                >
+                  {raisingCap ? 'Updating…' : 'Save & start'}
+                </button>
+              </div>
+              <p className="text-xs text-text-muted mt-1">Current limit: {gateData.cap}. Set higher to start this task now and allow more concurrent agents going forward.</p>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="flex flex-col gap-2 mt-3">
+        {gateData?.gateReason === 'capability_mismatch' && gateData.availableBackends && gateData.availableBackends.length > 0 && (
+          <div className="flex flex-col gap-2">
+            {gateData.availableBackends.map(backend => (
+              <button
+                key={backend}
+                onClick={() => handleSwitchBackendAndStart(backend)}
+                disabled={loading || switchingBackend !== null}
+                className="px-4 py-2 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50 font-medium"
+              >
+                {switchingBackend === backend
+                  ? 'Switching…'
+                  : `Switch to ${backend === 'claude' ? 'Claude (default)' : backend} and start`}
+              </button>
+            ))}
+          </div>
+        )}
+        {gateData?.gateReason === 'workspace_cap_reached' && gateData.canExempt && (
+          <button
+            onClick={() => handleStart(false, true)}
+            disabled={loading || raisingCap}
+            className="px-4 py-2 text-sm bg-surface-3 border border-border-default text-text-primary rounded hover:bg-surface-4 disabled:opacity-50 font-medium"
+          >
+            Start anyway (this once)
+          </button>
+        )}
+        {gateData?.canForce && gateData?.blockClass !== 'capability' && gateData?.gateReason !== 'workspace_cap_reached' && (
+          <button
+            onClick={() => handleStart(true)}
+            disabled={loading}
+            className="px-4 py-2 text-sm bg-status-warning text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
+          >
+            {gateData?.gateReason === 'deferred_start' ? 'Start now anyway' : 'Force start (bypass gate)'}
+          </button>
+        )}
+        <button
+          onClick={handleClose}
+          className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
+        >
+          {gateData?.gateReason === 'workspace_cap_reached' ? 'Leave queued (closes)' : gateData?.canForce && gateData?.blockClass !== 'capability' ? 'Cancel' : 'Close'}
+        </button>
+      </div>
+    </div>
+  ) : (
+    <div className="p-6">
+      <div className="text-center mb-4">
+        <div className="w-8 h-8 bg-status-error/10 rounded-full flex items-center justify-center mx-auto mb-4">
+          <svg className="w-5 h-5 text-status-error" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </div>
+        <p className="text-status-error text-sm">{error}</p>
+      </div>
+      <div className="flex justify-center gap-2">
+        <button
+          onClick={handleRetry}
+          className="px-4 py-2 text-sm bg-surface-3 rounded hover:bg-surface-4"
+        >
+          Try Again
+        </button>
+        <button
+          onClick={handleClose}
+          className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
+        >
+          Close
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <StartTaskShell status={status} onBackdropClick={handleClose} modal={modalContent}>
+      {inline ?? idleContent}
+    </StartTaskShell>
   );
 }

@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
+import Spinner from '@/components/Spinner';
 import WorkerActivityTimeline, { collapseWorkspacePath } from './WorkerActivityTimeline';
 import InstructionHistory from './InstructionHistory';
 import InstructWorkerForm from './InstructWorkerForm';
@@ -132,8 +133,13 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
     }
   }, [worker.id]);
 
-  // Send answer via respond endpoint — creates a fresh task from the existing worktree.
-  // More stable than /instruct (which requires the session to be alive).
+  // Send answer via respond endpoint — always creates a NEW task rather than
+  // resuming the live session. More stable than /instruct (which requires the
+  // session to still be alive — this worker's session is not; the runner
+  // aborts it when the question is asked). The new task's worktree continues
+  // on the same branch ONLY if the original worker had already pushed it
+  // (e.g. a PR was already open); if the question was asked before anything
+  // was pushed, the new task starts fresh from the default branch instead.
   async function handleAnswer(option: string) {
     setAnswerSending(option);
     try {
@@ -248,7 +254,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
           className="mb-3 flex items-center gap-2 min-w-0 cursor-pointer"
           onClick={() => setCurrentActionExpanded(!currentActionExpanded)}
         >
-          <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin flex-shrink-0" aria-hidden="true" />
+          <Spinner size="xs" className="text-status-running flex-shrink-0" aria-label="Working" />
           <p
             className={`text-sm text-text-secondary ${currentActionExpanded ? 'break-words' : 'truncate'}`}
             title={worker.currentAction}

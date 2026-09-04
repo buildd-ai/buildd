@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { accounts, accountWorkspaces, tasks, workers, workspaces, workspaceSkills, secrets, tenantBudgets, oauthBudgetEpisodes, teams, connectors, connectorShares, connectorWorkspaces, missions } from '@buildd/core/db/schema';
 import { eq, and, or, not, isNull, isNotNull, sql, inArray, lt, lte, gte } from 'drizzle-orm';
-import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics, SkillBundle } from '@buildd/shared';
+import type { ClaimTasksInput, ClaimTasksResponse, ClaimDiagnostics } from '@buildd/shared';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -12,8 +12,7 @@ import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { jsonResponse } from '@/lib/api-response';
 import { notifyTeam } from '@/lib/notify';
-import { hasCodexCredential, resolveCodexCredential } from '@/lib/codex-credential';
-import { resolveClaudeCredential } from '@/lib/claude-credential';
+import { hasCodexCredential } from '@/lib/codex-credential';
 import { resolveEffectiveModel, type Tier } from '@buildd/core/model-router';
 import {
   describeOauthPressure,
@@ -25,7 +24,6 @@ import {
 } from '@buildd/core/oauth-budget';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias } from '@buildd/core/model-tier-registry';
-import { buildKnowledgeContext, buildEntityCatalogContext } from '@/lib/knowledge-context';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
@@ -37,43 +35,27 @@ import {
   hasBypassFlag,
 } from '@/lib/bypass-flags';
 import { getActiveClaimsByWorkspace } from '@buildd/core/path-claim';
-import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { dependenciesSatisfied } from './deps-gate';
 import { checkMissionPacingGate, checkMissionConcurrencyGate } from './pacing-gate';
 import { missionNotHeld } from './held-gate';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
-import { buildSubjectPriorWork } from './subject-prior-work';
-import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { notifyConnectorBlocked } from './connector-block-notify';
 import { isBudgetExhausted } from '@/lib/budget-errors';
-
-// Slugify a connector name into the MCP server key used in queryOptions.mcpServers.
-// Connector names are already slug-shaped (uniqueness is on (teamId, name)), but we
-// normalize defensively so the runner-side key is deterministic.
-function slugifyConnectorName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '') || name.toLowerCase();
-}
-
-// A single MCP connector entry resolved at claim time. Superset of the http-only
-// shared type — the runner keys behaviour off `transport`.
-type ResolvedMcpConnector = {
-  id?: string;
-  name: string;
-  transport: 'http' | 'stdio';
-  url?: string;
-  command?: string;
-  args?: string[];
-  headers?: Record<string, string>;
-  env?: Record<string, string>;
-  // assertion-mode exchange metadata (assertionMode=true → runner performs mint+exchange)
-  assertionMode?: true;
-  mintApiUrl?: string;
-  audience?: string;
-  tokenEndpoint?: string;
-};
+import { attachMcpConnectors } from './mcp-connector-injection';
+import { runConnectorPreFilter } from './connector-prefilter';
+import { attachRoleConfig, attachSkillBundles } from './skill-and-role-injection';
+import { attachWorkspaceWorkContext } from './workspace-work-context';
+import {
+  attachExternalContextProviders,
+  attachKnowledgeContext,
+  attachSubjectPriorWork,
+} from './context-injection';
+import {
+  attachClaudeCredentials,
+  attachCodexCredentials,
+  attachPendingCredentialRefreshes,
+  attachServerManagedSecrets,
+} from './credential-injection';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -546,342 +528,35 @@ export async function POST(req: NextRequest) {
   }
 
   // ── Connector availability pre-filter ──────────────────────────────────────
-  // Tasks whose role declares connectorRefs are only claimable by a worker in
-  // a workspace where EVERY referenced connector is visible (owned or shared to
-  // this team), not explicitly disabled, has valid credentials, and is reachable.
-  // Tasks with connector failures are silently deferred so a correctly-routed or
-  // fixed-up worker can claim them later. For explicit single-task claims
-  // (body.taskId set) a 422 routing_mismatch is returned with typed failure info.
-  //
-  // Failure taxonomy (evaluated in order):
-  //   never_mounted      — dangling ref / wrong team / disabled for workspace
-  //   expired_or_revoked — credential missing, oauth token expired, or undecryptable
-  //   transient          — HTTP HEAD probe failed (transport=http only; 5s budget)
-  const connectorMismatchTaskIds = new Set<string>();
-  // Per-task typed failures used in the 422 response for explicit taskId claims.
-  const taskConnectorFailures = new Map<string, Array<{ connectorId: string; connectorName: string; mode: string }>>();
-  // Subset of taskConnectorFailures: only failures on task.requiredConnectors (for notifications).
-  const taskRequiredConnectorFailures = new Map<string, Array<{ connectorId: string; connectorName: string; mode: string }>>();
-  // Advisory-mode: connectors that failed but are not hard-required. Keyed by taskId.
-  const taskDegradedConnectors = new Map<string, Array<{ id: string; name: string; failureMode: string }>>();
-  {
-    const rolePairs = filteredTasks
-      .map(t => ({
-        taskId: t.id,
-        taskWorkspaceId: t.workspaceId,
-        roleSlug: (t as any).roleSlug as string | null,
-        teamId: (t as any).workspace?.teamId as string | undefined,
-      }))
-      .filter((p): p is { taskId: string; taskWorkspaceId: string; roleSlug: string; teamId: string } =>
-        !!p.roleSlug && !!p.teamId,
-      );
+  // Classifies which candidate tasks have unavailable connectors, and why.
+  // Taxonomy, visibility and credential rules live in ./connector-prefilter;
+  // deciding what to DO about a failure stays here.
+  const {
+    connectorMismatchTaskIds,
+    taskConnectorFailures,
+    taskRequiredConnectorFailures,
+    taskDegradedConnectors,
+  } = await runConnectorPreFilter(filteredTasks);
 
-    if (rolePairs.length > 0) {
-      const slugsToFetch = [...new Set(rolePairs.map(p => p.roleSlug))];
-      const teamIdsToFetch = [...new Set(rolePairs.map(p => p.teamId))];
-      const wsIdsToFetch = [...new Set(rolePairs.map(p => p.taskWorkspaceId))];
-
-      // Batch-fetch role rows for all relevant (teamId, roleSlug) combos.
-      const preFilterRoleRows = await db.query.workspaceSkills.findMany({
-        where: and(
-          inArray(workspaceSkills.slug, slugsToFetch),
-          eq(workspaceSkills.isRole, true),
-          eq(workspaceSkills.enabled, true),
-          inArray(workspaceSkills.teamId, teamIdsToFetch),
-          or(
-            isNull(workspaceSkills.workspaceId),
-            inArray(workspaceSkills.workspaceId, wsIdsToFetch),
-          ),
-        ),
-        columns: { slug: true, teamId: true, workspaceId: true, connectorRefs: true },
-      });
-
-      // Effective connectorRefs per (teamId|slug|wsId) — workspace-scoped row wins.
-      const effectiveRoleMap = new Map<string, string[]>();
-      for (const row of preFilterRoleRows) {
-        const refs = ((row as any).connectorRefs as string[] | null) ?? [];
-        if (refs.length === 0) continue;
-        const wsId = (row as any).workspaceId as string | null;
-        const teamId = (row as any).teamId as string;
-        effectiveRoleMap.set(`${teamId}|${row.slug}|${wsId ?? '*'}`, refs);
-      }
-      const getConnectorRefs = (teamId: string, slug: string, wsId: string): string[] =>
-        effectiveRoleMap.get(`${teamId}|${slug}|${wsId}`) ??
-        effectiveRoleMap.get(`${teamId}|${slug}|*`) ??
-        [];
-
-      // Collect all connector IDs referenced by any of the tasks' roles.
-      const allRefIds = new Set<string>();
-      for (const pair of rolePairs) {
-        for (const ref of getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId)) {
-          allRefIds.add(ref);
-        }
-      }
-
-      if (allRefIds.size > 0) {
-        const refIdList = [...allRefIds];
-
-        // Batch-fetch connector metadata — include authMode/transport/url for
-        // expired_or_revoked and transient classification.
-        const preFilterConnectors = await db.query.connectors.findMany({
-          where: inArray(connectors.id, refIdList),
-          columns: { id: true, teamId: true, name: true, authMode: true, transport: true, url: true, envMapping: true },
-        });
-        const connectorById = new Map(preFilterConnectors.map(c => [c.id, c]));
-
-        // Batch-fetch cross-team share grants so shared connectors are treated
-        // as visible even when teamId differs.
-        const preFilterShares = await db.query.connectorShares.findMany({
-          where: and(
-            inArray(connectorShares.sharedWithTeamId, teamIdsToFetch),
-            inArray(connectorShares.connectorId, refIdList),
-          ),
-          columns: { connectorId: true, sharedWithTeamId: true },
-        });
-        const sharedByTeam = new Map<string, Set<string>>();
-        for (const s of preFilterShares) {
-          if (!sharedByTeam.has(s.sharedWithTeamId)) sharedByTeam.set(s.sharedWithTeamId, new Set());
-          sharedByTeam.get(s.sharedWithTeamId)!.add(s.connectorId);
-        }
-
-        // Batch-fetch connector-workspace enabled rows. An absent row means the
-        // connector is enabled by default (same semantics as the injection block).
-        const preFilterCwRows = await db.query.connectorWorkspaces.findMany({
-          where: and(
-            inArray(connectorWorkspaces.workspaceId, wsIdsToFetch),
-            inArray(connectorWorkspaces.connectorId, refIdList),
-          ),
-          columns: { connectorId: true, workspaceId: true, enabled: true },
-        });
-        const cwEnabled = new Map<string, boolean>();
-        for (const row of preFilterCwRows) {
-          cwEnabled.set(`${row.workspaceId}|${row.connectorId}`, row.enabled !== false);
-        }
-
-        // ── expired_or_revoked: batch credential checks ───────────────────────
-        // Only runs when ENCRYPTION_KEY is present; otherwise skipped gracefully.
-        const credFailedIds = new Set<string>(); // connectors with expired/revoked creds
-        if (process.env.ENCRYPTION_KEY) {
-          const now = new Date();
-          const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
-
-          // oauth/header connectors: mcp_connector_credential, label = connectorId
-          const authConnectors = preFilterConnectors.filter(
-            c => c.authMode === 'oauth' || c.authMode === 'header',
-          );
-          if (authConnectors.length > 0) {
-            const ownerTeamIds = [...new Set(authConnectors.map(c => c.teamId))];
-            const credSecretRows = await db.query.secrets.findMany({
-              where: and(
-                inArray(secrets.teamId, ownerTeamIds),
-                eq(secrets.purpose, 'mcp_connector_credential'),
-                inArray(secrets.label, authConnectors.map(c => c.id)),
-              ),
-              columns: { id: true, label: true, tokenExpiresAt: true, lastRefreshedAt: true },
-            });
-            const secretByConnId = new Map(
-              credSecretRows.filter(s => s.label).map(s => [s.label!, s]),
-            );
-            const credProvider = getSecretsProvider();
-
-            for (const connector of authConnectors) {
-              const secret = secretByConnId.get(connector.id);
-              if (connector.authMode === 'oauth') {
-                if (!secret) { credFailedIds.add(connector.id); continue; }
-                const expiresAt = secret.tokenExpiresAt;
-                const refreshedAt = secret.lastRefreshedAt;
-                if (expiresAt && expiresAt < now && (!refreshedAt || refreshedAt < fiveMinAgo)) {
-                  credFailedIds.add(connector.id);
-                }
-              } else {
-                // header: try decryption
-                if (!secret) { credFailedIds.add(connector.id); continue; }
-                try {
-                  const val = await credProvider.get(secret.id);
-                  if (!val) credFailedIds.add(connector.id);
-                } catch {
-                  credFailedIds.add(connector.id);
-                }
-              }
-            }
-          }
-
-          // stdio connectors: mcp_credential secrets via envMapping values
-          const stdioConnectors = preFilterConnectors.filter(
-            c => c.transport === 'stdio' && c.authMode !== 'none' && !credFailedIds.has(c.id),
-          );
-          if (stdioConnectors.length > 0) {
-            const ownerTeamIds = [...new Set(stdioConnectors.map(c => c.teamId))];
-            const envLabels = [
-              ...new Set(
-                stdioConnectors.flatMap(c => Object.values((c.envMapping as Record<string, string> | null) ?? {})),
-              ),
-            ];
-            if (envLabels.length > 0) {
-              const envSecretRows = await db.query.secrets.findMany({
-                where: and(
-                  inArray(secrets.teamId, ownerTeamIds),
-                  eq(secrets.purpose, 'mcp_credential'),
-                  inArray(secrets.label, envLabels),
-                ),
-                columns: { id: true, label: true, teamId: true },
-              });
-              const envSecretByTeamLabel = new Map(
-                envSecretRows.filter(s => s.label && s.teamId).map(s => [`${s.teamId}\0${s.label}`, s]),
-              );
-              const credProvider = getSecretsProvider();
-              for (const connector of stdioConnectors) {
-                const mapping = (connector.envMapping as Record<string, string> | null) ?? {};
-                const labels = Object.values(mapping);
-                if (labels.length === 0) continue;
-                let credOk = true;
-                for (const label of labels) {
-                  const sr = envSecretByTeamLabel.get(`${connector.teamId}\0${label}`);
-                  if (!sr) { credOk = false; break; }
-                  try {
-                    const val = await credProvider.get(sr.id);
-                    if (!val) { credOk = false; break; }
-                  } catch { credOk = false; break; }
-                }
-                if (!credOk) credFailedIds.add(connector.id);
-              }
-            }
-          }
-        }
-
-        // ── transient: HTTP HEAD probe for http connectors ────────────────────
-        // 3s per connector, 5s total budget across the entire claim call.
-        // Connectors already classified (never_mounted or expired_or_revoked)
-        // are skipped — we'll know their IDs after the pass-1 loop below.
-        // We pre-classify all http connectors that are visible and credentialed,
-        // then probe them. Store results keyed by connectorId.
-        const transientIds = new Set<string>();
-        const httpProbeCandidates = preFilterConnectors.filter(
-          c => c.transport === 'http' && !credFailedIds.has(c.id),
-        );
-        if (httpProbeCandidates.length > 0) {
-          const budgetStart = Date.now();
-          const probeBudgetMs = 5000;
-          for (const connector of httpProbeCandidates) {
-            const spent = Date.now() - budgetStart;
-            if (spent >= probeBudgetMs) {
-              transientIds.add(connector.id);
-              continue;
-            }
-            const timeoutMs = Math.min(3000, probeBudgetMs - spent);
-            const ac = new AbortController();
-            const timer = setTimeout(() => ac.abort(), timeoutMs);
-            try {
-              await fetch(connector.url, { method: 'HEAD', signal: ac.signal });
-              clearTimeout(timer);
-            } catch {
-              clearTimeout(timer);
-              transientIds.add(connector.id);
-            }
-          }
-        }
-
-        // ── Pass 1: classify per-task failures ────────────────────────────────
-        for (const pair of rolePairs) {
-          const refs = getConnectorRefs(pair.teamId, pair.roleSlug, pair.taskWorkspaceId);
-          if (refs.length === 0) continue;
-
-          const failures: Array<{ connectorId: string; connectorName: string; mode: string }> = [];
-          for (const refId of refs) {
-            const connector = connectorById.get(refId);
-            if (!connector) {
-              failures.push({ connectorId: refId, connectorName: refId, mode: 'never_mounted' });
-              continue;
-            }
-            // Visibility check: connector must be owned by the task's team or shared to it.
-            const sharedSet = sharedByTeam.get(pair.teamId) ?? new Set<string>();
-            if (connector.teamId !== pair.teamId && !sharedSet.has(refId)) {
-              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
-              continue;
-            }
-            // Enabled check: an explicit false row disables the connector for this workspace.
-            const cwKey = `${pair.taskWorkspaceId}|${refId}`;
-            if (cwEnabled.has(cwKey) && !cwEnabled.get(cwKey)) {
-              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'never_mounted' });
-              continue;
-            }
-            // Credential check
-            if (credFailedIds.has(refId)) {
-              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'expired_or_revoked' });
-              continue;
-            }
-            // Transient check
-            if (transientIds.has(refId)) {
-              failures.push({ connectorId: refId, connectorName: connector.name, mode: 'transient' });
-            }
-          }
-
-          if (failures.length > 0) {
-            taskConnectorFailures.set(pair.taskId, failures);
-
-            // Advisory-mode check: when the workspace has connectorAdvisoryMode=true,
-            // tasks with no hard-required failing connectors claim with a degradedConnectors
-            // notice instead of being blocked — unless total degradation (ALL role connectors
-            // are unavailable), which always holds the task regardless of the flag.
-            const task = filteredTasks.find(t => t.id === pair.taskId);
-            const wsAdvisory = (task as any)?.workspace?.connectorAdvisoryMode === true;
-            const requiredConnectors = (task as any)?.requiredConnectors as string[] | null ?? null;
-            const failedIds = new Set(failures.map(f => f.connectorId));
-            const hasRequiredFailure = requiredConnectors?.some(id => failedIds.has(id)) ?? false;
-            const totalDegradation = failures.length === refs.length;
-
-            if (wsAdvisory && !hasRequiredFailure && !totalDegradation) {
-              // Partial degradation in advisory mode: claim proceeds with degradedConnectors.
-              taskDegradedConnectors.set(pair.taskId, failures.map(f => ({
-                id: f.connectorId,
-                name: f.connectorName,
-                failureMode: f.mode,
-              })));
-              const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
-              console.log(
-                `[claim] Advisory: task ${pair.taskId} claiming with degraded connectors [${detail}] in workspace ${pair.taskWorkspaceId}`,
-              );
-            } else {
-              connectorMismatchTaskIds.add(pair.taskId);
-              const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ');
-              const reason = totalDegradation && wsAdvisory ? 'total degradation' : 'connector mismatch';
-              console.log(
-                `[claim] Skipped task ${pair.taskId} (${reason}): role ${pair.roleSlug} has connector issues [${detail}] in workspace ${pair.taskWorkspaceId}`,
-              );
-              // Track required-connector failures for notifications. If the task has
-              // explicit requiredConnectors, only track failures on those IDs so the
-              // alert is specific to what the task declared as mandatory.
-              if (requiredConnectors?.length) {
-                const requiredFailures = failures.filter(f => requiredConnectors.includes(f.connectorId));
-                if (requiredFailures.length > 0) {
-                  taskRequiredConnectorFailures.set(pair.taskId, requiredFailures);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-
-    // For explicit single-task claims: 422 routing_mismatch instead of silently
-    // not claiming. The caller knows which task it wanted — a clear error with
-    // typed failure info is more useful than an empty workers array.
-    if (taskId && connectorMismatchTaskIds.has(taskId)) {
-      const blockedTask = filteredTasks.find(t => t.id === taskId);
-      const blockedSlug = (blockedTask as any)?.roleSlug as string | null;
-      const failures = taskConnectorFailures.get(taskId) ?? [];
-      const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ') ||
-        `role '${blockedSlug}' connector requirements not met`;
-      return NextResponse.json(
-        {
-          error: 'routing_mismatch',
-          detail: `Task requires connectors for role '${blockedSlug}' that are unavailable: ${detail}`,
-          connectorFailures: failures,
-        },
-        { status: 422 },
-      );
-    }
+  // For explicit single-task claims: 422 routing_mismatch instead of silently
+  // not claiming. The caller knows which task it wanted — a clear error with
+  // typed failure info is more useful than an empty workers array.
+  if (taskId && connectorMismatchTaskIds.has(taskId)) {
+    const blockedTask = filteredTasks.find(t => t.id === taskId);
+    const blockedSlug = (blockedTask as any)?.roleSlug as string | null;
+    const failures = taskConnectorFailures.get(taskId) ?? [];
+    const detail = failures.map(f => `'${f.connectorName}' (${f.mode})`).join(', ') ||
+      `role '${blockedSlug}' connector requirements not met`;
+    return NextResponse.json(
+      {
+        error: 'routing_mismatch',
+        detail: `Task requires connectors for role '${blockedSlug}' that are unavailable: ${detail}`,
+        connectorFailures: failures,
+      },
+      { status: 422 },
+    );
   }
+
 
   // ── Connector-block notifications (fire-and-forget) ──────────────────────
   // For tasks blocked due to required-connector failures, notify the owning team
@@ -1857,84 +1532,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Attach open PR context from other workers in the same workspace
-  if (claimedWorkers.length > 0) {
-    const claimedWorkerIds = claimedWorkers.map(cw => cw.id);
-    // Group claimed workers by workspace
-    const workspaceIds = [...new Set(claimedWorkers.map(cw => {
-      const task = filteredTasks.find(t => t.id === cw.taskId);
-      return task?.workspaceId;
-    }).filter(Boolean))] as string[];
-
-    if (workspaceIds.length > 0) {
-      const openPRWorkers = await db.query.workers.findMany({
-        where: and(
-          inArray(workers.workspaceId, workspaceIds),
-          not(isNull(workers.prUrl)),
-          inArray(workers.status, ['running', 'idle', 'starting', 'waiting_input', 'completed']),
-          not(inArray(workers.id, claimedWorkerIds)),
-        ),
-        columns: { id: true, branch: true, prUrl: true, prNumber: true, taskId: true, workspaceId: true },
-        orderBy: (workers, { desc }) => [desc(workers.createdAt)],
-        limit: 10,
-      });
-
-      if (openPRWorkers.length > 0) {
-        // Fetch task titles and manifests for PR context
-        const prTaskIds = openPRWorkers.map(w => w.taskId).filter(Boolean) as string[];
-        const prTasks = prTaskIds.length > 0
-          ? (await db.query.tasks.findMany({
-              where: inArray(tasks.id, prTaskIds),
-              columns: { id: true, title: true, pathManifest: true },
-            })) ?? []
-          : [];
-        const taskTitleMap = new Map(prTasks.map(t => [t.id, t.title]));
-        const taskManifestMap = new Map(prTasks.map(t => [t.id, t.pathManifest as string[] | null]));
-
-        const openPRs = openPRWorkers.map(w => ({
-          branch: w.branch,
-          prUrl: w.prUrl,
-          prNumber: w.prNumber,
-          taskTitle: w.taskId ? taskTitleMap.get(w.taskId) || null : null,
-          pathManifest: w.taskId ? (taskManifestMap.get(w.taskId) ?? null) : null,
-          workspaceId: w.workspaceId,
-        }));
-
-        for (const cw of claimedWorkers) {
-          const task = filteredTasks.find(t => t.id === cw.taskId);
-          const wsOpenPRs = openPRs.filter(pr => pr.workspaceId === task?.workspaceId);
-          if (wsOpenPRs.length > 0) {
-            (cw as any).openPRs = wsOpenPRs;
-          }
-        }
-      }
-
-      // Inject sibling task manifests so agents can check whether a file they're about
-      // to create is already owned by a pending/active sibling task.
-      // (Agent doctrine: never re-implement another task's declared deliverable.)
-      const siblingManifestTasks = (await db.query.tasks.findMany({
-        where: and(
-          inArray(tasks.workspaceId, workspaceIds),
-          inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-          isNotNull(tasks.pathManifest),
-          not(inArray(tasks.id, claimedWorkers.map(cw => cw.taskId))),
-        ),
-        columns: { id: true, title: true, pathManifest: true, workspaceId: true },
-      })) ?? [];
-
-      if (siblingManifestTasks.length > 0) {
-        for (const cw of claimedWorkers) {
-          const task = filteredTasks.find(t => t.id === cw.taskId);
-          const siblings = siblingManifestTasks
-            .filter(s => s.workspaceId === task?.workspaceId)
-            .map(s => ({ id: s.id, title: s.title, pathManifest: s.pathManifest as string[] }));
-          if (siblings.length > 0) {
-            (cw as any).siblingTaskManifests = siblings;
-          }
-        }
-      }
-    }
-  }
+  // Tell each agent what its workspace siblings already have in flight: open
+  // PRs from other live workers, and path manifests declared by pending sibling
+  // tasks. See ./workspace-work-context.
+  await attachWorkspaceWorkContext(claimedWorkers, filteredTasks);
 
   // Broadcast claim events so dashboard updates in real-time
   for (const cw of claimedWorkers) {
@@ -1979,243 +1580,17 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Resolve skill bundles for claimed workers
-  for (const cw of claimedWorkers) {
-    const ctx = (cw.task as any)?.context as { skillSlugs?: string[] } | undefined;
-    if (!ctx?.skillSlugs || ctx.skillSlugs.length === 0) continue;
+  // Resolve the skill bundles the task asked for, and the role config its agent
+  // runs under (workspace override > team default). See ./skill-and-role-injection.
+  await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
+  await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
 
-    const taskObj = filteredTasks.find(t => t.id === cw.taskId);
-    const wsId = taskObj?.workspaceId;
-    if (!wsId) continue;
-
-    const slugs = ctx.skillSlugs;
-    const bundles: SkillBundle[] = [];
-
-    // Look up workspace-level skills (enabled only)
-    if (slugs.length > 0) {
-      const wsSkills = await db.query.workspaceSkills.findMany({
-        where: and(
-          eq(workspaceSkills.workspaceId, wsId),
-          inArray(workspaceSkills.slug, slugs),
-          eq(workspaceSkills.enabled, true),
-        ),
-      });
-
-      const foundSlugs = new Set<string>();
-      for (const ws of wsSkills) {
-        foundSlugs.add(ws.slug);
-        const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
-        bundles.push({
-          slug: ws.slug,
-          name: ws.name,
-          description: ws.description || undefined,
-          content: ws.content,
-          ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
-          model: (ws.model ?? 'inherit') as string,
-          allowedTools: (ws.allowedTools as string[]) || [],
-          canDelegateTo: (ws.canDelegateTo as string[]) || [],
-          background: ws.background ?? false,
-          maxTurns: ws.maxTurns ?? null,
-          mcpServers: (ws.mcpServers as string[]) || [],
-          requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
-        });
-      }
-
-      // Fallback: account-level skills for slugs not found at workspace level
-      const missingSlugs = slugs.filter(s => !foundSlugs.has(s));
-      if (missingSlugs.length > 0) {
-        const acctSkills = await db.query.workspaceSkills.findMany({
-          where: and(
-            eq(workspaceSkills.accountId, account.id),
-            inArray(workspaceSkills.slug, missingSlugs),
-            eq(workspaceSkills.enabled, true),
-          ),
-        });
-        for (const ws of acctSkills) {
-          const meta = ws.metadata as { referenceFiles?: Record<string, string> } | null;
-          bundles.push({
-            slug: ws.slug,
-            name: ws.name,
-            description: ws.description || undefined,
-            content: ws.content,
-            ...(meta?.referenceFiles ? { referenceFiles: meta.referenceFiles } : {}),
-            model: (ws.model ?? 'inherit') as string,
-            allowedTools: (ws.allowedTools as string[]) || [],
-            canDelegateTo: (ws.canDelegateTo as string[]) || [],
-            background: ws.background ?? false,
-            maxTurns: ws.maxTurns ?? null,
-            mcpServers: (ws.mcpServers as string[]) || [],
-            requiredEnvVars: (ws.requiredEnvVars as Record<string, string>) || {},
-          });
-        }
-      }
-    }
-
-    if (bundles.length > 0) {
-      (cw as any).skillBundles = bundles;
-    }
-  }
-
-  // Enrich claimed workers with role config (for role-based task routing)
-  if (isStorageConfigured()) {
-    for (const cw of claimedWorkers) {
-      const task = filteredTasks.find(t => t.id === cw.taskId);
-      const roleSlug = (task as any)?.roleSlug as string | null;
-      if (!roleSlug) continue;
-
-      const wsId = task?.workspaceId;
-      if (!wsId) continue;
-
-      // Look up the role: workspace override > team default (§C.2 precedence).
-      const teamId = (task as any).workspace?.teamId as string | undefined;
-      let role;
-
-      if (teamId) {
-        const rows = await db.select()
-          .from(workspaceSkills)
-          .where(and(
-            eq(workspaceSkills.teamId, teamId),
-            eq(workspaceSkills.slug, roleSlug),
-            eq(workspaceSkills.enabled, true),
-            eq(workspaceSkills.isRole, true),
-            or(
-              isNull(workspaceSkills.workspaceId),
-              eq(workspaceSkills.workspaceId, wsId),
-            ),
-          ))
-          .orderBy(sql`(${workspaceSkills.workspaceId} IS NOT NULL) DESC`)
-          .limit(1);
-        role = rows[0];
-      }
-
-      // Legacy account-level fallback
-      if (!role) {
-        role = await db.query.workspaceSkills.findFirst({
-          where: and(
-            eq(workspaceSkills.accountId, account.id),
-            eq(workspaceSkills.slug, roleSlug),
-            eq(workspaceSkills.enabled, true),
-            eq(workspaceSkills.isRole, true),
-          ),
-        });
-      }
-
-      if (role?.configStorageKey && role?.configHash) {
-        const configUrl = await generateDownloadUrl(role.configStorageKey);
-        (cw as any).roleConfig = {
-          slug: role.slug,
-          configHash: role.configHash,
-          configUrl,
-          type: role.repoUrl ? 'builder' : 'service',
-          repoUrl: role.repoUrl || undefined,
-          model: role.model,
-          allowedTools: (role.allowedTools as string[]) || [],
-          canDelegateTo: (role.canDelegateTo as string[]) || [],
-          background: role.background ?? false,
-          maxTurns: role.maxTurns ?? null,
-        };
-      }
-
-      // CBM escape hatch: a role opts out of CBM enforcement by setting
-      // mcpServers['codebase-memory'] = false in its skill record (DB).
-      // Checked independently of configStorageKey so opt-out works without R2.
-      const roleMcpServers = role?.mcpServers as Record<string, unknown> | null | undefined;
-      if (roleMcpServers?.['codebase-memory'] === false) {
-        (cw as any).cbmDisabled = true;
-      }
-    }
-  }
-
-  // Resolve context providers — fetch external context at claim time for prompt injection
-  for (const cw of claimedWorkers) {
-    const task = filteredTasks.find(t => t.id === cw.taskId);
-    const ctx = (task as any)?.context as { contextProviders?: Array<{ url: string; headers?: Record<string, string>; label?: string }> } | undefined;
-    if (!ctx?.contextProviders?.length) continue;
-
-    const results = await Promise.allSettled(
-      ctx.contextProviders.map(async (provider) => {
-        const res = await fetch(provider.url, {
-          headers: { ...provider.headers, "Accept": "text/markdown, text/plain" },
-          signal: AbortSignal.timeout(5000),
-        });
-        if (!res.ok) throw new Error(`Context provider ${provider.url} returned ${res.status}`);
-        const body = await res.text();
-        return provider.label ? `## ${provider.label}\n\n${body}` : body;
-      }),
-    );
-    const resolved = results
-      .filter((r): r is PromiseFulfilledResult<string> => r.status === "fulfilled")
-      .map(r => r.value);
-
-    if (resolved.length > 0) {
-      (cw as any).resolvedContextProviders = resolved;
-      // Also merge into task context so runner can read it from task.context
-      const taskObj = cw.task as any;
-      if (taskObj?.context) {
-        taskObj.context.resolvedContextProviders = resolved;
-      }
-    }
-
-    // Log failures for debugging
-    for (const r of results) {
-      if (r.status === "rejected") {
-        console.warn("[claim] context provider failed:", r.reason?.message || r.reason);
-      }
-    }
-  }
-
-  // Inject related prior work into the agent's prompt at claim time — the worker
-  // analog of the orchestrator's plan-time injection. Retrieved knowledge rides
-  // the existing resolvedContextProviders rail into buildPrompt (no runner
-  // change). Best-effort: buildKnowledgeContext returns [] on any failure.
-  for (const cw of claimedWorkers) {
-    const task = filteredTasks.find(t => t.id === cw.taskId);
-    if (!task) continue;
-    const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
-    const teamId = (task as any).workspace?.teamId;
-    const sensitive = (task as any).workspace?.dataClass === 'sensitive';
-    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId, undefined, { sensitive });
-    // Known-entities catalog (§8.4): canonical entity names for the task's
-    // likely files so agents don't invent loose refs. Best-effort — returns ''
-    // on any failure; the extra .catch is belt-and-braces (claim must not 500).
-    const entityCatalog = await buildEntityCatalogContext(goal, task.workspaceId).catch(() => '');
-    if (entityCatalog) parts.push(entityCatalog);
-    if (parts.length === 0) continue;
-
-    const block = parts.join('\n');
-    (cw as any).resolvedContextProviders = [...((cw as any).resolvedContextProviders ?? []), block];
-    const taskObj = cw.task as any;
-    if (taskObj) {
-      taskObj.context = taskObj.context ?? {};
-      taskObj.context.resolvedContextProviders = [...(taskObj.context.resolvedContextProviders ?? []), block];
-    }
-  }
-
-  // Subject-anchor prior work injection (§7 of docs/design/task-subject-anchors.md).
-  // For tasks anchored to a subject PR, error, or mission, surface existing sibling
-  // tasks so the agent doesn't re-discover or re-implement work already in flight.
-  // Gated by priorWorkInjection in the workspace subjectPolicy (default: true).
-  // Best-effort: failures are logged and the claim still succeeds.
-  for (const cw of claimedWorkers) {
-    const task = filteredTasks.find(t => t.id === cw.taskId);
-    if (!task || !(task as any).subjectKind) continue;
-
-    const wsGitConfig = (task as any).workspace?.gitConfig;
-    const subjectPolicy = resolveSubjectPolicy(wsGitConfig?.subjectPolicy);
-
-    const priorWork = await buildSubjectPriorWork(task as any, subjectPolicy).catch(err => {
-      console.warn('[claim] subject-prior-work injection failed:', err);
-      return null;
-    });
-    if (!priorWork) continue;
-
-    (cw as any).resolvedContextProviders = [...((cw as any).resolvedContextProviders ?? []), priorWork];
-    const taskObj = cw.task as any;
-    if (taskObj) {
-      taskObj.context = taskObj.context ?? {};
-      taskObj.context.resolvedContextProviders = [...(taskObj.context.resolvedContextProviders ?? []), priorWork];
-    }
-  }
+  // Prompt-context injection. ORDER IS THE CONTRACT: these three append to the
+  // same resolvedContextProviders rail and the runner concatenates it in order.
+  // See ./context-injection.
+  await attachExternalContextProviders(claimedWorkers, filteredTasks);
+  await attachKnowledgeContext(claimedWorkers, filteredTasks);
+  await attachSubjectPriorWork(claimedWorkers, filteredTasks);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
   for (const cw of claimedWorkers) {
@@ -2235,453 +1610,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Attach inline decrypted secrets for server-managed credentials (API key and/or OAuth token)
-  // Secrets are scoped by the task's workspace team to prevent cross-team leakage.
-  if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
-    try {
-      const provider = getSecretsProvider();
+  // Attach inline decrypted server-managed credentials (API key and/or OAuth
+  // token), team-scoped to prevent cross-team leakage. See ./credential-injection.
+  await attachServerManagedSecrets(claimedWorkers, account.id);
 
-      for (const cw of claimedWorkers) {
-        const task = cw.task as any;
-        const workspaceTeamId = task?.workspace?.teamId;
-
-        if (!workspaceTeamId) continue;
-        // Codex tasks use OpenAI credentials, not Anthropic. Skip injecting
-        // Anthropic secrets so they don't reach the Codex CLI subprocess and
-        // cause spurious Claude auth errors if the team's Claude token is bad.
-        if (task?.backend === 'codex') continue;
-
-        const workerSecrets = await db.query.secrets.findMany({
-          where: and(
-            eq(secrets.teamId, workspaceTeamId),
-            inArray(secrets.purpose, ['anthropic_api_key', 'oauth_token', 'mcp_credential']),
-            or(
-              isNull(secrets.accountId),
-              eq(secrets.accountId, account.id),
-            ),
-            or(
-              isNull(secrets.workspaceId),
-              eq(secrets.workspaceId, task.workspaceId),
-            ),
-          ),
-          columns: { id: true, purpose: true, label: true, healthStatus: true, updatedAt: true },
-        });
-
-        if (workerSecrets.length === 0) continue;
-
-        // Pick the best row per purpose: prefer a non-revoked credential, then the
-        // most recently updated. With replaceScoped enforcing one row per scope this
-        // is normally a single row; the ordering is defense-in-depth so a stale or
-        // revoked leftover can never shadow a healthy credential (the bug that let a
-        // revoked token be handed to workers while a fresh one sat unused).
-        const pickBest = (purpose: string) =>
-          workerSecrets
-            .filter(s => s.purpose === purpose)
-            .sort((a, b) =>
-              (a.healthStatus === 'revoked' ? 1 : 0) - (b.healthStatus === 'revoked' ? 1 : 0) ||
-              (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))[0];
-
-        const apiKeySecret = pickBest('anthropic_api_key');
-        const oauthSecret = pickBest('oauth_token');
-
-        const [decryptedApiKey, decryptedOauthToken] = await Promise.all([
-          apiKeySecret ? provider.get(apiKeySecret.id) : null,
-          oauthSecret ? provider.get(oauthSecret.id) : null,
-        ]);
-
-        if (decryptedApiKey) {
-          (cw as any).serverApiKey = decryptedApiKey;
-        }
-        if (decryptedOauthToken) {
-          (cw as any).serverOauthToken = decryptedOauthToken;
-        }
-        // Inject mcp_credential secrets as flat mcpSecrets so the runner can resolve
-        // ${VAR} references in .mcp.json HTTP headers. The connector system only
-        // supports a single headerName per connector — it cannot model servers like
-        // Cue that require two headers (x-api-key + x-tenant-id). mcp_credential
-        // secrets keyed by their label (the env var name) remain the viable path
-        // until connectors gain a headers JSONB column.
-        const mcpCredSecrets = workerSecrets.filter(s => s.purpose === 'mcp_credential');
-        if (mcpCredSecrets.length > 0) {
-          const mcpSecretsMap: Record<string, string> = {};
-          await Promise.all(mcpCredSecrets.map(async (s) => {
-            if (!s.label) return;
-            const val = await provider.get(s.id).catch(() => null);
-            if (val) mcpSecretsMap[s.label] = val;
-          }));
-          if (Object.keys(mcpSecretsMap).length > 0) {
-            (cw as any).mcpSecrets = mcpSecretsMap;
-            console.log(`[claim] Injected ${Object.keys(mcpSecretsMap).length} mcp_credential secret(s) for worker ${cw.id}: ${Object.keys(mcpSecretsMap).join(', ')}`);
-          }
-        }
-      }
-    } catch (err) {
-      // Non-fatal: worker can still use local credentials
-      console.warn('Failed to decrypt server-managed secrets:', err);
-    }
-  }
-
-  // Inject active MCP connectors (spec: docs/specs/mcp-connectors-and-roles.md §2/§3).
-  //
-  // Connectors are the single source of truth for MCP servers. A connector reaches
-  // the agent for a task iff:
-  //   role.connectorRefs  ∩  enabledForWorkspace  ∩  teamConnectors
-  // where the role is resolved from the task's roleSlug (workspace override > team
-  // default). No role or empty connectorRefs → mount nothing (least-privilege).
-  //
-  // Credentials are resolved by the connector's OWNER team (connector.teamId), not
-  // the task's workspace team. Today they are equal; keying on the owner makes the
-  // Phase-2 cross-team sharing a pure visibility widening (no injection rewrite).
+  // Inject active MCP connectors — resolution rules (role connectorRefs ∩ workspace
+  // enablement ∩ team visibility, and owner-team credential keying) live in
+  // ./mcp-connector-injection. Spec: docs/specs/mcp-connectors-and-roles.md §2/§3.
   //
   // Separate block from the credential decryption above so connector injection is
   // not gated on workspace anthropic/oauth secrets being present.
   if (claimedWorkers.length > 0 && process.env.ENCRYPTION_KEY) {
-    try {
-      const connectorProvider = getSecretsProvider();
-
-      for (const cw of claimedWorkers) {
-        const task = cw.task as any;
-        const workspaceTeamId = task?.workspace?.teamId as string | undefined;
-        if (!workspaceTeamId) continue;
-
-        // Resolve the task's role → connectorRefs. No role slug → no opt-in (§2 AC-3).
-        const roleSlug = task?.roleSlug as string | null;
-        if (!roleSlug) continue;
-
-        const roleRows = await db.query.workspaceSkills.findMany({
-          where: and(
-            eq(workspaceSkills.slug, roleSlug),
-            eq(workspaceSkills.isRole, true),
-            eq(workspaceSkills.enabled, true),
-            eq(workspaceSkills.teamId, workspaceTeamId),
-            or(
-              isNull(workspaceSkills.workspaceId),
-              eq(workspaceSkills.workspaceId, task.workspaceId),
-            ),
-          ),
-          columns: { connectorRefs: true, workspaceId: true },
-        });
-        if (roleRows.length === 0) continue;
-
-        // Workspace-scoped override wins over the team-default row.
-        const role = roleRows.find(r => (r as any).workspaceId) ?? roleRows[0];
-        const connectorRefs = ((role as any).connectorRefs as string[] | null) ?? [];
-        if (connectorRefs.length === 0) continue;
-
-        // Cross-team sharing (§1b): visibility = owned ∪ shared-in. Fetch the
-        // share grants for this team first, then keep only referenced connectors
-        // that are owned by the task's team OR shared to it. A revoked share
-        // (row absent) drops the connector here — no orphaned injection (§1b AC-5).
-        // A dangling ref (deleted / invisible connector) simply drops out (§2 AC-4).
-        const shareRows = await db.query.connectorShares.findMany({
-          where: and(
-            eq(connectorShares.sharedWithTeamId, workspaceTeamId),
-            inArray(connectorShares.connectorId, connectorRefs),
-          ),
-          columns: { connectorId: true },
-        });
-        const sharedIdSet = new Set(shareRows.map(r => r.connectorId));
-
-        const referencedRows = await db.query.connectors.findMany({
-          where: inArray(connectors.id, connectorRefs),
-        });
-        const referencedConnectors = referencedRows.filter(
-          c => c.teamId === workspaceTeamId || sharedIdSet.has(c.id),
-        );
-        if (referencedConnectors.length === 0) continue;
-
-        // Filter to connectors enabled for this workspace (enabled !== false; a
-        // missing connector_workspaces row is treated as enabled).
-        const cwRows = await db.query.connectorWorkspaces.findMany({
-          where: and(
-            eq(connectorWorkspaces.workspaceId, task.workspaceId),
-            inArray(connectorWorkspaces.connectorId, referencedConnectors.map(c => c.id)),
-          ),
-        });
-        const cwMap = new Map(cwRows.map(r => [r.connectorId, r.enabled]));
-        const activeConnectors = referencedConnectors.filter(c => cwMap.get(c.id) !== false);
-        if (activeConnectors.length === 0) continue;
-
-        const ownerTeamIds = [...new Set(activeConnectors.map(c => c.teamId))];
-
-        // header/oauth credentials — keyed on the OWNER team (secrets.teamId = connector.teamId).
-        const authConnectorIds = activeConnectors
-          .filter(c => c.authMode === 'header' || c.authMode === 'oauth')
-          .map(c => c.id);
-        const connectorSecretMap = new Map<string, { id: string; tokenExpiresAt: Date | null }>();
-        if (authConnectorIds.length > 0) {
-          const connectorSecretRows = await db.query.secrets.findMany({
-            where: and(
-              inArray(secrets.teamId, ownerTeamIds),
-              eq(secrets.purpose, 'mcp_connector_credential'),
-              inArray(secrets.label, authConnectorIds),
-            ),
-            columns: { id: true, label: true, tokenExpiresAt: true },
-          });
-          for (const s of connectorSecretRows) {
-            if (s.label) connectorSecretMap.set(s.label, { id: s.id, tokenExpiresAt: s.tokenExpiresAt ?? null });
-          }
-        }
-
-        // stdio env-var credentials — mcp_credential secrets referenced by envMapping,
-        // keyed on the owner team + secret label.
-        const envLabels = [...new Set(
-          activeConnectors
-            .filter(c => c.transport === 'stdio')
-            .flatMap(c => Object.values((c.envMapping as Record<string, string> | null) ?? {})),
-        )];
-        // Keyed by `${ownerTeamId}\0${label}` — the same label can exist in
-        // several owner teams (§1b), and each connector must only ever see its
-        // OWN team's secret value.
-        const envSecretMap = new Map<string, string>();
-        if (envLabels.length > 0) {
-          const envSecretRows = await db.query.secrets.findMany({
-            where: and(
-              inArray(secrets.teamId, ownerTeamIds),
-              eq(secrets.purpose, 'mcp_credential'),
-              inArray(secrets.label, envLabels),
-            ),
-            columns: { id: true, label: true, teamId: true },
-          });
-          await Promise.all(envSecretRows.map(async (s) => {
-            if (!s.label || !s.teamId) return;
-            const val = await connectorProvider.get(s.id);
-            if (val) envSecretMap.set(`${s.teamId}\0${s.label}`, val);
-          }));
-        }
-
-        const mcpConnectors: ResolvedMcpConnector[] = [];
-
-        // Slug-collision precedence (§1b): if an owned and a shared-in connector
-        // slugify to the same MCP key, the OWNED one wins — process owned
-        // connectors first and drop any later connector whose key is already
-        // claimed (deterministic, no double-mount).
-        const orderedConnectors = [
-          ...activeConnectors.filter(c => c.teamId === workspaceTeamId),
-          ...activeConnectors.filter(c => c.teamId !== workspaceTeamId),
-        ];
-        const claimedNames = new Set<string>();
-
-        for (const connector of orderedConnectors) {
-          const name = slugifyConnectorName(connector.name);
-          if (claimedNames.has(name)) continue;
-          claimedNames.add(name);
-
-          // stdio transport: spawn a local process; env resolved from envMapping.
-          // No headers, no url. Omit if a mapped secret is missing (AC-4 parity).
-          if (connector.transport === 'stdio') {
-            if (!connector.command) continue;
-            const mapping = (connector.envMapping as Record<string, string> | null) ?? {};
-            const env: Record<string, string> = {};
-            let missing = false;
-            for (const [envVar, label] of Object.entries(mapping)) {
-              const val = envSecretMap.get(`${connector.teamId}\0${label}`);
-              if (!val) { missing = true; break; }
-              env[envVar] = val;
-            }
-            if (missing) continue;
-            mcpConnectors.push({
-              name,
-              transport: 'stdio',
-              command: connector.command,
-              args: (connector.args as string[] | null) ?? [],
-              ...(Object.keys(env).length > 0 ? { env } : {}),
-            });
-            continue;
-          }
-
-          // http transport.
-          if (!connector.url) continue;
-
-          if (connector.authMode === 'none') {
-            mcpConnectors.push({ id: connector.id, name, transport: 'http', url: connector.url });
-            continue;
-          }
-
-          // assertion-mode: return exchange metadata so the runner can mint+exchange
-          if (connector.authMode === 'assertion') {
-            if (!connector.assertionAudience || !connector.assertionTokenEndpoint) continue;
-            mcpConnectors.push({
-              id: connector.id,
-              name,
-              transport: 'http',
-              url: connector.url,
-              assertionMode: true,
-              mintApiUrl: `https://buildd.dev/api/connectors/${connector.id}/assertion`,
-              audience: connector.assertionAudience,
-              tokenEndpoint: connector.assertionTokenEndpoint,
-            });
-            continue;
-          }
-
-          const secretInfo = connectorSecretMap.get(connector.id);
-          if (!secretInfo) continue; // missing credential → omit (AC-4)
-
-          if (connector.authMode === 'oauth') {
-            // Refresh an expired access token at claim time; omit on unrecoverable failure (AC-3).
-            if (secretInfo.tokenExpiresAt && new Date(secretInfo.tokenExpiresAt) < now) {
-              const result = await refreshMcpConnectorCredential(secretInfo.id);
-              if (result !== 'refreshed' && result !== 'locked') continue;
-            }
-            const decryptedValue = await connectorProvider.get(secretInfo.id);
-            if (!decryptedValue) continue;
-            try {
-              const tokenBlob = JSON.parse(decryptedValue) as Record<string, unknown>;
-              const accessToken = tokenBlob.access_token as string | undefined;
-              if (!accessToken) continue;
-              mcpConnectors.push({
-                id: connector.id,
-                name,
-                transport: 'http',
-                url: connector.url,
-                headers: { Authorization: `Bearer ${accessToken}` },
-              });
-            } catch {
-              // Malformed JSON blob — skip
-            }
-          } else if (connector.authMode === 'header') {
-            const decryptedValue = await connectorProvider.get(secretInfo.id);
-            if (!decryptedValue) continue;
-            mcpConnectors.push({
-              id: connector.id,
-              name,
-              transport: 'http',
-              url: connector.url,
-              headers: { [connector.headerName!]: decryptedValue },
-            });
-          }
-        }
-
-        if (mcpConnectors.length > 0) {
-          (cw as any).mcpConnectors = mcpConnectors;
-        }
-      }
-    } catch (err) {
-      console.warn('Failed to inject MCP connector configs:', err);
-    }
+    await attachMcpConnectors(claimedWorkers, now, getSecretsProvider());
   }
 
-  // Attach Codex credential for codex-backend tasks.
-  // Fetched and decrypted at claim time so the runner never needs DB access.
-  // Never included for non-codex tasks to limit token exposure.
-  //
-  // Runner trust model: access is gated on the same API key auth used for all
-  // claim requests (authenticateApiKey above). Any account-level API key can
-  // receive decrypted Codex tokens for tasks in workspaces it can claim.
-  // There is no concept of "public-repo runner" in this architecture — runners
-  // are private processes that present a buildd API key. If an API key is
-  // compromised, the attacker gains the same access as the key holder (including
-  // Codex tokens on codex-backend tasks). Protect API keys accordingly.
-  if (process.env.ENCRYPTION_KEY) {
-    for (const cw of claimedWorkers) {
-      const task = filteredTasks.find(t => t.id === cw.taskId);
-      if ((task as any)?.backend !== 'codex') continue;
-
-      const wsId = task?.workspaceId;
-      const teamId = (task as any)?.workspace?.teamId;
-      if (!wsId || !teamId) continue;
-
-      try {
-        // Resolve the most-specific credential: workspace > account > team-wide.
-        // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
-        const cred = await resolveCodexCredential({ teamId, accountId: account.id, workspaceId: wsId });
-        if (cred) {
-          (cw as any).codexCredential = {
-            credentialType: cred.credentialType,
-            // OAuth fields (only set for OAuth credentials)
-            ...(cred.credentialType === 'oauth'
-              ? {
-                  accessToken: cred.accessToken,
-                  refreshToken: cred.refreshToken,
-                  accountId: cred.accountId,
-                  idToken: cred.idToken,
-                }
-              : {}),
-            // API key (only set for api_key credentials)
-            ...(cred.credentialType === 'api_key' ? { apiKey: cred.apiKey } : {}),
-            expiresAt: cred.tokenExpiresAt,
-          };
-        }
-      } catch (err) {
-        console.warn(`[claim] Failed to fetch Codex credential for workspace ${wsId}:`, err);
-      }
-    }
-  }
-
-  // Attach managed Claude OAuth credential (claude_credential purpose) for Claude-backend tasks.
-  //
-  // Workers receive ONLY the access_token — never the refresh_token. This prevents
-  // in-session token rotation: when the SDK has no refresh_token in the credentials
-  // file, it cannot call Anthropic's token endpoint, eliminating the "token family
-  // revocation" cascade that occurs when multiple workers rotate concurrently.
-  //
-  // Refresh is now runner-side: the runner calls /api/runner/credential-refresh before
-  // spawning its subprocess when pendingCredentialRefreshes is non-empty. The cron job
-  // nudges runners proactively via credential-refresh tasks before tokens expire.
-  if (process.env.ENCRYPTION_KEY) {
-    for (const cw of claimedWorkers) {
-      const task = filteredTasks.find(t => t.id === cw.taskId);
-      // Only inject for Claude-backend tasks; Codex tasks already handled above.
-      if ((task as any)?.backend === 'codex') continue;
-
-      const wsId = task?.workspaceId;
-      const teamId = (task as any)?.workspace?.teamId;
-      if (!wsId || !teamId) continue;
-
-      try {
-        // Refresh is now runner-side (pendingCredentialRefreshes); we only read the DB here.
-        // NOTE: credentials with healthStatus = 'revoked' (killed by prior Vercel IP-flip refreshes)
-        // cannot be recovered by this cutover — users must reconnect via the OAuth device-code flow.
-        // The first refresh after reconnect comes from the runner (workers.ts BUILDD_RUNNER_REFRESH gate).
-        const cred = await resolveClaudeCredential({ teamId, workspaceId: wsId });
-        if (cred) {
-          (cw as any).claudeAccessToken = cred.accessToken;
-          (cw as any).claudeTokenExpiresAt = cred.tokenExpiresAt ? cred.tokenExpiresAt.toISOString() : null;
-          console.log(`[claim] Attached claude_credential access_token for workspace ${wsId}`);
-        }
-      } catch (err) {
-        console.warn(`[claim] Failed to fetch Claude credential for workspace ${wsId}:`, err);
-      }
-    }
-  }
-
-  // Populate pendingCredentialRefreshes: credentials expiring within 2 hours that
-  // the runner should pre-refresh before spawning its subprocess. Both claude_credential
-  // and codex_credential rows visible to each task's workspace/team are included.
-  // Server-side claim-gate refresh has been removed; the runner is now the sole refresh origin.
-  if (process.env.ENCRYPTION_KEY) {
-    for (const cw of claimedWorkers) {
-      const task = filteredTasks.find(t => t.id === cw.taskId);
-      const wsId = task?.workspaceId;
-      const teamId = (task as any)?.workspace?.teamId;
-      if (!wsId || !teamId) continue;
-
-      try {
-        const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
-        const pendingRows = await db.query.secrets.findMany({
-          where: and(
-            eq(secrets.teamId, teamId),
-            inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
-            not(eq(secrets.healthStatus, 'revoked')),
-            isNotNull(secrets.tokenExpiresAt),
-            lt(secrets.tokenExpiresAt, twoHoursFromNow),
-            or(isNull(secrets.workspaceId), eq(secrets.workspaceId, wsId)),
-          ),
-          columns: { id: true, purpose: true, tokenExpiresAt: true },
-        });
-
-        if (pendingRows.length > 0) {
-          (cw as any).pendingCredentialRefreshes = pendingRows.map(row => ({
-            secretId: row.id,
-            purpose: row.purpose as 'claude_credential' | 'codex_credential',
-            expiresAt: row.tokenExpiresAt ? (row.tokenExpiresAt as Date).toISOString() : null,
-          }));
-        }
-      } catch (err) {
-        console.warn(`[claim] Failed to query pending credential refreshes for workspace ${wsId}:`, err);
-      }
-    }
-  }
+  // Attach agent-backend credentials and the runner's pre-refresh list.
+  // Codex-backend tasks get Codex creds, everything else gets Claude creds; both
+  // read-only (refresh is runner-side). See ./credential-injection.
+  await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
+  await attachClaudeCredentials(claimedWorkers, filteredTasks);
+  await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {

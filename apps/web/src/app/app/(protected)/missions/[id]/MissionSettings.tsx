@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import type { MissionDisplayState } from '@/lib/mission-helpers';
+import Spinner from '@/components/Spinner';
 
 /**
  * Every way a manual orchestrator run can end. `runMission` has five distinct
@@ -555,9 +556,7 @@ function RunOutcomeStrip({
 }) {
   if (outcome.kind === 'idle') return null;
 
-  const spinner = (
-    <span className="w-2.5 h-2.5 rounded-full border-2 border-accent border-t-transparent animate-spin inline-block flex-shrink-0" />
-  );
+  const spinner = <Spinner size="xs" className="text-accent flex-shrink-0" aria-label="Running" />;
 
   const shell = (tone: string, children: React.ReactNode) => (
     <div className={`flex items-center gap-2 rounded-lg border px-3 py-1.5 text-[12px] ${tone}`}>

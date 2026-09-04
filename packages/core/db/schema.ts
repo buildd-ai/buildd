@@ -1088,7 +1088,13 @@ export const workers = pgTable('workers', {
   mergedAt: timestamp('merged_at', { withTimezone: true }),
   // PR/git lifecycle state — kept live by GitHub webhook events.
   // null = no PR yet or status unknown (pre-migration workers).
-  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null>(),
+  // 'unresolvable' is TERMINAL and is written only by the reconcile sweep, after
+  // a row has failed to resolve against GitHub UNRESOLVABLE_FAILURE_THRESHOLD
+  // times and is older than UNKNOWN_TTL_MS (see lib/pr-freshness.ts). It exists
+  // so a row buildd genuinely cannot resolve stops being treated as an open PR
+  // forever — it leaves Home for the health surface instead of sitting on the
+  // action queue as a merge CTA nobody can act on.
+  prLifecycleStatus: text('pr_lifecycle_status').$type<'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null>(),
   // Set the first time prLifecycleStatus transitions to 'conflict'. Used to measure
   // conflictDeadDays. Never cleared (even if PR later becomes mergeable).
   conflictDetectedAt: timestamp('conflict_detected_at', { withTimezone: true }),
@@ -1096,6 +1102,13 @@ export const workers = pgTable('workers', {
   // Null = never checked (or pre-migration). Used by the read-through refresh to
   // skip workers that were polled within the last 5 minutes.
   prLastCheckedAt: timestamp('pr_last_checked_at', { withTimezone: true }),
+  // Consecutive failed attempts to resolve this PR against GitHub (404, dead
+  // installation, no repo). Reset to 0 on any successful resolution. Drives the
+  // transition to prLifecycleStatus='unresolvable'.
+  prCheckFailureCount: integer('pr_check_failure_count').default(0).notNull(),
+  // Why the row went terminal-unresolvable. Rendered on the health surface so
+  // an orphaned PR is visible rather than silently dropped (facae217 AC-6).
+  prUnresolvableReason: text('pr_unresolvable_reason'),
   // Base branch SHA at the time the PR was opened (captured by create_pr).
   // Used by the base-history-rewrite detector to identify force-pushes that
   // orphan the PR's merge base.

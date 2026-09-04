@@ -79,8 +79,16 @@ function makeCheckRuns(runs: Array<{ name: string; conclusion: string | null }>)
 
 function makeBranchProtection(contexts: string[]) {
   return {
-    required_status_checks: { contexts },
+    required_status_checks: {
+      contexts,
+      checks: contexts.map(context => ({ context })),
+    },
   };
+}
+
+/** Branch protection that is enabled but requires no status checks. */
+function makeBranchProtectionWithoutChecks() {
+  return { required_status_checks: { contexts: [], checks: [] } };
 }
 
 const BASE_PARAMS = {
@@ -89,6 +97,7 @@ const BASE_PARAMS = {
   installationId: 12345,
   repoFullName: 'org/repo',
   headSha: 'abc123',
+  baseBranch: 'dev',
   threshold: 3,
 };
 
@@ -98,6 +107,9 @@ beforeEach(() => {
   mockGithubApi.mockReset();
   mockNotify.mockReset();
   mockTriggerEvent.mockReset();
+  // mockReset() drops the implementation too; the detector chains .catch() on
+  // the returned promise, so it must stay thenable.
+  mockTriggerEvent.mockImplementation(() => Promise.resolve());
   mockDarkCheckAlertsFindFirst.mockReset();
 });
 
@@ -152,7 +164,7 @@ describe('detectDarkChecks', () => {
       expect(mockNotify).not.toHaveBeenCalled();
     });
 
-    it('treats null conclusion as skipped', async () => {
+    it('ignores a check that had not concluded yet (null conclusion)', async () => {
       mockGithubApi.mockImplementation((_, path: string) => {
         if (path.includes('/protection')) return Promise.resolve(makeBranchProtection(['ci/test']));
         if (path.includes('/check-runs')) return Promise.resolve(makeCheckRuns([{ name: 'ci/test', conclusion: null }]));
@@ -162,9 +174,53 @@ describe('detectDarkChecks', () => {
 
       await detectDarkChecks(BASE_PARAMS);
 
-      const insert = insertCalls.find(c => c.values?.checkName === 'ci/test');
-      expect(insert).toBeDefined();
-      expect(insert!.values.consecutiveSkips).toBe(1);
+      expect(insertCalls.length).toBe(0);
+      expect(updateCalls.length).toBe(0);
+      expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it('counts a check name once per PR even when it has many runs', async () => {
+      mockGithubApi.mockImplementation((_, path: string) => {
+        if (path.includes('/protection')) return Promise.resolve(makeBranchProtection(['ci/test']));
+        if (path.includes('/check-runs')) {
+          return Promise.resolve(makeCheckRuns([
+            { name: 'ci/test', conclusion: 'skipped' },
+            { name: 'ci/test', conclusion: 'skipped' },
+            { name: 'ci/test', conclusion: 'skipped' },
+          ]));
+        }
+        return Promise.resolve(null);
+      });
+      mockDarkCheckAlertsFindFirst.mockReturnValue(
+        Promise.resolve({ consecutiveSkips: 2, lastAlertedAt: null }),
+      );
+
+      await detectDarkChecks(BASE_PARAMS);
+
+      const counterUpdates = updateCalls.filter(c => c.setValues?.consecutiveSkips !== undefined);
+      expect(counterUpdates.length).toBe(1);
+      expect(counterUpdates[0].setValues.consecutiveSkips).toBe(3);
+    });
+
+    it('resets when one run of a name succeeded and another skipped', async () => {
+      mockGithubApi.mockImplementation((_, path: string) => {
+        if (path.includes('/protection')) return Promise.resolve(makeBranchProtection(['ci/test']));
+        if (path.includes('/check-runs')) {
+          return Promise.resolve(makeCheckRuns([
+            { name: 'ci/test', conclusion: 'skipped' },
+            { name: 'ci/test', conclusion: 'success' },
+          ]));
+        }
+        return Promise.resolve(null);
+      });
+      mockDarkCheckAlertsFindFirst.mockReturnValue(
+        Promise.resolve({ consecutiveSkips: 4, lastAlertedAt: null }),
+      );
+
+      await detectDarkChecks(BASE_PARAMS);
+
+      expect(updateCalls.find(c => c.setValues?.consecutiveSkips === 0)).toBeDefined();
+      expect(mockNotify).not.toHaveBeenCalled();
     });
   });
 
@@ -283,7 +339,7 @@ describe('detectDarkChecks', () => {
       expect(insertCalls[0].values.checkName).toBe('ci/required');
     });
 
-    it('tracks all checks when branch protection is unavailable', async () => {
+    it('tracks nothing when branch protection is unavailable', async () => {
       mockGithubApi.mockImplementation((_, path: string) => {
         if (path.includes('/protection')) return Promise.reject(new Error('403 Forbidden'));
         if (path.includes('/check-runs')) {
@@ -298,7 +354,71 @@ describe('detectDarkChecks', () => {
 
       await detectDarkChecks(BASE_PARAMS);
 
-      expect(insertCalls.length).toBe(2);
+      expect(insertCalls.length).toBe(0);
+      expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it('tracks nothing when the base branch requires no status checks', async () => {
+      mockGithubApi.mockImplementation((_, path: string) => {
+        if (path.includes('/protection')) return Promise.resolve(makeBranchProtectionWithoutChecks());
+        if (path.includes('/check-runs')) {
+          return Promise.resolve(makeCheckRuns([
+            { name: 'auto-fix', conclusion: 'skipped' },
+            { name: 'Visual QA', conclusion: 'skipped' },
+          ]));
+        }
+        return Promise.resolve(null);
+      });
+      mockDarkCheckAlertsFindFirst.mockReturnValue(
+        Promise.resolve({ consecutiveSkips: 102, lastAlertedAt: null }),
+      );
+
+      await detectDarkChecks(BASE_PARAMS);
+
+      expect(insertCalls.length).toBe(0);
+      expect(updateCalls.length).toBe(0);
+      expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it('reads protection for the PR base branch, not a hardcoded one', async () => {
+      const protectionPaths: string[] = [];
+      mockGithubApi.mockImplementation((_, path: string) => {
+        if (path.includes('/protection')) {
+          protectionPaths.push(path);
+          return Promise.resolve(makeBranchProtection(['build']));
+        }
+        if (path.includes('/check-runs')) {
+          return Promise.resolve(makeCheckRuns([{ name: 'build', conclusion: 'success' }]));
+        }
+        return Promise.resolve(null);
+      });
+      mockDarkCheckAlertsFindFirst.mockReturnValue(Promise.resolve(null));
+
+      await detectDarkChecks({ ...BASE_PARAMS, baseBranch: 'main' });
+
+      expect(protectionPaths).toEqual(['/repos/org/repo/branches/main/protection']);
+    });
+
+    it('resolves required checks from the modern checks array alone', async () => {
+      mockGithubApi.mockImplementation((_, path: string) => {
+        if (path.includes('/protection')) {
+          // GitHub omits the deprecated `contexts` field for newer rulesets.
+          return Promise.resolve({ required_status_checks: { checks: [{ context: 'build' }] } });
+        }
+        if (path.includes('/check-runs')) {
+          return Promise.resolve(makeCheckRuns([
+            { name: 'build', conclusion: 'skipped' },
+            { name: 'auto-fix', conclusion: 'skipped' },
+          ]));
+        }
+        return Promise.resolve(null);
+      });
+      mockDarkCheckAlertsFindFirst.mockReturnValue(Promise.resolve(null));
+
+      await detectDarkChecks(BASE_PARAMS);
+
+      expect(insertCalls.length).toBe(1);
+      expect(insertCalls[0].values.checkName).toBe('build');
     });
   });
 

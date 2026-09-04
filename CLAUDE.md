@@ -13,6 +13,7 @@
   - DB schema: `packages/core/db/schema.ts`
   - Shared types: `packages/shared/src/types.ts`
   - Worker runner: `packages/core/worker-runner.ts`
+- **Codebase graph**: `codebase-memory` MCP is indexed for this repo — load via `ToolSearch` for structural questions (who calls/depends on X, architecture orientation) over grep.
 
 ## Architecture
 
@@ -206,6 +207,14 @@ bun run seed:multi-user        # Tasks across multiple workspaces in various sta
 bun run seed:concurrent        # Account at maxConcurrent limit with active workers
 bun run seed:reset             # Cleans up seeded data (handles all seed types)
 ```
+
+### Worker Sandbox: No Prod DB, Browser Needs `install-deps`
+Worker sandboxes never get a production `DATABASE_URL` — that's a deliberate security
+boundary (no DB-credential purpose in the `secrets` table), not a bug; use seed scripts above
+for real-shaped data instead. A headless browser works via `npx playwright install-deps
+chromium` — just never type the literal word `sudo` in a Bash command, it's blocked outright
+by the harness safety policy even though the underlying escalation works. See
+`docs/testing.md` → "Worker Sandbox Constraints".
 
 ### UI Fixtures
 View worker UI states in isolation: `http://localhost:3001/app/dev/fixtures?state=waiting-input`

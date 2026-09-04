@@ -129,6 +129,7 @@ const consumption = (over: Record<string, any> = {}): any => ({
 const render = (over: Record<string, any> = {}) =>
   renderToStaticMarkup(
     <HealthClient
+      orphanedPrs={[]}
       runners={[]}
       usageStats={null}
       consumption={null}
@@ -142,6 +143,7 @@ const render = (over: Record<string, any> = {}) =>
       failureAnalytics={null}
       window="7d"
       cbm={null}
+      now={NOW}
       {...(over as any)}
     />,
   );
@@ -435,5 +437,102 @@ describe('HealthClient — Trend', () => {
     // The adoption percentage moves to the usage drill-down; publishing it in two
     // places under two different windows is what the restructure removes.
     expect(html).not.toContain('0% of 10');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Orphaned PRs — the surface that lets Home's action queue drop an unresolvable
+// row without dropping it silently (facae217 AC-6). A PR buildd cannot resolve
+// is not an action; it is a fact about the system, and this is where facts go.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const orphan = (over: Record<string, any> = {}) => ({
+  workerId: 'w-1',
+  workspaceName: 'ws',
+  taskId: 't-1',
+  taskTitle: 'fix: header summary on launch',
+  prUrl: 'https://github.com/org/repo/pull/77',
+  prNumber: 77,
+  reason: 'Workspace has no usable GitHub App installation',
+  failureCount: 3,
+  lastCheckedAt: new Date(Date.now() - 2 * HOUR).toISOString(),
+  prOpenedAt: new Date(Date.now() - 90 * 24 * HOUR).toISOString(),
+  ...over,
+});
+
+describe('HealthClient — orphaned PRs', () => {
+  it('renders nothing when there are no orphans — the expected steady state', () => {
+    const html = render({ orphanedPrs: [] });
+    expect(html).not.toContain('health-section-orphaned-prs');
+  });
+
+  it('lists a retired PR with its reason, failure count and PR link', () => {
+    const html = render({ orphanedPrs: [orphan()] });
+    expect(html).toContain('health-section-orphaned-prs');
+    expect(html).toContain('Orphaned PRs');
+    expect(html).toContain('Workspace has no usable GitHub App installation');
+    expect(html).toContain('3 failed checks');
+    expect(html).toContain('https://github.com/org/repo/pull/77');
+  });
+
+  it('says plainly that these are not merges the human can make', () => {
+    const html = render({ orphanedPrs: [orphan()] });
+    expect(html).toContain('excluded from Home');
+  });
+
+  it('files the block under Problems, not State or Trend', () => {
+    const html = render({ orphanedPrs: [orphan()] });
+    const [problems, orphans, state] = orderOf(
+      html,
+      'health-section-problems',
+      'health-section-orphaned-prs',
+      'health-section-state',
+    );
+    expect(orphans).toBeGreaterThan(problems);
+    expect(orphans).toBeLessThan(state);
+  });
+});
+
+describe('HealthClient — hydration contract', () => {
+  // Regression for the render-time-clock bug: HealthClient used to call
+  // `Date.now()` directly (via isRunnerOnline/timeAgo/timeUntil) inside its
+  // render body. A client component's render body runs twice for one page
+  // load — once on the server producing the HTML, once on the client during
+  // hydration, moments later — so a runner sitting within seconds of the
+  // online/offline threshold could read as online in one pass and offline in
+  // the other, giving React two different trees to reconcile for what is
+  // supposed to be one render. The fix threads a single `now` in as a prop
+  // instead of reading the clock inside the component; this test pins that
+  // contract by holding `now` fixed while advancing the REAL wall clock
+  // between two renders, and asserting the output does not move a bit.
+  it('renders identical structure across real time passing, for a runner straddling the online threshold', () => {
+    const RUNNER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+    const pinnedNow = NOW;
+    // 500ms shy of going offline as of `pinnedNow` — the narrowest realistic
+    // straddle window between a server render and client hydration.
+    const straddlingHeartbeat = new Date(pinnedNow - RUNNER_ONLINE_WINDOW_MS + 500).toISOString();
+
+    const originalDateNow = Date.now;
+    try {
+      // First render: real clock reads `pinnedNow`.
+      Date.now = () => pinnedNow;
+      const first = render({
+        runners: [runner({ lastHeartbeatAt: straddlingHeartbeat })],
+        now: pinnedNow,
+      });
+
+      // Second render: real clock has advanced past the threshold — this is
+      // exactly the gap a slow client hydration (e.g. a mobile connection)
+      // introduces. `now` the PROP is unchanged.
+      Date.now = () => pinnedNow + 5000;
+      const second = render({
+        runners: [runner({ lastHeartbeatAt: straddlingHeartbeat })],
+        now: pinnedNow,
+      });
+
+      expect(second).toBe(first);
+    } finally {
+      Date.now = originalDateNow;
+    }
   });
 });

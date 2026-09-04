@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { subjectLivenessCondition, subjectStillLive } from './subject-gate';
 import {
   BYPASS_SUBJECT_GATE_KEY,
@@ -11,9 +12,10 @@ import {
  *   - `subjectLivenessCondition()` — SQL prefilter in the claim query
  *   - `subjectStillLive()`         — in-loop guard in the dispatch loop
  * Both read lib/subject-gate-contract.ts, so they cannot drift. These tests
- * assert the TS side behaviourally and assert the SQL side references every
- * contract literal (rendering real SQL needs a dialect, so we walk the
- * fragment's chunks instead).
+ * assert the TS side behaviourally, assert the SQL side references every
+ * contract literal (the chunk walk), and assert what the SQL actually *does*
+ * with those literals (the PgDialect render further down — the literal walk
+ * alone passed under a fully inverted predicate).
  */
 
 // ─── subjectStillLive ────────────────────────────────────────────────────────
@@ -136,6 +138,73 @@ function sqlLiterals(node: any, out: string[] = []): string[] {
   if ('value' in node) sqlLiterals(node.value, out);
   return out;
 }
+
+/**
+ * The literal walk above proves the contract values *reach* the fragment, but
+ * says nothing about how they are used: every one of these mutations kept the
+ * file green —
+ *   - dropping the outer `NOT (...)`  → the gate admits ONLY dead-subject tasks
+ *   - `subject_pr_number IS NOT NULL` → `IS NULL`
+ *   - `source IN (...)`               → `NOT IN (...)`  (advisory anchors become
+ *                                        the mortal ones; PR-bound ones don't)
+ *   - `confidence != 'derived'`       → `=`  (re-opens the aeb80f incident in
+ *                                        SQL while the TS guard still says live)
+ *   - `bypassSubjectGate != 'true'`   → `=`  (bypass becomes a self-block)
+ *   - `subject_kind = 'pull_request'` → any other kind
+ * A prefilter that disagrees with `subjectStillLive()` is the worst shape of
+ * this bug: the task is filtered out of the candidate query, so the in-loop
+ * guard never runs and the task simply never claims, with no recorded reason.
+ */
+const dialect = new PgDialect();
+
+function renderSubjectGate(): { text: string; params: unknown[] } {
+  const q = dialect.sqlToQuery(subjectLivenessCondition());
+  return { text: q.sql.replace(/\s+/g, ' ').trim(), params: q.params };
+}
+
+describe('subjectLivenessCondition — emitted SQL', () => {
+  it('is a negated conjunction of exactly the six mortality conditions', () => {
+    const { text } = renderSubjectGate();
+    // Without the outer NOT the predicate selects dead subjects instead of
+    // excluding them.
+    expect(text.startsWith('NOT (')).toBe(true);
+    // All six must hold for a task to be dead. An OR anywhere in here would
+    // make e.g. "kind = pull_request" alone enough to kill the task.
+    expect(text.split(' AND ')).toHaveLength(6);
+    expect(text).not.toContain(' OR ');
+  });
+
+  it('only a pull_request subject with a PR number can be mortal', () => {
+    const { text } = renderSubjectGate();
+    expect(text).toContain(`"tasks"."subject_kind" = 'pull_request'`);
+    expect(text).toContain('"tasks"."subject_pr_number" IS NOT NULL');
+  });
+
+  it('binds the contract values positionally', () => {
+    const { params } = renderSubjectGate();
+    expect(params).toEqual([
+      SUBJECT_DEAD_RESOLUTION,
+      ...SUBJECT_BINDING_SOURCES,
+      'derived',
+      BYPASS_SUBJECT_GATE_KEY,
+    ]);
+  });
+
+  it('treats binding sources as the mortal set, never the exempt set', () => {
+    const { text } = renderSubjectGate();
+    expect(text).toMatch(/COALESCE\("tasks"\."subject_anchor"->>'source', ''\) IN \(\$2, \$3\)/);
+    expect(text).not.toContain('NOT IN');
+  });
+
+  it('excludes derived-confidence anchors and honours the bypass', () => {
+    const { text } = renderSubjectGate();
+    // `!=` → `=` on either of these inverts it: an anchor the filer marked as
+    // inferred becomes the only mortal one, and setting the bypass flag becomes
+    // the thing that blocks the task.
+    expect(text).toMatch(/COALESCE\("tasks"\."subject_anchor"->>'confidence', ''\) != \$4/);
+    expect(text).toMatch(/COALESCE\("tasks"\."context"->>\$5, ''\) != 'true'/);
+  });
+});
 
 describe('subjectLivenessCondition', () => {
   it('returns a SQL fragment', () => {

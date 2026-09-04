@@ -648,11 +648,13 @@ async function handlePullRequestEvent(event: {
   // Dark-check detection: track required checks that consistently report
   // 'skipped', alerting the workspace owner when N consecutive PRs show the
   // pattern. Fire-and-forget — never blocks the webhook response path.
-  if (event.installation) {
+  // Needs the base branch: only the checks that branch requires can be dark.
+  if (event.installation && pr.base?.ref) {
     detectDarkChecksForClosedPr(
       event.installation.id,
       repository.full_name,
       pr.head.sha,
+      pr.base.ref,
     ).catch(e =>
       console.error(`[webhook] dark-check detection failed for ${repository.full_name}:`, e),
     );

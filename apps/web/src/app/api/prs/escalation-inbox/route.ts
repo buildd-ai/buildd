@@ -43,7 +43,7 @@ export async function GET(_req: NextRequest) {
       inArray(workers.workspaceId, wsIds),
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-      sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
+      sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
     ),
     columns: {
       id: true,

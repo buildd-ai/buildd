@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { formatOutcomeDetail, isPhaseSuccess, formatPhaseLabel } from '@/lib/migration-outcomes';
+import Spinner from './Spinner';
 
 // Redeclared locally — do NOT import from @/lib/workspace-migration (server-only db code).
 type EntityDisposition =
@@ -493,7 +494,7 @@ export default function WorkspaceMigrationModal({
           {step === 'running' && (
             <div className="space-y-4">
               <div className="flex items-center gap-3 text-sm text-text-secondary">
-                <span className="inline-block w-4 h-4 border-2 border-text-muted border-t-transparent rounded-full animate-spin" />
+                <Spinner size="sm" aria-label="Migrating" />
                 Migrating workspace…
               </div>
               <OutcomeList outcomes={outcomes} />

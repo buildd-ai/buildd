@@ -1,6 +1,6 @@
 /**
- * Lazy reconciliation: cross-check GitHub for workers whose PR still looks
- * un-merged, healing rows the pull_request webhook never delivered.
+ * The single GitHub poller. Cross-checks GitHub for workers whose PR still
+ * looks un-merged, healing rows the pull_request webhook never delivered.
  *
  * Tier 2 of the reconciliation model (PR #1630): the read-through refresh in
  * pr-state-refresh.ts keeps rows fresh for workspaces someone is looking at;
@@ -14,12 +14,43 @@
  * so busy rows were never candidates at all; and the overwhelming majority of
  * what it did select was already known-closed, burning one GitHub call each,
  * uncapped, inside a 60 s function.
+ *
+ * Two further failures, measured against the four stale MERGE cards that
+ * prompted this rewrite:
+ *
+ *   1. The installation was resolved through the LEGACY
+ *      `workspaces.githubInstallationId` FK. lib/workspace-installation.ts
+ *      documents why that is wrong: after an App reinstall the FK points at a
+ *      dead installation which still mints a valid token whose every call 404s,
+ *      and when it is null this sweep recorded a check and skipped the row —
+ *      so the row rotated to the back of the queue looking healthy and was
+ *      never reconciled again. Silent, and permanent. Always go through
+ *      pickWorkspaceInstallationId.
+ *   2. Nothing counted failures, so nothing ever gave up. A row that could not
+ *      be resolved stayed "open" indefinitely and Home kept rendering it as a
+ *      merge CTA. Consecutive failures now accumulate and, past the TTL in
+ *      lib/pr-freshness.ts, land the row in terminal `unresolvable`.
+ *
+ * Cadence is age-tiered (see TIER_SLA_MS): recent PRs are re-verified every
+ * 30 minutes, 90-day-old ones daily. The invariant this sweep exists to hold is
+ * that no row's lifecycle state is ever older than its tier's SLA — with Home
+ * never rendered.
  */
 
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
-import { and, isNull, isNotNull, eq, lt, or, notInArray, sql } from 'drizzle-orm';
+import { and, isNull, isNotNull, eq, or, notInArray, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import {
+  WORKSPACE_INSTALLATION_WITH,
+  pickWorkspaceInstallationId,
+} from '@/lib/workspace-installation';
+import {
+  TIER_SLA_MS,
+  HOT_MAX_AGE_MS,
+  WARM_MAX_AGE_MS,
+  shouldMarkUnresolvable,
+} from '@/lib/pr-freshness';
 
 /**
  * On-demand merge-state check for a single worker.
@@ -49,7 +80,7 @@ export async function refreshWorkerMergeStateIfStale(
     if (pr.merged && pr.merged_at) {
       const now = new Date();
       await db.update(workers)
-        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, updatedAt: now })
+        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, prCheckFailureCount: 0, updatedAt: now })
         .where(eq(workers.id, worker.id));
       return true;
     }
@@ -59,9 +90,6 @@ export async function refreshWorkerMergeStateIfStale(
     return false;
   }
 }
-
-/** A row is a candidate once its last check is older than this. */
-export const RECONCILE_STALE_MS = 30 * 60 * 1000;
 
 /**
  * Rows per run. Bounded so a run always finishes inside the route's
@@ -73,10 +101,47 @@ export const RECONCILE_BATCH_CAP = 40;
 /** Spacing between GitHub calls, matching pr-state-refresh.ts. */
 const RATE_LIMIT_MS = 200;
 
-/** Lifecycle states that need no further GitHub call. */
-const TERMINAL_STATUSES = ['merged', 'closed'] as (
-  'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null
+/**
+ * Lifecycle states that need no further GitHub call. `unresolvable` is terminal
+ * for the same reason merged and closed are: re-asking cannot change the answer.
+ */
+const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as (
+  'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null
 )[];
+
+/** The timestamp we treat as "when this PR opened" — completedAt, else createdAt. */
+const PR_OPENED_AT_SQL = sql`COALESCE(${workers.completedAt}, ${workers.createdAt})`;
+
+/**
+ * SQL for the age-tiered staleness gate, derived from TIER_SLA_MS so the sweep
+ * and the read-path invariant can never disagree about what "fresh" means.
+ */
+function tieredStalenessCondition() {
+  const secs = (ms: number) => sql.raw(String(Math.round(ms / 1000)));
+  return sql`(
+    ${workers.prLastCheckedAt} IS NULL
+    OR ${workers.prLastCheckedAt} < now() - (
+      CASE
+        WHEN ${PR_OPENED_AT_SQL} > now() - (${secs(HOT_MAX_AGE_MS)} * interval '1 second')
+          THEN ${secs(TIER_SLA_MS.hot)} * interval '1 second'
+        WHEN ${PR_OPENED_AT_SQL} > now() - (${secs(WARM_MAX_AGE_MS)} * interval '1 second')
+          THEN ${secs(TIER_SLA_MS.warm)} * interval '1 second'
+        ELSE ${secs(TIER_SLA_MS.cold)} * interval '1 second'
+      END
+    )
+  )`;
+}
+
+export interface ReconcileResult {
+  total: number;
+  stamped: number;
+  closed: number;
+  skipped: number;
+  /** Rows whose GitHub call failed; retried next run. */
+  errors: number;
+  /** Rows that exhausted the unknown TTL and went terminal this run. */
+  unresolvable: number;
+}
 
 /**
  * Deferred so this module does not close an import cycle: task-dependencies
@@ -87,28 +152,23 @@ async function notifyDependents(taskId: string): Promise<void> {
   await checkDependsOnResolved(taskId);
 }
 
-export interface ReconcileResult {
-  total: number;
-  stamped: number;
-  closed: number;
-  skipped: number;
-  /** Rows whose GitHub call failed; retried next run. */
-  errors: number;
-}
-
 /**
  * Reconcile awaiting-merge workers against GitHub.
  *
  * For each candidate (PR set, not merged, not already terminal, unchecked for
- * RECONCILE_STALE_MS), fetches the PR and stamps mergedAt / prLifecycleStatus
- * accordingly. Open PRs are left open. Every row that is looked at — including
- * ones that were unchanged, unreachable or errored — has prLastCheckedAt
- * advanced, because the batch is ordered least-recently-checked first and a row
- * that never records a check would sit at the head of it forever.
+ * longer than its tier's SLA), fetches the PR and stamps mergedAt /
+ * prLifecycleStatus accordingly. Open PRs are left open. Every row that is
+ * looked at — including ones that were unchanged, unreachable or errored — has
+ * prLastCheckedAt advanced, because the batch is ordered least-recently-checked
+ * first and a row that never records a check would sit at the head of it
+ * forever.
+ *
+ * A row that CANNOT be resolved (404, dead installation, workspace with no repo)
+ * accumulates prCheckFailureCount. Once it is past both the failure threshold
+ * and the unknown TTL it is written to terminal `unresolvable` — off Home,
+ * still visible on the health surface.
  */
 export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
-  const cutoff = new Date(Date.now() - RECONCILE_STALE_MS);
-
   const candidates = await db.query.workers.findMany({
     where: and(
       isNotNull(workers.prNumber),
@@ -119,12 +179,17 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         isNull(workers.prLifecycleStatus),
         notInArray(workers.prLifecycleStatus, TERMINAL_STATUSES),
       ),
-      or(
-        isNull(workers.prLastCheckedAt),
-        lt(workers.prLastCheckedAt, cutoff),
-      ),
+      tieredStalenessCondition(),
     ),
-    columns: { id: true, prNumber: true, workspaceId: true, taskId: true },
+    columns: {
+      id: true,
+      prNumber: true,
+      workspaceId: true,
+      taskId: true,
+      completedAt: true,
+      createdAt: true,
+      prCheckFailureCount: true,
+    },
     orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
     limit: RECONCILE_BATCH_CAP,
   });
@@ -135,6 +200,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     closed: 0,
     skipped: 0,
     errors: 0,
+    unresolvable: 0,
   };
   if (candidates.length === 0) return result;
 
@@ -147,8 +213,39 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       .where(eq(workers.id, id));
   };
 
+  type Candidate = (typeof candidates)[number];
+
+  /**
+   * A row we could not resolve. Counts the failure and, once it is past both
+   * the threshold and the TTL, retires it to terminal `unresolvable` so it
+   * stops being rendered as an open PR nobody can act on.
+   */
+  const recordFailure = async (worker: Candidate, reason: string) => {
+    const failureCount = (worker.prCheckFailureCount ?? 0) + 1;
+    const prOpenedAt = worker.completedAt ?? worker.createdAt ?? null;
+    const terminal = shouldMarkUnresolvable({ failureCount, prOpenedAt, now: new Date() });
+
+    await recordCheck(worker.id, {
+      prCheckFailureCount: failureCount,
+      ...(terminal
+        ? {
+            prLifecycleStatus: 'unresolvable' as const,
+            prUnresolvableReason: reason,
+            updatedAt: new Date(),
+          }
+        : {}),
+    }).catch(() => {});
+
+    if (terminal) {
+      result.unresolvable++;
+      console.warn(
+        `[pr-reconcile] worker ${worker.id} PR #${worker.prNumber} → unresolvable after ${failureCount} failures: ${reason}`,
+      );
+    }
+  };
+
   // Group by workspace so we share one installation token per workspace
-  const byWorkspace = new Map<string, typeof candidates>();
+  const byWorkspace = new Map<string, Candidate[]>();
   for (const w of candidates) {
     if (!byWorkspace.has(w.workspaceId)) byWorkspace.set(w.workspaceId, []);
     byWorkspace.get(w.workspaceId)!.push(w);
@@ -160,22 +257,28 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
       columns: { repo: true },
-      with: { githubInstallation: { columns: { installationId: true } } },
+      with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    if (!workspace?.repo || !workspace.githubInstallation?.installationId) {
-      // Unreconcilable, not transient: without a repo + installation no GitHub
-      // call is possible, so record the check rather than re-selecting these
-      // rows every run and starving the rest of the batch.
+    const installationId = pickWorkspaceInstallationId(workspace);
+
+    if (!workspace?.repo || !installationId) {
+      // Unreconcilable, and NOT transient: without a repo + installation no
+      // GitHub call is possible, and nothing about this row will change that.
+      // The old code recorded a bare check here, which made the row look
+      // healthy and hid the problem forever. Count it as a failure instead so
+      // the row eventually retires to `unresolvable` and shows up on Health.
+      const reason = !workspace?.repo
+        ? 'Workspace has no linked GitHub repo'
+        : 'Workspace has no usable GitHub App installation';
       for (const worker of wsWorkers) {
         result.skipped++;
-        await recordCheck(worker.id).catch(() => {});
+        await recordFailure(worker, reason);
       }
       continue;
     }
 
     const { repo } = workspace;
-    const { installationId } = workspace.githubInstallation;
 
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
@@ -193,6 +296,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
           await recordCheck(worker.id, {
             mergedAt: new Date(pr.merged_at),
             prLifecycleStatus: 'merged',
+            prCheckFailureCount: 0,
             updatedAt: new Date(),
           });
           result.stamped++;
@@ -210,21 +314,23 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         } else if (pr.state === 'closed') {
           await recordCheck(worker.id, {
             prLifecycleStatus: 'closed',
+            prCheckFailureCount: 0,
             updatedAt: new Date(),
           });
           result.closed++;
         } else {
-          // Still open — record the check, change nothing else.
-          await recordCheck(worker.id);
+          // Still open — record the check and clear the failure streak. The PR
+          // resolved fine; it simply has not landed yet.
+          await recordCheck(worker.id, { prCheckFailureCount: 0 });
           result.skipped++;
         }
       } catch (err) {
-        // Non-fatal: network error, 404 (PR deleted), rate-limit, etc. Record
-        // the check so a permanently failing row costs one call per run
-        // instead of blocking every run at the head of the queue.
+        // Network error, 404 (PR deleted / repo moved), rate-limit. Recorded as
+        // a failure so a permanently unresolvable row costs one call per run
+        // and then retires, instead of being retried until the end of time.
         console.warn(`[pr-reconcile] worker ${worker.id} PR #${worker.prNumber}:`, err);
         result.errors++;
-        await recordCheck(worker.id).catch(() => {});
+        await recordFailure(worker, err instanceof Error ? err.message : String(err));
       }
     }
   }

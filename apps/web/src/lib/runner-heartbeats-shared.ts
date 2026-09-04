@@ -100,11 +100,23 @@ export function deriveSandboxPosture(hb: {
 }
 
 // 3× the 60-second liveness ping interval — absorbs transient network hiccups.
-const RUNNER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+export const RUNNER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
 
-/** Runner is "online" when its last liveness beat arrived within the past 3 minutes. */
-export function isRunnerOnline(lastHeartbeatAt: string | Date): boolean {
-  return Date.now() - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_WINDOW_MS;
+/**
+ * Runner is "online" when its last liveness beat arrived within the past 3
+ * minutes of `now`.
+ *
+ * `now` is a required parameter, never `Date.now()` internally: a runner
+ * sitting near the threshold flips this boolean depending on exactly when
+ * it's evaluated, and this function used to read the clock itself, so a
+ * render-time call from a SSR-ed client component (HealthClient) could
+ * disagree between the server render and the client hydration render a few
+ * hundred milliseconds later. Callers that render must pass a single
+ * pinned `now`; only genuinely client-only, event-driven call sites (e.g. a
+ * button-click handler) should pass a fresh `Date.now()`.
+ */
+export function isRunnerOnline(lastHeartbeatAt: string | Date, now: number): boolean {
+  return now - new Date(lastHeartbeatAt).getTime() < RUNNER_ONLINE_WINDOW_MS;
 }
 
 /**

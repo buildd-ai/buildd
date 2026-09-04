@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 const mockMissionsFindFirst = mock(() => null as any);
 
@@ -44,6 +45,27 @@ describe('checkMissionBudgetExhausted', () => {
   it('fails OPEN when the mission row is missing', async () => {
     mockMissionsFindFirst.mockResolvedValue(null);
     expect(await checkMissionBudgetExhausted('gone')).toBe(false);
+  });
+
+  it('looks up the mission it was asked about, selecting its status', async () => {
+    // The DB is mocked, so the query itself was unobserved: dropping
+    // `eq(missions.id, missionId)` (verdict comes from whichever mission the
+    // planner happens to return first) and dropping `status` from the selected
+    // columns (status reads as undefined → the gate always fails open, so a
+    // budget-exhausted mission keeps dispatching and keeps spending) both left
+    // this file green. budget_exhausted gates every task in the mission at
+    // once, the largest blast radius of any claim gate.
+    mockMissionsFindFirst.mockResolvedValue({ id: 'm-9', status: 'active' });
+    await checkMissionBudgetExhausted('m-9');
+
+    const args = mockMissionsFindFirst.mock.calls.at(-1)![0] as {
+      where: any;
+      columns: Record<string, boolean>;
+    };
+    const { sql: text, params } = new PgDialect().sqlToQuery(args.where);
+    expect(text).toContain('"missions"."id" = $1');
+    expect(params).toEqual(['m-9']);
+    expect(args.columns.status).toBe(true);
   });
 
   it('re-exports the ONE bypass-key definition, never a second literal', () => {

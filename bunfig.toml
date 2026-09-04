@@ -1,2 +1,8 @@
+# Applies to `bun run` / `bun <file>` from the repo root. Without it, every script
+# that touches the DB layer dies on `import 'server-only'` — see the module header
+# in scripts/stub-server-only.ts, and packages/core/bunfig.toml for the reason this
+# has to be repeated per directory.
+preload = ["./scripts/stub-server-only.ts"]
+
 [test]
 preload = ["./tests/setup.ts"]

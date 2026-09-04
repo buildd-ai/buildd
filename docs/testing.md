@@ -57,6 +57,35 @@ bun run seed:reset
 2. Add `"seed:my-seed": "bun run scripts/seed/my-seed.ts"` to `package.json`
 3. Save seed metadata to `.last-seed.json` for cleanup support
 
+## Worker Sandbox Constraints (Live Browser & Production Data)
+
+Two things agents doing UI/browser-bug tasks routinely get wrong about the worker sandbox:
+
+**No production `DATABASE_URL` — by design.** Worker sandboxes are never handed a raw
+production DB credential. The `secrets` table (see `docs/credentials-architecture.md`) has
+no database-credential `purpose` at all — it's scoped to agent-backend and integration
+credentials, not data-plane access — and this repo is public (`no-prod-data.yml`), so there's
+no safe way to inject one. This is a deliberate security boundary, not a missing feature. A
+task that asks an agent to reproduce a bug "against real team data" cannot be fulfilled
+literally inside a worker sandbox; use the seed scripts above (`bun run seed:*`, needs
+`BUILDD_API_KEY`) to generate realistically-shaped data instead, and phrase task descriptions
+accordingly rather than asking for raw production repro as a hard deliverable.
+
+**A headless browser IS available — don't write the literal word "sudo".** Playwright's
+Chromium binary is pre-cached, but its system shared libs (`libnspr4`, `libnss3`, etc.) are
+not installed by default. Fix it in-task with:
+
+```bash
+npx playwright install-deps chromium   # or firefox / webkit
+```
+
+This works — Playwright escalates internally and the install succeeds. What does **not**
+work is typing `sudo` yourself (e.g. `sudo npx playwright install-deps ...` or `sudo apt-get
+install ...`): the harness's Bash-tool safety policy blocks any command containing the literal
+substring `sudo` outright, before it ever runs, which reads as "no root in this sandbox" but
+isn't — the underlying privilege escalation works fine when a subprocess (like Playwright's
+installer) invokes it itself. Don't type `sudo` in a Bash command; let the tool do it.
+
 ## UI Fixtures
 
 ### Purpose

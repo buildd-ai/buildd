@@ -149,6 +149,28 @@ select {
   animation: status-pulse 1.5s ease-in-out infinite;
 }
 
+/* Block-ticker spinner — brutalist replacement for animate-spin+rounded-full rings
+   (Tailwind's borderRadius scale is zeroed, so ring spinners render as rotating
+   squares). Each bar is lit for 20% of a 1s cycle; steps(1) makes it tick rather
+   than glide. Bar N's animation-delay staggers which 20% slice it lights in. */
+@keyframes block-tick {
+  0%, 20% { opacity: 1; }
+  20.01%, 100% { opacity: 0.18; }
+}
+
+.spinner-bar {
+  opacity: 0.18;
+  background-color: currentColor;
+  animation: block-tick 1s steps(1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner-bar {
+    /* Slow the loop rather than freeze it — it should still read as active. */
+    animation-duration: 4s;
+  }
+}
+
 .grain-texture::after {
   content: '';
   position: absolute;

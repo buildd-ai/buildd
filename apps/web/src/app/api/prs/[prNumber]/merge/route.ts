@@ -45,13 +45,45 @@ export async function POST(
 
   // Accept workspaceId from body to disambiguate when the same PR number exists in
   // multiple repos. The merge card passes the workspace UUID from the escalation item.
-  let workspaceId: string | null = null;
+  let rawWorkspaceId: string | null = null;
   try {
     const body = await req.json().catch(() => ({}));
-    if (body?.workspaceId && typeof body.workspaceId === 'string' && wsIds.includes(body.workspaceId)) {
-      workspaceId = body.workspaceId;
+    if (body?.workspaceId && typeof body.workspaceId === 'string') {
+      rawWorkspaceId = body.workspaceId;
     }
   } catch { /* non-fatal — body is optional */ }
+
+  // Resolve workspaceId to a UUID — callers may pass a repo name (e.g. "sibling-app")
+  // rather than a UUID. wsIds only contains UUIDs, so a direct includes() check
+  // misses name-based inputs. If a workspaceId was supplied but doesn't resolve to
+  // one of the caller's accessible workspaces, fail explicitly instead of silently
+  // falling back to the unscoped wsIds search — an unresolved disambiguator must
+  // never be treated the same as "no disambiguator supplied" (mirrors
+  // resolveWorkerByPrNumber in apps/web/src/app/api/github/pr/route.ts).
+  let workspaceId: string | null = null;
+  if (rawWorkspaceId) {
+    if (wsIds.includes(rawWorkspaceId)) {
+      workspaceId = rawWorkspaceId;
+    } else {
+      const allWs = await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, wsIds),
+        columns: { id: true, name: true, repo: true },
+      });
+      const lower = rawWorkspaceId.toLowerCase();
+      const match = allWs.find(ws =>
+        ws.name.toLowerCase() === lower ||
+        ws.repo?.toLowerCase() === lower ||
+        ws.repo?.toLowerCase().endsWith('/' + lower)
+      );
+      workspaceId = match?.id ?? null;
+    }
+    if (!workspaceId) {
+      return NextResponse.json(
+        { error: `Workspace "${rawWorkspaceId}" not found or not accessible` },
+        { status: 403 },
+      );
+    }
+  }
 
   const searchIds = workspaceId ? [workspaceId] : wsIds;
 

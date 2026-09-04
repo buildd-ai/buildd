@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import ExternalLink from './ExternalLink';
+import Spinner from './Spinner';
 import { resolveWaitingCardState } from '@/lib/waiting-card-state';
 import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import { ActionCardContextLine } from './ActionCardContextLine';
@@ -202,7 +203,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
             )}
             {mergeState === 'merging' && (
               <span className="inline-flex items-center gap-1.5 text-[12px] text-text-muted">
-                <span className="w-2.5 h-2.5 rounded-full border-2 border-status-success border-t-transparent animate-spin" />
+                <Spinner size="xs" className="text-status-success" aria-label="Merging" />
                 Merging…
               </span>
             )}
@@ -300,7 +301,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       {mergeState === 'conflict_dispatched' && (
         <div className="mt-2 pt-2 border-t border-primary/20">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block flex-shrink-0" />
+            <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
             <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
           </div>
           <div className="flex items-center gap-3">

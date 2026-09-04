@@ -27,13 +27,19 @@ mock.module('drizzle-orm', () => ({
 }));
 
 const mockExecute = mock(() => Promise.resolve({ rows: [] }));
+const mockSet = mock((_v: Record<string, unknown>) => ({ where: mock(() => Promise.resolve()) }));
 mock.module('@buildd/core/db', () => ({
-  db: { execute: mockExecute },
+  db: { execute: mockExecute, update: () => ({ set: mockSet }) },
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  workers: { id: 'id', prNumber: 'prNumber', prUrl: 'prUrl', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus' },
+  workers: {
+    id: 'id', prNumber: 'prNumber', prUrl: 'prUrl', mergedAt: 'mergedAt',
+    prLifecycleStatus: 'prLifecycleStatus', prCheckFailureCount: 'prCheckFailureCount',
+  },
 }));
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 import { POST } from './route';
 
@@ -51,6 +57,7 @@ describe('POST /api/admin/backfill-merged-prs', () => {
     mockAuthenticateApiKey.mockReset();
     mockRefreshWorkerMergeStateIfStale.mockReset();
     mockExecute.mockReset();
+    mockSet.mockClear();
     mockExecute.mockResolvedValue({ rows: [] });
   });
 
@@ -70,9 +77,30 @@ describe('POST /api/admin/backfill-merged-prs', () => {
     expect(res.status).toBe(403);
   });
 
-  it('returns 200 with summary when no stale workers found', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
+  // A browser session is not an accepted credential here: `getCurrentUser`
+  // carries no admin level and this codebase has no platform-admin concept for
+  // sessions, so being signed in must not substitute for an admin key.
+  it('returns 401 for a signed-in session with no admin-level API key', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'some-user' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(401);
+    expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for a signed-in session presenting a non-admin API key', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'some-user' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'user' });
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(403);
+    expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 with summary when no stale workers found', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({ rows: [] });
 
     const res = await POST(makeRequest());
@@ -82,8 +110,8 @@ describe('POST /api/admin/backfill-merged-prs', () => {
   });
 
   it('calls refreshWorkerMergeStateIfStale for each stale worker', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({
       rows: [
         { id: 'w1', pr_number: 10, pr_url: 'https://github.com/o/r/pull/10', installation_id: 1 },
@@ -107,5 +135,84 @@ describe('POST /api/admin/backfill-merged-prs', () => {
 
     const res = await POST(makeRequest());
     expect(res.status).toBe(200);
+  });
+
+  // ── Candidate selection ──────────────────────────────────────────────────
+  //
+  // This route existed while four merged PRs sat on Home for up to 90 days,
+  // and could not have fixed any of them: it resolved the installation through
+  // the legacy workspaces FK only (NULL or dead for the affected workspaces)
+  // and required the originating task to be 'completed'.
+
+  it('prefers the repo-mediated installation over the legacy workspace FK', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    await POST(makeRequest());
+
+    const query = JSON.stringify(mockExecute.mock.calls[0][0]);
+    expect(query).toContain('github_repos');
+    expect(query).toContain('gr_inst.installation_id');
+  });
+
+  it('does not restrict the backfill to completed tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    await POST(makeRequest());
+
+    // A failed or cancelled task can still have left a PR that later merged,
+    // and Home renders it either way.
+    expect(JSON.stringify(mockExecute.mock.calls[0][0])).not.toContain("t.status = 'completed'");
+  });
+
+  it('retires an old row with no reachable installation to terminal unresolvable', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    mockExecute.mockResolvedValue({
+      rows: [{
+        id: 'w1',
+        pr_number: 77,
+        pr_url: 'https://github.com/o/r/pull/77',
+        installation_id: null,
+        pr_check_failure_count: 5,
+        pr_opened_at: new Date(Date.now() - 90 * DAY_MS).toISOString(),
+      }],
+    });
+
+    const res = await POST(makeRequest());
+    const data = await res.json();
+
+    expect(data.unresolvable).toBe(1);
+    expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
+    expect(mockSet).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'unresolvable' }),
+    );
+  });
+
+  it('counts, but does not retire, a young row with no reachable installation', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
+    mockExecute.mockResolvedValue({
+      rows: [{
+        id: 'w1',
+        pr_number: 78,
+        pr_url: 'https://github.com/o/r/pull/78',
+        installation_id: null,
+        pr_check_failure_count: 0,
+        pr_opened_at: new Date().toISOString(),
+      }],
+    });
+
+    const res = await POST(makeRequest());
+    const data = await res.json();
+
+    expect(data.unresolvable).toBe(0);
+    expect(data.skipped).toBe(1);
+    expect(mockSet).toHaveBeenCalledWith(
+      expect.not.objectContaining({ prLifecycleStatus: 'unresolvable' }),
+    );
   });
 });

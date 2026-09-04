@@ -6,6 +6,12 @@
 process.env.NODE_ENV = 'test';
 
 import { beforeEach, afterEach } from 'bun:test';
+// 'server-only' throws under the plain Bun runtime (it resolves by export
+// condition, not by a runtime check), so any transitive import of
+// `@buildd/core/db` breaks unmocked and partially-mocked test files. The stub and
+// the full reasoning live in one place, shared with the `bun run` preload wired up
+// in bunfig.toml — see scripts/stub-server-only.ts.
+import '../scripts/stub-server-only';
 
 const originalConsoleError = console.error;
 const originalConsoleLog = console.log;

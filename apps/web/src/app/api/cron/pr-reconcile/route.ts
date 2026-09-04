@@ -8,6 +8,12 @@
 //                       dependency gate so blocked tasks actually start. Merge
 //                       state is time-critical: a missed delivery starves every
 //                       dependent task until something corrects the row.
+//                       This is the ONLY GitHub poller in the codebase — the
+//                       read-through refresh in lib/pr-state-refresh.ts is a
+//                       render-time fast path, not a second poller. Convergence
+//                       is age-tiered (lib/pr-freshness.ts): every open worker
+//                       PR is re-verified within its tier's SLA whether or not
+//                       anybody opens Home.
 //   (no scope)          daily — the above plus sweepDeadZonePrs(), which spawns
 //                       conflict-resolution tasks. That one creates work, so it
 //                       stays on the slower cadence.
@@ -43,7 +49,7 @@ export async function GET(req: NextRequest) {
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
     ]);
     console.log(
-      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped} errors=${reconcile.errors}`,
+      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped} errors=${reconcile.errors} unresolvable=${reconcile.unresolvable}`,
     );
     if (deadZone) {
       console.log(

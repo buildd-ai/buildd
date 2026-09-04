@@ -10,11 +10,12 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/team-access';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
-import { buildActionQueue } from '@/lib/action-queue';
+import { buildActionQueue, summariseActionQueueAge } from '@/lib/action-queue';
 import { resolveActionCardContext } from '@/lib/action-card-context';
 import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
@@ -224,6 +225,10 @@ export default async function HomePage({
     waitingMinutes: number | null;
     conflictRetryTaskId: string | null;
     conflictRetryIteration: number | null;
+    /** Freshness inputs — buildActionQueue refuses a merge CTA on stale state. */
+    prLifecycleStatus: string | null;
+    prOpenedAt: Date | null;
+    prLifecycleCheckedAt: Date | null;
   }[] = [];
 
   let resolvedEscalations: ResolvedEscalationItem[] = [];
@@ -849,9 +854,15 @@ export default async function HomePage({
               inArray(workers.workspaceId, wsIds),
               isNotNull(workers.prUrl),
               isNull(workers.mergedAt),
-              sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
+              sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
             ),
-            columns: { id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true, prLifecycleStatus: true, completedAt: true },
+            columns: {
+              id: true, taskId: true, workspaceId: true, prUrl: true, prNumber: true,
+              prLifecycleStatus: true, completedAt: true,
+              // Freshness inputs for the action-queue invariant: how old the PR
+              // is (which tier it falls in) and when its state was last verified.
+              createdAt: true, prLastCheckedAt: true,
+            },
             with: {
               task: {
                 columns: { id: true, title: true, missionId: true, status: true, requiresReview: true, result: true },
@@ -1203,6 +1214,12 @@ export default async function HomePage({
                   conflictRetryIteration: conflictRetry?.iteration ?? null,
                   deadZoneExhausted: !!deadZoneInfo,
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
+                  // Read from persisted columns only (I-9): the sweep owns all
+                  // GitHub resolution, this layer only judges how old that
+                  // resolution is.
+                  prLifecycleStatus: w.prLifecycleStatus ?? null,
+                  prOpenedAt: w.completedAt ?? w.createdAt ?? null,
+                  prLifecycleCheckedAt: w.prLastCheckedAt ?? null,
                 };
               })
               .sort((a, b) => {
@@ -1312,7 +1329,12 @@ export default async function HomePage({
                       isNotNull(workers.prUrl),
                       isNull(workers.mergedAt),
                     ),
-                    columns: { prUrl: true, prNumber: true, prLifecycleStatus: true },
+                    columns: {
+                      prUrl: true, prNumber: true, prLifecycleStatus: true,
+                      // Freshness inputs — a blocker-derived merge card is still
+                      // a claim that this PR is open right now.
+                      completedAt: true, createdAt: true, prLastCheckedAt: true,
+                    },
                     orderBy: desc(workers.createdAt),
                     limit: 1,
                   },
@@ -1370,7 +1392,9 @@ export default async function HomePage({
                   kind: 'merge',
                   prUrl: w.prUrl,
                   prNumber: w.prNumber,
-                  prLifecycleStatus: (w.prLifecycleStatus as 'open' | 'merged' | 'closed' | null) ?? null,
+                  prLifecycleStatus: (w.prLifecycleStatus as 'open' | 'merged' | 'closed' | 'unresolvable' | null) ?? null,
+                  prOpenedAt: w.completedAt ?? w.createdAt ?? null,
+                  prLifecycleCheckedAt: w.prLastCheckedAt ?? null,
                   upstreamTaskId: upstream.id,
                   upstreamTaskTitle: upstream.title,
                   unblockCount: blockedTasks.length,
@@ -1492,6 +1516,21 @@ export default async function HomePage({
 
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
         actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
+
+        // Age telemetry. Four MERGE cards up to 90 days old were visible here
+        // for months with nothing in the system counting them — the regression
+        // arrived as a phone screenshot. In steady state olderThan7d is 0; a
+        // non-zero value means the sweep is not converging and is the signal to
+        // look at, ahead of anything the cards themselves say.
+        {
+          const age = summariseActionQueueAge(actionQueue);
+          if (age.olderThan7dCount > 0 || age.p99AgeHours > 0) {
+            console.log(
+              `[home] action_queue.card_age_hours p99=${age.p99AgeHours} older_than_7d=${age.olderThan7dCount} `
+              + `stale_unverified=${age.staleUnverified} stale_ancient=${age.staleAncient} measured=${age.measured}`,
+            );
+          }
+        }
 
         // Tag each item with its mission's initiative and collect the distinct
         // initiatives present (sorted, blocked-first) for the scoping chips.
@@ -1725,7 +1764,7 @@ export default async function HomePage({
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                 <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                                  <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block" />
+                                  <Spinner size="xs" aria-label="Resolving conflicts" />
                                   Resolving Conflicts
                                   {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
                                 </span>
@@ -1817,6 +1856,58 @@ export default async function HomePage({
                               </Link>
                             )}
                           </div>
+                        </div>
+                      );
+                    }
+                    // STALE — the shape #1790 established for BLOCKED, applied to
+                    // a different failure: we either cannot vouch for this PR's
+                    // current state, or we can and it is old enough that merging
+                    // it blind is the wrong ask. Either way it is a decision, not
+                    // a tap, so there is no merge button.
+                    if (item.chip === 'STALE') {
+                      const ageLabel = item.cardAgeHours == null
+                        ? null
+                        : item.cardAgeHours < 48
+                          ? `${item.cardAgeHours}h old`
+                          : `${Math.floor(item.cardAgeHours / 24)}d old`;
+                      return (
+                        <div
+                          key={item.subjectKey}
+                          className="border-l-2 border-border bg-surface-raised/40 rounded-r-[10px] px-4 py-3"
+                        >
+                          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+                            <span className="text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
+                              Stale
+                            </span>
+                            {ageLabel && (
+                              <span className="text-[11px] font-mono text-text-muted">{ageLabel}</span>
+                            )}
+                            {arc && (
+                              <span className="text-[11px] text-text-muted">{arc.label}</span>
+                            )}
+                          </div>
+                          {item.taskTitle && (
+                            <div className="text-[13px] font-medium text-text-secondary truncate mt-0.5">
+                              {item.taskId ? (
+                                <Link href={`/app/tasks/${item.taskId}`} className="hover:underline">
+                                  {item.taskTitle}
+                                </Link>
+                              ) : item.taskTitle}
+                            </div>
+                          )}
+                          <p className="text-[12px] text-text-muted mt-0.5">
+                            {item.staleGate?.reason ?? item.escalationReason}
+                          </p>
+                          {item.prUrl && (
+                            <a
+                              href={item.prUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-text-muted hover:underline mt-0.5 inline-block"
+                            >
+                              Check PR #{item.prNumber} on GitHub ↗
+                            </a>
+                          )}
                         </div>
                       );
                     }

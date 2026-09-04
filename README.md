@@ -26,36 +26,60 @@ For headless/SSH environments: `buildd login --device`
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                buildd Server (Next.js on Vercel)            │
-│                - Dashboard, Auth, Task Management           │
-│                - REST API for agents                        │
-└─────────────────────────────────────────────────────────────┘
-                              ▲
-                              │ REST API
-          ┌──────────┬────────┼────────┬──────────┐
-          │          │        │        │          │
-   ┌──────┴──────┐ ┌─┴────────┴─┐ ┌────┴─────┐
-   │ Claude Code │ │  Local UI  │ │ GitHub   │
-   │ + MCP       │ │  (Bun)     │ │ Actions  │
-   │             │ │            │ │          │
-   │ Your laptop │ │ Your laptop│ │ CI runner│
-   └─────────────┘ └────────────┘ └──────────┘
+        ┌──────────────────────────────────────────────┐
+        │       buildd server (Next.js on Vercel)      │
+        │   dashboard · auth · task + mission state    │
+        │            REST API · MCP server             │
+        └──────────────────────────────────────────────┘
+                             ▲
+                             │ claim / report over REST
+             ┌───────────────┼───────────────┐
+             │               │               │
+    ┌────────┴───────┐ ┌─────┴──────┐ ┌──────┴───────┐
+    │  Claude Code   │ │ buildd CLI │ │    GitHub    │
+    │    + MCP       │ │   runner   │ │   Actions    │
+    │  your laptop   │ │  laptop/VM │ │  CI runner   │
+    └────────────────┘ └────────────┘ └──────────────┘
 ```
 
-Buildd separates **coordination** from **execution**. The server manages tasks, auth, and state. Workers run wherever you want — your laptop, a VM, CI — and talk to the server via REST API.
+Buildd separates **coordination** from **execution**. The server owns tasks, auth,
+and state; it never runs an agent. Workers run wherever you want — your laptop, a
+VM, CI — claim work over the REST API, and report back.
+
+That split is deliberate: agent runs take minutes to hours, which no serverless
+request budget survives. It also means buildd works *with* whatever agent you
+already use rather than replacing it.
 
 ## Features
 
-- **Scheduled Tasks** — Set a cron and agents run automatically: nightly test suites, daily PR reviews, weekly dependency audits. No extra infrastructure needed.
-- **Skills** — Reusable instruction templates that standardize agent workflows. Install once, reference in any task. SHA-256 verified.
-- **Shared Memory** — Agents record gotchas, patterns, and decisions as they work. Future agents read them automatically.
-- **Multi-Agent Coordination** — Run agents on laptops, VMs, or GitHub Actions. One dashboard controls them all.
-- **GitHub-Native** — Agents create branches, commit code, and open PRs. Full webhook integration for automatic task creation.
-- **Planning Mode** — Agents propose implementation plans for human approval before writing code.
-- **Teams** — Invite collaborators, manage roles (owner/admin/member), share workspaces.
-- **Real-Time Control** — Monitor progress, send instructions to running agents mid-task, and approve plans live.
-- **MCP Integration** — Use Claude Code to claim and work on tasks directly. Auto-configured on login.
+- **Missions** — Group related work under a goal. Missions track progress across many
+  tasks, generate them on a schedule, and hold a cost budget that pauses spawning
+  when spent.
+- **Roles** — Agent personas with their own model, tool allowlist, MCP servers, and
+  delegation rules. Ships with organizer, builder, researcher, writer, analyst, and
+  reviewer; tasks route to a role and only a worker offering that role can claim them.
+- **Scheduled Tasks** — Set a cron and agents run automatically: nightly test suites,
+  daily PR reviews, weekly dependency audits. RSS and HTTP triggers too.
+- **Knowledge & Memory** — Agents record gotchas, patterns, and decisions as they work.
+  Retrieval injects the relevant ones into future prompts automatically, over an entity
+  graph built from your PRs and code rather than a flat note list.
+- **Multiple Backends** — Claude and Codex, with model tiers and automatic failover when
+  a provider is rate-limited, out of budget, or its credentials go bad.
+- **MCP Connectors** — Mount MCP servers per role, with credentials resolved at claim
+  time and never stored by the worker. Least-privilege by default: no role opts in, no
+  server mounts.
+- **Planning Mode** — Agents propose implementation plans for human approval before
+  writing code.
+- **GitHub-Native** — Agents create branches, commit, and open PRs. Webhooks reconcile
+  PR state and can create tasks automatically.
+- **Sandboxed Execution** — Workers run under a filesystem sandbox with an explicit
+  mount allowlist, so an agent cannot read outside the workspace it was given.
+- **Teams** — Invite collaborators, manage access (owner/admin/member), share workspaces
+  and connectors across teams.
+- **Real-Time Control** — Monitor progress, send instructions to running agents mid-task,
+  and approve plans live.
+- **MCP Integration** — Use Claude Code to create, claim, and work tasks directly.
+  Auto-configured on login.
 
 ## CLI Commands
 
@@ -73,26 +97,30 @@ buildd install --global # Register MCP server globally
 
 Full documentation at **[docs.buildd.dev](https://docs.buildd.dev)**
 
-- [Getting Started](https://docs.buildd.dev/docs/getting-started/local-ui) — Local UI setup
+- [Getting Started](https://docs.buildd.dev/docs/getting-started/runner) — Run your first worker
+- [Missions](https://docs.buildd.dev/docs/features/missions) — Goals that organize and generate tasks
 - [Skills](https://docs.buildd.dev/docs/features/skills) — Reusable agent instructions
-- [Schedules](https://docs.buildd.dev/docs/features/schedules) — Cron-based task automation
+- [Schedules](https://docs.buildd.dev/docs/features/schedules) — Cron and trigger-based automation
 - [Memory](https://docs.buildd.dev/docs/features/memory) — Workspace knowledge base
+- [Codex Backend](https://docs.buildd.dev/docs/getting-started/codex-backend) — Running on Codex instead of Claude
+- [MCP Server](https://docs.buildd.dev/docs/integrations/mcp-server) — Drive buildd from Claude Code
 - [Teams](https://docs.buildd.dev/docs/features/teams) — Collaboration and access control
 - [Planning Mode](https://docs.buildd.dev/docs/features/planning-mode) — Human-in-the-loop approval
 - [GitHub Integration](https://docs.buildd.dev/docs/features/github) — Webhooks and PR management
-- [API Reference](https://docs.buildd.dev/docs/concepts/task-access) — Endpoints and auth
+- [Task Access](https://docs.buildd.dev/docs/concepts/task-access) — Auth model and scoping
 - [Self-Hosting](https://docs.buildd.dev/docs/deployment/self-hosting) — Deploy your own instance
 
 ## Project Structure
 
 ```
 apps/
-├── web/              Next.js dashboard + API (deployed on Vercel)
-└── runner/           Standalone worker runner with web UI (Bun)
+├── web/              Next.js dashboard + REST API + MCP server (Vercel)
+└── runner/           Standalone worker runner, CLI and local web UI (Bun)
 
 packages/
-├── core/             Database schema (Drizzle ORM) + migrations
-└── shared/           Shared TypeScript types
+├── core/             Schema + migrations (Drizzle), knowledge store, model routing
+├── shared/           Shared TypeScript types
+└── openclaw-skill/   Packaged agent skill
 ```
 
 ## Contributing
@@ -107,4 +135,4 @@ See the [self-hosting guide](https://docs.buildd.dev/docs/deployment/self-hostin
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE) — Copyright 2026 Max Jacubowsky.
