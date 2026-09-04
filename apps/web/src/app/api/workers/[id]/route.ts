@@ -59,8 +59,16 @@ import { markInstructionsDelivered } from '@/lib/worker-instructions';
  * Worker statuses from which no further live update is legal. Every optimistic
  * write in this handler is guarded against these — resurrecting a terminated
  * worker would let a stale in-flight PATCH overwrite a real outcome.
+ *
+ * `superseded` (POST /api/workers/[id]/respond) is included even though that
+ * route writes it directly rather than through this handler's own CAS: once a
+ * human has answered the worker's question and a continuation task exists,
+ * this row is done — an in-flight runner PATCH for the same worker that reads
+ * stale-but-not-yet-superseded state must still find the row terminal by the
+ * time its own write lands, so it 409s instead of silently overwriting the
+ * answer's outcome.
  */
-const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error'];
+const TERMINAL_WORKER_STATUSES: string[] = ['completed', 'failed', 'error', 'superseded'];
 
 function isTerminalWorkerStatus(status: string | null | undefined): boolean {
   return !!status && TERMINAL_WORKER_STATUSES.includes(status);

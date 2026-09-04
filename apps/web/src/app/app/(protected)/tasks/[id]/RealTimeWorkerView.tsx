@@ -132,8 +132,13 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
     }
   }, [worker.id]);
 
-  // Send answer via respond endpoint — creates a fresh task from the existing worktree.
-  // More stable than /instruct (which requires the session to be alive).
+  // Send answer via respond endpoint — always creates a NEW task rather than
+  // resuming the live session. More stable than /instruct (which requires the
+  // session to still be alive — this worker's session is not; the runner
+  // aborts it when the question is asked). The new task's worktree continues
+  // on the same branch ONLY if the original worker had already pushed it
+  // (e.g. a PR was already open); if the question was asked before anything
+  // was pushed, the new task starts fresh from the default branch instead.
   async function handleAnswer(option: string) {
     setAnswerSending(option);
     try {

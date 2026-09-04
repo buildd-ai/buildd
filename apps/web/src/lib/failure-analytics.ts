@@ -61,6 +61,16 @@ export const FAILED_WORKER_STATUSES = ['failed', 'error'] as const;
  * complement of this list rather than as an allow-list of finished statuses: an
  * unrecognised status is far more likely to be a new terminal outcome than a new
  * in-flight one, and treating it as in-flight would silently deflate the rate.
+ *
+ * `superseded` (POST /api/workers/[id]/respond) is not literally in flight —
+ * the session is over — but it belongs here for the same reason `waiting_input`
+ * does: the worker never reached a real success/failure verdict, it was
+ * replaced by a continuation task once a human answered its question. Counting
+ * it as a terminal "success" (the default for any status outside
+ * FAILED_WORKER_STATUSES) would inflate the success rate on every answered
+ * question; counting it as a failure would misrepresent an answered question as
+ * broken work. Excluding it from the terminal population is the only outcome
+ * that doesn't lie in one direction or the other.
  */
 export const IN_FLIGHT_WORKER_STATUSES = [
   'idle',
@@ -68,6 +78,7 @@ export const IN_FLIGHT_WORKER_STATUSES = [
   'running',
   'waiting_input',
   'paused',
+  'superseded',
 ] as const;
 
 /** A failure at or under this many turns, at zero cost, never did any work. */

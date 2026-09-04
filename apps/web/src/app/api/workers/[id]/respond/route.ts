@@ -95,10 +95,32 @@ export async function POST(
   // wrote the worker row. Gate the state flip on the question still being open —
   // only the winner may create a task. Claiming before inserting also means a
   // loser leaves nothing behind, instead of an orphan retry task.
+  //
+  // Status is 'superseded', not 'completed': this worker did not finish its
+  // task, it was replaced by the continuation task inserted below. Recording it
+  // as 'completed' would count an answered question as a clean success in
+  // get_failure_analytics / success-rate-by-role — neither true nor the
+  // opposite (a genuine failure). 'superseded' is excluded from both buckets
+  // (see IN_FLIGHT_WORKER_STATUSES in lib/failure-analytics.ts) and is included
+  // in TERMINAL_WORKER_STATUSES (workers/[id]/route.ts) so a later PATCH from
+  // the runner for this same worker is rejected instead of resurrecting it.
+  //
+  // Known residual race, deliberately not closed here: this write and an
+  // in-flight runner PATCH for the same worker use independent, uncoordinated
+  // CAS predicates (this one gates on waitingFor being set; the PATCH route's
+  // terminal-transition reservation gates on status). If the runner's PATCH has
+  // already read the pre-answer row and is mid-flight when this commits, its
+  // own later write can still land after this one and overwrite `status`. A
+  // worker read AFTER this commits is correctly rejected (terminal-status
+  // guard), so the window is narrow — but fully closing it needs a shared
+  // reservation primitive between the two routes, not a stronger predicate
+  // here: gating this claim on worker status (rather than only waitingFor)
+  // would break the deliberate, tested contract that an AskUserQuestion abort
+  // can legitimately leave status='error'/'failed' with waitingFor still set.
   const [claimed] = await db
     .update(workers)
     .set({
-      status: 'completed',
+      status: 'superseded',
       waitingFor: null,
       completedAt: new Date(),
       updatedAt: new Date(),
@@ -113,7 +135,41 @@ export async function POST(
     );
   }
 
-  // Create the new retry task
+  // Create the new retry task.
+  //
+  // Field-by-field decision on what carries over from the original task —
+  // deliberate per field, not a blanket copy:
+  //
+  //  - mode, taskClass: COPY. The continuation's job is the ORIGINAL task's
+  //    job, now armed with an answer — not a new kind of task. When mode was
+  //    'planning' (the parent's deliverable IS a structured plan, e.g. a
+  //    mission organizer cycle that asked a clarifying question mid-decompose),
+  //    the continuation still owes that same plan; the SDK's outputFormat
+  //    constraint (resolveOutputFormat, keyed on mode) applies identically to
+  //    it, and the planning-contract guard's mode==='planning' clause
+  //    (workers/[id]/route.ts) fires the same way regardless of scheduleId or
+  //    creationSource — those only gate the guard's separate orchestrator-
+  //    fallback clause, which this route's continuations never hit since
+  //    creationSource here always defaults to 'api' (see below).
+  //  - priority, outputRequirement, outputSchema, category, pathManifest,
+  //    backend: COPY. None of these describe *how* the task was created —
+  //    they describe what it must deliver and how, which does not change
+  //    because a question was asked. Dropping outputSchema in particular used
+  //    to silently swap a custom contract (e.g. a reviewer verdict schema) for
+  //    either the default planning schema or no schema at all. Dropping
+  //    priority sent a priority-9 task's continuation to the back of the
+  //    queue. Dropping pathManifest lost the conflict-serialization edges
+  //    against sibling tasks touching the same files.
+  //  - dependsOn: NOT copied. Those edges gated the ORIGINAL task's claim on
+  //    prerequisites that were already satisfied before it could run in the
+  //    first place — the continuation isn't blocked on them again.
+  //  - subjectAnchor: NOT copied. It drives the subject-dedup/supersession
+  //    gate for auto-filed tasks (friction/webhook/CI-retry); copying it onto
+  //    a new task id under a human-answered flow isn't a case that subsystem
+  //    is designed for.
+  //  - creationSource: NOT copied (defaults to 'api'). It records who/what
+  //    created the row; this row was created by a human or API caller
+  //    answering a question via this route, which 'api' describes accurately.
   let newTask;
   try {
     [newTask] = await db
@@ -128,7 +184,22 @@ export async function POST(
         roleSlug: task?.roleSlug,
         mode: task?.mode,
         taskClass: (task?.taskClass ?? 'work') as 'work' | 'attempt' | 'bookkeeping',
+        priority: task?.priority,
+        outputRequirement: task?.outputRequirement,
+        outputSchema: task?.outputSchema,
+        category: task?.category,
+        pathManifest: task?.pathManifest,
+        backend: task?.backend,
         context: {
+          // Honored by the runner's setupWorktree/resolveWorktreeBase — but
+          // only when `worker.branch` already exists on the remote (verified
+          // by fetching and probing `origin/<branch>`). If the original
+          // worker was blocked before ever pushing (the common case: a
+          // question asked mid-task, before create_pr), no such branch
+          // exists, and the runner silently falls back to a fresh worktree
+          // from the default branch — the "resumes the existing worktree"
+          // claim this route's callers make does NOT hold in that case, and
+          // nothing here can verify at request time which case applies.
           baseBranch: worker.branch,
           userInput: message,
           previousAttempt: {
