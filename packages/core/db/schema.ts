@@ -597,7 +597,13 @@ export const workspaces = pgTable('workspaces', {
   githubRepoId: uuid('github_repo_id'),  // Will add FK after githubRepos is defined
   githubInstallationId: uuid('github_installation_id'),
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
-  accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
+  // 'open' lets any authenticated user reach the workspace without team
+  // membership (verifyWorkspaceAccess returns role 'member' for them). That is
+  // useful for a single-tenant install and wrong as a default the moment a
+  // second person signs up, so new workspaces are 'restricted'. Existing rows
+  // are deliberately left alone — flipping them would revoke access people
+  // currently rely on.
+  accessMode: text('access_mode').default('restricted').notNull().$type<'open' | 'restricted'>(),
   // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
