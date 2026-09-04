@@ -15,7 +15,42 @@ interface DarkCheckParams {
   installationId: number;
   repoFullName: string;
   headSha: string;
+  /** The branch the PR targeted — its protection rules define what is required. */
+  baseBranch: string;
   threshold?: number;
+}
+
+/**
+ * Resolves the status checks the base branch actually requires. Reads both the
+ * modern `checks[].context` list and the deprecated `contexts` array, since
+ * GitHub populates them inconsistently across protection and ruleset configs.
+ *
+ * Returns null when protection is unreadable, and an empty set when the branch
+ * is protected but gates nothing — both mean "no required checks to judge".
+ */
+async function fetchRequiredCheckNames(
+  installationId: number,
+  repoFullName: string,
+  baseBranch: string,
+): Promise<Set<string> | null> {
+  try {
+    const [owner, repoName] = repoFullName.split('/');
+    const protection = await githubApi(
+      installationId,
+      `/repos/${owner}/${repoName}/branches/${encodeURIComponent(baseBranch)}/protection`,
+    );
+    const required = protection?.required_status_checks;
+    const names = [
+      ...(Array.isArray(required?.checks)
+        ? required.checks.map((c: { context?: string }) => c?.context)
+        : []),
+      ...(Array.isArray(required?.contexts) ? required.contexts : []),
+    ].filter((n): n is string => typeof n === 'string' && n.length > 0);
+    return new Set(names);
+  } catch {
+    // Branch protection not configured, or the app lacks admin:repo scope.
+    return null;
+  }
 }
 
 /**
@@ -25,6 +60,11 @@ interface DarkCheckParams {
  * Fires a Pushover alert when the same check has been skipped on N consecutive
  * closed/merged PRs (default N=5). Deduplicates alerts to once per 24h per
  * (workspace, checkName) pair. Non-fatal: any error is logged, never thrown.
+ *
+ * Only checks that the PR's base branch *requires* are tracked. A skipped
+ * optional workflow (path-filtered, `if:`-gated, or a manual job) is intended
+ * behaviour, not a dark gate — counting those produced alerts naming checks no
+ * branch ever required.
  */
 export async function detectDarkChecks({
   workspaceId,
@@ -32,25 +72,19 @@ export async function detectDarkChecks({
   installationId,
   repoFullName,
   headSha,
+  baseBranch,
   threshold = DEFAULT_THRESHOLD,
 }: DarkCheckParams): Promise<void> {
   try {
-    // 1. Try to get required checks from branch protection rules for 'dev'.
-    //    Falls back to all check runs if branch protection is inaccessible.
-    let requiredCheckNames: Set<string> | null = null;
-    try {
-      const [owner, repoName] = repoFullName.split('/');
-      const protection = await githubApi(
-        installationId,
-        `/repos/${owner}/${repoName}/branches/dev/protection`,
-      );
-      const contexts = protection?.required_status_checks?.contexts;
-      if (Array.isArray(contexts) && contexts.length > 0) {
-        requiredCheckNames = new Set(contexts as string[]);
-      }
-    } catch {
-      // Branch protection not configured or insufficient permissions — track all checks.
-    }
+    // 1. Only the base branch's required checks can be dark. If protection is
+    //    unreadable or gates nothing, there is nothing to judge — stay quiet
+    //    rather than treating every optional workflow as a required one.
+    const requiredCheckNames = await fetchRequiredCheckNames(
+      installationId,
+      repoFullName,
+      baseBranch,
+    );
+    if (!requiredCheckNames || requiredCheckNames.size === 0) return;
 
     // 2. Fetch check runs for this PR's head SHA.
     let checkRuns: Array<{ name: string; conclusion: string | null }>;
@@ -70,23 +104,33 @@ export async function detectDarkChecks({
 
     if (checkRuns.length === 0) return;
 
-    // 3. Narrow to required checks (or all checks if branch protection unavailable).
-    const checksToTrack = requiredCheckNames
-      ? checkRuns.filter(r => requiredCheckNames!.has(r.name))
-      : checkRuns;
+    // 3. Collapse to one verdict per required check name. A name can have many
+    //    runs on the same SHA (re-runs, matrix legs, both a PR and a push
+    //    event) — one PR must move its counter by at most one. A name counts as
+    //    skipped only when every run of it skipped; a name with any run still
+    //    unconcluded is evidence of nothing and is left untouched.
+    const verdicts = new Map<string, { allSkipped: boolean; pending: boolean }>();
+    for (const run of checkRuns) {
+      if (!requiredCheckNames.has(run.name)) continue;
+      const v = verdicts.get(run.name) ?? { allSkipped: true, pending: false };
+      if (run.conclusion === null) v.pending = true;
+      else if (run.conclusion !== 'skipped') v.allSkipped = false;
+      verdicts.set(run.name, v);
+    }
 
-    if (checksToTrack.length === 0) return;
+    if (verdicts.size === 0) return;
 
     const now = new Date();
 
     // 4. Update consecutive-skip counters per check name.
-    for (const check of checksToTrack) {
-      const isSkipped = check.conclusion === 'skipped' || check.conclusion === null;
+    for (const [checkName, verdict] of verdicts) {
+      if (verdict.pending) continue;
+      const isSkipped = verdict.allSkipped;
 
       const existing = await db.query.darkCheckAlerts.findFirst({
         where: and(
           eq(darkCheckAlerts.workspaceId, workspaceId),
-          eq(darkCheckAlerts.checkName, check.name),
+          eq(darkCheckAlerts.checkName, checkName),
         ),
       });
 
@@ -99,13 +143,13 @@ export async function detectDarkChecks({
           .where(
             and(
               eq(darkCheckAlerts.workspaceId, workspaceId),
-              eq(darkCheckAlerts.checkName, check.name),
+              eq(darkCheckAlerts.checkName, checkName),
             ),
           );
       } else {
         await db.insert(darkCheckAlerts).values({
           workspaceId,
-          checkName: check.name,
+          checkName,
           consecutiveSkips: newCount,
           updatedAt: now,
         });
@@ -125,26 +169,26 @@ export async function detectDarkChecks({
             .where(
               and(
                 eq(darkCheckAlerts.workspaceId, workspaceId),
-                eq(darkCheckAlerts.checkName, check.name),
+                eq(darkCheckAlerts.checkName, checkName),
               ),
             );
 
           notify({
             app: 'alerts',
             title: `Dark check detected — ${workspaceName}`,
-            message: `Required check '${check.name}' has been Skipped on ${newCount} consecutive PRs — may be misconfigured.`,
+            message: `Required check '${checkName}' has been Skipped on ${newCount} consecutive closed PRs — may be misconfigured.`,
             priority: 0,
           });
 
           // Emit workspace event so it surfaces in real-time dashboard feed.
           triggerEvent(channels.workspace(workspaceId), 'workspace:dark_check_detected', {
             workspaceId,
-            checkName: check.name,
+            checkName,
             consecutiveSkips: newCount,
           }).catch(e => console.error('[dark-check] Pusher event failed:', e));
 
           console.log(
-            `[dark-check] Alert fired: workspace=${workspaceId} check="${check.name}" consecutiveSkips=${newCount}`,
+            `[dark-check] Alert fired: workspace=${workspaceId} check="${checkName}" consecutiveSkips=${newCount}`,
           );
         }
       }
@@ -162,6 +206,7 @@ export async function detectDarkChecksForClosedPr(
   installationId: number,
   repoFullName: string,
   headSha: string,
+  baseBranch: string,
 ): Promise<void> {
   const workspace = await db.query.workspaces.findFirst({
     where: workspaceRepoMatches(repoFullName),
@@ -175,5 +220,6 @@ export async function detectDarkChecksForClosedPr(
     installationId,
     repoFullName,
     headSha,
+    baseBranch,
   });
 }
