@@ -209,3 +209,111 @@ describe('buildSubjectPriorWork', () => {
     expect(result).toBeNull();
   });
 });
+
+// ── The sibling query ─────────────────────────────────────────────────────────
+//
+// Every test above hands the sibling rows straight to the formatter, so the
+// query that selects them was never inspected — and drizzle is mocked here into
+// plain objects, so inspecting it is free. These mutations were all silent:
+//
+//   - dropping `eq(tasks.workspaceId, ...)`: siblings are matched by PR number
+//     alone, so another team's task titles get pasted into this worker's prompt.
+//     Two workspaces on the same repo share PR numbers by construction.
+//   - dropping `ne(tasks.id, task.id)`: the task cites itself as prior work and
+//     tells the agent to "verify before re-implementing" its own job.
+//   - the error branch matching `subject_pr_number` instead of
+//     `subject_error_signature`: wrong siblings, or none.
+//   - `MAX_SIBLING_TASKS` raised: the block stops being bounded, which is the
+//     one property a prompt injection must keep.
+//   - `orderBy desc(createdAt)` → `asc`: with a cap of 5 you get the five
+//     OLDEST siblings, i.e. the least relevant prior work, and never the PR
+//     that just landed.
+
+/** Invoke a drizzle relational `orderBy` callback and report what it asked for. */
+function probeOrderBy(orderBy: any): unknown {
+  return orderBy(
+    { createdAt: 'createdAt', updatedAt: 'updatedAt' },
+    {
+      desc: (col: unknown) => ({ dir: 'desc', col }),
+      asc: (col: unknown) => ({ dir: 'asc', col }),
+    },
+  );
+}
+
+describe('buildSubjectPriorWork — sibling query', () => {
+  it('scopes PR siblings to the workspace and excludes the task itself', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await buildSubjectPriorWork(
+      { ...BASE_TASK, subjectKind: 'pull_request', subjectPrNumber: 42 },
+      ENABLED,
+    );
+
+    const args = mockFindMany.mock.calls.at(-1)![0] as any;
+    expect(args.where).toEqual({
+      op: 'and',
+      args: [
+        { op: 'eq', a: 'workspaceId', b: 'ws-1' },
+        { op: 'eq', a: 'subjectPrNumber', b: 42 },
+        { op: 'ne', a: 'id', b: 'task-1' },
+      ],
+    });
+    expect(args.limit).toBe(5);
+    expect(probeOrderBy(args.orderBy)).toEqual([{ dir: 'desc', col: 'createdAt' }]);
+    // Only the newest worker per sibling is rendered, so only one is fetched.
+    expect(args.with.workers.limit).toBe(1);
+    expect(probeOrderBy(args.with.workers.orderBy)).toEqual([
+      { dir: 'desc', col: 'createdAt' },
+    ]);
+  });
+
+  it('matches error siblings on the error signature, workspace-scoped', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await buildSubjectPriorWork(
+      { ...BASE_TASK, subjectKind: 'error', subjectErrorSignature: 'bwrap_namespace_denied' },
+      ENABLED,
+    );
+
+    const args = mockFindMany.mock.calls.at(-1)![0] as any;
+    expect(args.where).toEqual({
+      op: 'and',
+      args: [
+        { op: 'eq', a: 'workspaceId', b: 'ws-1' },
+        { op: 'eq', a: 'subjectErrorSignature', b: 'bwrap_namespace_denied' },
+        { op: 'ne', a: 'id', b: 'task-1' },
+      ],
+    });
+    expect(args.limit).toBe(5);
+    expect(probeOrderBy(args.orderBy)).toEqual([{ dir: 'desc', col: 'createdAt' }]);
+  });
+
+  it('matches mission siblings on the mission id, workspace-scoped', async () => {
+    mockFindMany.mockResolvedValue([]);
+    await buildSubjectPriorWork(
+      { ...BASE_TASK, subjectKind: 'mission', subjectMissionId: 'mission-xyz' },
+      ENABLED,
+    );
+
+    const args = mockFindMany.mock.calls.at(-1)![0] as any;
+    expect(args.where).toEqual({
+      op: 'and',
+      args: [
+        { op: 'eq', a: 'workspaceId', b: 'ws-1' },
+        { op: 'eq', a: 'subjectMissionId', b: 'mission-xyz' },
+        { op: 'ne', a: 'id', b: 'task-1' },
+      ],
+    });
+    expect(args.limit).toBe(5);
+  });
+
+  it('never queries for an unrecognised subject kind', async () => {
+    // The three branches are exhaustive by construction; a fourth kind (or a
+    // typo'd one) must fall through to null rather than issue an unfiltered
+    // findMany, which would return arbitrary tasks as "prior work".
+    const result = await buildSubjectPriorWork(
+      { ...BASE_TASK, subjectKind: 'branch' },
+      ENABLED,
+    );
+    expect(result).toBeNull();
+    expect(mockFindMany).not.toHaveBeenCalled();
+  });
+});
