@@ -654,7 +654,7 @@ export function HealthClient({
           </div>
         )}
 
-        <OrphanedPrsBlock rows={orphanedPrs} />
+        <OrphanedPrsBlock rows={orphanedPrs} now={now} />
       </section>
 
       {/* 2. State — what is true right now. Every number here renders its own
@@ -1124,7 +1124,7 @@ function fmtCost(n: number): string {
  * This is the surface that lets the action queue drop these rows without
  * dropping them silently.
  */
-function OrphanedPrsBlock({ rows }: { rows: OrphanedPrRow[] }) {
+function OrphanedPrsBlock({ rows, now }: { rows: OrphanedPrRow[]; now: number }) {
   // No orphans is the expected state — an empty block would be noise.
   if (rows.length === 0) return null;
 
@@ -1159,7 +1159,7 @@ function OrphanedPrsBlock({ rows }: { rows: OrphanedPrRow[] }) {
             </div>
             <p className="text-xs text-text-muted mt-0.5">
               {row.reason ?? 'Unresolvable'} · {row.failureCount} failed check
-              {row.failureCount === 1 ? '' : 's'} · last tried {timeAgo(row.lastCheckedAt)}
+              {row.failureCount === 1 ? '' : 's'} · last tried {timeAgo(row.lastCheckedAt, now)}
               {row.prUrl && (
                 <>
                   {' · '}
