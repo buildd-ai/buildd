@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Spinner from '@/components/Spinner';
 
 export default function RetryTaskButton({ taskId }: { taskId: string }) {
   const [loading, setLoading] = useState(false);
@@ -32,7 +33,7 @@ export default function RetryTaskButton({ taskId }: { taskId: string }) {
       aria-label="Retry task"
     >
       {loading ? (
-        <span className="w-4 h-4 block border-2 border-text-muted border-t-transparent rounded-full animate-spin" />
+        <Spinner size="sm" aria-label="Retrying" />
       ) : (
         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="23 4 23 10 17 10" />

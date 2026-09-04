@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Spinner from '@/components/Spinner';
 
 interface PlanStep {
   ref: string;
@@ -208,9 +209,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
               disabled={rejecting || !feedback.trim()}
               className="px-4 py-2 text-sm bg-status-error text-white rounded-[6px] hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
             >
-              {rejecting && (
-                <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-              )}
+              {rejecting && <Spinner size="sm" className="text-white" aria-label="Rejecting" />}
               {rejecting ? 'Rejecting...' : 'Submit Rejection'}
             </button>
           </div>
@@ -225,9 +224,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
             disabled={approving || rejecting}
             className="px-5 py-2.5 text-sm font-medium bg-status-success text-white rounded-[6px] hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
           >
-            {approving && (
-              <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-            )}
+            {approving && <Spinner size="sm" className="text-white" aria-label="Approving" />}
             {approving ? 'Approving...' : 'Approve Plan'}
           </button>
           {!showRejectForm && (

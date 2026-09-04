@@ -5,6 +5,7 @@ import { useLocalUiHealth } from './useLocalUiHealth';
 import { uploadImagesToR2 } from '@/lib/upload';
 import { SkillSlashTypeahead } from '@/components/skills/SkillSlashTypeahead';
 import { DependencySelector } from '@/components/tasks/DependencySelector';
+import Spinner from '@/components/Spinner';
 
 const PIPELINE_SKILL_SLUGS = ['pipeline-fan-out-merge', 'pipeline-sequential', 'pipeline-release'];
 
@@ -296,7 +297,7 @@ export default function QuickCreateModal({
         {assignmentStatus === 'waiting' ? (
           // Waiting for worker to accept
           <div className="p-6 text-center">
-            <div className="animate-spin w-8 h-8 border-2 border-primary border-t-transparent rounded-full mx-auto mb-4" />
+            <Spinner className="text-primary mb-4" aria-label="Waiting for worker" />
             <p className="text-text-primary mb-2">
               Waiting for worker to accept...
             </p>

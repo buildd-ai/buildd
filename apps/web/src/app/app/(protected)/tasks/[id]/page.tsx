@@ -10,6 +10,7 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { displayWorkspaceName } from '@buildd/shared';
 import { isStorageConfigured, generateDownloadUrl } from '@/lib/storage';
 import { isValidTaskId } from '@/lib/task-id';
+import Spinner from '@/components/Spinner';
 import LocalTime from '../LocalTime';
 import ReassignButton from './ReassignButton';
 import EditTaskButton from './EditTaskButton';
@@ -1018,7 +1019,7 @@ export default async function TaskDetailPage({
             return (
               <div className="bg-status-running/10 border border-status-running/20 rounded-[10px] p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">
-                  <span className="w-3.5 h-3.5 border-2 border-status-running border-t-transparent rounded-full animate-spin flex-shrink-0" />
+                  <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
                   Agent is generating a plan...
                 </div>
               </div>
@@ -1063,7 +1064,7 @@ export default async function TaskDetailPage({
         {activeWorker && (
           <div className="mb-8 order-first md:order-none">
             <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-6 flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full border-2 border-status-running border-t-transparent animate-spin" aria-hidden="true"></span>
+              <Spinner size="xs" className="text-status-running" aria-label="Running" />
               Active Worker
             </div>
             <RealTimeWorkerView

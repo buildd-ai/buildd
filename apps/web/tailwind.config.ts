@@ -60,7 +60,9 @@ const config: Config = {
           design: 'var(--cat-design)',
         },
       },
-      // Brutalist: square everything. 'full' kept for true circles (avatars, status dots).
+      // Brutalist: square everything, including 'full' — there is no true circle in
+      // this scale. Avatars/status-dots are square too; do not build ring spinners
+      // on rounded-full (they render as rotating squares) — use <Spinner> instead.
       borderRadius: {
         none: '0',
         sm: '0',
