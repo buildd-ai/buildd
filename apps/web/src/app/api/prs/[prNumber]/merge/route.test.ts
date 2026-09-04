@@ -5,6 +5,7 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockWorkersUpdate = mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) }));
 const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'ok' }));
 const mockTriggerEvent = mock(() => Promise.resolve());
@@ -26,7 +27,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: mockWorkersFindMany },
-      workspaces: { findFirst: mockWorkspacesFindFirst },
+      workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
     },
     update: mockWorkersUpdate,
   },
@@ -49,13 +50,19 @@ mock.module('@buildd/core/db/schema', () => ({
     prLifecycleStatus: 'prLifecycleStatus',
     id: 'id',
   },
-  workspaces: { id: 'id' },
+  workspaces: { id: 'id', name: 'name', repo: 'repo' },
 }));
 
 import { POST } from './route';
 
-function makeRequest(prNumber = '42'): [NextRequest, { params: Promise<{ prNumber: string }> }] {
-  const req = new NextRequest(`http://localhost/api/prs/${prNumber}/merge`, { method: 'POST' });
+function makeRequest(
+  prNumber = '42',
+  body?: Record<string, unknown>,
+): [NextRequest, { params: Promise<{ prNumber: string }> }] {
+  const req = new NextRequest(`http://localhost/api/prs/${prNumber}/merge`, {
+    method: 'POST',
+    ...(body ? { body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' } } : {}),
+  });
   return [req, { params: Promise.resolve({ prNumber }) }];
 }
 
@@ -86,6 +93,8 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     mockGetUserWorkspaceIds.mockReset();
     mockWorkersFindMany.mockReset();
     mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
     mockMergePullRequest.mockReset();
     mockTriggerEvent.mockReset();
   });
@@ -203,6 +212,47 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     expect(res.status).toBe(422);
     const body = await res.json();
     expect(body.error).toMatch(/mergeable state|branch protection/i);
+  });
+
+  it('rejects a workspaceId that does not resolve, instead of falling back to an unscoped search', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    // Caller only has access to ws-1, but a same-numbered PR also exists in ws-2
+    // (a workspace the caller cannot access). A bogus/unresolved workspaceId must
+    // NOT silently widen the search to every accessible workspace.
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', name: 'my-repo', repo: 'org/my-repo' }]);
+    const [req, ctx] = makeRequest('42', { workspaceId: 'totally-unknown-workspace' });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body.error).toMatch(/not found|not accessible/i);
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('resolves a workspaceId supplied as a repo name (not a UUID) and scopes the search to it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1', 'ws-2']);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'my-repo', repo: 'org/my-repo' },
+      { id: 'ws-2', name: 'other-repo', repo: 'org/other-repo' },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    const updateWhere = mock(() => Promise.resolve());
+    const updateSet = mock(() => ({ where: updateWhere }));
+    mockWorkersUpdate.mockReturnValue({ set: updateSet });
+    const [req, ctx] = makeRequest('42', { workspaceId: 'my-repo' });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    expect(mockWorkersFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          args: expect.arrayContaining([expect.objectContaining({ b: ['ws-1'] })]),
+        }),
+      }),
+    );
   });
 
   it('succeeds when multiple workers share the same prNumber in the same workspace', async () => {
