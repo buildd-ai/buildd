@@ -168,6 +168,15 @@ export default async function HealthPage({
   // forecast's provider session window, and every LIFETIME counter) say so
   // inline rather than silently ignoring it — see spec §2.3.
   const window = parseFailureWindow(rawWindow ?? rawFailureWindow);
+  // ONE clock read for the whole page, pinned server-side and passed down as
+  // data. HealthClient no longer calls `Date.now()` in its render body: a
+  // client component's render runs twice (once on the server for the HTML,
+  // once on the client during hydration), and a `Date.now()` read at render
+  // time can land on either side of a runner's online/offline threshold or a
+  // schedule's due time between those two passes, producing a hydration
+  // mismatch. Threading one server-pinned value through as a prop makes both
+  // passes render from the exact same input.
+  const now = Date.now();
   const user = await getCurrentUser();
   if (!user) redirect('/api/auth/signin');
 
@@ -490,6 +499,7 @@ export default async function HealthPage({
       failureAnalytics={failureAnalytics ?? null}
       window={window}
       cbm={cbmSummary ?? null}
+      now={now}
     />
   );
 }

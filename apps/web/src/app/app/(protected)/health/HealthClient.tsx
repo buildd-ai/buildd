@@ -94,9 +94,12 @@ function formatDuration(ms: number): string {
   return `${Math.round(s / 60)}m`;
 }
 
-function timeUntil(iso: string | null): string {
+// `now` is a required parameter, never `Date.now()` internally — see the
+// header comment on the `now` prop below for why a render-time clock read
+// here is an SSR/hydration hazard.
+function timeUntil(iso: string | null, now: number): string {
   if (!iso) return '—';
-  const seconds = Math.floor((new Date(iso).getTime() - Date.now()) / 1000);
+  const seconds = Math.floor((new Date(iso).getTime() - now) / 1000);
   if (seconds <= 0) return 'due';
   const m = Math.floor(seconds / 60);
   if (m < 60) return `in ${m}m`;
@@ -105,9 +108,9 @@ function timeUntil(iso: string | null): string {
   return `in ${Math.floor(h / 24)}d`;
 }
 
-function timeAgo(iso: string | null): string {
+function timeAgo(iso: string | null, now: number): string {
   if (!iso) return 'never';
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  const seconds = Math.floor((now - new Date(iso).getTime()) / 1000);
   if (seconds < 60) return `${seconds}s ago`;
   const m = Math.floor(seconds / 60);
   if (m < 60) return `${m}m ago`;
@@ -188,6 +191,19 @@ interface Props {
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
   cbm: CbmHealthSummary | null;
+  /**
+   * The instant the server rendered this page, in epoch ms.
+   *
+   * Every freshness/online-ness computation in this file derives from this
+   * ONE value instead of calling `Date.now()` at render time. `Date.now()`
+   * read inside a client component's render body is read once during SSR
+   * and again, moments later, during client hydration — for a runner
+   * sitting near the online/offline threshold, or a schedule due right
+   * around now, the two reads can disagree and the two renders produce a
+   * different tree. Pinning `now` server-side and threading it through as
+   * plain data makes the server and hydration renders byte-identical.
+   */
+  now: number;
 }
 
 /**
@@ -219,6 +235,7 @@ export function HealthClient({
   failureAnalytics,
   window: activeWindow,
   cbm,
+  now,
 }: Props) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -259,9 +276,12 @@ export function HealthClient({
     const hb = runners.find(r => r.id === heartbeatId);
 
     if (hb?.connectivity === 'push_only') {
-      const online = isRunnerOnline(hb.lastHeartbeatAt);
+      // Client-only, event-driven (fires from a button click, never during
+      // render/SSR) — a fresh clock read here carries no hydration risk.
+      const clickNow = Date.now();
+      const online = isRunnerOnline(hb.lastHeartbeatAt, clickNow);
       const idlePushOnly = online && hb.activeWorkerCount === 0;
-      const beat = timeAgo(hb.lastHeartbeatAt);
+      const beat = timeAgo(hb.lastHeartbeatAt, clickNow);
       setRunnerHealth(prev => {
         const next = new Map(prev);
         next.set(heartbeatId, {
@@ -357,10 +377,10 @@ export function HealthClient({
     }
   };
 
-  // One clock read for every freshness string on the page. Freshness is measured
-  // from each stat's OWN last-observed timestamp — this is only the instant we
-  // measure against, never a substitute for a missing timestamp.
-  const now = Date.now();
+  // `now` comes in as a prop, pinned server-side — see the Props doc comment.
+  // Freshness is measured from each stat's OWN last-observed timestamp; `now`
+  // is only the instant we measure against, never a substitute for a missing
+  // timestamp.
 
   // Derive problems
   //
@@ -372,12 +392,12 @@ export function HealthClient({
   // Grouped on `normalizeErrorSignature` — the same key the failure-signature
   // table under Trend ranks on, so one incident is one count on both.
   const failureGroups = useMemo(() => groupFailuresBySignature(recentFailures, 5), [recentFailures]);
-  const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt));
+  const offlineRunners = runners.filter(r => !isRunnerOnline(r.lastHeartbeatAt, now));
   // Every online runner whose sandbox posture is not actually enforced — bwrap
   // denied, or bwrap available with the mount allowlist off. Both are degraded;
   // neither may render as green.
   const degradedSandboxRunners = runners.filter(
-    r => isRunnerOnline(r.lastHeartbeatAt) && deriveSandboxPosture(r).tier === 'warning',
+    r => isRunnerOnline(r.lastHeartbeatAt, now) && deriveSandboxPosture(r).tier === 'warning',
   );
   // The four seat-auth confessions collapse into ONE page-level sentence. The
   // per-stat markers stay where they are; this only names the shared cause once
@@ -474,7 +494,7 @@ export function HealthClient({
                       </div>
                       {cred.lastFailureAt && (
                         <p className="text-xs text-text-muted mt-0.5">
-                          Last failure: {timeAgo(cred.lastFailureAt)}
+                          Last failure: {timeAgo(cred.lastFailureAt, now)}
                           {cred.lastFailureMessage && (
                             <span className={`ml-1 ${isRevoked ? 'text-status-error' : 'text-status-warning'}`}>
                               — {cred.lastFailureMessage.slice(0, 100)}
@@ -484,7 +504,7 @@ export function HealthClient({
                       )}
                       {cred.lastVerifiedAt && (
                         <p className="text-xs text-text-muted mt-0.5">
-                          Last verified: {timeAgo(cred.lastVerifiedAt)}
+                          Last verified: {timeAgo(cred.lastVerifiedAt, now)}
                         </p>
                       )}
                     </div>
@@ -545,7 +565,7 @@ export function HealthClient({
                   <p className="text-sm font-medium text-text-primary">
                     {hb.accountName || 'Runner'} offline
                   </p>
-                  <p className="text-xs text-text-muted">last beat {timeAgo(hb.lastHeartbeatAt)}</p>
+                  <p className="text-xs text-text-muted">last beat {timeAgo(hb.lastHeartbeatAt, now)}</p>
                 </div>
               </div>
             ))}
@@ -602,7 +622,7 @@ export function HealthClient({
                         </span>
                       </div>
                       <p className="text-xs text-text-muted mt-0.5">
-                        last {timeAgo(g.lastSeen)} · {sample.workspaceName}
+                        last {timeAgo(g.lastSeen, now)} · {sample.workspaceName}
                         {' · '}
                         {sample.taskId ? (
                           <a href={`/app/tasks/${sample.taskId}`} className="hover:text-primary">
@@ -661,7 +681,7 @@ export function HealthClient({
           ) : (
             <div className="divide-y divide-border-default">
               {runners.map((hb) => {
-                const online = isRunnerOnline(hb.lastHeartbeatAt);
+                const online = isRunnerOnline(hb.lastHeartbeatAt, now);
                 const idle = online && hb.activeWorkerCount === 0;
                 const health = runnerHealth.get(hb.id);
                 const statusLabel = online ? (idle ? 'idle' : 'online') : 'stale';
@@ -694,7 +714,7 @@ export function HealthClient({
                           </span>
                           <span
                             className={`text-[10px] font-mono ${sandboxClass}`}
-                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt)}` : ' · not yet probed'}`}
+                            title={`${posture.detail}${hb.sandboxProbeAt ? ` · probed ${timeAgo(hb.sandboxProbeAt, now)}` : ' · not yet probed'}`}
                           >
                             {sandboxLabel}
                           </span>
@@ -794,7 +814,7 @@ export function HealthClient({
         </div>
       </div>
 
-      {budgetForecast && <BudgetForecastSection forecast={budgetForecast} />}
+      {budgetForecast && <BudgetForecastSection forecast={budgetForecast} now={now} />}
 
       {credentialHealth.length > 0 && (
         <CredentialStateSection credentials={credentialHealth} now={now} />
@@ -897,9 +917,9 @@ export function HealthClient({
                               LIFETIME. Rendered with their own anchor so neither
                               reads as a count over the page window. */}
                           <p className="text-xs text-text-tertiary mt-0.5">
-                            {s.enabled ? `next ${timeUntil(s.nextRunAt)}` : 'paused'} · last {timeAgo(s.lastRunAt)}
+                            {s.enabled ? `next ${timeUntil(s.nextRunAt, now)}` : 'paused'} · last {timeAgo(s.lastRunAt, now)}
                             {' · '}
-                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt)} — an all-time counter, not a windowed one` : undefined}>
+                            <span title={s.createdAt ? `Created ${timeAgo(s.createdAt, now)} — an all-time counter, not a windowed one` : undefined}>
                               {lifetimeRuns(s.totalRuns)}
                             </span>
                             {s.consecutiveFailures > 0 && (
@@ -1018,7 +1038,7 @@ export function HealthClient({
         )}
 
         {failureAnalytics && (
-          <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} />
+          <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} now={now} />
         )}
 
         {usageStats && usageStats.total > 0 && (
@@ -1026,7 +1046,7 @@ export function HealthClient({
         )}
 
         {consumption && consumption.totals.tasks > 0 && (
-          <ConsumptionSection stats={consumption} workspaceId={wsFilter} />
+          <ConsumptionSection stats={consumption} workspaceId={wsFilter} now={now} />
         )}
 
         {cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
@@ -1051,7 +1071,7 @@ export function HealthClient({
               <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
               <p className="text-xs text-text-muted font-mono">{scheduleToDelete.cronExpression}</p>
               <p className="text-xs text-text-muted">
-                {scheduleToDelete.totalRuns} runs · last {timeAgo(scheduleToDelete.lastRunAt)}
+                {scheduleToDelete.totalRuns} runs · last {timeAgo(scheduleToDelete.lastRunAt, now)}
               </p>
             </div>
             <div className="flex gap-2">
@@ -1163,10 +1183,12 @@ function OrphanedPrsBlock({ rows }: { rows: OrphanedPrRow[] }) {
 function ConsumptionSection({
   stats,
   workspaceId,
+  now,
 }: {
   stats: ConsumptionStats;
   /** Carried into the drill-down link so the scope survives the navigation. */
   workspaceId: string | null;
+  now: number;
 }) {
   const { totals, tools, groups, window, byModel, modelDivergence, scan } = stats;
   const topTools = tools.byTool.slice(0, 5);
@@ -1176,7 +1198,7 @@ function ConsumptionSection({
   const divergence = divergenceSummary(modelDivergence);
   // Qualifies every number in this section, not just the model rows: the page
   // reads worker rows directly and the read is capped.
-  const caveat = scanCaveat(scan, timeAgo(scan.completeSince));
+  const caveat = scanCaveat(scan, timeAgo(scan.completeSince, now));
 
   return (
     <div data-testid="health-section-consumption" className="mb-6">
@@ -1535,8 +1557,8 @@ function confidenceClass(c: string | null): string {
   return 'text-text-muted';
 }
 
-function timeUntilShort(iso: string): string {
-  const ms = new Date(iso).getTime() - Date.now();
+function timeUntilShort(iso: string, now: number): string {
+  const ms = new Date(iso).getTime() - now;
   if (ms <= 0) return 'now';
   const h = Math.floor(ms / (60 * 60 * 1000));
   if (h < 1) return `${Math.ceil(ms / 60000)}m`;
@@ -1544,12 +1566,12 @@ function timeUntilShort(iso: string): string {
   return `${Math.floor(h / 24)}d`;
 }
 
-function formatReset(iso: string): string {
-  const t = timeUntilShort(iso);
+function formatReset(iso: string, now: number): string {
+  const t = timeUntilShort(iso, now);
   return t === 'now' ? 'resetting' : `resets in ${t}`;
 }
 
-function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
+function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; now: number }) {
   const hasAny =
     forecast.oauthSessions.length > 0 ||
     forecast.monthly !== null ||
@@ -1585,7 +1607,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                   {s.pressurePct}% of floor
                 </span>
                 <span className="text-text-muted">·</span>
-                <span>{formatReset(s.windowEndsAt)}</span>
+                <span>{formatReset(s.windowEndsAt, now)}</span>
                 {s.confidence && s.confidence !== 'low' && (
                   <>
                     <span className="text-text-muted">·</span>
@@ -1639,7 +1661,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                 <span className="text-text-muted">·</span>
                 <span data-testid="monthly-anchor">{monthlyAnchor(forecast.monthly.resetsAt)}</span>
                 <span className="text-text-muted">·</span>
-                <span>{formatReset(forecast.monthly.resetsAt)}</span>
+                <span>{formatReset(forecast.monthly.resetsAt, now)}</span>
                 {/* PROJECTION: the runway and the window its burn rate came from
                     are ONE string, so the value can never be read as windowed by
                     the page control. */}
@@ -1687,7 +1709,7 @@ function BudgetForecastSection({ forecast }: { forecast: BudgetForecast }) {
                 {forecast.codex.resetsAt && (
                   <>
                     <span className="text-text-muted">·</span>
-                    <span className="text-text-secondary">{formatReset(forecast.codex.resetsAt)}</span>
+                    <span className="text-text-secondary">{formatReset(forecast.codex.resetsAt, now)}</span>
                   </>
                 )}
               </div>
@@ -1948,9 +1970,11 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
 function FailureAnalyticsSection({
   analytics,
   window: activeWindow,
+  now,
 }: {
   analytics: FailureAnalytics;
   window: FailureWindow;
+  now: number;
 }) {
   const [expandedSignature, setExpandedSignature] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
@@ -2095,7 +2119,7 @@ function FailureAnalyticsSection({
                             {s.signature}
                           </span>
                           <span className="block text-xs text-text-muted mt-0.5">
-                            last {timeAgo(s.lastSeen)} · first {timeAgo(s.firstSeen)}
+                            last {timeAgo(s.lastSeen, now)} · first {timeAgo(s.firstSeen, now)}
                             {s.diedEarlyCount > 0 && (
                               <span className="text-status-error"> · {s.diedEarlyCount} died early</span>
                             )}

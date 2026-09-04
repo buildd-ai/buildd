@@ -2178,4 +2178,22 @@ describe('GET /api/github/pr', () => {
     // workspace name resolution must have been called
     expect(mockWorkspacesFindMany).toHaveBeenCalled();
   });
+
+  it('returns 404 when workspaceId is supplied but resolves to no accessible workspace, instead of falling back to an unscoped search', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['uuid-ws-1', 'uuid-ws-2']);
+    // Neither a UUID in wsIds nor a matching name/repo — e.g. a typo'd or inaccessible workspace.
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'uuid-ws-1', name: 'sibling-app', repo: 'acme/sibling-app' },
+      { id: 'uuid-ws-2', name: 'other', repo: 'acme/other' },
+    ]);
+
+    const res = await GET(createGetRequest(null, 149, 'nonexistent-workspace'));
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toContain('nonexistent-workspace');
+    // Must not have silently fallen back to searching across all accessible workspaces.
+    expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
 });
