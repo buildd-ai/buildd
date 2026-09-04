@@ -107,4 +107,8 @@ See the [self-hosting guide](https://docs.buildd.dev/docs/deployment/self-hostin
 
 ## License
 
-MIT
+[Apache License 2.0](LICENSE). Copyright 2026 Max Jacubowsky.
+
+Previously this section read "MIT" with no `LICENSE` file present. Code taken
+under that claim stays under MIT terms; everything from this commit forward is
+Apache-2.0, which adds the explicit patent grant that MIT lacks.
