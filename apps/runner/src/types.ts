@@ -1,4 +1,5 @@
 import type { RoleConfig } from './roles.js';
+import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -224,6 +225,16 @@ export interface LocalWorker {
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
   cbmBootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
   cbmBootstrapFailReason?: string;
+  /**
+   * Whether this session ran on the host-wide seeded graph rather than indexing
+   * its own. Lived only in a local in startSession before, so it never reached
+   * resultMeta and the shared cache's hit rate could only be inferred from
+   * bootstrapResult — which is why role-scoped workers getting no seed at all
+   * went unnoticed.
+   */
+  cbmSharedCache?: boolean;
+  /** Why the out-of-band seed refresh did or did not spawn. */
+  cbmSeedRefresh?: SeedRefreshOutcome;
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
@@ -301,10 +312,19 @@ export interface ModelUsage {
 /** CBM (Codebase Memory) observability metrics captured per task. */
 export interface CbmMetrics {
   outcome: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
-  /** Whether the pre-index bootstrap ran and whether it succeeded. Only set when outcome='enforced'. */
-  bootstrapResult?: 'ok' | 'failed';
+  disableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
+  /**
+   * Whether the pre-index bootstrap ran and whether it succeeded. Only set when
+   * outcome='enforced'. `skipped_warm` means the shared seed was admitted, so no
+   * per-task index ran at all — the two extra members were written to the column
+   * for weeks while this type still claimed 'ok' | 'failed'.
+   */
+  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
   bootstrapFailReason?: string;
+  /** Whether the session ran on the host-wide seeded graph. Always emitted. */
+  sharedCache: boolean;
+  /** Why the out-of-band seed refresh did or did not spawn for this repo. */
+  seedRefresh?: SeedRefreshOutcome;
   toolCalls: Record<string, number>;
   totalCbmCalls: number;
   readCount: number;

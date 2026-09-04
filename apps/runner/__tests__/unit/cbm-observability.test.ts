@@ -9,32 +9,42 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import type { CbmMetrics } from '../../src/types';
+// The REAL assembly, not a copy of it. This file used to define its own
+// "simulates what workers.ts does" version, which by construction could not fail
+// when the shipped shape changed — and a field that was computed but never
+// emitted (sharedCache) is exactly how the shared cache's hit rate stayed
+// invisible on the fleet for a week.
+import { buildCbmMetrics } from '../../src/cbm-enforcement';
 
-// Pure helper: simulates what workers.ts does when building cbm metrics at completion.
-function buildCbmMetrics(worker: {
-  cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
-  cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent';
-  cbmBootstrapResult?: 'ok' | 'failed';
-  cbmBootstrapFailReason?: string;
-  cbmToolCounts?: Record<string, number>;
-  cbmFileAccessCounts?: { read: number; grep: number; glob: number };
-}): CbmMetrics | undefined {
-  if (worker.cbmOutcome === undefined) return undefined;
-  const cbmCounts = worker.cbmToolCounts ?? {};
-  const fileAccess = worker.cbmFileAccessCounts ?? { read: 0, grep: 0, glob: 0 };
-  return {
-    outcome: worker.cbmOutcome,
-    ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
-    ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
-    ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
-    toolCalls: cbmCounts,
-    totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
-    readCount: fileAccess.read,
-    grepCount: fileAccess.grep,
-    globCount: fileAccess.glob,
-  };
-}
+describe('buildCbmMetrics — shared-seed visibility', () => {
+  test('emits sharedCache=false rather than omitting the key', () => {
+    // The distinction that matters: a row with sharedCache:false says "this task
+    // did not get the seed". An absent key is indistinguishable from a worker
+    // that predates the field, which is what made 0% and 70% look identical.
+    const m = buildCbmMetrics({ cbmOutcome: 'enforced' })!;
+    expect(m.sharedCache).toBe(false);
+    expect(Object.keys(m)).toContain('sharedCache');
+  });
+
+  test('emits sharedCache=true when the session ran on the seed', () => {
+    const m = buildCbmMetrics({ cbmOutcome: 'enforced', cbmSharedCache: true })!;
+    expect(m.sharedCache).toBe(true);
+  });
+
+  test('carries the seed-refresh outcome so a never-seeded repo is queryable', () => {
+    const m = buildCbmMetrics({ cbmOutcome: 'enforced', cbmSeedRefresh: 'script_absent' })!;
+    expect(m.seedRefresh).toBe('script_absent');
+  });
+
+  test("types skipped_warm, which the shipped code has written all along", () => {
+    const m = buildCbmMetrics({ cbmOutcome: 'enforced', cbmBootstrapResult: 'skipped_warm' })!;
+    expect(m.bootstrapResult).toBe('skipped_warm');
+  });
+
+  test('still returns undefined when CBM never activated', () => {
+    expect(buildCbmMetrics({})).toBeUndefined();
+  });
+});
 
 // Pure helper: simulates what workers.ts does when a CBM or file-access tool call arrives.
 function handleToolCall(

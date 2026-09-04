@@ -13,6 +13,7 @@
  *   - Binary absent from image: skipped silently (existsSync guard)
  */
 
+import type { CbmMetrics } from './types.js';
 import { join } from 'path';
 
 import { CBM_BINARY_PATH } from './bwrap-mount-allowlist';
@@ -395,7 +396,61 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
  * Deduped per repo per process so a burst of claims does not spawn a burst of
  * indexers; the HEAD stamp covers the cross-process case.
  */
-const seedRefreshRequested = new Set<string>();
+const seedRefreshAttempts = new Map<string, number>();
+
+/**
+ * Every reason a refresh did not spawn, as a value the caller can log.
+ *
+ * This used to be a bare `boolean` that the single call site discarded. Combined
+ * with a detached child on `stdio: 'ignore'`, that made the entire seed path
+ * unobservable: the seed script has eight distinct non-zero exits and not one of
+ * them could reach an operator. The fleet ran with role-scoped workers getting no
+ * seed at all and the only visible trace was an indirect one — `bootstrapResult`
+ * never reading `skipped_warm` for those workers.
+ */
+export type SeedRefreshOutcome =
+  | 'spawned'
+  | 'no_repo_path'
+  | 'binary_absent'
+  | 'script_absent'
+  | 'recently_attempted'
+  | 'spawn_failed';
+
+/**
+ * How long a repo is left alone after an attempt.
+ *
+ * Replaces a permanent per-process latch. The latch was added so a burst of
+ * claims could not spawn a burst of indexers, and it did that — but it was set
+ * BEFORE the spawn and cleared only if `spawn` itself threw, so a seeder that
+ * started and then failed marked the repo done forever. The runner process is
+ * long-lived, so "forever" meant until someone restarted it, with no log line to
+ * say why the seed never appeared. A cooldown gives the same burst protection
+ * and still converges.
+ */
+export const SEED_RETRY_COOLDOWN_MS = 10 * 60_000;
+
+/**
+ * Where the detached seeder's own output goes.
+ *
+ * Under the shared cache dir rather than the runner's log, because it is the
+ * shared cache's provenance: "why is there no seed for this repo" is answered
+ * here, next to the seed records themselves.
+ */
+export function cbmSeedLogPath(): string {
+  return join(sharedCbmCacheDir(), 'logs', 'seed.log');
+}
+
+function openSeedLogFd(): number | null {
+  try {
+    const { mkdirSync, openSync } = require('fs') as typeof import('fs');
+    const { dirname } = require('path') as typeof import('path');
+    const path = cbmSeedLogPath();
+    mkdirSync(dirname(path), { recursive: true });
+    return openSync(path, 'a');
+  } catch {
+    return null; // no log is survivable; a crashed worker is not
+  }
+}
 
 export function spawnCbmSeedRefresh(
   repoPath: string,
@@ -404,37 +459,97 @@ export function spawnCbmSeedRefresh(
     pathExists?: (p: string) => boolean;
     scriptPath?: string;
     runtime?: string;
+    now?: () => number;
+    openLogFd?: () => number | null;
   } = {},
-): boolean {
+): SeedRefreshOutcome {
   const pathExists = deps.pathExists ?? ((p: string) => {
     const { existsSync } = require('fs') as typeof import('fs');
     return existsSync(p);
   });
-  if (!repoPath || !pathExists(CBM_BINARY_PATH)) return false;
-  if (seedRefreshRequested.has(repoPath)) return false;
+  const now = deps.now ?? (() => Date.now());
+
+  if (!repoPath) return 'no_repo_path';
+  if (!pathExists(CBM_BINARY_PATH)) return 'binary_absent';
+
+  const lastAttempt = seedRefreshAttempts.get(repoPath);
+  if (lastAttempt !== undefined && now() - lastAttempt < SEED_RETRY_COOLDOWN_MS) {
+    return 'recently_attempted';
+  }
 
   const script = deps.scriptPath ?? join(import.meta.dir, '..', 'scripts', 'cbm-seed.ts');
-  if (!pathExists(script)) return false;
+  if (!pathExists(script)) return 'script_absent';
 
-  seedRefreshRequested.add(repoPath);
+  seedRefreshAttempts.set(repoPath, now());
   try {
     const spawn = deps.spawnProcess ?? (require('child_process') as typeof import('child_process')).spawn;
+    const logFd = (deps.openLogFd ?? openSeedLogFd)();
     const child = spawn(deps.runtime ?? process.execPath, [script, repoPath], {
       detached: true,
-      stdio: 'ignore',
+      // stdin closed, stdout+stderr to the seed log. Was 'ignore', which threw
+      // away the only description of why a seed did not happen.
+      stdio: logFd === null ? 'ignore' : ['ignore', logFd, logFd],
+    });
+    // The refresh is still fire-and-forget — nothing awaits this — but a failed
+    // seeder must not hold the cooldown, or one early failure suppresses every
+    // later attempt for the life of the process.
+    child.on?.('exit', (code: number | null) => {
+      if (code !== 0) {
+        seedRefreshAttempts.delete(repoPath);
+        console.warn(`[cbm-seed] seeder for ${repoPath} exited ${code} — see ${cbmSeedLogPath()}`);
+      }
     });
     child.unref?.();
-    return true;
+    return 'spawned';
   } catch {
     // A failed refresh must never affect the worker — it just means no seed yet.
-    seedRefreshRequested.delete(repoPath);
-    return false;
+    seedRefreshAttempts.delete(repoPath);
+    return 'spawn_failed';
   }
 }
 
 /** Test seam: forget which repos have already been asked to refresh. */
 export function resetCbmSeedRefreshState(): void {
-  seedRefreshRequested.clear();
+  seedRefreshAttempts.clear();
+}
+
+/**
+ * Assemble the per-task CBM metrics that travel to the server in `resultMeta.cbm`.
+ *
+ * Extracted from the completion path so it is testable directly. The unit test
+ * used to carry its own hand-copied "simulates what workers.ts does" version,
+ * which cannot fail when a real field is added or dropped — and a field that was
+ * computed but never emitted (`sharedCache`) is precisely how the shared cache's
+ * hit rate stayed invisible.
+ */
+export function buildCbmMetrics(worker: {
+  cbmOutcome?: CbmMetrics['outcome'];
+  cbmDisableReason?: CbmMetrics['disableReason'];
+  cbmBootstrapResult?: CbmMetrics['bootstrapResult'];
+  cbmBootstrapFailReason?: string;
+  cbmSharedCache?: boolean;
+  cbmSeedRefresh?: SeedRefreshOutcome;
+  cbmToolCounts?: Record<string, number>;
+  cbmFileAccessCounts?: { read: number; grep: number; glob: number };
+}): CbmMetrics | undefined {
+  if (worker.cbmOutcome === undefined) return undefined;
+  const cbmCounts = worker.cbmToolCounts ?? {};
+  const fileAccess = worker.cbmFileAccessCounts ?? { read: 0, grep: 0, glob: 0 };
+  return {
+    outcome: worker.cbmOutcome,
+    ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
+    ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
+    ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
+    // Always emitted, including false: "this task did NOT get the seed" is the
+    // finding, so it has to be a value in the row and not an absent key.
+    sharedCache: !!worker.cbmSharedCache,
+    ...(worker.cbmSeedRefresh && { seedRefresh: worker.cbmSeedRefresh }),
+    toolCalls: cbmCounts,
+    totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
+    readCount: fileAccess.read,
+    grepCount: fileAccess.grep,
+    globCount: fileAccess.glob,
+  };
 }
 
 /**

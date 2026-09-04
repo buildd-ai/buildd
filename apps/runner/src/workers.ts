@@ -75,7 +75,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -2503,6 +2503,7 @@ export class WorkerManager {
         cbmCacheDir = cbmActivation.cbmCacheDir;
         cbmRuntimeDir = cbmActivation.cbmRuntimeDir;
         cbmSharedCache = !!cbmActivation.sharedCache;
+        worker.cbmSharedCache = cbmSharedCache;
         mkdirSync(cbmCacheDir!, { recursive: true });
         // Daemon coordination dir — CBM will not start without it.
         ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
@@ -2555,7 +2556,14 @@ export class WorkerManager {
         // Keep the shared seed current, off the critical path. This worker already
         // has its graph (shared or per-worker); the refresh is for the next one, and
         // it exits immediately when HEAD has not moved.
-        if (repoPath) spawnCbmSeedRefresh(repoPath);
+        const seedOutcome = spawnCbmSeedRefresh(repoPath);
+        worker.cbmSeedRefresh = seedOutcome;
+        // Logged, not discarded: this return value was thrown away, and with the
+        // child on stdio:'ignore' that left no way to tell a seeded fleet from an
+        // unseeded one.
+        if (seedOutcome !== 'spawned' && seedOutcome !== 'recently_attempted') {
+          console.warn(`[Worker ${worker.id}] CBM seed refresh skipped: ${seedOutcome}`);
+        }
       }
 
       // CBM observability: provisional activation outcome + per-task counters.
@@ -3384,19 +3392,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
         // CBM observability: attach per-task metrics to resultMeta before completion.
         if (worker.cbmOutcome !== undefined) {
-          const cbmCounts = worker.cbmToolCounts ?? {};
-          const fileAccess = worker.cbmFileAccessCounts ?? { read: 0, grep: 0, glob: 0 };
-          const cbmMetrics = {
-            outcome: worker.cbmOutcome,
-            ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
-            ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
-            ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
-            toolCalls: cbmCounts,
-            totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
-            readCount: fileAccess.read,
-            grepCount: fileAccess.grep,
-            globCount: fileAccess.glob,
-          };
+          const cbmMetrics = buildCbmMetrics(worker)!;
           // Merge into resultMeta so all metrics travel together to the server.
           if (worker.resultMeta) {
             worker.resultMeta.cbm = cbmMetrics;
