@@ -7007,6 +7007,128 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     expect(res.status).toBe(200);
     expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
   });
+
+  // Regression: task f9893aa9 / PR #2074 (task 739cf1e0) — an ordinary builder
+  // task auto-decomposed from a mission plan (approvePlan with autoApproved:
+  // true) carries creationSource='orchestrator' and no outputSchema, exactly
+  // like a drifted heartbeat cycle, but it has no scheduleId (approvePlan never
+  // sets one) and was never dispatched under the planning contract. It did real
+  // work and opened a PR; it must not be reclassified as failed just because it
+  // never returned structuredOutput — it was never supposed to.
+  it('does not override an orchestrator-sourced execution task with no scheduleId that delivered a PR but no structuredOutput', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockArtifactsFindMany.mockResolvedValue([]);
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-plan-child-1',
+      pendingInstructions: null,
+      milestones: [],
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/2074',
+      prNumber: 2074,
+    });
+
+    // Auto-approved plan child: creationSource='orchestrator', mode='execution',
+    // no outputSchema, no scheduleId — approvePlan() never sets scheduleId.
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{
+            outputRequirement: 'auto', missionId: 'mission-1', scheduleId: null,
+            mode: 'execution', creationSource: 'orchestrator', outputSchema: null,
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'completed',
+        summary: 'Fixed the mobile header crowding bug and opened a PR.',
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
+  });
+
+  // Defense in depth for the "delivered work must not be overridden" rule: even
+  // a genuinely schedule-driven orchestrator cycle (scheduleId set) that
+  // unusually registered a PR must not be failed for lacking structuredOutput —
+  // the deliverable check runs before the contract override either way.
+  it('does not override a scheduled orchestrator cycle that registered a PR but no structuredOutput', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockArtifactsFindMany.mockResolvedValue([]);
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-orchestrator-3',
+      pendingInstructions: null,
+      milestones: [],
+      prUrl: 'https://github.com/org/repo/pull/501',
+      prNumber: 501,
+    });
+
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{
+            outputRequirement: 'auto', missionId: 'mission-1', scheduleId: 'sched-1',
+            mode: 'execution', creationSource: 'orchestrator', outputSchema: null,
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'Cycle produced a PR directly.' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(taskSetCalls.some((u) => u.status === 'failed')).toBe(false);
+  });
 });
 
 // ── §6d Passive overlap detection ─────────────────────────────────────────────
