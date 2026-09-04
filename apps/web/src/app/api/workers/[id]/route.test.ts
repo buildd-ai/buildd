@@ -6933,7 +6933,6 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
           limit: mock(() => [{
             outputRequirement: 'auto', missionId: 'mission-1', scheduleId: 'sched-1',
             mode: 'execution', creationSource: 'orchestrator', outputSchema: null,
-            taskClass: 'bookkeeping',
           }]),
         })),
       })),
