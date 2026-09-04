@@ -190,6 +190,75 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
     getMemoryClient: () => getMemoryClientForTeam(resolvedWorkspaceId, accountTeamId),
   };
 
+  /** Shared refusal when the team's memory store cannot be resolved. */
+  const memoryStoreUnavailable = () => ({
+    content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
+    isError: true,
+  });
+
+  /**
+   * Resolve what every memory / knowledge tool arm needs: the workspace this
+   * call belongs to, the team's memory store, and the store/embedder/team
+   * context handed to the action handlers.
+   *
+   * Refuses on OAuth workspace ambiguity. An OAuth token can reach several
+   * workspaces, so with none pinned there is no safe default: falling back to
+   * the account's team is the misroute class of the claim / create_task bug
+   * (2026-05-25 incident), writing knowledge under a team the caller never
+   * named. Make the caller pin a workspace instead.
+   *
+   * Three options stay explicit because the arms genuinely differ, and merging
+   * them would change behaviour:
+   * - `ambiguousWorkspaceMessage` names the tool family in the refusal.
+   * - `memoryStoreRequired`: the admin knowledge-ops arm only needs a store for
+   *   a delete; consolidate works off the vector store and tolerates null.
+   * - `forwardIsSensitive`: the admin arm must NOT forward it, because
+   *   handleMemoryAction refuses `delete` outright for a sensitive workspace and
+   *   an admin pruning knowledge has to keep working. recall / learn /
+   *   buildd_memory do forward it, as defence in depth behind their own
+   *   sensitive-workspace check.
+   */
+  const resolveMemoryContext = async (opts: {
+    ambiguousWorkspaceMessage: string;
+    memoryStoreRequired: boolean;
+    forwardIsSensitive: boolean;
+  }) => {
+    const wsId = await getWorkspaceId();
+    if (!wsId && authType === 'oauth') {
+      return {
+        ok: false as const,
+        refusal: {
+          content: [{ type: "text" as const, text: opts.ambiguousWorkspaceMessage }],
+          isError: true,
+        },
+      };
+    }
+
+    const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
+    if (!memClient && opts.memoryStoreRequired) {
+      return { ok: false as const, refusal: memoryStoreUnavailable() };
+    }
+
+    const embedder = getVoyageEmbedder();
+    const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
+    const memTeamId = await resolveTeamId(wsId, accountTeamId);
+
+    return {
+      ok: true as const,
+      memClient,
+      memCtx: {
+        project: await resolveProjectKey(wsId, repoName),
+        workerId,
+        workspaceId: wsId ?? undefined,
+        teamId: memTeamId ?? undefined,
+        knowledgeStore,
+        embedder,
+        api,
+        ...(opts.forwardIsSensitive ? { isSensitive } : {}),
+      },
+    };
+  };
+
   const server = new Server(
     { name: "buildd", version: "0.1.0" },
     {
@@ -260,32 +329,22 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
               isError: true,
             };
           }
-          const wsId = await getWorkspaceId();
-          if (!wsId && authType === 'oauth') {
-            return {
-              content: [{ type: "text" as const, text: "Cannot resolve workspace. Re-connect with ?workspace=<id> or use the workspace-pinned endpoint." }],
-              isError: true,
-            };
-          }
-          const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
-          if (!memClient && action === 'memory_delete') {
-            return {
-              content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
-              isError: true,
-            };
-          }
-          const embedder = getVoyageEmbedder();
-          const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
-          const memTeamId = await resolveTeamId(wsId, accountTeamId);
-          return await handleMemoryAction(memClient, action === 'memory_delete' ? 'delete' : 'consolidate_knowledge', params, {
-            project: await resolveProjectKey(wsId, repoName),
-            workerId,
-            workspaceId: wsId ?? undefined,
-            teamId: memTeamId ?? undefined,
-            knowledgeStore,
-            embedder,
-            api,
+          const resolved = await resolveMemoryContext({
+            ambiguousWorkspaceMessage: "Cannot resolve workspace. Re-connect with ?workspace=<id> or use the workspace-pinned endpoint.",
+            // consolidate_knowledge works straight off the vector store, so a
+            // null memory store is only fatal for a delete.
+            memoryStoreRequired: action === 'memory_delete',
+            // Deliberately not forwarded — see resolveMemoryContext.
+            forwardIsSensitive: false,
           });
+          if (!resolved.ok) return resolved.refusal;
+
+          return await handleMemoryAction(
+            resolved.memClient,
+            action === 'memory_delete' ? 'delete' : 'consolidate_knowledge',
+            params,
+            resolved.memCtx,
+          );
         }
 
         // list_releases / get_release: dispatched through handleBuilddAction, which
@@ -307,37 +366,14 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         const action = args?.action as string;
         const params = (args?.params || {}) as Record<string, unknown>;
 
-        // Refuse memory writes when the workspace is ambiguous for an OAuth
-        // multi-workspace token. Same bug class as the claim/create_task
-        // misroute (2026-05-25 incident): falling back to accountTeamId would
-        // silently write memories to the wrong team's vault.
-        const wsId = await getWorkspaceId();
-        if (!wsId && authType === 'oauth') {
-          return {
-            content: [{ type: "text" as const, text: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint." }],
-            isError: true,
-          };
-        }
-        const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
-        if (!memClient) {
-          return {
-            content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
-            isError: true,
-          };
-        }
-        const embedder = getVoyageEmbedder();
-        const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
-        const memTeamId = await resolveTeamId(wsId, accountTeamId);
-        return await handleMemoryAction(memClient, action, params, {
-          project: await resolveProjectKey(wsId, repoName),
-          workerId,
-          workspaceId: wsId ?? undefined,
-          teamId: memTeamId ?? undefined,
-          knowledgeStore,
-          embedder,
-          api,
-          isSensitive,
+        const resolved = await resolveMemoryContext({
+          ambiguousWorkspaceMessage: "Cannot resolve workspace for memory action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
+          memoryStoreRequired: true,
+          forwardIsSensitive: true,
         });
+        if (!resolved.ok) return resolved.refusal;
+
+        return await handleMemoryAction(resolved.memClient, action, params, resolved.memCtx);
       } else if (name === "recall" || name === "learn") {
         // Defense-in-depth: gate even if the tool was somehow called despite being
         // absent from the ListTools response for sensitive workspaces.
@@ -347,40 +383,20 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
             isError: true,
           };
         }
-        // Workspace / memory client resolution shared with buildd_memory
-        const wsId = await getWorkspaceId();
-        if (!wsId && authType === 'oauth') {
-          return {
-            content: [{ type: "text" as const, text: "Cannot resolve workspace for knowledge action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint." }],
-            isError: true,
-          };
-        }
-        const memClient = await getMemoryClientForTeam(wsId, accountTeamId);
-        if (!memClient) {
-          return {
-            content: [{ type: "text" as const, text: "Memory store unavailable — team could not be resolved." }],
-            isError: true,
-          };
-        }
-        const embedder = getVoyageEmbedder();
-        const knowledgeStore = wsId ? new PgVectorStore(embedder, getVoyageReranker()) : undefined;
-        const memTeamId = await resolveTeamId(wsId, accountTeamId);
-
-        const memCtx = {
-          project: await resolveProjectKey(wsId, repoName),
-          workerId,
-          workspaceId: wsId ?? undefined,
-          teamId: memTeamId ?? undefined,
-          knowledgeStore,
-          embedder,
-          api,
-          isSensitive,
-        };
+        // Workspace / memory store resolution shared with buildd_memory
+        const resolved = await resolveMemoryContext({
+          ambiguousWorkspaceMessage: "Cannot resolve workspace for knowledge action. This OAuth token has access to multiple workspaces — re-connect with ?workspace=<id> or use the workspace-pinned /api/mcp-oauth/[workspace]/ endpoint.",
+          memoryStoreRequired: true,
+          forwardIsSensitive: true,
+        });
+        if (!resolved.ok) return resolved.refusal;
+        // Non-null by construction: memoryStoreRequired refused above otherwise.
+        const memStore = resolved.memClient!;
 
         if (name === "recall") {
-          return await handleRecallAction(memClient, args as Record<string, unknown>, memCtx);
+          return await handleRecallAction(memStore, args as Record<string, unknown>, resolved.memCtx);
         } else {
-          return await handleLearnAction(memClient, args as Record<string, unknown>, memCtx);
+          return await handleLearnAction(memStore, args as Record<string, unknown>, resolved.memCtx);
         }
       } else if (name === "check_path_claim") {
         if (!workerId) {
