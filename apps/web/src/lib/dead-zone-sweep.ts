@@ -32,6 +32,10 @@ import {
   isAutoResolveMergeConflictsEnabled,
 } from '@/lib/conflict-retry';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import {
+  WORKSPACE_INSTALLATION_WITH,
+  pickWorkspaceInstallationId,
+} from '@/lib/workspace-installation';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
 
@@ -97,7 +101,11 @@ export function isDeadZoneCandidate(
   prLifecycleStatus: string | null,
 ): boolean {
   if (!prUrl || mergedAt) return false;
-  if (prLifecycleStatus === 'merged' || prLifecycleStatus === 'closed') return false;
+  if (
+    prLifecycleStatus === 'merged'
+    || prLifecycleStatus === 'closed'
+    || prLifecycleStatus === 'unresolvable'
+  ) return false;
   return (TERMINAL_STATUSES as readonly string[]).includes(taskStatus);
 }
 
@@ -123,7 +131,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
       workspaceId ? eq(workers.workspaceId, workspaceId) : undefined,
       isNotNull(workers.prUrl),
       isNull(workers.mergedAt),
-      sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged')`,
+      sql`COALESCE(${workers.prLifecycleStatus}, 'pr_open') NOT IN ('closed', 'merged', 'unresolvable')`,
       isNotNull(workers.taskId),
     ),
     columns: {
@@ -176,10 +184,15 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, wsId),
       columns: { id: true, repo: true, name: true, gitConfig: true, webhookConfig: true, githubInstallationId: true, githubRepoId: true },
-      with: { githubInstallation: { columns: { installationId: true } } },
+      with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    if (!workspace?.repo || !workspace.githubInstallation?.installationId) {
+    // Repo-mediated pointer first. The legacy workspaces.githubInstallationId FK
+    // survives an App reinstall pointing at a dead installation whose token
+    // 404s on every call — see lib/workspace-installation.ts.
+    const installationId = pickWorkspaceInstallationId(workspace);
+
+    if (!workspace?.repo || !installationId) {
       result.skipped += wsWorkers.length;
       continue;
     }
@@ -190,7 +203,6 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
     }
 
     const { repo } = workspace;
-    const { installationId } = workspace.githubInstallation;
 
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
