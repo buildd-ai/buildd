@@ -142,6 +142,7 @@ const render = (over: Record<string, any> = {}) =>
       failureAnalytics={null}
       window="7d"
       cbm={null}
+      now={NOW}
       {...(over as any)}
     />,
   );
@@ -435,5 +436,49 @@ describe('HealthClient — Trend', () => {
     // The adoption percentage moves to the usage drill-down; publishing it in two
     // places under two different windows is what the restructure removes.
     expect(html).not.toContain('0% of 10');
+  });
+});
+
+describe('HealthClient — hydration contract', () => {
+  // Regression for the render-time-clock bug: HealthClient used to call
+  // `Date.now()` directly (via isRunnerOnline/timeAgo/timeUntil) inside its
+  // render body. A client component's render body runs twice for one page
+  // load — once on the server producing the HTML, once on the client during
+  // hydration, moments later — so a runner sitting within seconds of the
+  // online/offline threshold could read as online in one pass and offline in
+  // the other, giving React two different trees to reconcile for what is
+  // supposed to be one render. The fix threads a single `now` in as a prop
+  // instead of reading the clock inside the component; this test pins that
+  // contract by holding `now` fixed while advancing the REAL wall clock
+  // between two renders, and asserting the output does not move a bit.
+  it('renders identical structure across real time passing, for a runner straddling the online threshold', () => {
+    const RUNNER_ONLINE_WINDOW_MS = 3 * 60 * 1000;
+    const pinnedNow = NOW;
+    // 500ms shy of going offline as of `pinnedNow` — the narrowest realistic
+    // straddle window between a server render and client hydration.
+    const straddlingHeartbeat = new Date(pinnedNow - RUNNER_ONLINE_WINDOW_MS + 500).toISOString();
+
+    const originalDateNow = Date.now;
+    try {
+      // First render: real clock reads `pinnedNow`.
+      Date.now = () => pinnedNow;
+      const first = render({
+        runners: [runner({ lastHeartbeatAt: straddlingHeartbeat })],
+        now: pinnedNow,
+      });
+
+      // Second render: real clock has advanced past the threshold — this is
+      // exactly the gap a slow client hydration (e.g. a mobile connection)
+      // introduces. `now` the PROP is unchanged.
+      Date.now = () => pinnedNow + 5000;
+      const second = render({
+        runners: [runner({ lastHeartbeatAt: straddlingHeartbeat })],
+        now: pinnedNow,
+      });
+
+      expect(second).toBe(first);
+    } finally {
+      Date.now = originalDateNow;
+    }
   });
 });

@@ -21,10 +21,20 @@ export default function ProtectedError({
         <p className="text-sm text-text-secondary mb-4">
           An unexpected error occurred. Please try again.
         </p>
-        {error.digest && (
+        {error.digest ? (
           <p className="text-xs text-text-muted font-mono mb-4 bg-surface-3 px-3 py-1.5 rounded">
             {error.digest}
           </p>
+        ) : (
+          // No digest means this was thrown client-side (digest is only
+          // populated for server-rendered errors — see error.digest in the
+          // Next.js docs). Those are otherwise undiagnosable from a
+          // screenshot: nothing else on this screen names what broke.
+          (error.name || error.message) && (
+            <p className="text-xs text-text-muted font-mono mb-4 bg-surface-3 px-3 py-1.5 rounded break-words">
+              {error.name}{error.name && error.message ? ': ' : ''}{error.message}
+            </p>
+          )
         )}
         <div className="flex items-center justify-center gap-3">
           <button

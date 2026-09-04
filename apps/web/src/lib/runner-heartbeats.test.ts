@@ -109,27 +109,42 @@ describe('isRunnerOnline', () => {
   // window (3× the ping interval) to absorb transient network hiccups.
 
   it('returns true when last heartbeat was under 3 minutes ago', () => {
-    const recent = new Date(Date.now() - 60 * 1000).toISOString();
-    expect(isRunnerOnline(recent)).toBe(true);
+    const now = Date.now();
+    const recent = new Date(now - 60 * 1000).toISOString();
+    expect(isRunnerOnline(recent, now)).toBe(true);
   });
 
   it('returns true at just under 3 minutes', () => {
-    const boundary = new Date(Date.now() - 179 * 1000).toISOString();
-    expect(isRunnerOnline(boundary)).toBe(true);
+    const now = Date.now();
+    const boundary = new Date(now - 179 * 1000).toISOString();
+    expect(isRunnerOnline(boundary, now)).toBe(true);
   });
 
   it('returns false when last heartbeat was over 3 minutes ago', () => {
-    const stale = new Date(Date.now() - 4 * 60 * 1000).toISOString();
-    expect(isRunnerOnline(stale)).toBe(false);
+    const now = Date.now();
+    const stale = new Date(now - 4 * 60 * 1000).toISOString();
+    expect(isRunnerOnline(stale, now)).toBe(false);
   });
 
   it('returns false for an old heartbeat', () => {
-    const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    expect(isRunnerOnline(old)).toBe(false);
+    const now = Date.now();
+    const old = new Date(now - 60 * 60 * 1000).toISOString();
+    expect(isRunnerOnline(old, now)).toBe(false);
   });
 
   it('accepts a Date object as well as an ISO string', () => {
-    expect(isRunnerOnline(new Date(Date.now() - 30 * 1000))).toBe(true);
-    expect(isRunnerOnline(new Date(Date.now() - 5 * 60 * 1000))).toBe(false);
+    const now = Date.now();
+    expect(isRunnerOnline(new Date(now - 30 * 1000), now)).toBe(true);
+    expect(isRunnerOnline(new Date(now - 5 * 60 * 1000), now)).toBe(false);
+  });
+
+  it('takes `now` as an explicit parameter rather than reading the clock itself', () => {
+    // Regression: isRunnerOnline used to call Date.now() internally, which is
+    // an SSR/hydration hazard for a render-time caller (HealthClient) — see
+    // runner-heartbeats-shared.ts. A fixed `now` far from the real wall clock
+    // must still be honored.
+    const heartbeatAt = new Date(1_800_000_000_000 - 30 * 1000).toISOString();
+    expect(isRunnerOnline(heartbeatAt, 1_800_000_000_000)).toBe(true);
+    expect(isRunnerOnline(heartbeatAt, 1_800_000_000_000 + 5 * 60 * 1000)).toBe(false);
   });
 });
