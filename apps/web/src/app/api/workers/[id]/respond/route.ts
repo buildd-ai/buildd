@@ -146,9 +146,11 @@ export async function POST(
   //    mission organizer cycle that asked a clarifying question mid-decompose),
   //    the continuation still owes that same plan; the SDK's outputFormat
   //    constraint (resolveOutputFormat, keyed on mode) applies identically to
-  //    it. This only works correctly because the planning-contract guard in
-  //    workers/[id]/route.ts now also checks taskClass, not creationSource
-  //    alone — see the comment there.
+  //    it, and the planning-contract guard's mode==='planning' clause
+  //    (workers/[id]/route.ts) fires the same way regardless of scheduleId or
+  //    creationSource — those only gate the guard's separate orchestrator-
+  //    fallback clause, which this route's continuations never hit since
+  //    creationSource here always defaults to 'api' (see below).
   //  - priority, outputRequirement, outputSchema, category, pathManifest,
   //    backend: COPY. None of these describe *how* the task was created —
   //    they describe what it must deliver and how, which does not change

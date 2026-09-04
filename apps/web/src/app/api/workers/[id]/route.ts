@@ -815,6 +815,10 @@ export async function PATCH(
   // release gate so a branch-merge workspace config does not flip the task to
   // failed because the worker branch was never pushed to the remote.
   let skipRelease = false;
+  // Lifted out of the outputRequirement block below (which only runs when
+  // outputReq !== 'none') so the planning-contract guard can see a PR that was
+  // auto-detected from GitHub even on a task with no output requirement.
+  let workerHasPR = !!worker.prUrl;
   // Fetch mission ownership for every terminal transition. Completion also uses
   // outputRequirement; failed/error transitions still need missionId so their
   // final recorded cost can enforce the mission budget.
@@ -840,7 +844,7 @@ export async function PATCH(
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, taskClass: tasks.taskClass })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -885,7 +889,7 @@ export async function PATCH(
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
-      let hasPR = !!worker.prUrl;
+      let hasPR = workerHasPR;
 
       // Auto-detect: if no PR on worker but branch exists, check GitHub for PRs
       if (!hasPR && worker.branch) {
@@ -912,6 +916,7 @@ export async function PATCH(
                   updatedAt: new Date(),
                 }).where(eq(workers.id, id));
                 hasPR = true;
+                workerHasPR = true;
               }
             } catch { /* non-fatal — fall through to normal validation */ }
           }
@@ -1702,40 +1707,43 @@ export async function PATCH(
       // schema. Other live candidates: the SDK returned no validated JSON, or
       // the task reached the runner through a path that bypasses claim.
       //
-      // Also covers orchestrator/heartbeat cycles that never got mode='planning'
-      // in the first place. A mission's cron-fired organizer task is created with
-      // creationSource='orchestrator'; unless it carries its own outputSchema (a
-      // lightweight heartbeat-status contract, opted into explicitly), it is
-      // always meant to decompose the mission via the default planning schema.
-      // Without this branch, an orchestrator task that ends up mode!=='planning'
-      // (e.g. a schedule template edited to drop the mode field) requests no
-      // outputFormat at all, the agent free-writes a "plan" as prose, and the
-      // cycle completes cleanly having filed nothing — the exact silent failure
-      // this guard exists to catch, just reached through a different door.
-      //
-      // taskClass !== 'work' is required alongside creationSource==='orchestrator':
-      // approvePlan() (approve-plan.ts) also stamps creationSource='orchestrator'
-      // on every ordinary builder task it auto-approves from a mission plan —
-      // those are taskClass='work', mode='execution', and never carry an
-      // outputSchema (plain work has no structured-output contract). Without this
-      // check, EVERY auto-approved mission child that completes with just a
-      // summary (i.e. almost all of them) was misclassified as a broken plan-cycle
-      // and force-failed. Only the organizer's own decompose/heartbeat/evaluation
-      // cycles are taskClass='bookkeeping' (mission-run.ts, mission-criteria-*.ts,
-      // mission-evaluation.ts) — that is the actual "this task's job is to emit a
-      // plan" signal, not creationSource alone.
+      // Second clause: a schedule-driven, mission-linked heartbeat/organizer
+      // cycle whose mode drifted away from 'planning' (e.g. a schedule template
+      // edited to drop the mode field — the fccbc723 incident, PR #2045).
+      // scheduleId is the positive signal: it is populated ONLY by the cron
+      // dispatcher (apps/web/src/app/api/cron/schedules/route.ts) for the tasks
+      // it creates itself. creationSource='orchestrator' alone is NOT enough —
+      // ordinary execution work created by approvePlan() (mission plan
+      // decomposition, the dominant source of mission-linked work tasks) and
+      // mission-run.ts's manual "Plan now" cycle both also carry
+      // creationSource='orchestrator', but neither is ever dispatched under the
+      // planning contract and neither sets scheduleId. The prior version of this
+      // clause inferred "owed a plan" from the mere absence of outputSchema and
+      // unconditionally failed every such task — including ones that opened a
+      // PR (see PR #2074 / task 739cf1e0, reported as friction task f9893aa9).
       const orchestratorTaskRow = terminalTaskRow[0];
       const expectsStructuredPlan = Boolean(
         orchestratorTaskRow?.mode === 'planning' ||
         (orchestratorTaskRow?.creationSource === 'orchestrator' &&
-          orchestratorTaskRow?.taskClass !== 'work' &&
+          Boolean(orchestratorTaskRow?.scheduleId) &&
           !orchestratorTaskRow?.outputSchema)
       );
+      // A worker that produced a PR or artifact delivered something — the
+      // contract this guard polices was satisfied by that deliverable even
+      // though it did not arrive as structuredOutput. Silently reclassifying a
+      // delivering worker as failed is worse than not enforcing the contract:
+      // the stale-worker reaper learned this for termination
+      // (checkWorkerDeliverables, task #1594) and this guard needs the same
+      // check before overriding a completion.
+      const workerDeliveredSomething = expectsStructuredPlan
+        ? workerHasPR || (await hasDeliverableArtifact())
+        : false;
       const planningContractViolation = (
         status === 'completed' &&
         !shouldAutoRetry &&
         expectsStructuredPlan &&
-        !body.structuredOutput
+        !body.structuredOutput &&
+        !workerDeliveredSomething
       );
       if (planningContractViolation) {
         console.error(

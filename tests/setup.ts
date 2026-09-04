@@ -6,24 +6,12 @@
 process.env.NODE_ENV = 'test';
 
 import { beforeEach, afterEach } from 'bun:test';
-import { plugin } from 'bun';
-
-// 'server-only' resolves via its own package.json "exports" condition
-// ('react-server' -> no-op, default -> throws); it is not a runtime check.
-// Only Next's webpack/turbopack build sets that condition for server-layer
-// bundles, so under plain `bun test` any transitive import of it throws
-// unconditionally, even from legitimately server-side code (route handlers,
-// `@buildd/core/db`). Next's own Jest preset works around this the same way:
-// alias the specifier to a no-op module. Mirror that here instead of setting
-// `--conditions=react-server` globally, which also swaps React itself to its
-// restricted server-components build (no `createContext`) and breaks every
-// test that renders through normal React.
-plugin({
-  name: 'stub-server-only',
-  setup(build) {
-    build.module('server-only', () => ({ contents: '', loader: 'js' }));
-  },
-});
+// 'server-only' throws under the plain Bun runtime (it resolves by export
+// condition, not by a runtime check), so any transitive import of
+// `@buildd/core/db` breaks unmocked and partially-mocked test files. The stub and
+// the full reasoning live in one place, shared with the `bun run` preload wired up
+// in bunfig.toml — see scripts/stub-server-only.ts.
+import '../scripts/stub-server-only';
 
 const originalConsoleError = console.error;
 const originalConsoleLog = console.log;

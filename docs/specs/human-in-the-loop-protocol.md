@@ -134,7 +134,13 @@ question — answering spawns a new worker", and that is literal.
   parent's prerequisites were already satisfied before the parent could run),
   `subjectAnchor` (drives a dedup/supersession subsystem this path is not
   part of), or `creationSource` (this row was created by whoever answered the
-  question via this route, not by the orchestrator).
+  question via this route, not by the orchestrator — it always defaults to
+  `'api'` here). Copying `mode: 'planning'` is safe because the
+  planning-contract guard's `mode === 'planning'` clause fires unconditionally
+  on mode alone; it does not depend on `creationSource` or `scheduleId` (those
+  only gate the guard's separate orchestrator-fallback clause — see the
+  `mode`/`creationSource` distinction in the guard's own comment,
+  `apps/web/src/app/api/workers/[id]/route.ts`).
 - `context.baseBranch` is honoured by the runner's worktree setup only when
   that branch already exists on the remote — i.e. the original worker had
   already pushed (for example, a PR was already open). If the question was
@@ -175,14 +181,15 @@ question — answering spawns a new worker", and that is literal.
   creates the continuation THEN all six are copied onto it, and `dependsOn`,
   `subjectAnchor`, `creationSource` are NOT copied.
 - AC-HITL-31: GIVEN a task with `mode: 'execution'`, `creationSource:
-  'orchestrator'`, `taskClass: 'work'` (an auto-approved mission builder child,
-  not the organizer's own decompose cycle) WHEN its worker completes with a
-  prose summary and no `structuredOutput` THEN the planning-contract guard in
-  `apps/web/src/app/api/workers/[id]/route.ts` MUST NOT override it to
-  `failed` — `taskClass !== 'work'` is required alongside
-  `creationSource === 'orchestrator'` for that guard's orchestrator-fallback
-  branch, precisely because `approve-plan.ts` stamps every auto-approved
-  builder child with `creationSource: 'orchestrator'` too.
+  'orchestrator'`, `scheduleId: null` (an auto-approved mission builder child
+  from `approve-plan.ts`, not a cron-dispatched organizer cycle) WHEN its
+  worker completes with a prose summary and no `structuredOutput` THEN the
+  planning-contract guard in `apps/web/src/app/api/workers/[id]/route.ts`
+  MUST NOT override it to `failed` — `scheduleId` (populated only by the cron
+  dispatcher) is the guard's orchestrator-fallback discriminator, not
+  `creationSource` alone, precisely because `approve-plan.ts` stamps every
+  auto-approved builder child with `creationSource: 'orchestrator'` too
+  (PR #2076).
 
 **Code surface**:
 - `apps/web/src/app/api/workers/[id]/respond/route.ts:49` (the `waitingFor`
