@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { getModelDisplayName } from '@buildd/core/model-display';
+import Spinner from '@/components/Spinner';
 
 interface SessionSummary {
   sessionId: string;
@@ -212,7 +213,7 @@ export default function SessionHistoryPanel({ localUiUrl, viewerToken, workerId 
             <div className="border-t border-border-default/50 pt-3">
               {messagesLoading && messages.length === 0 ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted py-2">
-                  <span className="w-2 h-2 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
+                  <Spinner size="xs" aria-label="Loading messages" />
                   Loading messages...
                 </div>
               ) : messages.length === 0 ? (

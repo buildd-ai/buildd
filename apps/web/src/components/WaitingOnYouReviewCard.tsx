@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
+import Spinner from './Spinner';
 import { AgentRecommendation } from './AgentRecommendation';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
@@ -88,7 +89,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
             )}
             {mergeState === 'merging' && (
               <span className="inline-flex items-center gap-1.5 text-[12px] text-text-muted">
-                <span className="w-2.5 h-2.5 rounded-full border-2 border-status-success border-t-transparent animate-spin" />
+                <Spinner size="xs" className="text-status-success" aria-label="Merging" />
                 Merging…
               </span>
             )}
@@ -161,7 +162,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       {mergeState === 'conflict_dispatched' && (
         <div className="mt-2 pt-2 border-t border-status-error/20">
           <div className="flex items-center gap-1.5 mb-1.5">
-            <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block flex-shrink-0" />
+            <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
             <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
           </div>
           <div className="flex items-center gap-3">

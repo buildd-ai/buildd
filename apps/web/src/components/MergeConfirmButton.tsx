@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Spinner from './Spinner';
 
 interface MergeConfirmButtonProps {
   prNumber: number;
@@ -96,7 +97,7 @@ export default function MergeConfirmButton({
   if (state === 'merging') {
     return (
       <span className="inline-flex items-center gap-1.5 text-[12px] text-text-muted">
-        <span className="w-2.5 h-2.5 rounded-full border-2 border-status-success border-t-transparent animate-spin" />
+        <Spinner size="xs" className="text-status-success" aria-label="Merging" />
         Merging…
       </span>
     );

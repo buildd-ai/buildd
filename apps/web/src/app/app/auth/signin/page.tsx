@@ -3,6 +3,7 @@
 import { signIn } from 'next-auth/react';
 import { useSearchParams } from 'next/navigation';
 import { Suspense, useEffect, useRef } from 'react';
+import Spinner from '@/components/Spinner';
 
 const ALLOWED_PROVIDERS = ['google', 'github'];
 
@@ -25,7 +26,7 @@ function SignInContent() {
     return (
       <main className="relative min-h-screen flex items-center justify-center p-6 overflow-hidden bg-[#2a2d3a]">
         <div className="text-center text-white">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-4" />
+          <Spinner className="mb-4" aria-label="Redirecting" />
           <p>Redirecting to {provider === 'github' ? 'GitHub' : 'Google'}...</p>
         </div>
       </main>

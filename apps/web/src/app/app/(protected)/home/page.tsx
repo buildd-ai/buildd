@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/team-access';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
+import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
 import { resolvePolicy } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
@@ -1725,7 +1726,7 @@ export default async function HomePage({
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                                 <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
-                                  <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block" />
+                                  <Spinner size="xs" aria-label="Resolving conflicts" />
                                   Resolving Conflicts
                                   {item.conflictRetryIteration != null && ` · attempt ${item.conflictRetryIteration}`}
                                 </span>

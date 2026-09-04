@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Spinner from './Spinner';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
@@ -17,9 +18,7 @@ export function AgentHandledCard({ item }: { item: ActionQueueItem }) {
     <div className="border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3">
       <div className="flex items-center gap-2 mb-0.5 flex-wrap">
         <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-text-muted tracking-wide uppercase">
-          {spinning && (
-            <span className="w-2 h-2 rounded-full border border-text-muted border-t-transparent animate-spin inline-block" />
-          )}
+          {spinning && <Spinner size="xs" aria-label="In progress" />}
           {label}
         </span>
       </div>
