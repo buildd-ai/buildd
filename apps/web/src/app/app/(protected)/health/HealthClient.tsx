@@ -16,6 +16,7 @@ import type {
   FailureAnalytics,
   FailureWindow,
   CbmHealthSummary,
+  OrphanedPrRow,
 } from './page';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
@@ -171,6 +172,8 @@ function humanizeCron(expr: string): string {
 }
 
 interface Props {
+  /** Worker rows whose PR the reconcile sweep gave up on — see OrphanedPrRow. */
+  orphanedPrs: OrphanedPrRow[];
   runners: RunnerHeartbeat[];
   usageStats: UsageStats | null;
   consumption: ConsumptionStats | null;
@@ -202,6 +205,7 @@ interface Props {
  * PROJECTION contract this file is an application of.
  */
 export function HealthClient({
+  orphanedPrs,
   runners,
   usageStats,
   consumption,
@@ -629,6 +633,8 @@ export function HealthClient({
             )}
           </div>
         )}
+
+        <OrphanedPrsBlock rows={orphanedPrs} />
       </section>
 
       {/* 2. State — what is true right now. Every number here renders its own
@@ -1083,6 +1089,71 @@ function fmtTokens(n: number): string {
 function fmtCost(n: number): string {
   if (!Number.isFinite(n)) return '—';
   return n >= 1 ? `$${n.toFixed(2)}` : `$${n.toFixed(3)}`;
+}
+
+/**
+ * PRs the reconcile sweep gave up on.
+ *
+ * A row reaches this list only after failing to resolve against GitHub
+ * UNRESOLVABLE_FAILURE_THRESHOLD times while older than the unknown TTL, so it
+ * is a genuine orphan — a deleted PR, a repo that moved, a workspace whose
+ * GitHub App installation no longer covers it. It states the reason rather
+ * than a CTA, because there is no one-tap fix: something outside buildd has to
+ * change before this row can ever resolve.
+ *
+ * This is the surface that lets the action queue drop these rows without
+ * dropping them silently.
+ */
+function OrphanedPrsBlock({ rows }: { rows: OrphanedPrRow[] }) {
+  // No orphans is the expected state — an empty block would be noise.
+  if (rows.length === 0) return null;
+
+  return (
+    <div data-testid="health-section-orphaned-prs" className="mt-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="section-label">Orphaned PRs</h3>
+        <span className="text-xs text-text-muted">
+          {sectionDenominator(rows.length, rows.length === 1 ? 'PR' : 'PRs')}
+        </span>
+      </div>
+      <p className="text-xs text-text-muted mb-2">
+        buildd could not resolve these against GitHub and has stopped retrying. They are
+        excluded from Home — nothing here is a merge you can make.
+      </p>
+      <div className="border border-border rounded-[10px] divide-y divide-border">
+        {rows.map(row => (
+          <div key={row.workerId} className="px-4 py-2.5">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-raised text-text-muted font-mono shrink-0">
+                {row.workspaceName}
+              </span>
+              <span className="text-sm text-text-primary truncate">
+                {row.taskId ? (
+                  <a href={`/app/tasks/${row.taskId}`} className="hover:text-primary">
+                    {row.taskTitle ?? `PR #${row.prNumber}`}
+                  </a>
+                ) : (
+                  row.taskTitle ?? `PR #${row.prNumber}`
+                )}
+              </span>
+            </div>
+            <p className="text-xs text-text-muted mt-0.5">
+              {row.reason ?? 'Unresolvable'} · {row.failureCount} failed check
+              {row.failureCount === 1 ? '' : 's'} · last tried {timeAgo(row.lastCheckedAt)}
+              {row.prUrl && (
+                <>
+                  {' · '}
+                  <a href={row.prUrl} target="_blank" rel="noopener noreferrer" className="hover:text-primary">
+                    PR #{row.prNumber} ↗
+                  </a>
+                </>
+              )}
+            </p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 /**

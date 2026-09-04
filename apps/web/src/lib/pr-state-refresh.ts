@@ -1,19 +1,25 @@
 /**
- * Read-through PR state refresh.
+ * Read-through PR state refresh — a render-time FAST PATH, not a poller.
  *
- * Called from mission detail and task list API routes. Fires in the background
- * (never blocks the response) and pushes corrected state over WORKER_PROGRESS
- * so open views update without a reload.
+ * Called from Home, mission detail and task list routes so a view someone is
+ * actually looking at reflects a merge that landed seconds ago. Convergence is
+ * NOT its job: lib/pr-reconcile.ts (the single GitHub poller, on the hourly
+ * pr-reconcile cron) is what guarantees every row's lifecycle state is inside
+ * its tier SLA whether or not anybody opens a page. Before that guarantee
+ * existed, this function WAS the only defence, and its bounded batch is exactly
+ * why four merged PRs sat on Home for up to 90 days.
  *
  * Rate-limited to match the backfill script (200 ms between GitHub calls).
- * Batch capped at 10 workers per render to bound GitHub API fan-out.
+ * Batch capped at 10 workers per render to bound GitHub API fan-out — and
+ * ordered least-recently-checked first, so under a backlog the cap is a fair
+ * queue rather than an arbitrary sample that can starve the same rows forever.
  * Non-fatal: GitHub errors are logged; prLastCheckedAt is left unset so the
  * next render retries.
  */
 
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, isNull, lt, notInArray, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import { githubApi, fetchCiLifecycleStatus } from '@/lib/github';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
@@ -26,7 +32,7 @@ const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 const RATE_LIMIT_MS = 200;
 
-const TERMINAL_STATUSES = ['merged', 'closed'] as ('pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | null)[];
+const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as ('pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'merged' | 'conflict' | 'closed' | 'unresolvable' | null)[];
 
 export interface StalePrCandidate {
   id: string;
@@ -60,6 +66,10 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
       ),
     ),
     columns: { id: true, prNumber: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
+    // Least-recently-checked first. Without an ordering the cap made this an
+    // arbitrary sample of the backlog, so a row could be passed over on every
+    // single render — indefinitely.
+    orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
     limit: BATCH_CAP,
   });
 
@@ -87,6 +97,9 @@ export async function refreshStaleWorkers(candidates: StalePrCandidate[]): Promi
       const lastChecked = w.prLastCheckedAt?.getTime() ?? 0;
       return now - lastChecked >= STALE_THRESHOLD_MS;
     })
+    // Same fairness rule as the DB-backed variant: the cap must take the
+    // oldest-checked rows, never an arbitrary slice of the backlog.
+    .sort((a, b) => (a.prLastCheckedAt?.getTime() ?? 0) - (b.prLastCheckedAt?.getTime() ?? 0))
     .slice(0, BATCH_CAP);
 
   await _processWorkerBatch(
@@ -148,7 +161,12 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
         ) as { state: string; merged: boolean; merged_at: string | null; head: { sha: string } };
 
         const now = new Date();
-        const update: Record<string, unknown> = { prLastCheckedAt: now, updatedAt: now };
+        // The PR resolved, so whatever failure streak this row had is over.
+        const update: Record<string, unknown> = {
+          prLastCheckedAt: now,
+          prCheckFailureCount: 0,
+          updatedAt: now,
+        };
         let didMerge = false;
 
         if (pr.merged && pr.merged_at) {

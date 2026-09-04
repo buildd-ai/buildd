@@ -64,6 +64,27 @@ export interface ScheduleRow {
  * filters `roleSlug IS NOT NULL`, so role-less tasks are invisible there, and it
  * is team-wide, so it cannot honour Health's `?workspace=` scoping.
  */
+/**
+ * A worker row whose PR the reconcile sweep could not resolve and has retired
+ * to terminal `prLifecycleStatus = 'unresolvable'`.
+ *
+ * These are deliberately absent from Home: an action queue is for things a
+ * human can act on, and a PR buildd cannot resolve is not one of them. Listing
+ * them here is how they stay visible without being an actionable card.
+ */
+export interface OrphanedPrRow {
+  workerId: string;
+  workspaceName: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  prUrl: string | null;
+  prNumber: number | null;
+  reason: string | null;
+  failureCount: number;
+  lastCheckedAt: string | null;
+  prOpenedAt: string | null;
+}
+
 export interface UsageStats {
   total: number;
   completed: number;
@@ -419,8 +440,43 @@ export default async function HealthPage({
       return (a.nextRunAt ?? '9999') < (b.nextRunAt ?? '9999') ? -1 : 1;
     });
 
+  // Orphaned PRs: worker rows the reconcile sweep gave up on
+  // (prLifecycleStatus='unresolvable' — see lib/pr-freshness.ts). They are OFF
+  // Home by design, because nobody can act on a PR buildd cannot even resolve.
+  // They surface here instead, which is what stops "retire it" from meaning
+  // "silently drop it" (facae217 AC-6).
+  const orphanedPrs: OrphanedPrRow[] = await db.query.workers
+    .findMany({
+      where: and(
+        inArray(workers.workspaceId, scopedWsIds),
+        eq(workers.prLifecycleStatus, 'unresolvable'),
+      ),
+      columns: {
+        id: true, workspaceId: true, prUrl: true, prNumber: true,
+        prUnresolvableReason: true, prCheckFailureCount: true,
+        prLastCheckedAt: true, completedAt: true, createdAt: true,
+      },
+      with: { task: { columns: { id: true, title: true } } },
+      orderBy: desc(workers.prLastCheckedAt),
+      limit: 25,
+    })
+    .then(rows => rows.map((w): OrphanedPrRow => ({
+      workerId: w.id,
+      workspaceName: wsById.get(w.workspaceId) ?? '(unknown)',
+      taskId: (w.task as { id: string } | null)?.id ?? null,
+      taskTitle: (w.task as { title: string } | null)?.title ?? null,
+      prUrl: w.prUrl,
+      prNumber: w.prNumber,
+      reason: w.prUnresolvableReason,
+      failureCount: w.prCheckFailureCount ?? 0,
+      lastCheckedAt: w.prLastCheckedAt ? w.prLastCheckedAt.toISOString() : null,
+      prOpenedAt: (w.completedAt ?? w.createdAt)?.toISOString() ?? null,
+    })))
+    .catch(() => [] as OrphanedPrRow[]);
+
   return (
     <HealthClient
+      orphanedPrs={orphanedPrs}
       runners={runners}
       usageStats={usageStats}
       consumption={consumption ?? null}

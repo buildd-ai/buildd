@@ -31,8 +31,9 @@ Section 5 covers rollout ordering and the proposed implementation task breakdown
 
 Subject liveness is defined in `docs/design/task-subject-anchors.md §6`. The authoritative value is `workers.prLifecycleStatus` (stamped by the GitHub webhook reconciliation sweep from §5 of that spec). **No mobile surface ever calls GitHub or re-derives PR state from live API calls.** All liveness rendering reads persisted DB fields:
 
-- `workers.prLifecycleStatus` — `open | merged | closed`
+- `workers.prLifecycleStatus` — `open | merged | closed | unresolvable` (see §1.5)
 - `workers.mergedAt` — non-null = PR merged
+- `workers.prLastCheckedAt` — when that lifecycle value was last verified (see §1.5)
 - `SubjectCompletionProposal.proposedAction` — `cancel | supersede | keep`
 - `blockingGate.prUrl` + lifecycle state (derived via `blockingGate` field from review-gate-ux §2.1 / BT-2)
 
@@ -100,6 +101,68 @@ Every implementation task touching these surfaces **must** declare these edges:
 | Escalation inbox resolved-group rendering | same 5/7 deployment |
 | Timeline gate chip collapse | review-gate-ux **BT-1** (`checkDependsOnResolved` gate fix) + **BT-7** (merge endpoint) — so `mergedAt` is stamped promptly |
 | Mission needs-attention card secondary line | BT-2 (`blockingGate` field carrying lifecycle state) |
+
+### 1.5 Lifecycle state has an age, and the age is part of the state
+
+§1.1 says lifecycle state is persisted, never re-derived in the UI. That rule is
+correct and stays. It is also incomplete: a persisted value is only as good as
+the last time something verified it, and until this section existed nothing
+bounded how old "unknown" was allowed to get.
+
+The failure this describes was observed on Home (mobile, 2026-09-03): four MERGE
+cards, three of them for PRs that had merged on GitHub 73–90 days earlier. Two
+individually-correct rules composed into a permanent leak — §1.2 says null
+lifecycle renders as `open` so a card never false-collapses, and
+task-subject-anchors AC-6 says an unresolvable row is never silently dropped.
+Together, any row buildd could not resolve was pinned to the action queue
+forever.
+
+#### Convergence is on a timer, not on render
+
+`workers.prLifecycleStatus` and `workers.mergedAt` are refreshed by the single
+GitHub poller (`/api/cron/pr-reconcile?scope=merge-state`, hourly) on an
+age-tiered backoff. The read-through refresh that runs when Home renders is a
+fast path, not the mechanism.
+
+| PR age | Tier | Lifecycle state must be re-verified within |
+|---|---|---|
+| < 24 h | hot | 30 minutes |
+| < 7 days | warm | 6 hours |
+| ≥ 7 days | cold | 24 hours |
+
+**Invariant:** no worker row's lifecycle state is older than its tier's SLA,
+with Home never rendered in between. Constants live in `lib/pr-freshness.ts`;
+the sweep derives its SQL staleness gate from the same table, so the two cannot
+drift.
+
+#### `unknown` has a TTL and a terminal exit
+
+A null or unresolvable lifecycle is treated as `open` for a bounded window only.
+Past **3 consecutive failed resolution attempts AND 24 hours of PR age** (both
+required — one GitHub incident must not condemn a young PR), the row is written
+to terminal `prLifecycleStatus = 'unresolvable'` with a `prUnresolvableReason`.
+
+| Outcome | Rendering |
+|---|---|
+| GitHub says merged/closed | Persisted; card collapses via the existing §1.3 path |
+| GitHub 404 / repo gone / no usable App installation | Terminal `unresolvable`. **Off Home entirely**, listed under Problems → Orphaned PRs on `/app/health` |
+| Genuinely open and ancient (≥ 14 days) | `STALE` chip carrying the age and the reason — a decision, not a merge tap. Same card shape as the BLOCKED card |
+
+#### The action queue fails closed
+
+`buildActionQueue` will not emit a `MERGE` or `REVIEW` card for a row whose
+lifecycle has not been verified inside its tier SLA. It degrades to `STALE`
+instead. The degradation is one-directional: nothing promotes a card *into* a
+merge CTA, so the worst case is "we told you we don't know", never "we told you
+to merge something that merged 90 days ago". Cards with an agent already on
+them (`RESOLVING`, `FIXING_CI`, `CI_RUNNING`, `BLOCKED`) are not gated — they
+make no claim about the PR still being open.
+
+`summariseActionQueueAge` emits `action_queue.card_age_hours` (p99) and a count
+of cards older than 7 days. Expected steady state for the latter is 0; non-zero
+means the sweep is not converging, and that is the signal to act on ahead of
+anything the cards themselves say.
+
 
 ---
 

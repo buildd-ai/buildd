@@ -981,6 +981,13 @@
       "when": 1788433882996,
       "tag": "0140_ambiguous_crusher_hogan",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1788491961822,
+      "tag": "0141_brave_amazoness",
+      "breakpoints": true
     }
   ]
 }

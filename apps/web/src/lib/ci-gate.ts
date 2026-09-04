@@ -8,7 +8,12 @@
  */
 
 export type PrLifecycle =
-  | 'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'conflict' | 'merged' | 'closed' | null;
+  | 'pr_open' | 'ci_running' | 'ci_green' | 'ci_failed' | 'conflict' | 'merged' | 'closed'
+  // Terminal: the reconcile sweep could not resolve this PR against GitHub and
+  // gave up. See lib/pr-freshness.ts. Never a CI state, so resolveCiGate
+  // returns null for it, same as any other non-CI status.
+  | 'unresolvable'
+  | null;
 
 export interface CiGateInput {
   prLifecycleStatus: PrLifecycle;

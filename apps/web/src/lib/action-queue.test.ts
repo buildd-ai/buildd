@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, partitionEscalations, isActionableChip } from './action-queue';
+import { buildActionQueue, partitionEscalations, isActionableChip, summariseActionQueueAge } from './action-queue';
 import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
@@ -507,10 +507,171 @@ describe('buildActionQueue — CI gate', () => {
 
 describe('isActionableChip', () => {
   it('counts human-gated chips and excludes agent-handled ones', () => {
-    expect(['MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE'].map(isActionableChip))
-      .toEqual([true, true, true, true, true, true]);
+    expect(['MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE', 'STALE'].map(isActionableChip))
+      .toEqual([true, true, true, true, true, true, true]);
     expect(['RESOLVING', 'FIXING_CI', 'CI_RUNNING'].map(isActionableChip))
       .toEqual([false, false, false]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Freshness invariant. A card that asks a human to merge is a claim about the
+// PR's CURRENT state; this is where that claim is refused on stale input.
+//
+// Every assertion here pins the FAIL-CLOSED direction: unknown degrades to
+// STALE, never to a CTA. The queue is allowed to say "I don't know"; it is not
+// allowed to say "merge this" about a PR that merged three months ago.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const HOUR = 3_600_000;
+const DAY = 24 * HOUR;
+const AT = new Date('2026-09-03T22:51:00Z');
+const before = (ms: number) => new Date(AT.getTime() - ms);
+
+describe('buildActionQueue — freshness invariant', () => {
+  it('refuses a MERGE card when the row has never been verified', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prOpenedAt: before(3 * HOUR),
+      prLifecycleCheckedAt: null,
+    })], { now: AT });
+
+    expect(result[0].chip).toBe('STALE');
+    expect(result[0].staleGate?.kind).toBe('unverified');
+  });
+
+  it('refuses a MERGE card when the last check is past the row tier SLA', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prOpenedAt: before(90 * DAY),
+      prLifecycleCheckedAt: before(4 * DAY),
+    })], { now: AT });
+
+    expect(result[0].chip).toBe('STALE');
+    expect(result[0].staleGate?.kind).toBe('unverified');
+  });
+
+  it('refuses a MERGE card for a verified-open PR that is simply ancient', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prOpenedAt: before(90 * DAY),
+      prLifecycleCheckedAt: before(HOUR),
+    })], { now: AT });
+
+    expect(result[0].chip).toBe('STALE');
+    expect(result[0].staleGate?.kind).toBe('ancient');
+    expect(result[0].escalationReason).toContain('90 days');
+  });
+
+  it('degrades a REVIEW card the same way — the gate is on the claim, not the tier', () => {
+    const result = buildActionQueue([], [escalationItem({
+      policyTier: 'agent-review',
+      prOpenedAt: before(90 * DAY),
+      prLifecycleCheckedAt: null,
+    })], { now: AT });
+
+    expect(result[0].chip).toBe('STALE');
+  });
+
+  it('allows a MERGE card for a recent PR verified inside its SLA', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prOpenedAt: before(3 * HOUR),
+      prLifecycleCheckedAt: before(60_000),
+    })], { now: AT });
+
+    expect(result[0].chip).toBe('MERGE');
+    expect(result[0].staleGate).toBeNull();
+  });
+
+  it('leaves callers that supply no PR age entirely alone', () => {
+    // Not a loophole for production — Home always supplies both fields — but a
+    // caller with no age has no tier, and therefore no SLA to be outside of.
+    expect(buildActionQueue([], [escalationItem()], { now: AT })[0].chip).toBe('MERGE');
+  });
+
+  it('drops a terminal unresolvable row out of the queue', () => {
+    const result = buildActionQueue([], [escalationItem({
+      prLifecycleStatus: 'unresolvable',
+      prOpenedAt: before(90 * DAY),
+      prLifecycleCheckedAt: null,
+    })], { now: AT });
+
+    expect(result).toHaveLength(0);
+  });
+
+  it('gates a blocker-derived merge card too, not just escalation cards', () => {
+    const result = buildActionQueue([mergeItem({
+      prOpenedAt: before(90 * DAY),
+      prLifecycleCheckedAt: null,
+    })], [], { now: AT });
+
+    expect(result[0].chip).toBe('STALE');
+  });
+
+  it('sorts every live decision above a stale one', () => {
+    const result = buildActionQueue([], [
+      escalationItem({
+        prUrl: PR_URL_B, prNumber: 1481, taskId: 'task-2',
+        prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: null,
+      }),
+      escalationItem({
+        prOpenedAt: before(2 * HOUR), prLifecycleCheckedAt: before(60_000),
+      }),
+    ], { now: AT });
+
+    expect(result.map(r => r.chip)).toEqual(['MERGE', 'STALE']);
+  });
+
+  it('orders stale cards oldest-first — the 90-day one is the least ambiguous', () => {
+    const result = buildActionQueue([], [
+      escalationItem({
+        prUrl: PR_URL_B, prNumber: 1481, taskId: 'task-2',
+        prOpenedAt: before(20 * DAY), prLifecycleCheckedAt: null,
+      }),
+      escalationItem({
+        prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: null,
+      }),
+    ], { now: AT });
+
+    expect(result.map(r => r.prNumber)).toEqual([1480, 1481]);
+  });
+});
+
+describe('summariseActionQueueAge', () => {
+  it('reports zeros for an empty queue', () => {
+    expect(summariseActionQueueAge([])).toEqual({
+      measured: 0,
+      p99AgeHours: 0,
+      olderThan7dCount: 0,
+      staleUnverified: 0,
+      staleAncient: 0,
+    });
+  });
+
+  it('counts the cards that should not exist, split by why', () => {
+    // The exact shape observed on Home: one recent card and three ancient ones.
+    const queue = buildActionQueue([], [
+      escalationItem({ taskId: 't0', prUrl: 'https://github.com/org/repo/pull/2040', prNumber: 2040, prOpenedAt: before(36 * HOUR), prLifecycleCheckedAt: null }),
+      escalationItem({ taskId: 't1', prUrl: 'https://github.com/org/repo/pull/25', prNumber: 25, prOpenedAt: before(73 * DAY), prLifecycleCheckedAt: null }),
+      escalationItem({ taskId: 't2', prUrl: 'https://github.com/org/repo/pull/77', prNumber: 77, prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: before(2 * HOUR) }),
+      escalationItem({ taskId: 't3', prUrl: 'https://github.com/org/repo/pull/59', prNumber: 59, prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: null }),
+    ], { now: AT });
+
+    const metrics = summariseActionQueueAge(queue);
+    expect(metrics.measured).toBe(4);
+    expect(metrics.p99AgeHours).toBe(90 * 24);
+    expect(metrics.olderThan7dCount).toBe(3);
+    expect(metrics.staleUnverified).toBe(3);
+    expect(metrics.staleAncient).toBe(1);
+    // None of the four may present as a merge tap.
+    expect(queue.every(c => c.chip === 'STALE')).toBe(true);
+  });
+
+  it('AC-6 steady state: once the sweep has stamped them merged, nothing is left', () => {
+    // What the backfill produces: the four rows become prLifecycleStatus
+    // 'merged', which Home's openPrWorkers query excludes outright — so the
+    // queue they feed is empty and no card is older than the stale threshold.
+    const queue = buildActionQueue([], [], { now: AT });
+    const metrics = summariseActionQueueAge(queue);
+    expect(queue).toHaveLength(0);
+    expect(metrics.olderThan7dCount).toBe(0);
   });
 });
 

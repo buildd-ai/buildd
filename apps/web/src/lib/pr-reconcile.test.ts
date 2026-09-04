@@ -41,6 +41,9 @@ mock.module('@buildd/core/db/schema', () => ({
     updatedAt: 'updatedAt',
     prLastCheckedAt: 'prLastCheckedAt',
     prLifecycleStatus: 'prLifecycleStatus',
+    prCheckFailureCount: 'prCheckFailureCount',
+    completedAt: 'completedAt',
+    createdAt: 'createdAt',
   },
   workspaces: { id: 'id' },
 }));
@@ -62,15 +65,35 @@ import {
   reconcileStalePrWorkers,
   refreshWorkerMergeStateIfStale,
   RECONCILE_BATCH_CAP,
-  RECONCILE_STALE_MS,
 } from './pr-reconcile';
+import { TIER_SLA_MS, UNRESOLVABLE_FAILURE_THRESHOLD, DAY_MS, HOUR_MS } from './pr-freshness';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+/** Legacy shape: only the direct `workspaces.githubInstallationId` FK resolves. */
 const ws = {
   repo: 'owner/repo',
   githubInstallation: { installationId: 123 },
 };
+
+/** An old PR, well past the unknown TTL — eligible to go terminal. */
+const ancientOpenedAt = new Date(Date.now() - 90 * DAY_MS);
+
+/**
+ * Flattens a mocked drizzle predicate tree to a string so a test can assert
+ * which columns and literals it references. Cycle-safe: the stubbed `sql` tag
+ * hands back objects that share sub-trees, which plain JSON.stringify chokes on.
+ */
+function describePredicate(node: unknown, seen = new WeakSet<object>()): string {
+  if (node == null) return '';
+  if (typeof node !== 'object') return String(node);
+  if (seen.has(node as object)) return '';
+  seen.add(node as object);
+  if (Array.isArray(node)) return node.map(n => describePredicate(n, seen)).join(' ');
+  return Object.entries(node as Record<string, unknown>)
+    .map(([k, v]) => `${k} ${describePredicate(v, seen)}`)
+    .join(' ');
+}
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -202,7 +225,7 @@ describe('reconcileStalePrWorkers', () => {
   it('returns zeros when no stale workers found', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
     const result = await reconcileStalePrWorkers();
-    expect(result).toEqual({ total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0 });
+    expect(result).toEqual({ total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0, unresolvable: 0 });
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
@@ -266,9 +289,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.mergedAt).toBeUndefined();
   });
 
-  it('skips workspace with no GitHub installation', async () => {
+  it('skips workspace with no GitHub installation, counting it as a failure not a clean check', async () => {
     mockWorkersFindMany.mockResolvedValue([
-      { id: 'w1', prNumber: 1, workspaceId: 'ws-no-gh' },
+      { id: 'w1', prNumber: 1, workspaceId: 'ws-no-gh', prCheckFailureCount: 0, completedAt: ancientOpenedAt },
     ]);
     mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
 
@@ -279,9 +302,121 @@ describe('reconcileStalePrWorkers', () => {
 
     expect(result.skipped).toBe(1);
     expect(mockGithubApi).not.toHaveBeenCalled();
-    // A workspace with no installation can never be reconciled. Record the
-    // check anyway, or these rows permanently occupy the head of the batch.
-    expect((setMock.mock.calls[0][0] as Record<string, unknown>).prLastCheckedAt).toBeInstanceOf(Date);
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    // Record the check, or these rows permanently occupy the head of the batch.
+    expect(written.prLastCheckedAt).toBeInstanceOf(Date);
+    // But NOT as a clean check. The old code wrote a bare prLastCheckedAt here,
+    // which made an unreconcilable row look healthy and hid it forever — the
+    // precise mechanism behind the four stale MERGE cards on Home.
+    expect(written.prCheckFailureCount).toBe(1);
+  });
+
+  // ── Installation resolution ────────────────────────────────────────────────
+  //
+  // The sweep used to read `workspaces.githubInstallationId` directly. That FK
+  // is legacy: after an App uninstall/reinstall it points at a dead
+  // installation whose token is valid but has access to no repos, so every call
+  // 404s — and when it is null the sweep silently skipped the workspace for
+  // good. lib/workspace-installation.ts exists precisely to prefer the
+  // repo-mediated pointer; this sweep must go through it.
+
+  it('resolves the installation through the repo, not the legacy workspace FK', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'owner/repo',
+      // Repo-mediated pointer is live; the legacy FK points at a dead install.
+      githubRepo: { installation: { installationId: 999 } },
+      githubInstallation: { installationId: 111 },
+    });
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockGithubApi).toHaveBeenCalledWith(999, '/repos/owner/repo/pulls/42');
+  });
+
+  it('asks the workspace query for both installation pointers', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    const withClause = (mockWorkspacesFindFirst.mock.calls[0][0] as any).with;
+    expect(withClause).toHaveProperty('githubRepo');
+    expect(withClause).toHaveProperty('githubInstallation');
+  });
+
+  // ── Unknown TTL and the terminal exit ──────────────────────────────────────
+
+  it('retires an old row to terminal unresolvable once failures pass the threshold', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 404,
+        workspaceId: 'ws1',
+        taskId: 't1',
+        prCheckFailureCount: UNRESOLVABLE_FAILURE_THRESHOLD - 1,
+        completedAt: ancientOpenedAt,
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockRejectedValue(new Error('Not Found'));
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.unresolvable).toBe(1);
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLifecycleStatus).toBe('unresolvable');
+    expect(written.prUnresolvableReason).toContain('Not Found');
+    expect(written.prCheckFailureCount).toBe(UNRESOLVABLE_FAILURE_THRESHOLD);
+  });
+
+  it('does not retire a young row, however many times it has failed', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 404,
+        workspaceId: 'ws1',
+        prCheckFailureCount: 20,
+        completedAt: new Date(Date.now() - HOUR_MS),
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockRejectedValue(new Error('502 Bad Gateway'));
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    // A GitHub incident must not condemn a PR that opened an hour ago.
+    expect(result.unresolvable).toBe(0);
+    expect((setMock.mock.calls[0][0] as Record<string, unknown>).prLifecycleStatus).toBeUndefined();
+  });
+
+  it('clears the failure streak when a row resolves again', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 7, workspaceId: 'ws1', prCheckFailureCount: 2, completedAt: ancientOpenedAt },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    await reconcileStalePrWorkers();
+
+    expect((setMock.mock.calls[0][0] as Record<string, unknown>).prCheckFailureCount).toBe(0);
   });
 
   it('processes multiple workspaces independently', async () => {
@@ -319,23 +454,42 @@ describe('reconcileStalePrWorkers', () => {
     mockWorkersFindMany.mockResolvedValue([]);
     await reconcileStalePrWorkers();
 
-    const where = JSON.stringify((mockWorkersFindMany.mock.calls[0][0] as any).where);
+    const where = describePredicate((mockWorkersFindMany.mock.calls[0][0] as any).where);
     expect(where).toContain('prLastCheckedAt');
-    // Minutes-to-an-hour, not days: a webhook missed at noon must be healed the
-    // same afternoon, and the read-through refresh keeps hot rows out of range.
-    expect(RECONCILE_STALE_MS).toBeGreaterThanOrEqual(60 * 1000);
-    expect(RECONCILE_STALE_MS).toBeLessThanOrEqual(60 * 60 * 1000);
+    // Minutes-to-an-hour for a fresh PR, not days: a webhook missed at noon must
+    // be healed the same afternoon, and the read-through refresh keeps hot rows
+    // out of range.
+    expect(TIER_SLA_MS.hot).toBeGreaterThanOrEqual(60 * 1000);
+    expect(TIER_SLA_MS.hot).toBeLessThanOrEqual(HOUR_MS);
   });
 
-  it('excludes rows already known to be merged or closed', async () => {
+  it('tiers the staleness window by PR age so cold rows cannot crowd out hot ones', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await reconcileStalePrWorkers();
+
+    const where = describePredicate((mockWorkersFindMany.mock.calls[0][0] as any).where);
+    // The gate must reference the PR's own age, not a single flat cutoff.
+    expect(where).toContain('completedAt');
+    expect(where).toContain('createdAt');
+    // Tier SLAs must be strictly ordered, and every tier bounded by a day — the
+    // documented invariant is that no row's state is ever older than its SLA.
+    expect(TIER_SLA_MS.hot).toBeLessThan(TIER_SLA_MS.warm);
+    expect(TIER_SLA_MS.warm).toBeLessThan(TIER_SLA_MS.cold);
+    expect(TIER_SLA_MS.cold).toBeLessThanOrEqual(DAY_MS);
+  });
+
+  it('excludes rows already known to be merged, closed or unresolvable', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
     await reconcileStalePrWorkers();
 
     const query = mockWorkersFindMany.mock.calls[0][0] as any;
-    const where = JSON.stringify(query.where);
+    const where = describePredicate(query.where);
     expect(where).toContain('prLifecycleStatus');
     expect(where).toContain('merged');
     expect(where).toContain('closed');
+    // Terminal for the same reason the other two are: re-asking GitHub cannot
+    // change the answer, and a retired row must not re-enter the rotation.
+    expect(where).toContain('unresolvable');
   });
 
   it('bounds the batch and takes the least-recently-checked first', async () => {

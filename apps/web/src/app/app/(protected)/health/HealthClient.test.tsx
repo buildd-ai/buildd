@@ -129,6 +129,7 @@ const consumption = (over: Record<string, any> = {}): any => ({
 const render = (over: Record<string, any> = {}) =>
   renderToStaticMarkup(
     <HealthClient
+      orphanedPrs={[]}
       runners={[]}
       usageStats={null}
       consumption={null}
@@ -435,5 +436,58 @@ describe('HealthClient — Trend', () => {
     // The adoption percentage moves to the usage drill-down; publishing it in two
     // places under two different windows is what the restructure removes.
     expect(html).not.toContain('0% of 10');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Orphaned PRs — the surface that lets Home's action queue drop an unresolvable
+// row without dropping it silently (facae217 AC-6). A PR buildd cannot resolve
+// is not an action; it is a fact about the system, and this is where facts go.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const orphan = (over: Record<string, any> = {}) => ({
+  workerId: 'w-1',
+  workspaceName: 'ws',
+  taskId: 't-1',
+  taskTitle: 'fix: header summary on launch',
+  prUrl: 'https://github.com/org/repo/pull/77',
+  prNumber: 77,
+  reason: 'Workspace has no usable GitHub App installation',
+  failureCount: 3,
+  lastCheckedAt: new Date(Date.now() - 2 * HOUR).toISOString(),
+  prOpenedAt: new Date(Date.now() - 90 * 24 * HOUR).toISOString(),
+  ...over,
+});
+
+describe('HealthClient — orphaned PRs', () => {
+  it('renders nothing when there are no orphans — the expected steady state', () => {
+    const html = render({ orphanedPrs: [] });
+    expect(html).not.toContain('health-section-orphaned-prs');
+  });
+
+  it('lists a retired PR with its reason, failure count and PR link', () => {
+    const html = render({ orphanedPrs: [orphan()] });
+    expect(html).toContain('health-section-orphaned-prs');
+    expect(html).toContain('Orphaned PRs');
+    expect(html).toContain('Workspace has no usable GitHub App installation');
+    expect(html).toContain('3 failed checks');
+    expect(html).toContain('https://github.com/org/repo/pull/77');
+  });
+
+  it('says plainly that these are not merges the human can make', () => {
+    const html = render({ orphanedPrs: [orphan()] });
+    expect(html).toContain('excluded from Home');
+  });
+
+  it('files the block under Problems, not State or Trend', () => {
+    const html = render({ orphanedPrs: [orphan()] });
+    const [problems, orphans, state] = orderOf(
+      html,
+      'health-section-problems',
+      'health-section-orphaned-prs',
+      'health-section-state',
+    );
+    expect(orphans).toBeGreaterThan(problems);
+    expect(orphans).toBeLessThan(state);
   });
 });

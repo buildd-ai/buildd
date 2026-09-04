@@ -358,6 +358,36 @@ on its next cycle (typically within 30–60 seconds).
 No runner-side "seen/skip cache" exists today that would require clearing. Verify before
 implementation by grepping for any skip-list or cooldown set in `apps/runner/`.
 
+#### 5.6 The gate surface may not assert state it has not verified
+
+A gate card is a claim about a PR's *current* state. Rendering `Merge` says "this
+PR is open and merging it is the next move". Every gate surface in this spec is
+therefore subject to the freshness invariant in
+`docs/design/mobile-decision-flow.md §1.5`:
+
+- The single GitHub poller re-verifies every open worker PR inside its
+  age-tiered SLA (30 min hot / 6 h warm / 24 h cold), independently of whether
+  anybody opens Home.
+- `buildActionQueue` refuses to emit a `MERGE` or `REVIEW` card for a row whose
+  lifecycle has not been verified inside that SLA, or for a genuinely-open PR
+  older than 14 days. Both degrade to a `STALE` chip stating the age and the
+  reason. The degradation only ever runs in that direction.
+- A row retired to terminal `prLifecycleStatus = 'unresolvable'` leaves this
+  surface entirely and appears under Problems → Orphaned PRs on `/app/health`.
+
+The gate *predicate* (`resolveReviewerGate`, §5.2.1) is unchanged by this and
+should not be adjusted to compensate. It answers **who owns the next move**; the
+freshness invariant answers **whether we still know enough to ask**. When they
+disagree — a human-tier PR whose state is 90 days unverified — the queue wins,
+because "manual merge required" printed against a PR that merged three months
+ago is worse than admitting the gap.
+
+Regression coverage for all three directions this area has failed in — the
+under-fire (a real gate missing from the queue), the over-fire (an unclaimed
+reviewer's PR asking the human to merge) and the stale leak — lives together in
+`apps/web/src/lib/reviewer-gate.test.ts`, deliberately in one file so a future
+fix to one cannot silently reopen another.
+
 ---
 
 ### 6. States + Copy Reference
@@ -392,6 +422,11 @@ implementation by grepping for any skip-list or cooldown set in `apps/runner/`.
 | Activity list blocked row (PR blocker) | `waiting on: PR #N merge` |
 | Activity list blocked row (task blocker) | `waiting on: {blocking task title}` |
 | Activity list blocked-group disclosure | `▶ N waiting on dependencies` |
+| Home STALE card — never verified (§5.6) | `PR state has never been verified against GitHub` |
+| Home STALE card — past SLA (§5.6) | `PR state last verified {age} ago — past the {window} check window` |
+| Home STALE card — ancient but open (§5.6) | `Open for {age} — decide whether this still ships, don't merge it blind` |
+| Home STALE card — CTA | `Check PR #N on GitHub ↗` (never `Merge`) |
+| Health → Orphaned PRs blurb | `buildd could not resolve these against GitHub and has stopped retrying. They are excluded from Home — nothing here is a merge you can make.` |
 
 ---
 
