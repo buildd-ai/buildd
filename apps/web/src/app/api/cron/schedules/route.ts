@@ -450,6 +450,24 @@ export async function GET(req: NextRequest) {
           }
         }
 
+        // Skip if linked mission has exhausted its cost budget — defer until budget is raised.
+        // MUST precede the `status !== 'active'` branch below, which would
+        // otherwise swallow this case and auto-DISABLE the schedule. Disabling
+        // is unrecoverable here: the auto-resume branch in api/missions/[id]
+        // flips the mission back to `active` when a human raises costBudgetUsd
+        // but never re-enables schedules, and the due-schedule query only reads
+        // enabled=true rows — so the mission would go silently dead forever.
+        if (linkedMission && linkedMission.status === 'budget_exhausted') {
+          const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
+          const nextRunAt = rawNext;
+          await db
+            .update(taskSchedules)
+            .set({ nextRunAt, lastDeferralReason: 'budget_exhausted', lastDeferredAt: now, updatedAt: now })
+            .where(eq(taskSchedules.id, schedule.id));
+          skipped++;
+          continue;
+        }
+
         // Skip if linked mission is no longer active
         if (linkedMission && linkedMission.status !== 'active') {
           // Auto-disable the schedule so it stops firing
@@ -467,18 +485,6 @@ export async function GET(req: NextRequest) {
           await db
             .update(taskSchedules)
             .set({ nextRunAt, lastDeferralReason: 'orchestration_manual', lastDeferredAt: now, updatedAt: now })
-            .where(eq(taskSchedules.id, schedule.id));
-          skipped++;
-          continue;
-        }
-
-        // Skip if linked mission has exhausted its cost budget — defer until budget is raised
-        if (linkedMission && linkedMission.status === 'budget_exhausted') {
-          const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
-          const nextRunAt = rawNext;
-          await db
-            .update(taskSchedules)
-            .set({ nextRunAt, lastDeferralReason: 'budget_exhausted', lastDeferredAt: now, updatedAt: now })
             .where(eq(taskSchedules.id, schedule.id));
           skipped++;
           continue;
