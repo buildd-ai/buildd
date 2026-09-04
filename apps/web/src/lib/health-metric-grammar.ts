@@ -18,7 +18,7 @@
  * See `docs/design/derived-metric-availability.md` for the sibling contract: no
  * stat renders a value or a bare dash without a reachable reason at that stat.
  */
-import { normalizeErrorSignature } from './failure-analytics';
+import { normalizeErrorSignature } from './error-signature';
 
 const MINUTE = 60 * 1000;
 const HOUR = 60 * MINUTE;
