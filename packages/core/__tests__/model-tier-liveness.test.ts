@@ -15,6 +15,7 @@ import { auditTierModels, type LiveModel } from '../model-tier-liveness';
 
 // Shape of a real /v1/models page, trimmed to the fields we use.
 const LIVE: LiveModel[] = [
+  { id: 'claude-fable-5-1', display_name: 'Claude Fable 5.1' },
   { id: 'claude-fable-5', display_name: 'Claude Fable 5' },
   { id: 'claude-opus-5', display_name: 'Claude Opus 5' },
   { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8' },

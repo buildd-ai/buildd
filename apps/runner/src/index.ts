@@ -1,5 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
+import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
+import { setCatalogPrices } from '@buildd/core/model-prices';
 import { join } from 'path';
 import { homedir, hostname } from 'os';
 import type { LocalUIConfig, LLMProvider, ProviderConfig } from './types';
@@ -674,6 +676,24 @@ if (workerManager) {
 if (buildd) {
   fetchAccountInfo();
 }
+
+/**
+ * Load the public model catalog so cost math uses live prices.
+ *
+ * Needs no credential (OpenRouter's list is public), so this runs on every
+ * runner regardless of auth mode. Best-effort and non-blocking: on failure the
+ * static price tables apply, which is the behaviour that existed before.
+ * Refreshed daily — model prices change on the order of months.
+ */
+async function loadModelCatalog() {
+  const entries = await fetchOpenRouterCatalog();
+  if (entries.length > 0) {
+    setCatalogPrices(entries);
+    console.log(`[runner] Loaded ${entries.length} models from the public catalog for cost math`);
+  }
+}
+loadModelCatalog();
+setInterval(loadModelCatalog, 24 * 60 * 60_000);
 
 // Serve static files
 function serveStatic(path: string, req?: Request): Response {

@@ -30,6 +30,10 @@ import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
+// From `model-tier-defaults`, not `model-tier-registry`: the registry imports
+// the db client, and this route only needs the tier vocabulary. Pulling the
+// registry in here would add a DB dependency to task creation for a constant.
+import { TIERS, type Tier } from '@buildd/core/model-tier-defaults';
 
 // Routing vocabulary for tasks.kind / tasks.complexity — the two inputs the
 // claim-time router's kind×complexity matrix reads (see packages/core/model-router.ts).
@@ -866,7 +870,7 @@ export async function POST(req: NextRequest) {
         ...(roleSlug && typeof roleSlug === 'string' ? { roleSlug } : {}),
         ...(resolvedRequiredConnectors !== null ? { requiredConnectors: resolvedRequiredConnectors } : {}),
         ...(pathManifest ? { pathManifest } : {}),
-        ...(['premium', 'standard', 'budget'].includes(rawTier) ? { tier: rawTier as 'premium' | 'standard' | 'budget' } : {}),
+        ...(TIERS.includes(rawTier as Tier) ? { tier: rawTier as Tier } : {}),
         ...(rawKind !== undefined ? { kind: rawKind as TaskKind } : {}),
         ...(rawComplexity !== undefined ? { complexity: rawComplexity as TaskComplexity } : {}),
         // Caller-supplied routing inputs are attributed to the user so routing

@@ -15,6 +15,7 @@
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./model-aliases": "./model-aliases.ts",
+    "./model-catalog": "./model-catalog.ts",
     "./model-prices": "./model-prices.ts",
     "./model-router": "./model-router.ts",
     "./model-tier-registry": "./model-tier-registry.ts",

@@ -1,0 +1,405 @@
+{
+  "data": [
+    {
+      "id": "anthropic/claude-fable-5.1",
+      "canonical_slug": "anthropic/claude-fable-5.1-20260831",
+      "name": "Anthropic: Claude Fable 5.1",
+      "created": 1788285838,
+      "context_length": 1000000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00005",
+        "input_cache_read": "0.00000025",
+        "input_cache_write": "0.0000125"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "tools",
+        "verbosity"
+      ]
+    },
+    {
+      "id": "anthropic/claude-haiku-4.5",
+      "canonical_slug": "anthropic/claude-4.5-haiku-20251001",
+      "name": "Anthropic: Claude Haiku 4.5",
+      "created": 1760547638,
+      "context_length": 200000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000005",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.00000125"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ]
+    },
+    {
+      "id": "anthropic/claude-opus-4.1",
+      "canonical_slug": "anthropic/claude-4.1-opus-20250805",
+      "name": "Anthropic: Claude Opus 4.1",
+      "created": 1754411591,
+      "context_length": 200000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000015",
+        "completion": "0.000075",
+        "input_cache_read": "0.0000015",
+        "input_cache_write": "0.00001875"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_tokens",
+        "reasoning",
+        "stop",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ]
+    },
+    {
+      "id": "anthropic/claude-opus-5",
+      "canonical_slug": "anthropic/claude-opus-5-20260723",
+      "name": "Claude Opus 5",
+      "created": 1784912544,
+      "context_length": 1000000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000005",
+        "completion": "0.000025",
+        "input_cache_read": "0.0000005",
+        "input_cache_write": "0.00000625"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ]
+    },
+    {
+      "id": "anthropic/claude-sonnet-4.6",
+      "canonical_slug": "anthropic/claude-4.6-sonnet-20260217",
+      "name": "Anthropic: Claude Sonnet 4.6",
+      "created": 1771342990,
+      "context_length": 1000000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000003",
+        "completion": "0.000015",
+        "input_cache_read": "0.0000003",
+        "input_cache_write": "0.00000375"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p",
+        "verbosity"
+      ]
+    },
+    {
+      "id": "anthropic/claude-sonnet-5",
+      "canonical_slug": "anthropic/claude-sonnet-5-20260630",
+      "name": "Anthropic: Claude Sonnet 5",
+      "created": 1782843083,
+      "context_length": 1000000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.00001",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.0000025"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ]
+    },
+    {
+      "id": "anthropic/claude-sonnet-5:batch",
+      "canonical_slug": "anthropic/claude-sonnet-5-20260630",
+      "name": "Anthropic: Claude Sonnet 5 (batch)",
+      "created": 1782843083,
+      "context_length": 1000000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000005",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.00000125"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "tool_choice",
+        "tools",
+        "verbosity"
+      ]
+    },
+    {
+      "id": "openai/gpt-5-image",
+      "canonical_slug": "openai/gpt-5-image",
+      "name": "OpenAI: GPT-5 Image",
+      "created": 1760447986,
+      "context_length": 400000,
+      "architecture": {
+        "output_modalities": [
+          "image",
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00001",
+        "completion": "0.00001",
+        "input_cache_read": "0.00000125"
+      },
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "presence_penalty",
+        "reasoning",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "top_logprobs",
+        "top_p"
+      ]
+    },
+    {
+      "id": "openai/gpt-5.1-codex-mini",
+      "canonical_slug": "openai/gpt-5.1-codex-mini-20251113",
+      "name": "OpenAI: GPT-5.1-Codex-Mini",
+      "created": 1763057820,
+      "context_length": 400000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00000025",
+        "completion": "0.000002",
+        "input_cache_read": "0.00000003"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "openai/gpt-5.3-codex",
+      "canonical_slug": "openai/gpt-5.3-codex-20260224",
+      "name": "OpenAI: GPT-5.3-Codex",
+      "created": 1771959164,
+      "context_length": 400000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.00000175",
+        "completion": "0.000014",
+        "input_cache_read": "0.000000175"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "openai/gpt-5.6-luna",
+      "canonical_slug": "openai/gpt-5.6-luna-20260709",
+      "name": "OpenAI: GPT-5.6 Luna",
+      "created": 1783590864,
+      "context_length": 1050000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.0000002",
+        "completion": "0.0000012",
+        "input_cache_read": "0.00000002",
+        "input_cache_write": "0.00000025"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "openai/gpt-5.6-terra",
+      "canonical_slug": "openai/gpt-5.6-terra-20260709",
+      "name": "OpenAI: GPT-5.6 Terra",
+      "created": 1783590857,
+      "context_length": 1050000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000002",
+        "completion": "0.000012",
+        "input_cache_read": "0.0000002",
+        "input_cache_write": "0.0000025"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "reasoning_effort",
+        "response_format",
+        "seed",
+        "structured_outputs",
+        "tool_choice",
+        "tools"
+      ]
+    },
+    {
+      "id": "~anthropic/claude-haiku-latest",
+      "canonical_slug": "~anthropic/claude-haiku-latest",
+      "name": "Anthropic Claude Haiku Latest",
+      "created": 1777318492,
+      "context_length": 200000,
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ]
+      },
+      "pricing": {
+        "prompt": "0.000001",
+        "completion": "0.000005",
+        "input_cache_read": "0.0000001",
+        "input_cache_write": "0.00000125"
+      },
+      "supported_parameters": [
+        "include_reasoning",
+        "max_completion_tokens",
+        "max_tokens",
+        "reasoning",
+        "response_format",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_k",
+        "top_p"
+      ]
+    }
+  ]
+}
