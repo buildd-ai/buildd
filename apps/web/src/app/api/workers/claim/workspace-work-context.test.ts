@@ -11,6 +11,22 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 const mockWorkersFindMany = mock(async (_args?: any) => [] as any[]);
 const mockTasksFindMany = mock(async (_args?: any) => [] as any[]);
 
+// Predicate stubs: `db` is mocked, so the query-level scoping (which workspaces,
+// which statuses, and the exclusion of the claiming workers/tasks themselves) is
+// unobservable through the returned rows. Plain objects make it assertable —
+// the post-filters below are only the second line of defence.
+mock.module('drizzle-orm', () => ({
+  and: (...args: any[]) => ({ args, type: 'and' }),
+  not: (value: any) => ({ value, type: 'not' }),
+  isNull: (field: any) => ({ field, type: 'isNull' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+}));
+mock.module('@buildd/core/db/schema', () => ({
+  workers: { id: 'id', workspaceId: 'workspaceId', prUrl: 'prUrl', status: 'status', createdAt: 'createdAt' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', status: 'status', pathManifest: 'pathManifest' },
+}));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -40,6 +56,17 @@ function prWorker(id: string, workspaceId: string, taskId: string | null) {
     taskId,
     workspaceId,
   } as any;
+}
+
+/** Reads one predicate out of the stubbed WHERE tree by node type + field. */
+function predicate(args: any, type: string, field: string) {
+  return (args?.where?.args ?? []).find((n: any) => n?.type === type && n.field === field);
+}
+
+/** Reads a NOT-wrapped predicate (`not(inArray(...))`, `not(isNull(...))`). */
+function negated(args: any, innerType: string, field: string) {
+  return (args?.where?.args ?? [])
+    .find((n: any) => n?.type === 'not' && n.value?.type === innerType && n.value?.field === field)?.value;
 }
 
 beforeEach(() => {
@@ -158,6 +185,63 @@ describe('attachWorkspaceWorkContext — siblingTaskManifests', () => {
     await attachWorkspaceWorkContext(workers, [task('t1', 'ws-1')]);
 
     expect(workers[0].siblingTaskManifests).toBeUndefined();
+  });
+});
+
+describe('attachWorkspaceWorkContext — query scoping', () => {
+  // Every filter here is invisible through the returned rows. Dropping the
+  // self-exclusion makes a worker read back its own PR as if it were a
+  // sibling's; dropping the workspace filter pulls every workspace's live
+  // workers out of the DB and leans entirely on the post-filter.
+  it('asks only for other live workers with a PR in the claimed workspaces', async () => {
+    await attachWorkspaceWorkContext(
+      [worker('t1'), worker('t2')],
+      [task('t1', 'ws-1'), task('t2', 'ws-2')],
+    );
+
+    const args = mockWorkersFindMany.mock.calls[0]?.[0] as any;
+    expect(predicate(args, 'inArray', 'workspaceId').values).toEqual(['ws-1', 'ws-2']);
+    expect(negated(args, 'isNull', 'prUrl')).toBeDefined();
+    expect(predicate(args, 'inArray', 'status').values)
+      .toEqual(['running', 'idle', 'starting', 'waiting_input', 'completed']);
+    // The claiming workers must not appear in their own openPRs context.
+    expect(negated(args, 'inArray', 'id').values).toEqual(['w-t1', 'w-t2']);
+    // Bounded context: this list is injected into the agent prompt.
+    expect(args.limit).toBe(10);
+  });
+
+  it('deduplicates the workspace list when several workers share a workspace', async () => {
+    await attachWorkspaceWorkContext(
+      [worker('t1'), worker('t2')],
+      [task('t1', 'ws-1'), task('t2', 'ws-1')],
+    );
+
+    expect(predicate(mockWorkersFindMany.mock.calls[0]?.[0], 'inArray', 'workspaceId').values).toEqual(['ws-1']);
+  });
+
+  it('asks only for pending/active sibling tasks with a manifest, excluding the claimed ones', async () => {
+    await attachWorkspaceWorkContext([worker('t1')], [task('t1', 'ws-1')]);
+
+    // Only one tasks query runs here (no PR workers → no title lookup).
+    const args = mockTasksFindMany.mock.calls[0]?.[0] as any;
+    expect(predicate(args, 'inArray', 'workspaceId').values).toEqual(['ws-1']);
+    expect(predicate(args, 'inArray', 'status').values).toEqual(['pending', 'assigned', 'in_progress']);
+    expect(predicate(args, 'isNotNull', 'pathManifest')).toBeDefined();
+    // A task must never be shown its own manifest as a sibling's.
+    expect(negated(args, 'inArray', 'id').values).toEqual(['t1']);
+  });
+
+  it('looks up PR titles only for the tasks behind the returned PR workers', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      prWorker('w-a', 'ws-1', 't-a'),
+      prWorker('w-b', 'ws-1', null),
+    ]);
+
+    await attachWorkspaceWorkContext([worker('t1')], [task('t1', 'ws-1')]);
+
+    // This query's WHERE is a bare `inArray`, not an `and(...)` tree.
+    const where = (mockTasksFindMany.mock.calls[0]?.[0] as any)?.where;
+    expect(where).toEqual({ field: 'id', values: ['t-a'], type: 'inArray' });
   });
 });
 
