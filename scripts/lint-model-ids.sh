@@ -27,6 +27,7 @@ ALLOWLIST=(
   "packages/core/model-tier-defaults.ts"           # code-level fallback tiers
   "packages/core/model-tier-liveness.ts"           # audits tier IDs; the IDs in its docstrings ARE the spec of the parser
   "packages/core/model-display.ts"                 # humanises model IDs; the IDs in its docstrings ARE the spec of the parser
+  "packages/core/model-catalog.ts"                 # normalises vendor model IDs; every hit is prose in a docstring, the code itself contains no ID literal
   "packages/core/mcp-tools.ts"                     # help/param documentation strings only
   "apps/web/src/app/api/qa/judge/route.ts"         # judge model pinned deliberately (PR #1029)
   "apps/runner/src/index.ts"                       # runner UI model dropdown
@@ -37,7 +38,7 @@ ALLOWLIST=(
 
 # claude-<family>-<n>, claude-<n>, any gpt-<n> (covers gpt-4, gpt-4o, gpt-4.1,
 # gpt-5, gpt-5-codex, gpt-3.5), and the o-series reasoning models.
-PATTERN='claude-(haiku|sonnet|opus|fable)-[0-9]|claude-[0-9]|gpt-[0-9]|o[0-9]-(mini|preview)'
+PATTERN='claude-(haiku|sonnet|opus|fable|mythos)-[0-9]|claude-[0-9]|gpt-[0-9]|o[0-9]-(mini|preview)'
 
 # Excluded from the scan, deliberately and visibly (counts are printed):
 #   - build output and vendored code

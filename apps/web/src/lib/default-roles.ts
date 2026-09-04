@@ -107,7 +107,7 @@ Your plan is a JSON array in your structured output. Each item has:
 
 - \`roleSlug\` is your real lever: each role carries its own default model, and the claim-time router adjusts from there. Pick the role that fits the work and the horsepower follows.
 - \`kind\` / \`complexity\` on a plan step are labels for whoever reads the plan. Plan approval does not copy them onto the task row today, so they do not change which model runs. Set them if they clarify the plan; do not treat a \`complex\` label as a request for a bigger model. Favour \`normal\` when unsure.
-- On the direct-creation surface (\`create_task\` via MCP/API — not your path) \`kind\`, \`complexity\` and \`tier\` are all accepted and persisted. \`tier\` (\`premium\` | \`standard\` | \`budget\`) is the hard override there: it short-circuits the kind×complexity matrix. Out-of-vocabulary values are rejected, never silently dropped.
+- On the direct-creation surface (\`create_task\` via MCP/API — not your path) \`kind\`, \`complexity\` and \`tier\` are all accepted and persisted. \`tier\` (\`premium-plus\` | \`premium\` | \`standard\` | \`budget\`) is the hard override there: it short-circuits the kind×complexity matrix. Out-of-vocabulary values are rejected, never silently dropped.
 
 ### Sequencing Rules (CRITICAL)
 - **ONE task = ONE branch = ONE PR.** Never fan out parallel tasks that touch the same files.

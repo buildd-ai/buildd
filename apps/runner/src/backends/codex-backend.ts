@@ -2,6 +2,20 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 import { mapCodexEventToSdkMessages } from './codex-events.js';
+import { catalogPriceFor } from '@buildd/core/model-prices';
+
+/**
+ * Codex prices in `{input, cachedInput, output}`; the shared catalog speaks
+ * `{input, output, cacheRead, cacheWrite}`. Returns null when the catalog is
+ * cold (nothing loaded it) or does not carry the model.
+ */
+function codexPriceFromCatalog(
+  modelId: string,
+): { input: number; cachedInput: number; output: number } | null {
+  const p = catalogPriceFor(modelId);
+  if (!p) return null;
+  return { input: p.input, cachedInput: p.cacheRead, output: p.output };
+}
 
 export interface CodexBackendConfig {
   /** Path to CODEX_HOME directory for auth.json (overrides env var) */
@@ -503,10 +517,44 @@ export class CodexBackend implements AgentBackend {
       return override as { input: number; cachedInput: number; output: number };
     }
 
+    // Live catalog first — it is the only source that cannot go stale, and the
+    // only one that knows a model released after this file was last touched.
+    const fromCatalog = codexPriceFromCatalog(modelId);
+    if (fromCatalog) return fromCatalog;
+
+    // Static fallback, verified 2026-09-04 against OpenRouter's public catalog.
+    //
+    // ORDER IS LOAD-BEARING and was wrong before: a bare `mini || nano` check
+    // ran first at a single $0.75/$4.50 rate, but those variants price per
+    // generation ($0.05 to $0.75), and `-pro` is $30 on 5.4/5.5 while on 5.6 it
+    // costs the SAME as the base model. So generation is matched before variant,
+    // and 5.6 before `pro`.
     const id = modelId.toLowerCase();
-    if (id.includes('mini') || id.includes('nano')) return { input: 0.75, cachedInput: 0.075, output: 4.5 };
-    if (id.includes('5.5')) return { input: 5, cachedInput: 0.5, output: 30 };
-    if (id.includes('5.4')) return { input: 2.5, cachedInput: 0.25, output: 15 };
+
+    if (id.includes('5.6')) {
+      // The 5.6 line prices per named variant; -pro carries the base rate.
+      if (id.includes('luna')) return { input: 0.2, cachedInput: 0.02, output: 1.2 };
+      if (id.includes('sol')) return { input: 2, cachedInput: 0.2, output: 10 };
+      return { input: 2, cachedInput: 0.2, output: 12 }; // terra + unknown 5.6
+    }
+    if (id.includes('5.5')) {
+      if (id.includes('pro')) return { input: 30, cachedInput: 3, output: 180 };
+      return { input: 5, cachedInput: 0.5, output: 30 };
+    }
+    if (id.includes('5.4')) {
+      if (id.includes('pro')) return { input: 30, cachedInput: 3, output: 180 };
+      if (id.includes('nano')) return { input: 0.2, cachedInput: 0.02, output: 1.25 };
+      if (id.includes('mini')) return { input: 0.75, cachedInput: 0.075, output: 4.5 };
+      return { input: 2.5, cachedInput: 0.25, output: 15 };
+    }
+    if (id.includes('5.3') || id.includes('5.2')) {
+      if (id.includes('pro')) return { input: 21, cachedInput: 2.1, output: 168 };
+      return { input: 1.75, cachedInput: 0.175, output: 14 };
+    }
+    // gpt-5 / 5.1 generation, including the codex variants we actually dispatch.
+    if (id.includes('nano')) return { input: 0.05, cachedInput: 0.005, output: 0.4 };
+    if (id.includes('mini')) return { input: 0.25, cachedInput: 0.025, output: 2 };
+    if (id.includes('pro')) return { input: 15, cachedInput: 1.5, output: 120 };
     return { input: 1.25, cachedInput: 0.125, output: 10 };
   }
 

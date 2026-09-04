@@ -352,6 +352,7 @@ export function buildMcpServerEntries(
 // Re-export for backward compat + direct use in this module.
 export { exchangeAssertionConnector } from './assertion-exchange.js';
 import { exchangeAssertionConnector } from './assertion-exchange.js';
+import { resolveEffectiveThinking } from '@buildd/core/model-aliases';
 
 function hasClaudeCredentials(): boolean {
   // Check for OAuth credentials from `claude login` (.credentials.json)
@@ -2472,6 +2473,10 @@ export class WorkerManager {
       const configuredThinking = taskThinking !== undefined ? taskThinking : gitConfig?.thinking;
       const taskEffort = (task.context as any)?.effort;
       const configuredEffort = taskEffort !== undefined ? taskEffort : gitConfig?.effort;
+      const effectiveThinking = resolveEffectiveThinking(sessionModel, configuredEffort, configuredThinking);
+      if (configuredThinking && !effectiveThinking) {
+        console.log(`[Worker ${worker.id}] Dropped thinking:disabled — ${sessionModel} rejects it${configuredEffort ? ` at effort ${configuredEffort}` : ''}`);
+      }
 
       // Resolve SDK native binary explicitly — Bun's isolated linker layout
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
@@ -2701,8 +2706,13 @@ export class WorkerManager {
         ...(resumeSessionId && (task.backend || 'claude') !== 'codex' ? { resume: resumeSessionId } : {}),
         // 1M context beta for Sonnet models (4.5, 4.6+) — reduces compaction at higher cost
         ...(betas ? { betas } : {}),
-        // Thinking/effort controls — validated against model capabilities below
-        ...(configuredThinking ? { thinking: configuredThinking } : {}),
+        // Thinking/effort controls — validated against model capabilities below.
+        // effectiveThinking, not configuredThinking: some models 400 on an
+        // explicit `{ type: "disabled" }` (Fable/Mythos always, Opus 5 at
+        // xhigh/max). resolveEffectiveThinking drops the override in exactly
+        // those cases. It existed for this before but was never called from
+        // anywhere, so the Opus 5 guard had no effect in production either.
+        ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
         ...(configuredEffort ? { effort: configuredEffort } : {}),
       };
 

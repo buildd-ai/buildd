@@ -1,5 +1,5 @@
 /**
- * Model tier registry — resolves premium/standard/budget → concrete provider + model.
+ * Model tier registry — resolves premium-plus/premium/standard/budget → concrete provider + model.
  *
  * Resolution chain (first match wins):
  *   1. Workspace override row  (team_id=X, workspace_id=Y, tier=T)
@@ -16,9 +16,9 @@ import { db } from './db/client';
 import { modelTierRegistry } from './db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 export type { Tier, TierProvider, TierEntry } from './model-tier-defaults';
-export { TIER_DEFAULTS } from './model-tier-defaults';
+export { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
 import type { Tier, TierEntry, TierProvider } from './model-tier-defaults';
-import { TIER_DEFAULTS } from './model-tier-defaults';
+import { TIER_DEFAULTS, TIERS } from './model-tier-defaults';
 
 /** Maps the model-router's legacy alias vocabulary to the new tier vocabulary. */
 export function mapRouterAlias(alias: string): Tier {
@@ -126,10 +126,10 @@ export async function resolveAllTiers(
   teamId: string,
   workspaceId?: string | null,
 ): Promise<Record<Tier, TierEntry>> {
-  const [premium, standard, budget] = await Promise.all([
-    resolveTierEntry('premium', teamId, workspaceId),
-    resolveTierEntry('standard', teamId, workspaceId),
-    resolveTierEntry('budget', teamId, workspaceId),
-  ]);
-  return { premium, standard, budget };
+  const entries = await Promise.all(
+    TIERS.map((tier) => resolveTierEntry(tier, teamId, workspaceId)),
+  );
+  return Object.fromEntries(
+    TIERS.map((tier, i) => [tier, entries[i]]),
+  ) as Record<Tier, TierEntry>;
 }
