@@ -77,9 +77,30 @@ describe('POST /api/admin/backfill-merged-prs', () => {
     expect(res.status).toBe(403);
   });
 
-  it('returns 200 with summary when no stale workers found', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
+  // A browser session is not an accepted credential here: `getCurrentUser`
+  // carries no admin level and this codebase has no platform-admin concept for
+  // sessions, so being signed in must not substitute for an admin key.
+  it('returns 401 for a signed-in session with no admin-level API key', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'some-user' });
     mockAuthenticateApiKey.mockResolvedValue(null);
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(401);
+    expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
+  });
+
+  it('returns 403 for a signed-in session presenting a non-admin API key', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'some-user' });
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'user' });
+
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(403);
+    expect(mockRefreshWorkerMergeStateIfStale).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 with summary when no stale workers found', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({ rows: [] });
 
     const res = await POST(makeRequest());
@@ -89,8 +110,8 @@ describe('POST /api/admin/backfill-merged-prs', () => {
   });
 
   it('calls refreshWorkerMergeStateIfStale for each stale worker', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({
       rows: [
         { id: 'w1', pr_number: 10, pr_url: 'https://github.com/o/r/pull/10', installation_id: 1 },
@@ -124,8 +145,8 @@ describe('POST /api/admin/backfill-merged-prs', () => {
   // and required the originating task to be 'completed'.
 
   it('prefers the repo-mediated installation over the legacy workspace FK', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({ rows: [] });
 
     await POST(makeRequest());
@@ -136,8 +157,8 @@ describe('POST /api/admin/backfill-merged-prs', () => {
   });
 
   it('does not restrict the backfill to completed tasks', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({ rows: [] });
 
     await POST(makeRequest());
@@ -148,8 +169,8 @@ describe('POST /api/admin/backfill-merged-prs', () => {
   });
 
   it('retires an old row with no reachable installation to terminal unresolvable', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({
       rows: [{
         id: 'w1',
@@ -172,8 +193,8 @@ describe('POST /api/admin/backfill-merged-prs', () => {
   });
 
   it('counts, but does not retire, a young row with no reachable installation', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'admin-user' });
-    mockAuthenticateApiKey.mockResolvedValue(null);
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'admin' });
     mockExecute.mockResolvedValue({
       rows: [{
         id: 'w1',

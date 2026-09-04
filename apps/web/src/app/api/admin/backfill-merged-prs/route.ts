@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { db } from '@buildd/core/db';
 import { sql, eq } from 'drizzle-orm';
@@ -30,19 +29,22 @@ import { shouldMarkUnresolvable } from '@/lib/pr-freshness';
  * Rows GitHub cannot resolve at all are written to terminal `unresolvable`
  * rather than left to be retried forever.
  *
- * Admin auth required (session or admin-level API key).
+ * Admin-level API key required.
  * Returns { total, refreshed, unresolvable, skipped }.
  */
 export async function POST(req: NextRequest) {
-  const user = await getCurrentUser();
+  // Admin-level API key required. A browser session is deliberately NOT
+  // accepted: there is no platform-admin concept for sessions in this codebase,
+  // so accepting one would let any signed-in user drive a bulk GitHub-backed
+  // write across every workspace. Same bar as admin/refresh-model-aliases.
   const authHeader = req.headers.get('authorization');
   const apiKey = authHeader?.replace('Bearer ', '') || null;
   const apiAccount = await authenticateApiKey(apiKey);
 
-  if (!user && !apiAccount) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!apiAccount) {
+    return NextResponse.json({ error: 'Requires an admin-level API key' }, { status: 401 });
   }
-  if (apiAccount && apiAccount.level !== 'admin') {
+  if (apiAccount.level !== 'admin') {
     return NextResponse.json({ error: 'Requires admin-level API key' }, { status: 403 });
   }
 
