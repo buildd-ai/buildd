@@ -2178,4 +2178,49 @@ describe('GET /api/github/pr', () => {
     // workspace name resolution must have been called
     expect(mockWorkspacesFindMany).toHaveBeenCalled();
   });
+
+  // Regression (friction task 55657d9f): passing an explicit workspaceId that does not
+  // resolve to any workspace the caller can access (typo, wrong id, or a workspace outside
+  // the team) must never silently fall back to an unscoped cross-workspace search. Before
+  // the fix, an unresolved workspaceId was treated the same as "no workspaceId supplied",
+  // so a same-numbered PR from a completely different repo/workspace was returned as if it
+  // were the one the caller asked for.
+  it('returns 404 (not a cross-workspace match) when workspaceId does not resolve to an accessible workspace', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockGetTeamWorkspaceIds.mockResolvedValue(['uuid-ws-1', 'uuid-ws-2']);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'uuid-ws-1', name: 'buildd', repo: 'buildd-ai/buildd' },
+      { id: 'uuid-ws-2', name: 'buildd-ios', repo: 'buildd-ai/buildd-ios' },
+    ]);
+    // A worker with the SAME PR number happens to exist in an unrelated accessible
+    // workspace. This must not be returned when the caller named a workspace that
+    // doesn't resolve — the caller asked to be scoped, not silently redirected.
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'w-wrong-repo',
+      workspaceId: 'uuid-ws-1',
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/25',
+      prNumber: 25,
+      workspace: WORKSPACE_OK,
+    }]);
+    // Wired so that, if the bug is present (unresolved workspaceId silently searches all
+    // workspaces), the handler would sail past worker resolution and confidently return
+    // the wrong repo's PR data as a 200 rather than erroring out for an unrelated reason.
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 25, title: 'wrong repo entirely', body: null, state: 'open',
+      mergeable: true, mergeable_state: 'clean',
+      html_url: 'https://github.com/buildd-ai/buildd/pull/25',
+      head: { sha: 'shaWrong' }, additions: 1, deletions: 1, changed_files: 1,
+    });
+    mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+    mockGithubApi.mockResolvedValueOnce([]);
+
+    // 'moa-ops' matches none of the accessible workspaces by id, name, or repo.
+    const res = await GET(createGetRequest(null, 25, 'moa-ops'));
+
+    expect(res.status).toBe(404);
+    const data = await res.json();
+    expect(data.error).toMatch(/workspace/i);
+    expect(data.pr).toBeUndefined();
+  });
 });

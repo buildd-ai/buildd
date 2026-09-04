@@ -36,7 +36,7 @@ async function resolveWorkerByPrNumber(
 
   // Resolve workspaceId to a UUID — callers may pass a repo name (e.g. "sibling-app")
   // rather than a UUID. wsIds only contains UUIDs, so a direct includes() check
-  // misses name-based inputs and silently falls back to searching all workspaces.
+  // misses name-based inputs.
   let narrowedWsId: string | null = null;
   if (workspaceId) {
     if (wsIds.includes(workspaceId)) {
@@ -53,6 +53,15 @@ async function resolveWorkerByPrNumber(
         ws.repo?.toLowerCase().endsWith('/' + lower)
       );
       if (match) narrowedWsId = match.id;
+    }
+
+    // The caller explicitly asked to be scoped to a workspace. If it doesn't resolve
+    // to one they can access (typo, wrong id, or a workspace outside their team),
+    // that is a disambiguation failure — never fall through to an unscoped search
+    // across every accessible workspace, which can silently match a same-numbered
+    // PR from an unrelated repo and return it as if it were the requested one.
+    if (!narrowedWsId) {
+      return { error: `Workspace "${workspaceId}" not found or not accessible`, status: 404 };
     }
   }
 
