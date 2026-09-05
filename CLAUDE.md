@@ -250,11 +250,20 @@ Some workflows exist as GitHub Actions only and must NOT be registered as routab
 
 ## Skills
 
+Every directory under `.claude/skills/` is listed here, and nothing that is not
+there is listed — `scripts/skills-listed.test.ts` enforces both directions. The
+previous version of this list named three skills that do not exist in the tree
+and omitted two that do.
+
+**`.claude/` is gitignored** (`.gitignore:14`), so a new skill needs
+`git add -f .claude/skills/<slug>/SKILL.md`. A plain `git add -A` skips it
+silently, and you get a commit that lists the skill without shipping it.
+
 - **Agent workflow**: `.claude/skills/buildd-workflow/` — Task lifecycle guide (claim → work → ship). Use `/buildd-workflow` when starting a task.
+- **Schema change**: `.claude/skills/schema-change/` — Ship a Drizzle migration without losing a column or a release. Migration index collisions happen several times a day with concurrent sessions and git does **not** conflict on the `.sql` files; read this before pushing anything that touches `packages/core/drizzle/`.
+- **Verification loop**: `.claude/skills/ralph-loop/` — Run the quality gates locally and iterate until they pass.
+- **Spec sync**: `.claude/skills/spec-sync/` — Keep `docs/SPEC.md` the source of truth and reconcile the doc/site repos against it.
 - **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
-- **UI audit**: `.claude/skills/ui-audit/` — UX evaluation framework
-- **Competitive landscape**: `.claude/skills/competitive-landscape/` — Market analysis
-- **SDK changelog monitor**: `.claude/skills/sdk-changelog-monitor/` — Track SDK releases
 
 ## Specs & Docs Layout
 
