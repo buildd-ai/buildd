@@ -45,6 +45,15 @@ if [ -n "$SHARED_CHANGES" ]; then
   exit 0
 fi
 
+# bun.lock only changes for actual dependency updates, never for the
+# package.json version-field bumps a release commit makes — so unlike
+# package.json, a lockfile diff is an unambiguous signal to run everything.
+if echo "$CHANGED" | grep -qE '^bun\.lock$'; then
+  log "bun.lock changed — running all tests"
+  echo "ALL"
+  exit 0
+fi
+
 # Map changed .ts files to colocated .test.ts files
 TESTS=""
 while IFS= read -r file; do

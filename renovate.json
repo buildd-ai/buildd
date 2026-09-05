@@ -10,7 +10,7 @@
       "groupName": "Anthropic AI SDK",
       "automerge": true,
       "automergeType": "pr",
-      "platformAutomerge": true
+      "platformAutomerge": false
     },
     {
       "matchPackageNames": ["@anthropic-ai/{/,}**"],
