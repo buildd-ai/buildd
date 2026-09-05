@@ -152,7 +152,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             id="obs-content"
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            placeholder="Detailed observation content..."
+            placeholder="Detailed observation content…"
             rows={4}
             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm resize-y"
           />
@@ -195,7 +195,7 @@ export default function CreateObservationForm({ workspaceId, onCreated }: Create
             disabled={saving}
             className="px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover text-sm font-medium disabled:opacity-50"
           >
-            {saving ? 'Saving...' : 'Save Observation'}
+            {saving ? 'Saving…' : 'Save Observation'}
           </button>
         </div>
       </div>

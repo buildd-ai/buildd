@@ -521,7 +521,7 @@ export default function NewMissionForm({
           <textarea
             value={description}
             onChange={e => setDescription(e.target.value)}
-            placeholder="Add more context about what this mission should accomplish..."
+            placeholder="Add more context about what this mission should accomplish…"
             rows={3}
             className="w-full px-4 py-3 bg-surface-1 border border-border-default rounded-sm text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary-ring focus:outline-none transition-colors resize-none"
             data-testid="mission-description-input"
@@ -674,7 +674,7 @@ export default function NewMissionForm({
                       : 'bg-surface-3 text-text-secondary hover:bg-surface-3/80 hover:text-text-primary border border-border-default'
                   }`}
                 >
-                  Custom...
+                  Custom…
                 </button>
               </div>
 
@@ -724,7 +724,7 @@ export default function NewMissionForm({
               )}
 
               {validatingCron && (
-                <div className="text-xs text-text-muted mt-2">Validating...</div>
+                <div className="text-xs text-text-muted mt-2">Validating…</div>
               )}
             </div>
           </>
@@ -744,7 +744,7 @@ export default function NewMissionForm({
             className="px-5 py-2 text-sm font-medium bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 transition-colors"
             data-testid="create-mission-button"
           >
-            {submitting ? 'Creating...' : 'Create Mission'}
+            {submitting ? 'Creating…' : 'Create Mission'}
           </button>
         </div>
 

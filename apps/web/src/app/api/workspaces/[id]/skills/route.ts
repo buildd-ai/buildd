@@ -8,6 +8,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
+import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 
 /** Coerce a defaultBackend value to the enum or null (null clears the role's preference). */
 function normalizeBackend(raw: unknown): 'claude' | 'codex' | null {
@@ -155,6 +156,15 @@ export async function POST(
         if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {
             return NextResponse.json(
                 { error: 'slug must be lowercase alphanumeric with hyphens (e.g., "ui-audit")' },
+                { status: 400 }
+            );
+        }
+
+        // `/app/team/new` is a static route, so a role with this slug could
+        // never reach its own detail page. See lib/reserved-slugs.ts.
+        if (isReservedRoleSlug(slug)) {
+            return NextResponse.json(
+                { error: `"${slug}" is reserved because /app/team/${slug} is a built-in page. Pick a different slug.` },
                 { status: 400 }
             );
         }

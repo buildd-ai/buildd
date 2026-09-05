@@ -335,7 +335,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Network error — please try again');
+      setRunError('Could not reach buildd. Criteria were not evaluated.');
     } finally {
       setIsRunning(false);
     }
@@ -362,7 +362,7 @@ export default function MissionGoalCriteria({ missionId, criteria: initialCriter
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Network error — criteria not saved');
+      setRunError('Could not reach buildd. Criteria were not saved.');
       setCriteria(criteria);
     } finally {
       setSavingCriteria(false);

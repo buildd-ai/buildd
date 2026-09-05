@@ -135,7 +135,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12 text-text-muted text-[13px]">
-        Loading feed...
+        Loading feed…
       </div>
     );
   }
@@ -149,7 +149,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
           value={guidanceText}
           onChange={(e) => setGuidanceText(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && postGuidance()}
-          placeholder="Send guidance to all agents..."
+          placeholder="Send guidance to all agents…"
           className="flex-1 px-3 py-2 rounded-lg bg-surface-2 border border-border-default text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-text/40"
         />
         {guidanceText.trim() && (
@@ -260,7 +260,7 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && postReply(note.id)}
-                        placeholder="Your reply..."
+                        placeholder="Your reply…"
                         className="flex-1 px-2.5 py-1.5 rounded-md bg-surface-2 border border-border-default text-[12px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-text/40"
                       />
                       <button

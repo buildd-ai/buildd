@@ -38,7 +38,7 @@ export default function DeleteAccountButton({ accountId, accountName }: { accoun
         disabled={deleting}
         className="btn btn-danger"
       >
-        {deleting ? 'Deleting...' : 'Delete'}
+        {deleting ? 'Deleting…' : 'Delete'}
       </button>
 
       <ConfirmDialog

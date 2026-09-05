@@ -140,7 +140,7 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                                 disabled={testing}
                                 className="px-3 py-1.5 text-sm border border-border-default rounded-md hover:bg-surface-3 disabled:opacity-50"
                             >
-                                {testing ? 'Testing...' : 'Test Connection'}
+                                {testing ? 'Testing…' : 'Test Connection'}
                             </button>
                             {testResult && (
                                 <span className={`text-sm ${testResult.ok ? 'text-status-success' : 'text-status-error'}`}>
@@ -156,7 +156,7 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                 <div className="bg-primary/10 border border-primary/30 rounded-lg p-4">
                     <p className="text-sm text-primary">
                         When enabled, new tasks created in this workspace will be sent to the webhook.
-                        The agent receives the task description and can report progress back via the Buildd API.
+                        The agent receives the task description and can report progress back via the buildd API.
                     </p>
                 </div>
             )}
@@ -168,7 +168,7 @@ export function WebhookConfigForm({ workspaceId, initialConfig }: Props) {
                     disabled={saving}
                     className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
                 >
-                    {saving ? 'Saving...' : 'Save Webhook'}
+                    {saving ? 'Saving…' : 'Save Webhook'}
                 </button>
 
                 {saved && (

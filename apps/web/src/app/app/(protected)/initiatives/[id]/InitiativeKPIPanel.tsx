@@ -77,7 +77,7 @@ export default function InitiativeKPIPanel({ initiativeId, kpis, kpiState: initi
       }
       startTransition(() => router.refresh());
     } catch {
-      setRunError('Network error — please try again');
+      setRunError('Could not reach buildd. KPIs were not evaluated.');
     } finally {
       setIsRunning(false);
     }

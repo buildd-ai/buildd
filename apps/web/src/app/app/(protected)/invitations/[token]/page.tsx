@@ -27,7 +27,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
             This invitation link is invalid or has been revoked.
           </p>
           <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
-            Go to Dashboard
+            Go to workspaces
           </Link>
         </div>
       </div>
@@ -60,7 +60,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
             This invitation has already been accepted. You are a member of <strong>{team?.name}</strong>.
           </p>
           <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
-            Go to Dashboard
+            Go to workspaces
           </Link>
         </div>
       </div>
@@ -78,7 +78,7 @@ export default async function InvitationPage({ params }: { params: Promise<{ tok
             This invitation has expired. Please ask the team admin to send a new invitation.
           </p>
           <Link href="/app/workspaces" className="text-primary hover:opacity-80 font-medium">
-            Go to Dashboard
+            Go to workspaces
           </Link>
         </div>
       </div>

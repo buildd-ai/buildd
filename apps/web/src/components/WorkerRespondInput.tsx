@@ -85,7 +85,7 @@ export default function WorkerRespondInput({
               handleSubmit();
             }
           }}
-          placeholder="Type your response..."
+          placeholder="Type your response…"
           disabled={submitting}
           className="flex-1 px-3 py-2 rounded-sm bg-surface-1 border border-border-default text-[13px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none transition-colors disabled:opacity-50"
         />
@@ -95,7 +95,7 @@ export default function WorkerRespondInput({
           onClick={() => handleSubmit()}
           className="px-4 py-2 rounded-sm bg-accent/20 text-accent-text text-[13px] font-medium hover:bg-accent/30 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
         >
-          {submitting ? 'Sending...' : 'Send'}
+          {submitting ? 'Sending…' : 'Send'}
         </button>
       </div>
 

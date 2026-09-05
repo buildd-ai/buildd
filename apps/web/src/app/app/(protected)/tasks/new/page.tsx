@@ -804,7 +804,7 @@ export default function NewTaskPage() {
                         id="missionId"
                         value={missionId}
                         onChange={setMissionId}
-                        placeholder="Link to a mission..."
+                        placeholder="Link to a mission…"
                         options={[
                           { value: '', label: 'None' },
                           ...availableMissions.map(m => ({
@@ -955,7 +955,7 @@ export default function NewTaskPage() {
                               setSelectedRoleSlug(v);
                               setSelectedRequiredConnectors([]);
                             }}
-                            placeholder="Assign to a role..."
+                            placeholder="Assign to a role…"
                             options={[
                               { value: '', label: 'Any role' },
                               ...roles.map(r => ({ value: r.slug, label: r.name })),
@@ -1062,7 +1062,7 @@ export default function NewTaskPage() {
                 className="flex-1 px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
               >
                 {loading
-                  ? (recurring ? 'Creating Schedule...' : 'Launching...')
+                  ? (recurring ? 'Creating Schedule…' : 'Launching…')
                   : (recurring ? 'Create Schedule' : 'Launch Task')
                 }
               </button>

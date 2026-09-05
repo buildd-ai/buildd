@@ -25,7 +25,7 @@ export default function ArtifactShareControl({
   const [shareToken, setShareToken] = useState<string | null>(initialShareToken);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<'share' | 'unshare' | 'copy' | null>(null);
 
   const shareUrl = shareToken ? `${baseUrl}/share/${shareToken}` : null;
 
@@ -35,7 +35,7 @@ export default function ArtifactShareControl({
   }
 
   async function handleShare() {
-    setError(false);
+    setError(null);
     setLoading(true);
     try {
       const res = await fetch(`/api/artifacts/${artifactId}/share`, {
@@ -59,14 +59,14 @@ export default function ArtifactShareControl({
         }
       }
     } catch {
-      setError(true);
+      setError('share');
     } finally {
       setLoading(false);
     }
   }
 
   async function handleUnshare() {
-    setError(false);
+    setError(null);
     setLoading(true);
     try {
       const res = await fetch(`/api/artifacts/${artifactId}/share`, {
@@ -77,7 +77,7 @@ export default function ArtifactShareControl({
       setVisibility('private');
       setShareToken(null);
     } catch {
-      setError(true);
+      setError('unshare');
     } finally {
       setLoading(false);
     }
@@ -88,7 +88,7 @@ export default function ArtifactShareControl({
     navigator.clipboard
       .writeText(shareUrl)
       .then(flashCopied)
-      .catch(() => setError(true));
+      .catch(() => setError('copy'));
   }
 
   return (
@@ -132,7 +132,13 @@ export default function ArtifactShareControl({
         </button>
       )}
       {error && (
-        <p className="mt-1 text-xs text-status-error">Something went wrong. Please try again.</p>
+        <p className="mt-1 text-xs text-status-error">
+          {error === 'share'
+            ? 'Could not create a share link. This artifact is still private.'
+            : error === 'unshare'
+              ? 'Could not revoke the share link. It may still be public.'
+              : 'Could not write to the clipboard. Your browser may be blocking it.'}
+        </p>
       )}
     </div>
   );

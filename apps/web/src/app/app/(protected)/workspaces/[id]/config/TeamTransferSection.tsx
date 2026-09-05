@@ -74,7 +74,7 @@ export function TeamTransferSection({ workspaceId, currentTeamId, teams }: Props
                         value={selectedTeamId}
                         onChange={setSelectedTeamId}
                         disabled={transferring}
-                        placeholder="Select a team..."
+                        placeholder="Select a team…"
                         options={otherTeams.map(team => ({
                             value: team.id,
                             label: `${team.name} (${team.memberCount} member${team.memberCount !== 1 ? 's' : ''})`,
@@ -87,7 +87,7 @@ export function TeamTransferSection({ workspaceId, currentTeamId, teams }: Props
                     disabled={!selectedTeamId || transferring}
                     className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium rounded-lg transition-colors"
                 >
-                    {transferring ? 'Transferring...' : 'Transfer'}
+                    {transferring ? 'Transferring…' : 'Transfer'}
                 </button>
             </div>
 

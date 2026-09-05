@@ -17,10 +17,14 @@ export default function ProtectedError({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
           </svg>
         </div>
-        <h2 className="text-lg font-semibold text-text-primary mb-2">Something went wrong</h2>
-        <p className="text-sm text-text-secondary mb-4">
-          An unexpected error occurred. Please try again.
-        </p>
+        <h2 className="text-lg font-semibold text-text-primary mb-2">This page failed to render</h2>
+        {/*
+          No prose line here on purpose. "An unexpected error occurred. Please
+          try again." restated the heading and duplicated the Try again button,
+          and it crowded out the one thing on this screen worth reading: the
+          digest or error string below, which is what makes the failure
+          traceable from a screenshot.
+        */}
         {error.digest ? (
           <p className="text-xs text-text-muted font-mono mb-4 bg-surface-3 px-3 py-1.5 rounded">
             {error.digest}
@@ -44,10 +48,10 @@ export default function ProtectedError({
             Try again
           </button>
           <Link
-            href="/app/dashboard"
+            href="/app/home"
             className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
           >
-            Back to dashboard
+            Back to home
           </Link>
         </div>
       </div>

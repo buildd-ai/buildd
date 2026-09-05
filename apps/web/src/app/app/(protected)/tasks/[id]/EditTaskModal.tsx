@@ -257,7 +257,7 @@ export default function EditTaskModal({ task, onClose }: Props) {
               disabled={loading || !title.trim()}
               className="w-full sm:w-auto px-3 py-2 sm:py-1.5 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
             >
-              {loading ? 'Saving...' : 'Save Changes'}
+              {loading ? 'Saving…' : 'Save Changes'}
             </button>
           </div>
         </form>

@@ -169,7 +169,7 @@ export default function WorkspaceList({
                                                         }
                                                     }}
                                                     options={[
-                                                        ...(!workspace.teamId ? [{ value: '', label: 'Select Team...' }] : []),
+                                                        ...(!workspace.teamId ? [{ value: '', label: 'Select Team…' }] : []),
                                                         ...teams.map((t) => ({
                                                             value: t.id,
                                                             label: `${t.name} ${t.slug.startsWith('personal') ? '(Personal)' : ''}`,

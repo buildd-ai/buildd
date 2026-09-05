@@ -81,7 +81,7 @@ export default function ArtifactViewer({
 
   // Per-artifact share UI state.
   const [shareLoadingId, setShareLoadingId] = useState<string | null>(null);
-  const [shareErrorId, setShareErrorId] = useState<string | null>(null);
+  const [shareError, setShareError] = useState<{ id: string; op: 'share' | 'unshare' | 'copy' } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Resync selection when the viewer (re)opens or the caller changes the target.
@@ -134,7 +134,7 @@ export default function ArtifactViewer({
 
   const handleShare = useCallback(
     async (a: ArtifactViewerItem) => {
-      setShareErrorId(null);
+      setShareError(null);
       setShareLoadingId(a.id);
       try {
         const res = await fetch(`/api/artifacts/${a.id}/share`, {
@@ -163,7 +163,7 @@ export default function ArtifactViewer({
         );
         onShareChange?.(a.id, { visibility: 'public', shareToken: token });
       } catch {
-        setShareErrorId(a.id);
+        setShareError({ id: a.id, op: 'share' });
       } finally {
         setShareLoadingId(null);
       }
@@ -173,7 +173,7 @@ export default function ArtifactViewer({
 
   const handleUnshare = useCallback(
     async (a: ArtifactViewerItem) => {
-      setShareErrorId(null);
+      setShareError(null);
       setShareLoadingId(a.id);
       try {
         const res = await fetch(`/api/artifacts/${a.id}/share`, {
@@ -188,7 +188,7 @@ export default function ArtifactViewer({
         );
         onShareChange?.(a.id, { visibility: 'private', shareToken: null });
       } catch {
-        setShareErrorId(a.id);
+        setShareError({ id: a.id, op: 'unshare' });
       } finally {
         setShareLoadingId(null);
       }
@@ -203,7 +203,7 @@ export default function ArtifactViewer({
       navigator.clipboard
         .writeText(url)
         .then(() => flashCopied(a.id))
-        .catch(() => setShareErrorId(a.id));
+        .catch(() => setShareError({ id: a.id, op: 'copy' }));
     },
     [baseUrl, flashCopied],
   );
@@ -327,9 +327,13 @@ export default function ArtifactViewer({
 
           {/* Footer actions */}
           <footer className="border-t border-card-border px-4 py-3 pb-[max(12px,env(safe-area-inset-bottom,0px))]" style={{ minHeight: 44 }}>
-            {shareErrorId === active.id && (
+            {shareError?.id === active.id && (
               <p className="mb-2 text-xs text-status-error">
-                Something went wrong. Please try again.
+                {shareError.op === 'share'
+                  ? 'Could not create a share link. This artifact is still private.'
+                  : shareError.op === 'unshare'
+                    ? 'Could not revoke the share link. It may still be public.'
+                    : 'Could not write to the clipboard. Your browser may be blocking it.'}
               </p>
             )}
             <div className="flex flex-wrap items-center gap-2">
