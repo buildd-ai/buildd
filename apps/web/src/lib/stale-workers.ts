@@ -264,7 +264,10 @@ async function resolveStaleTask(
 
   // Release path claims for the stale/orphaned task so waiting tasks can proceed.
   // Errors are non-fatal — the reaper's primary job is task state resolution.
-  releaseAndNotify(taskId).catch(e =>
+  // 'abandoned': a reaped worker landed nothing, so a waiter must not rebase.
+  // Awaited — this runs on the claim hot path, where an unawaited promise can be
+  // cut off after `notifiedAt` has already been stamped, stranding the waiter.
+  await releaseAndNotify(taskId, 'abandoned').catch(e =>
     console.error(`[stale-workers] releaseAndNotify failed for task ${taskId}:`, e),
   );
 

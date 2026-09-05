@@ -14,10 +14,15 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 
 const mockTasksFindFirst = mock(async (_opts?: any) => null as any);
 const setCalls: any[] = [];
+let returningRows: any[] = [];
 const mockUpdate = mock((_table: any) => ({
   set: mock((vals: any) => {
     setCalls.push(vals);
-    return { where: mock(() => Promise.resolve()) };
+    return {
+      where: mock(() => ({
+        returning: mock(() => Promise.resolve(returningRows)),
+      })),
+    };
   }),
 }));
 
@@ -27,15 +32,24 @@ mock.module('../db', () => ({
     update: mockUpdate,
   },
 }));
-mock.module('../db/schema', () => ({ tasks: { id: 'id', context: 'context' } }));
-mock.module('drizzle-orm', () => ({ eq: (a: any, b: any) => ({ a, b, type: 'eq' }) }));
 
 const {
   WORKER_MESSAGE_CAP,
   buildWorkerMessage,
   enqueueWorkerMessage,
   clearWorkerMessages,
+  buildEnqueueContextSql,
+  buildClearContextSql,
 } = await import('../worker-messages');
+
+// The queue writes are single atomic statements now, so a mocked db has no
+// resulting array to inspect — only the statement we sent. Render it.
+const { PgDialect } = await import('drizzle-orm/pg-core');
+const dialect = new PgDialect();
+function render(chunk: any): { sql: string; params: unknown[] } {
+  const q = dialect.sqlToQuery(chunk);
+  return { sql: q.sql, params: q.params };
+}
 
 const TASK = 'task-recipient';
 const SENDER = 'task-sender';
@@ -53,6 +67,7 @@ function msg(id: string) {
 
 beforeEach(() => {
   setCalls.length = 0;
+  returningRows = [{ id: TASK }];
   mockTasksFindFirst.mockReset();
   mockUpdate.mockClear();
 });
@@ -76,72 +91,78 @@ describe('buildWorkerMessage', () => {
 });
 
 // ── enqueueWorkerMessage ─────────────────────────────────────────────────────
+//
+// These used to assert on the array the code handed the mock. That array was
+// built from a snapshot read, which is the lost-update this rewrite removes:
+// two producers writing at once each replaced the whole column from their own
+// stale copy. The write is one statement now, so the assertions are on the
+// statement.
+
+describe('buildEnqueueContextSql', () => {
+  it('appends to the live column value rather than a snapshot', () => {
+    const { sql, params } = render(buildEnqueueContextSql(msg('m1')));
+    // Reads context inside the SET expression — no client-side array anywhere.
+    expect(sql).toContain('pendingWorkerMessages');
+    expect(sql).toContain('jsonb_array_elements');
+    expect(sql).toContain('||');
+    expect(params.some(p => typeof p === 'string' && p.includes('"m1"'))).toBe(true);
+  });
+
+  it('caps by position so only the newest WORKER_MESSAGE_CAP survive', () => {
+    const { sql, params } = render(buildEnqueueContextSql(msg('m1')));
+    expect(sql).toContain('jsonb_array_length');
+    expect(params).toContain(WORKER_MESSAGE_CAP);
+  });
+});
 
 describe('enqueueWorkerMessage', () => {
-  it('appends to an existing queue', async () => {
-    mockTasksFindFirst.mockResolvedValue({ context: { pendingWorkerMessages: [msg('m1')] } });
-    const ok = await enqueueWorkerMessage(TASK, msg('m2'));
-    expect(ok).toBe(true);
-    expect(setCalls).toHaveLength(1);
-    expect(setCalls[0].context.pendingWorkerMessages.map((m: any) => m.id)).toEqual(['m1', 'm2']);
-  });
-
-  it('creates the queue when the task context has none, preserving other keys', async () => {
-    mockTasksFindFirst.mockResolvedValue({ context: { model: 'claude-sonnet-5' } });
-    await enqueueWorkerMessage(TASK, msg('m1'));
-    expect(setCalls[0].context.model).toBe('claude-sonnet-5');
-    expect(setCalls[0].context.pendingWorkerMessages.map((m: any) => m.id)).toEqual(['m1']);
-  });
-
-  it('handles a null context', async () => {
-    mockTasksFindFirst.mockResolvedValue({ context: null });
+  it('writes one atomic statement and reports success from the updated row', async () => {
+    returningRows = [{ id: TASK }];
     const ok = await enqueueWorkerMessage(TASK, msg('m1'));
     expect(ok).toBe(true);
-    expect(setCalls[0].context.pendingWorkerMessages).toHaveLength(1);
+    // No pre-read: the statement itself reads the column.
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    expect(setCalls).toHaveLength(1);
+    expect(render(setCalls[0].context).sql).toContain('pendingWorkerMessages');
   });
 
-  it('caps the queue at WORKER_MESSAGE_CAP, dropping the oldest', async () => {
-    expect(WORKER_MESSAGE_CAP).toBe(3);
-    mockTasksFindFirst.mockResolvedValue({
-      context: { pendingWorkerMessages: [msg('m1'), msg('m2'), msg('m3')] },
-    });
-    await enqueueWorkerMessage(TASK, msg('m4'));
-    expect(setCalls[0].context.pendingWorkerMessages.map((m: any) => m.id)).toEqual(['m2', 'm3', 'm4']);
-  });
-
-  it('returns false and writes nothing when the task does not exist', async () => {
-    mockTasksFindFirst.mockResolvedValue(null);
+  it('returns false when the task does not exist', async () => {
+    returningRows = [];
     const ok = await enqueueWorkerMessage(TASK, msg('m1'));
     expect(ok).toBe(false);
-    expect(setCalls).toHaveLength(0);
   });
 });
 
 // ── clearWorkerMessages ──────────────────────────────────────────────────────
 
-describe('clearWorkerMessages', () => {
-  it('removes only the acked ids and keeps the rest queued', async () => {
-    mockTasksFindFirst.mockResolvedValue({
-      context: { pendingWorkerMessages: [msg('m1'), msg('m2'), msg('m3')] },
-    });
-    const cleared = await clearWorkerMessages(TASK, ['m2']);
-    expect(cleared).toBe(1);
-    expect(setCalls[0].context.pendingWorkerMessages.map((m: any) => m.id)).toEqual(['m1', 'm3']);
+describe('buildClearContextSql', () => {
+  it('filters by id against the live column', () => {
+    const { sql, params } = render(buildClearContextSql(['m2']));
+    expect(sql).toContain('pendingWorkerMessages');
+    expect(sql).toContain('jsonb_array_elements');
+    expect(params.some(p => typeof p === 'string' && p.includes('"m2"'))).toBe(true);
   });
 
-  it('writes nothing when no id matches — an unknown ack must not empty the queue', async () => {
-    mockTasksFindFirst.mockResolvedValue({
-      context: { pendingWorkerMessages: [msg('m1')] },
-    });
-    const cleared = await clearWorkerMessages(TASK, ['nope']);
-    expect(cleared).toBe(0);
-    expect(setCalls).toHaveLength(0);
+  it('keeps messages whose id is missing instead of dropping them', () => {
+    // `jsonb ? NULL` is NULL, and NOT NULL is NULL — which would silently
+    // filter the row out. The predicate has to admit a null id explicitly.
+    const { sql } = render(buildClearContextSql(['m2']));
+    expect(sql).toMatch(/IS NULL/i);
+  });
+});
+
+describe('clearWorkerMessages', () => {
+  it('writes one atomic statement for the acked ids', async () => {
+    returningRows = [{ id: TASK }];
+    const cleared = await clearWorkerMessages(TASK, ['m2']);
+    expect(cleared).toBe(true);
+    expect(setCalls).toHaveLength(1);
+    expect(render(setCalls[0].context).sql).toContain('jsonb_array_elements');
   });
 
   it('writes nothing when the ack list is empty', async () => {
     const cleared = await clearWorkerMessages(TASK, []);
-    expect(cleared).toBe(0);
-    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    expect(cleared).toBe(false);
     expect(setCalls).toHaveLength(0);
   });
 });

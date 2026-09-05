@@ -111,6 +111,7 @@ import {
   checkPathClaimConflict,
   insertClaims,
   releaseClaims,
+  rearmWaiter,
   registerWaiter,
   getActiveClaimsByWorkspace,
 } from '../path-claim';
@@ -345,6 +346,21 @@ describe('releaseClaims', () => {
 
     await releaseClaims(TASK_A);
     expect(mockUpdate).toHaveBeenCalledTimes(1); // claim soft-delete only
+  });
+});
+
+describe('rearmWaiter', () => {
+  beforeEach(resetQueues);
+
+  // releaseClaims stamps notifiedAt before delivery is attempted, so a failed
+  // delivery would otherwise be permanent: no later release finds the waiter,
+  // and neither does the starvation check.
+  it('clears notifiedAt for one blocking/waiting pair', async () => {
+    const chain = makeUpdateChain();
+    mockUpdate.mockReturnValue(chain);
+    await rearmWaiter(TASK_A, TASK_B);
+    expect(mockUpdate).toHaveBeenCalledTimes(1);
+    expect(chain.set).toHaveBeenCalledWith({ notifiedAt: null });
   });
 });
 

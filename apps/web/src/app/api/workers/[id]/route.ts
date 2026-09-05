@@ -51,7 +51,7 @@ import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worke
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
-import { WORKER_MESSAGE_CAP } from '@buildd/core/worker-message-format';
+import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
@@ -631,6 +631,9 @@ export async function PATCH(
   const instructionAckText = typeof rawInstructionsDelivered === 'string' && rawInstructionsDelivered.length > 0
     ? rawInstructionsDelivered
     : null;
+  const deliveredMessageIds = Array.isArray(rawWorkerMessagesDelivered)
+    ? rawWorkerMessagesDelivered.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : [];
   const declaresInstructionConsumer = body.consumeInstructions === true;
   const legacyInstructionConsumer = !declaresInstructionConsumer
     && !instructionAckText
@@ -657,8 +660,10 @@ export async function PATCH(
   else if (resultMeta && typeof resultMeta.numTurns === 'number' && resultMeta.numTurns > 0) updates.turns = resultMeta.numTurns;
   // Auto-increment turns for MCP workers that don't send explicit turn counts.
   // A bare delivery acknowledgement is bookkeeping, not a turn — counting it
-  // would inflate turns (and the OAuth budget window that reads them).
-  else if (!(instructionAckText && status === undefined && currentAction === undefined && milestones === undefined)) {
+  // would inflate turns (and the OAuth budget window that reads them). This
+  // covers both queues: instructionsDelivered and workerMessagesDelivered are
+  // each sent as their own PATCH carrying nothing else.
+  else if (!((instructionAckText || deliveredMessageIds.length > 0) && status === undefined && currentAction === undefined && milestones === undefined)) {
     updates.turns = sql`${workers.turns} + 1` as any;
   }
   if (localUiUrl !== undefined) updates.localUiUrl = localUiUrl;
@@ -2527,8 +2532,20 @@ export async function PATCH(
   }
 
   // Release path claims on terminal status so waiting tasks can proceed.
+  //
+  // The reason matters more than the release: `pr_required` only requires a PR
+  // to EXIST, so a completed worker's PR is normally still open here. Reporting
+  // 'merged' would tell the waiter to rebase onto work that has not landed.
   if (isTerminalStatus && worker.taskId) {
-    await releaseAndNotify(worker.taskId);
+    const mergedNow = Boolean(updated.mergedAt ?? worker.mergedAt)
+      || (updated.prLifecycleStatus ?? worker.prLifecycleStatus) === 'merged';
+    const hasOpenPr = Boolean(updated.prNumber ?? worker.prNumber);
+    const releaseReason = mergedNow
+      ? 'merged' as const
+      : status === 'completed' && hasOpenPr
+        ? 'pending_merge' as const
+        : 'abandoned' as const;
+    await releaseAndNotify(worker.taskId, releaseReason);
   }
 
   // Mission cost-budget gate: check whether the mission's cumulative spend has
@@ -2577,15 +2594,13 @@ export async function PATCH(
     ? (taskContext.pendingWorkerMessages as Array<{ id?: string }>)
     : [];
 
-  const deliveredMessageIds = Array.isArray(rawWorkerMessagesDelivered)
-    ? rawWorkerMessagesDelivered.filter((v): v is string => typeof v === 'string' && v.length > 0)
-    : [];
+  // What the response should report after this request's ack is applied. The
+  // removal itself runs in SQL against the live column (clearWorkerMessages), so
+  // an ack for an id that is not queued writes nothing and a message that
+  // arrived after this snapshot is never dropped.
   const retainedWorkerMessages = deliveredMessageIds.length > 0
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
-  // An ack for an id that is not queued (already cleared, or from a stale
-  // response) must not empty the queue behind a message that arrived since.
-  const hasWorkerMessageAck = retainedWorkerMessages.length !== pendingWorkerMessages.length;
 
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
@@ -2664,65 +2679,48 @@ export async function PATCH(
         await triggerEvent(channels.workspace(worker.workspaceId), 'path_overlap_detected', overlapEvent);
 
         // Deliver structured WorkerMessage to sibling's task via pendingWorkerMessages.
-        const workerMsg = {
-          id: crypto.randomUUID(),
+        // One atomic append (capped in SQL): the sibling is checking in and
+        // writing its own context, so a read-modify-write here loses whichever
+        // of the two wrote second.
+        await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
           type: 'path_blocked_on_you',
           fromTaskId: worker.taskId,
-          toTaskId: sibling.taskId,
-          sentAt: new Date().toISOString(),
-          hopCount: 0,
+          toTaskId: sibling.taskId!,
           body: {
             overlappingPaths: newPaths,
             detectedByBranch: updated.branch ?? worker.branch,
             detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
             funcNames: [] as string[],
           },
-        };
-        const siblingTaskCtx = ((await db.query.tasks.findFirst({
-          where: eq(tasks.id, sibling.taskId!),
-          columns: { context: true },
-        }))?.context ?? {}) as Record<string, unknown>;
-        const siblingPendingMsgs = Array.isArray(siblingTaskCtx.pendingWorkerMessages)
-          ? [...(siblingTaskCtx.pendingWorkerMessages as unknown[]), workerMsg]
-          : [workerMsg];
-        // Cap pending messages per spec §4c — oldest dropped.
-        const cappedMsgs = siblingPendingMsgs.length > WORKER_MESSAGE_CAP
-          ? siblingPendingMsgs.slice(-WORKER_MESSAGE_CAP)
-          : siblingPendingMsgs;
-        await db
-          .update(tasks)
-          .set({ context: { ...siblingTaskCtx, pendingWorkerMessages: cappedMsgs } })
-          .where(eq(tasks.id, sibling.taskId!));
+        }));
       }
 
-      // Atomically persist notifiedOverlaps + any acked-message removal.
-      const taskContextUpdates: Record<string, unknown> = {};
-      if (hasWorkerMessageAck) taskContextUpdates.pendingWorkerMessages = retainedWorkerMessages;
+      // Persist notifiedOverlaps as a jsonb merge, NOT a spread of the snapshot
+      // read before this loop began. The loop above does several round trips and
+      // a Pusher call, so a message enqueued by a sibling in that window would be
+      // reverted by a whole-column overwrite — the same loss this PR removes,
+      // arriving by a different route.
       if (newNotifications.length > 0) {
-        taskContextUpdates.notifiedOverlaps = [...notifiedOverlaps, ...newNotifications];
-      }
-      if (Object.keys(taskContextUpdates).length > 0) {
         await db
           .update(tasks)
-          .set({ context: { ...(taskContext ?? {}), ...taskContextUpdates } })
+          .set({
+            context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || jsonb_build_object('notifiedOverlaps', ${JSON.stringify([...notifiedOverlaps, ...newNotifications])}::jsonb)`,
+          })
           .where(eq(tasks.id, worker.taskId));
+      }
+      if (deliveredMessageIds.length > 0) {
+        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
       }
     } catch (err) {
       console.error(`[Worker ${id}] Passive overlap detection failed:`, err);
       // Fall through — an ack still has to be honoured.
-      if (hasWorkerMessageAck) {
-        await db
-          .update(tasks)
-          .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: retainedWorkerMessages } })
-          .where(eq(tasks.id, worker.taskId));
+      if (deliveredMessageIds.length > 0) {
+        await clearWorkerMessages(worker.taskId, deliveredMessageIds);
       }
     }
-  } else if (hasWorkerMessageAck && worker.taskId) {
+  } else if (deliveredMessageIds.length > 0 && worker.taskId) {
     // No overlap detection this tick — honour the delivery ack on its own.
-    await db
-      .update(tasks)
-      .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: retainedWorkerMessages } })
-      .where(eq(tasks.id, worker.taskId));
+    await clearWorkerMessages(worker.taskId, deliveredMessageIds);
   }
 
   const isHeartbeatOk =
@@ -2956,7 +2954,7 @@ export async function PATCH(
     // Echo token: the consumer sends this back as `instructionsDelivered` once
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
-    ...(pendingWorkerMessages.length > 0 ? { pendingMessages: pendingWorkerMessages } : {}),
+    ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
     ...(outputWarning ? { outputWarning } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }

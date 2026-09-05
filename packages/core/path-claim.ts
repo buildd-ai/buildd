@@ -225,6 +225,31 @@ export async function releaseClaims(taskId: string): Promise<ReleaseResult | nul
   };
 }
 
+/**
+ * Undo the `notifiedAt` stamp for one waiter so a later release — or the
+ * 60-minute starvation check, which also filters on `notifiedAt IS NULL` — can
+ * find it again.
+ *
+ * `releaseClaims` stamps every pending waiter before delivery is attempted,
+ * which is what keeps two concurrent releases from double-notifying. The cost
+ * is that a delivery failure is permanent: the row is no longer pending, the
+ * claims are already released so a repeat call short-circuits, and waiter rows
+ * are never deleted. Re-arming on failure trades a possible duplicate message
+ * for a guaranteed-visible one.
+ */
+export async function rearmWaiter(
+  blockingTaskId: string,
+  waitingTaskId: string,
+): Promise<void> {
+  await db
+    .update(pathClaimWaiters)
+    .set({ notifiedAt: null })
+    .where(and(
+      eq(pathClaimWaiters.blockingTaskId, blockingTaskId),
+      eq(pathClaimWaiters.waitingTaskId, waitingTaskId),
+    ));
+}
+
 // ── Waiter registration ──────────────────────────────────────────────────────
 
 /**

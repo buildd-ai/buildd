@@ -328,6 +328,23 @@ mock.module('@/lib/task-callback', () => ({
 }));
 
 const mockRecordTaskOutcome = mock(() => Promise.resolve(true));
+// The message queue writes are single SQL statements now, so a mocked db has
+// no resulting array to inspect. Mock the queue module instead and assert the
+// calls — which is also what the route's contract actually is.
+const mockEnqueueWorkerMessage = mock(async () => true);
+const mockClearWorkerMessages = mock(async () => true);
+mock.module('@buildd/core/worker-messages', () => ({
+  enqueueWorkerMessage: mockEnqueueWorkerMessage,
+  clearWorkerMessages: mockClearWorkerMessages,
+  buildWorkerMessage: (input: any) => ({
+    id: 'generated-id',
+    sentAt: '2026-09-05T00:00:00.000Z',
+    hopCount: 0,
+    ...input,
+  }),
+  WORKER_MESSAGE_CAP: 3,
+}));
+
 mock.module('@buildd/core/routing-analytics', () => ({
   recordTaskOutcome: mockRecordTaskOutcome,
 }));
@@ -6861,7 +6878,7 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       expect(data.pendingMessages).toHaveLength(1);
     });
 
-    it('clears only the acked ids on workerMessagesDelivered', async () => {
+    it('clears exactly the acked ids, in SQL against the live queue', async () => {
       const messages = [
         { id: 'msg-1', type: 'question', fromTaskId: 'task-a', fromWorkerId: 'w-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q1' } },
         { id: 'msg-2', type: 'question', fromTaskId: 'task-b', fromWorkerId: 'w-b', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q2' } },
@@ -6874,13 +6891,7 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
         context: { pendingWorkerMessages: messages },
         workspace: { teamId: 'team-1' },
       });
-      const taskUpdateCalls: any[] = [];
-      mockTasksUpdate.mockReturnValue({
-        set: mock((vals: any) => {
-          taskUpdateCalls.push(vals);
-          return { where: mock(() => Promise.resolve()) };
-        }),
-      });
+      mockClearWorkerMessages.mockClear();
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -6890,28 +6901,53 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
-      const cleared = taskUpdateCalls.find((u: any) => Array.isArray(u.context?.pendingWorkerMessages));
-      expect(cleared).toBeDefined();
-      expect(cleared.context.pendingWorkerMessages.map((m: any) => m.id)).toEqual(['msg-2']);
+      expect(mockClearWorkerMessages).toHaveBeenCalledTimes(1);
+      expect(mockClearWorkerMessages.mock.calls[0]).toEqual(['task-1', ['msg-1']]);
+      // The response reports the queue as it stands AFTER the ack.
+      const data = await res.json();
+      expect(data.pendingMessages.map((m: any) => m.id)).toEqual(['msg-2']);
     });
 
-    it('preserves other task context keys when clearing an acked message', async () => {
+    it('issues no queue write when the request carries no ack', async () => {
       mockTasksFindFirst.mockResolvedValue({
         scheduleId: null,
         outputRequirement: 'none',
         missionId: null,
         count: 0,
-        context: {
-          model: 'claude-sonnet-5',
-          pendingWorkerMessages: [{ id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } }],
-        },
+        context: { pendingWorkerMessages: [{ id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } }] },
         workspace: { teamId: 'team-1' },
       });
-      const taskUpdateCalls: any[] = [];
-      mockTasksUpdate.mockReturnValue({
+      mockClearWorkerMessages.mockClear();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', progress: 50, touchedPaths: ['apps/web/src/lib/foo.ts'] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockClearWorkerMessages).not.toHaveBeenCalled();
+      const data = await res.json();
+      expect(data.pendingMessages).toHaveLength(1);
+    });
+
+    // A bare ack is bookkeeping: counting it as a turn inflates the OAuth
+    // budget window, which reads that column.
+    it('does not count a bare delivery ack as a turn', async () => {
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: { pendingWorkerMessages: [{ id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } }] },
+        workspace: { teamId: 'team-1' },
+      });
+      const workerSets: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
         set: mock((vals: any) => {
-          taskUpdateCalls.push(vals);
-          return { where: mock(() => Promise.resolve()) };
+          workerSets.push(vals);
+          return { where: mock(() => ({ returning: mock(() => [updatedWorker]) })) };
         }),
       });
 
@@ -6922,38 +6958,8 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       });
       await PATCH(req, { params: mockParams });
 
-      const cleared = taskUpdateCalls.find((u: any) => Array.isArray(u.context?.pendingWorkerMessages));
-      expect(cleared.context.pendingWorkerMessages).toEqual([]);
-      expect(cleared.context.model).toBe('claude-sonnet-5');
-    });
-
-    it('an unknown acked id leaves the queue untouched', async () => {
-      mockTasksFindFirst.mockResolvedValue({
-        scheduleId: null,
-        outputRequirement: 'none',
-        missionId: null,
-        count: 0,
-        context: { pendingWorkerMessages: [{ id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } }] },
-        workspace: { teamId: 'team-1' },
-      });
-      const taskUpdateCalls: any[] = [];
-      mockTasksUpdate.mockReturnValue({
-        set: mock((vals: any) => {
-          taskUpdateCalls.push(vals);
-          return { where: mock(() => Promise.resolve()) };
-        }),
-      });
-
-      const req = createMockRequest({
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer bld_test' },
-        body: { workerMessagesDelivered: ['msg-does-not-exist'] },
-      });
-      const res = await PATCH(req, { params: mockParams });
-
-      expect(res.status).toBe(200);
-      const touched = taskUpdateCalls.find((u: any) => Array.isArray(u.context?.pendingWorkerMessages));
-      expect(touched).toBeUndefined();
+      expect(workerSets.length).toBeGreaterThan(0);
+      expect('turns' in workerSets[0]).toBe(false);
     });
   });
 
@@ -7361,12 +7367,11 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     expect(overlapEvent![2].siblingTaskId).toBe('task-2');
     expect(overlapEvent![2].overlappingPaths).toContain('apps/web/src/lib/foo.ts');
 
-    // Sibling task should have a pendingWorkerMessage appended
-    const siblingUpdate = taskUpdateCalls.find(
-      (u: any) => u.context?.pendingWorkerMessages?.length > 0,
-    );
-    expect(siblingUpdate).toBeDefined();
-    const msg = siblingUpdate.context.pendingWorkerMessages[0];
+    // Sibling task should have a message enqueued — one atomic append, so the
+    // assertion is on the call, not on a client-built array.
+    expect(mockEnqueueWorkerMessage).toHaveBeenCalled();
+    const [siblingTaskId, msg] = mockEnqueueWorkerMessage.mock.calls.at(-1) as any[];
+    expect(siblingTaskId).toBe('task-2');
     expect(msg.type).toBe('path_blocked_on_you');
     expect(msg.body.overlappingPaths).toContain('apps/web/src/lib/foo.ts');
   });

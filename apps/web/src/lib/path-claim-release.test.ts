@@ -15,8 +15,12 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 const mockReleaseClaims = mock(async (_taskId: string) => null as any);
 const mockTriggerEvent = mock(async () => {});
 const mockEnqueue = mock(async () => true);
+const mockRearm = mock(async () => {});
 
-mock.module('@buildd/core/path-claim', () => ({ releaseClaims: mockReleaseClaims }));
+mock.module('@buildd/core/path-claim', () => ({
+  releaseClaims: mockReleaseClaims,
+  rearmWaiter: mockRearm,
+}));
 mock.module('@buildd/core/worker-messages', () => ({
   enqueueWorkerMessage: mockEnqueue,
   buildWorkerMessage: (input: any) => ({
@@ -43,6 +47,8 @@ beforeEach(() => {
   mockReleaseClaims.mockReset();
   mockTriggerEvent.mockClear();
   mockEnqueue.mockClear();
+  mockRearm.mockClear();
+  mockEnqueue.mockImplementation(async () => true);
 });
 
 describe('releaseAndNotify', () => {
@@ -57,7 +63,7 @@ describe('releaseAndNotify', () => {
       ],
     });
 
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
 
     expect(mockEnqueue).toHaveBeenCalledTimes(2);
     const [taskA, msgA] = mockEnqueue.mock.calls[0] as any[];
@@ -84,7 +90,7 @@ describe('releaseAndNotify', () => {
       ],
     });
 
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
 
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
     const [, msg] = mockEnqueue.mock.calls[0] as any[];
@@ -99,7 +105,7 @@ describe('releaseAndNotify', () => {
       waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'a.ts' }],
     });
 
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
 
     const evt = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_claim_released');
     expect(evt).toBeDefined();
@@ -114,7 +120,7 @@ describe('releaseAndNotify', () => {
       waiters: [],
     });
 
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
 
     expect(mockEnqueue).not.toHaveBeenCalled();
     expect(mockTriggerEvent).not.toHaveBeenCalled();
@@ -122,12 +128,12 @@ describe('releaseAndNotify', () => {
 
   it('does nothing when the task held no claims', async () => {
     mockReleaseClaims.mockResolvedValue(null);
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
     expect(mockEnqueue).not.toHaveBeenCalled();
     expect(mockTriggerEvent).not.toHaveBeenCalled();
   });
 
-  it('a failed enqueue does not stop the remaining waiters or throw', async () => {
+  it('a failed enqueue re-arms that waiter and does not stop the others', async () => {
     mockReleaseClaims.mockResolvedValue({
       workspaceId: WS,
       releasedPaths: ['a.ts', 'b.ts'],
@@ -139,10 +145,42 @@ describe('releaseAndNotify', () => {
     });
     mockEnqueue.mockImplementationOnce(async () => { throw new Error('db down'); });
 
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
 
     expect(mockEnqueue).toHaveBeenCalledTimes(2);
     expect(mockTriggerEvent).toHaveBeenCalled();
+    // Without this the waiter is stranded for good: releaseClaims already
+    // stamped notifiedAt, so no later release and no starvation check finds it.
+    expect(mockRearm).toHaveBeenCalledTimes(1);
+    expect(mockRearm.mock.calls[0]).toEqual([HOLDER, WAITER_A]);
+  });
+
+  it('carries the release reason into the message body', async () => {
+    mockReleaseClaims.mockResolvedValue({
+      workspaceId: WS,
+      releasedPaths: ['a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'a.ts' }],
+    });
+
+    await releaseAndNotify(HOLDER, 'abandoned');
+
+    const [, msg] = mockEnqueue.mock.calls[0] as any[];
+    expect(msg.body.reason).toBe('abandoned');
+  });
+
+  it('does not re-arm when the waiting task row is simply gone', async () => {
+    mockReleaseClaims.mockResolvedValue({
+      workspaceId: WS,
+      releasedPaths: ['a.ts'],
+      notifiedWaiters: [WAITER_A],
+      waiters: [{ waitingTaskId: WAITER_A, blockedPath: 'a.ts' }],
+    });
+    mockEnqueue.mockImplementation(async () => false);
+
+    await releaseAndNotify(HOLDER, 'merged');
+
+    expect(mockRearm).not.toHaveBeenCalled();
   });
 
   it('falls back to the released paths when the result carries no per-waiter detail', async () => {
@@ -153,7 +191,7 @@ describe('releaseAndNotify', () => {
       notifiedWaiters: [WAITER_A],
     });
 
-    await releaseAndNotify(HOLDER);
+    await releaseAndNotify(HOLDER, 'merged');
 
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
     const [, msg] = mockEnqueue.mock.calls[0] as any[];

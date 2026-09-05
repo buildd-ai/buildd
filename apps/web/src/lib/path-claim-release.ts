@@ -8,9 +8,21 @@
  *   - stale-workers reaper on orphaned worker cleanup
  */
 
-import { releaseClaims } from '@buildd/core/path-claim';
+import { releaseClaims, rearmWaiter } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage } from '@buildd/core/worker-messages';
 import { triggerEvent, channels } from '@/lib/pusher';
+
+/**
+ * Why the locks dropped — decides what the waiting agent should do next.
+ *
+ * `merged`        the holder's PR is in the base branch: rebase.
+ * `pending_merge` the holder finished, PR still open: locks free, base unchanged.
+ * `abandoned`     failed, closed unmerged, or reaped: nothing landed.
+ *
+ * Required rather than defaulted: there are three call sites and each one knows
+ * the answer, while a default would quietly re-introduce "merged" as a lie.
+ */
+export type PathReleaseReason = 'merged' | 'pending_merge' | 'abandoned';
 
 /**
  * Release all active path_claims for a task, deliver a `path_released` message
@@ -24,7 +36,7 @@ import { triggerEvent, channels } from '@/lib/pusher';
  * Idempotent — safe to call even if the task has no active claims.
  * Fire-and-forget safe: all errors are caught and logged.
  */
-export async function releaseAndNotify(taskId: string): Promise<void> {
+export async function releaseAndNotify(taskId: string, reason: PathReleaseReason): Promise<void> {
   try {
     const result = await releaseClaims(taskId);
     if (!result) return; // no active claims — nothing to do
@@ -49,22 +61,29 @@ export async function releaseAndNotify(taskId: string): Promise<void> {
     }
 
     const releasedAt = new Date().toISOString();
-    for (const [waitingTaskId, paths] of pathsByWaiter) {
+    // Parallel, and each failure re-arms its own waiter: `releaseClaims` has
+    // already stamped notifiedAt, so without the re-arm a failed enqueue is a
+    // permanently silent waiter (no retry, no starvation warning either).
+    await Promise.all([...pathsByWaiter].map(async ([waitingTaskId, paths]) => {
       try {
-        await enqueueWorkerMessage(
+        const delivered = await enqueueWorkerMessage(
           waitingTaskId,
           buildWorkerMessage({
             type: 'path_released',
             fromTaskId: taskId,
             toTaskId: waitingTaskId,
-            body: { paths, releasedAt },
+            body: { paths, releasedAt, reason },
           }),
         );
+        // false = the waiting task row is gone; nothing to re-arm for.
+        if (!delivered) return;
       } catch (err) {
-        // One undeliverable waiter must not strand the others.
         console.error(`[path-claim] path_released enqueue failed for task ${waitingTaskId}:`, err);
+        await rearmWaiter(taskId, waitingTaskId).catch(rearmErr =>
+          console.error(`[path-claim] rearmWaiter failed for task ${waitingTaskId}:`, rearmErr),
+        );
       }
-    }
+    }));
 
     await triggerEvent(
       channels.workspace(workspaceId),

@@ -718,9 +718,21 @@ async function handlePullRequestEvent(event: {
     // edits are either landed (merged) or abandoned (closed), so held locks
     // should unblock waiting tasks.
     if (worker.taskId) {
-      releaseAndNotify(worker.taskId).catch(e =>
-        console.error(`[webhook] releaseAndNotify failed for task ${worker.taskId}:`, e),
-      );
+      const releaseTaskId = worker.taskId;
+      const releaseReason = pr.merged ? 'merged' as const : 'abandoned' as const;
+      // after(): delivery is now N DB writes (one message per waiter), not one
+      // Pusher call, so an unawaited promise can be cut off when the response
+      // returns — and `notifiedAt` is already stamped by then.
+      try {
+        after(() => releaseAndNotify(releaseTaskId, releaseReason).catch(e =>
+          console.error(`[webhook] releaseAndNotify failed for task ${releaseTaskId}:`, e),
+        ));
+      } catch {
+        // Outside a request scope (tests, direct invocation) — run inline.
+        await releaseAndNotify(releaseTaskId, releaseReason).catch(e =>
+          console.error(`[webhook] releaseAndNotify failed for task ${releaseTaskId}:`, e),
+        );
+      }
     }
 
     // Close any open changeIntent rows for this PR — surfaces are now free.

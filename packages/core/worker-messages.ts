@@ -12,11 +12,19 @@
  * produced was destroyed before an agent could read it. Serving the same
  * message twice is cheap; losing it is not.
  *
+ * Both writes are single statements that read `context` inside their own SET
+ * expression. A read-modify-write would reinstate the same loss by another
+ * route: two producers, or a producer and the recipient's own check-in, each
+ * replace the whole jsonb column from a copy taken before the other wrote.
+ * `deliveredTo` at apps/web/src/app/api/workers/[id]/route.ts and the context
+ * merges in auto-merge.ts / conflict-retry.ts / pr-review-request.ts use the
+ * same pattern; neon-http has no interactive transaction to fall back on.
+ *
  * Producers: `send_worker_message` (MCP, agent-initiated), the §6d passive
  * overlap notifier, and `releaseAndNotify` (path_released).
  */
 
-import { eq } from 'drizzle-orm';
+import { eq, sql, type SQL } from 'drizzle-orm';
 import { db } from './db';
 import { tasks } from './db/schema';
 
@@ -33,76 +41,79 @@ export type {
 
 import { WORKER_MESSAGE_CAP, type WorkerMessage } from './worker-message-format';
 
-function readQueue(context: unknown): WorkerMessage[] {
-  const ctx = (context ?? {}) as Record<string, unknown>;
-  return Array.isArray(ctx.pendingWorkerMessages)
-    ? (ctx.pendingWorkerMessages as WorkerMessage[])
-    : [];
+/**
+ * SQL for "append this message, keep only the newest WORKER_MESSAGE_CAP".
+ *
+ * Exported so it can be asserted directly: with a mocked db there is no
+ * resulting array to inspect, only the statement.
+ */
+export function buildEnqueueContextSql(message: WorkerMessage): SQL {
+  const appended = sql`(COALESCE(${tasks.context} -> 'pendingWorkerMessages', '[]'::jsonb) || ${JSON.stringify([message])}::jsonb)`;
+  return sql`jsonb_set(
+    COALESCE(${tasks.context}, '{}'::jsonb),
+    '{pendingWorkerMessages}',
+    COALESCE((
+      SELECT jsonb_agg(elem ORDER BY ord)
+      FROM jsonb_array_elements(${appended}) WITH ORDINALITY AS queued(elem, ord)
+      WHERE ord > jsonb_array_length(${appended}) - ${WORKER_MESSAGE_CAP}
+    ), '[]'::jsonb)
+  )`;
+}
+
+/** SQL for "drop these ids from the queue, leave everything else alone". */
+export function buildClearContextSql(deliveredIds: string[]): SQL {
+  const ids = sql`${JSON.stringify(deliveredIds)}::jsonb`;
+  return sql`jsonb_set(
+    COALESCE(${tasks.context}, '{}'::jsonb),
+    '{pendingWorkerMessages}',
+    COALESCE((
+      SELECT jsonb_agg(elem ORDER BY ord)
+      FROM jsonb_array_elements(COALESCE(${tasks.context} -> 'pendingWorkerMessages', '[]'::jsonb)) WITH ORDINALITY AS queued(elem, ord)
+      WHERE elem ->> 'id' IS NULL OR NOT (${ids} ? (elem ->> 'id'))
+    ), '[]'::jsonb)
+  )`;
 }
 
 /**
  * Append a message to a recipient task's queue, capped at WORKER_MESSAGE_CAP.
  * Returns false when the task no longer exists (nothing is written).
+ *
+ * A terminal recipient is written deliberately, and does NOT mirror
+ * `send_worker_message`'s terminal guard: retries reuse the same task row and
+ * inherit its context, so a queued `path_released` ("your base moved") is
+ * still correct for the next worker on that task. The MCP guard exists to tell
+ * a waiting *sender* to escalate; this path has no sender to inform.
  */
 export async function enqueueWorkerMessage(
   toTaskId: string,
   message: WorkerMessage,
 ): Promise<boolean> {
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, toTaskId),
-    columns: { context: true },
-  });
-  if (!task) return false;
-
-  const context = (task.context ?? {}) as Record<string, unknown>;
-  const queued = [...readQueue(context), message];
-  const capped = queued.length > WORKER_MESSAGE_CAP
-    ? queued.slice(-WORKER_MESSAGE_CAP)
-    : queued;
-
-  await db
+  const rows = await db
     .update(tasks)
-    .set({ context: { ...context, pendingWorkerMessages: capped } })
-    .where(eq(tasks.id, toTaskId));
+    .set({ context: buildEnqueueContextSql(message) })
+    .where(eq(tasks.id, toTaskId))
+    .returning({ id: tasks.id });
 
-  return true;
+  return rows.length > 0;
 }
 
 /**
  * Remove acked messages from a task's queue. Ids that are not queued are
- * ignored, and a call that would change nothing writes nothing — an ack for a
- * stale id must never empty the queue behind a message that arrived since.
- * Returns the number of messages removed.
+ * ignored, and messages that arrived after the response was served survive —
+ * the filter runs against the column, not against what the caller last read.
+ * Returns whether a statement was issued.
  */
 export async function clearWorkerMessages(
   taskId: string,
   deliveredIds: string[],
-): Promise<number> {
-  if (deliveredIds.length === 0) return 0;
+): Promise<boolean> {
+  if (deliveredIds.length === 0) return false;
 
-  const task = await db.query.tasks.findFirst({
-    where: eq(tasks.id, taskId),
-    columns: { context: true },
-  });
-  if (!task) return 0;
-
-  const context = (task.context ?? {}) as Record<string, unknown>;
-  const queued = readQueue(context);
-  const retained = queued.filter(m => !deliveredIds.includes(m?.id));
-  const removed = queued.length - retained.length;
-  if (removed === 0) return 0;
-
-  await db
+  const rows = await db
     .update(tasks)
-    .set({ context: { ...context, pendingWorkerMessages: retained } })
-    .where(eq(tasks.id, taskId));
+    .set({ context: buildClearContextSql(deliveredIds) })
+    .where(eq(tasks.id, taskId))
+    .returning({ id: tasks.id });
 
-  return removed;
+  return rows.length > 0;
 }
-
-/**
- * Render queued messages for an agent-facing tool result. Each message states
- * what it is and what the agent is expected to do about it — a message the
- * agent cannot act on is noise, and noise is what made this channel worth
- * ignoring.
- */
