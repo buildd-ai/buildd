@@ -64,6 +64,7 @@ mock.module('@/lib/pr-activity-comment', () => ({
 import {
   buildReviewerContext,
   createReviewerTask,
+  enforceServerSideEscalation,
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
@@ -609,5 +610,133 @@ describe('buildReviewerContext — patch evidence flag', () => {
       policyConfig: { ...POLICY, reviewerPatchEvidence: true },
     });
     expect(on).not.toContain('Could not fetch file list');
+  });
+});
+
+// ── Server-side escalation enforcement (T5) ──────────────────────────────────
+
+describe('enforceServerSideEscalation', () => {
+  const CLEAN = [{ filename: 'apps/web/src/lib/foo.ts' }];
+  const MIGRATION = [
+    { filename: 'apps/web/src/lib/foo.ts' },
+    { filename: 'packages/core/drizzle/0099_add_column.sql' },
+  ];
+  const OPEN_POLICY: MergePolicy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
+
+  it('overrides approve to escalate for a migration the reviewer never had cleared', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('migration');
+  });
+
+  it('leaves approve alone when the migration was inspected and found safe', () => {
+    // Pre-flight clears additive migrations. Re-escalating them here would
+    // turn every cleared expand migration into human toil.
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+      migrationSafety: { safe: true, operations: [] },
+    });
+
+    expect(result.verdict).toBe('approve');
+    expect(result.overrideReason).toBeNull();
+  });
+
+  it('overrides approve when the inspector found the migration unsafe', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+      migrationSafety: { safe: false, reason: 'drops a column still read by live code' },
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('drops a column');
+  });
+
+  it('overrides approve for a configured deny path', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [{ filename: 'infra/terraform/main.tf' }],
+      policy: {
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['infra/'] },
+      },
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('infra/terraform/main.tf');
+  });
+
+  it('overrides approve for a risk class the workspace policy reserves for humans', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [{ filename: 'packages/core/db/schema.ts' }],
+      policy: OPEN_POLICY,
+      policyConfig: {
+        preset: 'cautious',
+        riskClasses: [
+          { name: 'destructive_schema_change', detectedPaths: ['packages/core/db/schema.ts'] },
+        ],
+      },
+      migrationSafety: { safe: true, operations: [] },
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('human review');
+  });
+
+  it('passes a clean approve through untouched', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: CLEAN,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('approve');
+    expect(result.overrideReason).toBeNull();
+  });
+
+  it('escalates approve when the file list could not be read', () => {
+    // A real PR always has files, so an empty list means the GitHub fetch
+    // failed. Failing open here would let a transient 502 grant a merge.
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [],
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('could not');
+  });
+
+  it('leaves request-changes alone even on a migration', () => {
+    // request-changes merges nothing, so it is not the dangerous verdict.
+    // Forcing it to escalate would strand a PR the authoring agent could fix.
+    const result = enforceServerSideEscalation({
+      verdict: 'request-changes',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('request-changes');
+    expect(result.overrideReason).toBeNull();
+  });
+
+  it('leaves an existing escalate alone', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'escalate',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toBeNull();
   });
 });

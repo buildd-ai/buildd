@@ -152,6 +152,59 @@ export function preflightEscalationCheck(
   return { shouldEscalate: false };
 }
 
+/**
+ * Re-derive the escalation decision from the PR's file list at verdict time,
+ * and override a model `approve` when the files demand a human.
+ *
+ * `preflightEscalationCheck` is the canonical file-list gate, but it runs in
+ * exactly one place: `maybeDispatchReviewer`, reached only on the webhook's
+ * `action === 'opened'`. Nothing re-checks afterwards, and two paths reach a
+ * verdict without it:
+ *
+ *   - a PR pushed to after it opened (`synchronize` does not re-dispatch), so a
+ *     migration or deny-path file added during a request-changes iteration was
+ *     never gated;
+ *   - `POST /api/github/pr/review`, which calls `createReviewerTask` directly
+ *     with no pre-flight at all.
+ *
+ * So this runs at the verdict, which is the one point every path converges on
+ * and the last moment before the merge. It reads the file list only — never
+ * `escalationReason`, `summary` or any other model output, all of which are
+ * downstream of an untrusted diff. That is why this function's parameters do
+ * not include them: the guarantee is structural, not a rule to remember.
+ *
+ * Only `approve` is overridden. `request-changes` merges nothing, so forcing it
+ * to escalate would strand a PR the authoring agent could still fix.
+ */
+export function enforceServerSideEscalation(params: {
+  verdict: ReviewerTaskOutput['verdict'];
+  prFiles: Array<{ filename: string }>;
+  policy: MergePolicy;
+  policyConfig?: WorkspacePolicyConfig;
+  migrationSafety?: MigrationSafety;
+}): { verdict: ReviewerTaskOutput['verdict']; overrideReason: string | null } {
+  const { verdict, prFiles, policy, policyConfig, migrationSafety } = params;
+
+  if (verdict !== 'approve') return { verdict, overrideReason: null };
+
+  // A real PR always has at least one file, so an empty list means the fetch
+  // failed. Failing open would let a transient GitHub 502 grant a merge.
+  if (prFiles.length === 0) {
+    return {
+      verdict: 'escalate',
+      overrideReason:
+        'could not read the PR file list at verdict time, so the escalation gates could not be checked',
+    };
+  }
+
+  const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig);
+  if (preflight.shouldEscalate) {
+    return { verdict: 'escalate', overrideReason: preflight.reason };
+  }
+
+  return { verdict: 'approve', overrideReason: null };
+}
+
 // ── Reviewer task creation ────────────────────────────────────────────────────
 
 export interface CreateReviewerTaskParams {
