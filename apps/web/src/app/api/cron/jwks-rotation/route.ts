@@ -21,6 +21,11 @@ import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { generateSigningKeypair, makeKid, type KeyPairJwk } from '@/lib/signing-keys';
 import { reportOps } from '@buildd/core/report-ops';
+import {
+  ACTIVE_MAX_AGE_MS,
+  RETIRING_WINDOW_MS,
+  RETIRING_WINDOW_FORCE_MS,
+} from '@/lib/signing-key-windows';
 
 function getSigningKeyTeamId(): string {
   const teamId = process.env.BUILDD_SIGNING_KEY_TEAM_ID;
@@ -29,10 +34,6 @@ function getSigningKeyTeamId(): string {
 }
 
 export const maxDuration = 60;
-
-const ACTIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const RETIRING_WINDOW_MS = 10 * 24 * 60 * 60 * 1000; // 10 days
-const RETIRING_WINDOW_FORCE_MS = 10 * 60 * 1000;     // 10 minutes (forced revocation)
 
 async function rotate(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
@@ -153,3 +154,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'rotation failed', detail }, { status: 500 });
   }
 }
+
+/**
+ * The design doc (§B.3) describes forced rotation as POST, and a state-changing
+ * call should not be a GET. But the external scheduler can only issue GET, so
+ * GET stays for the weekly tick and POST is accepted for the operator path —
+ * same handler, same Bearer auth.
+ */
+export const POST = GET;
