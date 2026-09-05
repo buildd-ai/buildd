@@ -454,9 +454,11 @@ directly off the files cited.
    directives are asserted against the key lifecycle in
    `apps/web/src/lib/signing-key-windows.test.ts`, which is what makes the
    numbers meaningful. Nothing verifies that the CDN in front of production
-   actually honours `s-maxage` — during the first live rotation the edge was
-   observed serving a one-key document while origin served two, which is the
-   behaviour the bound is meant to shorten but not evidence that it did.
+   actually honours them. The old directives were measured — after the first
+   live rotation the edge served a one-key document while origin served two,
+   first fresh and then as `STALE` for hours past `max-age`, until a request
+   triggered the background refresh. That is evidence about the values being
+   replaced, not about the replacements.
 
 6. **Single-use codes and refresh rotation are untested.**
     `apps/web/src/lib/oauth/storage.ts` has no test file. The `consumedAt`

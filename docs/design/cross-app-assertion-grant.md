@@ -197,6 +197,21 @@ rotation — origin served the two-key document while the edge served one key.
 The bound that matters is `s-maxage + stale-while-revalidate ≪ RETIRING_WINDOW_FORCE_MS`;
 it is asserted in `apps/web/src/lib/signing-key-windows.test.ts`.
 
+The full sequence was measured end to end on that rotation, and it is worse
+than the arithmetic suggests. `stale-while-revalidate` does not expire on a
+timer — a shared cache revalidates only **when a request arrives**. So the
+one-key document was served fresh for the remainder of `max-age`, then went on
+being served as `STALE` for hours afterwards; it was observed at an `age` of
+roughly three hours, and the next request after that was the one that finally
+triggered the background refresh and returned the correct two-key set.
+
+The perverse consequence: **the less traffic the endpoint receives, the longer a
+superseded key set stays published.** A quiet JWKS endpoint — which is the
+normal state of one — holds its stale document closer to the
+`stale-while-revalidate` ceiling than to `s-maxage`. Sizing this directive as
+if it were a timeout is the mistake; it is a ceiling that traffic, not time,
+brings you down from.
+
 **Route:** `apps/web/src/app/api/.well-known/jwks.json/route.ts`
 
 ### B.2 Key storage
