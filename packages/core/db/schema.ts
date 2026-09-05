@@ -1545,7 +1545,12 @@ export const watchedProjects = pgTable('watched_projects', {
 }));
 
 // Dedupe ledger for watcher firings. Unique on (projectId, kind, dedupeKey)
-// so the same PR head SHA or deploy ID doesn't spawn duplicate tasks.
+// so the same PR head SHA or deploy ID doesn't spawn duplicate tasks. Insert-only
+// by design: nothing selects these rows, the INSERT *failing* is the read, and
+// the writer deletes the task it just created when that happens
+// (apps/web/src/lib/health-watcher.ts). Pruned by age in
+// /api/cron/task-archive — see WATCHER_EVENTS_RETENTION_DAYS for why the window
+// is deliberately long.
 export const watcherEvents = pgTable('watcher_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').references(() => watchedProjects.id, { onDelete: 'cascade' }).notNull(),

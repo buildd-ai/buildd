@@ -469,6 +469,9 @@ Investigate, fix, and push. Ping if the failure is flaky or out of scope for thi
 
   // Record event (unique on projectId+kind+dedupeKey). If this throws on conflict,
   // it means another tick already fired — that's fine, suppress duplicate work.
+  // Nothing ever reads these rows back; the constraint violation is the read.
+  // They are pruned by age in /api/cron/task-archive, on a window chosen to
+  // outlive any dedupe key that could still be current.
   try {
     await db.insert(watcherEvents).values({
       projectId: project.id,

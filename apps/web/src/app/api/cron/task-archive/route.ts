@@ -14,16 +14,17 @@
 // Idempotent: cancelled rows no longer match `status = 'failed'`, so re-running
 // is a no-op. Completed tasks are never touched.
 //
-// Also prunes worker_action_events past ACTION_EVENTS_RETENTION_DAYS — see
-// that constant's doc comment for why this table (not workers.mcp_calls-style
-// capped arrays) needs its own age-based retention job.
+// Also prunes worker_action_events past ACTION_EVENTS_RETENTION_DAYS and
+// watcher_events past WATCHER_EVENTS_RETENTION_DAYS — see those constants' doc
+// comments for why these tables (not workers.mcp_calls-style capped arrays) need
+// their own age-based retention job.
 //
 // Auth: Bearer token matching CRON_SECRET env var.
 // Recommended schedule: weekly.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workerActionEvents } from '@buildd/core/db/schema';
+import { watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
 import { lt, sql } from 'drizzle-orm';
 
 export const maxDuration = 60;
@@ -37,6 +38,25 @@ const STALE_AFTER = '30 days';
  * product reason to keep this table's rows longer than that.
  */
 const ACTION_EVENTS_RETENTION_DAYS = 45;
+
+/**
+ * `watcher_events` retention. The table is an insert-only uniqueness ledger: the
+ * health watcher inserts one row per firing and the UNIQUE index on
+ * (project_id, kind, dedupe_key) is what suppresses a duplicate task — the
+ * insert failing IS the read, so the rows are load-bearing, not telemetry, and
+ * nothing else ever selects them. Left alone the table grows without bound.
+ *
+ * 90 days, and deliberately generous, because pruning a row whose dedupe key is
+ * still CURRENT re-arms the watcher and re-files a task that already exists. A
+ * key stays current for as long as its subject does: `pr-<n>-<headSha>` while a
+ * release PR sits unpushed at that SHA, and `stale-<deployId>` for as long as
+ * that deploy remains the newest production deploy — neither has an upper bound
+ * this job can know. At 90 days the cost of being wrong is one duplicate task on
+ * a subject that has been untouched for a quarter (arguably a re-alert worth
+ * having), while the cost of being right is a table that stops growing forever.
+ * A watcher firing is a rare event, so nothing here is volume-driven.
+ */
+const WATCHER_EVENTS_RETENTION_DAYS = 90;
 
 export async function GET(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
@@ -85,5 +105,19 @@ export async function GET(req: NextRequest) {
     console.warn('[TaskArchive] worker_action_events prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
   }
 
-  return NextResponse.json({ ok: true, archived, prunedActionEvents });
+  let prunedWatcherEvents = 0;
+  try {
+    const cutoff = new Date(Date.now() - WATCHER_EVENTS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const pruned = await db
+      .delete(watcherEvents)
+      .where(lt(watcherEvents.firedAt, cutoff))
+      .returning({ id: watcherEvents.id });
+    prunedWatcherEvents = pruned.length;
+    console.log(`[TaskArchive] Pruned ${prunedWatcherEvents} watcher_events row(s) (>${WATCHER_EVENTS_RETENTION_DAYS}d)`);
+  } catch (pruneErr) {
+    // Non-fatal, same as above: a failed prune leaves rows for next week's run.
+    console.warn('[TaskArchive] watcher_events prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
+  }
+
+  return NextResponse.json({ ok: true, archived, prunedActionEvents, prunedWatcherEvents });
 }
