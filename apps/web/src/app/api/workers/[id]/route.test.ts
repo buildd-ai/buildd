@@ -4328,6 +4328,25 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
     });
 
+    it('approve: bounds the merge to the PR base ref, passing the workspace trunk branches', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        gitConfig: { targetBranch: 'dev', defaultBranch: 'dev' },
+        releaseConfig: { enabled: true, prodBranch: 'production' },
+      });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      const protectedBranches = (mockTryAutoMergeWorkerPr.mock.calls[0][0] as any).bound
+        ?.protectedBranches as string[] | undefined;
+      expect(protectedBranches).toBeDefined();
+      expect(protectedBranches).toContain('dev');
+      expect(protectedBranches).toContain('main');
+      expect(protectedBranches).toContain('production');
+    });
+
     it('approve: posts the verdict to the PR as a buildd activity comment', async () => {
       setupReviewerTaskCompletion('approve');
       mockGithubApi.mockClear();

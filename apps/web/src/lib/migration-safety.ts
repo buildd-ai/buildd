@@ -14,6 +14,22 @@ export function getMigrationNumber(filename: string): string | null {
   return MIGRATION_PATH.exec(filename)?.[1] ?? null;
 }
 
+/**
+ * A file whose change can alter the database schema: a generated SQL migration
+ * under any package's `drizzle/` directory, or the Drizzle schema itself.
+ *
+ * Lives here rather than in `reviewer.ts` (which re-exports it for its existing
+ * callers) so the merge-safety modules can reuse the one definition without
+ * pulling in the reviewer's database imports.
+ */
+export function isSchemaTouchingFile(filename: string): boolean {
+  // Generated SQL migration under any package's drizzle directory.
+  if (isGeneratedMigrationPath(filename)) return true;
+  // packages/core/db/schema.ts — exact match
+  if (filename === 'packages/core/db/schema.ts') return true;
+  return false;
+}
+
 function identifier(value: string): string {
   return value.replaceAll('"', '');
 }

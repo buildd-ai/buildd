@@ -31,6 +31,7 @@ import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
+import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
@@ -3015,7 +3016,9 @@ async function handleReviewerOutcomeIfNeeded(
       // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
       const workspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
-        columns: { id: true, gitConfig: true },
+        // releaseConfig is read for prodBranch — one of the trunk branches a
+        // model verdict may never merge into (see protectedBaseBranches).
+        columns: { id: true, gitConfig: true, releaseConfig: true },
       });
 
       // Resolve policy to check gateCondition. approve-only = agent verifies, human merges.
@@ -3087,6 +3090,18 @@ async function handleReviewerOutcomeIfNeeded(
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
         policy: approvePolicy!,
+        // This merge is authorised by a MODEL verdict, so it is bounded by the
+        // branch it lands in: a quarantined mission integration branch, never
+        // the workspace's trunk. Keyed off the PR's real base ref inside
+        // evaluateAutoMergeSafety — not off a workspace-level flag, so a
+        // workspace whose task PRs still target dev cannot inherit unattended
+        // merges by accident.
+        bound: {
+          protectedBranches: protectedBaseBranches({
+            gitConfig: workspace.gitConfig,
+            releaseConfig: workspace.releaseConfig,
+          }),
+        },
       });
       break;
     }

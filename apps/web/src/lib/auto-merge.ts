@@ -17,6 +17,12 @@ import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import {
+  evaluateModelApproveBound,
+  BUILD_PROOF_CHECK_TOKENS,
+  type CheckRunState,
+  type ModelApproveBound,
+} from '@/lib/auto-merge-bound';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -25,6 +31,12 @@ import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERA
  * Path checks are routed through the resolved policy:
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
+ *
+ * `bound` is set only when a *model* verdict is driving this merge (the reviewer
+ * approve path). It adds the base-ref-keyed rails in `auto-merge-bound.ts` on
+ * top of everything below: mission integration base only, no schema changes,
+ * and positive proof that build/test actually ran green. A CI-green merge under
+ * a human-configured policy passes no bound and is unaffected.
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
@@ -32,15 +44,17 @@ export async function evaluateAutoMergeSafety(
   prNumber: number,
   headSha: string,
   policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  bound?: ModelApproveBound,
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let checkRuns: CheckRunState[] = [];
+
   // CI completeness check — verify no check runs are still pending or failing.
   try {
     const checkRunsData = await githubApi(
       installationId,
       `/repos/${repoFullName}/commits/${headSha}/check-runs`,
     );
-    const checkRuns: Array<{ name: string; status: string; conclusion: string | null }> =
-      checkRunsData?.check_runs ?? [];
+    checkRuns = checkRunsData?.check_runs ?? [];
 
     const pendingOrFailed = checkRuns.filter(
       (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
@@ -52,9 +66,11 @@ export async function evaluateAutoMergeSafety(
       };
     }
 
-    // Warn if expected named checks are absent — likely means no test suite is configured.
+    // Warn if expected named checks are absent — likely means no test suite is
+    // configured. Under `bound` the same observation is a hard refusal rather
+    // than a log line (see hasBuildProof).
     const runNames = checkRuns.map((r) => r.name.toLowerCase());
-    const missingChecks = ['typecheck', 'build', 'test'].filter(
+    const missingChecks = BUILD_PROOF_CHECK_TOKENS.filter(
       (c) => !runNames.some((n) => n.includes(c)),
     );
     if (missingChecks.length > 0) {
@@ -140,20 +156,50 @@ export async function evaluateAutoMergeSafety(
     };
   }
 
+  // Single PR read: conflict detection, plus the base ref the model-approve
+  // bound keys off. `mergeable_state` stays a soft check (GitHub may still be
+  // computing it); the base ref is a hard input, so a failed read is fatal only
+  // when a bound needs it.
+  let prData: { mergeable_state?: string; base?: { ref?: string } } | null = null;
+  let prReadError: unknown = null;
+  try {
+    prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+  } catch (err) {
+    prReadError = err;
+    console.warn(`Could not read PR ${repoFullName}#${prNumber}:`, err);
+  }
+
   // Conflict detection — check GitHub's mergeable_state before attempting merge.
   // 'dirty' = conflicts with base; 'blocked' = branch protection or review required.
   // 'unknown' means GitHub is still computing — treat as a soft pass (do not block permanently).
-  try {
-    const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-    const mergeableState = prData?.mergeable_state as string | undefined;
-    if (mergeableState === 'dirty') {
-      return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
+  const mergeableState = prData?.mergeable_state;
+  if (mergeableState === 'dirty') {
+    return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
+  }
+  if (mergeableState === 'blocked') {
+    return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
+  }
+
+  if (bound) {
+    if (!prData) {
+      // Fail closed: without the base ref there is no bound to enforce, and an
+      // unbounded model-driven merge is the thing this rail exists to prevent.
+      return {
+        ok: false,
+        reason: `could not verify the PR base ref — GitHub PR lookup failed: ${
+          prReadError instanceof Error ? prReadError.message : String(prReadError)
+        }`,
+      };
     }
-    if (mergeableState === 'blocked') {
-      return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
+    const verdict = evaluateModelApproveBound({
+      baseRef: prData.base?.ref,
+      protectedBranches: bound.protectedBranches,
+      checkRuns,
+      files,
+    });
+    if (!verdict.permitted) {
+      return { ok: false, reason: verdict.reason };
     }
-  } catch (err) {
-    console.warn(`Could not check mergeable_state for ${repoFullName}#${prNumber}:`, err);
   }
 
   return { ok: true };
@@ -163,6 +209,10 @@ export async function evaluateAutoMergeSafety(
  * Enforce safety rails, then squash-merge the PR.
  * On a conflict (dirty mergeable_state), auto-dispatch a same-branch retry task.
  * On other rail violations, notify the mission feed instead of merging.
+ *
+ * Pass `bound` when a model `approve` verdict is what authorises this merge —
+ * see `auto-merge-bound.ts`. Omitting it means "CI green under a policy a human
+ * configured", which is not bounded by base ref.
  */
 export async function tryAutoMergeWorkerPr(params: {
   installationId: number;
@@ -171,10 +221,11 @@ export async function tryAutoMergeWorkerPr(params: {
   headSha: string;
   worker: { id: string; taskId: string | null; workspaceId?: string };
   policy: MergePolicy;
+  bound?: ModelApproveBound;
 }): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, policy } = params;
+  const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy);
+  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy, bound);
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 

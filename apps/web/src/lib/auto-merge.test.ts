@@ -8,9 +8,10 @@ mock.module('@/lib/pushover', () => ({
 }));
 
 const mockGithubApi = mock(() => Promise.resolve({ check_runs: [] }) as Promise<unknown>);
+const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'Pull Request successfully merged' }) as Promise<any>);
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
-  mergePullRequest: mock(() => Promise.resolve()),
+  mergePullRequest: mockMergePullRequest,
 }));
 
 let mockFindFirst = mock(() => null as any);
@@ -68,7 +69,7 @@ mock.module('@/lib/conflict-retry', () => ({
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
 }));
 
-import { evaluateAutoMergeSafety, escalateConflictExhaustion, escalateReviewerExhaustion } from './auto-merge';
+import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -400,6 +401,194 @@ describe('evaluateAutoMergeSafety generated-path exclusion', () => {
       ok: false,
       reason: expect.stringContaining('drops column foo'),
     });
+  });
+});
+
+// ── model-approve bound (base-ref keyed) ─────────────────────────────────────
+
+describe('evaluateAutoMergeSafety model-approve bound', () => {
+  // A merge driven by a model `approve` verdict is bounded by the branch it
+  // lands in: quarantined mission integration branches only, never a trunk.
+  const bound = { protectedBranches: ['main', 'dev', 'production'] };
+  const GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const ORDINARY_FILES = [{ filename: 'apps/web/src/lib/foo.ts', additions: 4, deletions: 1 }];
+
+  function stubPr(baseRef: string, opts: { checkRuns?: unknown[]; files?: unknown[] } = {}) {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: opts.checkRuns ?? GREEN })
+      .mockResolvedValueOnce(opts.files ?? ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', base: { ref: baseRef } });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true, operationClass: 'EXPAND' });
+  }
+
+  it('merges an approved PR based on a mission integration branch', async () => {
+    stubPr('mission/checkout-rewrite');
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('refuses the identical PR when the base is dev', async () => {
+    stubPr('dev');
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringMatching(
+        new RegExp(`base 'dev'.*protected trunk branch`),
+      ),
+    });
+  });
+
+  it('refuses when the base is main', async () => {
+    stubPr('main');
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringMatching(
+        new RegExp(`base 'main'.*protected trunk branch`),
+      ),
+    });
+  });
+
+  it("refuses when the base is the workspace's prodBranch", async () => {
+    stubPr('production');
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringMatching(
+        new RegExp(`base 'production'.*protected trunk branch`),
+      ),
+    });
+  });
+
+  it('refuses a migration-touching PR on a mission base even though the inspector rates it EXPAND-safe', async () => {
+    stubPr('mission/checkout-rewrite', {
+      files: [
+        { filename: 'packages/core/db/schema.ts', additions: 2, deletions: 0 },
+        { filename: 'packages/core/drizzle/0094_add_column.sql', additions: 1, deletions: 0 },
+      ],
+    });
+
+    const result = await evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound);
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toContain('cannot merge a schema change');
+    expect(result.ok === false && result.reason).toContain('packages/core/db/schema.ts');
+    // The EXPAND-safe verdict is real — the bound is strictly stricter, it did
+    // not merely inherit an inspector block.
+    expect(mockInspectPullRequestMigrations).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses when the build workflow never ran for the head SHA', async () => {
+    stubPr('mission/checkout-rewrite', { checkRuns: [] });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('no build/test check reported'),
+    });
+  });
+
+  it('refuses when every build check was skipped', async () => {
+    stubPr('mission/checkout-rewrite', {
+      checkRuns: [{ name: 'build', status: 'completed', conclusion: 'skipped' }],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('successful conclusion'),
+    });
+  });
+
+  it('refuses when the PR read that carries the base ref fails — fail closed', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not verify the PR base ref'),
+    });
+  });
+
+  it('leaves the unbounded (CI-green, human-configured policy) path alone', async () => {
+    // Same dev-based, zero-check-run PR that the bound refuses passes without
+    // one — proving each refusal above comes from the bound, not from a new
+    // restriction on every auto-merge.
+    stubPr('dev', { checkRuns: [] });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: true });
+  });
+});
+
+describe('tryAutoMergeWorkerPr passes the bound through to the safety rails', () => {
+  // Without this, a mutation that drops `bound` on the way to
+  // evaluateAutoMergeSafety silently disables the entire base-ref rail while
+  // every bound unit test stays green.
+  const bound = { protectedBranches: ['main', 'dev'] };
+  const worker = { id: 'worker-1', taskId: null as string | null };
+  const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } };
+
+  function stubPr(baseRef: string) {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([{ filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', base: { ref: baseRef } });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockMergePullRequest.mockClear();
+  }
+
+  it('merges when the base is a mission integration branch', async () => {
+    stubPr('mission/checkout-rewrite');
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker,
+      policy,
+      bound,
+    });
+
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not merge the identical PR when the base is dev', async () => {
+    stubPr('dev');
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker,
+      policy,
+      bound,
+    });
+
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });
 

@@ -13,7 +13,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, missionNotes, artifacts } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import type { MergePolicy } from '@buildd/shared';
-import type { MigrationSafety } from '@/lib/migration-safety';
+import { isSchemaTouchingFile, type MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { reviewerTitle } from './task-title';
 import type { WorkspacePolicyConfig } from './workspace-policy';
@@ -79,13 +79,11 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
 
 // ── Schema-touching path patterns ────────────────────────────────────────────
 
-export function isSchemaTouchingFile(filename: string): boolean {
-  // Generated SQL migration under any package's drizzle directory.
-  if (/(?:^|\/)drizzle\/\d{4}_[^/]+\.sql$/.test(filename)) return true;
-  // packages/core/db/schema.ts — exact match
-  if (filename === 'packages/core/db/schema.ts') return true;
-  return false;
-}
+// Defined in migration-safety.ts (dependency-free) so the merge-safety modules
+// can reuse it without importing this module's database surface. Re-exported
+// here because callers and tests have imported it from '@/lib/reviewer' since
+// BT-10.
+export { isSchemaTouchingFile };
 
 // ── Pre-flight escalation check ───────────────────────────────────────────────
 
