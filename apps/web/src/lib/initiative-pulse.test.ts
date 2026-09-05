@@ -24,6 +24,7 @@ import {
   zeroEffortWindow,
   derivePendingCounts,
   noPendingCounts,
+  countBlockedByPR,
   deriveVerdict,
   deriveConfidence,
   deriveInitiativeVerdict,
@@ -36,6 +37,7 @@ import {
   VERDICT_LABEL,
   type EffortRow,
   type PulseMission,
+  type BlockingTask,
   type VerdictInputs,
   type Verdict,
 } from './initiative-pulse';
@@ -548,5 +550,73 @@ describe('deriveInitiativeVerdict', () => {
     expect(
       deriveInitiativeVerdict({ rollup, effortDays, counts: { ...counts, blocked: 1 } }).verdict,
     ).toBe('stuck');
+  });
+});
+
+describe('countBlockedByPR', () => {
+  function blockingTask(over: Partial<BlockingTask> = {}): BlockingTask {
+    return { status: 'completed', workers: [], ...over };
+  }
+
+  const openPR = { prNumber: 7, mergedAt: null, prLifecycleStatus: 'open' };
+
+  it('counts a pending task whose completed dependency has an open PR', () => {
+    const index = new Map<string, BlockingTask>([
+      ['dep', blockingTask({ workers: [openPR] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['dep'] }], index)).toBe(1);
+  });
+
+  it('counts an open PR that sits on an older worker, not only the newest one', () => {
+    // A dependency retried: the newest worker produced no PR (or its PR is
+    // gone), while the PR the dependent task actually waits on belongs to an
+    // earlier attempt. Reading `workers[0]` alone scores this as unblocked and
+    // silently undercounts `blocked` on every surface at once.
+    const index = new Map<string, BlockingTask>([
+      [
+        'dep',
+        blockingTask({
+          workers: [
+            { prNumber: null, mergedAt: null, prLifecycleStatus: null },
+            openPR,
+          ],
+        }),
+      ],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['dep'] }], index)).toBe(1);
+  });
+
+  it('does not count a merged or closed PR on any worker', () => {
+    const index = new Map<string, BlockingTask>([
+      [
+        'merged',
+        blockingTask({ workers: [{ prNumber: 8, mergedAt: new Date('2026-08-01T00:00:00Z'), prLifecycleStatus: 'merged' }] }),
+      ],
+      ['closed', blockingTask({ workers: [{ prNumber: 9, mergedAt: null, prLifecycleStatus: 'closed' }] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['merged', 'closed'] }], index)).toBe(0);
+  });
+
+  it('counts a task with several blocking dependencies once', () => {
+    const index = new Map<string, BlockingTask>([
+      ['a', blockingTask({ workers: [openPR] })],
+      ['b', blockingTask({ workers: [{ prNumber: 11, mergedAt: null, prLifecycleStatus: 'open' }] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['a', 'b'] }], index)).toBe(1);
+  });
+
+  it('ignores non-pending tasks, unknown deps, and deps that are not completed', () => {
+    const index = new Map<string, BlockingTask>([
+      ['dep', blockingTask({ workers: [openPR] })],
+      ['running', blockingTask({ status: 'assigned', workers: [openPR] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'assigned', dependsOn: ['dep'] }], index)).toBe(0);
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['missing'] }], index)).toBe(0);
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['running'] }], index)).toBe(0);
   });
 });

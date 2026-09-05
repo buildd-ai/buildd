@@ -133,9 +133,23 @@ export default async function InitiativeDetailPage({
   const rollupInputs = rollupByInitiative.get(id) ?? emptyVerdictRollup(initiative.status);
 
   // `dependsOn` crosses mission boundaries, so the blocking index spans every
-  // mission loaded above rather than being rebuilt per mission. It cannot see a
-  // dependency on a task outside this initiative — the same blind spot the list
-  // has, which is why the two still agree.
+  // mission loaded above rather than being rebuilt per mission.
+  //
+  // KNOWN DIVERGENCE — do not read the previous version of this comment, which
+  // claimed the list shares this blind spot "which is why the two still agree".
+  // It does not, and they do not. `countBlockedByPR`'s index is built by each
+  // caller, and the three callers use three different scopes: the Initiatives
+  // list indexes every mission of every initiative it loaded, this page indexes
+  // only *this* initiative's missions, and Home narrows by the active workspace
+  // filter. So a task here depending on a completed task in a *different*
+  // initiative is invisible to this index but visible to the list's — and
+  // `blocked` can therefore differ between the two surfaces, violating §5.2 /
+  // AC-29. A dependency on a task in a mission with no initiative at all is
+  // invisible to every caller, so that number is wrong on all of them.
+  //
+  // The fix is a loader-owned, team-scoped blocking index (see the follow-ups in
+  // docs/design/mission-delivery-arc.md); it needs to change this file and
+  // missions/page.tsx together, so it is recorded rather than half-applied.
   const taskIndex = new Map<string, BlockingTask>();
   for (const m of (initiative.missions || []) as any[]) {
     for (const t of m.tasks ?? []) taskIndex.set(t.id, t);

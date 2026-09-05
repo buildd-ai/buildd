@@ -286,8 +286,16 @@ export function countBlockedByPR(
     for (const depId of task.dependsOn ?? []) {
       const dep = taskIndex.get(depId);
       if (!dep || dep.status !== 'completed') continue;
-      const worker = dep.workers?.[0];
-      if (worker?.prNumber && !worker.mergedAt && worker.prLifecycleStatus !== 'closed') {
+      // EVERY worker, not just the newest: a retried dependency can carry the
+      // PR the dependent task waits on an attempt or two back, and reading
+      // `workers[0]` alone scored that as unblocked — an undercount that hit
+      // every surface at once, so the §5.2 agreement invariant still passed.
+      // Matches `derivePendingCounts`, which already scans all workers for the
+      // awaiting-merge count.
+      const openPR = (dep.workers ?? []).some(
+        (w) => w?.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed',
+      );
+      if (openPR) {
         count++;
         break;
       }

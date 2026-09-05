@@ -369,6 +369,30 @@ counts in that initiative's row on `/app/initiatives`, because both read the sam
 loader (§6). Progress on both surfaces is the canonical task-weighted rollup
 (§6.3).
 
+**Calling the same function is NOT sufficient, and this invariant has been
+violated twice by surfaces that did** (both found 2026-09-04, both by building
+against this section):
+
+1. `initiative-list.ts` did not select `workers.status`, so
+   `deriveMissionSegmentState` could never return `ghost` there while detail
+   could. A completed task with an in-flight retry scored `solid`, which
+   `computeMissionProgress` counts as completed — so **`progress` read higher on
+   the list**. Fixed. The list also fed *every* worker into the rollup while
+   detail narrows to the newest, so selecting `status` alone would merely have
+   reversed the direction of the disagreement.
+2. `countBlockedByPR` takes a caller-built index, and the three callers scope it
+   three different ways — every loaded initiative (list), this initiative only
+   (detail), workspace-filtered (Home). A task depending on a completed task in
+   a *different* initiative is visible to one index and not the other, so
+   `blocked` can still differ. A dependency on a task in a mission with **no**
+   initiative is invisible to all of them, so that count is wrong everywhere and
+   the invariant passes anyway. **Open.**
+
+So the invariant MUST be read as: identical function, identical **input scope**,
+and identical **selected columns**. An agreement check cannot detect two surfaces
+agreeing on a wrong value — see §6.2's requirement below, which exists to make
+the scope loader-owned rather than caller-chosen.
+
 ### 5.3 Acceptance criteria
 
 - **AC-19**: GIVEN an initiative with `awaitingVerification: 2, blocked: 0,
@@ -456,6 +480,20 @@ The loader is split in two so that neither half forces a query the caller does
 not need: `loadInitiativeEffort` owns the SQL, and `derivePendingCounts` derives
 the four counts purely from mission rows the caller already holds. A surface that
 renders missions therefore pays nothing extra for its counts.
+
+
+**The blocking index is loader-owned and team-scoped (MUST).** `countBlockedByPR`
+needs to know which tasks are "blocking-capable" — completed, with a worker
+holding an open PR. That index was originally built by each caller from whatever
+rows it happened to have loaded, which is how the §5.2 divergence above went
+unnoticed: the function was shared, the input was not. It MUST come from the
+loader, selecting blocking-capable tasks team-wide rather than per-surface:
+`tasks.status = 'completed'` joined to a worker with `pr_number IS NOT NULL AND
+merged_at IS NULL AND coalesce(pr_lifecycle_status,'') <> 'closed'`. Cardinality
+is the number of open PRs in the team, so the payload is small and it adds one
+indexed query per team per render — no new cron or database wake window. Once it
+is loader-owned, `countBlockedByPR` can take a set of task ids instead of a row
+map, which deletes the "which worker" question entirely.
 
 ### 6.3 Canonical progress
 
