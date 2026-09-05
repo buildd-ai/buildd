@@ -63,7 +63,17 @@ export async function evaluateAutoMergeSafety(
       );
     }
   } catch (err) {
+    // Fail closed. This is the only read that proves CI is green; allowing the
+    // merge when it fails means a GitHub API blip silently becomes a merge with
+    // no CI verification at all. Refusing parks the PR for a human instead,
+    // which is recoverable — an unverified merge into dev is not.
     console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
+    return {
+      ok: false,
+      reason: `could not verify CI status — GitHub check-runs lookup failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
   }
 
   const denyPaths =
