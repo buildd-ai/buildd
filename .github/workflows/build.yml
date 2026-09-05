@@ -4,12 +4,18 @@ on:
   push:
     branches: [dev]
   pull_request:
-    # `mission/**` is a mission integration branch (docs/design/mission-delivery-arc.md).
-    # Without it here a task PR based on a mission branch gets NO Build & Test run —
-    # and because ci-fix.yml triggers on `workflow_run` of this workflow, the CI-retry
-    # agent chain goes silent with it. Unverified commits would then accumulate on the
-    # integration branch, which is the whole safety argument for that model.
-    branches: [main, dev, 'mission/**']
+    # A base-name allowlist is the wrong shape for a signal auto-merge depends on.
+    # An unlisted base means NO Build & Test run at all — and because ci-fix.yml
+    # triggers on `workflow_run` of this workflow, the CI-retry chain goes silent
+    # with it. A PR with zero runs then looks exactly like a green one to anything
+    # that only checks for *failing* checks, so every new branch convention is one
+    # forgotten line away from unverified auto-merges. `**` is the catch-all that
+    # removes that failure mode; the named branches below are kept as the record
+    # of which bases this workflow is *meant* to gate:
+    #   main, dev            — trunk
+    #   mission/**           — mission integration branches
+    #                          (docs/design/mission-delivery-arc.md)
+    branches: ['**', main, dev, 'mission/**']
 
 # One run per ref. PR runs are superseded by a new push to the same PR, so
 # cancelling is free; pushes to `dev` are NOT cancelled — each commit's verdict
