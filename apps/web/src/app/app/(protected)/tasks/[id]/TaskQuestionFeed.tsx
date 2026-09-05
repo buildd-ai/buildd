@@ -170,7 +170,7 @@ export default function TaskQuestionFeed({ taskId, activeWorkerId, activeWorkerS
                             handleReply(note.id);
                           }
                         }}
-                        placeholder="Type your answer..."
+                        placeholder="Type your answer…"
                         rows={2}
                         className="w-full px-3 py-2.5 rounded-[8px] bg-surface-2 border border-border-default text-[13px] text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-text/40 resize-none"
                       />

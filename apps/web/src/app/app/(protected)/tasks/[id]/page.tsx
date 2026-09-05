@@ -1119,7 +1119,7 @@ export default async function TaskDetailPage({
               <div className="bg-status-running/10 border border-status-running/20 rounded-[10px] p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">
                   <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
-                  Agent is generating a plan...
+                  Agent is generating a plan…
                 </div>
               </div>
             );

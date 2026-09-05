@@ -280,7 +280,7 @@ function WorkspaceOverrideEditor({
                 onChange={(e) => setContent(e.target.value)}
                 rows={8}
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
-                placeholder="Custom instructions for this workspace..."
+                placeholder="Custom instructions for this workspace…"
               />
             ) : (
               <div className="px-3 py-2 border border-border-default rounded-md bg-surface-2 opacity-60">
@@ -606,7 +606,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                 onChange={(e) => setContent(e.target.value)}
                 rows={14}
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
-                placeholder="You are Builder, a senior software engineer..."
+                placeholder="You are Builder, a senior software engineer…"
               />
               <p className="text-xs text-text-muted mt-1">Full system prompt for this role. Individual workspaces can override this.</p>
             </div>

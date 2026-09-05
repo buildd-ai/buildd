@@ -86,7 +86,7 @@ function DeviceContent() {
           {status === 'success' ? (
             <div className="text-center">
               <div className="mb-4 bg-status-success/10 border border-status-success/20 rounded-lg p-4 text-status-success">
-                Device authorized! You can close this tab and return to your terminal.
+                Device authorized. You can close this tab and return to your terminal.
               </div>
             </div>
           ) : (
@@ -116,7 +116,7 @@ function DeviceContent() {
                 disabled={status === 'submitting' || !code.trim()}
                 className="mt-4 w-full px-4 py-3 bg-primary text-white font-medium rounded-md hover:bg-primary-hover transition-colors shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {status === 'submitting' ? 'Authorizing...' : 'Authorize'}
+                {status === 'submitting' ? 'Authorizing…' : 'Authorize'}
               </button>
             </form>
           )}
@@ -135,7 +135,7 @@ export default function DevicePage() {
     <Suspense
       fallback={
         <div className="flex min-h-screen items-center justify-center bg-surface-1 text-text-primary">
-          Loading...
+          Loading…
         </div>
       }
     >

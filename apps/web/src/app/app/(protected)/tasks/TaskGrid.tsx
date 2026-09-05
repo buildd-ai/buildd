@@ -690,7 +690,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="Search tasks..."
+                placeholder="Search tasks…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
@@ -761,7 +761,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             <div className="flex-1" />
             <input
               type="text"
-              placeholder="Search tasks..."
+              placeholder="Search tasks…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"

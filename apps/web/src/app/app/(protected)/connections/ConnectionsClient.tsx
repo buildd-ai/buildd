@@ -376,7 +376,7 @@ export default function ConnectionsClient({
       )}
 
       {loading ? (
-        <div className="text-text-secondary text-sm">Loading...</div>
+        <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
           <p className="text-text-muted text-sm mb-3">No connections yet.</p>

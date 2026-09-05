@@ -51,7 +51,7 @@ export default function RepoPicker({ repos, selectedRepos, onToggle, loading }: 
   if (loading) {
     return (
       <div className="border border-border-default rounded-lg p-8 text-center">
-        <div className="animate-pulse text-text-muted">Loading repositories...</div>
+        <div className="animate-pulse text-text-muted">Loading repositories…</div>
       </div>
     );
   }
@@ -71,7 +71,7 @@ export default function RepoPicker({ repos, selectedRepos, onToggle, loading }: 
       <div className="flex items-center gap-2">
         <input
           type="text"
-          placeholder="Search repositories..."
+          placeholder="Search repositories…"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 px-3 py-2 text-sm border border-border-default rounded-lg bg-surface-1 focus:ring-2 focus:ring-primary-ring focus:border-primary"

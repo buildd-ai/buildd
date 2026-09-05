@@ -158,7 +158,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
               onChange={(e) => setContent(e.target.value)}
               rows={10}
               className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm"
-              placeholder="You are Builder, a senior software engineer..."
+              placeholder="You are Builder, a senior software engineer…"
               required
             />
             <p className="text-xs text-text-muted mt-1">This becomes the agent&apos;s system prompt.</p>
@@ -288,7 +288,7 @@ export function SkillForm({ workspaceId, delegateOptions }: Props) {
           disabled={saving}
           className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
         >
-          {saving ? 'Creating...' : 'Create Role'}
+          {saving ? 'Creating…' : 'Create Role'}
         </button>
 
         <a

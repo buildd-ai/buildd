@@ -170,7 +170,7 @@ export default function TaskPanel({
             </svg>
           </button>
           <span className="text-[14px] font-semibold text-text-primary truncate flex-1">
-            {loading ? 'Loading...' : data?.title || 'Task'}
+            {loading ? 'Loading…' : data?.title || 'Task'}
           </span>
           <Link
             href={`/app/tasks/${taskId}`}
@@ -182,7 +182,7 @@ export default function TaskPanel({
 
         {loading && (
           <div className="flex items-center justify-center py-16">
-            <span className="text-[13px] text-text-muted">Loading task...</span>
+            <span className="text-[13px] text-text-muted">Loading task…</span>
           </div>
         )}
 

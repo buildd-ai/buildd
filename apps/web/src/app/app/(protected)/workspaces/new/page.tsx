@@ -871,7 +871,7 @@ export default function NewWorkspacePage() {
               className="flex-1 px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-lg disabled:opacity-50"
             >
               {loading
-                ? 'Creating...'
+                ? 'Creating…'
                 : mode === 'create'
                 ? 'Create Repo & Workspace'
                 : selectedRepos.length > 1

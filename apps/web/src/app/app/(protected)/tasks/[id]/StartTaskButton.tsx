@@ -687,7 +687,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           onClick={handleRetry}
           className="px-4 py-2 text-sm bg-surface-3 rounded hover:bg-surface-4"
         >
-          Try Again
+          Try again
         </button>
         <button
           onClick={handleClose}

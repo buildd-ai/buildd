@@ -59,7 +59,7 @@ export function CronPresets({ value, onChange, timezone }: CronPresetsProps) {
               : 'border-border-default text-text-secondary hover:border-primary/30'
           }`}
         >
-          Custom...
+          Custom…
         </button>
       </div>
 

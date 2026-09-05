@@ -52,6 +52,7 @@ import { getSecretsProvider } from '@buildd/core/secrets';
 import type { ReleaseStrategy, WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
 import { shouldQueryRelease } from '@/lib/release-state';
+import { countOf } from '@/lib/plural';
 
 export const dynamic = 'force-dynamic';
 
@@ -1090,7 +1091,7 @@ export default async function MissionDetailPage({
           gets alarm styling, and names the criterion + evidence when known. */}
       {criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
-          Completion gated by {missionCriteria!.length} criteri{missionCriteria!.length === 1 ? 'on' : 'a'} · not yet verified — see Goal Criteria below ↓
+          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
         </p>
       )}
       {criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (

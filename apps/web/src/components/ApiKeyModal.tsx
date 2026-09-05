@@ -98,7 +98,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
                     onClick={() => handleCopy(apiKey)}
                     className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
                   >
-                    {copied ? 'Copied!' : 'Copy'}
+                    {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
               </div>
@@ -139,7 +139,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
                         onClick={() => handleCopy(mcpCommand(repo))}
                         className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
                       >
-                        {copied ? 'Copied!' : 'Copy'}
+                        {copied ? 'Copied' : 'Copy'}
                       </button>
                     </div>
                   </div>
@@ -153,7 +153,7 @@ export default function ApiKeyModal({ open, accountName, apiKey, repos = [], onC
                     onClick={() => handleCopy(mcpCommand())}
                     className="absolute top-2 right-2 px-2.5 py-1.5 rounded bg-surface-3 hover:bg-surface-2 text-text-secondary hover:text-text-primary text-xs transition-colors"
                   >
-                    {copied ? 'Copied!' : 'Copy'}
+                    {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
               )}

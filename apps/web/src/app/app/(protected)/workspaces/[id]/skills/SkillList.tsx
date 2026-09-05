@@ -102,7 +102,7 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
         <div className="mb-4">
           <input
             type="text"
-            placeholder="Search roles..."
+            placeholder="Search roles…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm focus:ring-2 focus:ring-primary-ring focus:border-primary"

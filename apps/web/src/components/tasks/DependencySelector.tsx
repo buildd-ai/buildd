@@ -125,7 +125,7 @@ export function DependencySelector({ workspaceId, excludeTaskId, selectedIds, on
       <div className="relative">
         <input
           type="text"
-          placeholder={loadingTasks ? 'Loading tasks...' : 'Search tasks to add as dependency...'}
+          placeholder={loadingTasks ? 'Loading tasks…' : 'Search tasks to add as dependency…'}
           value={search}
           onChange={(e) => {
             setSearch(e.target.value);

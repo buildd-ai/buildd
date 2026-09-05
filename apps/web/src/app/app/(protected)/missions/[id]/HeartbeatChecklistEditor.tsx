@@ -81,7 +81,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
               disabled={disabled}
               className="px-3 py-1.5 text-[12px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-50 transition-colors"
             >
-              {saving ? 'Saving...' : 'Save'}
+              {saving ? 'Saving…' : 'Save'}
             </button>
             <button
               onClick={handleCancel}
@@ -110,7 +110,7 @@ export default function HeartbeatChecklistEditor({ missionId, checklist }: Heart
           onClick={() => setEditing(true)}
           className="w-full p-3 border border-dashed border-card-border rounded-lg text-[12px] text-text-muted hover:border-accent/40 hover:text-accent-text transition-colors text-left"
         >
-          Add a checklist...
+          Add a checklist…
         </button>
       )}
     </div>

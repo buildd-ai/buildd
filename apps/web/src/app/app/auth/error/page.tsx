@@ -29,7 +29,7 @@ function ErrorContent() {
           href="/app/auth/signin"
           className="inline-block px-6 py-3 bg-primary text-white rounded-md hover:bg-primary-hover transition-opacity"
         >
-          Try Again
+          Try again
         </Link>
       </div>
     </main>
@@ -38,7 +38,7 @@ function ErrorContent() {
 
 export default function AuthErrorPage() {
   return (
-    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading...</div>}>
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading…</div>}>
       <ErrorContent />
     </Suspense>
   );

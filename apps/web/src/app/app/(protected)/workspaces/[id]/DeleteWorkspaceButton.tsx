@@ -38,7 +38,7 @@ export default function DeleteWorkspaceButton({ workspaceId, workspaceName }: { 
         disabled={deleting}
         className="px-4 py-2 border border-status-error/30 text-status-error rounded-lg hover:bg-status-error/10 disabled:opacity-50"
       >
-        {deleting ? 'Deleting...' : 'Delete Workspace'}
+        {deleting ? 'Deleting…' : 'Delete Workspace'}
       </button>
 
       <ConfirmDialog

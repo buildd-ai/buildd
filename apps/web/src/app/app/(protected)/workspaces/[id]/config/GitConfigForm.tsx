@@ -212,7 +212,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                             className="rounded"
                         />
                         <label htmlFor="useBuildBranch" className="text-sm">
-                            Use Buildd branch naming (<code>buildd/task-id-title</code>)
+                            Use buildd branch naming (<code>buildd/task-id-title</code>)
                         </label>
                     </div>
                 </div>
@@ -628,7 +628,7 @@ export function GitConfigForm({ workspaceId, workspaceName, initialConfig, confi
                     disabled={saving}
                     className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
                 >
-                    {saving ? 'Saving...' : 'Save Configuration'}
+                    {saving ? 'Saving…' : 'Save Configuration'}
                 </button>
 
                 {saved && (

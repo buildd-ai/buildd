@@ -299,7 +299,7 @@ export default function QuickCreateModal({
           <div className="p-6 text-center">
             <Spinner className="text-primary mb-4" aria-label="Waiting for worker" />
             <p className="text-text-primary mb-2">
-              Waiting for worker to accept...
+              Waiting for worker to accept…
             </p>
             <p className="text-sm text-text-secondary">
               Auto-reassigning in {countdown}s
@@ -315,7 +315,7 @@ export default function QuickCreateModal({
                 </svg>
               </div>
               <p className="text-text-primary font-medium">
-                Task started!
+                Task started
               </p>
               <p className="text-sm text-text-secondary mt-1">
                 A worker has picked up your task
@@ -329,7 +329,7 @@ export default function QuickCreateModal({
                   }}
                   className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-primary text-white rounded-lg hover:opacity-90 transition-opacity text-sm font-medium"
                 >
-                  View Task
+                  View task
                 </button>
               )}
               <button
@@ -363,7 +363,7 @@ export default function QuickCreateModal({
                 }}
                 className="flex items-center justify-center gap-2 w-full px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-3"
               >
-                View Task
+                View task
               </button>
             )}
             <button
@@ -383,7 +383,7 @@ export default function QuickCreateModal({
                 </svg>
               </div>
               <p className="text-text-primary font-medium">
-                Task created!
+                Task created
               </p>
               <p className="text-sm text-text-secondary mt-1">
                 Queued and waiting for a worker
@@ -397,7 +397,7 @@ export default function QuickCreateModal({
                   }}
                   className="flex items-center justify-center gap-2 w-full px-4 py-2.5 bg-primary text-white rounded-lg hover:opacity-90 transition-opacity text-sm font-medium"
                 >
-                  View Task
+                  View task
                 </button>
               )}
               <button
@@ -627,7 +627,7 @@ export default function QuickCreateModal({
                 className="w-full md:w-auto py-3 md:py-1.5 px-3 text-sm bg-primary hover:bg-primary-hover text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
               >
                 {loading
-                  ? 'Creating...'
+                  ? 'Creating…'
                   : selectedLocalUi
                     ? 'Create & Send'
                     : 'Create'

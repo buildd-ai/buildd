@@ -82,7 +82,7 @@ export default function DeleteTaskButton({ taskId, taskStatus }: Props) {
                 disabled={loading}
                 className="px-3 py-1.5 text-sm bg-status-error text-white rounded hover:opacity-90 disabled:opacity-50"
               >
-                {loading ? 'Deleting...' : 'Delete'}
+                {loading ? 'Deleting…' : 'Delete'}
               </button>
             </div>
           </div>

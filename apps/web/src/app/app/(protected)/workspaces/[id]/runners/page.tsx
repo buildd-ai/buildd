@@ -82,7 +82,7 @@ export default function RunnersPage() {
         </div>
 
         {loading ? (
-          <div className="text-text-muted">Loading runners...</div>
+          <div className="text-text-muted">Loading runners…</div>
         ) : error ? (
           <div className="p-4 bg-status-error/10 border border-status-error/30 rounded-lg text-status-error">
             {error}

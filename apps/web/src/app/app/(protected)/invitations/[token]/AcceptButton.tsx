@@ -39,7 +39,7 @@ export default function AcceptInvitationButton({ token }: { token: string }) {
         disabled={loading}
         className="w-full px-4 py-2 bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed font-medium"
       >
-        {loading ? 'Accepting...' : 'Accept Invitation'}
+        {loading ? 'Accepting…' : 'Accept Invitation'}
       </button>
       {error && (
         <p className="mt-3 text-sm text-status-error">{error}</p>
