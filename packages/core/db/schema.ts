@@ -979,6 +979,15 @@ export const tasks = pgTable('tasks', {
   kindIdx: index('tasks_kind_idx').on(t.kind),
   startAtIdx: index('tasks_start_at_idx').on(t.startAt),
   taskClassIdx: index('tasks_task_class_idx').on(t.taskClass),
+  // Partial expression index for the github workflow_run webhook's runId
+  // lookup, which fires on every completed CI workflow of every push and was
+  // sequentially scanning this whole table. Partial because only tasks that
+  // dispatched a release carry release_result at all; indexed as TEXT because
+  // the query compares ->> output directly (a ::bigint cast would throw 22P02
+  // both here at build time and per-row at query time on any malformed value).
+  releaseRunIdIdx: index('tasks_release_run_id_idx')
+    .on(sql`((release_result->>'runId'))`)
+    .where(sql`release_result IS NOT NULL`),
   ciRetryEventIdx: uniqueIndex('tasks_ci_retry_event_unique')
     .on(t.workspaceId, t.ciRetryPrNumber, t.ciRetryHeadSha)
     .where(sql`${t.creationSource} = 'webhook' AND ${t.ciRetryPrNumber} IS NOT NULL AND ${t.ciRetryHeadSha} IS NOT NULL`),
@@ -2614,6 +2623,9 @@ export const releases = pgTable('releases', {
 }, (t) => ({
   workspaceIdx: index('releases_workspace_idx').on(t.workspaceId),
   stateIdx: index('releases_state_idx').on(t.state),
+  // The workflow_run webhook resolves a release by run_url on the same hot
+  // path as the runId lookup above.
+  runUrlIdx: index('releases_run_url_idx').on(t.runUrl),
   workspaceShaIdx: uniqueIndex('releases_workspace_sha_idx').on(t.workspaceId, t.headSha),
 }));
 
