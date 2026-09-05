@@ -542,6 +542,7 @@ export class WorkerManager {
       claimPendingTasks: () => this.claimPendingTasks(),
       claimAndStart: (task) => this.claimAndStart(task),
       getProbedWorkers: () => this.probedWorkers,
+      resolveRepoPath: (workspace) => this.resolver.resolve(workspace),
     });
     this.hookFactory = new HookFactory({
       config: { inputAsRetry: config.inputAsRetry },

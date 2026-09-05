@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   MISSION_BRANCH_PREFIX,
+  shouldAnnounceBaseAdvance,
   isMissionIntegrationBase,
   looksLikeMissionIntegrationBranch,
   missionIntegrationBase,
@@ -117,5 +118,40 @@ describe('looksLikeMissionIntegrationBranch', () => {
 
   it('exports the prefix the shape check uses', () => {
     expect(MISSION_BRANCH_PREFIX).toBe('mission/');
+  });
+});
+
+describe('shouldAnnounceBaseAdvance', () => {
+  const MISSION_BASE = 'mission/checkout-arc-1a2b3c4d';
+
+  it('announces when a PR merges into a mission integration branch', () => {
+    expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: MISSION_BASE })).toBe(true);
+  });
+
+  it('does not announce for a PR closed without merging', () => {
+    // Nothing moved, so refreshing the graph for that base would be work over a
+    // base that did not advance.
+    expect(shouldAnnounceBaseAdvance({ merged: false, baseRef: MISSION_BASE })).toBe(false);
+  });
+
+  it('does not announce when merged is absent', () => {
+    expect(shouldAnnounceBaseAdvance({ baseRef: MISSION_BASE })).toBe(false);
+    expect(shouldAnnounceBaseAdvance({ merged: null, baseRef: MISSION_BASE })).toBe(false);
+  });
+
+  it('does not announce for a merge into trunk', () => {
+    // Trunk advances constantly and its seed is the default slot on the normal
+    // cooldown; announcing every trunk merge would rebuild it every time.
+    expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: 'dev' })).toBe(false);
+    expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: 'main' })).toBe(false);
+  });
+
+  it('does not announce for a merge into a task branch', () => {
+    expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: 'buildd/1a2b3c4d-add-endpoint' })).toBe(false);
+  });
+
+  it('does not announce when the base ref is unknown', () => {
+    expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: null })).toBe(false);
+    expect(shouldAnnounceBaseAdvance({ merged: true })).toBe(false);
   });
 });

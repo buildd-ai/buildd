@@ -10,7 +10,7 @@ import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
-import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
+import { isMissionIntegrationBase, shouldAnnounceBaseAdvance } from '@buildd/core/mission-integration';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -823,6 +823,32 @@ async function handlePullRequestEvent(event: {
     if (worker.taskId && worker.workspaceId) {
       evaluateAndAdvanceLoopOnMerge(worker.id, worker.taskId, worker.workspaceId).catch((e) =>
         console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${worker.taskId}:`, e)
+      );
+    }
+
+    // A merge onto a mission integration branch moved the base that every
+    // sibling task's codebase-graph seed is keyed on. Tell the runner, which
+    // owns the seed cache (a directory on its own host) and already has the
+    // keying and the one-refresh-in-flight bound.
+    //
+    // Keyed on the BASE REF alone, deliberately not on `task.missionId`: the
+    // stale thing is a seed keyed on that ref, and it is stale whether or not
+    // the merging task's row happens to carry a mission link. Requiring the
+    // link would make graph freshness depend on task bookkeeping.
+    //
+    // Also deliberately the SHAPE heuristic, where the release guard below uses
+    // the authoritative `isMissionIntegrationBase`. The asymmetry is the cost of
+    // being wrong: a false positive on a release decision suppresses a release
+    // the workspace asked for, while a false positive here costs one no-op
+    // refresh of a slot nobody reads.
+    if (shouldAnnounceBaseAdvance({ merged: pr.merged, baseRef: pr.base?.ref }) && worker.workspaceId) {
+      await triggerEvent(channels.workspace(worker.workspaceId), events.GRAPH_BASE_ADVANCED, {
+        repoFullName: repository.full_name,
+        baseRef: pr.base!.ref,
+      }).catch(e =>
+        // Advisory: the next claim in this mission refreshes the seed anyway, so
+        // a failed publish must never affect the merge path.
+        console.error(`[webhook] graph:base-advanced publish failed for ${repository.full_name}:`, e),
       );
     }
 

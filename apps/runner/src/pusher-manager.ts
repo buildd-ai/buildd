@@ -4,6 +4,7 @@ const Pusher = ('Pusher' in PusherModule ? (PusherModule as any).Pusher : Pusher
 import type { BuilddTask, WorkerCommand, LocalUIConfig, LocalWorker } from './types';
 import type { BuilddClient } from './buildd';
 import { saveWorker as storeSaveWorker } from './worker-store';
+import { refreshCbmSeedForBaseAdvance } from './cbm-enforcement';
 
 type EventHandler = (event: any) => void;
 type CommandHandler = (workerId: string, command: WorkerCommand) => void;
@@ -24,6 +25,12 @@ export interface PusherManagerCallbacks {
   claimPendingTasks: () => Promise<void>;
   claimAndStart: (task: BuilddTask) => Promise<LocalWorker | null>;
   getProbedWorkers: () => Set<string>;
+  /**
+   * Local checkout path for a workspace, or null when this runner has no clone
+   * of it. Needed by `graph:base-advanced`, which names a repo and a base ref
+   * but cannot know where this particular host keeps it.
+   */
+  resolveRepoPath: (workspace: { id: string; name: string; repo?: string | null }) => string | null;
 }
 
 export class PusherManager {
@@ -121,12 +128,52 @@ export class PusherManager {
           channel.bind('task:assigned', (data: { task: BuilddTask; targetLocalUiUrl?: string | null }) => {
             this.handleTaskAssignment(data);
           });
+          channel.bind('graph:base-advanced', (data: { repoFullName?: string; baseRef?: string }) => {
+            this.handleBaseAdvanced(ws, data);
+          });
           this.workspaceChannels.set(channelName, channel);
           console.log(`Subscribed to ${channelName} for task assignments`);
         }
       }
     } catch (err) {
       console.error('Failed to subscribe to workspace channels:', err);
+    }
+  }
+
+  /**
+   * A mission integration branch advanced: refresh the codebase-graph seed
+   * keyed on that base ref so the next sibling task in the mission does not
+   * build on a pre-merge graph.
+   *
+   * Advisory throughout. The seed also refreshes on the next claim in the
+   * mission, so this only removes the latency — every early return here is a
+   * normal outcome, not a failure, and none of them may throw into the Pusher
+   * callback. The outcome is logged rather than swallowed: a refresh that never
+   * runs should be visible in the runner log instead of inferred from the
+   * fleet being slow.
+   */
+  private handleBaseAdvanced(
+    workspace: { id: string; name: string; repo?: string | null },
+    data: { repoFullName?: string; baseRef?: string },
+  ) {
+    const baseRef = typeof data?.baseRef === 'string' ? data.baseRef : undefined;
+    if (!baseRef) {
+      console.log('[graph:base-advanced] ignored: no baseRef in payload');
+      return;
+    }
+    try {
+      const repoPath = this.callbacks.resolveRepoPath(workspace);
+      if (!repoPath) {
+        // Normal on a runner that holds no clone of this workspace. Every
+        // runner on the workspace channel receives the event; only the ones
+        // with a checkout can act on it.
+        console.log(`[graph:base-advanced] no local checkout for workspace ${workspace.name} — nothing to refresh`);
+        return;
+      }
+      const outcome = refreshCbmSeedForBaseAdvance({ repoPath, baseRef });
+      console.log(`[graph:base-advanced] ${baseRef} in ${repoPath}: ${outcome}`);
+    } catch (err) {
+      console.error('[graph:base-advanced] refresh failed:', err);
     }
   }
 
