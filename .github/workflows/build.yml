@@ -476,10 +476,13 @@ jobs:
           # Print what we resolved before using it. A gate that reports only
           # pass/fail cannot distinguish "healthy" from "never ran".
           if [ -z "$TEST_HOST" ] || [ -z "$TEST_CONTAINER" ]; then
-            echo "::warning::Test machine not configured — integration tests SKIPPED (measured nothing). Set the repo variables: gh variable set TEST_MACHINE_HOST --body '<tailscale-host>'; gh variable set TEST_MACHINE_CONTAINER --body '<container>'"
+            # Fails for the same reason the unreachable branch below does: no
+            # tests ran, so this must not report as passing coverage. Not a
+            # required check on `main`, so it annotates without blocking.
+            echo "::error::Test machine not configured, so NO integration or E2E tests ran. Set the repo variables: gh variable set TEST_MACHINE_HOST --body '<tailscale-host>'; gh variable set TEST_MACHINE_CONTAINER --body '<container>'"
             echo "INTEGRATION_MODE=skipped_unconfigured"
             echo "machine_online=false" >> "$GITHUB_OUTPUT"
-            exit 0
+            exit 1
           fi
           echo "INTEGRATION_MODE=full host=$TEST_HOST container=$TEST_CONTAINER user=$TEST_USER"
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
@@ -510,9 +513,21 @@ jobs:
               echo "machine_online=true" >> "$GITHUB_OUTPUT"
               exit 1
             else
-              echo "::warning::Test machine ${TEST_HOST} not reachable in Tailscale (infrastructure outage, not a code issue). Integration tests skipped for this run."
+              # FAILS, deliberately. This branch used to `exit 0` with a warning,
+              # on the reasoning that an infra outage is not a code problem. The
+              # consequence: between 2026-07-16 and 2026-08-29 this job reported
+              # SUCCESS six consecutive times having executed zero tests, because
+              # Tailscale was logged out on the host the whole time. A green that
+              # cannot be told apart from "never ran" is worse than a red one.
+              #
+              # Safe to fail: `integration` is NOT a required check on `main`
+              # (only `build` is), so a red here annotates the run without
+              # blocking a merge — including the hotfix PRs that are this job's
+              # entire population.
+              echo "::error::Test machine ${TEST_HOST} is unreachable over Tailscale, so NO integration or E2E tests ran. This is an infrastructure failure, not a code failure — but it is reported as a failure so it cannot masquerade as passing coverage. Fix: run 'sudo tailscale up --ssh' on the host (it logs out and stays out), then re-run this job."
+              echo "INTEGRATION_MODE=skipped_unreachable"
               echo "machine_online=false" >> "$GITHUB_OUTPUT"
-              exit 0
+              exit 1
             fi
           fi
           echo "machine_online=true" >> "$GITHUB_OUTPUT"
