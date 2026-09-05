@@ -711,7 +711,10 @@ all task PRs merged into the integration branch **and** the mission PR merged in
 (`mission-helpers.ts:269–282`) is permanently `UNVERIFIED` because nothing populates
 `branchDeleted` — and "the mission branch is gone" is exactly the check A′ wants.
 
-**P2 — `persistMissionPrIfFirst` must claim only the mission PR. DONE.**
+**P2 — the mission-PR slot must be claimed only by the mission PR. DONE.**
+*(The function was named `persistMissionPrIfFirst` and lived in the PR route; it
+is now `claimMissionPrimaryPr` in `apps/web/src/lib/mission-pr.ts`, shared with
+the mission-PR opener so there is one implementation of the base-ref gate.)*
 `api/github/pr/route.ts:893–903` claims `primaryPrNumber` for whichever PR arrives
 first. Under A′ the first *task* PR steals the slot. Gate it on base ref = `dev`, or
 on an explicit `isMissionPr` flag.
