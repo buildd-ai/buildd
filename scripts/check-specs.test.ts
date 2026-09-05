@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { claimedSymbols, resolveSymbols, VERIFIED_BY_DEBT } from './check-specs';
+import { claimedSymbols, codeSurfacePaths, resolveSymbols, VERIFIED_BY_DEBT } from './check-specs';
 
 /**
  * Guards for the two checks that make `specs:lint` test whether a spec is TRUE
@@ -112,5 +112,59 @@ describe('verified_by ratchet', () => {
     // The number is asserted so growing it requires editing this test and
     // explaining why.
     expect(VERIFIED_BY_DEBT.size).toBeLessThanOrEqual(18);
+  });
+});
+
+describe('codeSurfacePaths', () => {
+  // A multi-section spec repeats the `Code surface` label per section. Reading only
+  // the first match left sections 2..N unchecked, so a dead path in a later section
+  // passed the linter — work-tracker-integration.md had three sections and its §3
+  // named a route that does not exist, while specs:lint reported 0 errors.
+  test('collects paths from every Code surface section, not just the first', () => {
+    const body = [
+      '## 1. First capability',
+      '**Code surface**: `apps/web/src/one.ts`',
+      '',
+      '## 2. Second capability',
+      '**Code surface**: `apps/web/src/two.ts`',
+      '',
+      '## 3. Third capability',
+      '**Code surface**: `apps/web/src/three.ts`',
+    ].join('\n');
+
+    expect(codeSurfacePaths(body).sort()).toEqual([
+      'apps/web/src/one.ts',
+      'apps/web/src/three.ts',
+      'apps/web/src/two.ts',
+    ]);
+  });
+
+  test('handles the three label spellings within one body', () => {
+    const body = [
+      '**Code surface**: `apps/a.ts`',
+      '',
+      '## Code surface',
+      '`packages/b.ts`',
+      '',
+      '**Other label**: not a surface',
+      '',
+      'Code surface: `scripts/c.ts`',
+    ].join('\n');
+
+    expect(codeSurfacePaths(body).sort()).toEqual(['apps/a.ts', 'packages/b.ts', 'scripts/c.ts']);
+  });
+
+  test('still stops at the next label so neighbouring prose is not scanned', () => {
+    const body = [
+      '**Code surface**: `apps/web/src/real.ts`',
+      '',
+      '**Invariants**: `apps/web/src/not-a-surface.ts` is only mentioned',
+    ].join('\n');
+
+    expect(codeSurfacePaths(body)).toEqual(['apps/web/src/real.ts']);
+  });
+
+  test('returns nothing when a body has no Code surface section', () => {
+    expect(codeSurfacePaths('## Overview\nJust prose about `apps/web/src/x.ts`.')).toEqual([]);
   });
 });
