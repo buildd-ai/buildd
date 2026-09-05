@@ -198,6 +198,18 @@ export interface SetupWorktreeResult {
    *  equals the task's own `branch` parameter otherwise.  The caller should
    *  update `worker.branch` with this value so pushes target the right ref. */
   branch: string;
+  /**
+   * The ref the worktree was actually cut from, e.g. `origin/main` or a mission
+   * integration branch. RESOLVED, not predicted: it is whatever
+   * resolveWorktreeBase settled on after probing the remote, including any
+   * fallback it took.
+   *
+   * Returned because the codebase-memory seed is keyed on it. A caller that
+   * re-derived this instead would be re-implementing the base decision, and
+   * branch-names.ts documents what hand-mirroring that rule already cost once —
+   * a predicted ref that never existed, failing silently.
+   */
+  base: string;
   /** Set when resume candidate was requested but not usable (missing/diverged),
    *  causing a fresh start from the default branch.  Callers should surface
    *  this as a visible warning rather than silently degrading. */
@@ -508,6 +520,7 @@ export async function setupWorktree(
     return {
       path: worktreePath,
       branch: actualBranch,
+      base,
       ...(fallback ? { fallback } : {}),
       ...(sharedBranch ? { sharedBranch } : {}),
     };

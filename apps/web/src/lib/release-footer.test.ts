@@ -5,16 +5,31 @@ import { describe, it, expect, mock, beforeEach } from 'bun:test';
 // ── Chainable db.select mock — queue up one result per call within a test ────
 
 let selectResults: any[] = [];
+// Every WHERE this module builds, in call order. A mocked `db` makes predicates
+// unobservable, and queue depth is exactly a predicate — so capture them.
+let capturedWheres: any[] = [];
 function chainable(result: any) {
   const obj: any = {
     from: () => obj,
-    where: () => obj,
+    where: (pred: any) => {
+      capturedWheres.push(pred);
+      return obj;
+    },
     orderBy: () => obj,
     limit: () => obj,
     innerJoin: () => obj,
     then: (resolve: any) => resolve(result),
   };
   return obj;
+}
+
+/** Flatten the fake `and(...)`/`sql` tree into the SQL text it would render. */
+function whereText(pred: any): string {
+  if (pred == null) return '';
+  if (Array.isArray(pred)) return pred.map(whereText).join(' ');
+  if (pred.type === 'and') return pred.args.map(whereText).join(' ');
+  if (pred.type === 'sql') return (pred.strings ?? []).join('?') + ' ' + (pred.values ?? []).join(' ');
+  return '';
 }
 const mockSelect = mock(() => chainable(selectResults.shift()));
 
@@ -24,7 +39,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   releases: { id: 'id', workspaceId: 'workspace_id', createdAt: 'created_at', state: 'state' },
-  workers: { taskId: 'task_id', mergedAt: 'merged_at' },
+  workers: { taskId: 'task_id', mergedAt: 'merged_at', prBaseRef: 'pr_base_ref' },
   tasks: { id: 'id', workspaceId: 'workspace_id' },
 }));
 
@@ -51,6 +66,7 @@ const ws = { id: 'ws-1', name: 'buildd', gitConfig: null, releaseConfig: null };
 describe('loadReleaseFooterData', () => {
   beforeEach(() => {
     selectResults = [];
+    capturedWheres = [];
     mockSelect.mockClear();
     mockDetectArchetype.mockReset();
     mockResolveGatedReleaseBaseline.mockReset();
@@ -106,6 +122,26 @@ describe('loadReleaseFooterData', () => {
       oldestMergedAt: { kind: 'unavailable', reason: 'no_scope' },
       baselineSource: 'healthy',
     });
+  });
+
+  // P4 / mission-delivery-arc: a task PR that merged into `mission/<slug>` has
+  // landed on the integration branch, NOT on trunk. Counting it here reports a
+  // mission's work as releasable while nothing of it is on trunk, and then
+  // counts it a second time when the mission PR merges.
+  it('gated → the queue-depth WHERE excludes merges into a mission integration branch', async () => {
+    mockDetectArchetype.mockReturnValue('gated');
+    mockResolveGatedReleaseBaseline.mockResolvedValue({ source: 'healthy', asOf: '2026-08-20T00:00:00.000Z' });
+    selectResults = [
+      [{ id: 'rel-latest' }],
+      [{ queueDepth: 1, oldestMergedAt: null }],
+    ];
+    await loadReleaseFooterData(ws);
+
+    const queueWhere = whereText(capturedWheres[capturedWheres.length - 1]).toLowerCase();
+    expect(queueWhere).toContain('not like');
+    expect(queueWhere).toContain('mission/%');
+    // Null base refs (every row merged before the column existed) still count.
+    expect(queueWhere).toContain('is null');
   });
 
   it('continuous, a release row exists → last deploy state', async () => {

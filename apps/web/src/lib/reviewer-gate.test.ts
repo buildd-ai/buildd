@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { resolveReviewerGate } from './reviewer-gate';
 import type { ReviewerGateInput } from './reviewer-gate';
+import { resolvePolicy, isMissionIntegrationBase } from './merge-policy';
 import { buildActionQueue } from './action-queue';
 import type { EscalationRawItem } from './action-queue';
 import { DAY_MS, HOUR_MS, MINUTE_MS } from './pr-freshness';
@@ -298,5 +299,158 @@ describe('all three directions hold simultaneously', () => {
     })], { now: NOW });
 
     expect(queue[0].chip).toBe('RESOLVING');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Direction 4: Option A′ quarantined task PRs.
+//
+// A task PR based on a mission's integration branch resolves to
+// `auto-threshold` (merge-policy precedence rule 2) so it can land unattended —
+// the human gate for that work is the ONE mission PR into trunk. But that tier
+// drop is also what removes the reviewer, and "no reviewer will ever run" was
+// otherwise read as "a human must merge this". Net effect: A′ turned into its
+// own opposite, demoting task PRs and then presenting every one of them as the
+// human's problem.
+//
+// `/api/prs/escalation-inbox` and `/api/cron/stall-notify` drop these PRs by
+// testing the resolved tier. Home reaches the same question through
+// `resolveReviewerGate`, so the exemption has to live in the gate or the two
+// answers diverge for the same PR.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('resolveReviewerGate — Option A′ integration-branch task PRs', () => {
+  it("a quarantined task PR with no reviewer is the platform's move, not the human's", () => {
+    const gate = resolveReviewerGate(
+      baseInput({
+        policyTier: 'auto-threshold',
+        reviewerTask: null,
+        isMissionIntegrationTaskPr: true,
+      }),
+    );
+    expect(gate.actor).toBe('platform');
+    // Home buckets the in-flight rails on agentState and the inbox on
+    // actor === 'human', so a platform-owned PR must claim neither.
+    expect(gate.agentState).toBeUndefined();
+  });
+
+  it('the same PR without the A′ flag still falls to the human (pre-A′ behaviour untouched)', () => {
+    const gate = resolveReviewerGate(
+      baseInput({ policyTier: 'auto-threshold', reviewerTask: null }),
+    );
+    expect(gate.actor).toBe('human');
+  });
+
+  it('task.requiresReview still wins — an explicit per-task human gate is never revoked', () => {
+    // resolvePolicy rule 1 beats rule 2, so the tier arrives as 'human' even
+    // when the base is the integration branch.
+    const gate = resolveReviewerGate(
+      baseInput({ policyTier: 'human', isMissionIntegrationTaskPr: true }),
+    );
+    expect(gate.actor).toBe('human');
+    expect(gate.reason).toBe('Human Gate — manual merge required');
+  });
+
+  it('an explicit reviewer escalation on a quarantined PR still reaches the human', () => {
+    // Matches the inbox, which admits an escalated task before it looks at the
+    // tier at all. An agent that handed the PR back by name is not overridden.
+    const gate = resolveReviewerGate(
+      baseInput({
+        policyTier: 'auto-threshold',
+        isMissionIntegrationTaskPr: true,
+        escalationReason: 'escalated: touches a protected path',
+      }),
+    );
+    expect(gate.actor).toBe('human');
+    expect(gate.reason).toBe('escalated: touches a protected path');
+  });
+
+  it('a reviewer approval on a quarantined PR still reaches the human', () => {
+    const gate = resolveReviewerGate(
+      baseInput({
+        policyTier: 'auto-threshold',
+        isMissionIntegrationTaskPr: true,
+        approvalSummary: 'Looks good, confidence 0.9',
+      }),
+    );
+    expect(gate.actor).toBe('human');
+  });
+
+  it('a failed reviewer task does not page a human for a quarantined PR', () => {
+    // Nothing is waiting on this verdict: the platform merges the PR into a
+    // branch that is itself still behind the mission's review gate.
+    const gate = resolveReviewerGate(
+      baseInput({
+        policyTier: 'auto-threshold',
+        isMissionIntegrationTaskPr: true,
+        reviewerTask: { status: 'failed', hasLiveWorker: false, createdAt: NOW },
+      }),
+    );
+    expect(gate.actor).toBe('platform');
+  });
+});
+
+// The three surfaces that ask "is this PR a human's problem" about the SAME PR,
+// evaluated over one fixture. Two of them are one-line tier checks in route
+// handlers this file cannot import (they are server routes with DB clients), so
+// their predicates are reproduced verbatim and cited; Home's composition is the
+// real code path — `resolvePolicy` with the PR base ref, feeding
+// `resolveReviewerGate`.
+//
+// SCOPE, deliberately narrow: the claim under test is agreement about an
+// integration-branch task PR. Home legitimately knows more than the routes about
+// reviewer liveness under `agent-review` (a reviewer that never started IS a
+// human's problem, and the routes do not model that at all), so this does not
+// assert blanket agreement — only that A′ quarantine resolves identically.
+describe('Home, the escalation inbox and stall-notify agree about a quarantined task PR', () => {
+  const INTEGRATION_BRANCH = 'mission/example-slug-0a1b2c3d';
+  const optedInMission = { workingBranch: INTEGRATION_BRANCH, integrationBranchEnabled: true };
+  const humanWorkspace = { gitConfig: { mergePolicy: { tier: 'human' } } as any };
+  const agentReviewWorkspace = {
+    gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } } as any,
+  };
+
+  // api/prs/escalation-inbox/route.ts: `return policy.tier === 'human'`
+  // api/cron/stall-notify/route.ts:    `const isHumanGate = policy.tier === 'human'`
+  // Both build `policy` from resolvePolicy(ws, mission, null, { baseRef }).
+  function routesSayHuman(ws: { gitConfig: unknown }, baseRef: string | null): boolean {
+    return resolvePolicy(ws as never, optedInMission, null, { baseRef }).tier === 'human';
+  }
+
+  // home/page.tsx: same resolvePolicy call, then resolveReviewerGate.
+  function homeSaysHuman(ws: { gitConfig: unknown }, baseRef: string | null): boolean {
+    const policy = resolvePolicy(ws as never, optedInMission, null, { baseRef });
+    return (
+      resolveReviewerGate(
+        baseInput({
+          policyTier: policy.tier,
+          reviewerTask: null,
+          // Well past any dispatch grace period — the worst case for the human queue.
+          prOpenedAt: new Date(NOW.getTime() - 2 * HOUR_MS),
+          isMissionIntegrationTaskPr: isMissionIntegrationBase({ baseRef, mission: optedInMission }),
+        }),
+      ).actor === 'human'
+    );
+  }
+
+  it('a human-tier workspace: neither surface calls the quarantined task PR a human problem', () => {
+    expect(routesSayHuman(humanWorkspace, INTEGRATION_BRANCH)).toBe(false);
+    expect(homeSaysHuman(humanWorkspace, INTEGRATION_BRANCH)).toBe(false);
+  });
+
+  it('an agent-review workspace: same answer, same PR', () => {
+    expect(routesSayHuman(agentReviewWorkspace, INTEGRATION_BRANCH)).toBe(false);
+    expect(homeSaysHuman(agentReviewWorkspace, INTEGRATION_BRANCH)).toBe(false);
+  });
+
+  it('and all three still call the mission PR itself (base = trunk) a human problem', () => {
+    expect(routesSayHuman(humanWorkspace, 'dev')).toBe(true);
+    expect(homeSaysHuman(humanWorkspace, 'dev')).toBe(true);
+  });
+
+  it('an unknown base ref is never treated as quarantined by either surface', () => {
+    // The direction that silently deletes a review gate.
+    expect(routesSayHuman(humanWorkspace, null)).toBe(true);
+    expect(homeSaysHuman(humanWorkspace, null)).toBe(true);
   });
 });

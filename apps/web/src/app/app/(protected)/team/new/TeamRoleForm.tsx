@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ModelPicker } from '@/components/ModelPicker';
+import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE } from '@/lib/role-tool-scope';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -263,9 +264,9 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
 
             <div>
               <label className="block text-sm font-medium mb-1.5">
-                Allowed Tools
+                {SUBAGENT_TOOLS_LABEL}
                 <span className="text-text-muted font-normal ml-1">
-                  {allowedTools.length === 0 ? '(all)' : `(${allowedTools.length})`}
+                  {allowedTools.length === 0 ? '(defaults)' : `(${allowedTools.length})`}
                 </span>
               </label>
               <div className="flex flex-wrap gap-1.5">
@@ -287,7 +288,7 @@ export function TeamRoleForm({ teamId, workspaces }: Props) {
                   );
                 })}
               </div>
-              <p className="text-xs text-text-muted mt-1">Empty = all tools allowed.</p>
+              <p className="text-xs text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE}</p>
             </div>
 
             <div className="space-y-2">

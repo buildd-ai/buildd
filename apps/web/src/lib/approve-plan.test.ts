@@ -16,6 +16,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ── Mock state ────────────────────────────────────────────────────────────────
 let planningTaskRow: any = null;
 let workspaceRow: any = null;
+/** The mission row, when the planning task belongs to one (Option A′ opt-in). */
+let missionRow: any = null;
 /** id → task row, consulted by db.query.tasks.findFirst via the eq() id arg. */
 let taskRows: Record<string, any> = {};
 /** taskId → worker row, consulted by db.query.workers.findFirst. */
@@ -43,6 +45,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'tasks.id', parentTaskId: 'tasks.parent_task_id' },
   workspaces: { id: 'workspaces.id' },
   workers: { taskId: 'workers.task_id', createdAt: 'workers.created_at' },
+  missions: { id: 'missions.id' },
 }));
 
 /** Pull the value side of an `eq(col, value)` predicate (possibly inside and()). */
@@ -69,6 +72,7 @@ mock.module('@buildd/core/db', () => ({
         findMany: () => Promise.resolve(childrenRows),
       },
       workspaces: { findFirst: () => Promise.resolve(workspaceRow) },
+      missions: { findFirst: () => Promise.resolve(missionRow) },
       workers: {
         findFirst: (args: any) => {
           const taskId = eqValue(args?.where);
@@ -112,6 +116,7 @@ function reset() {
   updateCalls.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
   workspaceRow = { gitConfig: null };
+  missionRow = null;
   taskRows[PLANNING_TASK_ID] = planningTaskRow;
 }
 
@@ -181,5 +186,57 @@ describe('approvePlan — baseBranch resolution', () => {
     contextSeeds[0] = { headBranch: 'mission/delivery-arc-1a2b3c4d' };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
     expect(writtenBaseBranch()).toBe('mission/delivery-arc-1a2b3c4d');
+  });
+});
+
+describe('approvePlan — Option A′ integration branch as the default base', () => {
+  beforeEach(reset);
+
+  /** The `context` approvePlan INSERTED for a plan step (first pass). */
+  function insertedContext(index: number): Record<string, unknown> {
+    return insertedValues[index]?.context ?? {};
+  }
+
+  it('does not touch the context of a mission that has not opted in', async () => {
+    // The whole safety argument for shipping A′ one mission at a time: with the
+    // flag off, the children this creates are indistinguishable from before the
+    // feature existed. Asserting the ABSENCE of the key, not just a value.
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: 'mission/delivery-arc-1a2b3c4d', integrationBranchEnabled: false };
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'solo', title: 'Do the thing' }] as any);
+    expect('baseBranch' in insertedContext(0)).toBe(false);
+  });
+
+  it('bases every child on the integration branch when the mission opted in', async () => {
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: 'mission/delivery-arc-1a2b3c4d', integrationBranchEnabled: true };
+    await approvePlan(
+      PLANNING_TASK_ID,
+      [{ ref: 'a', title: 'First' }, { ref: 'b', title: 'Second' }] as any,
+    );
+    expect(insertedContext(0).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
+    expect(insertedContext(1).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
+  });
+
+  it('lets an explicit stacked baseBranch still win over the integration branch', async () => {
+    // A step naming a predecessor is stacking deliberately. A′ only fills in the
+    // base for steps that named none — it must not flatten a declared chain.
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: 'mission/delivery-arc-1a2b3c4d', integrationBranchEnabled: true };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe(`buildd/${DEP_ID8}-add-schema-migration`);
+  });
+
+  it('ignores the flag when the mission has no working branch yet', async () => {
+    // Opt-in can precede the organizer's first pass, which is what generates
+    // the branch name. An empty base is not a base.
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: null, integrationBranchEnabled: true };
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'solo', title: 'Do the thing' }] as any);
+    expect('baseBranch' in insertedContext(0)).toBe(false);
   });
 });

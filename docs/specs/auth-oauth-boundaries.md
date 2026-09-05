@@ -194,6 +194,5 @@ approves in the dashboard.
 - Schema: `packages/core/db/schema.ts` — `deviceCodes` table
 
 **Out of scope**: Per-team `notificationPreferences` (a related auth-adjacent
-concept). The `accounts.anthropicApiKey` deprecated column. Worker-level
-concurrency limits beyond `maxConcurrentWorkers` (covered in
-`runner-liveness.md`).
+concept). Worker-level concurrency limits beyond `maxConcurrentWorkers` (covered
+in `runner-liveness.md`).

@@ -20,6 +20,12 @@ import { secrets } from '@buildd/core/db/schema';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { generateSigningKeypair, makeKid, type KeyPairJwk } from '@/lib/signing-keys';
+import { reportOps } from '@buildd/core/report-ops';
+import {
+  ACTIVE_MAX_AGE_MS,
+  RETIRING_WINDOW_MS,
+  RETIRING_WINDOW_FORCE_MS,
+} from '@/lib/signing-key-windows';
 
 function getSigningKeyTeamId(): string {
   const teamId = process.env.BUILDD_SIGNING_KEY_TEAM_ID;
@@ -29,11 +35,7 @@ function getSigningKeyTeamId(): string {
 
 export const maxDuration = 60;
 
-const ACTIVE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
-const RETIRING_WINDOW_MS = 10 * 24 * 60 * 60 * 1000; // 10 days
-const RETIRING_WINDOW_FORCE_MS = 10 * 60 * 1000;     // 10 minutes (forced revocation)
-
-export async function GET(req: NextRequest) {
+async function rotate(req: NextRequest) {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {
     return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
@@ -111,11 +113,52 @@ export async function GET(req: NextRequest) {
     console.log(`[JWKSRotation] Bootstrap: created new Active key ${newKid}`);
   }
 
+  const ageDays = activeKey
+    ? Math.floor((now.getTime() - activeKey.createdAt.getTime()) / 86_400_000)
+    : null;
+
   return NextResponse.json({
     rotated,
     newKid,
+    activeKeyAgeDays: ageDays,
     deletedExpiredKeys: deleted,
     activeKid: rotated ? newKid : (activeKey?.label ?? null),
     liveKeyCount: liveKeys.length + (rotated ? 1 : 0) - deleted,
   });
 }
+
+/**
+ * A rotation failure must be audible.
+ *
+ * This route was staged dark from the day it shipped, so signing keys never
+ * rotated and nothing anywhere said so. Now that it fires weekly, the next
+ * version of that failure is a rotation that runs and throws — a 500 into a
+ * cron provider's log that nobody reads. Turn it into an ops alert.
+ *
+ * Severity is `critical`: keys that stop rotating fail silently for weeks and
+ * the symptom only appears when a verifier rejects an assertion, long after
+ * the cause.
+ */
+export async function GET(req: NextRequest) {
+  try {
+    return await rotate(req);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    await reportOps({
+      source: 'jwks-rotation',
+      message: 'signing key rotation failed',
+      severity: 'critical',
+      detail,
+    }).catch(() => {});
+    console.error('[JWKSRotation] failed:', detail);
+    return NextResponse.json({ error: 'rotation failed', detail }, { status: 500 });
+  }
+}
+
+/**
+ * The design doc (§B.3) describes forced rotation as POST, and a state-changing
+ * call should not be a GET. But the external scheduler can only issue GET, so
+ * GET stays for the weekly tick and POST is accepted for the operator path —
+ * same handler, same Bearer auth.
+ */
+export const POST = GET;

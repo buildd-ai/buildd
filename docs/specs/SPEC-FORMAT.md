@@ -123,7 +123,32 @@ and documents intentional omissions.
    behaviour, so a name that lives only in a test is not a code surface, and
    without the exclusion the corpus swallows its own tail (the linter's own
    tests must name deliberately-fake symbols to prove the check can fail).
-8. **No guard, no `active`.** An `active` spec must name the tests that assert
+8. **Every route URL you name must exist.** `specs:lint` extracts backticked
+   `/api/...` paths from the body — inline code and fenced blocks — and resolves
+   each against the Next.js app-router tree in `apps/web/src/app/` plus the
+   literal paths the runner's local server registers. Dynamic segments match by
+   POSITION, not name: a spec may write `[wsId]`, `{wsId}`, `<ws>`, `${wsId}` or
+   `:wsId` where the directory is `[workspaceId]`, and `*` matches any one
+   segment. A path that is a proper prefix of real routes (`/api/cron`) resolves
+   as a namespace, because prose legitimately names a family.
+
+   Severity follows `status` exactly as it does for symbols: **error** on
+   `active`, **warning** on `draft`, skipped on `superseded`. This exists
+   because an active spec asserted two routes as "(existing)" — a connector
+   probe endpoint and a per-workspace enable/disable `PATCH` — and neither had
+   ever been built. An agent that reads such a spec believes it may call the
+   endpoint, so it never builds it.
+
+   A literal segment must match a literal directory: `/api/connectors/probe`
+   does NOT resolve just because `/api/connectors/[id]` exists. Next.js would
+   route that request to the `[id]` handler, so leniency there is precisely what
+   hid the fabricated endpoint.
+
+   **To say a route does not exist, write it as plain text, not in backticks** —
+   backticks are the linter's signal for "this is live, go check it", same as
+   rule 7. State the requirement and mark the route NOT IMPLEMENTED rather than
+   deleting the requirement to get a green build.
+9. **No guard, no `active`.** An `active` spec must name the tests that assert
    its invariants in `verified_by`. A contract nobody can fail is a wish, so a
    new spec with no guard ships as `status: draft` — which is the honest state —
    and is promoted once tests exist. Pre-existing specs without guards are

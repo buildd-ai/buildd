@@ -8,11 +8,16 @@ import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace }
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
+import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+
+// One durable note per mission, not one per organizer cycle. Matched by
+// title, so this string is load-bearing — the dedupe query reads it.
+const INTEGRATION_BRANCH_NOTE_TITLE = 'Integration branch unavailable';
 
 async function recordOrganizerDuplicate(
   task: typeof tasks.$inferSelect,
@@ -367,6 +372,89 @@ export async function runMission(
       ?? candidate;
   }
 
+  // Option A′: an opted-in mission's integration branch has to exist on the
+  // remote before any task PR can target it — GitHub rejects a PR whose base
+  // ref is absent. Doing it here (rather than only at opt-in time) covers the
+  // mission that was opted in before it had a `workingBranch` at all, which is
+  // the common case: the branch name is generated a few lines above, on the
+  // first organizer pass.
+  if (workingBranch && mission.integrationBranchEnabled) {
+    const ensured = await ensureMissionIntegrationBranch(missionId);
+    if (!ensured.ok) {
+      console.error(
+        `[runMission] Mission ${missionId}: integration branch ${workingBranch} unavailable (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''})`,
+      );
+      const noteBody = `This mission uses an integration branch (\`${workingBranch}\`), but it could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs cannot open against a base that does not exist, so this blocks the mission's deliverable work until it is resolved.`;
+      // Post once, not once per organizer cycle: repeating a durable failure
+      // every heartbeat would bury the mission feed.
+      const existingNote = await db.query.missionNotes.findFirst({
+        where: and(
+          eq(missionNotes.missionId, missionId),
+          eq(missionNotes.title, INTEGRATION_BRANCH_NOTE_TITLE),
+          eq(missionNotes.status, 'open'),
+        ),
+        columns: { id: true },
+      });
+      if (!existingNote) {
+        await db.insert(missionNotes).values({
+          missionId,
+          authorType: 'system',
+          type: 'decision',
+          title: INTEGRATION_BRANCH_NOTE_TITLE,
+          body: noteBody,
+          status: 'open',
+        });
+      } else {
+        // Still broken, and possibly for a DIFFERENT reason than the one on the
+        // open note. "Post once" must not mean "report the first reason forever":
+        // refresh the body in place so the one open blocker note always describes
+        // the current failure, rather than dropping the new reason on the floor.
+        // Same shape as the dead-PR escalation note.
+        await db
+          .update(missionNotes)
+          .set({ body: noteBody })
+          .where(eq(missionNotes.id, existingNote.id));
+      }
+    } else {
+      // ── Resolve the blocker note now that the branch exists ────────────────
+      // Nothing used to clear this note, and because the dedupe above keys on
+      // `status='open'`, a stale one did more than linger: it SUPPRESSED the next
+      // genuine failure, which is the report an operator actually needs. So a
+      // success closes it.
+      //
+      // 'superseded' rather than 'dismissed': dismissal is the human/API action
+      // (see VALID_STATUSES in the notes routes), while 'superseded' is what the
+      // system uses when an event makes a note untrue — the same status
+      // escalation-supersession and dead-pr-shutdown set. The row stays as an
+      // audit trail. `supersededByPrNumber` is left null: there is no successor
+      // PR here, the condition simply resolved.
+      //
+      // One atomic UPDATE with the "still open" predicate in the WHERE, so a note
+      // a human has already answered or dismissed is not reopened or relabelled,
+      // and .returning() is the did-anything-change signal.
+      try {
+        const resolved = await db
+          .update(missionNotes)
+          .set({ status: 'superseded' })
+          .where(and(
+            eq(missionNotes.missionId, missionId),
+            eq(missionNotes.title, INTEGRATION_BRANCH_NOTE_TITLE),
+            eq(missionNotes.status, 'open'),
+          ))
+          .returning({ id: missionNotes.id });
+        if (resolved.length > 0) {
+          console.log(
+            `[runMission] Mission ${missionId}: integration branch ${ensured.branch} available — resolved ${resolved.length} open '${INTEGRATION_BRANCH_NOTE_TITLE}' note(s)`,
+          );
+        }
+      } catch (err) {
+        // Never fail an organizer pass over feed bookkeeping. A missed resolution
+        // is retried on the next pass, since this runs on every cycle.
+        console.error(`[runMission] Mission ${missionId}: failed to resolve integration-branch note:`, err);
+      }
+    }
+  }
+
   const baseBranch = workspace?.gitConfig?.defaultBranch || 'main';
 
   // Get template context from schedule if available
@@ -433,7 +521,20 @@ export async function runMission(
     cycleNumber: cycleCtx.cycleNumber,
     triggerChainId: cycleCtx.triggerChainId,
     triggerSource: cycleCtx.triggerSource,
-    ...(workingBranch ? { headBranch: workingBranch, baseBranch } : {}),
+    // The organizer's planning task must NOT be checked out on the integration
+    // branch once that branch is real work.
+    //
+    // `headBranch` is used verbatim by the claim route, so the planning worker's
+    // `workers.branch` becomes `mission/<slug>-<id8>` — and the runner then
+    // creates a LOCAL branch of that name pointing at trunk. Harmless while the
+    // column was inert bookkeeping; under Option A′ that remote ref holds every
+    // merged task PR of the mission, so a plain push is a non-fast-forward
+    // reject and a force-push would reset the integration branch to trunk and
+    // destroy the mission's landed work. The organizer plans; it does not need
+    // the mission's branch, so opted-in missions give it its own task branch.
+    ...(workingBranch && !mission.integrationBranchEnabled
+      ? { headBranch: workingBranch, baseBranch }
+      : {}),
   };
 
   // Get template config for mode/priority from schedule if available

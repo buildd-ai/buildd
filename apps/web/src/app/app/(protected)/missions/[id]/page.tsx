@@ -53,6 +53,12 @@ import type { ReleaseStrategy, WorkspaceReleaseConfig, WorkspaceGitConfig } from
 import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
 import { shouldQueryRelease } from '@/lib/release-state';
 import { countOf } from '@/lib/plural';
+import {
+  deriveMissionIntegrationPr,
+  deriveMissionProgressSubline,
+  shouldRenderMissionPrBlock,
+  MISSION_PR_STATE_LABEL,
+} from '@/lib/mission-integration-pr';
 
 export const dynamic = 'force-dynamic';
 
@@ -304,6 +310,15 @@ export default async function MissionDetailPage({
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
   const { totalTasks, completedTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
+  // Option A′: the mission integration PR is a different object from the task
+  // PRs, and no progress counter sees it — `computeMissionProgress` counts
+  // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
+  // opted-in mission have all merged into `mission/<slug>` while none of the
+  // mission's diff is on trunk. Null for every mission that has not opted in.
+  const missionIntegrationPr = deriveMissionIntegrationPr({
+    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
+    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
+  });
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
@@ -852,13 +867,55 @@ export default async function MissionDetailPage({
               </span>
             </div>
             <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
-            {/* BT-13: 'awaiting merge' count in progress display */}
+            {/* BT-13: 'awaiting merge' count. Under Option A′ this line also
+                carries the mission PR, because every task-level counter reads
+                "done" while the mission's diff sits on the integration branch
+                (lib/mission-integration-pr.ts). */}
             <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
-              {mission.status === 'completed'
-                ? `${totalTasks} tasks · ${completedTasks} completed`
-                : awaitingMerge > 0
-                  ? `${completedTasks}/${totalTasks} done · ${awaitingMerge} awaiting merge`
-                  : `${completedTasks} of ${totalTasks} tasks complete`}
+              {deriveMissionProgressSubline({
+                missionStatus: mission.status,
+                totalTasks,
+                completedTasks,
+                awaitingMerge,
+                integrationPr: missionIntegrationPr,
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Mission integration PR (Option A′) — the mission's review gate, and a
+            different object from the task PRs that fed the branch. Exactly one
+            exists per mission by construction; a mission that never opted in
+            renders nothing here. */}
+        {shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: totalTasks > 0 && completedTasks >= totalTasks }) && missionIntegrationPr && (
+          <div className={`card p-4 mb-4 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
+                  <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
+                    {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
+                  </span>
+                  <span className="text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
+                </div>
+                <p className="text-[13px] text-text-secondary">
+                  {missionIntegrationPr.state === 'not_opened'
+                    ? `Every task PR under this mission merges into its integration branch. No PR from that branch into the target branch exists yet — so none of this mission's work has reached the target branch.`
+                    : missionIntegrationPr.state === 'merged'
+                      ? `This mission's work reached the target branch through one PR from its integration branch.`
+                      : `This is the mission's review gate: one PR from the integration branch into the target branch. The merge policy applies here, not to the task PRs that fed it.`}
+                </p>
+              </div>
+              {missionIntegrationPr.prUrl && (
+                <a
+                  href={missionIntegrationPr.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 text-[12px] font-mono text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  #{missionIntegrationPr.prNumber} →
+                </a>
+              )}
             </div>
           </div>
         )}

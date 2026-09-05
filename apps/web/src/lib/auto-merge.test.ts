@@ -8,7 +8,7 @@ mock.module('@/lib/pushover', () => ({
 }));
 
 const mockGithubApi = mock(() => Promise.resolve({ check_runs: [] }) as Promise<unknown>);
-const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'Pull Request successfully merged' }) as Promise<any>);
+const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message: 'merged' }) as Promise<any>);
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   mergePullRequest: mockMergePullRequest,
@@ -427,7 +427,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     stubPr('mission/checkout-rewrite');
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({ ok: true });
   });
 
@@ -435,7 +435,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     stubPr('dev');
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringMatching(
@@ -448,7 +448,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     stubPr('main');
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringMatching(
@@ -461,7 +461,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     stubPr('production');
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringMatching(
@@ -478,7 +478,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
       ],
     });
 
-    const result = await evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound);
+    const result = await evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound });
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.reason).toContain('cannot merge a schema change');
     expect(result.ok === false && result.reason).toContain('packages/core/db/schema.ts');
@@ -491,7 +491,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     stubPr('mission/checkout-rewrite', { checkRuns: [] });
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('no build/test check reported'),
@@ -504,7 +504,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     });
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('successful conclusion'),
@@ -521,7 +521,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
 
     await expect(
-      evaluateAutoMergeSafety(...params, autoThresholdPolicy, bound),
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { bound }),
     ).resolves.toEqual({
       ok: false,
       reason: expect.stringContaining('could not verify the PR base ref'),
@@ -764,5 +764,232 @@ describe('escalateReviewerExhaustion', () => {
     await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
     const url = (mockNotify.mock.calls[0][0] as any).url as string;
     expect(url).toContain(`/app/tasks/${TASK_ID}`);
+  });
+});
+
+// ── Option A': the mission integration PR and the aggregate size gate ────────
+//
+// The mission PR is the union of every task diff in the mission, and each of
+// those diffs was already size-gated when it merged into the integration
+// branch. Re-applying an aggregate size gate at the mission PR double-counts a
+// check that already passed at the right granularity — and with the DEFAULT
+// policy (auto-threshold / 800 lines) it makes every mission PR structurally
+// unmergeable by the platform, so "the tier applies at the mission PR" would be
+// true only for an operator who explicitly configured a tier.
+//
+// Exactly ONE gate is exempt. CI-green, denyPaths / escalateToPaths, the
+// migration operation-class inspector and the conflict / branch-protection
+// checks all still run for a mission PR, and each has a test below.
+
+const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
+const optedInMission = { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true };
+/** 2,500 source lines — three times the default 800-line cap. */
+const OVERSIZED_FILES = [{ filename: 'apps/web/src/lib/feature.ts', additions: 2500, deletions: 0 }];
+
+describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+
+  it('does not apply the aggregate line threshold to the mission integration PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('still applies it when the mission has not opted in — a branch that merely LOOKS like one is not exempt', async () => {
+    // Authoritative predicate, not the `mission/` shape heuristic: a workspace is
+    // free to carry a mission/… branch that no mission owns, and a false positive
+    // here silently drops the size gate for it.
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, {
+        mission: { workingBranch: MISSION_BRANCH, integrationBranchEnabled: false },
+      }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('still applies it when the head ref is not the mission integration branch', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'feature/some-task' } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('still applies it when the PR read fails, so an unknown head ref never grants the exemption', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('still applies it with no opts at all — the exemption is opt-in per call', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  // ── What is NOT exempt ─────────────────────────────────────────────────────
+
+  it('CI must still be green for the mission integration PR', async () => {
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('build') });
+  });
+
+  it('an unverifiable CI status still fails closed for the mission integration PR', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('could not verify CI status') });
+  });
+
+  it('denyPaths still block the mission integration PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: '.github/workflows/build.yml', additions: 1, deletions: 0 }]);
+
+    await expect(
+      evaluateAutoMergeSafety(
+        ...params,
+        { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['.github/workflows/'] } },
+        { mission: optedInMission },
+      ),
+    ).resolves.toEqual({
+      ok: false,
+      reason: 'touches protected path (.github/workflows/build.yml)',
+    });
+  });
+
+  it('escalateToPaths still block the mission integration PR under agent-review', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: '.github/workflows/build.yml', additions: 1, deletions: 0 }]);
+
+    await expect(
+      evaluateAutoMergeSafety(
+        ...params,
+        { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['.github/workflows/'] } },
+        { mission: optedInMission },
+      ),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('.github/workflows/build.yml') });
+  });
+
+  it('a CONTRACT migration still blocks the mission integration PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0001_drop_column.sql', additions: 2, deletions: 0 }]);
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'drops a column',
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: 'drops a column' });
+  });
+
+  it('conflicts still block the mission integration PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { ref: MISSION_BRANCH } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('dirty') });
+  });
+
+  it('branch protection still blocks the mission integration PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'blocked', head: { ref: MISSION_BRANCH } });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('blocked') });
+  });
+});
+
+describe("tryAutoMergeWorkerPr — Option A' mission integration PR", () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+
+  it('resolves the mission from the worker task and merges an oversized mission PR', async () => {
+    // The wiring test: the exemption is only reachable if the merge path actually
+    // looks the mission up, which is also what makes the predicate authoritative.
+    mockFindFirst = mock(() => ({
+      id: 'task-owner',
+      mission: optedInMission,
+    })) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-owner', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not merge an oversized ordinary task PR (the gate is still there)', async () => {
+    mockFindFirst = mock(() => ({ id: 'task-1', mission: null })) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'feature/task-1' } });
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 43,
+      headSha: 'head-sha',
+      worker: { id: 'worker-2', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });

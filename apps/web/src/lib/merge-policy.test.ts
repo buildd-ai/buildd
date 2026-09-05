@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolvePolicy, mergePolicySchema, DEFAULT_MERGE_POLICY } from './merge-policy';
+import { resolvePolicy, mergePolicySchema, DEFAULT_MERGE_POLICY, isMissionIntegrationBase } from './merge-policy';
 import { parseMergePolicy } from '@buildd/shared';
 
 describe('DEFAULT_MERGE_POLICY', () => {
@@ -290,5 +290,146 @@ describe('mergePolicySchema', () => {
       agentReview: { reviewerRole: 'reviewer', gateCondition: 'invalid' },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ── Option A′: mission integration branch ───────────────────────────────────
+// The crux: the merge-policy TIER applies to the MISSION PR (integration branch →
+// trunk), not to the task PRs that target the integration branch. A task PR based
+// on a quarantined integration branch runs auto-threshold and lands unattended;
+// the human / agent-review gate fires exactly once, at the mission PR.
+describe('isMissionIntegrationBase', () => {
+  const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
+
+  it('is true when opted in, workingBranch set, and baseRef matches', () => {
+    expect(isMissionIntegrationBase({
+      baseRef: MISSION_BRANCH,
+      mission: { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true },
+    })).toBe(true);
+  });
+
+  it('is false when the mission has not opted in', () => {
+    expect(isMissionIntegrationBase({
+      baseRef: MISSION_BRANCH,
+      mission: { workingBranch: MISSION_BRANCH, integrationBranchEnabled: false },
+    })).toBe(false);
+  });
+
+  it('is false when workingBranch is null even if baseRef is the empty string', () => {
+    expect(isMissionIntegrationBase({
+      baseRef: '',
+      mission: { workingBranch: null, integrationBranchEnabled: true },
+    })).toBe(false);
+  });
+
+  it('is false when workingBranch is the empty string and baseRef is too', () => {
+    // Guards against a "both blank" match: two unset refs are not the same branch.
+    expect(isMissionIntegrationBase({
+      baseRef: '',
+      mission: { workingBranch: '', integrationBranchEnabled: true },
+    })).toBe(false);
+  });
+
+  it('is false when baseRef is null/undefined', () => {
+    expect(isMissionIntegrationBase({
+      baseRef: null,
+      mission: { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true },
+    })).toBe(false);
+    expect(isMissionIntegrationBase({
+      mission: { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true },
+    })).toBe(false);
+  });
+
+  it('is false when baseRef points at trunk, not the integration branch', () => {
+    expect(isMissionIntegrationBase({
+      baseRef: 'dev',
+      mission: { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true },
+    })).toBe(false);
+  });
+
+  it('is false with no mission at all', () => {
+    expect(isMissionIntegrationBase({ baseRef: MISSION_BRANCH, mission: null })).toBe(false);
+    expect(isMissionIntegrationBase({ baseRef: MISSION_BRANCH })).toBe(false);
+  });
+});
+
+describe('resolvePolicy — mission integration branch (Option A′)', () => {
+  const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
+  const humanWorkspace = { gitConfig: { mergePolicy: { tier: 'human' } } as any };
+  const missionOptedIn = { workingBranch: MISSION_BRANCH, integrationBranchEnabled: true };
+  const missionOptedOut = { workingBranch: MISSION_BRANCH, integrationBranchEnabled: false };
+
+  it('drops a human workspace gate to auto-threshold for a task PR based on the integration branch', () => {
+    const policy = resolvePolicy(humanWorkspace, missionOptedIn, null, { baseRef: MISSION_BRANCH });
+    expect(policy.tier).toBe('auto-threshold');
+  });
+
+  it('preserves the resolved threshold when dropping the tier', () => {
+    const policy = resolvePolicy(
+      { gitConfig: { mergePolicy: { tier: 'human', threshold: { maxLines: 250, denyPaths: ['drizzle/'] } } } as any },
+      missionOptedIn,
+      null,
+      { baseRef: MISSION_BRANCH },
+    );
+    expect(policy.tier).toBe('auto-threshold');
+    expect(policy.threshold?.maxLines).toBe(250);
+    expect(policy.threshold?.denyPaths).toEqual(['drizzle/']);
+  });
+
+  it('falls back to the default threshold when the resolved policy carries none', () => {
+    const policy = resolvePolicy(humanWorkspace, missionOptedIn, null, { baseRef: MISSION_BRANCH });
+    expect(policy.threshold?.maxLines).toBe(DEFAULT_MERGE_POLICY.threshold?.maxLines);
+    expect(policy.threshold?.denyPaths).toEqual([]);
+  });
+
+  it('changes nothing until the mission opts in', () => {
+    const policy = resolvePolicy(humanWorkspace, missionOptedOut, null, { baseRef: MISSION_BRANCH });
+    expect(policy.tier).toBe('human');
+  });
+
+  it('keeps the human gate for the mission PR itself (baseRef = trunk)', () => {
+    const policy = resolvePolicy(humanWorkspace, missionOptedIn, null, { baseRef: 'dev' });
+    expect(policy.tier).toBe('human');
+  });
+
+  it('keeps the human gate when the base ref is unknown (null)', () => {
+    const policy = resolvePolicy(humanWorkspace, missionOptedIn, null, { baseRef: null });
+    expect(policy.tier).toBe('human');
+  });
+
+  it('keeps the human gate when the pr argument is omitted entirely', () => {
+    const policy = resolvePolicy(humanWorkspace, missionOptedIn, null);
+    expect(policy.tier).toBe('human');
+  });
+
+  it('task.requiresReview beats the base-ref rule', () => {
+    const policy = resolvePolicy(
+      humanWorkspace,
+      missionOptedIn,
+      { requiresReview: true },
+      { baseRef: MISSION_BRANCH },
+    );
+    expect(policy.tier).toBe('human');
+  });
+
+  it('drops mission.mergePolicy agent-review to auto-threshold for an integration-branch task PR', () => {
+    const policy = resolvePolicy(
+      { gitConfig: null },
+      { ...missionOptedIn, mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      null,
+      { baseRef: MISSION_BRANCH },
+    );
+    expect(policy.tier).toBe('auto-threshold');
+    expect(policy.agentReview).toBeUndefined();
+  });
+
+  it('drops mission.requiresReview for an integration-branch task PR', () => {
+    const policy = resolvePolicy(
+      { gitConfig: null },
+      { ...missionOptedIn, requiresReview: true },
+      null,
+      { baseRef: MISSION_BRANCH },
+    );
+    expect(policy.tier).toBe('auto-threshold');
   });
 });

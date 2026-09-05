@@ -18,6 +18,9 @@ const mockGenerateSigningKeypair = mock(() => Promise.resolve({
   publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'x1', y: 'y1', kid: 'test', alg: 'ES256', use: 'sig' },
 }));
 
+const mockReportOps = mock(() => Promise.resolve(true));
+mock.module('@buildd/core/report-ops', () => ({ reportOps: mockReportOps }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -89,6 +92,8 @@ describe('GET /api/cron/jwks-rotation', () => {
     mockSecretsFindMany.mockResolvedValue([]);
     mockMakeKid.mockReset();
     mockMakeKid.mockReturnValue(SHARED_KID);
+    mockReportOps.mockReset();
+    mockReportOps.mockResolvedValue(true);
   });
 
   it('returns 401 without correct CRON_SECRET', async () => {
@@ -190,5 +195,32 @@ describe('GET /api/cron/jwks-rotation', () => {
     const body = await res.json();
     expect(body.newKid).toBe(SHARED_KID);
     expect(mockProviderSet.mock.calls[0][2]).toMatchObject({ label: SHARED_KID });
+  });
+
+  // Rotation was staged dark from the day it shipped, so keys never rotated and
+  // nothing said so. Now that it fires, the next shape of that failure is a
+  // rotation that throws into a cron provider's log nobody reads.
+  it('reports a critical ops alert when rotation throws, instead of failing silently', async () => {
+    mockSecretsFindMany.mockImplementation(() => {
+      throw new Error('secrets provider unreachable');
+    });
+
+    const res = await GET(makeRequest());
+
+    expect(res.status).toBe(500);
+    expect(mockReportOps).toHaveBeenCalledTimes(1);
+    const arg = mockReportOps.mock.calls[0][0] as any;
+    expect(arg.source).toBe('jwks-rotation');
+    expect(arg.severity).toBe('critical');
+    // The cause must travel with the alert, or it is a page with no lead.
+    expect(arg.detail).toContain('secrets provider unreachable');
+  });
+
+  it('does not alert on a clean run', async () => {
+    mockSecretsFindMany.mockImplementation(() => [] as any[]);
+
+    await GET(makeRequest());
+
+    expect(mockReportOps).not.toHaveBeenCalled();
   });
 });
