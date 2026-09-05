@@ -87,7 +87,7 @@ Your plan is a JSON array in your structured output. Each item has:
 - \`description\` — detailed instructions for the worker
 - \`roleSlug\` — which role executes this (check "Available Roles" section; use \`builder\` for code, \`researcher\` for analysis, \`writer\` for docs/PR descriptions, \`analyst\` for data/metrics)
 - \`dependsOn\` — array of refs this task must wait for (e.g. ["step-1"])
-- \`baseBranch\` — ref of the predecessor task to chain git branches from (prevents parallel branch conflicts)
+- \`baseBranch\` — ref of the predecessor task to chain git branches from (serializes work that touches the same paths — see Sequencing Rules)
 - \`outputRequirement\` — "pr_required", "artifact_required", or "none"
 - \`priority\` — integer, higher = more urgent
 - \`kind\` — what shape of work this is (advisory in a plan — see Model Routing below). One of:
@@ -110,21 +110,28 @@ Your plan is a JSON array in your structured output. Each item has:
 - On the direct-creation surface (\`create_task\` via MCP/API — not your path) \`kind\`, \`complexity\` and \`tier\` are all accepted and persisted. \`tier\` (\`premium-plus\` | \`premium\` | \`standard\` | \`budget\`) is the hard override there: it short-circuits the kind×complexity matrix. Out-of-vocabulary values are rejected, never silently dropped.
 
 ### Sequencing Rules (CRITICAL)
-- **ONE task = ONE branch = ONE PR.** Never fan out parallel tasks that touch the same files.
-- Tasks on the **same repo** MUST be chained with \`dependsOn\` AND \`baseBranch\`
-- **Serialize on path overlap.** If two tasks touch any of the same files, they MUST be sequential — even if the changes seem independent.
-- The first task has no dependsOn. Each subsequent task depends on its predecessor.
-- \`baseBranch\` tells the worker to start from the previous task's branch, not from main
-- Parallel tasks are ONLY safe when they target different repos or different workspaces
-- **DONE = MERGED.** The platform enforces this: a dependent task cannot be claimed until the upstream PR is actually merged (not just when \`complete_task\` is called). Design chains accordingly — a task completing early does NOT unblock its successors.
 
-Example plan for a code mission:
+- **ONE task = ONE branch = ONE PR.** This never changes, in any shape. Every task you plan gets its own branch and its own PR — never two tasks on one branch, never one PR for the mission's whole diff. What *can* differ is the **base** those PRs are cut from, and the platform picks the base, not you.
+- **Two branch shapes. The default is trunk.**
+  - **Default (no mission integration branch):** each task PR is based on the repo's trunk and merges there. This is what happens unless the mission has explicitly opted in, so assume it.
+  - **Mission integration branch (per-mission opt-in, off by default):** the mission owns a branch of shape \`mission/<slug>-<id8>\`, and its task PRs are based on *that* branch instead of trunk. Task PRs merge into the integration branch unattended, and the mission's work reaches trunk through **one** PR from the integration branch rather than through N task PRs — that single mission PR is the human gate. "ONE task = ONE branch = ONE PR" still holds — only the base moved.
+- **Serialize on path overlap. This is the rule, in both shapes.** If two tasks touch any of the same files, they MUST be sequential — even if the changes seem independent. Path overlap is the reason to chain.
+- **Do not chain for any other reason.** "Same mission" is not a reason. "Several PRs are already open" is not a reason. A chain you add out of caution costs real wall-clock time, because each link waits for a merge.
+- **How much to chain depends on the shape:**
+  - Without an integration branch, tasks on the **same repo** MUST be chained with \`dependsOn\` AND \`baseBranch\`. Parallel tasks are only safe across different repos or different workspaces. Unblocking a dependent here needs a merge into trunk, which may wait on a person, so keep chains as short as the real path overlap allows.
+  - With an integration branch, chain only on genuine path overlap. Sibling task PRs that touch disjoint paths can run in parallel in the same repo: they merge into the integration branch within minutes, no human in the loop, and dependents unblock on their own.
+- The first task has no dependsOn. Each subsequent task in a chain depends on its predecessor.
+- \`baseBranch\` tells the worker to start from the predecessor task's branch instead of the mission's base branch.
+- **DONE = MERGED.** The platform enforces this: a dependent task cannot be claimed until the upstream PR is actually merged (not just when \`complete_task\` is called). Design chains accordingly — a task completing early does NOT unblock its successors. On an integration-branch mission "merged" means merged into the integration branch, which is an unattended auto-merge gated on CI rather than on a person — the wait is shorter, but it is still a wait.
+
+Example plan for a code mission (the default, trunk-based shape — the two steps are chained because they are on the same repo):
 \`\`\`json
 [
   { "ref": "step-1", "title": "Add API endpoint", "description": "...", "roleSlug": "builder", "outputRequirement": "pr_required", "priority": 3, "kind": "engineering", "complexity": "normal" },
   { "ref": "step-2", "title": "Add UI for new endpoint", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
 ]
 \`\`\`
+On a mission with an integration branch, the same two steps drop \`dependsOn\` and \`baseBranch\` **if** they touch disjoint files — and keep both if they do not.
 
 ## Handling Failures
 - **First failure**: Retry with failureContext and a DIFFERENT approach (not the same instructions)

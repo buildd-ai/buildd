@@ -84,6 +84,71 @@ describe('DEFAULT_ROLES', () => {
     expect(c).not.toContain('how much Claude-horsepower the task gets');
   });
 
+  // The seeded prompt is what every organizer plans against, so a stale branch
+  // model here means organizers keep planning for a shape the machinery does not
+  // implement. Two shapes exist: per-task PRs into trunk (the default), and
+  // per-task PRs based on the mission integration branch when the mission opts in.
+  // "ONE task = ONE branch = ONE PR" is true in both — what changes is the base.
+  describe('Organizer sequencing rules', () => {
+    const c = () => bySlug.organizer.content;
+
+    it('keeps ONE task = ONE branch = ONE PR and says the base is what varies', () => {
+      expect(c()).toContain('ONE task = ONE branch = ONE PR');
+      expect(c()).toMatch(/base/);
+      // The clause must not read as a prohibition on the integration branch.
+      expect(c()).not.toContain('Never fan out parallel tasks that touch the same files.');
+    });
+
+    it('names the mission integration branch and the single mission PR', () => {
+      expect(c()).toContain('mission/<slug>-<id8>');
+      expect(c()).toContain('integration branch');
+      // One PR from the integration branch into trunk — not one PR standing in
+      // for the mission's task PRs.
+      expect(c()).toMatch(/\*{0,2}one\*{0,2} PR from the integration branch/i);
+    });
+
+    it('states that the integration branch is opt-in and off by default', () => {
+      expect(c()).toMatch(/opt-in/i);
+      expect(c()).toMatch(/off by default|unless the mission has explicitly opted in/i);
+    });
+
+    it('makes path overlap the reason to chain, in both shapes', () => {
+      expect(c()).toContain('Serialize on path overlap');
+      expect(c()).toContain('in both shapes');
+      // Blanket "same repo => chain" survives only as the non-opted-in rule.
+      expect(c()).toMatch(/Without an integration branch, tasks on the \*\*same repo\*\* MUST be chained/);
+    });
+
+    it('keeps DONE = MERGED and scopes "merged" to the integration branch when there is one', () => {
+      expect(c()).toContain('DONE = MERGED');
+      expect(c()).toContain('cannot be claimed until the upstream PR is actually merged');
+      expect(c()).toMatch(/merged into the integration branch/);
+    });
+
+    it('does not claim mission tasks share a branch or a single PR', () => {
+      // The false Option-A assertion the mission-delivery audit found in five
+      // artifacts. Tasks never shared a branch, and under the integration-branch
+      // shape that branch is their shared *base*, not their shared head.
+      expect(c()).not.toMatch(/share (one|a single|the same) branch/i);
+      expect(c()).not.toMatch(/push (commits )?to (one|the same|a shared) branch/i);
+    });
+
+    it('keeps the example plan valid JSON and consistent with the rules', () => {
+      const block = c().match(/Example plan for a code mission[^\n]*\n```json\n([\s\S]*?)```/);
+      expect(block).not.toBeNull();
+      const plan = JSON.parse(block![1]) as Array<Record<string, unknown>>;
+      expect(plan).toHaveLength(2);
+      expect(plan[0].dependsOn).toBeUndefined();
+      // Same-repo chain: the default (trunk-based) shape's rule.
+      expect(plan[1].dependsOn).toEqual(['step-1']);
+      expect(plan[1].baseBranch).toBe('step-1');
+      for (const step of plan) {
+        expect(typeof step.ref).toBe('string');
+        expect(step.outputRequirement).toBe('pr_required');
+      }
+    });
+  });
+
   it('Organizer prompt names roleSlug as the real routing lever and documents tier', () => {
     const c = bySlug.organizer.content;
     // roleSlug is what actually selects a model for a planned task.

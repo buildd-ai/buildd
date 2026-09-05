@@ -335,6 +335,60 @@ describe('buildMissionContext', () => {
     expect(result!.description).not.toContain('Efficiency mode');
   });
 
+  // The sequencing hint used to read "Multiple PRs exist on this mission. Chain
+  // plan steps with `dependsOn` and `baseBranch` to avoid branch conflicts." —
+  // sibling task PRs are not a conflict (each task has its own branch and its own
+  // PR in every branch shape) and PR count is not the reason to serialize. Path
+  // overlap is. How far to chain beyond that depends on the branch shape, so the
+  // hint reads `integrationBranchEnabled` off the mission row.
+  function mockSequencingMission(mission: Record<string, unknown>) {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-seq',
+      title: 'Ship the thing',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      ...mission,
+    } as any);
+    mockFindMany.mockResolvedValueOnce([
+      { id: 't1', title: 'Add endpoint', mode: 'execution', result: { summary: 'done', prUrl: 'https://example.test/pr/1', prNumber: 1 }, createdAt: new Date(), roleSlug: 'builder' },
+    ] as any);
+    // tasksWithPRs — isBuild is true because the only completed task is a builder
+    mockFindMany.mockResolvedValueOnce([
+      { id: 't1', title: 'Add endpoint', result: { prUrl: 'https://example.test/pr/1', prNumber: 1 } },
+    ] as any);
+    mockFindMany.mockResolvedValueOnce([]); // active
+    mockFindMany.mockResolvedValueOnce([]); // failed
+    mockSkillsFindMany.mockResolvedValueOnce([]);
+  }
+
+  it('sequencing hint blames path overlap, not PR count (trunk shape)', async () => {
+    mockSequencingMission({ integrationBranchEnabled: false, workingBranch: null });
+
+    const result = await buildMissionContext('obj-seq');
+    const d = result!.description;
+    expect(d).toContain('**Sequencing**');
+    expect(d).toContain('same files');
+    expect(d).toContain('own branch and its own PR');
+    // The two false framings must not come back.
+    expect(d).not.toContain('Multiple PRs exist on this mission');
+    expect(d).not.toContain('to avoid branch conflicts');
+  });
+
+  it('sequencing hint names the integration branch when the mission opted in', async () => {
+    mockSequencingMission({ integrationBranchEnabled: true, workingBranch: 'mission/ship-the-thing-1a2b3c4d' });
+
+    const result = await buildMissionContext('obj-seq');
+    const d = result!.description;
+    expect(d).toContain('**Sequencing**');
+    expect(d).toContain('mission/ship-the-thing-1a2b3c4d');
+    expect(d).toContain('unattended');
+    expect(d).toContain('same files');
+    expect(d).not.toContain('to avoid branch conflicts');
+  });
+
   it('surfaces nextSuggestion from completed tasks', async () => {
     mockFindFirst.mockResolvedValueOnce({
       id: 'obj-5',

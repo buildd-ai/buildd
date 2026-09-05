@@ -2,12 +2,12 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-01
+last_verified: 2026-09-05
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/condensed-timeline.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
-keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber]
 supersedes: []
 ---
 # Mission and Task Lifecycle
@@ -306,10 +306,26 @@ stored — it is derived on read from the state of associated tasks via
   `activeHours` gates firing cadence only — it does NOT change mission status.
   A `completed` or `paused` mission with `activeHours` set MUST NOT treat the
   active-hours window as a resume signal.
-- `missions.workingBranch` and `primaryPrNumber` track the shared branch for
-  all tasks under the mission; they are generated lazily on first task creation.
-  For workspace-less missions (`workspaceId = null`), these fields are always
-  null (no repo, no PRs).
+- **One task, one branch, one PR — in every branch shape.** Tasks under a mission
+  MUST NOT share a branch and MUST NOT be represented by a single PR.
+  `missions.workingBranch` is the mission's *integration* branch (shape
+  `mission/<slug>-<id8>`, written lazily on first task creation for a mission
+  whose workspace has a repo), and it is the **base** of the mission's task PRs
+  only when that mission has opted in (`missions.integrationBranchEnabled`,
+  default `false`). For an opted-in mission, task PRs merge into the integration
+  branch and the mission's work reaches trunk through exactly one PR from that
+  branch — the mission integration PR, which is the mission's single human gate.
+  Opening that PR is a separate step; no automated path opens it today. For every
+  other mission — the default — each task PR targets the workspace's trunk branch
+  and `workingBranch` retargets nothing.
+- `missions.primaryPrNumber`/`primaryPrUrl` MUST only ever be claimed by a PR
+  whose base ref is a trunk branch of the workspace (`gitConfig.targetBranch`,
+  `gitConfig.defaultBranch`, or the repo default). A PR based on the mission
+  integration branch — i.e. any task PR under an opted-in mission — MUST NOT
+  claim the slot, and an unknown base ref MUST NOT claim it either. The slot
+  therefore names the mission integration PR wherever one exists.
+- For workspace-less missions (`workspaceId = null`), `workingBranch` and
+  `primaryPrNumber`/`primaryPrUrl` are always null (no repo, no PRs).
 
 **Acceptance criteria**:
 - AC-8: GIVEN a mission with all tasks `completed` WHEN health is derived THEN
@@ -324,12 +340,33 @@ stored — it is derived on read from the state of associated tasks via
   firing gate, not a status transition.
 - AC-11: GIVEN a mission with `requiresReview = true` WHEN a task PR is created
   THEN auto-merge is suppressed and human review is required before merging.
+- AC-11o: GIVEN two tasks under the same mission WHEN each opens a PR THEN the
+  two PRs carry different head refs and different PR numbers — neither shape
+  produces one PR for the mission's task work.
+- AC-11p: GIVEN a mission with `workingBranch` set WHEN a task PR based on that
+  `workingBranch` is registered THEN `missions.primaryPrNumber` is NOT written
+  and the rejection is recorded with the base ref that was seen; GIVEN the same
+  registration with a base ref of the workspace trunk and `primaryPrNumber`
+  still null THEN the slot is claimed.
 
 **Code surface**:
 - Mission helpers: `packages/core/mission-helpers.ts` — `isDeliverableTask()`
 - Mission context: `apps/web/src/lib/mission-context.ts`
 - Mission API: `apps/web/src/app/api/missions/route.ts`,
   `apps/web/src/app/api/missions/[id]/route.ts`
+- Integration branch generation: `apps/web/src/lib/mission-run.ts` — writes
+  `missions.workingBranch` under `isNull` so the first writer wins
+- Mission-PR slot gate: `apps/web/src/lib/mission-pr.ts` —
+  `claimMissionPrimaryPr`, base ref checked against `trunkBranches`; called from
+  `apps/web/src/app/api/github/pr/route.ts` and from the mission-PR opener, one
+  implementation for both
+- Mission integration PR: `apps/web/src/lib/mission-pr.ts` —
+  `openMissionIntegrationPr` creates the `bookkeeping` task and worker row that
+  own it, so every worker-keyed merge surface can see and merge it
+- Option A′ predicates: `packages/core/mission-integration.ts` —
+  `missionIntegrationBase`, `isMissionIntegrationBase`
+- Seeded planner rules for both shapes: `apps/web/src/lib/default-roles.ts`
+  (Organizer, "Sequencing Rules")
 - Schema: `packages/core/db/schema.ts` — `missions` table
 
 ---
