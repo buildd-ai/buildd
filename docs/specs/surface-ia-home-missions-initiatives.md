@@ -153,14 +153,34 @@ behind `stuck`. `grinding` is invisible to every existing surface: tokens burn,
 tasks close, the percentage climbs, nothing merges. And `ready to close` is the
 honest reading of the `AWAITING` chip the rail was displaying.
 
-**Invariant**: for every subject key in the Waiting-on-You queue, that subject
-contributes to no clause of the pulse line.
+**Invariant**: no clause counts a Waiting-on-You subject as a *unit*. A clause is
+a count of arcs, never of PRs, so the queue's dedup-by-`subjectKey` cannot make
+the two numbers drift.
+
+A queue subject may still be the *evidence behind* a verdict, and this is not a
+violation. Corrected 2026-09-04: the invariant previously read "that subject
+contributes to no clause", which no implementation that keeps the §6.5 ladder can
+satisfy — `awaitingVerification` feeds `stuck`, so an arc whose only signal is one
+open PR renders `1 stuck` while that same PR sits below as a `MERGE` card. The
+distinction that matters is unit-of-count, not provenance: `1 stuck` restates
+nothing, whereas `4 awaiting merge` would.
 
 ### 2.4 Cost
 
-The line is fed by one call to the shared loader (§6), scoped to the active
-team. Home's query count MUST increase by at most one relative to v0.168.0, and
-the loader MUST NOT be called per initiative.
+The line is fed by the shared loader (§6), scoped to the active team.
+
+**MUST**: at most one call to each half of the shared loader per team
+(`loadInitiativeEffort` and `loadInitiativeVerdictInputs`), issued concurrently,
+and the loader MUST NOT be called per initiative. That is the property worth
+enforcing — cost scales with the team, not with the number of arcs.
+
+Corrected 2026-09-04: this previously read "Home's query count MUST increase by at
+most one relative to v0.168.0", which cannot be met by any correct
+implementation. A verdict needs `tokens7d` (the effort window) plus
+`criteriaFail`/`allTerminal`/`merges7d`/`attempts7d`, which is the loader's own
+five-query shape per §6.2 — none of it derivable from data Home already holds. The
+budget was written against a line that carried raw counts, and §2.3 is precisely
+the decision to stop doing that.
 
 ### 2.5 Acceptance criteria
 
@@ -200,8 +220,8 @@ contain a token-aggregation query.
 An initiative appears on this surface only as a per-card label linking to
 `/app/initiatives/<id>` (already implemented on both `FullMissionCard` and
 `CompactMissionCard`). The initiative-grouping path in `MissionGrid` —
-`initiativeGroups`, `InitiativeGroupData`, `InitiativeGroupSection`,
-`groupMissionsByInitiative` — is dead (no caller passes the prop) and MUST be
+initiativeGroups, InitiativeGroupData, InitiativeGroupSection,
+groupMissionsByInitiative — is dead (no caller passes the prop) and MUST be
 deleted along with its test file.
 
 ### 3.3 Workspace headers
@@ -235,7 +255,7 @@ team-level missions distinguishable when they coexist with workspace missions.
   the card shows the initiative title linking to `/app/initiatives/<id>` and the
   mission is grouped by `healthToGroup`, not by initiative.
 - **AC-12**: WHEN the Missions page module is loaded, THEN it exports no
-  reference to `groupMissionsByInitiative` and issues no `SUM(input_tokens +
+  reference to groupMissionsByInitiative and issues no `SUM(input_tokens +
   output_tokens)` query.
 
 ---
@@ -592,8 +612,13 @@ Ordered so that no intermediate commit leaves a surface without its signal:
    commit rather than living on both tabs for one, because the move is what
    makes them verdict-shaped; the Missions page therefore already lost its
    triage mount.
-4. Apply the workspace-header rule (§3.3); delete the dead initiative-grouping
-   path (§3.2).
+4. Apply the workspace-header rule (§3.3); ~~delete the dead initiative-grouping
+   path (§3.2)~~. **§3.2 done** (2026-09-04) — `groupMissionsByInitiative`, the
+   `initiativeGroups` prop, `InitiativeGroupData`, `InitiativeGroupSection`, the
+   collapse state and the grouped render branch are all removed, along with the
+   test that was their only external caller. Verified beforehand that
+   `missions/page.tsx` never passed the prop, so the path was dead as claimed.
+   The §3.3 workspace-header rule (AC-8…AC-10) is still open.
 5. Replace the initiative rail on Home with the pulse line (§2). **Partially
    done** — the rail is unmounted and its component file deleted (AC-6 holds, and
    a source-level guard now asserts Home does not import it). The pulse line

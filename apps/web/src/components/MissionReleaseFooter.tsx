@@ -64,22 +64,24 @@ export function MissionReleaseFooter({
     data,
   });
   if (!isReleaseVisible(state)) return null;
-  // Narrowing for the render bodies below: a visible state guarantees `data`.
-  if (!data) return null;
 
-  if (data.archetype === 'gated') {
-    const ageText =
-      data.oldestMergedAt.kind === 'value' ? ` · oldest ${daysAgo(data.oldestMergedAt.value)}d ago` : '';
-    const noReleaseYet = data.baselineSource !== 'healthy';
+  // Render from the classified state, never from the raw loader payload. The
+  // classifier is what collapsed `DerivedMetric` into a plain number and a
+  // nullable date, so reading `data` again here would re-open the unnarrowed
+  // shape the helper exists to resolve — and did, briefly: dropping the inline
+  // `kind === 'unavailable'` guard removed the only thing narrowing
+  // `queueDepth`, so `data.queueDepth.value` stopped type-checking.
+  if (state.archetype === 'gated') {
+    const ageText = state.oldestMergedAt ? ` · oldest ${daysAgo(state.oldestMergedAt)}d ago` : '';
     return (
       <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
         <span className="text-[11px] font-mono text-text-muted">
-          {noReleaseYet && <span className="text-text-muted/70">no releases yet · </span>}
-          {data.queueDepth.value} unshipped{ageText}
+          {!state.seeded && <span className="text-text-muted/70">no releases yet · </span>}
+          {state.queueDepth} unshipped{ageText}
         </span>
-        {data.releaseId && (
+        {state.releaseId && (
           <Link
-            href={`/app/releases/${data.releaseId}`}
+            href={`/app/releases/${state.releaseId}`}
             className="text-[11px] font-mono text-text-muted hover:text-text-secondary transition-colors shrink-0"
             onClick={(e) => e.stopPropagation()}
           >
@@ -90,34 +92,32 @@ export function MissionReleaseFooter({
     );
   }
 
-  if (data.archetype === 'continuous') {
-    if (!data.state) return null;
-    const badge = CONTINUOUS_STATE_BADGE[data.state] ?? { label: data.state, cls: 'text-text-muted border-border-default' };
-    const refDate = data.healthyAt ?? data.deployedAt;
-    return (
-      <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border ${badge.cls}`}>
-            {badge.label}
+  const badge = CONTINUOUS_STATE_BADGE[state.deployState] ?? {
+    label: state.deployState,
+    cls: 'text-text-muted border-border-default',
+  };
+  const refDate = state.healthyAt ?? state.deployedAt;
+  return (
+    <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-1.5">
+        <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border ${badge.cls}`}>
+          {badge.label}
+        </span>
+        {refDate && (
+          <span className="text-[11px] font-mono text-text-muted">
+            {daysAgo(refDate)}d ago
           </span>
-          {refDate && (
-            <span className="text-[11px] font-mono text-text-muted">
-              {daysAgo(refDate)}d ago
-            </span>
-          )}
-        </div>
-        {data.releaseId && (
-          <Link
-            href={`/app/releases/${data.releaseId}`}
-            className="text-[11px] font-mono text-text-muted hover:text-text-secondary transition-colors shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Release →
-          </Link>
         )}
       </div>
-    );
-  }
-
-  return null;
+      {state.releaseId && (
+        <Link
+          href={`/app/releases/${state.releaseId}`}
+          className="text-[11px] font-mono text-text-muted hover:text-text-secondary transition-colors shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Release →
+        </Link>
+      )}
+    </div>
+  );
 }
