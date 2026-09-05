@@ -18,10 +18,15 @@
  * a line this PR introduced" into a property of the evidence rather than a rule
  * the model has to be trusted to follow.
  *
+ * That property lives in `citableLines`, not in the rendered text. The text is
+ * for the model; the anchoring filter downstream must read `citableLines`,
+ * because patch content is PR-authored and a context line can be made to look
+ * exactly like a numbered added line.
+ *
  * See `docs/design/reviewer-evidence-and-verification.md`.
  */
 
-export type PatchOmissionReason = 'token-budget' | 'no-patch' | 'deleted';
+export type PatchOmissionReason = 'token-budget' | 'no-patch' | 'deleted' | 'parse-failed';
 
 export interface ReviewerPatchFile {
   filename: string;
@@ -42,6 +47,26 @@ export interface RenderedPatch {
   omittedFiles: Array<{ filename: string; reason: PatchOmissionReason }>;
   /** Included files that lost their `__old hunk__` sections to the budget. */
   deletionsStripped: string[];
+  /**
+   * The authoritative citable anchors: filename → new-file line numbers of the
+   * added lines actually present in `text`.
+   *
+   * Downstream filters must use this and must **not** re-parse `text`. The
+   * number column is not textually decidable: context lines are rendered as
+   * `<width spaces>  <content>`, `width` is per-file and never emitted, so a
+   * context line whose content happens to begin with digits and a `+` is
+   * byte-identical to a numbered added line — and that content is PR-authored.
+   * Any file in this repo that documents a diff, this module's own tests
+   * included, forges plausible anchors for free.
+   */
+  citableLines: Record<string, number[]>;
+  /**
+   * Files where the count of added lines parsed disagrees with GitHub's own
+   * `additions` count, meaning the parser lost or invented lines. The patch is
+   * still rendered — dropping it costs more evidence than the discrepancy —
+   * but `citableLines` for that file may be incomplete.
+   */
+  countMismatches: string[];
   estimatedTokens: number;
   /** True when anything was dropped — a whole file or just its deletions. */
   truncated: boolean;
@@ -85,39 +110,84 @@ interface Hunk {
   hasDeletions: boolean;
 }
 
-const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;
+/**
+ * `[\s\S]` rather than `.` for the trailing symbol: git copies the enclosing
+ * line into the hunk header verbatim and strips only *trailing* whitespace, so
+ * a source line holding a bare CR (or U+2028/U+2029) — mixed line endings, a
+ * Windows-authored fixture, `"a\rb"` written as a raw byte — puts a
+ * LineTerminator mid-header. `.` excludes all four of those and `$` without
+ * the `m` flag only matches end-of-input, so `(.*)$` failed such a header
+ * outright, the header fell through to the context branch, the new-side
+ * counter never reset, and every following added line was numbered against the
+ * *previous* hunk's origin. Wrong numbers are worse than no numbers here:
+ * they are indistinguishable from right ones downstream.
+ */
+const HUNK_HEADER = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@([\s\S]*)$/;
 
-function parseHunks(patch: string): Hunk[] {
+interface ParsedPatch {
+  hunks: Hunk[];
+  /** True when a hunk header did not parse — line numbers are unknowable. */
+  failed: boolean;
+}
+
+function parseHunks(patch: string): ParsedPatch {
   const hunks: Hunk[] = [];
   let current: Hunk | null = null;
-  let newLine = 0;
+  let newLine = 1;
 
-  for (const raw of patch.split('\n')) {
-    const header = HUNK_HEADER.exec(raw);
-    if (header) {
+  const raws = patch.split('\n');
+  // A trailing newline yields a final '' element, which is not a context line.
+  if (raws.length > 0 && raws[raws.length - 1] === '') raws.pop();
+
+  for (const raw of raws) {
+    // Every body line carries a ' ', '+', '-' or '\' marker, so a line
+    // starting with '@@' is a header. If it does not parse we cannot know
+    // where the new side resumes, and guessing would emit confident wrong
+    // anchors — fail the whole file instead.
+    if (raw.startsWith('@@')) {
+      const header = HUNK_HEADER.exec(raw);
+      if (!header) return { hunks: [], failed: true };
       current = { symbol: header[2].trim(), lines: [], hasAdditions: false, hasDeletions: false };
       hunks.push(current);
-      newLine = Number(header[1]);
+      // A `+0,0` hunk has no added lines, so this only guards against citing
+      // line 0 — an anchor to a line that cannot exist.
+      newLine = Math.max(1, Number(header[1]));
       continue;
     }
+    // Pre-hunk metadata (`diff --git`, `index`, `--- a/…`, `+++ b/…`) when the
+    // caller passes raw `git diff` output rather than the API's `patch` field.
     if (!current) continue;
     // `\ No newline at end of file` is diff metadata, not a reviewable line.
     if (raw.startsWith('\\')) continue;
 
-    if (raw.startsWith('+')) {
-      current.lines.push({ kind: 'added', content: raw.slice(1), newLine });
+    // The file's own CRLF endings survive the '\n' split; a trailing CR is
+    // noise in the prompt and breaks exact content matching downstream.
+    const body = raw.replace(/\r$/, '');
+
+    if (body.startsWith('+')) {
+      current.lines.push({ kind: 'added', content: body.slice(1), newLine });
       current.hasAdditions = true;
       newLine++;
-    } else if (raw.startsWith('-')) {
-      current.lines.push({ kind: 'removed', content: raw.slice(1) });
+    } else if (body.startsWith('-')) {
+      current.lines.push({ kind: 'removed', content: body.slice(1) });
       current.hasDeletions = true;
     } else {
-      current.lines.push({ kind: 'context', content: raw.startsWith(' ') ? raw.slice(1) : raw });
+      current.lines.push({ kind: 'context', content: body.startsWith(' ') ? body.slice(1) : body });
       newLine++;
     }
   }
 
-  return hunks;
+  return { hunks, failed: false };
+}
+
+function addedLineNumbers(hunks: Hunk[]): number[] {
+  const out: number[] = [];
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === 'added' && line.newLine != null) out.push(line.newLine);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +259,17 @@ function renderFileBlock(
     });
 
   if (rendered.length === 0) return null;
-  return [fileHeader(file), '', rendered.join('\n\n')].join('\n');
+
+  // Without this note the additions-only form is byte-identical to a complete
+  // diff of a file that only added lines — the reviewer would read a partial
+  // rendering as whole. Every other omission in this module warns in-text; a
+  // flag on the return object that the model never sees does not count.
+  const note =
+    !withDeletions && hunks.some((h) => h.hasDeletions)
+      ? '\n(deletions omitted for space: removed lines and deletion-only hunks are not shown for this file)'
+      : '';
+
+  return [`${fileHeader(file)}${note}`, '', rendered.join('\n\n')].join('\n');
 }
 
 /**
@@ -241,6 +321,36 @@ function noPatchSection(files: ReviewerPatchFile[]): string {
   ].join('\n');
 }
 
+/**
+ * Separate from "No Patch Available" on purpose. Blaming GitHub for a patch it
+ * did in fact return sends the reader looking in the wrong place, and hides
+ * the parser bug that is the actual cause.
+ */
+function parseFailedSection(files: ReviewerPatchFile[]): string {
+  if (files.length === 0) return '';
+  return [
+    '## Patch Not Parsed',
+    '',
+    'GitHub returned patch text for these files but it could not be parsed into',
+    'hunks, so no line numbers could be established. They are not reviewed.',
+    '',
+    nameList(files),
+  ].join('\n');
+}
+
+function warningSection(filenames: string[]): string {
+  if (filenames.length === 0) return '';
+  return [
+    '## Rendering Warnings',
+    '',
+    "The added-line count in this rendering disagrees with GitHub's own count",
+    'for these files. The patch below is shown in full, but a line you cannot',
+    'find in it may still have changed — do not conclude from its absence.',
+    '',
+    filenames.map((f) => `- ${f}`).join('\n'),
+  ].join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Assembly
 // ---------------------------------------------------------------------------
@@ -251,6 +361,7 @@ interface Candidate {
   newOnly: string | null;
   full: string;
   hasDeletions: boolean;
+  addedLines: number[];
 }
 
 export function renderReviewerPatch(
@@ -265,6 +376,8 @@ export function renderReviewerPatch(
       includedFiles: [],
       omittedFiles: [],
       deletionsStripped: [],
+      citableLines: {},
+      countMismatches: [],
       estimatedTokens: 0,
       truncated: false,
     };
@@ -272,6 +385,8 @@ export function renderReviewerPatch(
 
   const deleted: ReviewerPatchFile[] = [];
   const noPatch: ReviewerPatchFile[] = [];
+  const parseFailed: ReviewerPatchFile[] = [];
+  const countMismatches: string[] = [];
   const candidates: Candidate[] = [];
 
   for (const file of files) {
@@ -283,17 +398,27 @@ export function renderReviewerPatch(
       noPatch.push(file);
       continue;
     }
-    const hunks = parseHunks(file.patch);
-    const full = renderFileBlock(file, hunks, true);
+    const { hunks, failed } = parseHunks(file.patch);
+    const full = failed ? null : renderFileBlock(file, hunks, true);
     if (!full) {
-      noPatch.push(file);
+      // Patch text existed, so this is our failure, not a missing payload.
+      parseFailed.push(file);
       continue;
+    }
+    const addedLines = addedLineNumbers(hunks);
+    // Cheap invariant against parser drift: GitHub's count is authoritative,
+    // and a mismatch means we lost or invented lines. It does not disqualify
+    // the patch — the discrepancy is smaller than the evidence — but it is
+    // said out loud rather than left for the reviewer to trip over.
+    if (typeof file.additions === 'number' && addedLines.length !== file.additions) {
+      countMismatches.push(file.filename);
     }
     candidates.push({
       file,
       newOnly: renderFileBlock(file, hunks, false),
       full,
       hasDeletions: hunks.some((h) => h.hasDeletions),
+      addedLines,
     });
   }
 
@@ -313,7 +438,9 @@ export function renderReviewerPatch(
     estimatePatchTokens(summary) +
     estimatePatchTokens(overflowSection(candidates.map((c) => c.file))) +
     estimatePatchTokens(deletedSection(deleted)) +
-    estimatePatchTokens(noPatchSection(noPatch));
+    estimatePatchTokens(noPatchSection(noPatch)) +
+    estimatePatchTokens(parseFailedSection(parseFailed)) +
+    estimatePatchTokens(warningSection(countMismatches));
   let remaining = Math.max(0, tokenBudget - reserve);
 
   // Pass 1 — additions first, across every file, before any file's deletions.
@@ -346,15 +473,26 @@ export function renderReviewerPatch(
     .filter((e) => !e.withDeletions && e.candidate.hasDeletions)
     .map((e) => e.candidate.file.filename);
 
+  const includedMismatches = countMismatches.filter((name) =>
+    selected.some((e) => e.candidate.file.filename === name),
+  );
+
   const text = [
     summary,
+    warningSection(includedMismatches),
     ...selected.map((e) => e.body),
     overflowSection(overflow),
     deletedSection(deleted),
     noPatchSection(noPatch),
+    parseFailedSection(parseFailed),
   ]
     .filter(Boolean)
     .join('\n\n');
+
+  const citableLines: Record<string, number[]> = {};
+  for (const entry of selected) {
+    citableLines[entry.candidate.file.filename] = entry.candidate.addedLines;
+  }
 
   return {
     text,
@@ -363,10 +501,13 @@ export function renderReviewerPatch(
       ...overflow.map((f) => ({ filename: f.filename, reason: 'token-budget' as const })),
       ...deleted.map((f) => ({ filename: f.filename, reason: 'deleted' as const })),
       ...noPatch.map((f) => ({ filename: f.filename, reason: 'no-patch' as const })),
+      ...parseFailed.map((f) => ({ filename: f.filename, reason: 'parse-failed' as const })),
     ],
     deletionsStripped,
+    citableLines,
+    countMismatches: includedMismatches,
     estimatedTokens: estimatePatchTokens(text),
-    truncated: overflow.length > 0 || deletionsStripped.length > 0,
+    truncated: overflow.length > 0 || deletionsStripped.length > 0 || parseFailed.length > 0,
   };
 }
 
