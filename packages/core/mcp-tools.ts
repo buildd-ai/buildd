@@ -10,6 +10,7 @@ import { DISPATCHABLE_BACKENDS, backendLabel } from './backend-policy';
 import { TIERS, type Tier } from './model-tier-defaults';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
+import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import type {
   FailureAnalytics,
   FailureSignatureLookup,
@@ -1320,6 +1321,29 @@ export async function handleBuilddAction(
             });
           } catch {
             // Unconfirmed: it stays queued and is served again next time.
+          }
+        }
+      }
+
+      // Worker→worker messages ride the same check-in. Same protocol as the
+      // instruction queue: render into the tool result the agent is about to
+      // read, then ack by id. This call is the only consumer of the queue — the
+      // runner does not subscribe to the workspace channel and nothing else
+      // reads `pendingMessages`, so an unrendered message is a lost one.
+      const pendingMessages = Array.isArray(response.pendingMessages)
+        ? (response.pendingMessages as WorkerMessage[])
+        : [];
+      if (pendingMessages.length > 0) {
+        resultText += `\n\n${formatWorkerMessages(pendingMessages)}`;
+        const deliveredIds = pendingMessages.map(m => m?.id).filter((v): v is string => !!v);
+        if (deliveredIds.length > 0) {
+          try {
+            await api(`/api/workers/${workerId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({ workerMessagesDelivered: deliveredIds }),
+            });
+          } catch {
+            // Unconfirmed: they stay queued and are served again next time.
           }
         }
       }

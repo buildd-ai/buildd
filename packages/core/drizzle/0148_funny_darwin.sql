@@ -1,0 +1,2 @@
+CREATE INDEX "releases_run_url_idx" ON "releases" USING btree ("run_url");--> statement-breakpoint
+CREATE INDEX "tasks_release_run_id_idx" ON "tasks" USING btree (((release_result->>'runId'))) WHERE release_result IS NOT NULL;

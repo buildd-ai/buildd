@@ -136,11 +136,11 @@ Requires a worker context (?worker=<workerId> in the MCP URL).`,
           type: {
             type: "string" as const,
             enum: ["path_blocked_on_you", "path_released", "question", "answer"],
-            description: "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
+            description: "Message type. path_blocked_on_you: {paths, blockedTaskId} — blocked worker → holder. path_released: {paths, releasedAt, reason} — system → waiter. question: {text} — any → any. answer: {replyToMsgId, text} — any → any.",
           },
           body: {
             type: "object" as const,
-            description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
+            description: "Type-specific payload (max 2 KB). path_blocked_on_you: {paths: string[], blockedTaskId: string}. path_released: {paths: string[], releasedAt: string, reason: 'merged'|'pending_merge'|'abandoned'}. question: {text: string}. answer: {replyToMsgId: string, text: string}.",
           },
           hopCount: {
             type: "number" as const,

@@ -36,6 +36,11 @@ export interface ReleaseResult {
   releasedPaths: string[];
   /** Waiting task IDs that were notified (notifiedAt stamped). */
   notifiedWaiters: string[];
+  /**
+   * Same waiters with the path each one was blocked on, so the `path_released`
+   * message can name it. A waiter blocked on two paths appears twice.
+   */
+  waiters: Array<{ waitingTaskId: string; blockedPath: string }>;
 }
 
 // ── Path utilities ───────────────────────────────────────────────────────────
@@ -199,7 +204,7 @@ export async function releaseClaims(taskId: string): Promise<ReleaseResult | nul
       eq(pathClaimWaiters.blockingTaskId, taskId),
       isNull(pathClaimWaiters.notifiedAt),
     ),
-    columns: { id: true, waitingTaskId: true },
+    columns: { id: true, waitingTaskId: true, blockedPath: true },
   });
 
   if (pendingWaiters.length > 0) {
@@ -213,7 +218,36 @@ export async function releaseClaims(taskId: string): Promise<ReleaseResult | nul
     workspaceId,
     releasedPaths,
     notifiedWaiters: pendingWaiters.map(w => w.waitingTaskId),
+    waiters: pendingWaiters.map(w => ({
+      waitingTaskId: w.waitingTaskId,
+      blockedPath: w.blockedPath,
+    })),
   };
+}
+
+/**
+ * Undo the `notifiedAt` stamp for one waiter so a later release — or the
+ * 60-minute starvation check, which also filters on `notifiedAt IS NULL` — can
+ * find it again.
+ *
+ * `releaseClaims` stamps every pending waiter before delivery is attempted,
+ * which is what keeps two concurrent releases from double-notifying. The cost
+ * is that a delivery failure is permanent: the row is no longer pending, the
+ * claims are already released so a repeat call short-circuits, and waiter rows
+ * are never deleted. Re-arming on failure trades a possible duplicate message
+ * for a guaranteed-visible one.
+ */
+export async function rearmWaiter(
+  blockingTaskId: string,
+  waitingTaskId: string,
+): Promise<void> {
+  await db
+    .update(pathClaimWaiters)
+    .set({ notifiedAt: null })
+    .where(and(
+      eq(pathClaimWaiters.blockingTaskId, blockingTaskId),
+      eq(pathClaimWaiters.waitingTaskId, waitingTaskId),
+    ));
 }
 
 // ── Waiter registration ──────────────────────────────────────────────────────
