@@ -10,9 +10,20 @@ export async function GET() {
     authorization_endpoint: `${issuer}/api/oauth/authorize`,
     token_endpoint: `${issuer}/api/oauth/token`,
     registration_endpoint: `${issuer}/api/oauth/register`,
+    // Without this an RFC 8414 client cannot discover the key set at all and
+    // has to hardcode the path — which is doubly awkward here, because the
+    // document does not sit at root `/.well-known/` where a client would
+    // otherwise guess.
+    jwks_uri: `${issuer}/api/.well-known/jwks.json`,
     logo_uri: `${issuer}/logo.png`,
     response_types_supported: ['code'],
-    grant_types_supported: ['authorization_code', 'refresh_token'],
+    grant_types_supported: [
+      'authorization_code',
+      'refresh_token',
+      // The assertion grant is a supported grant on this issuer; omitting it
+      // told every client it was not.
+      'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    ],
     code_challenge_methods_supported: ['S256'],
     token_endpoint_auth_methods_supported: ['none'],
     scopes_supported: OAUTH_SCOPES,

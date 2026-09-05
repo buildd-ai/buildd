@@ -62,7 +62,9 @@ mock.module('@/lib/pr-activity-comment', () => ({
 }));
 
 import {
+  buildReviewerContext,
   createReviewerTask,
+  enforceServerSideEscalation,
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
@@ -468,5 +470,273 @@ describe('supersedeReviewerTaskOnMerge', () => {
     expect(result.superseded).toBe(true);
     expect(insertedMissionNote).toBeUndefined();
     expect(mockAppendPrActivity).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Patch evidence (T2) ──────────────────────────────────────────────────────
+
+describe('buildReviewerContext — patch evidence flag', () => {
+  const PR_FILES = [
+    {
+      filename: 'apps/web/src/lib/foo.ts',
+      status: 'modified',
+      additions: 2,
+      deletions: 1,
+      patch: [
+        '@@ -1,4 +1,5 @@ export function foo() {',
+        ' const a = 1;',
+        '-const b = 2;',
+        '+const b = 3;',
+        '+const c = 4;',
+        ' return a;',
+      ].join('\n'),
+    },
+  ];
+
+  const BASE = {
+    originalTaskId: 'original-t2',
+    originalTask: {
+      title: 'Patch evidence',
+      description: 'A task whose PR the reviewer should be able to read',
+      pathManifest: ['apps/web/src/lib/foo.ts'],
+    },
+    prNumber: 90,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/90',
+    headSha: 'sha90',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prFiles: PR_FILES,
+  };
+
+  const POLICY = { preset: 'balanced' as const, riskClasses: [] };
+
+  it('changes nothing about the prompt when the flag is off', async () => {
+    const off = await buildReviewerContext({
+      ...BASE,
+      policyConfig: { ...POLICY, reviewerPatchEvidence: false },
+    });
+    const absent = await buildReviewerContext({ ...BASE, policyConfig: POLICY });
+
+    // Absent and explicitly-false must be the same prompt: a workspace that
+    // never heard of this feature gets the pre-patch reviewer verbatim.
+    expect(off).toBe(absent);
+
+    expect(off).not.toContain('__new hunk__');
+    expect(off).not.toContain('## PR Diff');
+    // The filename list is still exactly what it was.
+    expect(off).toContain('## PR Files Changed (+2/-1)');
+    expect(off).toContain('  - apps/web/src/lib/foo.ts (+2/-1) [modified]');
+
+    // And the seam the patch splices into is byte-identical to the pre-feature
+    // prompt — not merely free of patch text. An opt-in that reflows every
+    // workspace's reviewer prompt by one blank line is not an opt-in, and
+    // "contains no hunks" would not have caught it.
+    expect(off).toContain('[modified]\n\n\n\n## Your Output');
+  });
+
+  it('injects the patch, with citation rules, when the flag is on', async () => {
+    const on = await buildReviewerContext({
+      ...BASE,
+      policyConfig: { ...POLICY, reviewerPatchEvidence: true },
+    });
+
+    expect(on).toContain('__new hunk__');
+    expect(on).toContain('2 +const b = 3;');
+    expect(on).toContain('@@ ... @@ export function foo() {');
+    expect(on).toContain('`path:line`');
+
+    // Additive, not a replacement: scope and completeness are judged against
+    // the filename list, and the patch may be short a file the budget dropped.
+    expect(on).toContain('## PR Files Changed (+2/-1)');
+  });
+
+  it('honours a per-workspace token budget', async () => {
+    const on = await buildReviewerContext({
+      ...BASE,
+      prFiles: [
+        {
+          filename: 'big.ts',
+          status: 'modified',
+          additions: 200,
+          deletions: 0,
+          patch: [
+            '@@ -1,200 +1,200 @@ fn',
+            ...Array.from({ length: 200 }, (_, i) => `+// line ${i} ${'x'.repeat(80)}`),
+          ].join('\n'),
+        },
+      ],
+      policyConfig: { ...POLICY, reviewerPatchEvidence: true, reviewerPatchTokenBudget: 200 },
+    });
+
+    expect(on).toContain('## Not Reviewed — Token Budget');
+    expect(on).not.toContain('__new hunk__');
+  });
+
+  it('does not mistake a path inside the patch text for a changed file', async () => {
+    // The self-healing policy check used to recover filenames by re-parsing the
+    // rendered prompt for `- ` lines. With patch text in that prompt, any diff
+    // that mentions a path would enter the changed-file list — and a PR could
+    // then be made to look as if it touched the schema by *writing about* it.
+    const on = await buildReviewerContext({
+      ...BASE,
+      prFiles: [
+        {
+          filename: 'docs/notes.md',
+          status: 'modified',
+          additions: 1,
+          deletions: 0,
+          // A CONTEXT line: it renders unnumbered, so it trims to `- <path>`
+          // and the old re-parse would have read it as a changed file. An
+          // added line renders as `2 +- <path>` and never matched.
+          patch: ['@@ -1,2 +1,3 @@ notes', ' - packages/core/db/schema.ts', '+new line'].join('\n'),
+        },
+      ],
+      policyConfig: {
+        preset: 'balanced' as const,
+        riskClasses: [],
+        reviewerPatchEvidence: true,
+      },
+    });
+
+    expect(on).toContain('   - packages/core/db/schema.ts');
+    expect(on).not.toContain('Proposed Policy Additions');
+  });
+
+  it('does not re-fetch the file list the caller already supplied', async () => {
+    // @/lib/github is unmocked here, so a fetch attempt fails and the context
+    // falls back to the "could not fetch" text. Its absence is the assertion.
+    const on = await buildReviewerContext({
+      ...BASE,
+      policyConfig: { ...POLICY, reviewerPatchEvidence: true },
+    });
+    expect(on).not.toContain('Could not fetch file list');
+  });
+});
+
+// ── Server-side escalation enforcement (T5) ──────────────────────────────────
+
+describe('enforceServerSideEscalation', () => {
+  const CLEAN = [{ filename: 'apps/web/src/lib/foo.ts' }];
+  const MIGRATION = [
+    { filename: 'apps/web/src/lib/foo.ts' },
+    { filename: 'packages/core/drizzle/0099_add_column.sql' },
+  ];
+  const OPEN_POLICY: MergePolicy = { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } };
+
+  it('overrides approve to escalate for a migration the reviewer never had cleared', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('migration');
+  });
+
+  it('leaves approve alone when the migration was inspected and found safe', () => {
+    // Pre-flight clears additive migrations. Re-escalating them here would
+    // turn every cleared expand migration into human toil.
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+      migrationSafety: { safe: true, operations: [] },
+    });
+
+    expect(result.verdict).toBe('approve');
+    expect(result.overrideReason).toBeNull();
+  });
+
+  it('overrides approve when the inspector found the migration unsafe', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+      migrationSafety: { safe: false, reason: 'drops a column still read by live code' },
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('drops a column');
+  });
+
+  it('overrides approve for a configured deny path', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [{ filename: 'infra/terraform/main.tf' }],
+      policy: {
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['infra/'] },
+      },
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('infra/terraform/main.tf');
+  });
+
+  it('overrides approve for a risk class the workspace policy reserves for humans', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [{ filename: 'packages/core/db/schema.ts' }],
+      policy: OPEN_POLICY,
+      policyConfig: {
+        preset: 'cautious',
+        riskClasses: [
+          { name: 'destructive_schema_change', detectedPaths: ['packages/core/db/schema.ts'] },
+        ],
+      },
+      migrationSafety: { safe: true, operations: [] },
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('human review');
+  });
+
+  it('passes a clean approve through untouched', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: CLEAN,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('approve');
+    expect(result.overrideReason).toBeNull();
+  });
+
+  it('escalates approve when the file list could not be read', () => {
+    // A real PR always has files, so an empty list means the GitHub fetch
+    // failed. Failing open here would let a transient 502 grant a merge.
+    const result = enforceServerSideEscalation({
+      verdict: 'approve',
+      prFiles: [],
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toContain('could not');
+  });
+
+  it('leaves request-changes alone even on a migration', () => {
+    // request-changes merges nothing, so it is not the dangerous verdict.
+    // Forcing it to escalate would strand a PR the authoring agent could fix.
+    const result = enforceServerSideEscalation({
+      verdict: 'request-changes',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('request-changes');
+    expect(result.overrideReason).toBeNull();
+  });
+
+  it('leaves an existing escalate alone', () => {
+    const result = enforceServerSideEscalation({
+      verdict: 'escalate',
+      prFiles: MIGRATION,
+      policy: OPEN_POLICY,
+    });
+
+    expect(result.verdict).toBe('escalate');
+    expect(result.overrideReason).toBeNull();
   });
 });

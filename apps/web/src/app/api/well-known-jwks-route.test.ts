@@ -24,7 +24,10 @@ const healthyKey = {
   publicKeyJwk: { kty: 'EC', crv: 'P-256', x: 'FAKE-x-coordinate', y: 'FAKE-y-coordinate', use: 'sig', alg: 'ES256' } as JsonWebKey,
 };
 
-const CACHE_HEADER = 'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400';
+// Imported, not restated. A literal here would keep passing after someone
+// widened the shared-cache lifetime and updated the string to match; the policy
+// itself is asserted against the key lifecycle in signing-key-windows.test.ts.
+import { JWKS_CACHE_CONTROL } from '@/lib/signing-key-windows';
 
 describe('GET /api/.well-known/jwks.json', () => {
   beforeEach(() => {
@@ -38,7 +41,7 @@ describe('GET /api/.well-known/jwks.json', () => {
 
     const res = await GET();
     expect(res.status).toBe(200);
-    expect(res.headers.get('cache-control')).toBe(CACHE_HEADER);
+    expect(res.headers.get('cache-control')).toBe(JWKS_CACHE_CONTROL);
 
     const body = await res.json();
     expect(body.keys).toHaveLength(1);

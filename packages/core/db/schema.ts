@@ -116,7 +116,6 @@ export const accounts = pgTable('accounts', {
   authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
 
   // For API-based auth (pay-per-token)
-  anthropicApiKey: text('anthropic_api_key'),
   maxCostPerDay: decimal('max_cost_per_day', { precision: 10, scale: 2 }),
   totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
 
@@ -691,8 +690,14 @@ export const missions = pgTable('missions', {
   pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
   pacingMaxPerHour: integer('pacing_max_per_hour'),
   lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
-  // Shared feature branch for this mission. All mission tasks push commits here;
-  // a single PR tracks all mission work. Generated lazily on first task creation.
+  // Mission integration branch, shape `mission/<slug>-<id8>`. Generated lazily on
+  // first task creation.
+  //
+  // Each mission task still gets its OWN branch and its OWN PR — this branch is
+  // their shared BASE, not a branch everyone commits to directly, and it does not
+  // by itself collapse mission work into a single PR. It only acts as that base
+  // when `integrationBranchEnabled` is true; while that flag is false the column
+  // is inert bookkeeping and task PRs target trunk as they always have.
   workingBranch: text('working_branch'),
   primaryPrNumber: integer('primary_pr_number'),
   primaryPrUrl: text('primary_pr_url'),
@@ -703,6 +708,14 @@ export const missions = pgTable('missions', {
   // Per-mission merge policy override. When set, takes precedence over workspace.gitConfig.mergePolicy.
   // null means "use workspace default".
   mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
+  // Per-mission opt-in to mission integration branches: task PRs are based on
+  // `workingBranch` instead of trunk, and one mission PR takes the integration
+  // branch into trunk when the mission's work is done. The merge-policy tier then
+  // applies to that ONE mission PR; task PRs into the (quarantined) integration
+  // branch run auto-threshold — see resolvePolicy() in apps/web/src/lib/merge-policy.ts.
+  //
+  // Default false: nothing about any existing mission changes until this is true.
+  integrationBranchEnabled: boolean('integration_branch_enabled').default(false).notNull(),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -1115,6 +1128,17 @@ export const workers = pgTable('workers', {
   // Used by the base-history-rewrite detector to identify force-pushes that
   // orphan the PR's merge base.
   prOpenedBaseSha: text('pr_opened_base_sha'),
+  // The PR's base ref as GitHub reports it — recorded at open time from
+  // `pull_request.base.ref` and refreshed by the pull_request webhook (which is
+  // what catches a RETARGET, i.e. someone changing a PR's base after it opened).
+  // This is the local source of truth for "did this land on trunk, or on a
+  // mission integration branch", which decides whether the merge-policy tier
+  // applies to this PR (see resolvePolicy()).
+  //
+  // Nullable: pre-migration workers and non-PR workers have none. A null must
+  // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
+  // because guessing wrong here silently deletes a human review gate.
+  prBaseRef: text('pr_base_ref'),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -2109,26 +2133,6 @@ export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
   team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
 }));
 
-// Advisory file reservations — prevents concurrent workers from editing the same files
-export const fileReservations = pgTable('file_reservations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
-  filePath: text('file_path').notNull(),
-  acquiredAt: timestamp('acquired_at', { withTimezone: true }).defaultNow().notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}, (t) => ({
-  // Only one active reservation per file per workspace (enforced at app level with expiry check)
-  workspaceFileIdx: uniqueIndex('file_reservations_workspace_file_idx').on(t.workspaceId, t.filePath),
-  workerIdx: index('file_reservations_worker_idx').on(t.workerId),
-  expiresIdx: index('file_reservations_expires_idx').on(t.expiresAt),
-}));
-
-export const fileReservationsRelations = relations(fileReservations, ({ one }) => ({
-  workspace: one(workspaces, { fields: [fileReservations.workspaceId], references: [workspaces.id] }),
-  worker: one(workers, { fields: [fileReservations.workerId], references: [workers.id] }),
-}));
-
 // System cache — generic key-value store for cached data (model lists, etc.)
 export const systemCache = pgTable('system_cache', {
   key: text('key').primaryKey(),
@@ -2172,7 +2176,6 @@ export const backendPauses = pgTable('backend_pauses', {
   backend: agentBackendEnum('backend').notNull(),
   /** 'budget' (session/rate-limit) | 'auth' (credential rejected). */
   reason: text('reason').notNull().default('budget'),
-  pausedAt: timestamp('paused_at', { withTimezone: true }).defaultNow().notNull(),
   resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
   sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2370,8 +2373,6 @@ export const externalLinks = pgTable('external_links', {
   externalUrl: text('external_url'),
   // Phase 3 echo-suppression watermark — last-seen external mtime.
   externalUpdatedAt: timestamp('external_updated_at', { withTimezone: true }),
-  // Phase 3 echo-suppression — hash of the last payload we pushed.
-  lastPushedHash: text('last_pushed_hash'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -2531,7 +2532,6 @@ export const pathClaims = pgTable('path_claims', {
   path: text('path').notNull(),
   claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
   releasedAt: timestamp('released_at', { withTimezone: true }),
-  releaseReason: text('release_reason'),
 }, (t) => ({
   activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
   taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
@@ -2578,9 +2578,6 @@ export const releases = pgTable('releases', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   archetype: text('archetype').notNull().$type<'gated' | 'continuous' | 'store' | 'package' | 'none'>(),
   unit: text('unit'),
-  strategy: text('strategy').$type<'workflow_dispatch' | 'branch_merge' | 'script'>(),
-  sourceRef: text('source_ref'),
-  targetRef: text('target_ref'),
   headSha: text('head_sha'),
   previousSha: text('previous_sha'),
   version: text('version'),

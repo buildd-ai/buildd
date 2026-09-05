@@ -2,12 +2,12 @@
 title: Surface IA — Home, Missions, Initiatives
 status: draft
 owner: max
-last_verified: 2026-09-04
+last_verified: 2026-09-05
 summary: Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 domain: surfaces
 surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presentation.ts, apps/web/src/lib/initiative-presentation.ts, apps/web/src/app/app/(protected)/home/page.tsx]
 related: [mission-task-lifecycle, timeline-dependency-geometry, release-flow]
-keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline]
+keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline, integration branch, value invariant]
 supersedes: [missions-tab-triage]
 ---
 
@@ -393,6 +393,54 @@ and identical **selected columns**. An agreement check cannot detect two surface
 agreeing on a wrong value — see §6.2's requirement below, which exists to make
 the scope loader-owned rather than caller-chosen.
 
+### 5.2a The one value invariant
+
+§5.2, AC-20 and AC-29 are **agreement** invariants: each asserts that two
+surfaces show the *same* number. None of them constrains *which* number. Two
+surfaces reading `0` out of one loader satisfy all three — so a shared wrong `0`
+is structurally outside what they can detect, and the mission-delivery audit
+(`docs/design/mission-delivery-arc.md`) hit exactly that, twice, both times on a
+mission whose work was finished and whose diff was not on trunk:
+
+1. `derivePendingCounts` scores `awaitingVerification` per **task** — a
+   `completed` task one of whose workers still holds an unmerged, unclosed PR.
+   For a mission using an integration branch every task PR merges into that
+   branch and carries `mergedAt`, so a per-task count over *deliverable rows
+   alone* reads `0` on Home, on `/app/initiatives`, and on initiative detail
+   while the mission's whole diff sits on an unmerged integration PR. All three
+   agree. The mission is invisible.
+2. That same `0` propagates into the verdict ladder (§6.5): `stuck` needs
+   `awaitingVerification > 0` or `blocked > 0`, so the mission cannot reach
+   `stuck` and lands on `Dormant` instead — which per AC-1 contributes no clause,
+   leaving Home with no pulse line at all. Mission detail's own `awaitingMerge`
+   count fails the same way and for the same reason (it is the `half` segment
+   count, and `isDeliverableTask` is `taskClass === 'work'`).
+
+**Status of that failure as of 2026-09-05: prevented, but only incidentally, and
+that is why this invariant is written down.** The mission integration PR is owned
+by a `bookkeeping` task with a worker row (`lib/mission-pr.ts`), and all three
+`derivePendingCounts` callers pass *every* task with no `taskClass` filter — so
+the owner row supplies the `1` and the value is already correct. Nothing asserted
+it. A single plausible refactor — "pending counts should ignore bookkeeping rows"
+— silently restores the wrong `0` on all three surfaces at once, and every
+agreement invariant would still pass. `AC-51` below is what makes that refactor
+fail instead, and `lib/initiative-pulse.ts` carries a comment prohibiting the
+narrowing. Mission detail is fixed differently: it renders the integration PR as
+its own block rather than relying on a segment count.
+
+**Value invariant**: a mission whose deliverable work is complete (every
+`isDeliverableTask` task terminal, none failed) and whose integration PR is open
+and unmerged MUST contribute **exactly 1** to `awaitingVerification` — not `0`,
+because nothing of that mission is on trunk and a human decision is outstanding,
+and not `N`, because one mission with one integration PR is one pending decision
+no matter how many tasks fed it. A mission that never opted into an integration
+branch is unaffected: its task PRs target trunk, so the per-task count already
+answers correctly and this invariant adds nothing to it.
+
+This is a constraint on the value, deliberately expressed without reference to
+any second surface. It is the invariant this spec was missing: every other check
+here would still pass on the failure above.
+
 ### 5.3 Acceptance criteria
 
 - **AC-19**: GIVEN an initiative with `awaitingVerification: 2, blocked: 0,
@@ -411,6 +459,15 @@ the scope loader-owned rather than caller-chosen.
 - **AC-23**: GIVEN an initiative with 25 deliverable tasks in one mission, WHEN
   the detail page renders, THEN all 25 are counted in the rollup denominator (no
   per-mission task cap).
+- **AC-51**: GIVEN a mission with `integrationBranchEnabled` true, every
+  deliverable task `completed`, every task PR merged into the integration
+  branch, and the mission's integration PR open, WHEN pending counts are
+  derived for its initiative, THEN that mission contributes exactly `1` to
+  `awaitingVerification` (§5.2a) — never `0`, and never one per task.
+- **AC-51a**: GIVEN the same mission after its integration PR is merged, WHEN
+  pending counts are derived, THEN that mission contributes `0` to
+  `awaitingVerification`; the count MUST NOT persist on the merge of the
+  integration PR.
 
 ---
 

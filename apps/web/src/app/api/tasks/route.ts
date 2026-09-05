@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
+import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -763,15 +764,25 @@ export async function POST(req: NextRequest) {
     // for both outputRequirement and backend resolution.
     let outputRequirement = explicitOutputRequirement;
     let missionStartAt: Date | null = null;
+    // Option A′: null unless this mission opted into an integration branch, in
+    // which case it is the default PR base for the task being created.
+    let missionIntegrationBaseBranch: string | null = null;
     if (missionId) {
       const mission = await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        columns: { defaultOutputRequirement: true, defaultBackend: true, startAt: true },
+        columns: {
+          defaultOutputRequirement: true,
+          defaultBackend: true,
+          startAt: true,
+          workingBranch: true,
+          integrationBranchEnabled: true,
+        },
       });
       if (!outputRequirement) outputRequirement = mission?.defaultOutputRequirement ?? 'auto';
       // Mission backend (an intentional per-mission choice) outranks role/workspace defaults.
       if (!resolvedBackend && mission?.defaultBackend) resolvedBackend = mission.defaultBackend;
       missionStartAt = mission?.startAt ?? null;
+      missionIntegrationBaseBranch = missionIntegrationBase(mission);
     }
 
     // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace
@@ -849,11 +860,21 @@ export async function POST(req: NextRequest) {
           title.startsWith('Aggregate results:') ||
           title.startsWith('Evaluate mission completion:') ||
           title.startsWith('Mission:') ||
-          title.startsWith('Close mission')
+          title.startsWith('Close mission') ||
+          // Option A′: the row that owns a mission integration PR. The opener
+          // sets `taskClass` directly, but a caller can create one through this
+          // route, and as `work` it would become a deliverable of the very
+          // mission whose completion it is waiting on.
+          title.startsWith(MISSION_PR_TASK_PREFIX)
         ) ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],
         context: {
+          // Option A′ default base, first so an explicit caller-supplied
+          // `baseBranch` in the incoming context still wins: a caller naming a
+          // predecessor branch is stacking deliberately, and A′ only fills in
+          // the base for tasks that named none.
+          ...(missionIntegrationBaseBranch ? { baseBranch: missionIntegrationBaseBranch } : {}),
           // Merge incoming context (MCP sends baseBranch, iteration, failureContext, model, effort, etc.)
           ...(typeof incomingContext === 'object' && incomingContext !== null && !Array.isArray(incomingContext) ? incomingContext : {}),
           // Route-computed fields take precedence

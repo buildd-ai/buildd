@@ -144,10 +144,10 @@ export interface QueryParams {
    *
    * The decay is inert whenever a reranker is configured, because `_finalize`
    * calls `applyRerank`, which overwrites `score`. So the same code ranks by
-   * age without a reranker and ignores age with one — and this package is
-   * constructed both ways in the same deployment (`buildd-mcp-server.ts`
-   * passes `getVoyageReranker()`, the `mcp-tools.ts` fallbacks do not), which
-   * means a query's ranking semantics depend on which path served it.
+   * age without a reranker and ignores age with one — and this package can be
+   * constructed both ways in the same deployment (a caller that passes
+   * `getVoyageReranker()` vs. the `mcp-tools.ts` fallbacks, which do not),
+   * which means a query's ranking semantics depend on which path served it.
    *
    * Pass false to get retrieval relevance only, so the caller can apply one
    * age policy that behaves identically either way.

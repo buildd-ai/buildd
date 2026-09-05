@@ -10,6 +10,7 @@ import { detectArchetype } from '@buildd/core/release-archetype';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import type { ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 
 export interface ReleaseFooterWorkspace {
   id: string;
@@ -49,6 +50,10 @@ export async function loadReleaseFooterData(workspace: ReleaseFooterWorkspace): 
             eq(tasksTable.workspaceId, workspace.id),
             isNotNull(workers.mergedAt),
             sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
+            // A task PR merged into a mission integration branch has NOT landed
+            // on trunk; the mission's contribution to this queue is its single
+            // integration PR, counted when that merges (core/release-queue-scope).
+            notMissionIntegrationMerge(),
           )))[0]
       : undefined;
 

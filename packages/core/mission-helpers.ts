@@ -1,6 +1,11 @@
 import type { GoalCriterion, GoalCriterionType, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState } from '@buildd/shared';
 export type { GoalCriterion, GoalCriterionType, GoalCriteriaState, CriterionVerdict, InitiativeKPI, InitiativeKPIState };
 import { type DerivedMetric, derivedValue, derivedUnavailable } from './derived-metric';
+import {
+  isMissionIntegrationBase,
+  isMissionPrTask,
+  missionIntegrationBase,
+} from './mission-integration';
 export type { DerivedMetric } from './derived-metric';
 
 // ─── Task type detection ───────────────────────────────────────────────────────
@@ -215,6 +220,13 @@ export function evaluateGoalCriteria(
   mission: {
     id: string;
     workingBranch?: string | null;
+    /**
+     * Option A': the mission's task PRs are based on `workingBranch` and the
+     * branch itself opens one PR into trunk. Absent or false is the "behave
+     * exactly as today" answer, so a caller that never plumbs it keeps the
+     * pre-A' semantics rather than getting a new failure mode.
+     */
+    integrationBranchEnabled?: boolean | null;
   },
   criteria: GoalCriterion[],
   context: {
@@ -224,6 +236,10 @@ export function evaluateGoalCriteria(
       kind?: string | null;
       title?: string | null;
       mode?: string | null;
+      // The stored deliverable/bookkeeping discriminator. `isDeliverableTask`
+      // and `isMissionPrTask` both read it; it was reaching this function at
+      // runtime already and simply was not declared.
+      taskClass?: string | null;
       creationSource?: string | null;
       category?: string | null;
     }>;
@@ -232,7 +248,12 @@ export function evaluateGoalCriteria(
       mergedAt?: string | Date | null;
       prUrl?: string | null;
       branchName?: string | null;
-      branchDeleted?: boolean | null;
+      /**
+       * The PR's base ref as GitHub reports it. Null means **unknown**, never
+       * trunk — see the Option A' arm below, where an unknown base cannot
+       * satisfy "the mission PR landed on trunk".
+       */
+      prBaseRef?: string | null;
     }>;
     artifacts: Array<{
       key?: string | null;
@@ -253,40 +274,95 @@ export function evaluateGoalCriteria(
 
     switch (criterion.type) {
       case 'all_prs_merged': {
-        const requireBranchDeleted = criterion.requireBranchDeleted === true;
-        const deliverableWorkers = context.workers.filter(w => w.prUrl);
-        if (deliverableWorkers.length === 0) {
+        // Option A': when the mission has opted in, its task PRs are based on
+        // the integration branch, so "every PR under this mission has merged"
+        // becomes true with **nothing on trunk**. That was this criterion's one
+        // inherited false green. The mission's own PR into trunk is now part of
+        // the criterion.
+        const integrationBase = missionIntegrationBase(mission);
+
+        const prWorkers = context.workers.filter(w => w.prUrl);
+        // Which of these PRs is the mission's own? Asked of the owning task, not
+        // of the PR title, and answered by the one predicate `mission-pr.ts`
+        // also uses to find the row it created.
+        const missionPrTaskIds = new Set(context.tasks.filter(isMissionPrTask).map(t => t.id));
+        const isMissionPrWorker = (w: { taskId?: string | null }) =>
+          !!w.taskId && missionPrTaskIds.has(w.taskId);
+
+        // Branch-deletion note: `requireBranchDeleted` is accepted and ignored.
+        // No branch-deletion signal has ever existed in this schema, so the
+        // option could only resolve to UNVERIFIED — a knob whose only effect was
+        // to make a mission that ticked it permanently uncompletable. Under A'
+        // the check people wanted ("the mission branch is done with") is the
+        // mission PR into trunk, which is verified below for real.
+        const branchNote = criterion.requireBranchDeleted === true
+          ? ' (branch deletion is not verified — the option is retired)'
+          : '';
+
+        if (prWorkers.length === 0) {
           // UNVERIFIED, not fail: "no PRs exist yet" is an absence of evidence,
           // and a hard fail here made the criterion unsatisfiable for a mission
           // that legitimately produces no PRs (research, coordination). Either
           // way it does not pass, so completion is still gated — but the reason
           // now reads as something an operator can act on.
           verdict = 'UNVERIFIED';
-          evidence = 'No PRs found for this mission yet';
-        } else {
-          const unmerged = deliverableWorkers.filter(w => !w.mergedAt);
-          if (unmerged.length > 0) {
-            verdict = 'fail';
-            evidence = `${unmerged.length} PR(s) not yet merged`;
-          } else if (requireBranchDeleted) {
-            // Check if branch is deleted. branchDeleted is set by the caller
-            // after querying the GitHub API. If unknown, mark UNVERIFIED.
-            const branchKnown = deliverableWorkers.some(w => w.branchDeleted !== null && w.branchDeleted !== undefined);
-            if (!branchKnown) {
-              verdict = 'UNVERIFIED';
-              evidence = 'Branch deletion status unknown — GitHub check needed';
-            } else {
-              const branchStillLive = deliverableWorkers.some(w => w.branchDeleted === false);
-              verdict = branchStillLive ? 'fail' : 'pass';
-              evidence = branchStillLive
-                ? `Working branch still exists (requireBranchDeleted=true)`
-                : 'All PRs merged and working branch deleted';
-            }
-          } else {
-            verdict = 'pass';
-            evidence = `All ${deliverableWorkers.length} PR(s) merged`;
-          }
+          evidence = `No PRs found for this mission yet${branchNote}`;
+          break;
         }
+
+        const unmerged = prWorkers.filter(w => !w.mergedAt);
+        if (unmerged.length > 0) {
+          // Covers the mission PR too: while it is open this reads `fail`, the
+          // same way an open task PR always has, and it clears when the PR
+          // merges rather than needing anything to re-evaluate it.
+          verdict = 'fail';
+          evidence = `${unmerged.length} PR(s) not yet merged${branchNote}`;
+          break;
+        }
+
+        if (!integrationBase) {
+          // Not opted in — exactly the pre-A' answer, including for a mission
+          // whose base refs happen to name a `mission/…` branch.
+          verdict = 'pass';
+          evidence = `All ${prWorkers.length} PR(s) merged${branchNote}`;
+          break;
+        }
+
+        // Opted in. A merged mission PR counts only if we can see that it went
+        // somewhere other than the integration branch: an unknown base ref is
+        // unknown, and reading it as trunk is the one direction that invents a
+        // green nobody can point at.
+        const landedOnTrunk = prWorkers.filter(
+          w =>
+            isMissionPrWorker(w) &&
+            !!w.prBaseRef?.trim() &&
+            !isMissionIntegrationBase({ baseRef: w.prBaseRef, mission }),
+        );
+
+        if (landedOnTrunk.length === 0) {
+          // UNVERIFIED rather than fail, for two reasons. It matches the "no PRs
+          // yet" arm — absence of evidence is not a contradiction, and this state
+          // is transient by construction, since the mission PR opens as soon as
+          // the deliverable work lands. And a `fail` here would be actively
+          // harmful: the caller suppresses command and prose grading once any
+          // criterion fails, so the window between the last task PR merging and
+          // the mission PR opening would silently stop every other criterion
+          // being graded.
+          verdict = 'UNVERIFIED';
+          const anyMissionPr = prWorkers.some(isMissionPrWorker);
+          evidence = anyMissionPr
+            ? `All ${prWorkers.length} PR(s) merged, but the mission PR's base ref does not show it `
+              + `landing outside \`${integrationBase}\``
+            : `All ${prWorkers.length} PR(s) merged into \`${integrationBase}\`, but the mission has `
+              + `no PR into trunk yet — nothing has reached the default branch`;
+          evidence += branchNote;
+          break;
+        }
+
+        verdict = 'pass';
+        const taskPrCount = prWorkers.filter(w => !isMissionPrWorker(w)).length;
+        evidence = `All ${taskPrCount} task PR(s) merged into \`${integrationBase}\`, and the mission PR `
+          + `merged into \`${landedOnTrunk[0].prBaseRef}\`${branchNote}`;
         break;
       }
 

@@ -1009,6 +1009,20 @@
       "when": 1788614887709,
       "tag": "0144_famous_kylun",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1788630955356,
+      "tag": "0145_melted_red_ghost",
+      "breakpoints": true
+    },
+    {
+      "idx": 146,
+      "version": "7",
+      "when": 1788631773462,
+      "tag": "0146_easy_mysterio",
+      "breakpoints": true
     }
   ]
 }

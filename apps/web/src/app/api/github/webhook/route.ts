@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases } from '@buildd/core/db/schema';
-import { and, eq, sql, inArray, isNull, not } from 'drizzle-orm';
+import { and, eq, sql, inArray, isNull, not, or, ne } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -9,6 +9,8 @@ import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
+import { isMissionIntegrationBase, shouldAnnounceBaseAdvance } from '@buildd/core/mission-integration';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -449,16 +451,27 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         }
 
         // Resolve merge policy via the single precedence chain:
-        //   task.requiresReview → mission.mergePolicy → mission.requiresReview → workspace.mergePolicy → default
-        let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null } | undefined;
+        //   task.requiresReview → mission integration branch → mission.mergePolicy
+        //   → mission.requiresReview → workspace.mergePolicy → default
+        let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
         if (worker.taskId) {
           workerTask = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            with: { mission: { columns: { mergePolicy: true, requiresReview: true } } },
+            with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
             columns: { id: true, requiresReview: true, missionId: true, title: true },
           }) as typeof workerTask;
         }
-        const policy = resolvePolicy(workspace, workerTask?.mission ?? null, workerTask ?? null);
+        // Prefer the check_suite payload's base ref — it is authoritative and
+        // race-free — and fall back to the stored column. This is a gate that
+        // decides whether auto-merge fires, and `worker.prBaseRef` can be stale
+        // for a retargeted PR, in the direction that DROPS a human review gate.
+        // Null (unknown) leaves the chain untouched.
+        const policy = resolvePolicy(
+          workspace,
+          workerTask?.mission ?? null,
+          workerTask ?? null,
+          { baseRef: pr.base?.ref ?? worker.prBaseRef },
+        );
 
         if (policy.tier === 'human') {
           console.log(`PR held for human review (policy.tier=human) — ${repository.full_name}#${pr.number}`);
@@ -515,8 +528,47 @@ async function handlePullRequestEvent(event: {
   };
   installation?: { id: number };
   repository: { full_name: string };
+  changes?: { base?: { ref?: { from?: string } } };
 }) {
   const { action, pull_request: pr, repository } = event;
+
+  // ── Keep workers.prBaseRef in step with GitHub's base ref ────────────────
+  // Runs for EVERY pull_request action, before any action-specific branching,
+  // because the action that matters most here is one none of the branches below
+  // handle: `edited` with changes.base — a RETARGET. Somebody changing a PR's
+  // base after it opened is precisely what makes the merge-policy decision
+  // stale (a task PR moved off a mission integration branch onto trunk must get
+  // its human gate back, and vice versa).
+  //
+  // Single atomic UPDATE with the no-op case excluded in the WHERE clause, so a
+  // routine `synchronize` on an unchanged base costs no write. .returning() is
+  // therefore also the retarget detector: a row comes back only on a real change.
+  if (pr.base?.ref) {
+    const observedBaseRef = pr.base.ref;
+    try {
+      const rebased = await db
+        .update(workers)
+        .set({ prBaseRef: observedBaseRef, updatedAt: new Date() })
+        .where(and(
+          workerOwnsPr(repository.full_name, pr.number),
+          or(isNull(workers.prBaseRef), ne(workers.prBaseRef, observedBaseRef)),
+        ))
+        .returning({ id: workers.id });
+      // RETURNING yields post-update values, so the prior ref is not recoverable
+      // here — the WHERE clause is what proves this was a change, not a no-op.
+      for (const row of rebased) {
+        console.log(
+          `[webhook] PR #${pr.number} base ref now '${observedBaseRef}' `
+          + `on worker ${row.id} [action=${action}]`,
+        );
+      }
+    } catch (err) {
+      // Never fail the webhook over bookkeeping — a missed sync self-heals on the
+      // next pull_request event for this PR, and a null/stale value degrades to
+      // the existing merge gate rather than skipping one.
+      console.error(`[webhook] failed to sync prBaseRef for PR #${pr.number}:`, err);
+    }
+  }
 
   // Track PR lifecycle status on open/reopen/synchronize events
   if (
@@ -676,6 +728,12 @@ async function handlePullRequestEvent(event: {
     with: { task: true },
   });
 
+  // Is this handler LEARNING about the merge, or is it a redelivery of one it
+  // already processed? Captured here because the stamp below destroys the
+  // evidence, and it is what keeps the per-merge effects further down
+  // exactly-once now that they no longer ride on the task's status transition.
+  const mergeIsNew = !worker?.mergedAt;
+
   // Resolve the sticky activity comment: the PR closing is the last word, so a
   // header left on a working state ("Review passed — merging once checks are
   // green") must stop spinning even though no buildd step ran after it.
@@ -776,137 +834,243 @@ async function handlePullRequestEvent(event: {
         console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${worker.taskId}:`, e)
       );
     }
-  }
 
-  if (pr.merged && worker?.task && worker.task.status !== 'completed') {
-    await db
-      .update(tasks)
-      .set({ status: 'completed', updatedAt: new Date() })
-      .where(eq(tasks.id, worker.task.id));
-    console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
-
-    // Work-tracker: post completion comment and transition issue to "Done"
-    maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
-
-    // PR merged: unblock any missions waiting on this mission's PRs to merge
-    if (worker.task.missionId) {
-      checkAndUnblockDependentMissions(worker.task.missionId, 'merged').catch(e =>
-        console.error(`[webhook] unblock failed for merged PR mission ${worker.task!.missionId}:`, e)
+    // A merge onto a mission integration branch moved the base that every
+    // sibling task's codebase-graph seed is keyed on. Tell the runner, which
+    // owns the seed cache (a directory on its own host) and already has the
+    // keying and the one-refresh-in-flight bound.
+    //
+    // Keyed on the BASE REF alone, deliberately not on `task.missionId`: the
+    // stale thing is a seed keyed on that ref, and it is stale whether or not
+    // the merging task's row happens to carry a mission link. Requiring the
+    // link would make graph freshness depend on task bookkeeping.
+    //
+    // Also deliberately the SHAPE heuristic, where the release guard below uses
+    // the authoritative `isMissionIntegrationBase`. The asymmetry is the cost of
+    // being wrong: a false positive on a release decision suppresses a release
+    // the workspace asked for, while a false positive here costs one no-op
+    // refresh of a slot nobody reads.
+    if (shouldAnnounceBaseAdvance({ merged: pr.merged, baseRef: pr.base?.ref }) && worker.workspaceId) {
+      await triggerEvent(channels.workspace(worker.workspaceId), events.GRAPH_BASE_ADVANCED, {
+        repoFullName: repository.full_name,
+        baseRef: pr.base!.ref,
+      }).catch(e =>
+        // Advisory: the next claim in this mission refreshes the seed anyway, so
+        // a failed publish must never affect the merge path.
+        console.error(`[webhook] graph:base-advanced publish failed for ${repository.full_name}:`, e),
       );
     }
 
-    // Post-merge release trigger — Path B (webhook side).
+    // Option A′: a task PR landing on the mission's integration branch is the
+    // event that can make the mission's work complete, so it is where the one
+    // mission PR gets opened. Awaited, not fire-and-forget: this opens a PR,
+    // and a detached promise in a serverless handler can be killed mid-call,
+    // which would leave a mission whose work is done and whose PR never
+    // appeared — the exact silent stall A′ exists to remove.
     //
-    // Invariant enforced here:
-    //   branch_merge workspaces → Path A (worker PATCH + executeRelease) is authoritative.
-    //                              Path B must NOT fire to prevent double-fire.
-    //   workflow_dispatch workspaces → Path A skips; Path B fires the workflow.
-    //   trigger=manual → neither path auto-fires.
-    //   trigger=on_mission_complete → only fire when mission is all-terminal + atomic dedup.
-    const mergedTask = worker.task;
-    if (mergedTask.release !== 'false' && event.installation) {
-      const mergedWorkspace = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, mergedTask.workspaceId),
+    // `assumeCompletedTaskIds` because `tasks.status` for THIS task is stamped
+    // further down; `workers.mergedAt` is already stamped above.
+    if (worker.task.missionId && pr.base?.ref) {
+      const opened = await maybeOpenMissionIntegrationPr(worker.task.missionId, {
+        assumeCompletedTaskIds: [worker.task.id],
+      }).catch(e => {
+        console.error(`[webhook] mission PR open failed for mission ${worker.task!.missionId}:`, e);
+        return null;
       });
-      const shouldRelease =
-        mergedTask.release === 'true' ||
-        (mergedTask.release === 'inherit' && mergedWorkspace?.releaseConfig?.enabled === true);
+      if (opened && !opened.ok && opened.reason !== 'work_incomplete') {
+        // `work_incomplete` is the normal answer on all but the last merge and
+        // is not worth a line. Anything else means an opted-in mission finished
+        // its work and still has no PR, which must not be silent.
+        console.error(
+          `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
+          + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
+        );
+      }
+    }
+  }
 
-      if (shouldRelease && mergedWorkspace) {
-        const releaseConfig = mergedWorkspace.releaseConfig;
-        const resolution = resolveReleaseStrategy(releaseConfig);
+  if (pr.merged && worker?.task) {
+    // Two different questions, and they used to share one guard.
+    //
+    // `tasks.status = 'completed'` belongs to the TRANSITION — this task was not
+    // finished, and this merge finished it. Everything after it belongs to the
+    // MERGE, and is true of the PR landing whatever the task row already said.
+    //
+    // Collapsing them meant a merged PR whose task was ALREADY completed got no
+    // post-merge effects at all. That is not an edge case: the bookkeeping task
+    // that owns a mission integration PR is created already `completed` (nothing
+    // should ever claim it), so merging the mission PR on GitHub fired neither
+    // the `merged` dependency signal — the only writer of
+    // `missions.dependencyMetAt`, and the only thing that clears the `merged`
+    // gate — nor the Path-B release trigger. A downstream mission waited
+    // forever, and only when the human clicked Merge on GitHub rather than in
+    // buildd, because the dashboard merge route raises the signal itself.
+    if (worker.task.status !== 'completed') {
+      await db
+        .update(tasks)
+        .set({ status: 'completed', updatedAt: new Date() })
+        .where(eq(tasks.id, worker.task.id));
+      console.log(`Auto-completed task ${worker.task.id} via merged PR #${pr.number} on ${repository.full_name}`);
 
-        if (resolution.ok) {
-          // branch_merge: Path A already handled the merge on task completion — skip.
-          if (resolution.strategy.kind === 'branch_merge') {
-            // no-op: Path A is authoritative for branch_merge workspaces
-          } else if (resolution.strategy.kind === 'workflow_dispatch') {
-            const trigger = resolveReleaseTrigger(releaseConfig);
+      // Work-tracker: post completion comment and transition issue to "Done".
+      // Stays inside the transition guard deliberately: a "Done" comment is a
+      // one-shot announcement, and re-posting it on every delivery is spam on
+      // someone's issue tracker.
+      maybePostWorkTrackerIssueUpdate(pr.number, pr.html_url, true).catch(() => {});
+    }
 
-            if (trigger === 'manual') {
-              // no-op: owner fires trigger_release manually
-            } else if (trigger === 'on_mission_complete') {
-              // Only dispatch if this task's mission is now all-terminal
-              if (mergedTask.missionId) {
-                const missionId = mergedTask.missionId;
-                const pending = await countPendingTasksForMission(missionId);
-                if (pending === 0) {
-                  // Same predicate as every other completion path, including the
-                  // goal-criteria gate. This side used to check only "no pending
-                  // tasks" and dispatch, so a mission whose criteria read `fail`
-                  // could be shipped here and refused by the completion path in
-                  // the same minute. `evaluateCriteria: false` — a release READS a
-                  // verdict, it does not manufacture one.
-                  const decision = await canCompleteMission(missionId, {
-                    path: 'release_trigger',
-                    acceptCompleted: true,
-                    evaluateCriteria: false,
-                  });
-                  if (!decision.ok) {
-                    console.log(
-                      `[webhook] mission ${missionId}: not releasing — ${decision.code}: ${decision.reason}`,
-                    );
-                  } else if (await claimMissionReleaseAttempt(missionId)) {
-                    // Phase 1 claimed the ATTEMPT. Both exits below resolve it.
-                    const { workflowFile, ref, inputs } = resolution.strategy;
-                    const [owner, name] = repository.full_name.split('/');
-                    try {
-                      const dispatchResult = await dispatchWorkflowRelease(
-                        event.installation.id,
-                        owner,
-                        name,
-                        { workflowFile, ref, inputs: { force: 'false', ...inputs } },
+    // ── Effects of the merge itself ──────────────────────────────────────────
+    //
+    // Gated on `mergeIsNew`, not on the task's status. GitHub redelivers, and
+    // these must run exactly once per merge — the status guard used to provide
+    // that by accident, and `workers.mergedAt` (captured before this handler
+    // stamped it) is the honest version of the same question.
+    if (mergeIsNew) {
+      // PR merged: unblock any missions waiting on this mission's PRs to merge.
+      // Safe to run for an already-completed task: the helper re-checks the
+      // mission-wide predicate itself and its write is guarded on
+      // `dependencyMetAt IS NULL`, so it is idempotent by construction.
+      if (worker.task.missionId) {
+        checkAndUnblockDependentMissions(worker.task.missionId, 'merged').catch(e =>
+          console.error(`[webhook] unblock failed for merged PR mission ${worker.task!.missionId}:`, e)
+        );
+      }
+
+      // Post-merge release trigger — Path B (webhook side).
+      //
+      // Invariant enforced here:
+      //   branch_merge workspaces → Path A (worker PATCH + executeRelease) is authoritative.
+      //                              Path B must NOT fire to prevent double-fire.
+      //   workflow_dispatch workspaces → Path A skips; Path B fires the workflow.
+      //   trigger=manual → neither path auto-fires.
+      //   trigger=on_mission_complete → only fire when mission is all-terminal + atomic dedup.
+      //
+      // Option A′ adds one more: a merge into a mission integration branch is NOT
+      // a release-triggering merge. `workflow_dispatch` does not go through
+      // `executeRelease` (which refuses this case itself), so without this guard a
+      // mission whose last task PR landed on the integration branch would dispatch
+      // a release of trunk — a release recorded against the mission that does not
+      // contain the mission's work. That is the same class of lie as a mission
+      // marked released with nothing deployed.
+      const mergedTask = worker.task;
+      // The authoritative predicate, not the `mission/` name heuristic: a mission
+      // that has NOT opted in must behave exactly as before, even if its branch
+      // happens to carry that prefix. Costs one two-column read, and only for a
+      // mission task on a merged PR.
+      const mergedTaskMission = mergedTask.missionId
+        ? await db.query.missions.findFirst({
+            where: eq(missions.id, mergedTask.missionId),
+            columns: { workingBranch: true, integrationBranchEnabled: true },
+          })
+        : null;
+      const mergedOntoIntegrationBranch = isMissionIntegrationBase({
+        baseRef: pr.base?.ref,
+        mission: mergedTaskMission,
+      });
+      if (mergedTask.release !== 'false' && event.installation && !mergedOntoIntegrationBranch) {
+        const mergedWorkspace = await db.query.workspaces.findFirst({
+          where: eq(workspaces.id, mergedTask.workspaceId),
+        });
+        const shouldRelease =
+          mergedTask.release === 'true' ||
+          (mergedTask.release === 'inherit' && mergedWorkspace?.releaseConfig?.enabled === true);
+
+        if (shouldRelease && mergedWorkspace) {
+          const releaseConfig = mergedWorkspace.releaseConfig;
+          const resolution = resolveReleaseStrategy(releaseConfig);
+
+          if (resolution.ok) {
+            // branch_merge: Path A already handled the merge on task completion — skip.
+            if (resolution.strategy.kind === 'branch_merge') {
+              // no-op: Path A is authoritative for branch_merge workspaces
+            } else if (resolution.strategy.kind === 'workflow_dispatch') {
+              const trigger = resolveReleaseTrigger(releaseConfig);
+
+              if (trigger === 'manual') {
+                // no-op: owner fires trigger_release manually
+              } else if (trigger === 'on_mission_complete') {
+                // Only dispatch if this task's mission is now all-terminal
+                if (mergedTask.missionId) {
+                  const missionId = mergedTask.missionId;
+                  const pending = await countPendingTasksForMission(missionId);
+                  if (pending === 0) {
+                    // Same predicate as every other completion path, including the
+                    // goal-criteria gate. This side used to check only "no pending
+                    // tasks" and dispatch, so a mission whose criteria read `fail`
+                    // could be shipped here and refused by the completion path in
+                    // the same minute. `evaluateCriteria: false` — a release READS a
+                    // verdict, it does not manufacture one.
+                    const decision = await canCompleteMission(missionId, {
+                      path: 'release_trigger',
+                      acceptCompleted: true,
+                      evaluateCriteria: false,
+                    });
+                    if (!decision.ok) {
+                      console.log(
+                        `[webhook] mission ${missionId}: not releasing — ${decision.code}: ${decision.reason}`,
                       );
-                      const releaseResult: ReleaseResult = {
-                        status: 'pending_ci',
-                        message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
-                        runId: dispatchResult.runId,
-                        runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
-                        runStatus: dispatchResult.runStatus,
-                        runConclusion: dispatchResult.runConclusion ?? null,
-                      };
-                      await db
-                        .update(tasks)
-                        .set({ releaseResult, updatedAt: new Date() })
-                        .where(eq(tasks.id, mergedTask.id));
-                      await commitMissionRelease(missionId);
-                      console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
-                    } catch (err) {
-                      await abandonMissionReleaseAttempt(
-                        missionId,
-                        'dispatch_failed',
-                        `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
-                      );
+                    } else if (await claimMissionReleaseAttempt(missionId)) {
+                      // Phase 1 claimed the ATTEMPT. Both exits below resolve it.
+                      const { workflowFile, ref, inputs } = resolution.strategy;
+                      const [owner, name] = repository.full_name.split('/');
+                      try {
+                        const dispatchResult = await dispatchWorkflowRelease(
+                          event.installation.id,
+                          owner,
+                          name,
+                          { workflowFile, ref, inputs: { force: 'false', ...inputs } },
+                        );
+                        const releaseResult: ReleaseResult = {
+                          status: 'pending_ci',
+                          message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
+                          runId: dispatchResult.runId,
+                          runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
+                          runStatus: dispatchResult.runStatus,
+                          runConclusion: dispatchResult.runConclusion ?? null,
+                        };
+                        await db
+                          .update(tasks)
+                          .set({ releaseResult, updatedAt: new Date() })
+                          .where(eq(tasks.id, mergedTask.id));
+                        await commitMissionRelease(missionId);
+                        console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
+                      } catch (err) {
+                        await abandonMissionReleaseAttempt(
+                          missionId,
+                          'dispatch_failed',
+                          `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
+                        );
+                      }
                     }
                   }
                 }
-              }
-            } else {
-              // every_merge (or future values): dispatch on each merged PR
-              const { workflowFile, ref, inputs } = resolution.strategy;
-              const [owner, name] = repository.full_name.split('/');
-              try {
-                const dispatchResult = await dispatchWorkflowRelease(
-                  event.installation.id,
-                  owner,
-                  name,
-                  { workflowFile, ref, inputs: { force: 'false', ...inputs } },
-                );
-                const releaseResult: ReleaseResult = {
-                  status: 'pending_ci',
-                  message: `Release: dispatched ${workflowFile}@${ref} for ${repository.full_name} — awaiting workflow completion`,
-                  runId: dispatchResult.runId,
-                  runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
-                  runStatus: dispatchResult.runStatus,
-                  runConclusion: dispatchResult.runConclusion ?? null,
-                };
-                await db
-                  .update(tasks)
-                  .set({ releaseResult, updatedAt: new Date() })
-                  .where(eq(tasks.id, mergedTask.id));
-                console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id}, runId=${dispatchResult.runId ?? 'pending'})`);
-              } catch (err) {
-                console.error(`[webhook] Release dispatch failed for ${repository.full_name}:`, err);
+              } else {
+                // every_merge (or future values): dispatch on each merged PR
+                const { workflowFile, ref, inputs } = resolution.strategy;
+                const [owner, name] = repository.full_name.split('/');
+                try {
+                  const dispatchResult = await dispatchWorkflowRelease(
+                    event.installation.id,
+                    owner,
+                    name,
+                    { workflowFile, ref, inputs: { force: 'false', ...inputs } },
+                  );
+                  const releaseResult: ReleaseResult = {
+                    status: 'pending_ci',
+                    message: `Release: dispatched ${workflowFile}@${ref} for ${repository.full_name} — awaiting workflow completion`,
+                    runId: dispatchResult.runId,
+                    runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
+                    runStatus: dispatchResult.runStatus,
+                    runConclusion: dispatchResult.runConclusion ?? null,
+                  };
+                  await db
+                    .update(tasks)
+                    .set({ releaseResult, updatedAt: new Date() })
+                    .where(eq(tasks.id, mergedTask.id));
+                  console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id}, runId=${dispatchResult.runId ?? 'pending'})`);
+                } catch (err) {
+                  console.error(`[webhook] Release dispatch failed for ${repository.full_name}:`, err);
+                }
               }
             }
           }
@@ -1310,7 +1474,7 @@ async function fetchCIFailureLogs(
 async function maybeDispatchReviewer(
   installationId: number,
   repoFullName: string,
-  pr: { number: number; head: { sha: string }; html_url: string },
+  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string } },
   openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
 ): Promise<boolean> {
   try {
@@ -1326,18 +1490,33 @@ async function maybeDispatchReviewer(
     if (!task) return false;
 
     // Load mission separately to resolve merge policy
-    let mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null } | null = null;
+    type PolicyMission = {
+      mergePolicy?: import('@buildd/shared').MergePolicy | null;
+      workingBranch?: string | null;
+      integrationBranchEnabled?: boolean;
+    };
+    let mission: PolicyMission | null = null;
     if (task.missionId) {
       const row = await db.query.missions.findFirst({
         where: eq(missions.id, task.missionId),
-        columns: { mergePolicy: true },
+        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
       });
-      if (row) mission = row as { mergePolicy?: import('@buildd/shared').MergePolicy | null };
+      if (row) mission = row as PolicyMission;
     }
-    const basePolicy = resolvePolicy(workspace, mission);
+    // Take the base ref straight off the webhook payload rather than re-reading
+    // workers.prBaseRef: this runs on PR open, where the DB write from the create
+    // call and this event race. The payload is authoritative and race-free.
+    const basePolicy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
 
     // Fetch PR files first (needed for policyConfig override AND pre-flight check)
-    let prFiles: Array<{ filename: string }> = [];
+    let prFiles: Array<{
+      filename: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      patch?: string | null;
+      previous_filename?: string | null;
+    }> = [];
     try {
       const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
       if (Array.isArray(raw)) prFiles = raw;
@@ -1431,6 +1610,9 @@ async function maybeDispatchReviewer(
       installationId,
       repoFullName,
       policyConfig: policyConfig ?? undefined,
+      // Already fetched above for the policy override and the pre-flight
+      // check — passing it through saves a second identical GitHub call.
+      prFiles,
     });
 
     if (reviewerTask) {
@@ -1471,7 +1653,7 @@ async function maybeDispatchReviewer(
 async function maybeAutoMergeNoCiPr(
   installationId: number,
   repoFullName: string,
-  pr: { number: number; head: { sha: string } },
+  pr: { number: number; head: { sha: string }; base?: { ref: string } },
 ): Promise<void> {
   const linkedWorkspaces = await db.query.workspaces.findMany({
     where: workspaceRepoMatches(repoFullName),
@@ -1490,15 +1672,23 @@ async function maybeAutoMergeNoCiPr(
     }
 
     // Resolve merge policy with task/mission context
-    let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null } | undefined;
+    let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
     if (worker.taskId) {
       workerTask = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        with: { mission: { columns: { mergePolicy: true, requiresReview: true } } },
+        with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
         columns: { id: true, requiresReview: true },
       }) as typeof workerTask;
     }
-    const policy = resolvePolicy(workspace, workerTask?.mission ?? null, workerTask ?? null);
+    // Prefer the webhook payload's base ref (authoritative, no race with the
+    // create-PR write); fall back to the recorded column when this handler is
+    // reached from a path that carries no base.
+    const policy = resolvePolicy(
+      workspace,
+      workerTask?.mission ?? null,
+      workerTask ?? null,
+      { baseRef: pr.base?.ref ?? worker.prBaseRef },
+    );
 
     if (policy.tier !== 'auto-threshold') {
       // 'human': surface in escalation inbox (notification fired by check_suite or PR open handler)

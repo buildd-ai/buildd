@@ -2,7 +2,6 @@
  * Shared MCP tool handlers for Buildd.
  *
  * Used by:
- * - packages/core/buildd-mcp-server.ts (in-process SDK server)
  * - apps/web/src/app/api/mcp/route.ts (HTTP server)
  */
 
@@ -219,10 +218,6 @@ export const memoryActions = ['context', 'search', 'save', 'get', 'update', 'que
  * Every call site must keep these behind the same `dataClass !== 'sensitive'`
  * gate the deprecated buildd_memory tool uses; handleRecallAction /
  * handleLearnAction re-check `ctx.isSensitive` as defense in depth.
- *
- * The stdio server (buildd-mcp-server.ts) declares its own zod equivalents --
- * that transport builds schemas from zod, not raw JSON Schema, so it cannot
- * consume these.
  */
 export const recallToolDefinition = {
   name: "recall",

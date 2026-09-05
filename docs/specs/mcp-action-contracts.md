@@ -56,8 +56,7 @@ every supported action.
 - Auth: `apps/web/src/lib/api-auth.ts` — `authenticateApiKey()`
 
 **Out of scope**: OAuth 2.1 PKCE flow for claude.ai MCP clients (see
-`auth-oauth-boundaries.md`). The in-process stdio MCP server
-(`packages/core/buildd-mcp-server.ts`) used by the local runner.
+`auth-oauth-boundaries.md`).
 
 ---
 

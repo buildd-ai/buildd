@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -232,11 +233,9 @@ async function maybeCreateReleaseRow(params: {
   workspace: { name?: string | null; releaseConfig?: WorkspaceReleaseConfig | null; gitConfig?: WorkspaceGitConfig | null } | null | undefined;
   headSha: string | undefined;
   previousSha: string | undefined;
-  sourceRef: string | undefined;
-  prodBranch: string;
   repo: { fullName: string; installation: { installationId: number } };
 }): Promise<string | null> {
-  const { workspaceId, workspace, headSha, previousSha, sourceRef, prodBranch, repo } = params;
+  const { workspaceId, workspace, headSha, previousSha, repo } = params;
   if (!headSha) return null;
 
   const archetype = detectArchetype({
@@ -274,11 +273,8 @@ async function maybeCreateReleaseRow(params: {
       verificationStrategy: (workspace?.releaseConfig?.verificationUrl || archetype === 'gated') ? 'http' : 'none',
       triggeredBy: 'auto',
       deployedAt: new Date(),
-      sourceRef,
-      targetRef: prodBranch,
       headSha,
       previousSha,
-      strategy: 'branch_merge',
     })
     // Idempotent on the (workspace_id, head_sha) unique index — a retried
     // release of the same merge commit must not double-count.
@@ -344,18 +340,36 @@ export interface ReleaseInput {
   isMissionRelease?: boolean;
 }
 
-export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult> {
+/**
+ * `ReleaseResult` plus the reason a `skipped` was a *policy* refusal rather than
+ * a failure.
+ *
+ * Declared here rather than widened in `packages/core/db/schema.ts` on purpose:
+ * that interface is the `$type` of `tasks.releaseResult`, and editing it — even
+ * type-only — invites the "changed schema.ts without a migration" gate. This
+ * field never needs to persist; it exists so the caller can tell "this mission
+ * releases through its mission PR" from "the release broke", which reads
+ * identically today and puts a `Mission release attempt failed` note on the
+ * mission feed for the intended path.
+ */
+export type ReleaseOutcome = ReleaseResult & {
+  skipReason?: 'mission_integration_branch';
+};
+
+export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcome> {
   const { taskId, workerId, workspaceId, isMissionRelease = false } = input;
 
   // Fetch task release flag and worker PR info
   const [task, worker, workspace] = await Promise.all([
     db.query.tasks.findFirst({
       where: eq(tasks.id, taskId),
-      columns: { release: true },
+      columns: { release: true, missionId: true },
+      // Option A′ — see the integration-branch refusal below.
+      with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     }),
     db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      columns: { branch: true, prNumber: true, prUrl: true },
+      columns: { branch: true, prNumber: true, prUrl: true, prBaseRef: true },
     }),
     db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
@@ -369,6 +383,65 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   // Determine if release should run
   if (releaseFlag === 'false') {
     return { status: 'skipped', message: 'Release: not requested (suppressed by task flag)' };
+  }
+
+  // Option A′: a task of a mission using an integration branch must never
+  // release from its own branch.
+  //
+  // The worker-branch path below merges `worker.branch` directly into the prod
+  // branch. Under A′ a mission task's branch is cut from the integration branch,
+  // so that merge would carry the task's commits PLUS every sibling commit
+  // already sitting on the integration branch and not yet on trunk — shipping
+  // unreviewed work to production and bypassing the mission PR, which is the one
+  // human gate A′ exists to create. It routes around exactly the control it was
+  // built to add.
+  //
+  // The mission's work reaches production the normal way: the mission PR merges
+  // into trunk, and the workspace's trunk→prod release flow ships it. This
+  // refusal is a `skipped`, which the caller records as a refusal rather than a
+  // release (see mission-release.ts's two-phase claim), so it is visible rather
+  // than silent.
+  if (isMissionIntegrationBase({ baseRef: worker?.prBaseRef, mission: task?.mission })) {
+    return {
+      status: 'skipped',
+      message:
+        `Release: task PR targets the mission integration branch `
+        + `(${task?.mission?.workingBranch ?? 'unknown'}) — the mission PR is the release unit, not this task.`,
+      skipReason: 'mission_integration_branch',
+    };
+  }
+
+  // Second arm: the release SOURCE must never be the integration branch itself.
+  //
+  // The arm above asks "where does this task's PR land", which catches a
+  // deliverable task of an A′ mission. It says nothing about the mission's own
+  // bookkeeping owner row, whose `prBaseRef` is TRUNK — the mission PR's base —
+  // while its `workers.branch` IS the integration branch. The worker-branch path
+  // below would then mergeIntoProd(worker.branch): `mission/<slug>` straight into
+  // the prod branch, bypassing both the mission PR and trunk, carrying every
+  // sibling commit on that branch to production unreviewed.
+  //
+  // Reachable today, and nondeterministically so: attemptMissionRelease releases
+  // through the mission's most recently updated completed task that has a worker
+  // (`tasks.updatedAt desc`), so whether a mission hit the arm above or this
+  // direct-to-prod merge depended on which row that ordering surfaced.
+  //
+  // `isMissionIntegrationBase` reads oddly with a branch in the `baseRef` slot,
+  // but it is exactly the question being asked — "is this ref this mission's
+  // integration branch" — and it is the authoritative form, comparing against
+  // `missions.workingBranch` rather than pattern-matching a name. It is also
+  // flag-gated, so a mission that never opted in is untouched even if its working
+  // branch is named `mission/…`. (Where the mission row is not in scope, the
+  // shape fallback is `looksLikeMissionIntegrationBranch` from the same module.)
+  if (isMissionIntegrationBase({ baseRef: worker?.branch, mission: task?.mission })) {
+    return {
+      status: 'skipped',
+      message:
+        `Release: the release source is the mission integration branch `
+        + `(${worker?.branch}) — it reaches production through the mission PR into `
+        + `trunk, never by a direct merge to the prod branch.`,
+      skipReason: 'mission_integration_branch',
+    };
   }
 
   // Trigger policy: governs cadence. Per-task releases check this; mission-
@@ -523,7 +596,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     mergedAt = new Date().toISOString();
     mergeSha = mergeResp.sha as string | undefined;
 
-    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, sourceRef: branchMerge.releaseBranch, prodBranch, repo });
+    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, repo });
   } else if (worker?.branch) {
     // Worker-branch path: merge the worker's feature branch into prodBranch
 
@@ -553,7 +626,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     mergedAt = new Date().toISOString();
     mergeSha = mergeResult.sha;
 
-    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, sourceRef: worker.branch, prodBranch, repo });
+    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, repo });
   }
 
   // Step 2: Poll Vercel for deployment

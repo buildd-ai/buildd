@@ -15,6 +15,7 @@
 
 import type { CbmMetrics } from './types.js';
 import { join } from 'path';
+import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 
 import { CBM_BINARY_PATH } from './bwrap-mount-allowlist';
 
@@ -109,6 +110,22 @@ export interface CbmContext {
   worktreePath: string | undefined;
   /** Absolute path of the base clone the worktree belongs to — the path a shared seed is indexed at. */
   repoPath?: string;
+  /**
+   * The ref this task's worktree was actually cut from — `origin/<default>` for a
+   * trunk task, the mission integration branch for a mission task that opted in.
+   * Resolved, never assumed: it comes from setupWorktree's own answer, so it
+   * cannot drift from the branch that really exists.
+   *
+   * Undefined means "not resolved", which is a real state (a worker with no
+   * worktree, or a caller that has not been threaded yet) and is handled by the
+   * null-base-ref rule in seedRecordPath rather than guessed at.
+   */
+  baseRef?: string;
+  /**
+   * The repo's default base (e.g. `origin/main`). Used ONLY to recognise that
+   * `baseRef` is the default one — see seedBaseRefFor.
+   */
+  defaultBaseRef?: string;
   isCodexTask: boolean;
   /** True when the role's DB record has mcpServers['codebase-memory'] === false. */
   cbmRoleDisabled: boolean;
@@ -128,6 +145,17 @@ export interface CbmActivation {
   skipBootstrapIndex?: boolean;
   /** CBM project key the seed is indexed under (shared mode only). */
   cbmProject?: string;
+  /**
+   * Set when a seed for this repo EXISTS but was built from a different base, so
+   * it was refused. Both refs are carried because "refused a seed" is only
+   * actionable if you can see which base was wanted and which was on offer.
+   *
+   * This exists as a value rather than only a log line because a silent refusal
+   * and a silent stale hit look identical from outside, and this repo has a
+   * documented, repeated failure mode of paths that pass while measuring nothing.
+   * The caller logs it and it travels into the per-task CBM metrics.
+   */
+  seedBaseMismatch?: { wanted: string; found: string };
 }
 
 /**
@@ -178,12 +206,110 @@ export function cbmSeedRoot(): string {
   return process.env.BUILDD_CBM_SEED_ROOT || join(homedir(), '.buildd-cbm-seed');
 }
 
-/** Stable, readable, collision-free seed path for a repo. */
-export function cbmSeedPathFor(repoPath: string): string {
+/**
+ * One logical base ref, one spelling.
+ *
+ * The runner resolves a base as `origin/<x>` (resolveWorktreeBase), a mission row
+ * carries the bare branch name, and git itself will hand back
+ * `refs/remotes/origin/<x>`. Those are one base, and keying on the raw string
+ * would make two of the three spellings miss a seed that exists — a miss is
+ * survivable (it indexes) but it silently throws away the whole point of the
+ * shared cache, so collapse them here instead.
+ *
+ * Returns `undefined` for absent/blank input rather than `''`: "unknown base" is
+ * a distinct state with its own rule (see seedRecordPath), and an empty string
+ * would key somewhere real.
+ */
+export function normalizeBaseRef(ref: string | null | undefined): string | undefined {
+  if (typeof ref !== 'string') return undefined;
+  const trimmed = ref.trim().replace(/\/+$/, '');
+  if (!trimmed) return undefined;
+  const stripped = trimmed
+    .replace(/^refs\/remotes\//, '')
+    .replace(/^refs\/heads\//, '')
+    .replace(/^origin\//, '');
+  return stripped || undefined;
+}
+
+/**
+ * Which seed slot a task's base belongs in.
+ *
+ * The default branch's seed lives in the LEGACY UNKEYED slot, not in a composite
+ * one. That is not a special case bolted on — it is the on-disk reality of every
+ * already-seeded host, where the one record per repo describes the default branch.
+ * Collapsing the default here means:
+ *   - a trunk task keeps hitting the seed it hits today, with no migration and no
+ *     re-indexing of the whole fleet, and
+ *   - a task whose base ref could not be resolved lands in the same slot as a
+ *     trunk task, which is the correct degradation because trunk is what an
+ *     unresolved base almost always is.
+ *
+ * A COMPOSITE SLOT IS FOR A MISSION INTEGRATION BRANCH, and the predicate says so
+ * rather than saying "not the default". Those two are very different sets, and the
+ * difference is not academic: `worktreeBaseRef` is
+ * `origin/<context.resumeBranch ?? context.baseBranch>` (resolveWorktreeBase), and
+ * four ordinary paths declare a non-trunk base with no A′ flag in sight — a CI
+ * retry and any resumed attempt (`ci-retry.ts` sets both fields to the previous
+ * worker's `buildd/…` branch), a stacked plan phase (`approve-plan.ts` resolves the
+ * predecessor's branch into `context.baseBranch`), and every mission
+ * command-criterion verify task.
+ *
+ * Giving a throwaway `buildd/…` branch its own slot is wrong in both directions:
+ *   - READ: it misses the shared trunk seed it used to hit and pays a full
+ *     bootstrap index, while the log line reads like a correct safety refusal.
+ *   - WRITE: the claim-path refresh then indexes a NEW PERMANENT CBM project for a
+ *     branch that is deleted on merge, and the seeder prunes nothing. It also
+ *     loosens the concurrency bound — the cooldown admits one seeder per key, so
+ *     N declared bases admit N simultaneous full indexes on one host.
+ *
+ * A mission integration branch has none of those properties: it is shared by the
+ * mission's tasks, long-lived, and genuinely divergent from trunk because siblings
+ * keep merging into it — which is precisely why the trunk graph is the wrong answer
+ * for it and worth a slot of its own.
+ *
+ * The runner is not told which mission a task belongs to (nothing on the claimed
+ * worker payload carries `missionId` or the mission's working branch), so the
+ * question is answered by the shared name predicate in
+ * `@buildd/core/mission-integration` — the same one the server uses to decide
+ * whether a merge is worth announcing as a base advance. Name-based, but it is the
+ * one generator of those names (`mission-run.ts`), and being wrong here costs a
+ * cache slot, not a correctness gate.
+ *
+ * Returns undefined for "the unkeyed slot".
+ */
+export function seedBaseRefFor(input: {
+  baseRef?: string | null;
+  defaultBaseRef?: string | null;
+}): string | undefined {
+  const base = normalizeBaseRef(input.baseRef);
+  if (base === undefined) return undefined;
+  const dflt = normalizeBaseRef(input.defaultBaseRef);
+  if (dflt !== undefined && dflt === base) return undefined;
+  // Normalized first: the predicate matches the `mission/` prefix, and the raw
+  // ref arrives as `origin/mission/…` or `refs/remotes/origin/mission/…`.
+  return looksLikeMissionIntegrationBranch(base) ? base : undefined;
+}
+
+/**
+ * Stable, readable, collision-free seed path for a repo at a base ref.
+ *
+ * Per base, not per repo: CBM keys a project by the absolute path it was indexed
+ * at, so two bases sharing one seed checkout would index as a SINGLE project and
+ * overwrite each other — the mission seed clobbering the trunk seed and back
+ * again on every refresh, with both recorded as valid.
+ *
+ * An absent base ref yields the pre-P9 path unchanged, so seeds already on disk
+ * stay usable.
+ */
+export function cbmSeedPathFor(repoPath: string, baseRef?: string | null): string {
   const { createHash } = require('crypto') as typeof import('crypto');
   const { basename } = require('path') as typeof import('path');
   const normalized = repoPath.replace(/\/+$/, '');
-  const hash = createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+  const base = normalizeBaseRef(baseRef);
+  const hash = createHash('sha1')
+    .update(base === undefined ? normalized : `${normalized}\n${base}`)
+    .digest('hex')
+    .slice(0, 12);
   return join(cbmSeedRoot(), `${basename(normalized) || 'repo'}-${hash}`);
 }
 
@@ -200,14 +326,32 @@ export interface CbmSeedRecord {
 }
 
 /**
- * Where the seed record for a repo lives.
+ * Where the seed record for a repo AT A BASE REF lives.
  *
- * Keyed by a hash of the repo path so a record can be found without guessing
- * CBM's slug rules.
+ * Keyed by a hash of `(repoPath, baseRef)` so a record can be found without
+ * guessing CBM's slug rules, and so a seed built from one base cannot answer a
+ * request for another.
+ *
+ * THE NULL/UNKNOWN BASE REF RULE, in one place because three call sites depend on
+ * it: an absent or unresolvable `baseRef` reads and writes the LEGACY, UNKEYED
+ * slot — byte-identical to the pre-P9 path (a hash of the repo path alone). That
+ * degrades to exactly today's behaviour: the default-branch seed is found and the
+ * bootstrap index is skipped, as it is on every seeded host right now.
+ *
+ * The rule is deliberately one-directional. A NAMED base ref only ever hits a
+ * seed recorded for that same named ref; it never falls back to the legacy slot.
+ * That fallback is precisely the false cache hit P9 exists to remove — it is what
+ * hands a mission task a trunk graph together with `skipBootstrapIndex: true`, so
+ * the task neither has a correct graph nor indexes one for itself.
  */
-function seedRecordPath(repoPath: string): string {
+function seedRecordPath(repoPath: string, baseRef?: string | null): string {
   const { createHash } = require('crypto') as typeof import('crypto');
-  const hash = createHash('sha1').update(repoPath.replace(/\/+$/, '')).digest('hex').slice(0, 16);
+  const repo = repoPath.replace(/\/+$/, '');
+  const base = normalizeBaseRef(baseRef);
+  const hash = createHash('sha1')
+    .update(base === undefined ? repo : `${repo}\n${base}`)
+    .digest('hex')
+    .slice(0, 16);
   return join(sharedCbmCacheDir(), 'seeds', `${hash}.json`);
 }
 
@@ -221,20 +365,49 @@ function seedRecordPath(repoPath: string): string {
  * as "project not found or not indexed" at query time, on the agent's turn, with
  * no signal at activation. Recording the fact removes the guess entirely.
  */
-export function writeCbmSeedRecord(repoPath: string, record: CbmSeedRecord): void {
+export function writeCbmSeedRecord(
+  repoPath: string,
+  record: CbmSeedRecord,
+  opts: {
+    /**
+     * Also fill the legacy unkeyed slot, so a task whose base ref could not be
+     * resolved still finds this seed (today's behaviour).
+     *
+     * TRUE by default, and that default is chosen to fail safe: the only
+     * production writer is scripts/cbm-seed.ts, and if base-ref plumbing were
+     * ever mis-wired the worst case is the pre-P9 behaviour rather than every
+     * worker on the fleet losing the seed and paying the ~20s index again.
+     *
+     * A seeder targeting a mission integration branch MUST pass false — writing
+     * a mission graph into the slot that unknown-base lookups read is the same
+     * stale-graph defect, just pointed the other way.
+     */
+    alsoDefaultSlot?: boolean;
+  } = {},
+): void {
   const { mkdirSync, writeFileSync } = require('fs') as typeof import('fs');
-  const path = seedRecordPath(repoPath);
   mkdirSync(join(sharedCbmCacheDir(), 'seeds'), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`);
+  const body = `${JSON.stringify(record, null, 2)}\n`;
+  writeFileSync(seedRecordPath(repoPath, record.ref), body);
+  if (opts.alsoDefaultSlot !== false) {
+    writeFileSync(seedRecordPath(repoPath, undefined), body);
+  }
 }
 
-export function readCbmSeedRecord(repoPath: string): CbmSeedRecord | null {
+export function readCbmSeedRecord(repoPath: string, baseRef?: string | null): CbmSeedRecord | null {
   const { existsSync, readFileSync } = require('fs') as typeof import('fs');
-  const path = seedRecordPath(repoPath);
+  const path = seedRecordPath(repoPath, baseRef);
   if (!existsSync(path)) return null;
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as CbmSeedRecord;
-    return parsed && typeof parsed.project === 'string' ? parsed : null;
+    if (!parsed || typeof parsed.project !== 'string') return null;
+    // Defence in depth: the record must AGREE with the base ref it was found
+    // under. The path hash already encodes the ref, so a disagreement means a
+    // hand-edited or hash-colliding file — and serving that is the stale-graph
+    // failure again. Only checkable when a ref was named.
+    const wanted = normalizeBaseRef(baseRef);
+    if (wanted !== undefined && normalizeBaseRef(parsed.ref) !== wanted) return null;
+    return parsed;
   } catch {
     return null; // corrupt record: fall back to a per-worker index
   }
@@ -357,9 +530,19 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
   // The seed is looked up through its record, not by deriving a key from the repo
   // path. Deriving matched a db indexed from the BASE CLONE, whose checkout tracks
   // a stale leftover branch — that is the bug this replaces.
+  //
+  // Keyed on (repoPath, baseRef). A seed built from trunk is not an answer about a
+  // mission integration branch: sibling tasks have been merging into that base, so
+  // the trunk graph describes precisely the code that has since changed. Serving it
+  // would be bad enough on its own, but a hit also sets skipBootstrapIndex, so the
+  // task would get no graph of its own either — a confidently wrong answer instead
+  // of a missing one, which is the worse failure. An agent with no index greps; an
+  // agent with a stale index believes it.
+  let seedBaseMismatch: CbmActivation['seedBaseMismatch'];
+  const seedBaseRef = seedBaseRefFor(ctx);
   if (ctx.repoPath) {
     const shared = sharedCbmCacheDir();
-    const record = readCbmSeedRecord(ctx.repoPath);
+    const record = readCbmSeedRecord(ctx.repoPath, seedBaseRef);
     if (record && pathExists(join(shared, `${record.project}.db`))) {
       return {
         enforced: true,
@@ -371,6 +554,18 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
         cbmProject: record.project,
       };
     }
+
+    // Missed. Distinguish "no seed at all" from "a seed for another base", because
+    // only the second says the shared cache is working and merely pointed
+    // elsewhere — and only the second is worth a refresh for this base.
+    const wanted = seedBaseRef;
+    if (wanted !== undefined) {
+      const fallbackRecord = readCbmSeedRecord(ctx.repoPath, undefined);
+      const found = normalizeBaseRef(fallbackRecord?.ref);
+      if (found !== undefined && found !== wanted) {
+        seedBaseMismatch = { wanted, found };
+      }
+    }
   }
 
   const cbmCacheDir = `/tmp/cbm-${ctx.workerId}`;
@@ -379,6 +574,7 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
     cbmBinaryPath: CBM_BINARY_PATH,
     cbmCacheDir,
     cbmRuntimeDir: cbmRuntimeDirFor(cbmCacheDir),
+    ...(seedBaseMismatch ? { seedBaseMismatch } : {}),
   };
 }
 
@@ -396,7 +592,70 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
  * Deduped per repo per process so a burst of claims does not spawn a burst of
  * indexers; the HEAD stamp covers the cross-process case.
  */
-const seedRefreshAttempts = new Map<string, number>();
+const seedRefreshAttempts = new Map<string, SeedLease>();
+
+/**
+ * Refreshes currently running, keyed the same way as the records themselves.
+ *
+ * Distinct from the cooldown, which is a rate limit on the CLAIM path. This is a
+ * concurrency bound on the base-advance path, where the cooldown must not apply:
+ * a merge into the integration branch means the base really moved and the seed
+ * really is stale, so suppressing it for ten minutes would leave every sibling
+ * claiming against a graph one merge behind.
+ *
+ * A request that finds the slot taken is DROPPED, not queued. Queueing would be
+ * wrong as well as unbounded: the seeder re-reads the ref's current sha when it
+ * starts, so the in-flight run already subsumes every advance that happened while
+ * it was waiting. A queue would just re-index the same tree N times.
+ *
+ * A LEASE, not a flag — it stores when the spawn happened and lapses after
+ * SEED_RETRY_COOLDOWN_MS. The slot is normally released by the child's `exit`
+ * listener, but that signal is not guaranteed: the child is detached, `on` is
+ * optional on the injected spawn, and a wedged seeder may never exit at all. A
+ * slot released only by a callback is the permanent per-process latch this file
+ * already had once (see SEED_RETRY_COOLDOWN_MS) — "no seed, no retry, no log line
+ * until someone restarts the runner". Expiry makes it converge either way, which
+ * is the direction that fails safe.
+ *
+ * Because the lease LAPSES, two spawns for one key can legitimately be alive at
+ * once, so the record names its HOLDER as well as its time. Release is keyed on
+ * `(key, token)`: a wedged seeder that finally exits after its lease lapsed must
+ * not delete the successor's lease, or the next request spawns a SECOND
+ * concurrent seeder for the same `(repoPath, baseRef)` — two indexers over one
+ * seed clone under one fixed CBM_RUNTIME_DIR, which is contention this fleet has
+ * already been bitten by.
+ */
+const seedRefreshInFlight = new Map<string, SeedLease>();
+
+/**
+ * A lease record: WHEN it was taken (expiry) and WHO took it (release).
+ *
+ * The token is a process-local monotonic counter rather than a timestamp — two
+ * spawns within one millisecond must still be distinguishable, and an injected
+ * clock is free to stand still.
+ */
+interface SeedLease {
+  token: number;
+  at: number;
+}
+
+let seedLeaseCounter = 0;
+
+/**
+ * Drop a lease / cooldown record only while we are still its holder.
+ *
+ * A no-op when someone else holds it — which is the whole point: our exit says
+ * nothing about their run.
+ */
+function releaseSeedRecord(map: Map<string, SeedLease>, key: string, token: number): void {
+  if (map.get(key)?.token === token) map.delete(key);
+}
+
+/** The one composite key. Records, cooldown and in-flight slot must never disagree. */
+function seedRefreshKey(repoPath: string, baseRef?: string | null): string {
+  const base = normalizeBaseRef(baseRef);
+  return base === undefined ? repoPath : `${repoPath}\n${base}`;
+}
 
 /**
  * Every reason a refresh did not spawn, as a value the caller can log.
@@ -411,9 +670,11 @@ const seedRefreshAttempts = new Map<string, number>();
 export type SeedRefreshOutcome =
   | 'spawned'
   | 'no_repo_path'
+  | 'no_base_ref'
   | 'binary_absent'
   | 'script_absent'
   | 'recently_attempted'
+  | 'already_in_flight'
   | 'spawn_failed';
 
 /**
@@ -461,6 +722,19 @@ export function spawnCbmSeedRefresh(
     runtime?: string;
     now?: () => number;
     openLogFd?: () => number | null;
+    /**
+     * The base the seed must describe. Omitted = the repo's default branch, which
+     * is the pre-P9 behaviour and still what the claim path asks for on a
+     * non-mission task.
+     */
+    baseRef?: string;
+    /**
+     * Skip the claim-path cooldown. For an event that means "the base moved"
+     * (a task PR merged into the integration branch), where the cooldown would
+     * be suppressing exactly the refresh that is now required. Still bounded by
+     * the in-flight slot.
+     */
+    ignoreCooldown?: boolean;
   } = {},
 ): SeedRefreshOutcome {
   const pathExists = deps.pathExists ?? ((p: string) => {
@@ -472,19 +746,40 @@ export function spawnCbmSeedRefresh(
   if (!repoPath) return 'no_repo_path';
   if (!pathExists(CBM_BINARY_PATH)) return 'binary_absent';
 
-  const lastAttempt = seedRefreshAttempts.get(repoPath);
-  if (lastAttempt !== undefined && now() - lastAttempt < SEED_RETRY_COOLDOWN_MS) {
-    return 'recently_attempted';
+  const key = seedRefreshKey(repoPath, deps.baseRef);
+
+  if (!deps.ignoreCooldown) {
+    const lastAttempt = seedRefreshAttempts.get(key);
+    if (lastAttempt !== undefined && now() - lastAttempt.at < SEED_RETRY_COOLDOWN_MS) {
+      return 'recently_attempted';
+    }
+  }
+
+  // Bound: at most one refresh in flight per (repoPath, baseRef). Dropped, not
+  // queued — see seedRefreshInFlight. The lease shares SEED_RETRY_COOLDOWN_MS
+  // deliberately: "an attempt older than the cooldown no longer counts" is one
+  // rule, whether or not we ever saw the child exit.
+  const inFlightSince = seedRefreshInFlight.get(key);
+  if (inFlightSince !== undefined && now() - inFlightSince.at < SEED_RETRY_COOLDOWN_MS) {
+    return 'already_in_flight';
   }
 
   const script = deps.scriptPath ?? join(import.meta.dir, '..', 'scripts', 'cbm-seed.ts');
   if (!pathExists(script)) return 'script_absent';
 
-  seedRefreshAttempts.set(repoPath, now());
+  const baseRefArgs = deps.baseRef ? ['--base-ref', deps.baseRef] : [];
+  // One token for this attempt, stamped on both records, so every later release
+  // can ask "is this still mine?" instead of assuming it is.
+  const token = ++seedLeaseCounter;
+  seedRefreshAttempts.set(key, { token, at: now() });
+  seedRefreshInFlight.set(key, { token, at: now() });
   try {
     const spawn = deps.spawnProcess ?? (require('child_process') as typeof import('child_process')).spawn;
     const logFd = (deps.openLogFd ?? openSeedLogFd)();
-    const child = spawn(deps.runtime ?? process.execPath, [script, repoPath], {
+    // The base ref goes through VERBATIM, not normalized: the seeder resolves it
+    // with git, which needs the spelling that actually exists as a ref. Only the
+    // in-process key is normalized.
+    const child = spawn(deps.runtime ?? process.execPath, [script, repoPath, ...baseRefArgs], {
       detached: true,
       // stdin closed, stdout+stderr to the seed log. Was 'ignore', which threw
       // away the only description of why a seed did not happen.
@@ -494,23 +789,67 @@ export function spawnCbmSeedRefresh(
     // seeder must not hold the cooldown, or one early failure suppresses every
     // later attempt for the life of the process.
     child.on?.('exit', (code: number | null) => {
+      // Release OUR slot. A leaked slot is the permanent-latch bug the cooldown
+      // replaced, and on an advancing base it would freeze the seed at the first
+      // advance for the life of the runner process — but releasing someone
+      // else's is the mirror-image bug: a wedged child exiting long after its
+      // lease lapsed would hand the key to a second concurrent seeder.
+      releaseSeedRecord(seedRefreshInFlight, key, token);
       if (code !== 0) {
-        seedRefreshAttempts.delete(repoPath);
-        console.warn(`[cbm-seed] seeder for ${repoPath} exited ${code} — see ${cbmSeedLogPath()}`);
+        // Same rule for the cooldown: clearing it must not clear a newer
+        // caller's, or one wedged child re-opens the burst window.
+        releaseSeedRecord(seedRefreshAttempts, key, token);
+        console.warn(`[cbm-seed] seeder for ${key.replace('\n', ' @ ')} exited ${code} — see ${cbmSeedLogPath()}`);
       }
     });
     child.unref?.();
     return 'spawned';
   } catch {
     // A failed refresh must never affect the worker — it just means no seed yet.
-    seedRefreshAttempts.delete(repoPath);
+    // Holder-checked like every other release, even though nothing can have
+    // taken the key since the two `set`s above: one rule, no exceptions to audit.
+    releaseSeedRecord(seedRefreshAttempts, key, token);
+    releaseSeedRecord(seedRefreshInFlight, key, token);
     return 'spawn_failed';
   }
+}
+
+/**
+ * The integration branch advanced — refresh that base's seed now.
+ *
+ * Entry point for "a task PR merged into the mission integration branch". The base
+ * has moved, so the seed for THAT base (and only that base) is stale. Distinct
+ * from the claim-path refresh in two ways: it names the base ref explicitly, and
+ * it is not subject to the claim-path cooldown, because the cooldown exists to
+ * absorb bursts of claims and this is a real state change.
+ *
+ * Still bounded — one in flight per `(repoPath, baseRef)`, second request dropped.
+ * The seeder itself does the incremental work (detect_changes over a full
+ * re-index) and exits immediately when the ref has not actually moved, so calling
+ * this speculatively is cheap and calling it on every merge is correct.
+ *
+ * Fire-and-forget by construction: it returns an outcome to LOG, never a promise
+ * to await. Nothing on a worker's critical path may block on indexing.
+ */
+export function refreshCbmSeedForBaseAdvance(
+  input: { repoPath: string; baseRef: string },
+  deps: Parameters<typeof spawnCbmSeedRefresh>[1] = {},
+): SeedRefreshOutcome {
+  // An advance with no resolvable base is not actionable: refreshing "the default
+  // slot" instead would rebuild the trunk seed in response to a mission merge,
+  // which is both useless and misleading in the log.
+  if (normalizeBaseRef(input.baseRef) === undefined) return 'no_base_ref';
+  return spawnCbmSeedRefresh(input.repoPath, {
+    ...deps,
+    baseRef: input.baseRef,
+    ignoreCooldown: true,
+  });
 }
 
 /** Test seam: forget which repos have already been asked to refresh. */
 export function resetCbmSeedRefreshState(): void {
   seedRefreshAttempts.clear();
+  seedRefreshInFlight.clear();
 }
 
 /**

@@ -1030,7 +1030,15 @@ export default async function TaskDetailPage({
 
         {/* Dependencies (dependsOn) */}
         {depTasks.length > 0 && (() => {
-          const allResolved = depTasks.every(d => d.status === 'completed');
+          // Reuses the already-gate-checked list rather than re-deriving it.
+          // The local copy here was `every(d => d.status === 'completed')`,
+          // which diverged from the real gate in both directions: it withheld
+          // the checkmark for a satisfying `cancelled` dep, and — worse — it
+          // showed "All dependencies resolved" for a `completed` dep whose PR
+          // was still open, which the gate treats as blocking. A green
+          // checkmark on a task that cannot be claimed is the phantom blocker
+          // inverted, and this file already imported the shared predicate.
+          const allResolved = unresolvedDeps.length === 0;
           return (
             <div className="mb-6">
               <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">

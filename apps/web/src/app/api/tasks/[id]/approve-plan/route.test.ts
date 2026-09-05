@@ -34,6 +34,10 @@ mock.module('@buildd/core/db', () => ({
     query: {
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workspaces: { findFirst: mock(() => Promise.resolve(null)) },
+      // approvePlan reads the mission to resolve the Option A′ integration base.
+      // Null = a mission that has not opted in, which is the default and keeps
+      // these cases asserting the pre-A′ shape.
+      missions: { findFirst: mock(() => Promise.resolve(null)) },
     },
     insert: (_table: any) => ({
       values: (vals: any) => {
@@ -62,6 +66,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', parentTaskId: 'parentTaskId' },
   workspaces: { id: 'id' },
+  missions: { id: 'missions.id' },
 }));
 
 // Import handler AFTER mocks

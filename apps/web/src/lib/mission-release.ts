@@ -102,11 +102,30 @@ export async function abandonMissionReleaseAttempt(
   missionId: string,
   code: MissionReleaseFailure,
   reason: string,
+  /**
+   * Clear the claim without posting a `decision` note.
+   *
+   * For a *policy* refusal, not a failure. Under Option A′ an opted-in mission
+   * releases through its mission PR, so `executeRelease` refuses every
+   * per-task attempt by design — and the note said "Mission release attempt
+   * failed" on the intended path, every time completion was evaluated. A feed
+   * that cries failure on the happy path stops being read.
+   *
+   * The claim invariant is unchanged: `releaseAttemptedAt` is still cleared, so
+   * the mission can be released again. Only the note is suppressed, and the
+   * refusal is still logged.
+   */
+  quiet = false,
 ): Promise<void> {
   await db
     .update(missions)
     .set({ releaseAttemptedAt: null, updatedAt: new Date() })
     .where(and(eq(missions.id, missionId), isNull(missions.releasedAt)));
+
+  if (quiet) {
+    console.log(`[mission-release] mission ${missionId}: release refused by policy — ${code}: ${reason}`);
+    return;
+  }
 
   console.error(`[mission-release] mission ${missionId}: release attempt failed — ${code}: ${reason}`);
 
@@ -241,7 +260,14 @@ export async function fireMissionReleaseIfComplete(
       // `release` flag is 'inherit'), which is precisely the case the one-phase
       // claim used to burn silently.
       if (result.status === 'skipped') {
-        await abandonMissionReleaseAttempt(missionId, 'skipped', result.message);
+        await abandonMissionReleaseAttempt(
+          missionId,
+          'skipped',
+          result.message,
+          // A′ refusals are the designed path for an opted-in mission, so they
+          // clear the claim without a failure note on the mission feed.
+          result.skipReason === 'mission_integration_branch',
+        );
       } else {
         await commitMissionRelease(missionId);
       }

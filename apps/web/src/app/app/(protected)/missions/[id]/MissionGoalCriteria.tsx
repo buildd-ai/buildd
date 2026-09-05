@@ -70,7 +70,6 @@ function AddCriterionForm({ onAdd, onCancel }: {
   const [metricOp, setMetricOp] = useState<'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'>('gte');
   const [metricThreshold, setMetricThreshold] = useState('');
   const [metricUnit, setMetricUnit] = useState('');
-  const [requireBranchDeleted, setRequireBranchDeleted] = useState(false);
   const [description, setDescription] = useState('');
   const [notMechanizableReason, setNotMechanizableReason] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -82,7 +81,7 @@ function AddCriterionForm({ onAdd, onCancel }: {
   function buildCriterion(): GoalCriterion {
     const base = label ? { label } : {};
     if (type === 'all_prs_merged') {
-      return { type, ...base, requireBranchDeleted: requireBranchDeleted || undefined };
+      return { type, ...base };
     }
     if (type === 'no_open_tasks') return { type, ...base };
     if (type === 'artifact_exists') return { type, ...base, key: artifactKey || undefined, artifactType: artifactType || undefined };
@@ -247,18 +246,6 @@ function AddCriterionForm({ onAdd, onCancel }: {
             />
           </div>
         </>
-      )}
-
-      {type === 'all_prs_merged' && (
-        <label className="flex items-center gap-2 cursor-pointer pl-[4.5rem]">
-          <input
-            type="checkbox"
-            checked={requireBranchDeleted}
-            onChange={e => setRequireBranchDeleted(e.target.checked)}
-            className="rounded"
-          />
-          <span className="text-[12px] text-text-secondary">Require branch deleted</span>
-        </label>
       )}
 
       <div className="flex items-center gap-2">

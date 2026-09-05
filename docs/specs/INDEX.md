@@ -12,7 +12,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The buildd API MUST authenticate every request as either an api-key or an OAuth token, apply only that auth type's billing and concurrency limits, and reject ambiguous multi-workspace OAuth claims.
 - [Credential Isolation & MCP Injection Security Model](./credential-isolation.md) · @builder — verified 2026-07-21
   The runner MUST inject MCP connectors resolved from the task's own workspace, abort worker startup when a required connector is unreachable, and keep runner coordination secrets out of the agent subprocess.
-- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-08-30
+- [OAuth Provider & Signing Keys](./oauth-provider-and-jwks.md) · @max — verified 2026-09-05
   buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 
 ### billing (1)
@@ -40,12 +40,12 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [MCP Action Contracts](./mcp-action-contracts.md) · @max — verified 2026-09-03
   The MCP server at /api/mcp MUST expose buildd, recall, learn and the deprecated buildd_memory over stateless Streamable HTTP, authenticate every call with a Bearer key, and gate actions by token privilege.
-- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-08-30
+- [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
 ### missions (1)
 
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-01
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-05
   The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 
 ### releases (3)
@@ -100,7 +100,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-04
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-04
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-05
   Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 
 ## Superseded (1)

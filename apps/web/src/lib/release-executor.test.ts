@@ -23,11 +23,37 @@ const mockDbUpdateWhere = mock((_pred?: unknown) => ({ returning: mockDbUpdateRe
 const mockDbUpdateSet = mock((_values?: unknown) => ({ where: mockDbUpdateWhere }));
 const mockDbUpdate = mock((_table?: unknown) => ({ set: mockDbUpdateSet }));
 
+/**
+ * The QUERY ARGUMENTS, captured.
+ *
+ * The stubs below ignore what they are asked for, so a test that only checks the
+ * returned decision cannot tell a correct query from a broken one. That is not
+ * hypothetical here: deleting `prBaseRef`/`branch` from the workers `columns`, or
+ * the `with: { mission: … }` relation from the task query, makes
+ * `isMissionIntegrationBase` see undefined, the A′ refusal never fires, and every
+ * refusal test still passes — while a task branch cut off the integration branch
+ * merges straight into the prod branch. Capturing the args is what makes the
+ * selection itself testable. Recorded in the module mock rather than inside the
+ * `mock()` fns because tests reassign those with mockResolvedValue.
+ */
+let taskFindArgs: any[] = [];
+let workerFindArgs: any[] = [];
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      tasks: { findFirst: mockTasksFindFirst },
-      workers: { findFirst: mockWorkersFindFirst },
+      tasks: {
+        findFirst: (args?: any) => {
+          taskFindArgs.push(args);
+          return mockTasksFindFirst(args as never);
+        },
+      },
+      workers: {
+        findFirst: (args?: any) => {
+          workerFindArgs.push(args);
+          return mockWorkersFindFirst(args as never);
+        },
+      },
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
@@ -356,6 +382,8 @@ describe('executeRelease — trigger policy', () => {
     mockDbInsertReturning.mockResolvedValue([]);
     mockAttributeRelease.mockReset();
     mockDetectArchetype.mockReturnValue('none');
+    taskFindArgs = [];
+    workerFindArgs = [];
 
     // default: task with release='inherit', worker with branch
     mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
@@ -382,6 +410,280 @@ describe('executeRelease — trigger policy', () => {
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     expect(result.status).toBe('skipped');
     expect(result.message).toContain('on_mission_complete');
+  });
+
+  // ── Option A′: the integration branch is not a release source ─────────────
+  //
+  // The worker-branch path merges `worker.branch` straight into the prod branch.
+  // A mission task's branch is cut from the integration branch, so releasing
+  // from it would carry every sibling commit already on that branch and not yet
+  // on trunk — shipping unreviewed work to production and bypassing the mission
+  // PR, which is the one human gate A′ exists to create.
+
+  const OPTED_IN_MISSION = {
+    workingBranch: 'mission/checkout-arc-1a2b3c4d',
+    integrationBranchEnabled: true,
+  };
+
+  it('refuses to release a task whose PR targets the mission integration branch', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 7,
+      prUrl: 'https://example.test/pr/7',
+      prBaseRef: 'mission/checkout-arc-1a2b3c4d',
+    });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+  });
+
+  it('refuses even when isMissionRelease bypasses the trigger policy', async () => {
+    // isMissionRelease exists to bypass cadence, not to bypass safety. Under A′
+    // the mission's work reaches prod through the mission PR, never from a
+    // worker branch cut off the integration branch.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'on_mission_complete' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 7,
+      prUrl: 'https://example.test/pr/7',
+      prBaseRef: 'mission/checkout-arc-1a2b3c4d',
+    });
+
+    const result = await executeRelease({
+      taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true,
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+  });
+
+  it('still releases a mission task whose PR targets trunk', async () => {
+    // A task of an opted-in mission that nonetheless lands on trunk — the
+    // "nothing changes unless the base ref says so" guarantee.
+    //
+    // This test used to set `branch: 'mission/checkout-arc-1a2b3c4d'` and assert
+    // no refusal, i.e. it PINNED the hole the second arm below closes: a row
+    // whose base ref is trunk but whose branch IS the integration branch was
+    // released by merging that branch straight into prod. The branch here is now
+    // an ordinary task branch, which is what the assertion was ever about.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 9,
+      prUrl: 'https://example.test/pr/9',
+      prBaseRef: 'dev',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null); // stop past the refusal
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
+  it('still releases a task of a mission that has not opted in', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      release: 'inherit',
+      missionId: 'm-1',
+      mission: { ...OPTED_IN_MISSION, integrationBranchEnabled: false },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 7,
+      prUrl: 'https://example.test/pr/7',
+      prBaseRef: 'mission/checkout-arc-1a2b3c4d',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
+  /**
+   * ARM 2 — the release SOURCE must never be a mission integration branch.
+   *
+   * Arm 1 asks "does this task's PR target the integration branch", which catches
+   * a deliverable task of an A′ mission. It does not catch the mission's own
+   * bookkeeping owner row: that row's `prBaseRef` is TRUNK (the mission PR's base)
+   * while its `workers.branch` is the integration branch itself. The worker-branch
+   * path then calls mergeIntoProd(worker.branch) and merges `mission/<slug>`
+   * directly into the prod branch — bypassing both the mission PR and trunk, and
+   * shipping every sibling commit on that branch unreviewed.
+   *
+   * It is reachable: attemptMissionRelease picks the mission's most recently
+   * updated completed task that has a worker (`tasks.updatedAt desc`), so whether
+   * a mission got a refusal or a direct-to-prod merge of its integration branch
+   * depended on which row that ordering happened to surface. Nondeterministic
+   * release behaviour, worst outcome an unreviewed production deploy.
+   */
+  const MISSION_OWNER_ROW = {
+    branch: 'mission/checkout-arc-1a2b3c4d',
+    prNumber: 9,
+    prUrl: 'https://example.test/pr/9',
+    prBaseRef: 'dev', // the MISSION PR's base — trunk, so arm 1 says nothing
+  };
+
+  it('refuses when the release source branch IS the mission integration branch', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({ ...MISSION_OWNER_ROW });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+    // Names the branch, so the refusal is diagnosable from the feed alone.
+    expect(result.message).toContain('mission/checkout-arc-1a2b3c4d');
+  });
+
+  it('refuses the integration-branch source even under isMissionRelease', async () => {
+    // This is the path that actually fires it — the mission-complete hook.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'on_mission_complete' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({ ...MISSION_OWNER_ROW });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({
+      taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true,
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+  });
+
+  it('refuses the integration-branch source BEFORE the trigger policy can answer', async () => {
+    // Position matters: if the refusal moved below the trigger block, a
+    // trigger=every_merge workspace would fall straight through to the merge, and
+    // the only test coverage would be a trigger=manual skip that happens to look
+    // like a refusal. Pin the order by making the trigger permissive and asserting
+    // the message is the refusal, not a cadence skip.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'true', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({ ...MISSION_OWNER_ROW });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+    // No GitHub call was made — nothing was merged anywhere.
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+
+  it('releases from a mission-shaped branch when the mission never opted in', async () => {
+    // Flag-gated, like arm 1: a mission that never opted in behaves exactly as it
+    // did before A′ existed, even though its working branch is named `mission/…`.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      release: 'inherit',
+      missionId: 'm-1',
+      mission: { ...OPTED_IN_MISSION, integrationBranchEnabled: false },
+    });
+    mockWorkersFindFirst.mockResolvedValue({ ...MISSION_OWNER_ROW });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
+  it('releases from a task branch of an opted-in mission that is not the integration branch', async () => {
+    // The arm must not swallow ordinary releases: only the integration branch
+    // itself is refused as a source.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat', prNumber: 9, prUrl: 'https://example.test/pr/9', prBaseRef: 'dev',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
+  // ── The refusal's INPUTS, not just its output ──────────────────────────────
+  // Every refusal test above still passes if the columns feeding the predicate
+  // are dropped from the query, because the stubs ignore their arguments. These
+  // two assert the selection itself.
+
+  it('selects the worker columns the refusal reads', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({ ...MISSION_OWNER_ROW });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(workerFindArgs).toHaveLength(1);
+    // Arm 1 reads prBaseRef; arm 2 reads branch. A column that is not selected
+    // arrives as undefined and the predicate silently answers false.
+    expect(workerFindArgs[0].columns.prBaseRef).toBe(true);
+    expect(workerFindArgs[0].columns.branch).toBe(true);
+  });
+
+  it("selects the mission's integration-branch opt-in with the task", async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({ ...MISSION_OWNER_ROW });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(taskFindArgs).toHaveLength(1);
+    // Without the relation the predicate has no mission and refuses nothing —
+    // the flag gate degrades to "always allow", which is the wrong direction.
+    expect(taskFindArgs[0].with.mission.columns.integrationBranchEnabled).toBe(true);
+    expect(taskFindArgs[0].with.mission.columns.workingBranch).toBe(true);
+  });
+
+  it('still releases when the PR base ref is unknown', async () => {
+    // Null base ref means "we do not know where this PR lands". It must not
+    // silently suppress a release the workspace asked for.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat', prNumber: 7, prUrl: 'https://example.test/pr/7', prBaseRef: null,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
   });
 
   it('proceeds when trigger=every_merge (default behavior)', async () => {
@@ -500,9 +802,6 @@ describe('executeRelease — releases row creation', () => {
       triggeredBy: 'auto',
       headSha: 'headsha222',
       previousSha: 'prevsha111',
-      targetRef: 'main',
-      sourceRef: 'buildd/my-feat',
-      strategy: 'branch_merge',
     }));
   });
 
@@ -633,12 +932,8 @@ describe('executeRelease — releases row creation', () => {
       workspaceId: 'ws-1',
       archetype: 'gated',
       state: 'deploying',
-      strategy: 'branch_merge',
       headSha: 'mergedmain222',
       previousSha: 'prevmain111',
-      // sourceRef is the release branch, not a worker branch
-      sourceRef: 'dev',
-      targetRef: 'main',
       // Matches api/releases/trigger: gated releases are HTTP-verifiable. Still
       // inert unless the workspace configures a verificationUrl.
       verificationStrategy: 'http',

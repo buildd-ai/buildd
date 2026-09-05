@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { roleModelLabel } from '@/lib/model-presentation';
+import { SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 
 interface Skill {
   id: string;
@@ -143,10 +144,10 @@ export function SkillList({ workspaceId, initialSkills }: Props) {
                 {modelLabel}
               </span>
 
-              {/* Tool count */}
+              {/* Subagent tool count — scoped, not a restriction on the role's agent */}
               {toolCount > 0 && (
-                <span className="text-[11px] text-text-muted flex-shrink-0">
-                  {toolCount} tool{toolCount !== 1 ? 's' : ''}
+                <span className="text-[11px] text-text-muted flex-shrink-0" title={SUBAGENT_TOOLS_NOTE}>
+                  {subagentToolsSummary(skill.allowedTools)}
                 </span>
               )}
 
