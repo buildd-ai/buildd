@@ -18,6 +18,17 @@ let workerRows: any[] = [];
 let artifactRows: any[] = [];
 const updateCalls: any[] = [];
 const insertedRows: any[] = [];
+/**
+ * The `columns` selections each query asked for.
+ *
+ * Captured because the db mock cannot enforce them: it returns whatever the test
+ * put in `missionRow` / `workerRows` regardless of what was selected, so a
+ * behavioural assertion would pass even if the route stopped selecting a column
+ * production depends on. Asserting the selection is the only non-vacuous way to
+ * pin the plumbing.
+ */
+const missionFindArgs: any[] = [];
+const workerFindArgs: any[] = [];
 
 const mockResolveCommandCriterion = mock((_opts: any) => Promise.resolve({
   kind: 'pending', taskId: 'verify-task-1', evidence: 'Verification task verify-t dispatched: bun test',
@@ -55,9 +66,9 @@ mock.module('@buildd/core/db/schema', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      missions: { findFirst: () => Promise.resolve(missionRow) },
+      missions: { findFirst: (args: any) => { missionFindArgs.push(args); return Promise.resolve(missionRow); } },
       tasks: { findMany: () => Promise.resolve(taskRows) },
-      workers: { findMany: () => Promise.resolve(workerRows) },
+      workers: { findMany: (args: any) => { workerFindArgs.push(args); return Promise.resolve(workerRows); } },
       artifacts: { findMany: () => Promise.resolve(artifactRows) },
     },
     update: () => ({
@@ -167,6 +178,8 @@ function reset() {
   artifactRows = [];
   updateCalls.length = 0;
   insertedRows.length = 0;
+  missionFindArgs.length = 0;
+  workerFindArgs.length = 0;
   mockStrategyResult = 'inline';
   mockResolveCommandCriterion.mockReset();
   mockResolveCommandCriterion.mockImplementation(() => Promise.resolve({
@@ -849,5 +862,113 @@ describe('evaluationStrategy: worker path', () => {
 
     // Worker dispatch should fire because ensureCriteriaVerdict passes allowWorkerDispatch: true
     expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Option A': what the evaluator has to fetch for `all_prs_merged` ───────────
+//
+// The criterion itself is tested in packages/core; these tests cover the half
+// that lives here — that the mission's opt-in flag and each worker's PR base ref
+// actually reach it. Get the plumbing wrong and the criterion silently reverts
+// to its pre-A' answer, which is a pass with nothing on trunk.
+
+describe("evaluateCriteriaNow — Option A' plumbing", () => {
+  beforeEach(reset);
+
+  const INTEGRATION_BRANCH = 'mission/m1';
+  const TRUNK = 'dev';
+
+  /** One deliverable task whose PR merged into the integration branch. */
+  function taskPrLanded() {
+    taskRows = [
+      { id: 't1', status: 'completed', title: 'Do the work', taskClass: 'work', mode: 'execution', result: null },
+    ];
+    workerRows = [
+      {
+        taskId: 't1',
+        mergedAt: new Date('2026-01-01'),
+        prUrl: 'https://github.example/pr/1',
+        branch: 'task/t1',
+        prBaseRef: INTEGRATION_BRANCH,
+      },
+    ];
+  }
+
+  /** Add the bookkeeping task + worker that own the mission's PR into trunk. */
+  function missionPr(opts: { mergedAt: Date | null; baseRef?: string | null }) {
+    taskRows.push({
+      id: 'ship-1',
+      status: 'completed',
+      title: 'Ship mission: Empty-source rendering',
+      taskClass: 'bookkeeping',
+      mode: 'execution',
+      result: null,
+    });
+    workerRows.push({
+      taskId: 'ship-1',
+      mergedAt: opts.mergedAt,
+      prUrl: 'https://github.example/pr/9',
+      branch: INTEGRATION_BRANCH,
+      prBaseRef: opts.baseRef === undefined ? TRUNK : opts.baseRef,
+    });
+  }
+
+  it("selects the mission's integration-branch opt-in", async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }] });
+    taskPrLanded();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'manual' });
+
+    expect(missionFindArgs[0].columns.integrationBranchEnabled).toBe(true);
+    expect(missionFindArgs[0].columns.workingBranch).toBe(true);
+  });
+
+  it("selects each worker's PR base ref", async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }] });
+    taskPrLanded();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'manual' });
+
+    expect(workerFindArgs[0].columns.prBaseRef).toBe(true);
+  });
+
+  it('leaves a mission that has not opted in on its pre-A\' verdict', async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }], integrationBranchEnabled: false });
+    taskPrLanded();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'manual' });
+
+    expect(lastState().criteria[0].verdict).toBe('pass');
+  });
+
+  it('does not pass an opted-in mission whose work has only reached the integration branch', async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }], integrationBranchEnabled: true });
+    taskPrLanded();
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'manual' });
+
+    expect(lastState().criteria[0].verdict).toBe('UNVERIFIED');
+    expect(lastState().overall).not.toBe('pass');
+  });
+
+  it('passes once the mission PR has merged into trunk', async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }], integrationBranchEnabled: true });
+    taskPrLanded();
+    missionPr({ mergedAt: new Date('2026-01-02') });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'manual' });
+
+    expect(lastState().criteria[0].verdict).toBe('pass');
+    expect(lastState().criteria[0].evidence).toContain(TRUNK);
+  });
+
+  it('fails while the mission PR is still open', async () => {
+    mission({ goalCriteria: [{ type: 'all_prs_merged' }], integrationBranchEnabled: true });
+    taskPrLanded();
+    missionPr({ mergedAt: null });
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'manual' });
+
+    expect(lastState().criteria[0].verdict).toBe('fail');
   });
 });

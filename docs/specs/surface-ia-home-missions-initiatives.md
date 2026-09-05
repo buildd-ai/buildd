@@ -404,16 +404,29 @@ mission whose work was finished and whose diff was not on trunk:
 
 1. `derivePendingCounts` scores `awaitingVerification` per **task** — a
    `completed` task one of whose workers still holds an unmerged, unclosed PR.
-   For a mission using an integration branch, every task PR merges into that
-   branch, so every one of them carries `mergedAt` and the count reads `0` on
-   Home, on `/app/initiatives`, and on initiative detail, while the mission's
-   whole diff sits on an unmerged integration PR. All three agree. The mission is
-   invisible.
+   For a mission using an integration branch every task PR merges into that
+   branch and carries `mergedAt`, so a per-task count over *deliverable rows
+   alone* reads `0` on Home, on `/app/initiatives`, and on initiative detail
+   while the mission's whole diff sits on an unmerged integration PR. All three
+   agree. The mission is invisible.
 2. That same `0` propagates into the verdict ladder (§6.5): `stuck` needs
    `awaitingVerification > 0` or `blocked > 0`, so the mission cannot reach
    `stuck` and lands on `Dormant` instead — which per AC-1 contributes no clause,
    leaving Home with no pulse line at all. Mission detail's own `awaitingMerge`
-   count fails the same way and for the same reason.
+   count fails the same way and for the same reason (it is the `half` segment
+   count, and `isDeliverableTask` is `taskClass === 'work'`).
+
+**Status of that failure as of 2026-09-05: prevented, but only incidentally, and
+that is why this invariant is written down.** The mission integration PR is owned
+by a `bookkeeping` task with a worker row (`lib/mission-pr.ts`), and all three
+`derivePendingCounts` callers pass *every* task with no `taskClass` filter — so
+the owner row supplies the `1` and the value is already correct. Nothing asserted
+it. A single plausible refactor — "pending counts should ignore bookkeeping rows"
+— silently restores the wrong `0` on all three surfaces at once, and every
+agreement invariant would still pass. `AC-51` below is what makes that refactor
+fail instead, and `lib/initiative-pulse.ts` carries a comment prohibiting the
+narrowing. Mission detail is fixed differently: it renders the integration PR as
+its own block rather than relying on a segment count.
 
 **Value invariant**: a mission whose deliverable work is complete (every
 `isDeliverableTask` task terminal, none failed) and whose integration PR is open

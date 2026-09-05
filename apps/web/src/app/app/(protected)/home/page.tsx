@@ -27,6 +27,7 @@ import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
@@ -899,6 +900,9 @@ export default async function HomePage({
                       eq(tasks.workspaceId, wsId),
                       isNotNull(workers.mergedAt),
                       sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
+                      // A merge into a mission integration branch is not on
+                      // trunk — see core/release-queue-scope.
+                      notMissionIntegrationMerge(),
                     ),
                   );
 

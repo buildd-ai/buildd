@@ -80,7 +80,6 @@ export interface CriterionDraft {
   command: string;
   artifactKey: string;
   artifactType: string;
-  requireBranchDeleted: boolean;
   description: string;
   notMechanizableReason: string;
 }
@@ -92,7 +91,6 @@ export function newCriterionDraft(type: SelectableCriterionType = 'command'): Cr
     command: '',
     artifactKey: '',
     artifactType: '',
-    requireBranchDeleted: false,
     description: '',
     notMechanizableReason: '',
   };
@@ -116,7 +114,6 @@ export function draftToCriterion(draft: CriterionDraft): GoalCriterion {
     case 'all_prs_merged':
       return {
         type: 'all_prs_merged',
-        ...(draft.requireBranchDeleted ? { requireBranchDeleted: true } : {}),
         ...base,
       };
     case 'no_open_tasks':

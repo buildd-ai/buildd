@@ -210,6 +210,11 @@ export async function evaluateCriteriaNow(
       goalCriteria: true,
       goalCriteriaState: true,
       workingBranch: true,
+      // Option A': `all_prs_merged` needs the opt-in to know whether a merged
+      // task PR reached trunk or only the integration branch. Absent, the
+      // criterion keeps its pre-A' meaning — which for an opted-in mission is
+      // a pass with nothing on the default branch.
+      integrationBranchEnabled: true,
       status: true,
     },
   });
@@ -230,12 +235,20 @@ export async function evaluateCriteriaNow(
     },
   });
 
-  let missionWorkers: Array<{ taskId: string | null; mergedAt: Date | null; prUrl: string | null; branch: string }> = [];
+  let missionWorkers: Array<{
+    taskId: string | null;
+    mergedAt: Date | null;
+    prUrl: string | null;
+    branch: string;
+    prBaseRef: string | null;
+  }> = [];
   if (missionTasks.length > 0) {
     const taskIds = missionTasks.map(t => t.id);
     missionWorkers = await db.query.workers.findMany({
       where: inArray(workers.taskId, taskIds),
-      columns: { taskId: true, mergedAt: true, prUrl: true, branch: true },
+      // `prBaseRef` is what separates "merged into the mission's integration
+      // branch" from "merged into trunk". Null is unknown, never trunk.
+      columns: { taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true },
     });
   }
 
@@ -246,7 +259,11 @@ export async function evaluateCriteriaNow(
 
   // ── Mechanical evaluation (always re-run: it is one query, never a snapshot) ─
   const state = evaluateGoalCriteria(
-    { id: mission.id, workingBranch: mission.workingBranch },
+    {
+      id: mission.id,
+      workingBranch: mission.workingBranch,
+      integrationBranchEnabled: mission.integrationBranchEnabled,
+    },
     criteria,
     {
       tasks: missionTasks,
@@ -255,6 +272,7 @@ export async function evaluateCriteriaNow(
         mergedAt: w.mergedAt,
         prUrl: w.prUrl,
         branchName: w.branch,
+        prBaseRef: w.prBaseRef,
       })),
       artifacts: missionArtifacts.map(a => ({ key: a.key, type: a.type })),
       evaluatedBy: opts.evaluatedBy,

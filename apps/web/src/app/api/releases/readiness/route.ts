@@ -9,6 +9,7 @@ import { detectArchetype } from '@buildd/core/release-archetype';
 import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 
 /**
  * Release readiness per gated workspace — applies spec §8 exception-rule data.
@@ -111,6 +112,9 @@ export async function GET(req: NextRequest) {
             eq(tasks.workspaceId, wsId),
             isNotNull(workers.mergedAt),
             sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
+            // A merge into a mission integration branch is not on trunk — see
+            // core/release-queue-scope.
+            notMissionIntegrationMerge(),
           ),
         );
 

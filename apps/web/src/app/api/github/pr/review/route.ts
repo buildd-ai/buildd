@@ -286,6 +286,11 @@ export async function POST(req: NextRequest) {
         prUrl: pr.html_url,
         prLifecycleStatus: 'pr_open',
         ...(typeof pr.base?.sha === 'string' ? { prOpenedBaseSha: pr.base.sha } : {}),
+        // Where this PR lands, alongside the base SHA. Without it an adopted PR
+        // reads "unknown base" forever to every Option A′ consumer — which is
+        // safe (unknown degrades to the existing gate) but means an adopted PR
+        // never gets the integration-branch treatment even when it targets one.
+        ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
         ...(typeof pr.additions === 'number' ? { linesAdded: pr.additions } : {}),
         ...(typeof pr.deletions === 'number' ? { linesRemoved: pr.deletions } : {}),
         ...(typeof pr.changed_files === 'number' ? { filesChanged: pr.changed_files } : {}),

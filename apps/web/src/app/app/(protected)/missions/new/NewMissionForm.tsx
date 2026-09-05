@@ -187,17 +187,6 @@ function CriterionRow({
         </div>
       )}
 
-      {draft.type === 'all_prs_merged' && (
-        <label className="flex items-center gap-2 text-[11px] text-text-secondary">
-          <input
-            type="checkbox"
-            checked={draft.requireBranchDeleted}
-            onChange={e => set({ requireBranchDeleted: e.target.checked })}
-          />
-          Also require the branch to be deleted
-        </label>
-      )}
-
       {draft.type === 'artifact_exists' && (
         <>
           <div className="flex items-start gap-2">

@@ -802,3 +802,123 @@ describe('completeMissionIfVerified — refused', () => {
     expect(insertedRows).toHaveLength(0);
   });
 });
+
+describe('canCompleteMission — Option A′: the mission integration PR is the landing on trunk', () => {
+  beforeEach(reset);
+
+  const OPTED_IN = {
+    workingBranch: 'mission/checkout-arc-1a2b3c4d',
+    integrationBranchEnabled: true,
+  };
+
+  /** The bookkeeping row that owns a mission integration PR. */
+  function missionPrOwner(pr: { prUrl?: string | null; prNumber?: number | null; mergedAt?: string | null }) {
+    return {
+      id: 't-mission-pr',
+      status: 'completed',
+      title: 'Ship mission: Checkout arc',
+      taskClass: 'bookkeeping',
+      mode: 'execution',
+      result: null,
+      workers: [{
+        prUrl: pr.prUrl ?? null,
+        prNumber: pr.prNumber ?? null,
+        mergedAt: pr.mergedAt ?? null,
+        prLifecycleStatus: null,
+      }],
+    };
+  }
+
+  /** A merged deliverable — the state after task PRs land on the integration branch. */
+  function mergedWork(title = 'Build the thing') {
+    return work('completed', title, {
+      workers: [{
+        prUrl: 'https://example.test/pr/11',
+        prNumber: 11,
+        mergedAt: '2026-09-05T10:00:00.000Z',
+        prLifecycleStatus: 'merged',
+      }],
+    });
+  }
+
+  it('refuses while the mission PR is open and unmerged', async () => {
+    // `deliverables` is taskClass === 'work', so the bookkeeping owner row is
+    // filtered out and the awaiting_merge check structurally cannot see it.
+    activeMission(OPTED_IN);
+    taskRows = [
+      mergedWork(),
+      missionPrOwner({ prUrl: 'https://example.test/pr/42', prNumber: 42, mergedAt: null }),
+    ];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('#42');
+    expect(d.awaitingMerge).toBe(1);
+  });
+
+  it('refuses when the mission PR has not been opened yet', async () => {
+    // The opener runs from the PR-merge webhook, so this window exists: every
+    // task PR merged, no mission PR. Completing here closes a mission whose
+    // diff never reached trunk.
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork()];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_mission_pr');
+    expect(d.reason).toContain('has not been opened');
+  });
+
+  it('refuses when the owner row exists but carries no PR', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [mergedWork(), missionPrOwner({ prUrl: null, prNumber: null })];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_mission_pr');
+  });
+
+  it('allows completion once the mission PR is merged', async () => {
+    activeMission(OPTED_IN);
+    taskRows = [
+      mergedWork(),
+      missionPrOwner({ prUrl: 'https://example.test/pr/42', prNumber: 42, mergedAt: '2026-09-05T12:00:00.000Z' }),
+    ];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(true);
+  });
+
+  it('does not gate a mission that has not opted in', async () => {
+    // The whole safety argument: a mission with the flag off must reach exactly
+    // the same verdict it reached before this gate existed.
+    activeMission({ ...OPTED_IN, integrationBranchEnabled: false });
+    taskRows = [mergedWork()];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(true);
+  });
+
+  it('does not gate a mission with no working branch', async () => {
+    activeMission({ workingBranch: null, integrationBranchEnabled: true });
+    taskRows = [mergedWork()];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.ok).toBe(true);
+  });
+
+  it('still reports a task PR blocker before reaching the mission-PR gate', async () => {
+    // Order matters for the reason string an operator reads: an unmerged task
+    // PR is the more actionable blocker, and the mission PR cannot open until
+    // it clears anyway.
+    activeMission(OPTED_IN);
+    taskRows = [
+      work('completed', 'Build the thing', {
+        workers: [{ prUrl: 'https://example.test/pr/11', prNumber: 11, mergedAt: null, prLifecycleStatus: 'pr_open' }],
+      }),
+    ];
+
+    const d = await canCompleteMission('m1', { path: 'dormancy' });
+    expect(d.code).toBe('awaiting_merge');
+  });
+});

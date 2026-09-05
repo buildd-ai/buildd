@@ -315,7 +315,10 @@ stored — it is derived on read from the state of associated tasks via
   default `false`). For an opted-in mission, task PRs merge into the integration
   branch and the mission's work reaches trunk through exactly one PR from that
   branch — the mission integration PR, which is the mission's single human gate.
-  Opening that PR is a separate step; no automated path opens it today. For every
+  That PR is opened automatically: the `pull_request` webhook calls
+  `maybeOpenMissionIntegrationPr` when a task PR merges, and
+  `openMissionIntegrationPr` opens it once every deliverable task of the mission is
+  terminal and every deliverable PR has merged into the integration branch. For every
   other mission — the default — each task PR targets the workspace's trunk branch
   and `workingBranch` retargets nothing.
 - `missions.primaryPrNumber`/`primaryPrUrl` MUST only ever be claimed by a PR

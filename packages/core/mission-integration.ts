@@ -72,3 +72,19 @@ export function isMissionIntegrationBase(args: {
 export function looksLikeMissionIntegrationBranch(ref: string | null | undefined): boolean {
   return typeof ref === 'string' && ref.startsWith(MISSION_BRANCH_PREFIX);
 }
+
+/**
+ * Title prefix for the task that owns a mission integration PR.
+ *
+ * Load-bearing in three places: `api/tasks/route.ts` classifies a task with
+ * this prefix as `bookkeeping`, `mission-pr.ts` creates the row, and every
+ * surface that has to tell the mission PR apart from the task PRs that fed it
+ * matches on it. It lives here, with the other A′ predicates and no imports, so
+ * a *surface* can ask the question without pulling in a DB client.
+ */
+export const MISSION_PR_TASK_PREFIX = 'Ship mission: ';
+
+/** Does this task own a mission integration PR rather than deliverable work? */
+export function isMissionPrTask(task: { title?: string | null; taskClass?: string | null }): boolean {
+  return task.taskClass === 'bookkeeping' && (task.title ?? '').startsWith(MISSION_PR_TASK_PREFIX);
+}

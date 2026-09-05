@@ -2993,10 +2993,27 @@ async function handleReviewerOutcomeIfNeeded(
   const missionForPolicy = missionId
     ? await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        columns: { mergePolicy: true },
+        // Deliberately not `requiresReview`: this path has never resolved
+        // mission-level requiresReview, and Option A′ is not the change that
+        // should start. Only the two fields the base-ref rule needs.
+        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
       })
     : null;
-  const reviewPolicy = workspace ? resolvePolicy(workspace, missionForPolicy) : null;
+
+  // The PR being gated, read before the policy because the policy depends on it:
+  // under Option A′ a task PR based on the mission's integration branch is not
+  // the mission's review gate — the single PR from that branch into trunk is —
+  // so the tier drops here and applies there instead.
+  const gatedWorker = await db.query.workers.findFirst({
+    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    // `prBaseRef: null` means "unknown", which resolvePolicy treats as
+    // not-the-integration-branch — i.e. it degrades to today's gate.
+    columns: { id: true, taskId: true, prBaseRef: true },
+  });
+
+  const reviewPolicy = workspace
+    ? resolvePolicy(workspace, missionForPolicy, null, { baseRef: gatedWorker?.prBaseRef ?? null })
+    : null;
 
   // Re-derive the escalation gates from the PR's CURRENT file list. Pre-flight
   // ran at most once, on the webhook's `opened` action; a PR pushed to during a

@@ -84,8 +84,10 @@ archived` (lifecycle is stored; *health* is derived from task state via
   (`missions.integrationBranchEnabled`, default **false**). For an opted-in mission the
   task PRs merge into the integration branch, and the mission's work reaches trunk
   through a single PR from that branch — the mission integration PR, which is the
-  mission's one human gate. (Opening that PR is a distinct step; no automated path
-  opens it today.) A mission that has not opted in — the default — behaves as it always
+  mission's one human gate. That PR is opened automatically: when a task PR merges,
+  the `pull_request` webhook calls `maybeOpenMissionIntegrationPr`, which opens it
+  (via `openMissionIntegrationPr`) once no deliverable task of the mission is left
+  unfinished or unmerged. A mission that has not opted in — the default — behaves as it always
   has: each task PR targets the workspace's trunk branch and nothing retargets it.
   `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
   mission, i.e. the mission integration PR where one exists; a PR based on the mission

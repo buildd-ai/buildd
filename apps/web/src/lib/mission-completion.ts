@@ -1,5 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, missionNotes, workers } from '@buildd/core/db/schema';
+import { isMissionPrTask, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -47,6 +48,7 @@ export type CompletionDecisionCode =
   | 'pending_deliverables'
   | 'infra_stalled'
   | 'awaiting_merge'
+  | 'awaiting_mission_pr'
   | 'criteria_failed'
   | 'criteria_pending'
   | 'criteria_unverified';
@@ -188,6 +190,9 @@ export async function canCompleteMission(
       goalCriteria: true,
       goalCriteriaState: true,
       autoVerify: true,
+      // Option A′ — see the mission-integration-PR gate below.
+      workingBranch: true,
+      integrationBranchEnabled: true,
     },
   });
 
@@ -346,6 +351,55 @@ export async function canCompleteMission(
       code: 'awaiting_merge',
       reason: `${awaitingMerge.length} deliverable task(s) completed but not merged: ${named}`,
     };
+  }
+
+  // Option A′: the mission integration PR is where this mission's work actually
+  // reaches trunk, and it is owned by a `bookkeeping` row — so `deliverables`
+  // (taskClass === 'work') filters it out and the check above structurally
+  // cannot see it. Without this gate an opted-in mission completes the moment
+  // its task PRs land on the integration branch, with **nothing on trunk**:
+  // "marked done, shipped nothing", the same shape the two-phase release claim
+  // exists to prevent, one level up.
+  //
+  // Not-yet-opened blocks too. The opener runs from the PR-merge webhook, so
+  // there is a window where every task PR has merged and no mission PR exists;
+  // completing in that window would close a mission whose diff never reached
+  // trunk and never will.
+  if (missionIntegrationBase(mission)) {
+    const ownerTask = allTasks.find(t => isMissionPrTask(t));
+    const ownerWorker = ownerTask
+      ? (ownerTask as unknown as {
+          workers?: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: Date | string | null }>;
+        }).workers?.[0]
+      : undefined;
+
+    if (!ownerTask || !ownerWorker?.prUrl) {
+      return {
+        ...base,
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason:
+          `This mission uses an integration branch (\`${mission.workingBranch}\`) and its work has not `
+          + `reached trunk yet — the mission PR has not been opened.`,
+      };
+    }
+    if (!ownerWorker.mergedAt) {
+      base.awaitingMerge = 1;
+      base.awaitingMergeDetails = [{
+        taskId: ownerTask.id,
+        title: ownerTask.title,
+        prNumber: ownerWorker.prNumber ?? null,
+        prUrl: ownerWorker.prUrl,
+      }];
+      return {
+        ...base,
+        ok: false,
+        code: 'awaiting_mission_pr',
+        reason:
+          `Mission PR${ownerWorker.prNumber ? ` #${ownerWorker.prNumber}` : ''} is open and unmerged — `
+          + `the mission's work is on \`${mission.workingBranch}\`, not on trunk.`,
+      };
+    }
   }
 
   if (criteria.length === 0) {

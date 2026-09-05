@@ -40,24 +40,25 @@ import {
 } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { missionIntegrationBase } from '@buildd/core/mission-integration';
+import {
+  isMissionPrTask,
+  MISSION_PR_TASK_PREFIX,
+  missionIntegrationBase,
+} from '@buildd/core/mission-integration';
 
 /**
- * Title prefix for the task that owns a mission integration PR.
+ * The mission-PR task identity, re-exported rather than reimplemented.
  *
- * Load-bearing in two places: `api/tasks/route.ts` classifies a task with this
- * prefix as `bookkeeping`, and `isMissionPrTask` below identifies the owning
- * row. Keep them in step.
+ * It moved into `@buildd/core/mission-integration` when the `all_prs_merged`
+ * criterion (which lives in `packages/core` and must stay dependency-light)
+ * needed to tell the mission's own PR apart from the task PRs that fed it. Two
+ * copies of a "which row is this" rule is how the primaryPrNumber slot came to
+ * mean something different in each place that read it.
  */
-export const MISSION_PR_TASK_PREFIX = 'Ship mission: ';
+export { MISSION_PR_TASK_PREFIX, isMissionPrTask };
 
 /** Statuses in which a task still represents unlanded deliverable work. */
 const UNFINISHED_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
-
-/** Does this task own a mission integration PR rather than deliverable work? */
-export function isMissionPrTask(task: { title?: string | null; taskClass?: string | null }): boolean {
-  return task.taskClass === 'bookkeeping' && (task.title ?? '').startsWith(MISSION_PR_TASK_PREFIX);
-}
 
 /**
  * The branches a *mission-level* PR can target: the workspace's own trunk.
