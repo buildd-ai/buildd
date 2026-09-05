@@ -2,7 +2,7 @@
 title: Surface IA — Home, Missions, Initiatives
 status: draft
 owner: max
-last_verified: 2026-09-01
+last_verified: 2026-09-04
 summary: Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 domain: surfaces
 surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presentation.ts, apps/web/src/lib/initiative-presentation.ts, apps/web/src/app/app/(protected)/home/page.tsx]
@@ -594,8 +594,13 @@ Ordered so that no intermediate commit leaves a surface without its signal:
    triage mount.
 4. Apply the workspace-header rule (§3.3); delete the dead initiative-grouping
    path (§3.2).
-5. Replace `InitiativeRail` on Home with the pulse line (§2). Delete
-   `InitiativeRail` and its component file once no surface mounts it.
+5. Replace the initiative rail on Home with the pulse line (§2). **Partially
+   done** — the rail is unmounted and its component file deleted (AC-6 holds, and
+   a source-level guard now asserts Home does not import it). The pulse line
+   itself (§2.2's clause set, AC-1…AC-5) is **not built yet**, so Home currently
+   carries no initiative element other than the arc headline. Deleting the rail
+   ahead of its replacement is the reason this step is called out rather than
+   marked done: the two halves must not be left separated for long.
 6. Add the verdict-and-evidence block, the pending-action strip and the large
    sparkline to the detail page (§5).
 
@@ -860,9 +865,11 @@ detail get the same component, not two implementations to keep in sync.
 
 **Code surface**
 
-- `apps/web/src/app/app/(protected)/home/page.tsx` — Home; currently mounts the
-  rail and builds `actionQueue`.
-- `apps/web/src/components/InitiativeRail.tsx` — the rail to be removed (§2.1).
+- `apps/web/src/app/app/(protected)/home/page.tsx` — Home; builds `actionQueue`.
+  No longer mounts the initiative rail (§2.1, migration step 5). The rail's own
+  component file, formerly at apps/web/src/components/InitiativeRail.tsx, has
+  been deleted — named here as plain text because it is deliberately absent, per
+  SPEC-FORMAT's rule that backticks mark a live code surface.
 - `apps/web/src/app/app/(protected)/missions/page.tsx` — Missions; no longer
   mounts triage or loads effort (#1710).
 - `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx` — mission grouping,

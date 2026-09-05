@@ -526,6 +526,22 @@ the Initiatives-list chip mean what its label says.
 
 ### Frontend
 
+> **`docs/specs/surface-ia-home-missions-initiatives.md` §1 and §8–§10 are the
+> authoritative contract for every release surface, with AC-38…AC-45.** They
+> post-date this doc's first draft and settle three things it must not
+> re-litigate: the release ledger is **MUST** on Home, the missions-list card and
+> mission detail, and **MUST NOT** on the initiative surfaces (§8.4); `Release
+> now` lives on **mission detail and the Home readiness widget only**, and is
+> **removed** from `/app/workspaces/[id]/config`, which keeps configuration alone
+> (§10.1–10.2); and task-level ship state is a **badge**, never a fifth task-rail
+> segment (§10.3) — `SegmentStrip` renders a variable-length dependency chain,
+> not a fixed pipeline, so there is nothing to graft a stage onto. §9's three
+> empty states (`none` / `unseeded` / `clean`) must all route through the one
+> shared baseline-ladder helper; a per-surface `COALESCE`-to-epoch or "no rows,
+> hide" shortcut is the regression that doctrine exists to prevent.
+>
+> What follows is the *shape* of the delivery read, consistent with that contract.
+
 **Mission detail — a Delivery block**, mounted directly below the outcome summary
 (the natural place: the outcome summary already ends at "merged"). Three steps, each
 with its own evidence, each rendering nothing when it has no signal:
@@ -773,10 +789,19 @@ lost:
   (`release-verification.ts`) is the only writer of `state: 'healthy'` and has
   **zero callers**; the health-check cron only *degrades* rows already marked
   healthy (`eq(releases.state, 'healthy')`). So `MAX(healthy_at)` is NULL for
-  every archetype, and `MissionShipState`'s `shipped` has nothing to read. The
-  baseline ladder hides this by degrading to `deployedAt`, which is why it went
-  unnoticed. **This gates Track 3 step 1** and wants a policy decision: promote
-  on deploy success, or require the `verificationUrl` probe.
+  every archetype.
+
+  **It does not block the delivery UI**, contrary to a first reading of it. The
+  surface-IA spec's §9.1 baseline ladder is explicitly
+  `MAX(healthy_at)` → `MAX(deployed_at)` → latest release row of any state →
+  prod-branch head, and `unseeded` is named as the *normal* day-one state that
+  MUST NOT be hidden. `resolveGatedReleaseBaseline`
+  (`apps/web/src/lib/release-baseline.ts`) already implements that ladder, so
+  every release surface degrades correctly through the missing rung. The gap is
+  real and worth closing — a `shipped` that means "in production" needs the
+  promotion — but it is a correctness item, not a prerequisite, and it wants a
+  policy decision: promote on deploy success, or require the `verificationUrl`
+  probe.
 - **`build.yml`'s own comment is false.** It justifies skipping release PRs with
   "dev already ran full integration before the promotion", but `changes` is gated
   on `base_ref == 'main'`, so `dev` never runs integration at all — meaning
