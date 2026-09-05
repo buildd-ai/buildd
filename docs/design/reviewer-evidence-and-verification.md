@@ -141,6 +141,18 @@ explicit "not reviewed — token budget" heading so the model cannot mistake
 absence for cleanliness. Pre-inject it; do not rely on the agent choosing to
 shell out to `gh`.
 
+Shipped in #2107 (renderer) and #2108 (wiring, behind
+`policyConfig.reviewerPatchEvidence`, default off). Two contracts came out of
+building it that T4 depends on. First, **only added lines carry a line
+number** — a deliberate deviation from PR-Agent, which numbers every line — so
+a cited line number is provably a line the PR introduced. Second, that
+guarantee lives in the returned `citableLines` map and **not** in the rendered
+text: context lines render as `<width spaces>  <content>`, `width` is per-file
+and never emitted, so a context line whose content begins with digits and a
+`+` is byte-identical to a numbered added line, and that content is
+PR-authored. A T4 filter that re-parses the prompt is therefore defeatable by
+any PR that documents a diff — including this module's own tests.
+
 **2. Split the verdict from the feedback.** Call one returns findings as
 evidence only: `{file, lineStart, lineEnd, claim, failureScenario}` — no prose
 fix. Call two writes `feedback` for findings that survive filtering. This
@@ -253,6 +265,18 @@ egress rule blocks. Four bounds, all non-optional:
    integration-branch topology is not in force for a workspace, task PRs target
    `dev` directly and the same trade does not hold — so this bound reads the
    base ref, not a global flag.
+
+   **The trade also assumes CI ran, and today that assumption can be false.**
+   `build.yml` declares `pull_request: branches: [main, dev, 'mission/**']`, so
+   a PR based on any other ref gets no Build & Test run at all — and since
+   `ci-fix.yml` triggers on `workflow_run` of that workflow, the CI-retry chain
+   goes silent with it. A PR with zero runs is indistinguishable from a green
+   one to anything that only looks for failures; observed on PR #2108, where
+   the three passing checks were a secrets scan and two Vercel no-ops. So T10
+   must require a *reported success* for the head SHA, not the absence of
+   failure, and the trigger list needs a catch-all. A base-name allowlist is
+   the wrong shape for a condition auto-merge depends on: violating the
+   convention silently removes the gate instead of failing.
 4. **Untrusted text is labelled.** Strip HTML comments and invisible characters
    from PR body/diff before they enter the prompt, and mark them as data. Note
    the adjacent lesson from the CodeRabbit RCE
@@ -278,7 +302,7 @@ gate serialises overlapping work. T1 is load-bearing; T2–T9 assume it landed.
 | T9a | Security: base-branch doctrine restore + untrusted-text stripping | `apps/web/src/lib/role-config.ts`, `apps/runner/src/roles.ts` + tests | — | unit: PR-head `CLAUDE.md`/`.claude/` is not read |
 | T9b | UI truth: label the Allowed Tools panel as subagent-scoped (or hide it for skill-less roles) | `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`, `apps/web/src/app/app/(protected)/team/[slug]/settings/TeamRoleEditor.tsx` | — | visual: no surface claims "N restricted" for a control that does not apply |
 | T9c | Enforce role `allowedTools` on the primary agent, reviewer role first | `apps/runner/src/workers.ts` + tests | T1, T9b | unit: role allowlist applied to primary agent; per-role audit recorded in the PR |
-| T10 | Base-ref-keyed auto-merge bound: approve may merge a task PR into an integration branch, never into `dev`/`prodBranch`/a release PR | `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/merge-policy.ts` + tests | T5 | unit: same verdict auto-merges on integration base, escalates on `dev` base |
+| T10 | Base-ref-keyed auto-merge bound: approve may merge a task PR into an integration branch, never into `dev`/`prodBranch`/a release PR — **and only when Build & Test actually reported success for the head SHA** | `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/merge-policy.ts`, `.github/workflows/build.yml` + tests | T5 | unit: same verdict auto-merges on integration base, escalates on `dev` base; a PR whose build workflow never ran does not auto-merge |
 
 Suggested split for a team: T1 alone first (nothing else is worth doing until
 the reviewer can see the diff), then T5 + T9a + T9b + T10 in parallel with T2
