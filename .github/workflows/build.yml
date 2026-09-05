@@ -4,7 +4,19 @@ on:
   push:
     branches: [dev]
   pull_request:
-    branches: [main, dev]
+    # `mission/**` is a mission integration branch (docs/design/mission-delivery-arc.md).
+    # Without it here a task PR based on a mission branch gets NO Build & Test run —
+    # and because ci-fix.yml triggers on `workflow_run` of this workflow, the CI-retry
+    # agent chain goes silent with it. Unverified commits would then accumulate on the
+    # integration branch, which is the whole safety argument for that model.
+    branches: [main, dev, 'mission/**']
+
+# One run per ref. PR runs are superseded by a new push to the same PR, so
+# cancelling is free; pushes to `dev` are NOT cancelled — each commit's verdict
+# is the record for the promotion that follows it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
@@ -348,11 +360,22 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     needs: changes
-    # Skip on release PRs (dev→main): dev already ran full integration before the
-    # promotion, so re-running it here is redundant noise (and flakes on CI Claude
-    # quota / missing E2E workspace fixtures). Hotfix PRs (feature→main) bypass dev,
-    # so they still run it. `build` remains the only required check on main.
+    # Skipped on release PRs (dev→main), which flake on CI Claude quota and missing
+    # E2E workspace fixtures. Hotfix PRs (feature→main) bypass dev, so they still
+    # run it. `build` remains the only required check on main.
+    #
+    # NOTE: this skip is NOT covered by "dev already ran it" — the `changes` job is
+    # gated on `base_ref == 'main'`, so integration never runs on a PR into `dev` or
+    # on a push to `dev`. Net effect: integration and E2E do not gate a dev→main
+    # promotion at all. That is a real gap, recorded rather than papered over.
     if: needs.changes.outputs.needs_server == 'true' && github.head_ref != 'dev'
+
+    # Test-machine coordinates. Repo variables, not literals: this repo is public.
+    # Unset TEST_HOST/TEST_CONTAINER makes the sync step skip loudly (see below).
+    env:
+      TEST_HOST: ${{ vars.TEST_MACHINE_HOST }}
+      TEST_USER: ${{ vars.TEST_MACHINE_USER || 'ubuntu' }}
+      TEST_CONTAINER: ${{ vars.TEST_MACHINE_CONTAINER }}
 
     steps:
       - uses: actions/checkout@v7
@@ -450,12 +473,21 @@ jobs:
       - name: Sync code and build on test machine
         id: sync
         run: |
+          # Print what we resolved before using it. A gate that reports only
+          # pass/fail cannot distinguish "healthy" from "never ran".
+          if [ -z "$TEST_HOST" ] || [ -z "$TEST_CONTAINER" ]; then
+            echo "::warning::Test machine not configured — integration tests SKIPPED (measured nothing). Set the repo variables: gh variable set TEST_MACHINE_HOST --body '<tailscale-host>'; gh variable set TEST_MACHINE_CONTAINER --body '<container>'"
+            echo "INTEGRATION_MODE=skipped_unconfigured"
+            echo "machine_online=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "INTEGRATION_MODE=full host=$TEST_HOST container=$TEST_CONTAINER user=$TEST_USER"
           BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
           rc=1
           for attempt in 1 2 3 4 5; do
             echo "Attempt $attempt/5: syncing and building on test machine..."
-            if tailscale ssh ubuntu@100.82.109.19 << SCRIPT
-              docker exec coder-ai-run-my-claude-workspace bash -c "
+            if tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
+              docker exec $TEST_CONTAINER bash -c "
                 set -e
                 export PATH=/home/coder/.local/bin:/home/coder/.bun/bin:\\\$PATH
                 (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
@@ -473,12 +505,12 @@ jobs:
           done
           if [ $rc -ne 0 ]; then
             echo "All SSH attempts failed. Probing Tailscale connectivity..."
-            if timeout 15 tailscale ping 100.82.109.19 2>&1 | grep -qi "pong"; then
+            if timeout 15 tailscale ping "$TEST_HOST" 2>&1 | grep -qi "pong"; then
               echo "::error::SSH failed but machine IS reachable via Tailscale — check SSH/docker config on the test machine"
               echo "machine_online=true" >> "$GITHUB_OUTPUT"
               exit 1
             else
-              echo "::warning::Test machine 100.82.109.19 not reachable in Tailscale (infrastructure outage, not a code issue). Integration tests skipped for this run."
+              echo "::warning::Test machine ${TEST_HOST} not reachable in Tailscale (infrastructure outage, not a code issue). Integration tests skipped for this run."
               echo "machine_online=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -499,7 +531,7 @@ jobs:
         # consumed as ssh stdin, leaving none for the inner one. Use bash -c
         # with the script piped via stdin to docker exec -i instead.
         run: |
-          tailscale ssh ubuntu@100.82.109.19 "docker exec -i coder-ai-run-my-claude-workspace bash -s" << 'INNER' || true
+          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
           set +e
           echo "::group::SDK binary state (post-build)"
           echo "--- arch + bun version ---"
@@ -539,12 +571,12 @@ jobs:
         run: |
           # Pipe env vars to a file on the remote — avoids all escaping issues
           printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" | \
-            tailscale ssh ubuntu@100.82.109.19 \
-              "docker exec -i coder-ai-run-my-claude-workspace bash -c 'cat > /tmp/buildd-ci/.env.test'"
+            tailscale ssh "$TEST_USER@$TEST_HOST" \
+              "docker exec -i $TEST_CONTAINER bash -c 'cat > /tmp/buildd-ci/.env.test'"
 
           # Start Next.js server with real env vars
-          tailscale ssh ubuntu@100.82.109.19 << 'SCRIPT'
-            docker exec coder-ai-run-my-claude-workspace bash -c '
+          tailscale ssh "$TEST_USER@$TEST_HOST" << 'SCRIPT'
+            docker exec ${{ vars.TEST_MACHINE_CONTAINER }} bash -c '
               export PATH=$HOME/.local/bin:$HOME/.bun/bin:$PATH
               screen -X -S buildd-web quit 2>/dev/null || true
               screen -dmS buildd-web bash -c "
@@ -558,15 +590,15 @@ jobs:
 
           # Wait for server
           for i in $(seq 1 30); do
-            if curl -s http://100.82.109.19:3333/api/version 2>/dev/null | jq -e . >/dev/null 2>&1; then
+            if curl -s http://${{ vars.TEST_MACHINE_HOST }}:3333/api/version 2>/dev/null | jq -e . >/dev/null 2>&1; then
               echo "Server ready"
               break
             fi
             if [ "$i" -eq 30 ]; then
               echo "::error::Preview server failed to start after 150s"
               echo "--- /tmp/buildd-web.log ---"
-              tailscale ssh ubuntu@100.82.109.19 \
-                "docker exec coder-ai-run-my-claude-workspace cat /tmp/buildd-web.log 2>/dev/null" || true
+              tailscale ssh "$TEST_USER@$TEST_HOST" \
+                "docker exec $TEST_CONTAINER cat /tmp/buildd-web.log 2>/dev/null" || true
               exit 1
             fi
             echo "Waiting for server... (attempt $i)"
@@ -582,7 +614,7 @@ jobs:
         # binary is here then but the runner reports it missing, the issue is
         # in how the runner process resolves the path, not in the install.
         run: |
-          tailscale ssh ubuntu@100.82.109.19 "docker exec -i coder-ai-run-my-claude-workspace bash -s" << 'INNER' || true
+          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
           echo "::group::SDK binary state (pre-runner)"
           ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -3
           ls -la /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl 2>&1 | head -3
@@ -592,8 +624,8 @@ jobs:
       - name: Start preview runner
         if: steps.sync.outputs.machine_online != 'false' && needs.changes.outputs.runner == 'true'
         run: |
-          tailscale ssh ubuntu@100.82.109.19 << SCRIPT
-            docker exec coder-ai-run-my-claude-workspace bash -c "
+          tailscale ssh "$TEST_USER@$TEST_HOST" << SCRIPT
+            docker exec $TEST_CONTAINER bash -c "
               export PATH=\\\$HOME/.local/bin:\\\$HOME/.bun/bin:\\\$PATH
               screen -X -S buildd-test quit 2>/dev/null || true
               screen -dmS buildd-test bash -c '
@@ -619,10 +651,10 @@ jobs:
                apps/web/tests/integration/missions-smoke.test.ts \
                apps/runner/__tests__/integration-config.test.ts
         env:
-          BUILDD_TEST_SERVER: http://100.82.109.19:3333
+          BUILDD_TEST_SERVER: http://${{ vars.TEST_MACHINE_HOST }}:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
-          LOCAL_UI_URL: http://100.82.109.19:8767
+          LOCAL_UI_URL: http://${{ vars.TEST_MACHINE_HOST }}:8767
 
       - name: E2E tests
         if: steps.sync.outputs.machine_online != 'false'
@@ -637,11 +669,11 @@ jobs:
           exit $code
         timeout-minutes: 10
         env:
-          BUILDD_TEST_SERVER: http://100.82.109.19:3333
+          BUILDD_TEST_SERVER: http://${{ vars.TEST_MACHINE_HOST }}:3333
           BUILDD_RUNNER_SERVER: http://localhost:3333
           BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
           BUILDD_ADMIN_API_KEY: ${{ secrets.BUILDD_ADMIN_API_KEY }}
-          LOCAL_UI_URL: http://100.82.109.19:8767
+          LOCAL_UI_URL: http://${{ vars.TEST_MACHINE_HOST }}:8767
           SKIP_LOCAL_UI_START: "1"
           # Scope E2E tests based on what changed:
           #   api only    → run API tests (fast, no runner needed)
@@ -656,7 +688,7 @@ jobs:
         # mutated /tmp/buildd-ci. Also captures inode/mtime so we can tell
         # whether the file was overwritten vs deleted vs never installed.
         run: |
-          tailscale ssh ubuntu@100.82.109.19 "docker exec -i coder-ai-run-my-claude-workspace bash -s" << 'INNER' || true
+          tailscale ssh "$TEST_USER@$TEST_HOST" "docker exec -i $TEST_CONTAINER bash -s" << 'INNER' || true
           echo "::group::SDK binary state (on failure)"
           echo "--- expected platform variant ---"
           ls -lai /tmp/buildd-ci/node_modules/.bun/@anthropic-ai+claude-agent-sdk-linux-arm64-musl@*/node_modules/@anthropic-ai/claude-agent-sdk-linux-arm64-musl/claude 2>&1 | head -3
@@ -676,17 +708,17 @@ jobs:
         if: failure()
         run: |
           echo "--- /tmp/buildd-test.log (runner) ---"
-          tailscale ssh ubuntu@100.82.109.19 \
-            "docker exec coder-ai-run-my-claude-workspace bash -c 'tail -500 /tmp/buildd-test.log 2>/dev/null'" || echo "(no runner log)"
+          tailscale ssh "$TEST_USER@$TEST_HOST" \
+            "docker exec $TEST_CONTAINER bash -c 'tail -500 /tmp/buildd-test.log 2>/dev/null'" || echo "(no runner log)"
           echo ""
           echo "--- /tmp/buildd-web.log (server, tail) ---"
-          tailscale ssh ubuntu@100.82.109.19 \
-            "docker exec coder-ai-run-my-claude-workspace bash -c 'tail -200 /tmp/buildd-web.log 2>/dev/null'" || echo "(no server log)"
+          tailscale ssh "$TEST_USER@$TEST_HOST" \
+            "docker exec $TEST_CONTAINER bash -c 'tail -200 /tmp/buildd-web.log 2>/dev/null'" || echo "(no server log)"
 
       - name: Cleanup
         if: always()
         run: |
-          tailscale ssh ubuntu@100.82.109.19 'docker exec coder-ai-run-my-claude-workspace bash -c "
+          tailscale ssh "$TEST_USER@$TEST_HOST" 'docker exec ${{ vars.TEST_MACHINE_CONTAINER }} bash -c "
             screen -X -S buildd-web quit 2>/dev/null
             screen -X -S buildd-test quit 2>/dev/null
             (chmod -R u+rwx /tmp/buildd-ci 2>/dev/null || true) && rm -rf /tmp/buildd-ci
