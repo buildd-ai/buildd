@@ -644,12 +644,12 @@ all task PRs merged into the integration branch **and** the mission PR merged in
 (`mission-helpers.ts:269–282`) is permanently `UNVERIFIED` because nothing populates
 `branchDeleted` — and "the mission branch is gone" is exactly the check A′ wants.
 
-**P2 — `persistMissionPrIfFirst` must claim only the mission PR.**
+**P2 — `persistMissionPrIfFirst` must claim only the mission PR. DONE.**
 `api/github/pr/route.ts:893–903` claims `primaryPrNumber` for whichever PR arrives
 first. Under A′ the first *task* PR steals the slot. Gate it on base ref = `dev`, or
 on an explicit `isMissionPr` flag.
 
-**P3 — `runMission` must stop halting planning on an open primary PR** (B7). Under
+**P3 — `runMission` must stop halting planning on an open primary PR** (B7). **DONE** — replaced by `evaluateMissionOpenPrGate`, shared by `runMission` and `maybeRetriggerMission`, keyed on path overlap via `path-overlap.ts` over *all* the mission's open PRs. Safety property: the organizer never starts a cycle while an open PR of this mission owns a concrete path the mission's remaining work has declared. `getMissionPrState` was its only caller and is deleted. Under
 any mission-PR model that PR is open for the mission's whole life, so the organizer
 stops decomposing. The guard should key off "an open PR whose paths overlap the next
 planned task", which the path-claim machinery can already answer.
@@ -668,7 +668,11 @@ whether this works at all:
 - Release-queue depth must distinguish "merged into an integration branch" from
   "merged into `dev`", or it counts mission work twice.
 
-**P5 — integration-branch freshness, with a stated bound.** Nothing merges `dev`
+**P5 — integration-branch freshness, with a stated bound.** *The probe half is
+DONE:* the staleness check now measures `<base>..origin/<default>` after the base
+is resolved and names the ref in its warning, instead of running against the main
+clone's unrelated HEAD. Still advisory. *The freshness question itself remains
+open.* Nothing merges `dev`
 into a mission branch today. `git-operations.ts:211–229` runs a staleness check but
 with `cwd: repoPath` — the **main clone's HEAD**, not the mission branch — so it
 measures the wrong tree and only `console.warn`s. Decide: a periodic
@@ -686,7 +690,15 @@ stays true and the **base** changes, so the wording must name the integration
 branch — otherwise organizers keep planning against the wrong model. `:118–119`
 setting `pr_required` on builder steps stays correct.
 
-**P8 — `approve-plan.ts:116–130` re-derives branch names.** It predicts
+**P8 — `approve-plan.ts` re-derives branch names. DONE**, and the finding needed
+correcting: the *live* drift was `useBuildBranch`, not the mission override. A
+workspace with both `branchPrefix` and `useBuildBranch` had `agent/…` predicted
+while the claim route created `buildd/…`. The mission-`headBranch` case is
+**latent, not live** — nothing stamps `headBranch` onto mission children today, so
+mission tasks do get `buildd/<id8>-<slug>` as predicted. `packages/core/branch-names.ts`
+is now the one generator (with a contract test), and `approve-plan.ts` prefers
+reading `workers.branch`, then the dependency's `context.headBranch`, predicting
+only when the dependency has no worker yet. Original finding, for the record: it predicts
 `buildd/{id8}-{title}` for a dependency's `baseBranch` — a hand-mirrored copy of the
 claim route's generator that omits `useBuildBranch` **and the mission `headBranch`
 override, so it already predicts a nonexistent branch for every mission task
@@ -792,7 +804,7 @@ that was confirmed to fail before the fix — not merely to pass after it.
 | **B12, B13, B14, B16, B4** | Fixed. |
 | **B8** | Resolved as `draft`, not superseded — see the finding. |
 | **B17** | Doc half fixed. The CI trigger widening belongs to Track 2. |
-| **B10** | Already fixed on `dev`; the doc now records the residual worktree-path collision instead. |
+| **B10** | Already fixed on `dev`. The residual worktree-*path* collision is now closed too: a path a live worktree owns is no longer force-reclaimed — only an unregistered directory or a provably clean worktree is, otherwise setup diverts to a worker-suffixed path. An inconclusive probe counts as not-reclaimable. Re-keying the path on the resolved branch was rejected: the stale-path reclaim must run *before* `listBranchOwners`, which is what resolves the branch. |
 | **B15** | **Not done.** Seed admission is a deploy/runtime fact this branch cannot verify or test. Still owed, and still what makes today's fleet slow. |
 | **U11** | Already fixed on `dev` — the raw enums are gone from that page. |
 
@@ -838,6 +850,39 @@ time.
 6. **Surface-IA §5 + dead-path deletion** (U9), and a subscriber for
    `mission:completion_decision` (U10). **Do the `initiativeGroups` deletion before
    any A′ edit to `MissionGrid.tsx`**, or the two collide.
+
+**Follow-ups opened by the Track 2/3 work (2026-09-04), none of them started.**
+Recorded here so they are not lost with the agent transcripts that found them.
+
+- **`lib/initiative-list.ts` makes §5.2's agreement invariant fail today.** It
+  omits the `workers.status` column, so `deriveMissionSegmentState` can never
+  return `ghost` there while initiative detail can — which lets `completedTasks`,
+  and therefore `progress`, differ between the two surfaces *now*. It also keys
+  `blocked` off `workers[0]` only. Separately, `countBlockedByPR`'s task index
+  spans only the missions its caller loaded, so a task depending on one in another
+  initiative is scored not-blocked on **both** surfaces: the invariant passes and
+  the number is wrong on both. This is the second independent confirmation that an
+  agreement invariant cannot catch two surfaces agreeing on a wrong `0`.
+- **Nothing promotes a release to `healthy`** (see above). Needs the policy call:
+  promote on deploy success, or require the `verificationUrl` probe.
+- **`SparklineBar` has no per-day `<title>`**, so §5.1's hover detail is
+  unimplementable without an additive change there. A per-page overlay renderer
+  would violate the reuse rule.
+- **There is no KPI editor route.** §5.1 says an `unverified` block "links to the
+  KPI editor"; KPIs are only editable through a panel that mounts when
+  `kpis.length > 0`, and no initiative currently has KPIs set. So every arc gets
+  the bare qualifier and the "fix is one click away" promise is unsatisfiable.
+- **`lib/release-readiness.ts` and `lib/task-ship-state.ts` are the release
+  surfaces not routed through `classifyReleaseState`** (§9.2's "every release
+  surface"). `ReleaseWidget` already has its own shared helper carrying the
+  CI-green precondition; collapsing the two is a larger change.
+- **`createdByAccountId` does not identify a person.** `accounts` has no `userId`
+  and `resolveAccountId` picks any account in the viewer's team, so the Origin
+  row's "You" is a name-match heuristic. Making it truthful is a schema question.
+- **Migration step 4's §3.3 workspace-header rule** (AC-8…AC-10) is still open;
+  only the §3.2 deletion landed.
+- **`releases.unit`** is still unused — reserved-looking, and the natural home for
+  a mission-scoped release under A′.
 
 **Spec follow-ups this schedules.** `docs/SPEC.md:79` and
 `docs/specs/mission-task-lifecycle.md:264–267` are rewritten to describe A′
