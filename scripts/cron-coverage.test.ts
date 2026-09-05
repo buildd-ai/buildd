@@ -73,3 +73,54 @@ describe('cron route auth', () => {
     }
   });
 });
+
+/**
+ * A manifest entry with `enabled: false` satisfies every check above — the route
+ * has a trigger, the trigger is not doubled, it is not an orphan — while never
+ * firing. That is how JWKS rotation sat staged dark from the day it shipped:
+ * signing keys never rotated, and no test, log or alert said so.
+ *
+ * Staging a route dark is legitimate. Staging it dark INVISIBLY is not. So the
+ * set is enumerated here with a reason, and it may only shrink.
+ */
+describe('cron staged-dark ledger', () => {
+  // Each entry must say why it does not fire, and what would change that.
+  const STAGED_DARK: Record<string, string> = {
+    '/api/cron/stall-notify':
+      'BT-11/BT-19 stall notification. Never triggered. Enable once the ' +
+      'notification volume is known to be tolerable at a 5-minute cadence.',
+    '/api/cron/routing-calibration':
+      'Aggregates 7 days of task outcomes for model-routing calibration. ' +
+      'Read-only; its inputs (downshifted, wasRetried) are genuinely written, ' +
+      'so it is enable-when-wanted rather than blocked on anything.',
+  };
+
+  const disabled = manifest.jobs
+    .filter((j) => j.enabled === false)
+    .map((j) => j.path)
+    .sort();
+
+  it('every dark job is listed with a reason', () => {
+    const unexplained = disabled.filter((p) => !STAGED_DARK[p]);
+    expect(
+      unexplained,
+      'a job was disabled without an entry here — say why it does not fire, ' +
+        'or enable it. A silently dark cron is indistinguishable from a broken one.',
+    ).toEqual([]);
+  });
+
+  it('the ledger names no job that is already enabled', () => {
+    const stale = Object.keys(STAGED_DARK).filter((p) => !disabled.includes(p));
+    expect(
+      stale,
+      'these jobs now fire — remove them from STAGED_DARK so the ledger keeps ' +
+        'measuring something',
+    ).toEqual([]);
+  });
+
+  it('the dark set only shrinks', () => {
+    // Was 3 when this ledger landed; JWKS rotation was enabled in the same
+    // change. Raising this number requires editing the line and explaining why.
+    expect(disabled.length).toBeLessThanOrEqual(2);
+  });
+});

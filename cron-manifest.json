@@ -28,7 +28,7 @@
       "title": "Buildd: JWKS Rotation",
       "path": "/api/cron/jwks-rotation",
       "schedule": "0 4 * * 0",
-      "enabled": false
+      "enabled": true
     },
     {
       "$comment": "Aggregates 7 days of task outcomes for model-routing calibration. Read-only; weekly is enough since the window is 7d. Staged dark \u2014 no trigger has ever existed for this route.",
