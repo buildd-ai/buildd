@@ -41,6 +41,10 @@ const mockMissionsFindFirst = mock(() => null as any);
 let insertCalls: Array<{ table: any; values: any; conflict: string | null }> = [];
 let deleteCalls: Array<{ table: any }> = [];
 let updateCalls: Array<{ table: any; setValues: any }> = [];
+// Captured `db.select().from(t).where(cond)` predicates, so a test can assert
+// the SHAPE of a query and not just its result (see the workflow_run runId
+// lookup: the danger there is the SQL it emits, not what it returns).
+let selectWhereCalls: Array<{ table: any; condition: any }> = [];
 
 // Table-keyed select results — lets tests configure `db.select().from(<table>)`
 // responses (used by the knowledge-ingest enqueue path). Return null to fall
@@ -75,8 +79,9 @@ mock.module('@/lib/repo-scope', () => ({
   GIT_SUFFIX_RE: 'suffix-re',
 }));
 
+const mockNotify = mock((_opts: any) => {});
 mock.module('@/lib/pushover', () => ({
-  notify: mock(() => {}),
+  notify: mockNotify,
 }));
 
 mock.module('@/lib/task-dispatch', () => ({
@@ -137,6 +142,7 @@ mock.module('@buildd/core/db', () => ({
     select: (_columns?: any) => ({
       from: (table: any) => ({
         where: (_cond: any) => {
+          selectWhereCalls.push({ table, condition: _cond });
           const rows = selectTableResults(table);
           if (rows) {
             return Object.assign(Promise.resolve(rows), {
@@ -164,7 +170,10 @@ mock.module('drizzle-orm', () => ({
 const schemaMock = {
   githubInstallations: { id: 'id', installationId: 'installationId' },
   githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId', fullName: 'fullName' },
-  tasks: { id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status' },
+  tasks: {
+    id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status',
+    releaseResult: 'release_result', missionId: 'mission_id', workspaceId: 'workspace_id',
+  },
   workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef' },
   workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
@@ -456,6 +465,8 @@ function resetAll() {
   insertCalls = [];
   deleteCalls = [];
   updateCalls = [];
+  selectWhereCalls = [];
+  mockNotify.mockClear();
   selectTableResults = () => null;
   jobInsertConflicts = false;
 
@@ -2677,6 +2688,54 @@ describe('workflow_run → releases state advancement', () => {
 
     const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
     expect(releaseUpdate).toBeUndefined();
+  });
+
+  // ── the runId lookup ──────────────────────────────────────────────────────
+  //
+  // This lookup runs on EVERY completed workflow_run — every CI workflow on
+  // every push, not just release runs — so its SQL is on a hot path shared
+  // with the whole repo's CI volume.
+
+  it('still fails the release task on a non-failure, non-success conclusion', async () => {
+    // Guard against "optimising" this handler by filtering conclusions before
+    // the task lookup: buildWorkflowRunOutcome treats anything other than
+    // success as failed, so a CANCELLED or TIMED_OUT release run must still
+    // mark the task failed and alert. Only the releases-row advancement is
+    // restricted to success/failure.
+    selectTableResults = (t) =>
+      t === schemaMock.tasks
+        ? [{ id: 'task-rel-1', releaseResult: { status: 'pending_ci', message: '' }, missionId: null, workspaceId: 'ws-release' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('cancelled')));
+    expect(res.status).toBe(200);
+
+    const taskUpdate = updateCalls.find((c) => c.table === schemaMock.tasks);
+    expect(taskUpdate).toBeDefined();
+    expect((taskUpdate!.setValues as any).releaseResult.status).toBe('failed');
+    expect(mockNotify.mock.calls.length).toBeGreaterThan(0);
+  });
+
+  it('matches runId as text and skips rows with no release_result', async () => {
+    selectTableResults = () => null;
+    await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+
+    const lookup = selectWhereCalls.find((c) => c.table === schemaMock.tasks);
+    expect(lookup, 'no select against tasks was captured').toBeDefined();
+    const raw = (lookup!.condition.strings as string[]).join('?');
+
+    // No ::bigint cast. The cast is evaluated per row during the scan, so a
+    // single task whose release_result->>'runId' is not numeric raises 22P02
+    // and every workflow_run delivery 500s — which GitHub then retries.
+    expect(raw).not.toContain('::bigint');
+
+    // IS NOT NULL is what lets the planner use the partial index
+    // tasks_release_run_id_idx (indexed WHERE release_result IS NOT NULL);
+    // without it the predicate cannot be proven to exclude NULL rows.
+    expect(raw).toContain('IS NOT NULL');
+
+    // Compared as text, so the parameter must be the id stringified.
+    expect(lookup!.condition.values).toContain('9999');
   });
 });
 

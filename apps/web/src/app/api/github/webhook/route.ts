@@ -1904,8 +1904,22 @@ async function handleWorkflowRunEvent(event: {
   const run = event.workflow_run;
 
   // Find the task whose releaseResult.runId matches this workflow run.
-  // The cast to int is safe because runId is always stored as a JS number (which
-  // Postgres stores in JSONB as a numeric literal without quotes).
+  //
+  // This runs for EVERY completed workflow_run — every CI workflow on every
+  // push, not just release runs — so the predicate is on a hot path carrying
+  // the whole repo's CI volume. Two things make it cheap and safe:
+  //
+  //   - Compared as TEXT, not `::bigint`. The cast is evaluated per row while
+  //     scanning, so one task whose release_result->>'runId' is not numeric
+  //     raises 22P02 and every workflow_run delivery 500s — which GitHub then
+  //     retries, amplifying the failure. Text equality cannot throw. runId is
+  //     always written as a JS number, and JSONB renders an integer back
+  //     through ->> as plain digits, so String(run.id) matches exactly.
+  //   - `IS NOT NULL` first. It is semantically free (a NULL release_result
+  //     could never match) and it is what lets the planner use the partial
+  //     index `tasks_release_run_id_idx`, which is indexed
+  //     WHERE release_result IS NOT NULL — a few release-dispatching rows
+  //     instead of the whole tasks table.
   const matchingTask = await db
     .select({
       id: tasks.id,
@@ -1914,7 +1928,9 @@ async function handleWorkflowRunEvent(event: {
       workspaceId: tasks.workspaceId,
     })
     .from(tasks)
-    .where(sql`(${tasks.releaseResult}->>'runId')::bigint = ${run.id}`)
+    .where(
+      sql`${tasks.releaseResult} IS NOT NULL AND ${tasks.releaseResult}->>'runId' = ${String(run.id)}`,
+    )
     .limit(1)
     .then((rows) => rows[0] ?? null);
 
