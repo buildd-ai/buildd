@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import type { ReleaseBaselineSource } from '@buildd/core/release-baseline';
+import type { ReleaseArchetype } from '@buildd/core/release-archetype';
+import { classifyReleaseState, isReleaseVisible } from '@/lib/release-state';
 
 export type GatedReleaseFooter = {
   archetype: 'gated';
@@ -35,13 +37,37 @@ export const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string
   pending_external: { label: 'Pending', cls: 'text-text-muted border-border-default' },
 };
 
-export function MissionReleaseFooter({ data }: { data: ReleaseFooterData }) {
+/**
+ * The mission-list card footer.
+ *
+ * Visibility is decided by the shared `classifyReleaseState` helper, not by an
+ * inline copy of the §9.1 branches. AC-45 requires that this card and the
+ * mission-detail section classify `none` / `unseeded` / `clean` identically
+ * *because they call the same helper* — they used to hold two hand-copied sets
+ * of branches, which is the divergence the doctrine exists to prevent.
+ *
+ * `archetype` is optional so the card grid does not have to thread it: absent,
+ * it is taken from the loader payload, which can only describe a release-capable
+ * workspace. Supplying it is strictly better — it is the only way to distinguish
+ * `none` from `clean`, and per AC-42 a `none` workspace should not have been
+ * queried at all.
+ */
+export function MissionReleaseFooter({
+  data,
+  archetype,
+}: {
+  data: ReleaseFooterData;
+  archetype?: ReleaseArchetype;
+}) {
+  const state = classifyReleaseState({
+    archetype: archetype ?? data?.archetype ?? 'none',
+    data,
+  });
+  if (!isReleaseVisible(state)) return null;
+  // Narrowing for the render bodies below: a visible state guarantees `data`.
   if (!data) return null;
 
   if (data.archetype === 'gated') {
-    // Unavailable (no baseline resolvable at all) or genuinely nothing to ship
-    // both render nothing — neither implies a pipeline the workspace doesn't have.
-    if (data.queueDepth.kind === 'unavailable' || data.queueDepth.value === 0) return null;
     const ageText =
       data.oldestMergedAt.kind === 'value' ? ` · oldest ${daysAgo(data.oldestMergedAt.value)}d ago` : '';
     const noReleaseYet = data.baselineSource !== 'healthy';

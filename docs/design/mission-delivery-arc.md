@@ -262,34 +262,48 @@ integration tests now run inside `build.yml`.
 
 ### Surface gaps
 
-- **U1** Mission detail has no release block. Composition is header → outcome
-  summary → Timeline|Feed tabs → goal criteria → settings.
-- **U2** There is no `/app/releases` index — only `[id]/page.tsx` — and no nav
-  entry (`lib/nav-config.tsx`: Home, Missions, Initiatives, Activity, Team).
-  Release history exists only inside workspace config.
-- **U3** The Home `Release Queue` widget states the problem (`N unshipped · oldest
-  Nd ago`) and offers a link to the *previous* release. It has no verb.
-- **U4** `Release now` is three navigations deep and disabled for the strategy this
-  repo uses.
-- **U5** `NewMissionForm` collects title, description, workspace, backend, budget,
-  schedule. No goal criteria, no merge policy, no release intent.
-- **U6** No provenance anywhere in the UI (see Problem §4).
-- **U7** No task → release link, though `release_tasks` edges are written and the
-  release page renders the reverse direction.
-- **U8** Attempts and reviewer runs collapse into a bookkeeping footer carrying
-  title, timestamp, PR url. Why the attempt exists, which role ran it, and how many
-  remain are all absent.
-- **U9** `docs/specs/surface-ia-home-missions-initiatives.md` migration steps 4–6
-  are unshipped: Home still mounts `InitiativeRail`, the dead
-  `groupMissionsByInitiative` path still ships with its test, and initiative detail
-  has no verdict block, evidence line, pending-action strip or large sparkline.
-- **U10** `MISSION_COMPLETION_DECISION` is emitted for every completion decision
-  per spec and has no subscriber (`lib/pusher.ts` is its only occurrence).
-- **U11** `tasks/[id]/page.tsx` prints raw enums (`ci_running`, `pr_open`) into the
-  UI, and three of `StageChip`'s states (`MERGE`, `VERIFY`, `REVIEWING`) are dead —
-  never produced by `lib/stage.ts`.
+**Re-verified against `origin/dev` on 2026-09-04, and four of these were already
+closed.** They are kept, struck through, with what closed them — a design doc
+whose gap list is stale sends people to build things that exist, which is exactly
+what happened here before this pass.
 
----
+- ~~**U1** Mission detail has no release block.~~ **Closed.**
+  `missions/[id]/MissionReleaseSection.tsx` shipped in v0.194.0 (#2036) with
+  `ReleaseNowButton` already mounted, satisfying §8.5, AC-40, AC-41 and §10.1.
+- ~~**U2** There is no `/app/releases` index and no nav entry.~~ **Closed.**
+  `app/(protected)/releases/page.tsx` exists and `lib/nav-config.tsx` carries a
+  `Releases` entry.
+- ~~**U3** The Home `Release Queue` widget has no verb.~~ **Closed.**
+  `home/ReleaseActionButton.tsx` mounts in the widget's non-`ci_blocking` branch.
+- ~~**U4** `Release now` is three navigations deep and disabled for this repo's
+  strategy.~~ **Closed** by the §10.1 relocation: it now lives on mission detail
+  and the Home widget, and is gone from `/app/workspaces/[id]/config`.
+- **U5** `NewMissionForm` collects title, description, workspace, backend, budget,
+  schedule. No goal criteria, no merge policy, no release intent. **Still open** —
+  verified: no `goalCriteria` reference in
+  `missions/new/NewMissionForm.tsx`.
+- **U6** No provenance anywhere in the UI (see Problem §4). **Still open.**
+- **U7** No task → release link, though `release_tasks` edges are written and the
+  release page renders the reverse direction. **Still open.**
+- **U8** Attempts and reviewer runs collapse into a bookkeeping footer carrying
+  title, timestamp, PR url. **Still open** — verified: `attachAttempts` has no
+  call site in any `.tsx` file, so the canonical grouping API is unused by the UI.
+- **U9** `docs/specs/surface-ia-home-missions-initiatives.md` migration steps 4–6.
+  **Step 5 is now half done and that is its own hazard:** `InitiativeRail` is
+  unmounted and deleted (AC-6 holds, with a source-level guard), but §2's pulse
+  line was never built, so Home carries no initiative element beyond the arc
+  headline. Steps 4 and 6 remain.
+- **U10** `MISSION_COMPLETION_DECISION` is emitted for every completion decision
+  per spec and has no subscriber. **Still open** — verified: the only non-test
+  occurrences are the emitter (`mission-completion.ts:440`) and the event
+  constant (`pusher.ts:119`).
+- ~~**U11** `tasks/[id]/page.tsx` prints raw enums and three `StageChip` states are
+  dead.~~ **Closed** — the raw enums are gone from that page.
+
+**The lesson, recorded because it cost real effort:** every closed item above was
+closed on `dev` *after* the audit that found it. Findings decay; the reasoning
+behind them does not. Re-read the cited code at `origin/dev` before acting on any
+item here.
 
 ## Proposal
 
