@@ -27,9 +27,24 @@ export interface ResolveWorktreeBaseOptions {
  *
  * Prefers `context.resumeBranch` (new canonical field) over `context.baseBranch`
  * (legacy CI retry field). If a `fetchBranch` probe is supplied, it verifies the
- * remote branch before returning it, falling back to `defaultBranch` on missing
- * or diverged results. Without a probe the candidate is returned optimistically
- * (backward compat for callers that haven't wired up the probe yet).
+ * remote branch before returning it. Without a probe the candidate is returned
+ * optimistically (backward compat for callers that haven't wired up the probe).
+ *
+ * WHY THE TWO FIELDS ARE NOT INTERCHANGEABLE HERE. They feed the same ladder,
+ * but a `'diverged'` probe result means opposite things for each:
+ *
+ *  - `resumeBranch` is a *prior attempt*. More than 50 commits ahead of trunk
+ *    means that attempt ran away; starting fresh is the safe move.
+ *  - `baseBranch` is a base the task was *deliberately told to build on* — a
+ *    stacked predecessor, or a mission integration branch under Option A′.
+ *    Being ahead of trunk is the whole purpose of such a branch, and falling
+ *    back to trunk is actively destructive: the worktree gets cut from trunk
+ *    while the task context still names the integration branch, so the PR opens
+ *    against a base its commits were never derived from and the diff reads as
+ *    though it reverts every sibling change already landed there.
+ *
+ * So divergence only vetoes a resume candidate. `'missing'` still vetoes both —
+ * git cannot cut a worktree from a ref that does not exist.
  *
  * @returns A git ref like `origin/main` or `origin/buildd/abc-fix-tests`
  */
@@ -39,13 +54,17 @@ export async function resolveWorktreeBase(
   const { defaultBranch, context, fetchBranch, log, onFallback } = opts;
 
   // Prefer resumeBranch (new canonical field) over baseBranch (legacy CI retry field)
-  const candidate =
-    (typeof context?.resumeBranch === 'string' && context.resumeBranch.length > 0
-      ? context.resumeBranch as string
-      : undefined) ??
-    (typeof context?.baseBranch === 'string' && (context.baseBranch as string).length > 0
-      ? context.baseBranch as string
-      : undefined);
+  const resumeCandidate =
+    typeof context?.resumeBranch === 'string' && context.resumeBranch.length > 0
+      ? (context.resumeBranch as string)
+      : undefined;
+  const declaredBase =
+    typeof context?.baseBranch === 'string' && (context.baseBranch as string).length > 0
+      ? (context.baseBranch as string)
+      : undefined;
+  const candidate = resumeCandidate ?? declaredBase;
+  /** Which field the candidate came from — decides how `'diverged'` is read. */
+  const kind: 'resume' | 'declared_base' = resumeCandidate ? 'resume' : 'declared_base';
 
   if (!candidate) {
     return `origin/${defaultBranch}`;
@@ -56,13 +75,24 @@ export async function resolveWorktreeBase(
     return `origin/${candidate}`;
   }
 
+  const label = kind === 'resume' ? 'resumeBranch' : 'baseBranch';
   const result = await fetchBranch(candidate);
   if (result === 'missing') {
-    log?.(`[worktree] resumeBranch ${candidate} not found on remote — falling back to ${defaultBranch}`);
+    log?.(`[worktree] ${label} ${candidate} not found on remote — falling back to ${defaultBranch}`);
     onFallback?.({ candidate, reason: 'missing' });
     return `origin/${defaultBranch}`;
   }
   if (result === 'diverged') {
+    if (kind === 'declared_base') {
+      // Expected, not a fault: a declared base is supposed to be ahead of
+      // trunk. Logged with the count's meaning named so this is not mistaken
+      // for a swallowed error.
+      log?.(
+        `[worktree] baseBranch ${candidate} is far ahead of ${defaultBranch} — honouring it anyway ` +
+        `(a declared base is expected to lead trunk; divergence only vetoes a resume branch)`,
+      );
+      return `origin/${candidate}`;
+    }
     log?.(`[worktree] resumeBranch ${candidate} is diverged beyond recovery — falling back to ${defaultBranch}`);
     onFallback?.({ candidate, reason: 'diverged' });
     return `origin/${defaultBranch}`;

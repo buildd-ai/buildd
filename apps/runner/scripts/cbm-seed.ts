@@ -36,6 +36,23 @@ import { join } from 'path';
 const repoPath = process.argv[2]?.replace(/\/+$/, '');
 const force = process.argv.includes('--force');
 
+/**
+ * Explicit base ref to seed, e.g. a mission integration branch. Absent means the
+ * repo's default branch — the pre-P9 behaviour and still the common case.
+ *
+ * This is what makes the seed base-ref-aware. Without it every seed described
+ * trunk, so a mission task based on an integration branch was handed the
+ * pre-mission graph AND told to skip its own index: a confidently wrong graph of
+ * precisely the code its siblings had just changed.
+ */
+const baseRefArgIdx = process.argv.indexOf('--base-ref');
+const baseRefArg = baseRefArgIdx > -1 ? process.argv[baseRefArgIdx + 1]?.trim() : undefined;
+const explicitBaseRef = baseRefArg && !baseRefArg.startsWith('--') ? baseRefArg : undefined;
+if (baseRefArgIdx > -1 && !explicitBaseRef) {
+  console.error('cbm-seed: --base-ref given without a value');
+  process.exit(2);
+}
+
 function git(args: string[], cwd = repoPath): { ok: boolean; out: string } {
   const r = spawnSync('git', ['-C', cwd!, ...args], { encoding: 'utf8', timeout: 120_000 });
   return { ok: r.status === 0, out: (r.stdout ?? '').trim() };
@@ -77,15 +94,41 @@ if (!isGitRepoRoot(repoPath)) {
 }
 
 git(['fetch', 'origin', '--quiet']);
-const ref = defaultRef();
-if (!ref) {
-  console.error(`cbm-seed: no origin default branch for ${repoPath} — skipping`);
-  process.exit(1);
+
+/**
+ * The ref this seed describes. An explicit --base-ref must RESOLVE — refusing is
+ * the point. Falling back to the default branch would produce a seed labelled
+ * with a base it does not describe, which is the stale-graph defect wearing a
+ * correct-looking record.
+ */
+let ref: string | null;
+if (explicitBaseRef) {
+  ref = [explicitBaseRef, `origin/${explicitBaseRef}`]
+    .find(candidate => git(['rev-parse', '--verify', '--quiet', candidate]).ok) ?? null;
+  if (!ref) {
+    console.error(`cbm-seed: base ref ${explicitBaseRef} does not resolve in ${repoPath} — refusing to seed`);
+    process.exit(1);
+  }
+} else {
+  ref = defaultRef();
+  if (!ref) {
+    console.error(`cbm-seed: no origin default branch for ${repoPath} — skipping`);
+    process.exit(1);
+  }
 }
+
+// A seed for a non-default base must NOT fill the legacy unkeyed record slot:
+// that slot is what a task with no resolved base ref reads, and putting a mission
+// branch's graph there is the same stale-graph defect pointed the other way.
+const isDefaultBase = !explicitBaseRef;
+
 const sha = git(['rev-parse', ref]).out;
-const seedPath = cbmSeedPathFor(repoPath);
+// Per base, not per repo: CBM keys a project by the absolute path it indexed, so
+// two bases sharing one checkout would collapse into a single project and
+// overwrite each other on every refresh.
+const seedPath = cbmSeedPathFor(repoPath, isDefaultBase ? undefined : ref);
 const shared = sharedCbmCacheDir();
-const previous = readCbmSeedRecord(repoPath);
+const previous = readCbmSeedRecord(repoPath, isDefaultBase ? undefined : ref);
 
 if (
   !force
@@ -120,45 +163,96 @@ if (!existsSync(join(seedPath, '.git'))) {
 
 const runtimeDir = ensureCbmRuntimeDir(shared, join(shared, 'seed-run'));
 const started = Date.now();
-const res = spawnSync(CBM_BINARY_PATH, ['cli', 'index_repository', '--repo-path', seedPath], {
-  env: {
-    ...process.env,
-    CBM_CACHE_DIR: shared,
-    CBM_RUNTIME_DIR: runtimeDir,
-    CBM_ALLOWED_ROOT: seedPath,
-    CBM_AUTO_WATCH: 'false',
-    CBM_MEM_BUDGET_MB: '1024',
-  },
-  encoding: 'utf8',
-  timeout: 15 * 60_000,
-});
 
-if (res.status !== 0) {
-  console.error(`cbm-seed: index failed (status ${res.status}) — workers fall back to per-task indexing`);
-  if (res.stderr) console.error(res.stderr.split('\n').slice(-3).join('\n'));
-  process.exit(1);
+const cbmEnv = {
+  ...process.env,
+  CBM_CACHE_DIR: shared,
+  CBM_RUNTIME_DIR: runtimeDir,
+  CBM_ALLOWED_ROOT: seedPath,
+  CBM_AUTO_WATCH: 'false',
+  CBM_MEM_BUDGET_MB: '1024',
+};
+
+/**
+ * Incremental refresh when this exact seed already exists and only its ref moved.
+ *
+ * This is the case an advancing integration branch produces on every sibling
+ * merge, and it is why N tasks on one shared base is a BETTER cache unit than N
+ * tasks each cut from trunk: one incremental update per advance, amortised across
+ * the mission, instead of one full ~20s index per task.
+ *
+ * `detect_changes` is attempted, never required. Its exact CLI spelling is not
+ * pinned by anything in this repo, so a wrong flag or a build that does not
+ * expose it must degrade to the full index that already worked — not to no seed.
+ * The fallback prints, so "incremental never actually runs" is visible in the seed
+ * log rather than silently costing a full index forever.
+ */
+const canRefreshIncrementally =
+  !force
+  && !!previous
+  && previous.seedPath === seedPath
+  && existsSync(join(shared, `${previous.project}.db`));
+
+let project: string | undefined;
+let mode: 'incremental' | 'full' = 'full';
+
+if (canRefreshIncrementally) {
+  const inc = spawnSync(
+    CBM_BINARY_PATH,
+    ['cli', 'detect_changes', '--repo-path', seedPath],
+    { env: cbmEnv, encoding: 'utf8', timeout: 15 * 60_000 },
+  );
+  if (inc.status === 0) {
+    mode = 'incremental';
+    // detect_changes updates an EXISTING project, so its key is the recorded one
+    // rather than something to re-parse. Prefer its own report when it gives one.
+    project = /"project"\s*:\s*"([^"]+)"/.exec(inc.stdout ?? '')?.[1] ?? previous!.project;
+  } else {
+    console.log(
+      `cbm-seed: detect_changes unavailable or failed (status ${inc.status}) — falling back to a full index`,
+    );
+  }
 }
 
-// Read the project name back out of CBM's own output. Deriving it from the path
-// looked fine on paths without dots and then silently produced a key CBM had never
-// heard of — which fails at query time on the agent's turn, not here.
-const project = /"project"\s*:\s*"([^"]+)"/.exec(res.stdout ?? '')?.[1];
+if (mode === 'full') {
+  const res = spawnSync(CBM_BINARY_PATH, ['cli', 'index_repository', '--repo-path', seedPath], {
+    env: cbmEnv,
+    encoding: 'utf8',
+    timeout: 15 * 60_000,
+  });
+
+  if (res.status !== 0) {
+    console.error(`cbm-seed: index failed (status ${res.status}) — workers fall back to per-task indexing`);
+    if (res.stderr) console.error(res.stderr.split('\n').slice(-3).join('\n'));
+    process.exit(1);
+  }
+
+  // Read the project name back out of CBM's own output. Deriving it from the path
+  // looked fine on paths without dots and then silently produced a key CBM had never
+  // heard of — which fails at query time on the agent's turn, not here.
+  project = /"project"\s*:\s*"([^"]+)"/.exec(res.stdout ?? '')?.[1];
+}
+
 if (!project) {
   console.error('cbm-seed: index reported no project name — not recording a seed');
   process.exit(1);
 }
 
-writeCbmSeedRecord(repoPath, {
+writeCbmSeedRecord(
   repoPath,
-  seedPath,
-  project,
-  ref,
-  sha,
-  indexedAt: new Date().toISOString(),
-});
+  {
+    repoPath,
+    seedPath,
+    project,
+    ref,
+    sha,
+    indexedAt: new Date().toISOString(),
+  },
+  { alsoDefaultSlot: isDefaultBase },
+);
 
-const nodes = /"nodes":(\d+)/.exec(res.stdout ?? '')?.[1] ?? '?';
 console.log(
-  `cbm-seed: ${project} indexed in ${((Date.now() - started) / 1000).toFixed(1)}s`
-  + ` (nodes=${nodes}, ${ref} ${sha.slice(0, 9)}) -> ${shared}`,
+  `cbm-seed: ${project} ${mode === 'incremental' ? 'refreshed' : 'indexed'}`
+  + ` in ${((Date.now() - started) / 1000).toFixed(1)}s`
+  + ` (base=${ref} ${sha.slice(0, 9)}, defaultSlot=${isDefaultBase}) -> ${shared}`,
 );
