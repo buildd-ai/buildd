@@ -76,6 +76,51 @@ import type { MergePolicy } from '@buildd/shared';
 const params = [1, 'buildd-ai/buildd', 42, 'head-sha'] as const;
 const autoThresholdPolicy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } };
 
+describe('evaluateAutoMergeSafety CI verification', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+
+  it('refuses the merge when the check-runs lookup fails', async () => {
+    // Fail closed: this read is the only proof CI is green, so an API blip must
+    // not become a merge with no CI verification.
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('could not verify CI status'),
+    });
+  });
+
+  it('does not reach the diff-size or mergeable_state reads after a failed lookup', async () => {
+    mockGithubApi.mockRejectedValueOnce(new Error('GitHub API error: 502 Bad Gateway'));
+
+    await evaluateAutoMergeSafety(...params, autoThresholdPolicy);
+
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses while a check run is still queued or in progress', async () => {
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [
+        { name: 'build', status: 'completed', conclusion: 'success' },
+        { name: 'integration', status: 'queued', conclusion: null },
+      ],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('integration'),
+    });
+  });
+});
+
 describe('evaluateAutoMergeSafety mergeable_state check', () => {
   beforeEach(() => {
     mockGithubApi.mockReset();
