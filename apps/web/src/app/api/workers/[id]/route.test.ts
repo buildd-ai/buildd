@@ -315,14 +315,6 @@ mock.module('@/lib/pushover', () => ({
   notify: mockNotify,
 }));
 
-mock.module('@/lib/slack-notify', () => ({
-  notifySlack: mock(() => Promise.resolve()),
-}));
-
-mock.module('@/lib/discord-notify', () => ({
-  notifyDiscord: mock(() => Promise.resolve()),
-}));
-
 mock.module('@/lib/task-callback', () => ({
   sendTaskCallback: mock(() => Promise.resolve()),
 }));

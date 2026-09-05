@@ -487,9 +487,9 @@ it fires.
   Only the human takeover of a reviewer (`/interrupt`) is specified here.
 - **Mission completion overrides** and the goal-criteria gate — see
   `docs/specs/mission-task-lifecycle.md`.
-- **Notification transport**: Pushover / Slack / Discord fan-out and per-team
-  channel configuration. This spec requires only that a question produce a
-  notification carrying the respond link.
+- **Notification transport** and per-team channel configuration. This spec
+  requires only that a question produce a notification carrying the respond
+  link.
 - **The runner's local debug UI** endpoints on port 8766, which can drive
   `sendMessage` without any coordination-layer record.
 

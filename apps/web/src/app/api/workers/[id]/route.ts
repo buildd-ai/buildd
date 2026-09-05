@@ -11,8 +11,6 @@ import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
-import { notifySlack } from '@/lib/slack-notify';
-import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
@@ -2751,7 +2749,7 @@ export async function PATCH(
     );
   }
 
-  // Send Slack/Discord notifications and webhook callback on completion/failure
+  // Send the webhook callback on completion/failure
   // Smart suppression: skip notifications for heartbeat tasks with status "ok", auto-retried failures, or budget resets
   if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry && !isBudgetReset) {
     try {
@@ -2761,39 +2759,11 @@ export async function PATCH(
       });
 
       if (taskForNotify?.workspace) {
-        const ws = taskForNotify.workspace;
         const result = (taskForNotify as any).result as {
           summary?: string;
           prUrl?: string;
           structuredOutput?: unknown;
         } | null;
-        const summaryText = result?.summary
-          ? result.summary.slice(0, 200)
-          : undefined;
-
-        const emoji = status === 'completed' ? 'white_check_mark' : 'x';
-        const statusLabel = status === 'completed' ? 'completed' : 'failed';
-        const lines = [
-          `Task ${statusLabel}: "${taskForNotify.title}"`,
-          ...(summaryText ? [`Summary: ${summaryText}`] : []),
-          ...(result?.prUrl ? [`PR: ${result.prUrl}`] : []),
-          `Dashboard: https://buildd.dev/app/tasks/${taskForNotify.id}`,
-        ];
-        const message = lines.join('\n');
-
-        // Slack
-        notifySlack(ws as any, `:${emoji}: ${message}`).catch((err) =>
-          console.error('Slack notify error:', err)
-        );
-
-        // Discord
-        notifyDiscord(ws as any, message, {
-          title: `Task ${statusLabel}`,
-          description: lines.slice(1).join('\n'),
-          color: status === 'completed' ? 0x22c55e : 0xef4444,
-          url: `https://buildd.dev/app/tasks/${taskForNotify.id}`,
-        }).catch((err) => console.error('Discord notify error:', err));
-
         // Webhook callback (enriched with worker performance data)
         // Sensitive: redacted stub — no summary or structured output in payload
         const completedAt = updates.completedAt ?? worker.completedAt;

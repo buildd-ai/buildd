@@ -241,7 +241,7 @@ the route tree is authoritative.)
   `notes/[noteId]/reply`).
 - **Workspaces:** `workspaces` (+ `by-repo`, `match-repos`, `create-repo`),
   `workspaces/[id]/{config,runners,schedules,skills,memory,projects,
-  watched-projects,webhook,integrations/slack,codex-credential}` and nested CRUD.
+  watched-projects,webhook,codex-credential}` and nested CRUD.
 - **Teams:** `teams`, `teams/[id]` (+ `members`, `invitations`), `invitations/[token]/accept`.
 - **Roles/Skills:** `roles`; skill CRUD under `workspaces/[id]/skills`.
 - **Secrets:** `secrets`.
