@@ -1,6 +1,6 @@
 # Plan — Linear Phase 3a (inbound webhook: label → task, close → cancel)
 
-**Status:** In progress — branch `feat/linear-phase-3` (based on `main`).
+**Status:** Shipped — phase 3a landed in v0.155.0 (2026-07-26): the Linear inbound webhook route and `lib/linear-webhook.ts`. Archived; phase 3b was never started and belongs in `docs/design/` if revived.
 **Design:** `docs/design/linear-hierarchy-ingest.md` (Phase 3)
 **Spec:** `docs/specs/work-tracker-integration.md` §3 (inbound webhooks)
 **Scope:** The **inbound Linear webhook** only. A labeled Linear issue creates a

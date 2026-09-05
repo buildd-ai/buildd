@@ -1,6 +1,6 @@
 # Backend Failover Policy
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `packages/core/backend-policy.ts`, `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/tasks/[id]/reassign/route.ts`, `docs/design/retry-continuity.md`
 
 ---

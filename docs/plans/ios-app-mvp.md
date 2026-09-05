@@ -1,6 +1,6 @@
 # Plan: Buildd iOS App MVP
 
-**Status**: Draft — mockups complete, ready for implementation
+**Status**: Superseded — implementation lives in the `buildd-ai/buildd-ios` repo (active). This file is the original MVP scope, kept for the design rationale; it is not the current state of that app.
 **Created**: 2026-03-22
 
 > **Visual design — source of truth: [`docs/design/mobile-feed-spec.md`](design/mobile-feed-spec.md).**

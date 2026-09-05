@@ -8,7 +8,7 @@ domain: mcp
 surfaces: [packages/core/mcp-tools.ts, apps/web/src/app/api/mcp/route.ts, apps/web/src/app/api/github/pr/review/route.ts, apps/web/src/lib/pr-review-status.ts]
 related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-roles]
 keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405, request_pr_review, get_pr_review, adopted pr, waitfor]
-verified_by: [packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
+verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
 supersedes: []
 ---
 # MCP Action Contracts

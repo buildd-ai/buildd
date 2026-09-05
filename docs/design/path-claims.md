@@ -1,6 +1,6 @@
 # Path Claims as a Coordination Primitive
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 `apps/web/src/app/api/tasks/[id]/path-claim/route.ts`,
 `apps/web/src/app/api/mcp/route.ts` (check_path_claim tool, lines 297–325 / 595–718),

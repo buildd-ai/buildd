@@ -1,6 +1,6 @@
 # bwrap Bind-Allowlist Worker Isolation
 
-**Status:** Proposed
+**Status:** Implemented — phase 1 only (allowlist is opt-in via `BUILDD_SANDBOX_MOUNT_ALLOWLIST`, default off)
 **Related:**
 - `apps/runner/src/workers.ts` — `startSession()`, `isBwrapSupported()`, `sandboxConfig`, `cleanEnv`
 - `apps/runner/src/env-scan.ts:54` — `checkBwrapSupport()` probe
