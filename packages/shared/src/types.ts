@@ -363,6 +363,15 @@ export interface WorkspacePolicyConfig {
   riskClasses: RiskClassEntry[];
   /** Required when preset implies agent-review escalation for any class. */
   reviewerRole?: string;
+  /**
+   * Pre-inject the PR's patch text into the reviewer task, instead of only the
+   * changed-filename list. Off by default: it changes what the reviewer's
+   * verdict is based on, so a workspace opts in rather than discovering it.
+   * See `docs/design/reviewer-evidence-and-verification.md`.
+   */
+  reviewerPatchEvidence?: boolean;
+  /** Token ceiling for that patch. Defaults to `REVIEWER_PATCH_TOKEN_BUDGET`. */
+  reviewerPatchTokenBudget?: number;
 }
 
 // ============================================================================

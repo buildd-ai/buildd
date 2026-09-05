@@ -1337,7 +1337,14 @@ async function maybeDispatchReviewer(
     const basePolicy = resolvePolicy(workspace, mission);
 
     // Fetch PR files first (needed for policyConfig override AND pre-flight check)
-    let prFiles: Array<{ filename: string }> = [];
+    let prFiles: Array<{
+      filename: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      patch?: string | null;
+      previous_filename?: string | null;
+    }> = [];
     try {
       const raw = await githubApi(installationId, `/repos/${repoFullName}/pulls/${pr.number}/files?per_page=300`);
       if (Array.isArray(raw)) prFiles = raw;
@@ -1431,6 +1438,9 @@ async function maybeDispatchReviewer(
       installationId,
       repoFullName,
       policyConfig: policyConfig ?? undefined,
+      // Already fetched above for the policy override and the pre-flight
+      // check — passing it through saves a second identical GitHub call.
+      prFiles,
     });
 
     if (reviewerTask) {

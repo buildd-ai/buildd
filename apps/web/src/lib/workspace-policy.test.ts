@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   detectRiskClassPaths,
+  effectivePathsForClass,
   detectAllRiskClasses,
   resolveEffectivePolicyForPR,
   buildPolicyIntentSentence,
@@ -380,5 +381,25 @@ describe('applyPolicyConfigToMergePolicy', () => {
       ['packages/core/drizzle/0002.sql'],
     );
     expect(result.tier).toBe('auto-threshold');
+  });
+});
+
+describe('effectivePathsForClass — malformed stored config', () => {
+  it('does not throw when a stored risk class has no detectedPaths', () => {
+    // `gitConfig.policyConfig` is jsonb and `PATCH /api/workspaces/[id]`
+    // accepts a hand-authored one, so the required field can be absent at
+    // runtime. The unguarded spread threw inside preflightEscalationCheck,
+    // whose caller catches and reports "no reviewer dispatched" — which the
+    // webhook follows into the auto-merge path. A crashing gate must not read
+    // as an absent one.
+    const entry = { name: 'auth_and_secrets', userPaths: ['lib/auth.ts'] } as never;
+
+    expect(() => effectivePathsForClass(entry)).not.toThrow();
+    expect(effectivePathsForClass(entry)).toEqual(['lib/auth.ts']);
+  });
+
+  it('does not throw when both path lists are absent', () => {
+    const entry = { name: 'dependency_bump' } as never;
+    expect(effectivePathsForClass(entry)).toEqual([]);
   });
 });

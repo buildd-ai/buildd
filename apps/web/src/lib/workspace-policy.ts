@@ -174,9 +174,18 @@ export function detectAllRiskClasses(files: string[]): RiskClassEntry[] {
 
 // ── Policy resolution (per-PR) ────────────────────────────────────────────────
 
-/** Get all effective paths for a risk class (detected + user overrides). */
+/**
+ * Get all effective paths for a risk class (detected + user overrides).
+ *
+ * `detectedPaths` is required by the type but this config is jsonb, and
+ * `PATCH /api/workspaces/[id]` accepts a hand-authored `gitConfig.policyConfig`
+ * that TypeScript never sees. An unguarded spread over a missing array threw
+ * inside `preflightEscalationCheck`, whose caller catches and returns "no
+ * reviewer dispatched" — which the webhook then follows into the auto-merge
+ * path. A crashing escalation gate must not read as an absent one.
+ */
 export function effectivePathsForClass(entry: RiskClassEntry): string[] {
-  return [...entry.detectedPaths, ...(entry.userPaths ?? [])];
+  return [...(entry.detectedPaths ?? []), ...(entry.userPaths ?? [])];
 }
 
 /** Check whether a file path is covered by a risk class entry. */

@@ -214,6 +214,7 @@ let lastInsertTable: any = null;
 let lastInsertValues: any = null;
 // Controls whether onConflictDoNothing returns a row (default) or null (dedup suppressed)
 let mockInsertConflictDoNothingResult: 'row' | 'empty' = 'row';
+let missionNoteInserts: any[] = [];
 const mockGenericInsert = mock((table: any) => {
   // Delegate tenant budget inserts to the existing mock so existing tests still work
   // (schema mock returns an object for tenantBudgets, not a string)
@@ -223,6 +224,9 @@ const mockGenericInsert = mock((table: any) => {
   return {
     values: mock((values: any) => {
       lastInsertValues = values;
+      // `lastInsertValues` is overwritten by every insert, so a handler that
+      // writes an audit note and then a task leaves no trace of the note.
+      if (table === 'missionNotes') missionNoteInserts.push(values);
       const row = { id: 'new-task-id', ...values };
       return {
         onConflictDoUpdate: mock(() => Promise.resolve()),
@@ -258,6 +262,16 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
+}));
+
+// The verdict-time escalation gate re-inspects migrations. The real inspector
+// walks several paginated endpoints; mocking it keeps these tests about the
+// gate's wiring, the way the webhook route tests do.
+const mockInspectPullRequestMigrations = mock(() =>
+  Promise.resolve({ safe: true as const, operationClass: 'EXPAND' as const }),
+);
+mock.module('@/lib/migration-inspector', () => ({
+  inspectPullRequestMigrations: mockInspectPullRequestMigrations,
 }));
 
 mock.module('@/lib/task-dependencies', () => ({
@@ -370,10 +384,18 @@ mock.module('@/lib/task-dispatch', () => ({
   buildTaskPayload: mock((task: any) => task),
 }));
 
+// The gate's own logic is unit-tested in lib/reviewer.test.ts. Here it is a
+// mock so these tests can pin the WIRING: that the route re-reads the PR's
+// files at verdict time and honours an override it did not compute itself.
+const mockEnforceServerSideEscalation = mock((params: any) => ({
+  verdict: params.verdict,
+  overrideReason: null as string | null,
+}));
 mock.module('@/lib/reviewer', () => ({
   createReviewerTask: mock(() => Promise.resolve({ id: 'reviewer-task-1' })),
   preflightEscalationCheck: mock(() => ({ shouldEscalate: false })),
   isSchemaTouchingFile: mock(() => false),
+  enforceServerSideEscalation: mockEnforceServerSideEscalation,
   REVIEWER_TASK_OUTPUT_SCHEMA: {},
 }));
 
@@ -517,6 +539,17 @@ describe('PATCH /api/workers/[id]', () => {
     mockWorkspacesFindFirst.mockReset();
     mockGithubReposFindFirst.mockReset();
     mockGithubApi.mockReset();
+    missionNoteInserts = [];
+    mockEnforceServerSideEscalation.mockReset();
+    mockEnforceServerSideEscalation.mockImplementation((params: any) => ({
+      verdict: params.verdict,
+      overrideReason: null as string | null,
+    }));
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: true,
+      operationClass: 'EXPAND',
+    } as never);
     mockTriggerEvent.mockReset();
     mockUpsertAutoArtifact.mockReset();
     mockFormatStructuredOutput.mockReset();
@@ -4214,6 +4247,17 @@ describe('PATCH /api/workers/[id]', () => {
     } = {}) {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
 
+      // A real PR has files, and the verdict-time gate re-reads them — it
+      // escalates when it cannot, so the default `[]` made every approve
+      // escalate. Model a clean, readable diff unless a test overrides it.
+      mockGithubApi.mockImplementation((_installId: number, path: string) =>
+        Promise.resolve(
+          typeof path === 'string' && /\/pulls\/\d+\/files/.test(path)
+            ? [{ filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1, status: 'modified' }]
+            : [],
+        ),
+      );
+
       // Worker being updated (the reviewer worker)
       mockWorkersFindFirst.mockResolvedValue({
         id: 'worker-1',
@@ -4311,6 +4355,71 @@ describe('PATCH /api/workers/[id]', () => {
         },
       });
     }
+
+    it('approve: re-reads the PR file list at verdict time and passes it to the gate', async () => {
+      // Pre-flight runs at most once, on the webhook's `opened` action. A
+      // migration added during a request-changes iteration is never re-gated,
+      // and POST /api/github/pr/review creates a reviewer with no pre-flight at
+      // all. So the gate must be fed the PR's CURRENT files, not the ones it
+      // was created with.
+      setupReviewerTaskCompletion('approve');
+      mockGithubApi.mockImplementation((_installId: number, path: string) =>
+        Promise.resolve(
+          typeof path === 'string' && /\/pulls\/\d+\/files/.test(path)
+            ? [
+                { filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1, status: 'modified' },
+                { filename: 'packages/core/drizzle/0099_drop_column.sql', additions: 4, deletions: 0, status: 'added' },
+              ]
+            : [],
+        ),
+      );
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockEnforceServerSideEscalation).toHaveBeenCalledTimes(1);
+      const arg = mockEnforceServerSideEscalation.mock.calls[0][0] as any;
+      expect(arg.verdict).toBe('approve');
+      expect(arg.prFiles.map((f: any) => f.filename)).toContain(
+        'packages/core/drizzle/0099_drop_column.sql',
+      );
+      // The gate must never be handed the model's own text to reason about.
+      expect(arg).not.toHaveProperty('escalationReason');
+      expect(arg).not.toHaveProperty('summary');
+    });
+
+    it('approve: honours a server override — escalates, does not merge, and says why', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockEnforceServerSideEscalation.mockImplementation(() => ({
+        verdict: 'escalate',
+        overrideReason: 'drops a column still read by live code',
+      }));
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+
+      // The audit note records the escalation, not the model's approval — and
+      // says the server overrode it, or the card reads as an approval.
+      const note = missionNoteInserts.find((n) => n.type === 'reviewer_escalated');
+      expect(note).toBeDefined();
+      expect(note.body).toContain('the file list requires a human');
+      expect(note.body).toContain('drops a column still read by live code');
+      expect(note.title).toContain('drops a column still read by live code');
+    });
+
+    it('approve: escalates when the PR file list comes back empty', async () => {
+      // An unreadable list must not grant a merge. The gate decides that, but
+      // the route has to actually give it the empty list rather than skipping
+      // the call.
+      setupReviewerTaskCompletion('approve');
+      mockGithubApi.mockImplementation(() => Promise.resolve([]));
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockEnforceServerSideEscalation).toHaveBeenCalledTimes(1);
+      expect((mockEnforceServerSideEscalation.mock.calls[0][0] as any).prFiles).toEqual([]);
+    });
 
     it('approve: calls tryAutoMergeWorkerPr and does not create retry task', async () => {
       setupReviewerTaskCompletion('approve');

@@ -24,6 +24,12 @@ import {
 } from './workspace-policy';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { appendPrActivity } from './pr-activity-comment';
+import {
+  renderReviewerPatch,
+  normalizeGithubPrFiles,
+  type GithubPrFile,
+  type ReviewerPatchFile,
+} from './reviewer-patch';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -146,6 +152,59 @@ export function preflightEscalationCheck(
   return { shouldEscalate: false };
 }
 
+/**
+ * Re-derive the escalation decision from the PR's file list at verdict time,
+ * and override a model `approve` when the files demand a human.
+ *
+ * `preflightEscalationCheck` is the canonical file-list gate, but it runs in
+ * exactly one place: `maybeDispatchReviewer`, reached only on the webhook's
+ * `action === 'opened'`. Nothing re-checks afterwards, and two paths reach a
+ * verdict without it:
+ *
+ *   - a PR pushed to after it opened (`synchronize` does not re-dispatch), so a
+ *     migration or deny-path file added during a request-changes iteration was
+ *     never gated;
+ *   - `POST /api/github/pr/review`, which calls `createReviewerTask` directly
+ *     with no pre-flight at all.
+ *
+ * So this runs at the verdict, which is the one point every path converges on
+ * and the last moment before the merge. It reads the file list only — never
+ * `escalationReason`, `summary` or any other model output, all of which are
+ * downstream of an untrusted diff. That is why this function's parameters do
+ * not include them: the guarantee is structural, not a rule to remember.
+ *
+ * Only `approve` is overridden. `request-changes` merges nothing, so forcing it
+ * to escalate would strand a PR the authoring agent could still fix.
+ */
+export function enforceServerSideEscalation(params: {
+  verdict: ReviewerTaskOutput['verdict'];
+  prFiles: Array<{ filename: string }>;
+  policy: MergePolicy;
+  policyConfig?: WorkspacePolicyConfig;
+  migrationSafety?: MigrationSafety;
+}): { verdict: ReviewerTaskOutput['verdict']; overrideReason: string | null } {
+  const { verdict, prFiles, policy, policyConfig, migrationSafety } = params;
+
+  if (verdict !== 'approve') return { verdict, overrideReason: null };
+
+  // A real PR always has at least one file, so an empty list means the fetch
+  // failed. Failing open would let a transient GitHub 502 grant a merge.
+  if (prFiles.length === 0) {
+    return {
+      verdict: 'escalate',
+      overrideReason:
+        'could not read the PR file list at verdict time, so the escalation gates could not be checked',
+    };
+  }
+
+  const preflight = preflightEscalationCheck(prFiles, policy, migrationSafety, policyConfig);
+  if (preflight.shouldEscalate) {
+    return { verdict: 'escalate', overrideReason: preflight.reason };
+  }
+
+  return { verdict: 'approve', overrideReason: null };
+}
+
 // ── Reviewer task creation ────────────────────────────────────────────────────
 
 export interface CreateReviewerTaskParams {
@@ -171,6 +230,8 @@ export interface CreateReviewerTaskParams {
   repoFullName: string;
   /** When set, the reviewer context uses intent sentences instead of raw glob lists. */
   policyConfig?: WorkspacePolicyConfig;
+  /** The PR's files, when the caller already fetched them. See BuildContextParams. */
+  prFiles?: GithubPrFile[];
   /**
    * Where to push this review's outcome, for a requester waiting in code.
    * Stored on the reviewer task so whichever handler reaches the terminal
@@ -211,6 +272,7 @@ export async function createReviewerTask(
     installationId,
     repoFullName,
     policyConfig: params.policyConfig,
+    prFiles: params.prFiles,
   });
 
   const title = reviewerTitle(prNumber, originalTask.title);
@@ -272,6 +334,12 @@ interface BuildContextParams {
   installationId: number;
   repoFullName: string;
   policyConfig?: WorkspacePolicyConfig;
+  /**
+   * The PR's files, when the caller already fetched them. The webhook fetches
+   * this exact endpoint for the policy override and the pre-flight check, so
+   * passing them through saves a second identical GitHub call per reviewed PR.
+   */
+  prFiles?: GithubPrFile[];
 }
 
 /** Doctrine bullets used when the task declared a concrete file scope. */
@@ -330,24 +398,26 @@ export function renderManifestGuidance(
   };
 }
 
-async function buildReviewerContext(params: BuildContextParams): Promise<string> {
+/** @internal exported for tests — the assembled prompt is the unit under test. */
+export async function buildReviewerContext(params: BuildContextParams): Promise<string> {
   const { originalTaskId, originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig } = params;
 
   // Fetch PR diff summary via GitHub API (lazy import avoids circular deps)
   let diffSummary = '';
+  let files: ReviewerPatchFile[] = [];
   try {
-    const { githubApi } = await import('@/lib/github');
-    const files: Array<{
-      filename: string;
-      additions: number;
-      deletions: number;
-      status: string;
-    }> = await githubApi(
-      params.installationId,
-      `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
-    );
+    if (params.prFiles) {
+      files = normalizeGithubPrFiles(params.prFiles);
+    } else {
+      const { githubApi } = await import('@/lib/github');
+      const fetched = await githubApi(
+        params.installationId,
+        `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
+      );
+      files = Array.isArray(fetched) ? normalizeGithubPrFiles(fetched as GithubPrFile[]) : [];
+    }
 
-    if (Array.isArray(files) && files.length > 0) {
+    if (files.length > 0) {
       const totalAdded = files.reduce((s, f) => s + (f.additions || 0), 0);
       const totalDeleted = files.reduce((s, f) => s + (f.deletions || 0), 0);
       const fileLines = files
@@ -357,8 +427,32 @@ async function buildReviewerContext(params: BuildContextParams): Promise<string>
     }
   } catch (err) {
     console.warn(`[reviewer] Failed to fetch PR files for #${prNumber}:`, err);
+    files = [];
     diffSummary = '## PR Files\n\n(Could not fetch file list — check GitHub API access)';
   }
+
+  // The patch itself, when the workspace has opted in. Additive: the filename
+  // list stays, because scope and completeness are judged against it and the
+  // patch may be short a file the budget could not fit.
+  let patchSection = '';
+  if (policyConfig?.reviewerPatchEvidence && files.length > 0) {
+    const rendered = renderReviewerPatch(files, {
+      tokenBudget: policyConfig.reviewerPatchTokenBudget,
+    });
+    if (rendered.text) {
+      patchSection = [
+        rendered.text,
+        '',
+        'Cite findings as `path:line`, using only the numbered lines above —',
+        'those are the lines this PR added. An unnumbered line is context: it is',
+        'shown so you can read the change, not so you can attribute it to this PR.',
+      ].join('\n');
+    }
+  }
+  // Carries its own separator so that with the flag off the assembled prompt is
+  // byte-identical to the pre-patch one — an opt-in that silently reflows every
+  // workspace's reviewer prompt is not opt-in.
+  const patchBlock = patchSection ? `\n\n${patchSection}` : '';
 
   // Fetch task artifacts
   let artifactsSection = '';
@@ -393,13 +487,14 @@ async function buildReviewerContext(params: BuildContextParams): Promise<string>
   if (policyConfig) {
     policySection = buildPolicyClassPaths(policyConfig);
 
-    // Self-healing: find files not covered by any risk class but risk-adjacent
-    const allFiles = diffSummary
-      .split('\n')
-      .filter((l) => l.trim().startsWith('- '))
-      .map((l) => l.trim().slice(2).split(' ')[0])
-      .filter(Boolean);
-    const uncovered = findUncoveredRiskPaths(policyConfig, allFiles);
+    // Self-healing: find files not covered by any risk class but risk-adjacent.
+    // Read from the file list, never by re-parsing the rendered prompt: patch
+    // text is PR-authored and any `- some/path.ts` line inside a diff would
+    // otherwise enter this list as a file the PR never touched.
+    const uncovered = findUncoveredRiskPaths(
+      policyConfig,
+      files.map((f) => f.filename).filter(Boolean),
+    );
     if (uncovered.length > 0) {
       const lines = uncovered.map(
         (u) => `- \`${u.file}\` → suggested class: \`${u.suggestedClass}\``,
@@ -436,7 +531,7 @@ ${uncoveredSection}
 
 ${manifestSection}
 
-${diffSummary}
+${diffSummary}${patchBlock}
 
 ${artifactsSection}
 
