@@ -26,7 +26,6 @@ export const teams = pgTable('teams', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
-  plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
 
   // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
   // teams that never set one behave exactly as before. Used for anything rendered to a
@@ -620,22 +619,6 @@ export const workspaces = pgTable('workspaces', {
 
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
   webhookConfig: jsonb('webhook_config').$type<WorkspaceWebhookConfig>(),
-
-  // Discord integration
-  discordConfig: jsonb('discord_config').$type<{
-    guildId?: string;
-    channelId?: string;
-    botToken?: string;
-    enabled?: boolean;
-  }>(),
-
-  // Slack integration
-  slackConfig: jsonb('slack_config').$type<{
-    teamId?: string;
-    channelId?: string;
-    botToken?: string;
-    enabled?: boolean;
-  }>(),
 
   // Release configuration — controls whether tasks can trigger a prod deploy
   releaseConfig: jsonb('release_config').$type<WorkspaceReleaseConfig>(),

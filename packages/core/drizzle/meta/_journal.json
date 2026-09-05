@@ -1002,6 +1002,13 @@
       "when": 1788577284750,
       "tag": "0143_striped_argent",
       "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1788614887709,
+      "tag": "0144_famous_kylun",
+      "breakpoints": true
     }
   ]
 }
