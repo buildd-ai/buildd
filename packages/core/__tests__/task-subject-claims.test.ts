@@ -11,6 +11,13 @@
  * canonical_task_id from the conflicting row and attaches a subject report
  * instead of creating a duplicate task.
  *
+ * NOTE on `state`: nothing retires a claim. A superseded claim is ROTATED in
+ * place (apps/web/src/lib/subject-intake-db.ts `rotateClaim`), which keeps the
+ * retry-chain links a release-and-reinsert would discard, so 'active' is the
+ * only value ever written and the index predicate is constant-true. The column
+ * and the predicate stay as the extension point; the `released_at` timestamp
+ * that nothing ever wrote was dropped in migration 0147.
+ *
  * These tests validate the constraint definition is correct in the migration SQL
  * and that the schema module exports the expected table shape. The full
  * collision behaviour is only exercisable against a real Postgres instance;
@@ -55,9 +62,10 @@ describe('task_subject_claims — migration SQL', () => {
   });
 
   it('has the partial unique index that enforces single-active-row per dedupe key', () => {
-    // This is the constraint that makes concurrent inserts collide.
-    // The WHERE clause restricts it to active rows only, so released claims
-    // don't block new generations for the same key.
+    // This is the constraint that makes concurrent inserts collide. The WHERE
+    // clause restricts it to active rows; since nothing ever retires a claim it
+    // is constant-true in practice, and it is the shape, not the filtering, that
+    // is load-bearing here.
     expect(migrationSql).toContain('CREATE UNIQUE INDEX "task_subject_claims_active_unique"');
     expect(migrationSql).toContain('"workspace_id","key_type","key_hash"');
     expect(migrationSql).toContain(`WHERE "task_subject_claims"."state" = 'active'`);
@@ -149,11 +157,13 @@ describe('task_subject_claims — concurrent-insert collision contract', () => {
     expect((result as { outcome: 'attached'; canonicalTaskId: string }).canonicalTaskId).toBe('task-1');
   });
 
-  it('released claims (state=released) do not collide — a new active claim is permitted', async () => {
-    // This is what the partial WHERE clause guarantees: released rows are out of
-    // the unique index, so a new active insert for the same key succeeds (new
-    // generation). Modelled here by having no existing ACTIVE row.
-    const db = makeMockDb(null); // no active row (released row not in index)
+  it('a key with no active row is claimable — the only way a second create happens', async () => {
+    // The previous version of this test claimed to model a RELEASED row falling
+    // out of the partial index. No code path releases a claim, so that scenario
+    // does not exist; what it actually modelled is the first-ever claim for a
+    // key. Keep the case, drop the fiction: a superseded key is reused by
+    // rotating its existing row, never by inserting a second one.
+    const db = makeMockDb(null);
     const result = await tryClaimSubject(db, 'ws-1', 'pr_generation', 'hash-abc', 'task-3');
     expect(result.outcome).toBe('created');
   });
@@ -172,7 +182,9 @@ describe('task_subject_claims — schema shape', () => {
     expect(cols).toContain('generation');
     expect(cols).toContain('state');
     expect(cols).toContain('createdAt');
-    expect(cols).toContain('releasedAt');
+    // No `releasedAt`: dropped in 0147 because nothing ever set it. A column
+    // that only ever holds NULL is a claim about a lifecycle that does not run.
+    expect(cols).not.toContain('releasedAt');
   });
 });
 

@@ -200,6 +200,8 @@ No schema migration is needed for `task_subject_claims` itself — `key_type` is
 
 The `releasedAt` timestamp is set by the same webhook and reaper paths that already manage `prLifecycleStatus`.
 
+> **Status note (this doc is still Proposed):** there is no claim-release logic to extend — subject claims are only ever rotated in place, `state` is always `'active'`, and the `released_at` column was dropped in migration 0147 because nothing wrote it. Step 3 below therefore builds the release path from scratch and must re-add its own timestamp column.
+
 ---
 
 ## Implementation Sketch

@@ -196,6 +196,65 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(capturedUpdates.maxConcurrentTasks).toBe(1);
   });
 
+  // ── connectorAdvisoryMode ──────────────────────────────────────────────────
+  // The degraded-mode claim path (connector-prefilter.ts) is gated entirely on
+  // this column, and it had no writer anywhere: the flag could never be true, so
+  // the tested advisory behaviour was unreachable in production. These tests pin
+  // the writer, including the strict-boolean rule — a coerced value would let the
+  // string "false" switch a claim gate off.
+
+  it('turns connector advisory mode on', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = createMockRequest({ method: 'PATCH', body: { connectorAdvisoryMode: true } });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates.connectorAdvisoryMode).toBe(true);
+  });
+
+  it('turns connector advisory mode back off — false is a value, not an absence', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = createMockRequest({ method: 'PATCH', body: { connectorAdvisoryMode: false } });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates).toHaveProperty('connectorAdvisoryMode', false);
+  });
+
+  it('rejects a non-boolean connectorAdvisoryMode instead of coercing it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    for (const value of ['true', 'false', 1, 0, null]) {
+      const req = createMockRequest({ method: 'PATCH', body: { connectorAdvisoryMode: value } });
+      const res = await PATCH(req, { params: mockParams });
+      expect(res.status).toBe(400);
+      expect(capturedUpdates).not.toHaveProperty('connectorAdvisoryMode');
+    }
+  });
+
+  it('leaves the flag untouched when the field is absent', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = createMockRequest({ method: 'PATCH', body: { name: 'Renamed' } });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedUpdates).not.toHaveProperty('connectorAdvisoryMode');
+  });
+
+  it('refuses to set the flag for a caller with no access to the workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+
+    const req = createMockRequest({ method: 'PATCH', body: { connectorAdvisoryMode: true } });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(404);
+    expect(capturedUpdates).not.toHaveProperty('connectorAdvisoryMode');
+  });
+
   it('updates workspace repo via repoUrl field', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 
