@@ -25,13 +25,17 @@ const nextConfig = {
         destination: '/app/home',
         permanent: false,
       },
-      // The standalone /memory marketing page is gone. It kept an id="pricing"
-      // anchor for inbound links predating the move to a built-in feature, so
-      // send that traffic to the docs page it used to link out to.
+      // The standalone /memory marketing page is gone. Unlike /app/dashboard it
+      // was a live route, not one shadowed by a redirect, so real inbound links
+      // may exist — it kept an id="pricing" anchor for links predating the move
+      // to a built-in feature. Send that traffic to the docs page it used to
+      // link out to. Deliberately a 307, not a 308: browsers cache a permanent
+      // redirect indefinitely, and deleting a page that was serving traffic is
+      // the kind of call worth being able to take back.
       {
         source: '/memory',
         destination: 'https://docs.buildd.dev/docs/features/memory',
-        permanent: true,
+        permanent: false,
       },
     ];
   },

@@ -18,7 +18,7 @@ export default function AcceptInvitationButton({ token }: { token: string }) {
       });
 
       if (!res.ok) {
-        const data = await res.json();
+        const data = await res.json().catch(() => ({} as { error?: string }));
         setError(data.error || 'Failed to accept invitation');
         return;
       }
