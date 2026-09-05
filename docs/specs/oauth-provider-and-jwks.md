@@ -2,13 +2,13 @@
 title: OAuth Provider & Signing Keys
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-09-05
 summary: buildd's OAuth provider surface MUST issue only workspace-scoped PKCE-protected tokens to registered clients, and its JWKS MUST publish the public half of every key that can verify a buildd assertion.
 domain: auth
-surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/oauth/tokens.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
+surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-keys.ts, apps/web/src/lib/signing-key-windows.ts, apps/web/src/app/api/.well-known/jwks.json/route.ts]
 related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, mcp-action-contracts]
 keywords: [rfc 7591, dynamic client registration, rfc 9728, resource_metadata, jwks, kid, es256, hs256, code_challenge, signing_key, assertion grant]
-verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts]
+verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts]
 supersedes: []
 ---
 # OAuth Provider & Signing Keys
@@ -81,7 +81,7 @@ system.
   405 (stateless; no SSE).
 
 **Code surface**:
-- AS metadata: `apps/web/src/app/.well-known/oauth-authorization-server/route.ts:8-19`
+- AS metadata: `apps/web/src/app/.well-known/oauth-authorization-server/route.ts:6-31`
 - Protected-resource metadata: `apps/web/src/app/.well-known/oauth-protected-resource/api/mcp-oauth/[workspace]/route.ts:17-22`
 - DCR: `apps/web/src/app/api/oauth/register/route.ts:10-16` (schema), `:33-49` (response)
 - Client row: `apps/web/src/lib/oauth/storage.ts:16-29` — `createClient()`
@@ -224,8 +224,23 @@ system.
   returns `privateKeyJwk` to any caller.
 - `GET /api/.well-known/jwks.json` MUST respond with an RFC 7517 `keys` array
   whose entries carry `kid`, `use: "sig"`, `alg: "ES256"`, and the public
-  coordinates, and MUST set `Cache-Control: public, max-age=3600,
-  stale-while-revalidate=86400`.
+  coordinates.
+- The JWKS response MUST distinguish the relying party's cache lifetime from a
+  shared cache's. `max-age` MAY be long (currently one hour) because relying
+  parties are also required to flush on an unknown `kid`; `s-maxage` plus
+  `stale-while-revalidate` MUST NOT, because an intermediary answers that flush
+  from its own copy and so decides how long a new key stays unpublished and a
+  revoked one stays trusted. Their sum MUST stay well below
+  `RETIRING_WINDOW_FORCE_MS`, or forced revocation cannot deliver the
+  "absent from the JWKS within minutes" property it exists for. Constants and
+  the asserted relation live in `apps/web/src/lib/signing-key-windows.ts`.
+- The authorization-server metadata document MUST advertise `jwks_uri`. The key
+  set does not sit at root `/.well-known/`, so RFC 8414 discovery is the only
+  way a client can locate it without hardcoding a path. It MUST also list the
+  assertion grant in `grant_types_supported`.
+- Assertion `iss` MUST come from `getIssuer()`, never a literal. A literal makes
+  every deployment claim the production issuer while signing with the same
+  production key set, which a resource server checking `iss` cannot distinguish.
 - The endpoint MUST self-bootstrap: when zero `signing_key` rows exist it
   creates an Active key and serves it in the same request. Bootstrapping
   requires `BUILDD_SIGNING_KEY_TEAM_ID`; without it `createActiveSigningKey()`
@@ -395,110 +410,108 @@ Each entry is an invariant above with no automated test, or a place where code
 and the design doc disagree. None of these are speculative — each is read
 directly off the files cited.
 
-1. **No signing key has ever rotated in production.** `cron-manifest.json`
-   ships `/api/cron/jwks-rotation` with `enabled: false` and states that no
-   trigger has ever existed. Every rotation invariant is covered by unit tests
-   and by nothing else. Consequences that follow mechanically: the Active key's
-   age is unbounded; `tokenExpiresAt` is never set on any row, so no key is
-   ever Retiring; and the delete step never runs.
+> **On reading this list.** Eight of the fifteen entries here described defects
+> that had already been fixed, and one of them claimed the opposite of the
+> truth (that JWKS publishes expired keys). A stale gap list is worse than no
+> gap list: an agent either re-fixes solved problems or trusts an inverted
+> statement about a security primitive. Entry 3 is the instructive one — it
+> asserted a gap by naming a path that does not exist
+> (`.well-known/jwks.json/route.test.ts`), and the test had all along been
+> deliberately placed elsewhere, because the unit-test runner skips dot
+> directories. **Asserting a file's absence is not the same as asserting a
+> behaviour is untested.** Closed entries are recorded under "Recently closed"
+> below rather than deleted, so this does not read as an unexplained shrink.
 
-2. **JWKS publishes every `signing_key` row, including already-expired ones.**
-   `getAllPublicKeys()` (`apps/web/src/lib/signing-keys.ts:102-106`) filters on
-   `purpose` only — it does not filter on `tokenExpiresAt`. Expiry is enforced
-   solely by the deletion step in the disabled cron, so a key past its Retiring
-   window stays in the published JWKS until that cron runs. The design doc's
-   "Revoked ⇒ removed from JWKS" and "at most 2 keys in JWKS" properties are
-   asserted nowhere in code and by no test.
-
-3. **The JWKS endpoint has no test file at all.** There is no
-   `apps/web/src/app/api/.well-known/jwks.json/route.test.ts`. The response
-   shape, the cache headers, and the bootstrap-on-empty path are unverified.
-
-4. **JWKS can return HTTP 200 with an empty `keys` array.** The route only
-   bootstraps when `keys.length === 0` *before* the second read; if the
-   re-read still yields nothing (for example a row whose `label` is null, or a
-   `provider.get()` that returns null), it serves `{"keys":[]}` with a
-   one-hour `max-age`. No code asserts `keys.length > 0` before responding 200,
-   so resource servers cache an empty key set and reject every assertion for
-   that window.
-
-5. **No self-check or alert for "no usable signing key".** The only guard is
-   per-request, inside the mint route
-   (`apps/web/src/app/api/connectors/[id]/assertion/route.ts:149-153`). Because
+1. **No self-check or alert for "no usable signing key".** Rotation now fires
+   weekly and reports its own failures as a `critical` ops alert, but nothing
+   probes the *health* of the key set between rotations. Because
    `provider.get()` decrypts with `ENCRYPTION_KEY`
    (`packages/core/secrets/crypto.ts:20-43`), a wiped or rotated
    `ENCRYPTION_KEY` makes `getAllPublicKeys()` throw and JWKS return HTTP 500
    for every caller — the failure mode is total, and the precedent exists: a
    production incident once returned JWKS 500 because the entire Vercel
-   production environment had been wiped. Nothing periodically probes this
-   surface, and with rotation disabled no scheduled job touches the keys at
-   all, so the first signal is a third party's failed verification.
+   production environment had been wiped. The first signal would still be a
+   third party's failed verification.
 
-6. **`kid` is not unique.** `makeKid()` is `buildd-YYYY-MM` in both
-   `apps/web/src/lib/signing-keys.ts:21-25` and
-   `apps/web/src/app/api/cron/jwks-rotation/route.ts:36-40`. Two rotations in
-   the same calendar month (reachable via `force=true`) produce two rows with
-   the same `label`, and no unique constraint prevents it:
-   `secrets_scoped_auth_credential_idx` explicitly excludes `signing_key`, and
-   `secrets_account_purpose_label_idx` does not bind because `accountId` is
-   NULL for these rows. Two JWKS entries sharing one `kid` make key selection
-   ambiguous for any resource server that looks up by `kid`.
-
-7. **Signing-key creation is not serialised.** The invariant is that creation
+2. **Signing-key creation is not serialised.** The invariant is that creation
    of a signing key MUST be serialised, so that two callers racing on the
    bootstrap path cannot each insert an Active key and leave key selection
    ambiguous. No test asserts it. Specifics are tracked privately until the
    guard lands.
 
-8. **`jwks_uri` is missing from authorization-server metadata.**
-   `docs/design/cross-app-assertion-grant.md:769` requires
-   `jwks_uri: ${issuer}/api/.well-known/jwks.json` in
-   `apps/web/src/app/.well-known/oauth-authorization-server/route.ts`; the
-   route (`:8-19`) does not emit it, nor `grant_types_supported: jwt-bearer`.
-   The JWKS also sits under `/api/.well-known/` rather than root
-   `/.well-known/`, so an RFC 8414 client following metadata cannot find it and
-   must hardcode the path.
+3. **Nothing asserts "at most 2 keys in JWKS".** Publication is correctly
+   gated on expiry, and rotation retires exactly one predecessor, so the
+   property holds by construction on the normal path. It is not enforced:
+   repeated `?force=true` calls within one retiring window, or a raced
+   bootstrap, can publish more, and no test or constraint bounds the count.
 
-9. **Assertion `iss` is a hardcoded literal.** The mint route sets
-   `iss: 'https://buildd.dev'`
-   (`apps/web/src/app/api/connectors/[id]/assertion/route.ts:167`) while OAuth
-   access tokens derive `iss` from `getIssuer()`. A preview deployment mints
-   assertions claiming the production issuer, signed by the same production key
-   set.
+4. **JWKS is served from a path RFC 8414 clients cannot guess.** The document
+   lives at `/api/.well-known/jwks.json` rather than root `/.well-known/`.
+   Discovery now works because the metadata advertises `jwks_uri`, but a client
+   that probes the conventional root path still gets a 404.
 
-10. **Forced rotation is HTTP GET, not POST.** The design doc describes
-    `POST /api/cron/jwks-rotation?force=true`; only `GET` is exported
-    (`apps/web/src/app/api/cron/jwks-rotation/route.ts:42`). The fast-revocation
-    path is therefore reachable by a GET carrying `CRON_SECRET`.
+5. **The shared-cache bound is a policy, not a measurement.** The cache
+   directives are asserted against the key lifecycle in
+   `apps/web/src/lib/signing-key-windows.test.ts`, which is what makes the
+   numbers meaningful. Nothing verifies that the CDN in front of production
+   actually honours `s-maxage` — during the first live rotation the edge was
+   observed serving a one-key document while origin served two, which is the
+   behaviour the bound is meant to shorten but not evidence that it did.
 
-11. **Single-use codes and refresh rotation are untested.**
+6. **Single-use codes and refresh rotation are untested.**
     `apps/web/src/lib/oauth/storage.ts` has no test file. The `consumedAt`
     single-use guard, PKCE `code_challenge` comparison, `redirectUri` rebinding
     check, and `revokedAt` rotation are all asserted only by inspection.
     `auth-oauth-boundaries.md` AC-11/AC-12 state these as criteria; no test
     implements them.
 
-12. **No test covers registration or discovery.** There is no test file for
+7. **No test covers registration or discovery.** There is no test file for
     `/api/oauth/register`, `/.well-known/oauth-authorization-server`, or
     `/.well-known/oauth-protected-resource/...`. AC-1 through AC-5 are
     currently manual checks.
 
-13. **Registered `redirect_uris` are not constrained to an allowed scheme
+8. **Registered `redirect_uris` are not constrained to an allowed scheme
     set.** The invariant is that a redirect URI MUST be accepted at
     registration only within an allowed scheme set: `https:` plus loopback
     `http:`, with non-loopback `http:` and any non-HTTP scheme rejected at
     registration time. No test asserts it. Specifics are tracked privately
     until the guard lands.
 
-14. **The HS256 secret has no rotation story.** `getJwtSecret()` falls back
+9. **The HS256 secret has no rotation story.** `getJwtSecret()` falls back
     through `OAUTH_JWT_SECRET → AUTH_SECRET → NEXTAUTH_SECRET`
     (`apps/web/src/lib/oauth/config.ts:36-42`). Access tokens carry no `kid`
     and there is no two-key overlap window, so changing that secret invalidates
     every outstanding MCP access token at once — and where the fallback lands on
     `AUTH_SECRET`, the same value signs NextAuth sessions.
 
-15. **The authorize-time workspace access check is not tested.** Only
+10. **The authorize-time workspace access check is not tested.** Only
     `isRegisteredRedirectUri` has coverage in
     `apps/web/src/app/api/oauth/authorize/route.test.ts`. AC-9 and AC-10 (403
     on unreachable workspace, picker on omitted workspace) have no test, and the
     route's session and DB paths are never exercised.
+
+### Recently closed
+
+Kept as a record so a reader who remembers the longer list can see where the
+entries went, and so the same claims are not re-derived from an older copy.
+
+- *"No signing key has ever rotated in production."* Rotation was enabled, and a
+  first rotation was then performed and observed by hand: the key set went from
+  one key to two, the predecessor retiring rather than disappearing.
+- *"JWKS publishes every `signing_key` row, including already-expired ones."*
+  Inverted, and had been for some time — `getAllPublicKeys()` filters on
+  `tokenExpiresAt IS NULL OR > now()`, so an expired key is never published even
+  if the deleter has not run.
+- *"The JWKS endpoint has no test file at all."* It has one; the entry looked
+  for it beside the route, where the runner would never have collected it.
+- *"JWKS can return HTTP 200 with an empty `keys` array."* An unusable document
+  now returns 503 with `no-store`.
+- *"`kid` is not unique."* `makeKid()` appends a millisecond-of-month stamp plus
+  random suffix, so two rotations in one calendar month no longer collide.
+- *"`jwks_uri` is missing from authorization-server metadata."* Advertised, along
+  with the assertion grant in `grant_types_supported`.
+- *"Assertion `iss` is a hardcoded literal."* Derived from `getIssuer()`;
+  unchanged in production, fixed everywhere else.
+- *"Forced rotation is HTTP GET, not POST."* `POST` is now accepted for the
+  operator path. `GET` remains because the external scheduler can issue nothing
+  else.

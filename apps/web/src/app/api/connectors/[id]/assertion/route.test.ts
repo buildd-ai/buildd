@@ -76,6 +76,10 @@ const connector = {
 };
 const activeKey = { id: 'key-1', kid: 'buildd-2026-07', privateKeyJwk: {}, publicKeyJwk: {}, createdAt: new Date() };
 
+// Not mocked: getIssuer() is pure env reading, and the point of the assertion
+// below is that the route agrees with it rather than restating a hostname.
+import { getIssuer } from '@/lib/oauth/config';
+
 describe('POST /api/connectors/[id]/assertion', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
@@ -208,7 +212,7 @@ describe('POST /api/connectors/[id]/assertion', () => {
     expect(mockSignAssertion).toHaveBeenCalledTimes(1);
     const [payload, , kid] = mockSignAssertion.mock.calls[0];
 
-    expect(payload.iss).toBe('https://buildd.dev');
+    expect(payload.iss).toBe(getIssuer());
     expect(payload.sub).toBe('account-1:team-1'); // accountId:teamId
     expect(payload.aud).toBe('https://cue.buildd.dev/api/mcp');
     expect(payload.act.sub).toBe('worker:worker-1');
@@ -238,6 +242,26 @@ describe('POST /api/connectors/[id]/assertion', () => {
   it('returns 400 when taskId is missing', async () => {
     const res = await POST(makeRequest({ workerId: 'worker-1' }), { params: mockParams });
     expect(res.status).toBe(400);
+  });
+
+  // Regression: `iss` was the literal 'https://buildd.dev' regardless of where
+  // the code ran, so a preview deployment minted assertions claiming the
+  // production issuer — and signed them with the same production key set, so a
+  // resource server checking `iss` could not tell the two apart. In production
+  // getIssuer() returns that same canonical host, so this is only a change off
+  // production.
+  it('claims the deployment issuer, not the production hostname, off production', async () => {
+    const prev = process.env.OAUTH_ISSUER;
+    process.env.OAUTH_ISSUER = 'https://preview.example.test';
+    try {
+      await POST(makeRequest({ workerId: 'worker-1', taskId: 'task-1' }), { params: mockParams });
+      const [payload] = mockSignAssertion.mock.calls[0];
+      expect(payload.iss).toBe('https://preview.example.test');
+      expect(payload.iss).not.toBe('https://buildd.dev');
+    } finally {
+      if (prev === undefined) delete process.env.OAUTH_ISSUER;
+      else process.env.OAUTH_ISSUER = prev;
+    }
   });
 
   it('returns 400 on invalid JSON body', async () => {
