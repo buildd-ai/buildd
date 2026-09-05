@@ -26,7 +26,7 @@ function ErrorContent() {
         </div>
 
         <Link
-          href="/auth/signin"
+          href="/app/auth/signin"
           className="inline-block px-6 py-3 bg-primary text-white rounded-md hover:bg-primary-hover transition-opacity"
         >
           Try Again

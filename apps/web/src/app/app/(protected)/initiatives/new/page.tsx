@@ -6,6 +6,7 @@ import { cookies } from 'next/headers';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import NewInitiativeForm from './NewInitiativeForm';
+import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,7 +22,7 @@ export default async function NewInitiativePage() {
   if (teamIds.length === 0) {
     return (
       <div className="p-8 text-center text-text-secondary">
-        No team found. Create a workspace before planning an initiative.
+        No team found. <Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> before planning an initiative.
       </div>
     );
   }

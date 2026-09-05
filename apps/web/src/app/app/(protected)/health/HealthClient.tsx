@@ -34,6 +34,7 @@ import {
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import { countOf } from '@/lib/plural';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -1071,7 +1072,7 @@ export function HealthClient({
               <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
               <p className="text-xs text-text-muted font-mono">{scheduleToDelete.cronExpression}</p>
               <p className="text-xs text-text-muted">
-                {scheduleToDelete.totalRuns} runs · last {timeAgo(scheduleToDelete.lastRunAt, now)}
+                {countOf(scheduleToDelete.totalRuns, 'run')} · last {timeAgo(scheduleToDelete.lastRunAt, now)}
               </p>
             </div>
             <div className="flex gap-2">
@@ -1471,7 +1472,7 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
             {cbm.binaryAbsent > 0 && (
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-error">Binary absent from the runner image</span>
-                <span className="text-xs text-text-muted tabular-nums">{cbm.binaryAbsent} session(s)</span>
+                <span className="text-xs text-text-muted tabular-nums">{countOf(cbm.binaryAbsent, 'session')}</span>
               </div>
             )}
             {cbm.mountUnavailable > 0 && (
@@ -1482,7 +1483,7 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
                 >
                   Sandbox mount unavailable
                 </span>
-                <span className="text-xs text-text-muted tabular-nums">{cbm.mountUnavailable} session(s)</span>
+                <span className="text-xs text-text-muted tabular-nums">{countOf(cbm.mountUnavailable, 'session')}</span>
               </div>
             )}
             {cbm.topIndexFailReason && (

@@ -27,6 +27,7 @@ import { getBackendStrandSummary } from '@/lib/backend-strand';
 import type { CbmHealthSummary } from '@/lib/cbm-insight';
 import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { HealthClient } from './HealthClient';
+import Link from 'next/link';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { CbmHealthSummary };
@@ -185,7 +186,7 @@ export default async function HealthPage({
     return (
       <div className="max-w-2xl mx-auto p-6">
         <h1 className="hidden md:block text-2xl font-bold mb-2">Health</h1>
-        <p className="text-sm text-text-tertiary">No team found.</p>
+        <p className="text-sm text-text-tertiary">No team found. <Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> to see this page.</p>
       </div>
     );
   }

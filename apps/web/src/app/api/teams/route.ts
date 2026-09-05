@@ -4,6 +4,7 @@ import { teams, teamMembers } from '@buildd/core/db/schema';
 import { eq, inArray, sql } from 'drizzle-orm';
 import { getUserFromRequest } from '@/lib/auth-helpers';
 import { seedDefaultRolesForTeam } from '@/lib/default-roles';
+import { isReservedTeamSlug } from '@/lib/reserved-slugs';
 
 export async function GET(req: NextRequest) {
   const user = await getUserFromRequest(req);
@@ -74,6 +75,13 @@ export async function POST(req: NextRequest) {
     // Validate slug format
     if (!/^[a-z0-9-]+$/.test(slug)) {
       return NextResponse.json({ error: 'Slug must contain only lowercase letters, numbers, and hyphens' }, { status: 400 });
+    }
+
+    // A slug that collides with a static route under /app/team would strand the
+    // team: Next.js resolves the static segment first, so its detail page would
+    // never render. See lib/reserved-slugs.ts.
+    if (isReservedTeamSlug(slug)) {
+      return NextResponse.json({ error: `"${slug}" is reserved. Pick a different slug.` }, { status: 400 });
     }
 
     // Check slug uniqueness

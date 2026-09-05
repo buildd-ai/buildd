@@ -10,6 +10,7 @@ import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { buildUsageDrilldownView, resolveDrilldownWindow } from '@/lib/usage-drilldown';
 import { UsageClient } from './UsageClient';
+import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,7 +45,7 @@ export default async function UsageDrilldownPage({
     return (
       <div className="max-w-2xl mx-auto p-6">
         <h1 className="hidden md:block text-2xl font-bold mb-2">Usage</h1>
-        <p className="text-sm text-text-tertiary">No team found.</p>
+        <p className="text-sm text-text-tertiary">No team found. <Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> to see this page.</p>
       </div>
     );
   }

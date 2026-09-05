@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import type { RoleWithActivity } from './page';
+import { countOf } from '@/lib/plural';
 
 interface Props {
   activeRoles: RoleWithActivity[];
@@ -149,7 +150,7 @@ function ActiveRoleCard({ role, firstWsId }: { role: RoleWithActivity; firstWsId
 
       {role.stats && role.stats.total > 0 && (
         <div className="flex items-center gap-3 mt-3 text-[11px] text-text-muted">
-          <span>{role.stats.total} tasks (30d)</span>
+          <span>{countOf(role.stats.total, 'task')} (30d)</span>
           <span className="text-status-success">{role.stats.completed} done</span>
           {role.stats.failed > 0 && <span className="text-status-error">{role.stats.failed} failed</span>}
         </div>
@@ -181,7 +182,7 @@ function IdleRoleChip({ role }: { role: RoleWithActivity }) {
         </span>
       )}
       {role.stats && role.stats.total > 0 ? (
-        <span className="text-[11px] text-text-muted">{role.stats.total} tasks</span>
+        <span className="text-[11px] text-text-muted">{countOf(role.stats.total, 'task')}</span>
       ) : (
         <span className="text-[11px] text-text-muted font-mono">{role.slug}</span>
       )}
