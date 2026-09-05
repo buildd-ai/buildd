@@ -25,11 +25,27 @@ const webSrc = join(__dirname, '..');
  * Events with no client consumer by design. Each entry states why, because an
  * unexplained allowlist is how a coverage gate stops measuring anything.
  */
+/**
+ * Events whose consumer is the **runner**, not the dashboard — verified against
+ * `apps/runner/src` rather than taken on trust.
+ *
+ * This category exists because the prose reason was doing no work. `task:assigned`
+ * sat in the server-only list explaining that the runner consumes it, and nothing
+ * checked that the runner still did; the same sentence would have kept the gate
+ * green after a refactor dropped the bind. An event nobody binds and a binding
+ * nobody publishes to are the same defect from opposite ends, and this repo has
+ * shipped both.
+ */
+const RUNNER_CONSUMED_EVENTS: Record<string, string> = {
+  'task:assigned': 'runner claim routing; the UI learns via task:updated',
+  'graph:base-advanced':
+    'the codebase-graph seed cache is a directory on the runner host, so only the runner can act on a base advance',
+};
+
 const SERVER_ONLY_EVENTS: Record<string, string> = {
   // Commands travel server → runner over the worker channel; the dashboard is
   // not a party to them.
   'worker:command': 'runner control plane, not a UI signal',
-  'task:assigned': 'runner claim routing; the UI learns via task:updated',
   // Schedule bookkeeping consumed by the cron/runner side.
   'schedule:triggered': 'cron bookkeeping; surfaced through the tasks it creates',
   'schedule:deferred': 'cron bookkeeping; surfaced through schedule state on reload',
@@ -62,6 +78,17 @@ function publishedEvents(): string[] {
   return [...block.matchAll(/:\s*'([^']+)'/g)].map((m) => m[1]);
 }
 
+/**
+ * Runner source, for the `RUNNER_CONSUMED_EVENTS` check. The runner is a
+ * separate app, so this reaches out of `apps/web` deliberately — the claim
+ * being verified is precisely that the consumer lives over there.
+ */
+// webSrc is apps/web/src, so two levels up is `apps/`.
+const runnerSrc = join(webSrc, '..', '..', 'runner', 'src');
+const runnerSources = collectFiles(runnerSrc)
+  .map((f) => readFileSync(f, 'utf8'))
+  .join('\n');
+
 const files = collectFiles(webSrc);
 /** Files that bind Pusher handlers — i.e. the consumer side. */
 const clientSources = files
@@ -80,11 +107,48 @@ describe('Pusher subscriber coverage', () => {
     expect(clientSources).toContain('.bind(');
   });
 
-  it('every published event is either consumed by a client or declared server-only', () => {
+  // The path arithmetic is load-bearing: if `runnerSrc` resolved to nothing,
+  // every runner-consumed event would silently look unbound and the check below
+  // would fail loudly — but a future refactor could just as easily make it
+  // resolve to an empty string and pass. Assert the scan is non-empty.
+  it('found the runner source tree it verifies runner-consumed events against', () => {
+    expect(runnerSources.length).toBeGreaterThan(0);
+    expect(runnerSources).toContain('.bind(');
+  });
+
+  it('every published event is consumed by a client, consumed by the runner, or declared server-only', () => {
     const orphans = publishedEvents().filter(
-      (ev) => !(ev in SERVER_ONLY_EVENTS) && !clientSources.includes(`'${ev}'`),
+      (ev) =>
+        !(ev in SERVER_ONLY_EVENTS) &&
+        !(ev in RUNNER_CONSUMED_EVENTS) &&
+        !clientSources.includes(`'${ev}'`),
     );
     expect(orphans).toEqual([]);
+  });
+
+  it('every runner-consumed event is actually bound in the runner', () => {
+    const unbound = Object.keys(RUNNER_CONSUMED_EVENTS).filter(
+      (ev) => !runnerSources.includes(`'${ev}'`),
+    );
+    expect(unbound).toEqual([]);
+  });
+
+  it('every runner-consumed event is still published', () => {
+    const published = new Set(publishedEvents());
+    const dead = Object.keys(RUNNER_CONSUMED_EVENTS).filter((ev) => !published.has(ev));
+    expect(dead).toEqual([]);
+  });
+
+  it('no event is listed as both server-only and runner-consumed', () => {
+    const both = Object.keys(RUNNER_CONSUMED_EVENTS).filter((ev) => ev in SERVER_ONLY_EVENTS);
+    expect(both).toEqual([]);
+  });
+
+  it('every runner-consumed exemption carries a stated reason', () => {
+    const unexplained = Object.entries(RUNNER_CONSUMED_EVENTS)
+      .filter(([, why]) => why.trim().length < 15)
+      .map(([ev]) => ev);
+    expect(unexplained).toEqual([]);
   });
 
   it('the server-only allowlist names no event that has since gained a subscriber', () => {

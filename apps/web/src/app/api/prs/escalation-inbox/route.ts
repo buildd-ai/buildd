@@ -53,10 +53,18 @@ export async function GET(_req: NextRequest) {
       prNumber: true,
       prLifecycleStatus: true,
       completedAt: true,
+      // Where this PR points — see the resolvePolicy call below.
+      prBaseRef: true,
     },
     with: {
       task: {
         columns: { id: true, title: true, missionId: true, status: true },
+        // Only the two Option A' fields are selected on purpose. Adding
+        // mergePolicy/requiresReview here would newly feed steps 3-4 of the
+        // precedence chain into this call site, which today resolves from the
+        // workspace alone — a behaviour change unrelated to integration
+        // branches. This keeps the diff to exactly the A' rule.
+        with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
       },
     },
   });
@@ -223,7 +231,15 @@ export async function GET(_req: NextRequest) {
       if (w.taskId && approvalMap.has(w.taskId)) return true;
       const ws = wsMap.get(w.workspaceId);
       if (!ws) return false;
-      const policy = resolvePolicy(ws);
+      // A task PR based on the mission integration branch is not a human's
+      // problem — the human gate for that work is the mission PR. Keep it out of
+      // the inbox. A null prBaseRef resolves exactly as before.
+      const policy = resolvePolicy(
+        ws,
+        (w.task as any)?.mission ?? null,
+        null,
+        { baseRef: w.prBaseRef },
+      );
       return policy.tier === 'human';
     })
     .map(w => {

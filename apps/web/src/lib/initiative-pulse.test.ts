@@ -197,6 +197,60 @@ describe('derivePendingCounts', () => {
 
     expect(out.get('init-1')).toEqual(noPendingCounts());
   });
+
+  // ── The value invariant (spec §5.2a, AC-51 / AC-51a) ───────────────────────
+  //
+  // §5.2, AC-20 and AC-29 only require two surfaces to show the SAME number, so
+  // a shared wrong `0` satisfies all three. These two pin the VALUE for a
+  // mission using an integration branch, where every task PR merges into
+  // `mission/<slug>` and therefore carries `mergedAt` while none of that
+  // mission's diff is on trunk.
+  //
+  // What supplies the 1 is the bookkeeping task that owns the mission
+  // integration PR (`isMissionPrTask` / `MISSION_PR_TASK_PREFIX` — created by
+  // `openMissionIntegrationPr`): it is `completed` with an open, unmerged PR, so
+  // the per-task rule counts it once. Every caller feeds `derivePendingCounts`
+  // ALL of a mission's tasks, bookkeeping included — narrowing any of them to
+  // deliverable tasks would drop this row and take the count back to 0.
+
+  /** Two deliverable task PRs, both merged into the mission's integration branch. */
+  const taskPrsMergedIntoIntegrationBranch = [
+    { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/1', mergedAt: new Date(NOW - 3_600_000), prLifecycleStatus: 'merged' }] },
+    { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/2', mergedAt: new Date(NOW - 1_800_000), prLifecycleStatus: 'merged' }] },
+  ];
+
+  it('AC-51: a finished integration-branch mission contributes exactly 1, not 0 and not one per task', () => {
+    const out = derivePendingCounts(
+      [
+        mission({
+          tasks: [
+            ...taskPrsMergedIntoIntegrationBranch,
+            // The mission integration PR: bookkeeping row, open PR into trunk.
+            { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/3', mergedAt: null, prLifecycleStatus: 'pr_open' }] },
+          ],
+        }),
+      ],
+      { now: NOW },
+    );
+
+    expect(out.get('init-1')!.awaitingVerification).toBe(1);
+  });
+
+  it('AC-51a: the count drops to 0 once the integration PR itself merges', () => {
+    const out = derivePendingCounts(
+      [
+        mission({
+          tasks: [
+            ...taskPrsMergedIntoIntegrationBranch,
+            { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/3', mergedAt: new Date(NOW), prLifecycleStatus: 'merged' }] },
+          ],
+        }),
+      ],
+      { now: NOW },
+    );
+
+    expect(out.get('init-1')!.awaitingVerification).toBe(0);
+  });
 });
 
 // ─── The winning verdict (spec §6.5) ─────────────────────────────────────────

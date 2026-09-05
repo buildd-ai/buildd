@@ -1,4 +1,5 @@
 import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { notMissionIntegrationMerge } from './release-queue-scope';
 import { missions, workspaces, workers, tasks, releases, releaseTasks } from './db/schema';
 import { detectArchetype } from './release-archetype';
 import type { db as DbInstance } from './db';
@@ -186,6 +187,11 @@ async function computeOldestUnshippedAge(wsIds: string[], db: Db, now: Date): Pr
       inArray(tasks.workspaceId, wsIds),
       isNotNull(workers.mergedAt),
       sql`${workers.mergedAt} > ${maxHealthyAt}::timestamptz`,
+      // A task PR that merged into a mission integration branch has not shipped
+      // to trunk, so it must not be able to pin "oldest unshipped merge" — under
+      // Option A′ it would report an age for work that is waiting on the mission
+      // PR, not on a release. Same fragment the three queue-depth queries use.
+      notMissionIntegrationMerge(),
     ));
 
   const oldestMergedAt = oldestRow?.oldestMergedAt ?? null;

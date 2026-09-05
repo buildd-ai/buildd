@@ -17,13 +17,17 @@
 // (AC-42), and a release-capable mission with nothing to show is NEVER computed
 // the same way as an archetype-`none` one (§9.1). `shouldQueryRelease` is reused
 // rather than re-branched so the two classifiers cannot drift apart about which
-// archetypes are release-capable.
+// archetypes are release-capable. The merged partition carries
+// `notMissionIntegrationMerge()` for the same reason: "did this merge reach
+// trunk" is one question with one implementation, in
+// `@buildd/core/release-queue-scope`, not a fifth private variant here.
 import { db } from '@buildd/core/db';
 import { tasks, workers, releases, releaseTasks } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { shouldQueryRelease } from '@/lib/release-state';
+import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 
 export type MissionShipState =
   /** Open work remains — the mission is not finished producing its diff. */
@@ -45,7 +49,11 @@ export type MissionShipState =
 export interface MissionShipEvidence {
   /** Mission tasks in a non-terminal status. */
   openWorkCount: number;
-  /** Mission tasks with at least one worker that recorded a merge. */
+  /**
+   * Mission tasks with at least one worker whose merge could have reached trunk.
+   * Merges into a mission integration branch (Option A′) are excluded — see the
+   * query below and `@buildd/core/release-queue-scope`.
+   */
   mergedTaskCount: number;
   /** Mission tasks carried by at least one `healthy` release. */
   shippedTaskCount: number;
@@ -161,7 +169,14 @@ export async function loadMissionShipState(
   const [row] = await db
     .select({
       openWorkCount: sql<number>`count(distinct case when ${tasks.status} not in ${TERMINAL_TASK_STATUSES} then ${tasks.id} end)::int`,
-      mergedTaskCount: sql<number>`count(distinct case when ${workers.mergedAt} is not null then ${tasks.id} end)::int`,
+      // `mergedAt` alone answers "a PR of this task merged", not "it reached
+      // trunk". Under Option A′ a mission's task PRs merge into the mission's
+      // integration branch, so without the base-ref filter a mission with every
+      // task PR merged and its mission PR still open reads `merged_unshipped` —
+      // "the release queue is what's next" — while trunk has none of it. Same
+      // fragment as the four release-queue-depth queries, deliberately: this is
+      // the fifth caller of the same question.
+      mergedTaskCount: sql<number>`count(distinct case when ${workers.mergedAt} is not null and ${notMissionIntegrationMerge()} then ${tasks.id} end)::int`,
       shippedTaskCount: sql<number>`count(distinct case when ${releases.state} = 'healthy' then ${tasks.id} end)::int`,
     })
     .from(tasks)

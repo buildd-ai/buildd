@@ -125,13 +125,35 @@ describe('resolveCommandCriterion — dispatch', () => {
   // `resolveWorktreeBase`); with no branch on the context it cuts from the
   // workspace default branch instead and the command verifies code the mission
   // has not landed — a green criterion that proves nothing about the mission.
-  it('runs the command against the mission working branch, not the default branch', async () => {
-    missionRow = { id: 'm1', title: 'Empty-source rendering', workspaceId: 'ws-1', workingBranch: 'buildd/mission-m1' };
+  it('runs the command against the mission integration branch, not the default branch', async () => {
+    missionRow = {
+      id: 'm1', title: 'Empty-source rendering', workspaceId: 'ws-1',
+      workingBranch: 'mission/empty-source-1a2b3c4d', integrationBranchEnabled: true,
+    };
 
     await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
 
     const row = insertedValues[0];
-    expect(row.context.baseBranch).toBe('buildd/mission-m1');
+    expect(row.context.baseBranch).toBe('mission/empty-source-1a2b3c4d');
+  });
+
+  it('emits no branch for a mission that has not opted into an integration branch', async () => {
+    // `runMission` generates a `workingBranch` for every mission with a repo,
+    // but nothing pushes to it unless the mission opted in — so naming it here
+    // pointed the verification worktree at a ref that does not exist on the
+    // remote. The runner degraded to trunk, which is why it went unnoticed, and
+    // it also let a `mission/*` base ref be recorded for a mission that never
+    // opted in, which is the one input that makes the release queue's
+    // branch-shape heuristic wrong. Same effective checkout, no false signal.
+    missionRow = {
+      id: 'm1', title: 'Not opted in', workspaceId: 'ws-1',
+      workingBranch: 'mission/not-opted-in-1a2b3c4d', integrationBranchEnabled: false,
+    };
+
+    await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    const row = insertedValues[0];
+    expect('baseBranch' in row.context).toBe(false);
   });
 
   it('emits no branch on the context when the mission has no working branch', async () => {

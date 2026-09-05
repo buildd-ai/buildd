@@ -187,6 +187,15 @@ export interface LocalWorker {
   // When subagentTasksObservedCount > subagentTasks.length, persisted span metrics are floors.
   subagentTasksObservedCount: number;
   worktreePath?: string;  // Git worktree path (isolated cwd for this worker)
+  /**
+   * The ref this worker's worktree was cut from, as resolved by setupWorktree —
+   * `origin/<default>` on a trunk task, the mission integration branch on a
+   * mission task that opted in. Recorded because the codebase-memory seed is
+   * keyed on `(repoPath, baseRef)`: setupWorktree runs in startWorker and the
+   * CBM decision happens later in startSession, so the resolved answer has to
+   * travel on the worker rather than be re-derived and risk disagreeing.
+   */
+  worktreeBaseRef?: string;
   checkpoints: Checkpoint[];  // File checkpoints for rollback support
   checkpointEvents: Set<CheckpointEventType>;  // Tracks which meaningful checkpoints have fired
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
@@ -235,6 +244,15 @@ export interface LocalWorker {
   cbmSharedCache?: boolean;
   /** Why the out-of-band seed refresh did or did not spawn. */
   cbmSeedRefresh?: SeedRefreshOutcome;
+  /**
+   * Set when a seed for this repo existed but described a DIFFERENT base, so it
+   * was refused and this task indexed its own graph instead.
+   *
+   * A value, not just a log line: refusing a stale seed and silently serving one
+   * are indistinguishable from outside, and the difference is whether the agent's
+   * graph answers describe its actual base.
+   */
+  cbmSeedBaseMismatch?: { wanted: string; found: string };
   cbmToolCounts?: Record<string, number>;
   cbmFileAccessCounts?: { read: number; grep: number; glob: number };
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).

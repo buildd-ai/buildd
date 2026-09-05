@@ -76,8 +76,22 @@ Key config (all JSONB, migration-free to evolve):
 A first-class **goal** that aggregates tasks. Status: `active | paused | completed |
 archived` (lifecycle is stored; *health* is derived from task state via
 `deriveMissionHealth`, not stored). Notable fields:
-- **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — all mission tasks push to one
-  shared branch tracked by a single PR.
+- **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — the mission's **integration
+  branch** (shape `mission/<slug>-<id8>`, generated lazily once the mission's workspace
+  has a repo) and the mission-level PR that tracks it. Mission tasks do **not** share a
+  branch: every task gets its own branch and its own PR, always. `workingBranch` is the
+  **base** those task PRs are cut from only for a mission that opted in
+  (`missions.integrationBranchEnabled`, default **false**). For an opted-in mission the
+  task PRs merge into the integration branch, and the mission's work reaches trunk
+  through a single PR from that branch — the mission integration PR, which is the
+  mission's one human gate. That PR is opened automatically: when a task PR merges,
+  the `pull_request` webhook calls `maybeOpenMissionIntegrationPr`, which opens it
+  (via `openMissionIntegrationPr`) once no deliverable task of the mission is left
+  unfinished or unmerged. A mission that has not opted in — the default — behaves as it always
+  has: each task PR targets the workspace's trunk branch and nothing retargets it.
+  `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
+  mission, i.e. the mission integration PR where one exists; a PR based on the mission
+  branch never claims the slot. Both fields stay null for workspace-less missions.
 - `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. An *explicit* status write to `completed` or `archived` (dashboard / MCP) **deletes** the linked schedule; an *automated* completion through `completeMissionIfVerified` **disables** it (`enabled = false`) instead, so a mission that later reopens — or one refused by the goal-criteria gate — keeps its heartbeat. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. Deleting a mission also deletes its schedule. Either way a heartbeat schedule cannot outlive the mission that owns it.
 - **`goalCriteria`** (jsonb) + **`goalCriteriaState`** (jsonb) + `autoVerify` — the
   completion gate. `goalCriteria` is a list of outcome criteria

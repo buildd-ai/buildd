@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 // ─── DB mocks ─────────────────────────────────────────────────────────────────
 
 const mockWorkersFindMany = mock(() => [] as any[]);
+const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
@@ -12,6 +13,7 @@ mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findMany: mockWorkersFindMany },
+      missions: { findMany: mockMissionsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
     update: () => mockWorkersUpdate(),
@@ -22,6 +24,7 @@ mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ a, b, op: 'eq' }),
   and: (...args: any[]) => ({ args, op: 'and' }),
   lt: (a: any, b: any) => ({ a, b, op: 'lt' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   or: (...args: any[]) => ({ args, op: 'or' }),
   isNull: (a: any) => ({ a, op: 'isNull' }),
   isNotNull: (a: any) => ({ a, op: 'isNotNull' }),
@@ -46,11 +49,50 @@ mock.module('@buildd/core/db/schema', () => ({
     createdAt: 'createdAt',
   },
   workspaces: { id: 'id' },
+  missions: {
+    id: 'id',
+    status: 'status',
+    workingBranch: 'workingBranch',
+    integrationBranchEnabled: 'integrationBranchEnabled',
+    updatedAt: 'updatedAt',
+  },
 }));
 
 const mockCheckDependsOnResolved = mock(() => Promise.resolve(undefined));
 mock.module('@/lib/task-dependencies', () => ({
   checkDependsOnResolved: mockCheckDependsOnResolved,
+}));
+
+// The mission dependency gate. `missions.dependencyMetAt` has exactly one
+// writer, and the `merged` gate is cleared only by that column — so whether this
+// fires on a healed merge is the difference between a downstream mission
+// starting and waiting forever.
+const mockCheckAndUnblockDependentMissions = mock(() => Promise.resolve([] as string[]));
+mock.module('@/lib/mission-dependency', () => ({
+  checkAndUnblockDependentMissions: mockCheckAndUnblockDependentMissions,
+  // Full module surface: mock.module replaces a module for the whole process,
+  // so a partial stub would delete these for any other importer in it.
+  isMissionBlocked: mock(() => Promise.resolve({ blocked: false })),
+  wouldCreateCycle: mock(() => Promise.resolve(false)),
+}));
+
+// The mission-PR module is a black box here. The opener is idempotent, returns
+// null for a mission that never opted in and a `{ ok: false, reason }` for every
+// "not yet" case; the two readers below are what let the sweep decide whether a
+// mission is worth an opener call at all.
+const mockMaybeOpenMissionIntegrationPr = mock(() => Promise.resolve(null as any));
+const mockFindMissionPrOwner = mock(() => Promise.resolve(null as any));
+const mockEvaluateMissionWorkState = mock(() => Promise.resolve({
+  complete: true,
+  reason: 'complete',
+  unfinishedTaskCount: 0,
+  unmergedPrCount: 0,
+  landedOnIntegrationCount: 1,
+} as any));
+mock.module('@/lib/mission-pr', () => ({
+  maybeOpenMissionIntegrationPr: mockMaybeOpenMissionIntegrationPr,
+  findMissionPrOwner: mockFindMissionPrOwner,
+  evaluateMissionWorkState: mockEvaluateMissionWorkState,
 }));
 
 // ─── GitHub API mock ──────────────────────────────────────────────────────────
@@ -64,7 +106,10 @@ mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 import {
   reconcileStalePrWorkers,
   refreshWorkerMergeStateIfStale,
+  sweepMissionIntegrationPrs,
   RECONCILE_BATCH_CAP,
+  MISSION_PR_SWEEP_CAP,
+  MISSION_PR_SWEEP_WINDOW_MS,
 } from './pr-reconcile';
 import { TIER_SLA_MS, UNRESOLVABLE_FAILURE_THRESHOLD, DAY_MS, HOUR_MS } from './pr-freshness';
 
@@ -216,6 +261,10 @@ describe('reconcileStalePrWorkers', () => {
     mockWorkersUpdate.mockReset();
     mockGithubApi.mockReset();
     mockCheckDependsOnResolved.mockReset();
+    mockMaybeOpenMissionIntegrationPr.mockReset();
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue(null);
+    mockCheckAndUnblockDependentMissions.mockReset();
+    mockCheckAndUnblockDependentMissions.mockResolvedValue([]);
     // Every outcome now records prLastCheckedAt, so update() must be callable.
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
@@ -550,5 +599,345 @@ describe('reconcileStalePrWorkers', () => {
     await reconcileStalePrWorkers();
 
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
+  });
+
+  // ── Option A' — the mission PR opener needs a non-webhook trigger ──────────
+  //
+  // The webhook was the ONLY caller of maybeOpenMissionIntegrationPr, and
+  // `workers.mergedAt` is documented as lossy in this repo. A lost delivery for
+  // the last task PR therefore healed the row here an hour later and still left
+  // the mission with no PR — and since the completion gate refuses a mission in
+  // that state, a transient delivery gap became terminal.
+
+  it("re-attempts the mission PR when it heals a missed merge", async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task-42', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.stamped).toBe(1);
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith('m1');
+  });
+
+  it('asks the candidate query for the task mission link the opener needs', async () => {
+    mockWorkersFindMany.mockResolvedValue([]);
+    await reconcileStalePrWorkers();
+
+    // Without this the sweep would have to re-read tasks one at a time, and a
+    // missing relation would silently make the opener call unreachable.
+    const query = mockWorkersFindMany.mock.calls[0][0] as any;
+    expect(query.with?.task?.columns?.missionId).toBe(true);
+  });
+
+  it('does not call the opener for a worker whose task has no mission', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task-42', task: { missionId: null } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('does not call the opener for a PR that is merely closed', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 43, workspaceId: 'ws1', taskId: 'task-43', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: false, merged_at: null });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('tells the mission dependency gate when it heals a missed merge', async () => {
+    // Same gap as the opener had, one tier down: a downstream mission whose
+    // gateCondition is 'merged' is cleared ONLY by dependencyMetAt, and the
+    // webhook and the dashboard merge route were the only two writers of it. A
+    // lost delivery left that mission blocked with "Waiting for mission X PRs to
+    // merge" until something unrelated poked it.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task-42', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m1', 'merged');
+  });
+
+  it('raises the mission signal only after the opener has run', async () => {
+    // Ordering is load-bearing: the mission PR must already exist, unmerged,
+    // before missionHasUnmergedWork is asked — otherwise a task-PR merge would
+    // unblock dependents early, before the mission's own gate had even opened.
+    const order: string[] = [];
+    mockMaybeOpenMissionIntegrationPr.mockImplementation(async () => { order.push('open'); return null; });
+    mockCheckAndUnblockDependentMissions.mockImplementation(async () => { order.push('unblock'); return []; });
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task-42', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(order).toEqual(['open', 'unblock']);
+  });
+
+  it('does not raise the mission signal for a PR that is merely closed', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 43, workspaceId: 'ws1', taskId: 'task-43', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: false, merged_at: null });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockCheckAndUnblockDependentMissions).not.toHaveBeenCalled();
+  });
+
+  it('a failing mission signal is logged, never fatal to the sweep', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task-42', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockCheckAndUnblockDependentMissions.mockRejectedValue(new Error('DB blip'));
+
+    const orig = console.error;
+    console.error = () => {};
+    const result = await reconcileStalePrWorkers();
+    console.error = orig;
+
+    expect(result.stamped).toBe(1);
+    // The task-level gate must still have been told.
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-42');
+  });
+
+  it('asks the opener once per mission, however many of its PRs heal at once', async () => {
+    // A batch can heal several workers of the same mission. The opener is
+    // idempotent, so repeating it is safe — but each repeat is a handful of
+    // queries inside a 60 s function for an answer that cannot have changed.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 1, workspaceId: 'ws1', taskId: 'ta', task: { missionId: 'm1' } },
+      { id: 'w2', prNumber: 2, workspaceId: 'ws1', taskId: 'tb', task: { missionId: 'm1' } },
+      { id: 'w3', prNumber: 3, workspaceId: 'ws1', taskId: 'tc', task: { missionId: 'm2' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.stamped).toBe(3);
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledTimes(2);
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith('m1');
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith('m2');
+    // Both mission-level effects share the one dedupe: the signal is idempotent,
+    // but it is also two counting queries per call.
+    expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledTimes(2);
+  });
+
+  it('an opener failure is logged, never fatal to the sweep', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 'task-42', task: { missionId: 'm1' } },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockMaybeOpenMissionIntegrationPr.mockRejectedValue(new Error('GitHub 500'));
+
+    const orig = console.error;
+    console.error = () => {};
+    const result = await reconcileStalePrWorkers();
+    console.error = orig;
+
+    expect(result.stamped).toBe(1);
+    // The dependency gate must still have been told.
+    expect(mockCheckDependsOnResolved).toHaveBeenCalledWith('task-42');
+  });
+});
+
+// ─── Mission PR sweep ─────────────────────────────────────────────────────────
+//
+// Some states reach "work complete" with NO PR-merge event at all: the last
+// deliverable finishes with outputRequirement 'none', or every deliverable task
+// is cancelled. Nothing in the merge path can heal those, so the cron needs a
+// trigger that does not depend on a merge having happened.
+
+describe('sweepMissionIntegrationPrs', () => {
+  const workState = (over: Record<string, unknown> = {}) => ({
+    complete: true,
+    reason: 'complete',
+    unfinishedTaskCount: 0,
+    unmergedPrCount: 0,
+    landedOnIntegrationCount: 1,
+    ...over,
+  });
+
+  beforeEach(() => {
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockMaybeOpenMissionIntegrationPr.mockReset();
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue({ ok: true, prNumber: 5, prUrl: 'u', created: true });
+    mockFindMissionPrOwner.mockReset();
+    mockFindMissionPrOwner.mockResolvedValue(null);
+    mockEvaluateMissionWorkState.mockReset();
+    mockEvaluateMissionWorkState.mockResolvedValue(workState());
+    mockGithubApi.mockReset();
+  });
+
+  it('returns zeros and asks nothing when there are no opted-in missions', async () => {
+    const result = await sweepMissionIntegrationPrs();
+    expect(result.total).toBe(0);
+    expect(result.opened).toBe(0);
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('bounds the candidate set to opted-in missions with an integration branch', async () => {
+    await sweepMissionIntegrationPrs();
+
+    const query = mockMissionsFindMany.mock.calls[0][0] as any;
+    const where = describePredicate(query.where);
+    // Opted-in ONLY: a mission that never set the flag has no mission PR to open,
+    // and scanning every mission on every tick is exactly what must not happen.
+    expect(where).toContain('integrationBranchEnabled');
+    expect(where).toContain('workingBranch');
+    // Still-live missions only.
+    expect(where).toContain('status');
+    // And a recency window, so a mission that has genuinely gone quiet leaves the
+    // candidate set instead of being retried until the end of time.
+    expect(where).toContain('updatedAt');
+    expect(query.limit).toBe(MISSION_PR_SWEEP_CAP);
+    expect(query.orderBy).toBeDefined();
+    expect(MISSION_PR_SWEEP_WINDOW_MS).toBeLessThanOrEqual(30 * DAY_MS);
+  });
+
+  it('opens the mission PR for a mission that reached completeness with no merge event', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+
+    const result = await sweepMissionIntegrationPrs();
+
+    expect(mockMaybeOpenMissionIntegrationPr).toHaveBeenCalledWith('m1');
+    expect(result.opened).toBe(1);
+    expect(result.total).toBe(1);
+  });
+
+  it('leaves a mission whose PR is already open alone, without calling the opener', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({
+      taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u', mergedAt: null, state: 'open',
+    });
+
+    const result = await sweepMissionIntegrationPrs();
+
+    expect(result.alreadyOpen).toBe(1);
+    expect(result.opened).toBe(0);
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('never reopens a mission PR a human closed, and says nothing about it', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({
+      taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u', mergedAt: null, state: 'closed',
+    });
+
+    const logs: unknown[][] = [];
+    const origErr = console.error;
+    const origWarn = console.warn;
+    console.error = (...a: unknown[]) => { logs.push(a); };
+    console.warn = (...a: unknown[]) => { logs.push(a); };
+    const result = await sweepMissionIntegrationPrs();
+    console.error = origErr;
+    console.warn = origWarn;
+
+    expect(result.prClosed).toBe(1);
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+    // Closing the mission PR is a decision. Re-litigating it hourly in the logs
+    // is the spam this sweep must not produce.
+    expect(logs).toEqual([]);
+  });
+
+  it('does not ask GitHub anything for a mission with nothing landed on its branch', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    // Work is "complete" — every deliverable is terminal — but nothing merged
+    // into the integration branch (all cancelled, or all artifact-only). There
+    // is no PR to open, and asking GitHub to compare an empty branch every hour
+    // is a cost with no possible outcome.
+    mockEvaluateMissionWorkState.mockResolvedValue(workState({ landedOnIntegrationCount: 0 }));
+
+    const logs: unknown[][] = [];
+    const origErr = console.error;
+    console.error = (...a: unknown[]) => { logs.push(a); };
+    const result = await sweepMissionIntegrationPrs();
+    console.error = origErr;
+
+    expect(result.nothingToShip).toBe(1);
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+    expect(logs).toEqual([]);
+  });
+
+  it('skips a mission whose work is not finished yet', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockEvaluateMissionWorkState.mockResolvedValue(
+      workState({ complete: false, reason: 'tasks_unfinished', unfinishedTaskCount: 2 }),
+    );
+
+    const result = await sweepMissionIntegrationPrs();
+
+    expect(result.notReady).toBe(1);
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('one failing mission does not stop the sweep', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }, { id: 'm2' }]);
+    mockMaybeOpenMissionIntegrationPr
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ ok: true, prNumber: 7, prUrl: 'u', created: true });
+
+    const orig = console.error;
+    console.error = () => {};
+    const result = await sweepMissionIntegrationPrs();
+    console.error = orig;
+
+    expect(result.errors).toBe(1);
+    expect(result.opened).toBe(1);
+  });
+
+  it('counts an api_error as an error rather than a silent skip', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue({ ok: false, reason: 'api_error', detail: '500' });
+
+    const orig = console.error;
+    console.error = () => {};
+    const result = await sweepMissionIntegrationPrs();
+    console.error = orig;
+
+    expect(result.errors).toBe(1);
+    expect(result.opened).toBe(0);
+  });
+
+  it('treats a mission_pr_closed race as terminal, not as an error', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue({ ok: false, reason: 'mission_pr_closed' });
+
+    const result = await sweepMissionIntegrationPrs();
+
+    expect(result.prClosed).toBe(1);
+    expect(result.errors).toBe(0);
   });
 });

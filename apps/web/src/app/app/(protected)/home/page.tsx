@@ -12,7 +12,7 @@ import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, summariseActionQueueAge } from '@/lib/action-queue';
@@ -27,6 +27,7 @@ import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
@@ -899,6 +900,9 @@ export default async function HomePage({
                       eq(tasks.workspaceId, wsId),
                       isNotNull(workers.mergedAt),
                       sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
+                      // A merge into a mission integration branch is not on
+                      // trunk — see core/release-queue-scope.
+                      notMissionIntegrationMerge(),
                     ),
                   );
 
@@ -933,11 +937,15 @@ export default async function HomePage({
               // Freshness inputs for the action-queue invariant: how old the PR
               // is (which tier it falls in) and when its state was last verified.
               createdAt: true, prLastCheckedAt: true,
+              // Where this PR points. Needed by resolvePolicy to tell a task PR
+              // into a mission integration branch (no human gate — the gate is on
+              // the mission PR) from a PR into trunk (gate applies).
+              prBaseRef: true,
             },
             with: {
               task: {
                 columns: { id: true, title: true, missionId: true, status: true, requiresReview: true, result: true },
-                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true } } },
+                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
           });
@@ -1035,7 +1043,12 @@ export default async function HomePage({
               const ws = wsInboxMap.get(w.workspaceId);
               const mission = (w.task as any)?.mission ?? null;
               const policy = ws
-                ? resolvePolicy(ws, mission, { requiresReview: (w.task as any)?.requiresReview })
+                ? resolvePolicy(
+                    ws,
+                    mission,
+                    { requiresReview: (w.task as any)?.requiresReview },
+                    { baseRef: w.prBaseRef },
+                  )
                 : { tier: 'auto-threshold' as const };
               const rt = latestReviewerTaskByOrigId.get(w.taskId);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
@@ -1047,6 +1060,16 @@ export default async function HomePage({
                   : null,
                 prOpenedAt: w.completedAt ?? null,
                 now: gateNow,
+                // Option A′: the tier drop in resolvePolicy is also what removes
+                // the reviewer, and "no reviewer will ever run" otherwise reads
+                // as "a human must merge this" — the exact inverse of the intent.
+                // The gate needs the base-ref fact itself, not just its shadow
+                // in the tier. Authoritative predicate, because the mission row
+                // (workingBranch + integrationBranchEnabled) is selected above.
+                isMissionIntegrationTaskPr: isMissionIntegrationBase({
+                  baseRef: w.prBaseRef,
+                  mission,
+                }),
               }));
             }
             // ─────────────────────────────────────────────────────────────────────
@@ -1448,8 +1471,14 @@ export default async function HomePage({
                 // or running reviewer task means the agent still owns it — the
                 // dependency urgency is real, but the actor isn't the human, so it
                 // belongs on the in-flight card, not a Waiting on You MERGE card.
+                //
+                // `!== 'human'` rather than `=== 'agent'`: an Option A′ task PR is
+                // owned by the platform, which merges it unattended, so the
+                // dependency urgency is real but there is nothing to ask a human
+                // for. It has no in-flight card either (no reviewer is running),
+                // so it correctly renders nowhere at all.
                 const gate = reviewerGateMap.get(upstream.id);
-                if (gate && gate.actor === 'agent') {
+                if (gate && gate.actor !== 'human') {
                   const inFlightCard = agentReviewingPrs.find(c => c.taskId === upstream.id)
                     ?? reviewQueuedPrs.find(c => c.taskId === upstream.id);
                   if (inFlightCard) {

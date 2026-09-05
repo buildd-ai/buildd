@@ -208,6 +208,17 @@ function zeroCounts(): PendingCounts {
  * `UNASSIGNED_INITIATIVE_KEY` so the unassigned pseudo-initiative gets the same
  * treatment as a real one.
  *
+ * **Feed this EVERY task of a mission, bookkeeping rows included** — do not
+ * narrow the input to `isDeliverableTask`. For a mission on an integration
+ * branch (Option A′) every task PR merges into `mission/<slug>`, so every one
+ * of them carries `mergedAt` and contributes nothing here; the mission's one
+ * outstanding decision is its integration PR, which is owned by a
+ * `bookkeeping` task (`isMissionPrTask`). Dropping bookkeeping rows would take
+ * `awaitingVerification` to `0` for a mission whose whole diff is off trunk —
+ * the wrong `0` that spec §5.2a / AC-51 exists to forbid, and that the
+ * agreement invariants (§5.2, AC-20, AC-29) cannot detect because every
+ * surface would agree on it.
+ *
  * Pure — no DB, no clock beyond `now` (injectable for tests).
  */
 export function derivePendingCounts(

@@ -38,8 +38,8 @@
  */
 
 import { db } from '@buildd/core/db';
-import { workers, workspaces } from '@buildd/core/db/schema';
-import { and, isNull, isNotNull, eq, or, notInArray, sql } from 'drizzle-orm';
+import { missions, workers, workspaces } from '@buildd/core/db/schema';
+import { and, isNull, isNotNull, eq, gt, or, notInArray, sql } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
@@ -49,8 +49,15 @@ import {
   TIER_SLA_MS,
   HOT_MAX_AGE_MS,
   WARM_MAX_AGE_MS,
+  DAY_MS,
   shouldMarkUnresolvable,
 } from '@/lib/pr-freshness';
+import {
+  evaluateMissionWorkState,
+  findMissionPrOwner,
+  maybeOpenMissionIntegrationPr,
+} from '@/lib/mission-pr';
+import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 
 /**
  * On-demand merge-state check for a single worker.
@@ -190,6 +197,11 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       createdAt: true,
       prCheckFailureCount: true,
     },
+    // The mission link, for the Option A' opener below. Fetched with the batch
+    // rather than re-read per row: a merge healed here may be the event that
+    // completes an opted-in mission's work, and the webhook that would normally
+    // have opened its PR is the delivery that went missing.
+    with: { task: { columns: { missionId: true } } },
     orderBy: sql`${workers.prLastCheckedAt} ASC NULLS FIRST`,
     limit: RECONCILE_BATCH_CAP,
   });
@@ -253,6 +265,15 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
 
   let callIndex = 0;
 
+  /**
+   * Missions whose mission-level merge effects have already run in this batch.
+   *
+   * Both effects below are idempotent, so a repeat is safe — but a batch can
+   * heal several workers of one mission, and each repeat is a handful of queries
+   * inside a 60 s function for an answer that cannot have changed.
+   */
+  const missionsHandled = new Set<string>();
+
   for (const [workspaceId, wsWorkers] of byWorkspace) {
     const workspace = await db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
@@ -300,6 +321,42 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             updatedAt: new Date(),
           });
           result.stamped++;
+          // Option A': the webhook was the only trigger for the mission PR, and
+          // `workers.mergedAt` is documented as lossy. Healing the row without
+          // re-attempting the opener leaves an opted-in mission whose work is
+          // done and whose PR never appeared — and the completion gate refuses
+          // that state, so a transient delivery gap became terminal.
+          //
+          // Ordered BEFORE the dependency notification, matching the webhook: the
+          // mission PR must already exist (unmerged) when anything asks whether
+          // this mission still has unmerged work.
+          //
+          // No `assumeCompletedTaskIds` here, deliberately. Unlike the webhook,
+          // this sweep does not go on to stamp `tasks.status`, so it has no
+          // grounds to claim a task has landed beyond what the rows already say.
+          if (worker.task?.missionId && !missionsHandled.has(worker.task.missionId)) {
+            const missionId = worker.task.missionId;
+            missionsHandled.add(missionId);
+            await maybeOpenMissionIntegrationPr(missionId).catch(err =>
+              console.error(`[pr-reconcile] mission PR open failed for mission ${missionId}:`, err),
+            );
+            // And the mission-level dependency gate, which had the same gap one
+            // tier down: `missions.dependencyMetAt` is the only thing that clears
+            // a `merged` gate, and only the webhook and the dashboard merge route
+            // ever wrote it. A lost delivery therefore left a downstream mission
+            // reading "Waiting for mission X PRs to merge" until something
+            // unrelated poked it.
+            //
+            // Ordered AFTER the opener, deliberately: the helper re-checks
+            // `missionHasUnmergedWork`, so the mission's own PR must already
+            // exist — and be unmerged — before it is asked. Reversing these two
+            // would unblock dependents on a task-PR merge, before the mission's
+            // review gate had even opened. Idempotent: its only write is guarded
+            // on `dependencyMetAt IS NULL`.
+            await checkAndUnblockDependentMissions(missionId, 'merged').catch(err =>
+              console.error(`[pr-reconcile] mission unblock failed for mission ${missionId}:`, err),
+            );
+          }
           // Stamping mergedAt is not enough — the dependency gate has to be
           // told, or the tasks this PR was blocking stay pending until some
           // other write pokes them.
@@ -333,6 +390,170 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         await recordFailure(worker, err instanceof Error ? err.message : String(err));
       }
     }
+  }
+
+  return result;
+}
+
+// ─── Mission PR sweep (Option A') ─────────────────────────────────────────────
+
+/**
+ * Missions considered per run.
+ *
+ * Ordered least-recently-updated first, so a mission that stalled sits at the
+ * head of the queue rather than being starved by busier ones. Small on purpose:
+ * opting in is per-mission, and every candidate costs a handful of indexed
+ * reads.
+ */
+export const MISSION_PR_SWEEP_CAP = 20;
+
+/**
+ * How long after its last update a mission remains a sweep candidate.
+ *
+ * This is the retry bound. A mission that genuinely has nothing to ship — every
+ * deliverable cancelled, or an integration branch nothing ever landed on — would
+ * otherwise be re-examined every hour forever. When it goes quiet it leaves the
+ * candidate set, and the sweep stops thinking about it.
+ */
+export const MISSION_PR_SWEEP_WINDOW_MS = 7 * DAY_MS;
+
+export interface MissionPrSweepResult {
+  /** Candidates the bounded query selected. */
+  total: number;
+  /** Mission PRs actually created this run. */
+  opened: number;
+  /** Already had a live mission PR — nothing to do. */
+  alreadyOpen: number;
+  /** Mission PR closed by a human, or closed between check and open. Terminal. */
+  prClosed: number;
+  /** Work is terminal but nothing landed on the integration branch. */
+  nothingToShip: number;
+  /** Work not finished yet — the normal answer for most candidates. */
+  notReady: number;
+  /** Opener threw, or reported an API failure. Retried next run. */
+  errors: number;
+}
+
+/**
+ * Open the mission PR for any opted-in mission whose work is done and whose PR
+ * never appeared.
+ *
+ * The webhook is a merge-event trigger, and there are states that reach "work
+ * complete" with no PR-merge event at all: the last deliverable completes with
+ * `outputRequirement: 'none'`, or every deliverable task is cancelled (a
+ * legitimate way for a mission to finish — the work was called off, which is a
+ * decision, not an absence). Nothing in the merge path can heal those. This is
+ * the trigger that does not depend on a merge having happened.
+ *
+ * Cheap by construction, in three layers:
+ *
+ *   1. The SQL bound selects opted-in missions only — never every mission — and
+ *      caps and orders the batch.
+ *   2. `findMissionPrOwner` short-circuits the two states with nothing to do
+ *      (a live PR) and nothing permitted (a human closed it) before any work
+ *      state is evaluated.
+ *   3. `landedOnIntegrationCount === 0` is the honest "nothing to ship" answer,
+ *      and it is checked BEFORE the opener — which is the call that would
+ *      otherwise ask GitHub to compare an empty branch on every tick.
+ *
+ * So a mission that legitimately has nothing to ship costs a few indexed reads,
+ * no GitHub call, no log line and no mission note, and drops out of the
+ * candidate set entirely once it goes quiet.
+ *
+ * This sweep is deliberately NOT keyed on merge events, and the read-through
+ * refresh in lib/pr-state-refresh.ts is the second reason why: when a render
+ * stamps `mergedAt` first, `reconcileStalePrWorkers`' `isNull(workers.mergedAt)`
+ * candidate query never selects that worker, so the merge-path opener above
+ * never fires for it either. Whoever happened to open a page decides which tier
+ * sees the merge; only this sweep sees the mission regardless.
+ */
+export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult> {
+  const result: MissionPrSweepResult = {
+    total: 0,
+    opened: 0,
+    alreadyOpen: 0,
+    prClosed: 0,
+    nothingToShip: 0,
+    notReady: 0,
+    errors: 0,
+  };
+
+  const candidates = await db.query.missions.findMany({
+    where: and(
+      eq(missions.integrationBranchEnabled, true),
+      isNotNull(missions.workingBranch),
+      // Live missions only. A paused mission is a human stop signal, and a
+      // completed or archived one has no PR left to open.
+      eq(missions.status, 'active'),
+      gt(missions.updatedAt, new Date(Date.now() - MISSION_PR_SWEEP_WINDOW_MS)),
+    ),
+    columns: { id: true },
+    orderBy: sql`${missions.updatedAt} ASC NULLS FIRST`,
+    limit: MISSION_PR_SWEEP_CAP,
+  });
+
+  result.total = candidates.length;
+  if (candidates.length === 0) return result;
+
+  for (const mission of candidates) {
+    try {
+      const owner = await findMissionPrOwner(mission.id);
+      // A live gate: this is the normal answer for a mission mid-review.
+      if (owner?.state === 'open') {
+        result.alreadyOpen++;
+        continue;
+      }
+      // A human closed the mission PR. Reopening it would fight an explicit
+      // decision, and saying so hourly would be noise, not signal.
+      if (owner?.state === 'closed') {
+        result.prClosed++;
+        continue;
+      }
+
+      const work = await evaluateMissionWorkState(mission.id);
+      if (!work.complete) {
+        result.notReady++;
+        continue;
+      }
+      // Complete, but with nothing on the branch for a PR to carry. Not an
+      // error and not something to retry against GitHub.
+      if (work.landedOnIntegrationCount === 0) {
+        result.nothingToShip++;
+        continue;
+      }
+
+      const opened = await maybeOpenMissionIntegrationPr(mission.id);
+      if (!opened) {
+        // Opted out between the query and here.
+        result.notReady++;
+      } else if (opened.ok) {
+        if (opened.created) result.opened++;
+        else result.alreadyOpen++;
+      } else if (opened.reason === 'mission_pr_closed') {
+        result.prClosed++;
+      } else if (opened.reason === 'no_commits' || opened.reason === 'work_incomplete') {
+        result.nothingToShip++;
+      } else {
+        // no_repo / api_error / not_opted_in / no_working_branch: a mission whose
+        // work is done and whose PR still did not open must not be silent.
+        result.errors++;
+        console.error(
+          `[pr-reconcile] mission ${mission.id} work is done but its PR did not open: `
+          + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
+        );
+      }
+    } catch (err) {
+      result.errors++;
+      console.error(`[pr-reconcile] mission PR sweep failed for mission ${mission.id}:`, err);
+    }
+  }
+
+  if (result.opened > 0 || result.errors > 0) {
+    console.log(
+      `[MissionPrSweep] total=${result.total} opened=${result.opened} alreadyOpen=${result.alreadyOpen} `
+      + `prClosed=${result.prClosed} nothingToShip=${result.nothingToShip} notReady=${result.notReady} `
+      + `errors=${result.errors}`,
+    );
   }
 
   return result;

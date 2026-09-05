@@ -36,6 +36,8 @@
     "./memory-store": "./memory-store.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./mission-integration": "./mission-integration.ts",
+    "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
     "./external-links": "./external-links.ts",
     "./release-strategy": "./release-strategy.ts",

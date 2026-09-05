@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -406,11 +407,20 @@ mock.module('@/lib/release-executor', () => ({
 
 // Override any cross-test contamination from webhook/route.test.ts which mocks this module.
 // Provide the real resolvePolicy logic so gateCondition checks work correctly.
-mock.module('@/lib/merge-policy', () => ({
-  resolvePolicy: (
-    workspace: { gitConfig?: { mergePolicy?: any; autoMergeOnGreenCI?: boolean; autoMergePR?: boolean; autoMergeMaxLines?: number; autoMergeDenyPaths?: string[] } | null },
-    mission?: { mergePolicy?: any } | null,
-  ) => {
+//
+// The Option A' arm uses the REAL predicate from core, so a test can only reach
+// it by the route actually passing the mission's integration fields and the PR's
+// base ref. `mockResolvePolicy.mock.calls` records the arguments for the same
+// reason — a hand-copied stub can agree with the route about the wrong thing, so
+// the arguments are asserted directly and the precedence chain itself is left to
+// merge-policy.test.ts, which exercises the real implementation.
+const mockResolvePolicy = mock((
+  workspace: { gitConfig?: { mergePolicy?: any; autoMergeOnGreenCI?: boolean; autoMergePR?: boolean; autoMergeMaxLines?: number; autoMergeDenyPaths?: string[] } | null },
+  mission?: { mergePolicy?: any; workingBranch?: string | null; integrationBranchEnabled?: boolean | null } | null,
+  _task?: { requiresReview?: boolean } | null,
+  pr?: { baseRef?: string | null } | null,
+) => {
+  const below = () => {
     if (mission?.mergePolicy) return mission.mergePolicy;
     if (workspace.gitConfig?.mergePolicy) return workspace.gitConfig.mergePolicy;
     const legacyAutoMerge = workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR ?? true;
@@ -422,8 +432,13 @@ mock.module('@/lib/merge-policy', () => ({
         denyPaths: workspace.gitConfig?.autoMergeDenyPaths ?? [],
       },
     };
-  },
-}));
+  };
+  if (isMissionIntegrationBase({ baseRef: pr?.baseRef, mission })) {
+    return { tier: 'auto-threshold', threshold: below().threshold ?? { maxLines: 800, denyPaths: [] } };
+  }
+  return below();
+});
+mock.module('@/lib/merge-policy', () => ({ resolvePolicy: mockResolvePolicy }));
 
 // CBM fleet detectors. The real implementations are DB-backed and no-op unless
 // OPS_ALERTS_ENABLED, so stubbing them is the only way to observe the caller gate.
@@ -4435,6 +4450,138 @@ describe('PATCH /api/workers/[id]', () => {
       });
       // No retry task
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    // ── Option A': the mission PR carries the gate, not the task PRs ─────────
+    //
+    // A task PR based on the mission's integration branch is not the mission's
+    // review gate — the single PR from that branch into trunk is. Until the
+    // approve path resolved its policy with the PR's base ref it kept applying
+    // the pre-A' gate, so an approve-only workspace parked every task PR waiting
+    // for a human press that Option A' had already moved downstream.
+    it("approve: resolves the policy with the PR's base ref and the mission's integration fields", async () => {
+      setupReviewerTaskCompletion('approve');
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: null,
+        workingBranch: 'mission/illustrative-goal',
+        integrationBranchEnabled: true,
+      });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          turns: 3,
+          pendingInstructions: null,
+        })
+        .mockResolvedValue({
+          id: 'original-worker',
+          workspaceId: 'ws-1',
+          taskId: 'original-task-1',
+          prNumber: 42,
+          prBaseRef: 'mission/illustrative-goal',
+        });
+      mockResolvePolicy.mockClear();
+      // Recorded-call assertions below are about the SELECTED columns, not the
+      // returned rows: the db mock hands back whatever the test staged whatever
+      // was asked for, so an assertion on the row would pass even with the
+      // columns dropped from the query.
+      mockMissionsFindFirst.mockClear();
+      mockWorkersFindFirst.mockClear();
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockResolvePolicy).toHaveBeenCalled();
+      const call = mockResolvePolicy.mock.calls[0] as any[];
+      expect(call[3]).toEqual({ baseRef: 'mission/illustrative-goal' });
+      expect(call[1]).toMatchObject({
+        workingBranch: 'mission/illustrative-goal',
+        integrationBranchEnabled: true,
+      });
+
+      // The policy read is the mission query that asks for `mergePolicy`; later
+      // in the handler another one asks for budget columns.
+      const missionColumns = (mockMissionsFindFirst.mock.calls as any[])
+        .map(c => c?.[0]?.columns)
+        .find((c: any) => c?.mergePolicy === true);
+      expect(missionColumns).toMatchObject({ workingBranch: true, integrationBranchEnabled: true });
+      // ...and NOT requiresReview: this path has never resolved it.
+      expect(missionColumns.requiresReview).toBeUndefined();
+      const workerColumns = (mockWorkersFindFirst.mock.calls as any[])
+        .map(c => c?.[0]?.columns)
+        .filter(Boolean);
+      expect(workerColumns.some((c: any) => c.prBaseRef === true)).toBe(true);
+      // Only the Option A' rule is fed in — the approve path has never resolved
+      // `task.requiresReview` and this change does not start.
+      expect(call[2]).toBeNull();
+    });
+
+    it("approve: auto-merges a task PR on the integration branch even when the workspace gate is approve-only", async () => {
+      setupReviewerTaskCompletion('approve');
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        gitConfig: {
+          mergePolicy: {
+            tier: 'agent-review',
+            agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' },
+          },
+        },
+      });
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: null,
+        workingBranch: 'mission/illustrative-goal',
+        integrationBranchEnabled: true,
+      });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-1',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'reviewer-task-1',
+          turns: 3,
+          pendingInstructions: null,
+        })
+        .mockResolvedValue({
+          id: 'original-worker',
+          workspaceId: 'ws-1',
+          taskId: 'original-task-1',
+          prNumber: 42,
+          prBaseRef: 'mission/illustrative-goal',
+        });
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    it('approve: an unknown base ref keeps the pre-A\' gate', async () => {
+      // `workers.prBaseRef` is null for "we do not know where this PR is going".
+      // That must degrade to today's gate, never to auto-threshold.
+      setupReviewerTaskCompletion('approve');
+      mockWorkspacesFindFirst.mockResolvedValue({
+        id: 'ws-1',
+        gitConfig: {
+          mergePolicy: {
+            tier: 'agent-review',
+            agentReview: { reviewerRole: 'reviewer', gateCondition: 'approve-only' },
+          },
+        },
+      });
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: null,
+        workingBranch: 'mission/illustrative-goal',
+        integrationBranchEnabled: true,
+      });
+      // originalWorker has no prBaseRef at all (setupReviewerTaskCompletion default).
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
     it('approve: posts the verdict to the PR as a buildd activity comment', async () => {
