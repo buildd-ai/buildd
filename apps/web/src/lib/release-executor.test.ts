@@ -384,6 +384,119 @@ describe('executeRelease — trigger policy', () => {
     expect(result.message).toContain('on_mission_complete');
   });
 
+  // ── Option A′: the integration branch is not a release source ─────────────
+  //
+  // The worker-branch path merges `worker.branch` straight into the prod branch.
+  // A mission task's branch is cut from the integration branch, so releasing
+  // from it would carry every sibling commit already on that branch and not yet
+  // on trunk — shipping unreviewed work to production and bypassing the mission
+  // PR, which is the one human gate A′ exists to create.
+
+  const OPTED_IN_MISSION = {
+    workingBranch: 'mission/checkout-arc-1a2b3c4d',
+    integrationBranchEnabled: true,
+  };
+
+  it('refuses to release a task whose PR targets the mission integration branch', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 7,
+      prUrl: 'https://example.test/pr/7',
+      prBaseRef: 'mission/checkout-arc-1a2b3c4d',
+    });
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+  });
+
+  it('refuses even when isMissionRelease bypasses the trigger policy', async () => {
+    // isMissionRelease exists to bypass cadence, not to bypass safety. Under A′
+    // the mission's work reaches prod through the mission PR, never from a
+    // worker branch cut off the integration branch.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'on_mission_complete' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 7,
+      prUrl: 'https://example.test/pr/7',
+      prBaseRef: 'mission/checkout-arc-1a2b3c4d',
+    });
+
+    const result = await executeRelease({
+      taskId: 't', workerId: 'w', workspaceId: 'ws-1', isMissionRelease: true,
+    });
+    expect(result.status).toBe('skipped');
+    expect(result.message).toContain('mission integration branch');
+  });
+
+  it('still releases a mission task whose PR targets trunk', async () => {
+    // The mission PR itself, and any mission that never opted in. Must be
+    // untouched — this is the "nothing changes until you opt in" guarantee.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'mission/checkout-arc-1a2b3c4d',
+      prNumber: 9,
+      prUrl: 'https://example.test/pr/9',
+      prBaseRef: 'dev',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null); // stop past the refusal
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
+  it('still releases a task of a mission that has not opted in', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({
+      release: 'inherit',
+      missionId: 'm-1',
+      mission: { ...OPTED_IN_MISSION, integrationBranchEnabled: false },
+    });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat',
+      prNumber: 7,
+      prUrl: 'https://example.test/pr/7',
+      prBaseRef: 'mission/checkout-arc-1a2b3c4d',
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
+  it('still releases when the PR base ref is unknown', async () => {
+    // Null base ref means "we do not know where this PR lands". It must not
+    // silently suppress a release the workspace asked for.
+    mockWorkspacesFindFirst.mockResolvedValue({
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },
+      githubRepoId: 'repo-1',
+    });
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit', missionId: 'm-1', mission: OPTED_IN_MISSION });
+    mockWorkersFindFirst.mockResolvedValue({
+      branch: 'buildd/abc-feat', prNumber: 7, prUrl: 'https://example.test/pr/7', prBaseRef: null,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(null);
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.message).not.toContain('mission integration branch');
+  });
+
   it('proceeds when trigger=every_merge (default behavior)', async () => {
     mockWorkspacesFindFirst.mockResolvedValue({
       releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', trigger: 'every_merge' },

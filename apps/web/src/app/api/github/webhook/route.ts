@@ -10,6 +10,7 @@ import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
+import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -878,8 +879,30 @@ async function handlePullRequestEvent(event: {
     //   workflow_dispatch workspaces → Path A skips; Path B fires the workflow.
     //   trigger=manual → neither path auto-fires.
     //   trigger=on_mission_complete → only fire when mission is all-terminal + atomic dedup.
+    //
+    // Option A′ adds one more: a merge into a mission integration branch is NOT
+    // a release-triggering merge. `workflow_dispatch` does not go through
+    // `executeRelease` (which refuses this case itself), so without this guard a
+    // mission whose last task PR landed on the integration branch would dispatch
+    // a release of trunk — a release recorded against the mission that does not
+    // contain the mission's work. That is the same class of lie as a mission
+    // marked released with nothing deployed.
     const mergedTask = worker.task;
-    if (mergedTask.release !== 'false' && event.installation) {
+    // The authoritative predicate, not the `mission/` name heuristic: a mission
+    // that has NOT opted in must behave exactly as before, even if its branch
+    // happens to carry that prefix. Costs one two-column read, and only for a
+    // mission task on a merged PR.
+    const mergedTaskMission = mergedTask.missionId
+      ? await db.query.missions.findFirst({
+          where: eq(missions.id, mergedTask.missionId),
+          columns: { workingBranch: true, integrationBranchEnabled: true },
+        })
+      : null;
+    const mergedOntoIntegrationBranch = isMissionIntegrationBase({
+      baseRef: pr.base?.ref,
+      mission: mergedTaskMission,
+    });
+    if (mergedTask.release !== 'false' && event.installation && !mergedOntoIntegrationBranch) {
       const mergedWorkspace = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, mergedTask.workspaceId),
       });

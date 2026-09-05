@@ -1,6 +1,8 @@
 # Mission Delivery Arc — Idea to Release
 
-**Status:** Proposed
+**Status:** Accepted — A′ adopted and built behind a per-mission opt-in
+(`missions.integrationBranchEnabled`, default false). See "Decisions taken"
+immediately below before reading the proposal as an open question.
 **Verified against:** `origin/dev` @ `f48cfbb2` (2026-09-04). Every path and line
 below was read, not remembered. Line numbers drift — re-confirm before editing.
 **Related:** `docs/plans/mission-delivery-arc-rewrite.md` (the audit this rewrite
@@ -15,6 +17,71 @@ carries), `docs/specs/mission-task-lifecycle.md`, `docs/specs/release-flow.md`,
 `apps/web/src/lib/initiative-pulse.ts`
 
 ---
+
+## Decisions taken (2026-09-05)
+
+The crux is resolved and A′ is implemented. Recording the decisions here because
+the sections below are written as an argument, and an argument reads as an open
+question long after it has been settled — which is the exact defect this document
+was opened to fix.
+
+**1. The merge-policy tier applies to the MISSION PR.** Task PRs based on the
+mission integration branch resolve to `auto-threshold` and land unattended;
+`human` / `agent-review` applies once, at the mission PR. Implemented as a
+precedence-2 rule in `resolvePolicy` keyed on the PR's base ref, below
+`task.requiresReview` — an explicit per-task human gate is an operator act and A′
+must not silently revoke one someone asked for by name. The threshold is carried
+through, so the tier drops and the per-task size guard does not.
+
+**2. A′ is per-mission opt-in, default off.** `missions.integrationBranchEnabled`.
+Every code path added returns null / `not_opted_in` / today's answer when it is
+false, and each has a test asserting that specifically. Rollout is one mission at
+a time, which is what the risk of this change is worth.
+
+**3. The mission PR is owned by a worker row.** P4 called this the choice that
+decides whether the review flow works at all, and it was right: every
+human-facing merge surface here is worker-keyed, so a mission PR living only in
+`missions.primaryPrNumber` would render nowhere and 404 on merge.
+`openMissionIntegrationPr` creates a `bookkeeping` task and a worker row to hold
+it. Bookkeeping, not work — as work it would join the very set whose completion
+it waits on.
+
+**4. `workers.prBaseRef` is the local source of truth for "where does this PR
+land".** Written at PR-open from GitHub's own answer, re-synced on every
+`pull_request` event. **A null base ref never counts as quarantined**: unknown
+degrades to the existing gate, because the permissive direction silently deletes
+a human review gate.
+
+**5. P5 — no automatic `dev → mission/*` merge in v1.** The mission PR resolves
+divergence at the end, and GitHub's `pull_request` checks test the base-merged
+ref, so the mission PR is not fooled by a stale base. The staleness probe is
+advisory and now names the ref it measured. A bounded periodic refresh task
+remains available if long missions turn out to end in conflict resolution often
+enough to pay for it — that is the failure mode to watch, and it is recoverable
+per-mission, which is why it was not worth building up front.
+
+**6. The CBM seed refresh is driven by the next claim, not by the merge
+webhook.** The seed cache is a directory on the runner host; the webhook is
+serverless. There is no web→runner channel for this today, and a Pusher
+subscriber nothing publishes to would be a path that looks wired and measures
+nothing. The two lines that would close the latency gap are recorded in the
+follow-ups.
+
+**Two defects this work found rather than inherited**, both of which A′ turns
+from annoying into destructive:
+
+- **A declared base was being treated as a runaway resume branch.**
+  `resolveWorktreeBase` fell back to trunk when `fetchBranch` reported
+  `'diverged'`, and `'diverged'` means "more than 50 commits ahead of trunk" — a
+  description of every healthy mission integration branch. The fallback is
+  silent; the damage is not. The worktree gets cut from trunk while
+  `context.baseBranch` still names the integration branch, so the PR opens
+  against a base its commits were never derived from and the diff reads as
+  though it reverts every sibling change already landed. Divergence now vetoes
+  only a resume candidate.
+- **Keying the CBM seed naively on the resolved base would have lost the shared
+  cache fleet-wide.** A base equal to the repo default has to collapse into the
+  legacy unkeyed slot, or every ordinary task misses a slot nothing ever wrote.
 
 ## Problem
 
@@ -668,7 +735,13 @@ whether this works at all:
 - Release-queue depth must distinguish "merged into an integration branch" from
   "merged into `dev`", or it counts mission work twice.
 
-**P5 — integration-branch freshness, with a stated bound.** *The probe half is
+**P5 — integration-branch freshness. DECIDED (2026-09-05): no automatic `dev →
+mission/*` merge in v1.** The mission PR resolves divergence at the end, and
+GitHub's `pull_request` checks test the base-merged ref, so the mission PR is not
+fooled by a stale base. The failure mode to watch is long missions routinely
+ending in conflict resolution; that is recoverable per-mission, which is why the
+bounded refresh task was not worth building up front. Original framing, kept
+because the bound still applies if it is ever built: *The probe half is
 DONE:* the staleness check now measures `<base>..origin/<default>` after the base
 is resolved and names the ref in its warning, instead of running against the main
 clone's unrelated HEAD. Still advisory. *The freshness question itself remains
@@ -684,7 +757,13 @@ the base-merged ref, so the mission PR itself is not fooled by a stale base.
 **P6 — `command` criteria must run on the mission branch** (B16). Put
 `workingBranch` into the verification task's context.
 
-**P7 — rewrite the seeded planner instructions.** `default-roles.ts:107` injects
+**P7 — rewrite the seeded planner instructions. DONE (2026-09-05.)** The
+Sequencing Rules now hold in both shapes: "ONE task = ONE branch = ONE PR" stays
+(it is true under A′ — what changes is the base, and the platform picks it), the
+blanket `dependsOn` + `baseBranch` chain becomes a **path-overlap** rule because
+task PRs into the integration branch merge in minutes and dependents unblock
+without a human, and the strict chain remains the rule for the non-opted-in
+shape. "DONE = MERGED" kept verbatim with one clause added. Original finding: `default-roles.ts:107` injects
 *"ONE task = ONE branch = ONE PR"* into every planner prompt. Under A′ that clause
 stays true and the **base** changes, so the wording must name the integration
 branch — otherwise organizers keep planning against the wrong model. `:118–119`
@@ -705,7 +784,18 @@ override, so it already predicts a nonexistent branch for every mission task
 today.** Under A′ the stacked-`baseBranch` mechanism can mostly go away; at minimum
 this must read `workers.branch` / `missions.workingBranch` instead of re-deriving.
 
-**P9 — the codebase-memory seed must become base-ref-aware.** Two pieces. First, fix
+**P9 — the codebase-memory seed must become base-ref-aware. DONE (2026-09-05),**
+keyed on `(repoPath, baseRef)`. Two corrections to the finding below: the file is
+`apps/runner/src/cbm-enforcement.ts`, not under `apps/web` — the whole seed path
+is runner-side — and the record's field is `ref`, not `baseRef`. That first one
+matters: **there is no web→runner channel for a webhook-driven refresh**, so the
+refresh is driven by the next claim in the mission instead, and the two lines
+that would close the latency gap (a `graph:base-advanced` Pusher event plus a
+subscriber) are recorded rather than built, because a subscriber nothing
+publishes to is a path that looks wired and measures nothing. A base equal to the
+repo default **must** collapse into the legacy unkeyed slot or every ordinary
+task misses a slot nothing ever wrote, losing the shared cache fleet-wide.
+Original finding: Two pieces. First, fix
 B15 — it is a live defect and it is also what makes today's fleet slow. Second, key
 the seed record and `spawnCbmSeedRefresh` on `(repoPath, baseRef)`; both fields
 already exist on the record and neither is read. Without this, A′ hands every mission
@@ -750,12 +840,13 @@ was indexed at, so the indirection this needs is built and proven.
 
 ## Open questions
 
-- **A′ vs B.** A′ is the recommendation, and B17 — the one thing that could have
-  changed the answer — is now resolved and cheap (a one-line trigger widening). What
-  remains is the doubled CI minutes and the P5 freshness cadence. If A′ is wrong, the
-  failure mode is that mission branches rot and every mission ends in a conflict
-  resolution; B's failure mode is that operators want one revertable mission diff and
-  cannot get it. The first is recoverable per-mission; the second is permanent.
+- ~~**A′ vs B.**~~ **Settled: A′, built 2026-09-05.** The reasoning stands as
+  recorded — if A′ is wrong the failure mode is that mission branches rot and every
+  mission ends in a conflict resolution, which is recoverable per-mission, where B's
+  failure mode (operators want one revertable mission diff and cannot get one) is
+  permanent. **The thing to actually watch** now that it is built: how often an
+  opted-in mission's integration PR arrives conflicted. That is the signal that P5's
+  bounded refresh task is worth building after all.
 - **Does `shipped` require production, or is the `dev` merge enough?** Proposed:
   archetype decides — `gated` requires containment in a healthy `main` release,
   `continuous` requires the deploy, `none` renders no delivery step at all rather
@@ -833,9 +924,13 @@ lost:
   on `base_ref == 'main'`, so `dev` never runs integration at all — meaning
   integration and E2E never gate a dev→main promotion.
 
-**Track 2 — A′ itself,** in dependency order: B17's CI widening → P2 → P1 → P3 →
-P7/P8 → P4 → P9 → P5. The first mission opted in behind a flag, one mission at a
-time.
+**Track 2 — A′ itself. BUILT (2026-09-05)** on branch
+`feat/mission-integration-branch`, behind `missions.integrationBranchEnabled`
+(default false). B17's CI widening, P2, P3, P8 landed with Track 1; P7, P9 and
+the retargeting, the crux rule, the mission-PR opener and P5's decision landed
+here. Every added path returns today's answer when the flag is false, and each
+has a test asserting that specifically — that is the property that makes "one
+mission at a time" real rather than aspirational.
 
 **Track 3 — the frontend arc,** which mostly does not depend on Track 2 landing:
 
@@ -850,6 +945,40 @@ time.
 6. **Surface-IA §5 + dead-path deletion** (U9), and a subscriber for
    `mission:completion_decision` (U10). **Do the `initiativeGroups` deletion before
    any A′ edit to `MissionGrid.tsx`**, or the two collide.
+
+**Follow-ups opened by building A′ (2026-09-05).**
+
+- **A stale `context.baseBranch` survives a `'missing'` fallback.** When the
+  runner cannot cut a worktree from a declared base because the ref is gone, it
+  falls back to trunk but nothing clears `context.baseBranch` — so the PR route
+  still opens the PR against the vanished base and GitHub answers 422. This is
+  reachable **without** A′: step-2 stacks on step-1's branch, step-1's PR merges,
+  GitHub auto-deletes the branch, step-2 claims. Wants a guard in the
+  PR-creation path (verify the base exists, else fall back to trunk and say so).
+- **CBM refresh latency.** The seed refreshes on the next claim in the mission,
+  not on the merge. Closing that costs exactly two lines — a
+  `graph:base-advanced` Pusher event from the webhook and a subscriber in
+  `pusher-manager.ts` — deliberately not built, because a subscriber nothing
+  publishes to would be another path that looks wired and measures nothing.
+- **`readCbmSeedRecord`'s record/ref agreement check is unreachable through the
+  public API** and stays green when mutated alone; it is a second independent
+  barrier, not dead code, and it is flagged rather than claimed as covered.
+- **B15 interaction.** Base-ref keying makes seed admission reject strictly
+  more: the first task of an opted-in mission finds no seed for the mission base
+  and bootstrap-indexes while the refresh builds one for its siblings. That is
+  the amortisation A′ predicted, with the cost landing on task #1. If seeds are
+  not actually admitted on the live fleet, P9 sits dormant behind B15 and changes
+  nothing observable.
+- **The CBM CLI's `detect_changes` invocation is unpinned** by anything in this
+  repo. A wrong flag degrades to the full index that already worked and *prints*
+  the fallback, so it is visible rather than silent — but it wants one check
+  against the pinned build.
+- **`_journal.json` has six entries below the running high-water mark** (idx 21,
+  22, 33, 34, 44, 117). This is **not** the old silent-skip hazard: `migrate.ts`
+  routes a below-mark untracked migration to `backfillTrackingRows`, which
+  introspects the live schema and throws `BackfillContradictedError` if the DDL
+  is absent. Recorded because the crude version of this warning was repeated as a
+  live finding during this work and is wrong.
 
 **Follow-ups opened by the Track 2/3 work (2026-09-04), none of them started.**
 Recorded here so they are not lost with the agent transcripts that found them.

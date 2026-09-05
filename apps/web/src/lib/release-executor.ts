@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -346,11 +347,13 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   const [task, worker, workspace] = await Promise.all([
     db.query.tasks.findFirst({
       where: eq(tasks.id, taskId),
-      columns: { release: true },
+      columns: { release: true, missionId: true },
+      // Option A′ — see the integration-branch refusal below.
+      with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
     }),
     db.query.workers.findFirst({
       where: eq(workers.id, workerId),
-      columns: { branch: true, prNumber: true, prUrl: true },
+      columns: { branch: true, prNumber: true, prUrl: true, prBaseRef: true },
     }),
     db.query.workspaces.findFirst({
       where: eq(workspaces.id, workspaceId),
@@ -364,6 +367,31 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   // Determine if release should run
   if (releaseFlag === 'false') {
     return { status: 'skipped', message: 'Release: not requested (suppressed by task flag)' };
+  }
+
+  // Option A′: a task of a mission using an integration branch must never
+  // release from its own branch.
+  //
+  // The worker-branch path below merges `worker.branch` directly into the prod
+  // branch. Under A′ a mission task's branch is cut from the integration branch,
+  // so that merge would carry the task's commits PLUS every sibling commit
+  // already sitting on the integration branch and not yet on trunk — shipping
+  // unreviewed work to production and bypassing the mission PR, which is the one
+  // human gate A′ exists to create. It routes around exactly the control it was
+  // built to add.
+  //
+  // The mission's work reaches production the normal way: the mission PR merges
+  // into trunk, and the workspace's trunk→prod release flow ships it. This
+  // refusal is a `skipped`, which the caller records as a refusal rather than a
+  // release (see mission-release.ts's two-phase claim), so it is visible rather
+  // than silent.
+  if (isMissionIntegrationBase({ baseRef: worker?.prBaseRef, mission: task?.mission })) {
+    return {
+      status: 'skipped',
+      message:
+        `Release: task PR targets the mission integration branch `
+        + `(${task?.mission?.workingBranch ?? 'unknown'}) — the mission PR is the release unit, not this task.`,
+    };
   }
 
   // Trigger policy: governs cadence. Per-task releases check this; mission-
