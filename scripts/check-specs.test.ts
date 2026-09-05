@@ -1,11 +1,20 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { claimedSymbols, codeSurfacePaths, resolveSymbols, VERIFIED_BY_DEBT } from './check-specs';
+import {
+  apiRouteTable,
+  claimedApiRoutes,
+  claimedSymbols,
+  codeSurfacePaths,
+  resolveApiRoute,
+  resolveSymbols,
+  VERIFIED_BY_DEBT,
+} from './check-specs';
 
 /**
- * Guards for the two checks that make `specs:lint` test whether a spec is TRUE
- * rather than merely well-formed: symbol liveness and the `verified_by` ratchet.
+ * Guards for the checks that make `specs:lint` test whether a spec is TRUE
+ * rather than merely well-formed: symbol liveness, route-URL liveness, and the
+ * `verified_by` ratchet.
  *
  * Written because the checks themselves assert that an unguarded contract is not
  * a contract. Shipping them unguarded would have been the same defect one level up.
@@ -24,6 +33,12 @@ function frontmatterOf(slug: string): string {
   const raw = readFileSync(join(SPECS_DIR, `${slug}.md`), 'utf8');
   const end = raw.indexOf('\n---', 3);
   return end === -1 ? '' : raw.slice(3, end);
+}
+
+function bodyOf(slug: string): string {
+  const raw = readFileSync(join(SPECS_DIR, `${slug}.md`), 'utf8');
+  const end = raw.indexOf('\n---', 3);
+  return end === -1 ? raw : raw.slice(end + 4);
 }
 
 describe('claimedSymbols', () => {
@@ -166,5 +181,163 @@ describe('codeSurfacePaths', () => {
 
   test('returns nothing when a body has no Code surface section', () => {
     expect(codeSurfacePaths('## Overview\nJust prose about `apps/web/src/x.ts`.')).toEqual([]);
+  });
+});
+
+describe('claimedApiRoutes', () => {
+  test('extracts the path out of a backticked method+path claim', () => {
+    expect(claimedApiRoutes('`POST /api/connectors` creates or reuses')).toEqual([
+      '/api/connectors',
+    ]);
+  });
+
+  test('keeps dynamic segments and strips a query string', () => {
+    expect(claimedApiRoutes('`GET /api/workers/[id]/artifacts?limit=10`')).toEqual([
+      '/api/workers/[id]/artifacts',
+    ]);
+  });
+
+  test('strips trailing punctuation without eating a closing bracket', () => {
+    expect(claimedApiRoutes('see (`GET /api/tasks/[id]`), then')).toEqual(['/api/tasks/[id]']);
+    expect(claimedApiRoutes('`GET /api/missions/[id]/notes.`')).toEqual([
+      '/api/missions/[id]/notes',
+    ]);
+  });
+
+  test('ignores file paths — codeSurfacePaths owns those', () => {
+    const body = 'handler is `apps/web/src/app/api/workers/[id]/route.ts:45`';
+    expect(claimedApiRoutes(body)).toEqual([]);
+  });
+
+  test('ignores a bare `/api` root: it claims no endpoint', () => {
+    expect(claimedApiRoutes('everything under `/api` is coordination-only')).toEqual([]);
+  });
+
+  test('reads fenced code blocks too — a curl example is a claim', () => {
+    const body = ['```bash', 'curl -X POST https://buildd.dev/api/tasks/claim', '```'].join('\n');
+    expect(claimedApiRoutes(body)).toEqual(['/api/tasks/claim']);
+  });
+
+  test('ignores un-backticked prose, which is how a spec says NOT IMPLEMENTED', () => {
+    // The escape hatch, mirroring SPEC-FORMAT rule 7 for symbols: backticks mean
+    // "this is live, go check it". Without it, stating that
+    // /api/connectors/probe does not exist would itself fail the linter, and the
+    // only way to a green build would be deleting the requirement.
+    const body = 'A standalone probe endpoint (/api/connectors/probe) is NOT implemented.';
+    expect(claimedApiRoutes(body)).toEqual([]);
+  });
+
+  test('deduplicates repeated claims', () => {
+    expect(claimedApiRoutes('`POST /api/missions` … `GET /api/missions`')).toEqual([
+      '/api/missions',
+    ]);
+  });
+});
+
+describe('resolveApiRoute', () => {
+  // A hand-built table so these assertions do not move when the app-router tree
+  // does. Shape matches apiRouteTable(): one segment array per route.ts.
+  const table = [
+    ['api', 'connectors'],
+    ['api', 'connectors', '[id]'],
+    ['api', 'connectors', '[id]', 'shares'],
+    ['api', 'workspaces', '[workspaceId]', 'skills'],
+    ['api', 'cron', 'queue-stall'],
+    ['api', 'auth', '[...nextauth]'],
+  ];
+
+  test('rejects a fabricated route even when a dynamic sibling would swallow it', () => {
+    // The defect this check exists for: /api/connectors/probe was asserted as
+    // "(existing)" by an active spec and was never built. Next.js would route
+    // that request to the [id] handler, so a matcher that lets a literal fall
+    // through to a dynamic directory calls the fabrication live.
+    expect(resolveApiRoute('/api/connectors/probe', table)).toBeNull();
+  });
+
+  test('rejects a fabricated route with dynamic segments in it', () => {
+    expect(resolveApiRoute('/api/connectors/[id]/workspaces/[wsId]', table)).toBeNull();
+  });
+
+  test('accepts a dynamic route whose parameter the spec renamed', () => {
+    // The parameter name is not the contract: the directory is [workspaceId].
+    expect(resolveApiRoute('/api/workspaces/[wsId]/skills', table)).toBe('route');
+  });
+
+  test('accepts every placeholder spelling the corpus uses for an id', () => {
+    for (const seg of ['[id]', '{workspaceId}', '<ws>', '${wsId}', ':wsId', 'W']) {
+      expect(resolveApiRoute(`/api/workspaces/${seg}/skills`, table), seg).toBe('route');
+    }
+  });
+
+  test('a placeholder does NOT satisfy a literal directory', () => {
+    // `/api/[thing]/shares` must not pass by pretending `connectors` is a param.
+    expect(resolveApiRoute('/api/[thing]/shares', table)).toBeNull();
+  });
+
+  test('resolves an exact literal route', () => {
+    expect(resolveApiRoute('/api/cron/queue-stall', table)).toBe('route');
+  });
+
+  test('a wildcard segment matches any one route segment', () => {
+    expect(resolveApiRoute('/api/cron/*', table)).toBe('route');
+  });
+
+  test('a catch-all route absorbs the segments under it', () => {
+    expect(resolveApiRoute('/api/auth/[...nextauth]', table)).toBe('route');
+    expect(resolveApiRoute('/api/auth/signin/github', table)).toBe('route');
+  });
+
+  test('a namespace prefix resolves as `namespace`, not as a route', () => {
+    // Prose legitimately names a family (`/api/cron`, `/api/.well-known`).
+    expect(resolveApiRoute('/api/cron', table)).toBe('namespace');
+  });
+
+  test('a namespace that prefixes nothing is unresolved', () => {
+    expect(resolveApiRoute('/api/schedules', table)).toBeNull();
+    expect(resolveApiRoute('/api/nope/at/all', table)).toBeNull();
+  });
+
+  test('a shorter path is not satisfied by a longer route of the same prefix', () => {
+    // /api/connectors/[id]/shares exists; /api/connectors/[id]/shares/[x] does not.
+    expect(resolveApiRoute('/api/connectors/[id]/shares/[shareId]', table)).toBeNull();
+  });
+});
+
+describe('route liveness against the real route tree', () => {
+  test('the app-router table is populated', () => {
+    expect(apiRouteTable().length).toBeGreaterThan(50);
+  });
+
+  test('a real route resolves, a fabricated neighbour does not', () => {
+    expect(resolveApiRoute('/api/workers/claim')).toBe('route');
+    expect(resolveApiRoute('/api/workers/claim-it-all')).toBeNull();
+  });
+
+  test('a real dynamic route resolves under a renamed parameter', () => {
+    expect(resolveApiRoute('/api/workspaces/[wsId]/skills')).toBe('route');
+  });
+
+  test('the runner-local server counts as a route source', () => {
+    // The runner's HTTP surface is a Bun switch, not a file tree. Without it a
+    // spec citing the local doctor endpoint would be reported as fabricated.
+    expect(resolveApiRoute('/api/doctor')).toBe('route');
+  });
+
+  test('the corpus is measured: extraction is non-zero', () => {
+    // The gate's own failure mode is silence. If a regex edit or a corpus
+    // reformat stops extraction, this goes red before the linter reports clean.
+    const total = specSlugs().reduce((n, slug) => n + claimedApiRoutes(bodyOf(slug)).length, 0);
+    expect(total, 'no /api URLs extracted anywhere — the route gate measures nothing').toBeGreaterThan(50);
+  });
+
+  test('no active spec claims a route that does not exist', () => {
+    const dead: string[] = [];
+    for (const slug of specSlugs()) {
+      if (!/^status:\s*active\b/m.test(frontmatterOf(slug))) continue;
+      for (const url of claimedApiRoutes(bodyOf(slug))) {
+        if (!resolveApiRoute(url)) dead.push(`${slug}: ${url}`);
+      }
+    }
+    expect(dead, 'active specs assert endpoints nobody serves').toEqual([]);
   });
 });
