@@ -318,6 +318,26 @@ describe('releaseClaims', () => {
     expect(mockUpdate).toHaveBeenCalledTimes(2);
   });
 
+  // The waiting agent needs to know WHICH path freed, not just that something
+  // did — that is what the path_released message carries.
+  it('returns the blocked path per waiter so the release message can name it', async () => {
+    queueFindMany('pathClaims', [
+      { id: 'claim-1', workspaceId: WS, path: 'src/foo.ts' },
+    ]);
+    queueFindMany('pathClaimWaiters', [
+      { id: 'waiter-1', waitingTaskId: TASK_B, blockedPath: 'src/foo.ts' },
+      { id: 'waiter-2', waitingTaskId: TASK_C, blockedPath: 'src/foo.ts' },
+    ]);
+
+    mockUpdate.mockReturnValue(makeUpdateChain());
+
+    const result = await releaseClaims(TASK_A);
+    expect(result?.waiters).toEqual([
+      { waitingTaskId: TASK_B, blockedPath: 'src/foo.ts' },
+      { waitingTaskId: TASK_C, blockedPath: 'src/foo.ts' },
+    ]);
+  });
+
   it('does not call waiter update when no pending waiters', async () => {
     queueFindMany('pathClaims', [{ id: 'claim-1', workspaceId: WS, path: 'src/a.ts' }]);
     queueFindMany('pathClaimWaiters', []);

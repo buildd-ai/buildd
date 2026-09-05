@@ -281,6 +281,40 @@ describe('send_worker_message MCP handler', () => {
     expect(updateCalls.length).toBeGreaterThanOrEqual(2);
   });
 
+  // Messages now survive until the recipient acks them by id, so an uncapped
+  // queue would grow without bound on a task nobody is checking in for.
+  it('caps the recipient queue at WORKER_MESSAGE_CAP, dropping the oldest', async () => {
+    const existing = [1, 2, 3].map(n => ({
+      id: `old-${n}`,
+      type: 'question',
+      fromTaskId: 'other',
+      sentAt: new Date().toISOString(),
+      hopCount: 1,
+      body: { text: `q${n}` },
+    }));
+    mockTasksFindFirst
+      .mockReset()
+      .mockResolvedValueOnce(makeSenderTask())
+      .mockResolvedValueOnce(makeRecipientTask({ context: { pendingWorkerMessages: existing } }));
+
+    const contexts: any[] = [];
+    mockTasksUpdateSet.mockImplementation((data: any) => {
+      contexts.push(data.context);
+      return { where: mockTasksUpdateWhere };
+    });
+
+    const body: any = await callTool(VALID_ARGS);
+    expect(JSON.parse(body.result.content[0].text).delivered).toBe(true);
+
+    const recipientWrite = contexts.find(c => Array.isArray(c?.pendingWorkerMessages));
+    expect(recipientWrite).toBeDefined();
+    const ids = recipientWrite.pendingWorkerMessages.map((m: any) => m.id);
+    expect(ids).toHaveLength(3);
+    expect(ids[0]).toBe('old-2');
+    expect(ids[1]).toBe('old-3');
+    expect(ids[2]).not.toBe('old-1');
+  });
+
   it('enforces rate limit: blocks after 5 messages in the same window', async () => {
     const now = Date.now();
     // Simulate sender task with 5 messages already sent in this window

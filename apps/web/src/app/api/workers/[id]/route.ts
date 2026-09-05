@@ -51,6 +51,7 @@ import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worke
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { WORKER_MESSAGE_CAP } from '@buildd/core/worker-message-format';
 import { pathsOverlap, isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
@@ -453,6 +454,10 @@ export async function PATCH(
   // echo (but not the stored copy) would make that compare-and-set never match,
   // so the same instruction would be served forever. It is never persisted.
   const rawInstructionsDelivered: unknown = body.instructionsDelivered;
+  // Ack for worker→worker messages: the ids the consumer has actually shown to
+  // the agent. Captured pre-redaction for the same reason as the instruction
+  // echo — these are compared against the stored queue, never persisted as text.
+  const rawWorkerMessagesDelivered: unknown = body.workerMessagesDelivered;
   body = redactSecretsInBody(body, secretValues);
 
   // Metrics-only write: measurement about a session, no state transition. Must
@@ -2557,11 +2562,30 @@ export async function PATCH(
       }))?.context as Record<string, unknown> | null
     : null;
 
-  // Drain pending worker-to-worker messages so they can be returned in the response.
-  // Messages are stored in tasks.context.pendingWorkerMessages by send_worker_message (MCP).
+  // Serve pending worker-to-worker messages in the response. Written by
+  // send_worker_message (MCP), the §6d overlap notifier below, and
+  // releaseAndNotify (path_released).
+  //
+  // SERVE, not drain: the queue used to be emptied by every PATCH that carried
+  // touched paths, whether or not anything read the response — which destroyed
+  // every message the overlap notifier ever produced. A message now leaves the
+  // queue only when a consumer sends `workerMessagesDelivered: [<id>, …]` back,
+  // exactly as `instructionsDelivered` confirms the human steering queue.
+  // Re-serving an unacked message on the next check-in is the intended
+  // behaviour: a client that never acks displays nothing to anyone.
   const pendingWorkerMessages = Array.isArray(taskContext?.pendingWorkerMessages)
-    ? (taskContext.pendingWorkerMessages as unknown[])
+    ? (taskContext.pendingWorkerMessages as Array<{ id?: string }>)
     : [];
+
+  const deliveredMessageIds = Array.isArray(rawWorkerMessagesDelivered)
+    ? rawWorkerMessagesDelivered.filter((v): v is string => typeof v === 'string' && v.length > 0)
+    : [];
+  const retainedWorkerMessages = deliveredMessageIds.length > 0
+    ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
+    : pendingWorkerMessages;
+  // An ack for an id that is not queued (already cleared, or from a stale
+  // response) must not empty the queue behind a message that arrived since.
+  const hasWorkerMessageAck = retainedWorkerMessages.length !== pendingWorkerMessages.length;
 
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
@@ -2661,17 +2685,19 @@ export async function PATCH(
         const siblingPendingMsgs = Array.isArray(siblingTaskCtx.pendingWorkerMessages)
           ? [...(siblingTaskCtx.pendingWorkerMessages as unknown[]), workerMsg]
           : [workerMsg];
-        // Cap at 3 pending messages per spec §4c — oldest dropped.
-        const cappedMsgs = siblingPendingMsgs.length > 3 ? siblingPendingMsgs.slice(-3) : siblingPendingMsgs;
+        // Cap pending messages per spec §4c — oldest dropped.
+        const cappedMsgs = siblingPendingMsgs.length > WORKER_MESSAGE_CAP
+          ? siblingPendingMsgs.slice(-WORKER_MESSAGE_CAP)
+          : siblingPendingMsgs;
         await db
           .update(tasks)
           .set({ context: { ...siblingTaskCtx, pendingWorkerMessages: cappedMsgs } })
           .where(eq(tasks.id, sibling.taskId!));
       }
 
-      // Atomically persist notifiedOverlaps + clear pendingWorkerMessages for this task.
+      // Atomically persist notifiedOverlaps + any acked-message removal.
       const taskContextUpdates: Record<string, unknown> = {};
-      if (pendingWorkerMessages.length > 0) taskContextUpdates.pendingWorkerMessages = [];
+      if (hasWorkerMessageAck) taskContextUpdates.pendingWorkerMessages = retainedWorkerMessages;
       if (newNotifications.length > 0) {
         taskContextUpdates.notifiedOverlaps = [...notifiedOverlaps, ...newNotifications];
       }
@@ -2683,19 +2709,19 @@ export async function PATCH(
       }
     } catch (err) {
       console.error(`[Worker ${id}] Passive overlap detection failed:`, err);
-      // Fall through — still drain pendingWorkerMessages on error
-      if (pendingWorkerMessages.length > 0) {
+      // Fall through — an ack still has to be honoured.
+      if (hasWorkerMessageAck) {
         await db
           .update(tasks)
-          .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: [] } })
+          .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: retainedWorkerMessages } })
           .where(eq(tasks.id, worker.taskId));
       }
     }
-  } else if (pendingWorkerMessages.length > 0 && worker.taskId) {
-    // No overlap detection this tick — still drain pending messages.
+  } else if (hasWorkerMessageAck && worker.taskId) {
+    // No overlap detection this tick — honour the delivery ack on its own.
     await db
       .update(tasks)
-      .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: [] } })
+      .set({ context: { ...(taskContext ?? {}), pendingWorkerMessages: retainedWorkerMessages } })
       .where(eq(tasks.id, worker.taskId));
   }
 

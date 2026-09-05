@@ -477,9 +477,10 @@ it fires.
 
 ## Out of scope
 
-- **Agent-to-agent messaging**: `send_worker_message` and the
-  `tasks.context.pendingWorkerMessages` drain in the worker PATCH. Same plumbing,
-  no human in the loop.
+- **Agent-to-agent messaging**: `send_worker_message` and the ack-gated
+  `tasks.context.pendingWorkerMessages` queue served by the worker PATCH
+  (cleared only by `workerMessagesDelivered`, mirroring `instructionsDelivered`
+  below). Same plumbing, no human in the loop.
 - **Permission prompts**: `waitingFor.type === 'permission'` is resolved
   locally by the runner's debug UI through `resolvePermission`; it never reaches
   the coordination API as an answerable prompt.

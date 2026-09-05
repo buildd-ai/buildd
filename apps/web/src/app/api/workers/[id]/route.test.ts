@@ -6819,6 +6819,142 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
       expect(data.pendingMessages[0].id).toBe('msg-1');
       expect(data.pendingMessages[1].id).toBe('msg-2');
     });
+
+    // ── Ack protocol ──────────────────────────────────────────────────────
+    //
+    // The queue used to be cleared on every PATCH that carried touched paths,
+    // so an ordinary progress update destroyed messages no consumer had read.
+    // Only an ack naming the message ids may move the queue now.
+
+    it('does NOT clear the queue on an ordinary progress update', async () => {
+      const message = { id: 'msg-abc', type: 'question', fromTaskId: 'task-sender', fromWorkerId: 'w-s', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } };
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: { pendingWorkerMessages: [message] },
+        workspace: { teamId: 'team-1' },
+      });
+      const taskUpdateCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskUpdateCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', progress: 50, touchedPaths: ['apps/web/src/lib/foo.ts'] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const emptied = taskUpdateCalls.find(
+        (u: any) => Array.isArray(u.context?.pendingWorkerMessages) && u.context.pendingWorkerMessages.length === 0,
+      );
+      expect(emptied).toBeUndefined();
+      // Still served, so the next check-in can deliver it.
+      const data = await res.json();
+      expect(data.pendingMessages).toHaveLength(1);
+    });
+
+    it('clears only the acked ids on workerMessagesDelivered', async () => {
+      const messages = [
+        { id: 'msg-1', type: 'question', fromTaskId: 'task-a', fromWorkerId: 'w-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q1' } },
+        { id: 'msg-2', type: 'question', fromTaskId: 'task-b', fromWorkerId: 'w-b', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q2' } },
+      ];
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: { pendingWorkerMessages: messages },
+        workspace: { teamId: 'team-1' },
+      });
+      const taskUpdateCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskUpdateCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerMessagesDelivered: ['msg-1'] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const cleared = taskUpdateCalls.find((u: any) => Array.isArray(u.context?.pendingWorkerMessages));
+      expect(cleared).toBeDefined();
+      expect(cleared.context.pendingWorkerMessages.map((m: any) => m.id)).toEqual(['msg-2']);
+    });
+
+    it('preserves other task context keys when clearing an acked message', async () => {
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: {
+          model: 'claude-sonnet-5',
+          pendingWorkerMessages: [{ id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } }],
+        },
+        workspace: { teamId: 'team-1' },
+      });
+      const taskUpdateCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskUpdateCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerMessagesDelivered: ['msg-1'] },
+      });
+      await PATCH(req, { params: mockParams });
+
+      const cleared = taskUpdateCalls.find((u: any) => Array.isArray(u.context?.pendingWorkerMessages));
+      expect(cleared.context.pendingWorkerMessages).toEqual([]);
+      expect(cleared.context.model).toBe('claude-sonnet-5');
+    });
+
+    it('an unknown acked id leaves the queue untouched', async () => {
+      mockTasksFindFirst.mockResolvedValue({
+        scheduleId: null,
+        outputRequirement: 'none',
+        missionId: null,
+        count: 0,
+        context: { pendingWorkerMessages: [{ id: 'msg-1', type: 'question', fromTaskId: 'task-a', sentAt: new Date().toISOString(), hopCount: 1, body: { text: 'q' } }] },
+        workspace: { teamId: 'team-1' },
+      });
+      const taskUpdateCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          taskUpdateCalls.push(vals);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerMessagesDelivered: ['msg-does-not-exist'] },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const touched = taskUpdateCalls.find((u: any) => Array.isArray(u.context?.pendingWorkerMessages));
+      expect(touched).toBeUndefined();
+    });
   });
 
   // Regression: planning task whose runner returns free-form text (no structuredOutput)

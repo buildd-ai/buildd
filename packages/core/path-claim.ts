@@ -36,6 +36,11 @@ export interface ReleaseResult {
   releasedPaths: string[];
   /** Waiting task IDs that were notified (notifiedAt stamped). */
   notifiedWaiters: string[];
+  /**
+   * Same waiters with the path each one was blocked on, so the `path_released`
+   * message can name it. A waiter blocked on two paths appears twice.
+   */
+  waiters: Array<{ waitingTaskId: string; blockedPath: string }>;
 }
 
 // ── Path utilities ───────────────────────────────────────────────────────────
@@ -199,7 +204,7 @@ export async function releaseClaims(taskId: string): Promise<ReleaseResult | nul
       eq(pathClaimWaiters.blockingTaskId, taskId),
       isNull(pathClaimWaiters.notifiedAt),
     ),
-    columns: { id: true, waitingTaskId: true },
+    columns: { id: true, waitingTaskId: true, blockedPath: true },
   });
 
   if (pendingWaiters.length > 0) {
@@ -213,6 +218,10 @@ export async function releaseClaims(taskId: string): Promise<ReleaseResult | nul
     workspaceId,
     releasedPaths,
     notifiedWaiters: pendingWaiters.map(w => w.waitingTaskId),
+    waiters: pendingWaiters.map(w => ({
+      waitingTaskId: w.waitingTaskId,
+      blockedPath: w.blockedPath,
+    })),
   };
 }
 
