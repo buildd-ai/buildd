@@ -2,11 +2,11 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules } from '@buildd/core/db/schema';
 import { eq, and, sql, desc, gt } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
-import { githubApi } from '@/lib/github';
-import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
+import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { postMissionFeedEvent, systemActor, type FeedActor } from '@/lib/mission-feed';
+import { evaluateMissionOpenPrGate } from '@/lib/mission-run';
 import type { CycleContext, RunMissionOptions, RunMissionResult } from '@/lib/mission-run';
 
 /** Max planning cycles within a single trigger chain before stopping */
@@ -262,31 +262,33 @@ export async function maybeRetriggerMission(
     return { action: 'stalled' };
   }
 
-  // 8.5. Open-PR guard — if the mission has an unmerged primary PR, stop
-  //      fanning out more planning cycles. Notify instead so a human (or
-  //      auto-merge) can resolve the PR before we pile on more work.
-  const missionWithPr = await db.query.missions.findFirst({
-    where: eq(missions.id, missionId),
-    columns: { title: true, primaryPrNumber: true, primaryPrUrl: true },
-  });
-  if (missionWithPr?.primaryPrNumber && missionWithPr.primaryPrUrl) {
-    const prState = await getMissionPrState(missionId, githubApi);
-    if (prState && prState.state === 'open' && !prState.merged) {
+  // 8.5. Open-PR guard — pause the loop only when an open PR of this mission
+  //      owns paths the mission's remaining work has declared. Keying this on
+  //      `primaryPrNumber` (= "first PR any mission task opened") stopped the
+  //      whole loop for one arbitrary sibling PR; see evaluateMissionOpenPrGate
+  //      for the rule, its safety property and its known limit.
+  const prGate = await evaluateMissionOpenPrGate(missionId);
+  if (prGate.paused) {
+    const missionWithPr = await db.query.missions.findFirst({
+      where: eq(missions.id, missionId),
+      columns: { title: true },
+    });
+    if (prGate.prNumber && prGate.prUrl) {
       await notifyMissionPrReady(missionId, {
         title: 'Mission PR awaiting review',
-        prUrl: prState.prUrl,
-        prNumber: prState.prNumber,
-        headSha: prState.headSha,
+        prUrl: prGate.prUrl,
+        prNumber: prGate.prNumber,
+        headSha: prGate.headSha || String(prGate.prNumber),
         reason: 'awaiting_review',
-        message: `${missionWithPr.title} — PR #${prState.prNumber} is open. Retrigger paused.`,
+        message: `${missionWithPr?.title ?? 'Mission'} — PR #${prGate.prNumber} is open and owns files the next planned work needs (${prGate.overlapPaths.join(', ')}). Retrigger paused.`,
       });
-      await triggerEvent(
-        channels.mission(missionId),
-        events.MISSION_LOOP_STALLED,
-        { missionId, reason: 'pr_awaiting_review', prNumber: prState.prNumber }
-      );
-      return { action: 'skipped' };
     }
+    await triggerEvent(
+      channels.mission(missionId),
+      events.MISSION_LOOP_STALLED,
+      { missionId, reason: 'pr_awaiting_review', prNumber: prGate.prNumber ?? undefined }
+    );
+    return { action: 'skipped' };
   }
 
   // 9. All guards pass — retrigger
