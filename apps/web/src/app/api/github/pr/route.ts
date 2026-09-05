@@ -17,7 +17,8 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
-import { escalateConflictExhaustion } from '@/lib/auto-merge';
+import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
+import { resolvePolicy } from '@/lib/merge-policy';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -686,6 +687,106 @@ export async function PUT(req: NextRequest) {
           mergeCommitSha: idemMergeCommitSha,
         },
       });
+    }
+
+    // ── Merge-policy gate ────────────────────────────────────────────────────
+    //
+    // Until this existed, `merge_pr` was the ONLY route to a merge that
+    // evaluated no policy at all: authenticate, check tenancy, merge. Both
+    // other routes — auto-merge on green CI, and the reviewer `approve` path —
+    // run `evaluateAutoMergeSafety` first. And `merge_pr` sits in
+    // `workerActions`, so every worker token can call it. An agent could
+    // therefore bypass CI, deny paths, the migration operation-class inspector
+    // and the size cap by calling the tool directly, and under `agent-review`
+    // it could merge its own PR without a reviewer ever seeing it.
+    //
+    // The workspace's merge policy tier decides, because the tier already
+    // encodes who is allowed to end a PR:
+    //
+    //   auto-threshold — the platform may merge unattended, so an agent asking
+    //                    for the same thing is permitted *if* the same safety
+    //                    check passes.
+    //   agent-review   — the reviewer's verdict is the gate. A self-merge
+    //                    routes around the reviewer entirely, so it is refused
+    //                    no matter how green the PR is.
+    //   human          — refused, which is what the tier means.
+    const force = body.force === true;
+    if (force && account.level !== 'admin') {
+      return NextResponse.json({
+        error: 'force merge requires an admin token',
+        hint: '`force` bypasses the workspace merge policy, so it is reserved for a human-held admin token. Drop `force` to merge under policy.',
+      }, { status: 403 });
+    }
+
+    if (!force) {
+      let policyPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
+      try {
+        policyPr = await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/pulls/${prNumber}`,
+        );
+      } catch (err) {
+        console.warn(`[merge_pr] Could not read ${repo.fullName}#${prNumber} for policy:`, err);
+      }
+
+      const headSha = policyPr?.head?.sha ?? null;
+      if (!headSha) {
+        // Fail closed. This read is what identifies the commit the policy is
+        // evaluated against; merging without it would be a merge with no
+        // policy, which is the hole this gate closes.
+        return NextResponse.json({
+          error: 'could not read the PR head to evaluate merge policy — refusing the merge',
+          hint: 'Retry, or have a human merge from the escalation inbox.',
+        }, { status: 403 });
+      }
+
+      const task = worker.taskId
+        ? await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            columns: { id: true, requiresReview: true, missionId: true },
+          })
+        : null;
+      const mission = task?.missionId
+        ? await db.query.missions.findFirst({
+            where: eq(missions.id, task.missionId),
+            columns: { mergePolicy: true, requiresReview: true },
+          })
+        : null;
+
+      const policy = resolvePolicy(workspace, mission, task, {
+        baseRef: policyPr?.base?.ref ?? null,
+      });
+
+      if (policy.tier === 'human') {
+        return NextResponse.json({
+          error: `merge policy tier is 'human' — this PR must be merged by a person`,
+          tier: policy.tier,
+          hint: 'Report completion and let the owner merge from the escalation inbox.',
+        }, { status: 403 });
+      }
+
+      if (policy.tier === 'agent-review') {
+        return NextResponse.json({
+          error: `merge policy tier is 'agent-review' — a reviewer decides this PR, so it cannot be self-merged`,
+          tier: policy.tier,
+          hint: 'Use request_pr_review to dispatch the reviewer, then get_pr_review for the verdict. An approve merges the PR for you when policy permits.',
+        }, { status: 403 });
+      }
+
+      const safety = await evaluateAutoMergeSafety(
+        repo.installation.installationId,
+        repo.fullName,
+        prNumber,
+        headSha,
+        policy,
+      );
+      if (!safety.ok) {
+        return NextResponse.json({
+          error: `merge policy refused this merge: ${safety.reason}`,
+          tier: policy.tier,
+          hint: 'Fix the cause and retry, or report completion and let a human merge.',
+        }, { status: 403 });
+      }
     }
 
     const result = await mergePullRequest(
