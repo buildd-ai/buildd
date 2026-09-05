@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, missions, initiatives } from '@buildd/core/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
-import { deriveTaskType } from '@buildd/core/mission-helpers';
+import { deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import type { Verdict, Confidence } from './verdict-presentation';
 
 /**
@@ -498,16 +498,19 @@ export async function loadInitiativeVerdictInputs(opts: {
       .groupBy(missions.initiativeId),
 
     // Rework: tasks created in the window, classified in TS rather than SQL so
-    // `deriveTaskType`'s rules stay the single source of truth. `mode` is part
-    // of that classification — a spawned builder task (parentTaskId set,
-    // mode 'execution', no prefix) is a deliverable, not an attempt — so
-    // omitting it would read approve_plan children as thrash.
+    // one classifier serves every surface. `taskClass` is the stored answer;
+    // `title`/`parentTaskId`/`mode` are carried only for the pre-backfill
+    // fallback (see classifyAttemptRow), where `mode` decides attempt vs.
+    // deliverable — a spawned builder task (parentTaskId set, mode 'execution',
+    // no prefix) is a deliverable, so omitting it would read approve_plan
+    // children as thrash.
     db
       .select({
         initiativeId: missions.initiativeId,
         title: tasks.title,
         parentTaskId: tasks.parentTaskId,
         mode: tasks.mode,
+        taskClass: tasks.taskClass,
       })
       .from(tasks)
       .innerJoin(missions, eq(missions.id, tasks.missionId))
@@ -542,8 +545,29 @@ export interface AttemptRow {
   initiativeId: string | null;
   title: string;
   parentTaskId: string | null;
-  /** 'execution' | 'planning'. Required: it decides attempt vs. deliverable. */
+  /** 'execution' | 'planning'. Decides attempt vs. deliverable in the fallback. */
   mode: string | null;
+  /**
+   * 'work' | 'attempt' | 'bookkeeping', the stored discriminator and the primary
+   * signal. NULL only for rows that pre-date the backfill.
+   */
+  taskClass?: string | null;
+}
+
+/**
+ * Is this row rework?
+ *
+ * `taskClass` is the single classifier (`docs/specs/mission-task-lifecycle.md`).
+ * The title-prefix classifier is a fallback for pre-backfill rows only: it does
+ * not know about `[Conflict Retry #N]` (`conflict-retry.ts`), which carries a
+ * `parentTaskId` and inherits `mode: 'execution'`, so it read every conflict
+ * retry as fresh deliverable work — a workspace thrashing on merge conflicts
+ * rendered `winning`.
+ */
+export function classifyAttemptRow(row: AttemptRow): boolean {
+  if (row.taskClass != null) return isAttempt(row);
+  // Pre-backfill row: keep the legacy title/mode classification.
+  return deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId, mode: row.mode }) !== null; // taskclass:pre-backfill-fallback
 }
 
 /**
@@ -592,8 +616,7 @@ export function assembleVerdictRollups(input: {
   }
 
   for (const row of input.attemptRows) {
-    const type = deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId, mode: row.mode });
-    if (type === null) continue;
+    if (!classifyAttemptRow(row)) continue;
     bucket(row.initiativeId ?? UNASSIGNED_INITIATIVE_KEY).attempts7d++;
   }
 

@@ -433,6 +433,53 @@ describe('assembleVerdictRollups', () => {
     expect(out.get('init-1')!.attempts7d).toBe(1);
   });
 
+  it('counts conflict retries as attempts via taskClass', () => {
+    // `[Conflict Retry #N]` matches none of deriveTaskType's prefixes, carries a
+    // parentTaskId and inherits mode 'execution' — so the title classifier reads
+    // it as fresh deliverable work and a workspace thrashing on merge conflicts
+    // renders `winning`. taskClass is the stored answer and says 'attempt'.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: 'Add pagination', parentTaskId: null, mode: 'execution', taskClass: 'work' },
+        { initiativeId: 'init-1', title: '[Conflict Retry #1] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: 'attempt' },
+        { initiativeId: 'init-1', title: '[Conflict Retry #2] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: 'attempt' },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(2);
+  });
+
+  it('does not count bookkeeping rows as attempts', () => {
+    // taskClass 'bookkeeping' is neither deliverable nor rework. Under the title
+    // classifier a prefixed bookkeeping row would have counted as thrash.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: '[reviewer] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: 'bookkeeping' },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(0);
+  });
+
+  it('falls back to deriveTaskType for pre-backfill rows with a null taskClass', () => {
+    // Rows that pre-date the taskClass backfill must keep their old
+    // classification rather than silently dropping out of the rework signal.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: '[CI Retry #2] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: null },
+        { initiativeId: 'init-1', title: 'Add pagination', parentTaskId: null, mode: 'execution', taskClass: null },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(1);
+  });
+
   it('sums merges and buckets initiative-less rows under __unassigned__', () => {
     const out = assembleVerdictRollups({
       ...base,

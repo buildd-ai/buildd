@@ -6,6 +6,7 @@ import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
+import { isBookkeeping } from '@buildd/core/mission-helpers';
 
 /**
  * Human plan-approval gate.
@@ -209,7 +210,7 @@ async function checkChildrenCompleted(
 ): Promise<void> {
   const children = await db.query.tasks.findMany({
     where: eq(tasks.parentTaskId, parentTaskId),
-    columns: { id: true, status: true, workspaceId: true, title: true, result: true },
+    columns: { id: true, status: true, workspaceId: true, title: true, result: true, taskClass: true },
   });
 
   if (children.length === 0) return;
@@ -244,7 +245,7 @@ async function checkChildrenCompleted(
  */
 async function maybeCreateAggregationTask(
   parentTaskId: string,
-  children: Array<{ id: string; status: string; workspaceId: string; title: string; result: unknown }>
+  children: Array<{ id: string; status: string; workspaceId: string; title: string; result: unknown; taskClass?: string | null }>
 ): Promise<void> {
   // Fetch parent to check if it's a planning task
   const parent = await db.query.tasks.findFirst({
@@ -318,8 +319,11 @@ async function maybeCreateAggregationTask(
     return;
   }
 
-  // Skip aggregation for single-child planning tasks — redundant overhead
-  const nonAggChildren = children.filter(c => !c.title.startsWith('Aggregate results:'));
+  // Skip aggregation for single-child planning tasks — redundant overhead.
+  // Excludes a prior aggregator by `taskClass`, not by title: aggregators are
+  // created below with taskClass 'bookkeeping', so the stored discriminator is
+  // authoritative and a retitled aggregator no longer slips through.
+  const nonAggChildren = children.filter(c => !isBookkeeping(c));
   if (nonAggChildren.length <= 1) {
     if (parent.missionId) {
       maybeRetriggerMission(parent.missionId, parentTaskId).catch((err) =>
