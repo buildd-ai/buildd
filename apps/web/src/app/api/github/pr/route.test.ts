@@ -15,6 +15,7 @@ const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
+const mockTasksFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 const mockWorkersUpdate = mock(() => ({
@@ -54,6 +55,7 @@ mock.module('@buildd/core/db', () => ({
       // may take the slot, while for every other mission the column keeps its
       // legacy meaning. Null = not opted in, which is what these cases assert.
       missions: { findFirst: mockMissionsFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -1592,6 +1594,29 @@ describe('PUT /api/github/pr', () => {
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
     });
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    // The merge-policy gate reads the PR, its check runs and its files. Model a
+    // green, clean, small PR by default so each test states its own refusal
+    // rather than inheriting one from a missing fixture.
+    mockGithubApi.mockImplementation((_inst: number, path: string) => {
+      if (/\/check-runs$/.test(path)) {
+        return Promise.resolve({
+          check_runs: [
+            { name: 'typecheck', status: 'completed', conclusion: 'success' },
+            { name: 'build', status: 'completed', conclusion: 'success' },
+            { name: 'test', status: 'completed', conclusion: 'success' },
+          ],
+        });
+      }
+      if (/\/files/.test(path)) {
+        return Promise.resolve([
+          { filename: 'apps/web/src/lib/foo.ts', additions: 10, deletions: 2, status: 'modified' },
+        ]);
+      }
+      return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+    });
   });
 
   it('returns 401 when not authenticated', async () => {
@@ -1690,6 +1715,191 @@ describe('PUT /api/github/pr', () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toBe('GitHub repo not found');
+  });
+
+  describe('merge-policy gate', () => {
+    function workerOk() {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1',
+        accountId: 'account-1',
+        taskId: 'task-1',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+
+    const put = () => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    }));
+
+    it("refuses under 'agent-review' — a self-merge routes around the reviewer", async () => {
+      // The most important refusal: green CI does not substitute for the
+      // verdict, so this cannot be satisfied by making the PR cleaner.
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } } },
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.tier).toBe('agent-review');
+      expect(data.error).toContain('cannot be self-merged');
+      expect(data.hint).toContain('request_pr_review');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses under 'human'", async () => {
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).tier).toBe('human');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the task itself requires review, whatever the workspace tier", async () => {
+      workerOk();
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: true, missionId: null });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).tier).toBe('human');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses when CI is not green, naming the failing check', async () => {
+      workerOk();
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({
+            check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }],
+          });
+        }
+        if (/\/files/.test(path)) return Promise.resolve([{ filename: 'a.ts', additions: 1, deletions: 0, status: 'modified' }]);
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('build');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the PR touches a configured deny path', async () => {
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: {
+          ...WORKSPACE_OK,
+          gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['packages/core/db/'] } } },
+        },
+      });
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+        }
+        if (/\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'packages/core/db/schema.ts', additions: 4, deletions: 0, status: 'modified' }]);
+        }
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the PR head cannot be read — fail closed', async () => {
+      // This read identifies the commit the policy is evaluated against.
+      // Merging without it is a merge with no policy, which is the hole.
+      workerOk();
+      mockGithubApi.mockImplementation(() => Promise.reject(new Error('502 Bad Gateway')));
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('could not read the PR head');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('merges under auto-threshold when the same safety check auto-merge uses passes', async () => {
+      // The positive case. Without it, every refusal above would also pass on a
+      // route that refused unconditionally.
+      workerOk();
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects force from a worker-level token', async () => {
+      workerOk();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'worker' });
+
+      const res = await PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, force: true },
+      }));
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('admin token');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin token force past the policy', async () => {
+      // A human-held admin token is the human. Refusing it would make the gate
+      // unbypassable, which turns a stuck PR into a support ticket.
+      workerOk();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+      });
+
+      const res = await PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, force: true },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('still reports an already-merged PR without evaluating policy', async () => {
+      // Reporting an existing merge is not a merge; a `human` tier must not
+      // turn idempotent success into a 403.
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        mergedAt: new Date('2026-09-01T00:00:00Z'),
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.alreadyMerged).toBe(true);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
   });
 
   it('merges PR successfully and stamps worker mergedAt', async () => {
