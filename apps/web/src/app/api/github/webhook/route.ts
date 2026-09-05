@@ -11,7 +11,13 @@ import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
-import { countPendingTasksForMission } from '@/lib/mission-release';
+import {
+  countPendingTasksForMission,
+  claimMissionReleaseAttempt,
+  commitMissionRelease,
+  abandonMissionReleaseAttempt,
+} from '@/lib/mission-release';
+import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
@@ -818,21 +824,26 @@ async function handlePullRequestEvent(event: {
             } else if (trigger === 'on_mission_complete') {
               // Only dispatch if this task's mission is now all-terminal
               if (mergedTask.missionId) {
-                const pending = await countPendingTasksForMission(mergedTask.missionId);
+                const missionId = mergedTask.missionId;
+                const pending = await countPendingTasksForMission(missionId);
                 if (pending === 0) {
-                  // Atomic dedup: only the first caller that sets releasedAt fires
-                  const claimed = await db
-                    .update(missions)
-                    .set({ releasedAt: new Date() })
-                    .where(
-                      and(
-                        eq(missions.id, mergedTask.missionId),
-                        isNull(missions.releasedAt),
-                      )
-                    )
-                    .returning({ id: missions.id });
-
-                  if (claimed.length > 0) {
+                  // Same predicate as every other completion path, including the
+                  // goal-criteria gate. This side used to check only "no pending
+                  // tasks" and dispatch, so a mission whose criteria read `fail`
+                  // could be shipped here and refused by the completion path in
+                  // the same minute. `evaluateCriteria: false` — a release READS a
+                  // verdict, it does not manufacture one.
+                  const decision = await canCompleteMission(missionId, {
+                    path: 'release_trigger',
+                    acceptCompleted: true,
+                    evaluateCriteria: false,
+                  });
+                  if (!decision.ok) {
+                    console.log(
+                      `[webhook] mission ${missionId}: not releasing — ${decision.code}: ${decision.reason}`,
+                    );
+                  } else if (await claimMissionReleaseAttempt(missionId)) {
+                    // Phase 1 claimed the ATTEMPT. Both exits below resolve it.
                     const { workflowFile, ref, inputs } = resolution.strategy;
                     const [owner, name] = repository.full_name.split('/');
                     try {
@@ -844,7 +855,7 @@ async function handlePullRequestEvent(event: {
                       );
                       const releaseResult: ReleaseResult = {
                         status: 'pending_ci',
-                        message: `Release: dispatched ${workflowFile}@${ref} for mission ${mergedTask.missionId} — awaiting workflow completion`,
+                        message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
                         runId: dispatchResult.runId,
                         runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
                         runStatus: dispatchResult.runStatus,
@@ -854,9 +865,14 @@ async function handlePullRequestEvent(event: {
                         .update(tasks)
                         .set({ releaseResult, updatedAt: new Date() })
                         .where(eq(tasks.id, mergedTask.id));
-                      console.log(`[webhook] Mission ${mergedTask.missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
+                      await commitMissionRelease(missionId);
+                      console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
                     } catch (err) {
-                      console.error(`[webhook] Mission release dispatch failed for ${repository.full_name}:`, err);
+                      await abandonMissionReleaseAttempt(
+                        missionId,
+                        'dispatch_failed',
+                        `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
+                      );
                     }
                   }
                 }

@@ -199,9 +199,30 @@ mock.module('@buildd/core/release-strategy', () => ({
 
 // Mock mission-release helpers
 const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
+// Two-phase release claim. `claim` returning true means this caller owns the
+// attempt and must resolve it; commit/abandon are the two resolutions. Asserting
+// on WHICH one fired is how the "no poisoned mission" guarantee is tested.
+const mockClaimMissionReleaseAttempt = mock(() => Promise.resolve(true));
+const mockCommitMissionRelease = mock(() => Promise.resolve());
+const mockAbandonMissionReleaseAttempt = mock(() => Promise.resolve());
 mock.module('@/lib/mission-release', () => ({
   countPendingTasksForMission: mockCountPendingTasksForMission,
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
+  claimMissionReleaseAttempt: mockClaimMissionReleaseAttempt,
+  commitMissionRelease: mockCommitMissionRelease,
+  abandonMissionReleaseAttempt: mockAbandonMissionReleaseAttempt,
+}));
+
+// The shared completion predicate. The webhook release path used to check only
+// "no pending tasks", so a mission whose goal criteria read `fail` could ship
+// here and be refused by the completion path in the same minute. Default: clear.
+const mockCanCompleteMission = mock(() => Promise.resolve({
+  ok: true,
+  code: 'ok',
+  reason: 'All goal criteria pass',
+}) as any);
+mock.module('@/lib/mission-completion', () => ({
+  canCompleteMission: mockCanCompleteMission,
 }));
 
 // Mock workflow dispatch so tests don't hit real GitHub or block on setTimeout polling
@@ -399,6 +420,12 @@ function resetAll() {
   mockMissionsFindFirst.mockReset();
   mockResolveReleaseStrategy.mockReset();
   mockCountPendingTasksForMission.mockReset();
+  mockClaimMissionReleaseAttempt.mockReset();
+  mockClaimMissionReleaseAttempt.mockReturnValue(Promise.resolve(true));
+  mockCommitMissionRelease.mockReset();
+  mockAbandonMissionReleaseAttempt.mockReset();
+  mockCanCompleteMission.mockReset();
+  mockCanCompleteMission.mockReturnValue(Promise.resolve({ ok: true, code: 'ok', reason: 'clear' }) as any);
   mockResolvePolicy.mockReset();
   mockCreateReviewerTask.mockReset();
   mockPreflightEscalationCheck.mockReset();
@@ -1462,6 +1489,145 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
+      // Phase 2 on success: the mission is marked released only now.
+      expect(mockCommitMissionRelease).toHaveBeenCalledWith('mission-1');
+      expect(mockAbandonMissionReleaseAttempt).not.toHaveBeenCalled();
+    });
+
+    it('workflow_dispatch + on_mission_complete: refuses when the shared completion predicate refuses', async () => {
+      // B3. This path used to dispatch on "no pending tasks" alone, so a mission
+      // whose goal criteria read `fail` shipped here while the completion path
+      // refused it — same mission, same minute, two answers.
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 20,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t20-feat', sha: 'sha-20' },
+          html_url: 'https://github.com/test-org/test-repo/pull/20',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w20',
+        task: { id: 't20', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockCanCompleteMission.mockReturnValue(Promise.resolve({
+        ok: false,
+        code: 'criteria_failed',
+        reason: 'goal criterion 1 reads fail',
+      }) as any);
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+      // A refusal must not consume the claim either.
+      expect(mockClaimMissionReleaseAttempt).not.toHaveBeenCalled();
+      expect(mockCommitMissionRelease).not.toHaveBeenCalled();
+    });
+
+    it('workflow_dispatch + on_mission_complete: uses the same gate options as every other completion path', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 21,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t21-feat', sha: 'sha-21' },
+          html_url: 'https://github.com/test-org/test-repo/pull/21',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w21',
+        task: { id: 't21', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      // `evaluateCriteria: false` — a release READS a verdict, it must not
+      // dispatch verification tasks or spend tokens producing one.
+      expect(mockCanCompleteMission).toHaveBeenCalledWith('mission-1', {
+        path: 'release_trigger',
+        acceptCompleted: true,
+        evaluateCriteria: false,
+      });
+    });
+
+    it('workflow_dispatch + on_mission_complete: hands back the claim when dispatch fails', async () => {
+      // B1. The claim used to be `releasedAt` itself, taken before the dispatch,
+      // so a throw here left the mission permanently marked released with
+      // nothing deployed and only a console.error to show for it.
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 22,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t22-feat', sha: 'sha-22' },
+          html_url: 'https://github.com/test-org/test-repo/pull/22',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w22',
+        task: { id: 't22', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockDispatchWorkflowRelease.mockImplementation(() => Promise.reject(new Error('github 502')) as any);
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockCommitMissionRelease).not.toHaveBeenCalled();
+      expect(mockAbandonMissionReleaseAttempt).toHaveBeenCalledTimes(1);
+      const [missionId, code, reason] = mockAbandonMissionReleaseAttempt.mock.calls[0] as any[];
+      expect(missionId).toBe('mission-1');
+      expect(code).toBe('dispatch_failed');
+      expect(String(reason)).toContain('github 502');
     });
 
     it('workflow_dispatch + on_mission_complete: does NOT dispatch when tasks are still pending', async () => {
