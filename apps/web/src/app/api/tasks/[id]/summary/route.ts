@@ -4,6 +4,7 @@ import { tasks, workers, workerErrorTraces } from '@buildd/core/db/schema';
 import { eq, desc, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { verifyWorkspaceAccess } from '@/lib/team-access';
+import { isGateSatisfied } from '@/lib/task-presentation';
 
 // GET /api/tasks/[id]/summary — lightweight task data for the slide-over panel
 export async function GET(
@@ -98,7 +99,14 @@ export async function GET(
     });
     const trace = latestTraces[0] || null;
 
-    // Count unresolved dependencies — mirrors the gate used on the task detail page.
+    // Count unresolved dependencies via the SHARED gate predicate.
+    // This used to hand-roll the rule and said it "mirrors the gate used on the
+    // task detail page" — which was itself a local copy, so it inherited that
+    // copy's bug: `d.status !== 'completed'` treats a CANCELLED dep as
+    // blocking, while the gate treats cancelling as a deliberate "this won't be
+    // delivered" signal that releases dependents. Any consumer of this endpoint
+    // was told a claimable task was blocked. It also guarded on `prNumber`
+    // where the contract guards on `prUrl`.
     // Only checked for pending tasks; non-pending tasks are already past the gate.
     const depTaskIds = (task.dependsOn as string[] | undefined) || [];
     let blockedByCount = 0;
@@ -108,17 +116,15 @@ export async function GET(
         columns: { id: true, status: true },
         with: {
           workers: {
-            columns: { prNumber: true, mergedAt: true, prLifecycleStatus: true },
+            columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
             orderBy: desc(workers.createdAt),
             limit: 1,
           },
         },
       });
-      blockedByCount = depTasks.filter(d => {
-        if (d.status !== 'completed') return true;
-        const latestWorker = d.workers?.[0];
-        return latestWorker?.prNumber && !latestWorker.mergedAt && latestWorker.prLifecycleStatus !== 'closed';
-      }).length;
+      blockedByCount = depTasks.filter(
+        d => !isGateSatisfied(d, (d.workers ?? []) as Parameters<typeof isGateSatisfied>[1]),
+      ).length;
     }
 
     return NextResponse.json({
