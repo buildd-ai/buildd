@@ -29,6 +29,7 @@ import {
   insertClaims,
   registerWaiter,
 } from "@buildd/core/path-claim";
+import { WORKER_MESSAGE_CAP } from "@buildd/core/worker-message-format";
 import { isAdvisoryManifest } from "@buildd/core/path-overlap";
 import {
   handleBuilddAction,
@@ -484,8 +485,8 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
               blocker?.missionId !== mcpTask.missionId;
 
             const message = isCrossMission
-              ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_claim_released event will fire on the workspace channel when the path is free.`
-              : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_claim_released event will fire on the workspace channel when the path is free.`;
+              ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`
+              : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
 
             const result: Record<string, unknown> = {
               claimed: false,
@@ -733,12 +734,17 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         };
 
         // Deliver: append to recipient task's pendingWorkerMessages in context.
-        // Drained (cleared) by the recipient worker's next PATCH update_progress call,
-        // which returns them as pendingMessages[] in the response.
+        // Served by the recipient worker's next PATCH update_progress call, which
+        // returns them as pendingMessages[]; the MCP update_progress handler
+        // renders them and acks by id. Capped like every other producer —
+        // messages now survive until acked, so an unbounded queue would grow.
         const recipientCtx = (recipientTask.context ?? {}) as Record<string, unknown>;
-        const pendingMsgs = Array.isArray(recipientCtx.pendingWorkerMessages)
+        const queuedMsgs = Array.isArray(recipientCtx.pendingWorkerMessages)
           ? [...(recipientCtx.pendingWorkerMessages as unknown[]), workerMessage]
           : [workerMessage];
+        const pendingMsgs = queuedMsgs.length > WORKER_MESSAGE_CAP
+          ? queuedMsgs.slice(-WORKER_MESSAGE_CAP)
+          : queuedMsgs;
 
         await db
           .update(tasks)

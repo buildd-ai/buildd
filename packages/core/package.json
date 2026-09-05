@@ -54,6 +54,8 @@
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
     "./path-claim": "./path-claim.ts",
+    "./worker-messages": "./worker-messages.ts",
+    "./worker-message-format": "./worker-message-format.ts",
     "./friction-manifest": "./friction-manifest.ts",
     "./failure-friction-signature": "./failure-friction-signature.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
