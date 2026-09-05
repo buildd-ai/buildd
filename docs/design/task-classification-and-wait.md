@@ -1,6 +1,6 @@
 # Task Classification and Wait Primitive
 
-**Status:** Proposed  
+**Status:** Implemented — Part A only (`tasks.task_class` and its read sites shipped in #1730; the wait half is not built)
 **Related:**  
 - `packages/core/mission-helpers.ts` — `deriveTaskType`, `isDeliverableTask`, `computeMissionProgress`  
 - `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` — `allTasksCount`, `isBookkeeping` predicate  

@@ -168,7 +168,7 @@ export default function ConnectorsSection({
       )}
 
       {loading ? (
-        <div className="text-text-secondary text-sm">Loading...</div>
+        <div className="text-text-secondary text-sm">Loading…</div>
       ) : connectors.length === 0 ? (
         <div className="card p-6 text-center">
           <p className="text-text-muted mb-3 text-sm">No connectors yet</p>

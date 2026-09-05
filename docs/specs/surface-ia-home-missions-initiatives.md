@@ -2,12 +2,12 @@
 title: Surface IA — Home, Missions, Initiatives
 status: draft
 owner: max
-last_verified: 2026-09-01
+last_verified: 2026-09-05
 summary: Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 domain: surfaces
 surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presentation.ts, apps/web/src/lib/initiative-presentation.ts, apps/web/src/app/app/(protected)/home/page.tsx]
 related: [mission-task-lifecycle, timeline-dependency-geometry, release-flow]
-keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline]
+keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline, integration branch, value invariant]
 supersedes: [missions-tab-triage]
 ---
 
@@ -153,14 +153,34 @@ behind `stuck`. `grinding` is invisible to every existing surface: tokens burn,
 tasks close, the percentage climbs, nothing merges. And `ready to close` is the
 honest reading of the `AWAITING` chip the rail was displaying.
 
-**Invariant**: for every subject key in the Waiting-on-You queue, that subject
-contributes to no clause of the pulse line.
+**Invariant**: no clause counts a Waiting-on-You subject as a *unit*. A clause is
+a count of arcs, never of PRs, so the queue's dedup-by-`subjectKey` cannot make
+the two numbers drift.
+
+A queue subject may still be the *evidence behind* a verdict, and this is not a
+violation. Corrected 2026-09-04: the invariant previously read "that subject
+contributes to no clause", which no implementation that keeps the §6.5 ladder can
+satisfy — `awaitingVerification` feeds `stuck`, so an arc whose only signal is one
+open PR renders `1 stuck` while that same PR sits below as a `MERGE` card. The
+distinction that matters is unit-of-count, not provenance: `1 stuck` restates
+nothing, whereas `4 awaiting merge` would.
 
 ### 2.4 Cost
 
-The line is fed by one call to the shared loader (§6), scoped to the active
-team. Home's query count MUST increase by at most one relative to v0.168.0, and
-the loader MUST NOT be called per initiative.
+The line is fed by the shared loader (§6), scoped to the active team.
+
+**MUST**: at most one call to each half of the shared loader per team
+(`loadInitiativeEffort` and `loadInitiativeVerdictInputs`), issued concurrently,
+and the loader MUST NOT be called per initiative. That is the property worth
+enforcing — cost scales with the team, not with the number of arcs.
+
+Corrected 2026-09-04: this previously read "Home's query count MUST increase by at
+most one relative to v0.168.0", which cannot be met by any correct
+implementation. A verdict needs `tokens7d` (the effort window) plus
+`criteriaFail`/`allTerminal`/`merges7d`/`attempts7d`, which is the loader's own
+five-query shape per §6.2 — none of it derivable from data Home already holds. The
+budget was written against a line that carried raw counts, and §2.3 is precisely
+the decision to stop doing that.
 
 ### 2.5 Acceptance criteria
 
@@ -200,8 +220,8 @@ contain a token-aggregation query.
 An initiative appears on this surface only as a per-card label linking to
 `/app/initiatives/<id>` (already implemented on both `FullMissionCard` and
 `CompactMissionCard`). The initiative-grouping path in `MissionGrid` —
-`initiativeGroups`, `InitiativeGroupData`, `InitiativeGroupSection`,
-`groupMissionsByInitiative` — is dead (no caller passes the prop) and MUST be
+initiativeGroups, InitiativeGroupData, InitiativeGroupSection,
+groupMissionsByInitiative — is dead (no caller passes the prop) and MUST be
 deleted along with its test file.
 
 ### 3.3 Workspace headers
@@ -235,7 +255,7 @@ team-level missions distinguishable when they coexist with workspace missions.
   the card shows the initiative title linking to `/app/initiatives/<id>` and the
   mission is grouped by `healthToGroup`, not by initiative.
 - **AC-12**: WHEN the Missions page module is loaded, THEN it exports no
-  reference to `groupMissionsByInitiative` and issues no `SUM(input_tokens +
+  reference to groupMissionsByInitiative and issues no `SUM(input_tokens +
   output_tokens)` query.
 
 ---
@@ -349,6 +369,78 @@ counts in that initiative's row on `/app/initiatives`, because both read the sam
 loader (§6). Progress on both surfaces is the canonical task-weighted rollup
 (§6.3).
 
+**Calling the same function is NOT sufficient, and this invariant has been
+violated twice by surfaces that did** (both found 2026-09-04, both by building
+against this section):
+
+1. `initiative-list.ts` did not select `workers.status`, so
+   `deriveMissionSegmentState` could never return `ghost` there while detail
+   could. A completed task with an in-flight retry scored `solid`, which
+   `computeMissionProgress` counts as completed — so **`progress` read higher on
+   the list**. Fixed. The list also fed *every* worker into the rollup while
+   detail narrows to the newest, so selecting `status` alone would merely have
+   reversed the direction of the disagreement.
+2. `countBlockedByPR` takes a caller-built index, and the three callers scope it
+   three different ways — every loaded initiative (list), this initiative only
+   (detail), workspace-filtered (Home). A task depending on a completed task in
+   a *different* initiative is visible to one index and not the other, so
+   `blocked` can still differ. A dependency on a task in a mission with **no**
+   initiative is invisible to all of them, so that count is wrong everywhere and
+   the invariant passes anyway. **Open.**
+
+So the invariant MUST be read as: identical function, identical **input scope**,
+and identical **selected columns**. An agreement check cannot detect two surfaces
+agreeing on a wrong value — see §6.2's requirement below, which exists to make
+the scope loader-owned rather than caller-chosen.
+
+### 5.2a The one value invariant
+
+§5.2, AC-20 and AC-29 are **agreement** invariants: each asserts that two
+surfaces show the *same* number. None of them constrains *which* number. Two
+surfaces reading `0` out of one loader satisfy all three — so a shared wrong `0`
+is structurally outside what they can detect, and the mission-delivery audit
+(`docs/design/mission-delivery-arc.md`) hit exactly that, twice, both times on a
+mission whose work was finished and whose diff was not on trunk:
+
+1. `derivePendingCounts` scores `awaitingVerification` per **task** — a
+   `completed` task one of whose workers still holds an unmerged, unclosed PR.
+   For a mission using an integration branch every task PR merges into that
+   branch and carries `mergedAt`, so a per-task count over *deliverable rows
+   alone* reads `0` on Home, on `/app/initiatives`, and on initiative detail
+   while the mission's whole diff sits on an unmerged integration PR. All three
+   agree. The mission is invisible.
+2. That same `0` propagates into the verdict ladder (§6.5): `stuck` needs
+   `awaitingVerification > 0` or `blocked > 0`, so the mission cannot reach
+   `stuck` and lands on `Dormant` instead — which per AC-1 contributes no clause,
+   leaving Home with no pulse line at all. Mission detail's own `awaitingMerge`
+   count fails the same way and for the same reason (it is the `half` segment
+   count, and `isDeliverableTask` is `taskClass === 'work'`).
+
+**Status of that failure as of 2026-09-05: prevented, but only incidentally, and
+that is why this invariant is written down.** The mission integration PR is owned
+by a `bookkeeping` task with a worker row (`lib/mission-pr.ts`), and all three
+`derivePendingCounts` callers pass *every* task with no `taskClass` filter — so
+the owner row supplies the `1` and the value is already correct. Nothing asserted
+it. A single plausible refactor — "pending counts should ignore bookkeeping rows"
+— silently restores the wrong `0` on all three surfaces at once, and every
+agreement invariant would still pass. `AC-51` below is what makes that refactor
+fail instead, and `lib/initiative-pulse.ts` carries a comment prohibiting the
+narrowing. Mission detail is fixed differently: it renders the integration PR as
+its own block rather than relying on a segment count.
+
+**Value invariant**: a mission whose deliverable work is complete (every
+`isDeliverableTask` task terminal, none failed) and whose integration PR is open
+and unmerged MUST contribute **exactly 1** to `awaitingVerification` — not `0`,
+because nothing of that mission is on trunk and a human decision is outstanding,
+and not `N`, because one mission with one integration PR is one pending decision
+no matter how many tasks fed it. A mission that never opted into an integration
+branch is unaffected: its task PRs target trunk, so the per-task count already
+answers correctly and this invariant adds nothing to it.
+
+This is a constraint on the value, deliberately expressed without reference to
+any second surface. It is the invariant this spec was missing: every other check
+here would still pass on the failure above.
+
 ### 5.3 Acceptance criteria
 
 - **AC-19**: GIVEN an initiative with `awaitingVerification: 2, blocked: 0,
@@ -367,6 +459,15 @@ loader (§6). Progress on both surfaces is the canonical task-weighted rollup
 - **AC-23**: GIVEN an initiative with 25 deliverable tasks in one mission, WHEN
   the detail page renders, THEN all 25 are counted in the rollup denominator (no
   per-mission task cap).
+- **AC-51**: GIVEN a mission with `integrationBranchEnabled` true, every
+  deliverable task `completed`, every task PR merged into the integration
+  branch, and the mission's integration PR open, WHEN pending counts are
+  derived for its initiative, THEN that mission contributes exactly `1` to
+  `awaitingVerification` (§5.2a) — never `0`, and never one per task.
+- **AC-51a**: GIVEN the same mission after its integration PR is merged, WHEN
+  pending counts are derived, THEN that mission contributes `0` to
+  `awaitingVerification`; the count MUST NOT persist on the merge of the
+  integration PR.
 
 ---
 
@@ -436,6 +537,20 @@ The loader is split in two so that neither half forces a query the caller does
 not need: `loadInitiativeEffort` owns the SQL, and `derivePendingCounts` derives
 the four counts purely from mission rows the caller already holds. A surface that
 renders missions therefore pays nothing extra for its counts.
+
+
+**The blocking index is loader-owned and team-scoped (MUST).** `countBlockedByPR`
+needs to know which tasks are "blocking-capable" — completed, with a worker
+holding an open PR. That index was originally built by each caller from whatever
+rows it happened to have loaded, which is how the §5.2 divergence above went
+unnoticed: the function was shared, the input was not. It MUST come from the
+loader, selecting blocking-capable tasks team-wide rather than per-surface:
+`tasks.status = 'completed'` joined to a worker with `pr_number IS NOT NULL AND
+merged_at IS NULL AND coalesce(pr_lifecycle_status,'') <> 'closed'`. Cardinality
+is the number of open PRs in the team, so the payload is small and it adds one
+indexed query per team per render — no new cron or database wake window. Once it
+is loader-owned, `countBlockedByPR` can take a set of task ids instead of a row
+map, which deletes the "which worker" question entirely.
 
 ### 6.3 Canonical progress
 
@@ -592,10 +707,20 @@ Ordered so that no intermediate commit leaves a surface without its signal:
    commit rather than living on both tabs for one, because the move is what
    makes them verdict-shaped; the Missions page therefore already lost its
    triage mount.
-4. Apply the workspace-header rule (§3.3); delete the dead initiative-grouping
-   path (§3.2).
-5. Replace `InitiativeRail` on Home with the pulse line (§2). Delete
-   `InitiativeRail` and its component file once no surface mounts it.
+4. Apply the workspace-header rule (§3.3); ~~delete the dead initiative-grouping
+   path (§3.2)~~. **§3.2 done** (2026-09-04) — `groupMissionsByInitiative`, the
+   `initiativeGroups` prop, `InitiativeGroupData`, `InitiativeGroupSection`, the
+   collapse state and the grouped render branch are all removed, along with the
+   test that was their only external caller. Verified beforehand that
+   `missions/page.tsx` never passed the prop, so the path was dead as claimed.
+   The §3.3 workspace-header rule (AC-8…AC-10) is still open.
+5. Replace the initiative rail on Home with the pulse line (§2). **Partially
+   done** — the rail is unmounted and its component file deleted (AC-6 holds, and
+   a source-level guard now asserts Home does not import it). The pulse line
+   itself (§2.2's clause set, AC-1…AC-5) is **not built yet**, so Home currently
+   carries no initiative element other than the arc headline. Deleting the rail
+   ahead of its replacement is the reason this step is called out rather than
+   marked done: the two halves must not be left separated for long.
 6. Add the verdict-and-evidence block, the pending-action strip and the large
    sparkline to the detail page (§5).
 
@@ -860,9 +985,11 @@ detail get the same component, not two implementations to keep in sync.
 
 **Code surface**
 
-- `apps/web/src/app/app/(protected)/home/page.tsx` — Home; currently mounts the
-  rail and builds `actionQueue`.
-- `apps/web/src/components/InitiativeRail.tsx` — the rail to be removed (§2.1).
+- `apps/web/src/app/app/(protected)/home/page.tsx` — Home; builds `actionQueue`.
+  No longer mounts the initiative rail (§2.1, migration step 5). The rail's own
+  component file, formerly at apps/web/src/components/InitiativeRail.tsx, has
+  been deleted — named here as plain text because it is deliberately absent, per
+  SPEC-FORMAT's rule that backticks mark a live code surface.
 - `apps/web/src/app/app/(protected)/missions/page.tsx` — Missions; no longer
   mounts triage or loads effort (#1710).
 - `apps/web/src/app/app/(protected)/missions/MissionGrid.tsx` — mission grouping,

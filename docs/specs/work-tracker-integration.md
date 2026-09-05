@@ -120,9 +120,11 @@ cancel the linked task (if still open).
   `labeled`, `closed`), gated on the repo's workspace having
   `workTrackerConfig.provider='github'`. Signature verified via
   `verifyWebhookSignature`.
-- **Linear** inbound uses a new route `POST /api/webhooks/linear` with a
+- **Linear** inbound uses `POST /api/webhooks/linear/{workspaceId}` with a
   per-workspace webhook secret (stored in `secrets`, `purpose='webhook_token'`),
-  verifying Linear's signature.
+  verifying Linear's signature. The workspace id is a path segment because
+  Linear's payload carries no buildd workspace id and the signing secret is
+  per-workspace, so the route cannot resolve one from the body.
 - Task creation is idempotent per `(workspace, externalIssueId)` — a second
   `labeled` event for the same issue does not create a duplicate task.
 - The created task is linked (`externalIssueId`/`externalIssueUrl` set) so the
@@ -138,7 +140,7 @@ cancel the linked task (if still open).
 - AC-4: GIVEN an invalid webhook signature THEN `401` and no task mutation.
 
 **Code surface**: `apps/web/src/app/api/github/webhook/route.ts` (issues events);
-`apps/web/src/app/api/webhooks/linear/route.ts` (new); workspace config UI
+`apps/web/src/app/api/webhooks/linear/[workspaceId]/route.ts`; workspace config UI
 (`WorkTrackerSection.tsx`) for label + inbound status.
 
 **Out of scope**: syncing arbitrary field edits; comment mirroring; providers

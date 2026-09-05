@@ -276,7 +276,5 @@ to per-team `notificationPreferences`.
   `secrets.purpose`
 - Observability doc: `docs/observability-and-notifications.md`
 
-**Out of scope**: Slack and Discord slash command handling
-(`/api/integrations/slack`, `/api/integrations/discord`) — these are
-inbound, not outbound. The `report-ops` critical-alert path (covered in
+**Out of scope**: the `report-ops` critical-alert path (covered in
 `runner-liveness.md`). MCP Resources (read-only, no Pusher involvement).

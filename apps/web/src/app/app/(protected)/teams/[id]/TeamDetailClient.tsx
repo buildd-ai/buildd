@@ -209,7 +209,7 @@ export default function TeamDetailClient({
                   disabled={saving}
                   className="px-3 py-1.5 bg-primary text-white rounded-md hover:bg-primary-hover text-sm disabled:opacity-50"
                 >
-                  {saving ? 'Saving...' : 'Save'}
+                  {saving ? 'Saving…' : 'Save'}
                 </button>
                 <button
                   onClick={() => {
@@ -254,7 +254,7 @@ export default function TeamDetailClient({
                 disabled={deleting}
                 className="px-3 py-1.5 border border-status-error/30 text-status-error rounded-md hover:bg-status-error/10 text-sm disabled:opacity-50"
               >
-                {deleting ? 'Deleting...' : 'Delete Team'}
+                {deleting ? 'Deleting…' : 'Delete Team'}
               </button>
             )}
           </div>
@@ -357,7 +357,7 @@ export default function TeamDetailClient({
                     disabled={inviting || !inviteEmail}
                     className="px-4 py-2 text-sm bg-primary text-white rounded-md hover:bg-primary-hover disabled:opacity-50"
                   >
-                    {inviting ? 'Sending...' : 'Invite'}
+                    {inviting ? 'Sending…' : 'Invite'}
                   </button>
                 </div>
                 {inviteUrl && (

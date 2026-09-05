@@ -1,6 +1,6 @@
 # Model Tiers — Premium / Standard / Budget
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `packages/core/model-aliases.ts`, `packages/core/model-router.ts`, `packages/core/model-prices.ts`, `packages/core/db/schema.ts`, `apps/web/src/app/api/workers/claim/route.ts`, `docs/design/backend-failover-policy.md`
 
 ---

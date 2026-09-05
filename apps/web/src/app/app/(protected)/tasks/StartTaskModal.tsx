@@ -292,7 +292,7 @@ export default function StartTaskModal({
               className="w-full md:w-auto py-3 md:py-1.5 px-3 text-sm bg-status-success hover:bg-status-success/90 text-white rounded hover:opacity-90 disabled:opacity-50 font-medium"
             >
               {loading
-                ? 'Starting...'
+                ? 'Starting…'
                 : recurring
                   ? 'Create Schedule'
                   : 'Start'

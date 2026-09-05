@@ -17,6 +17,16 @@ import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import {
+  evaluateModelApproveBound,
+  BUILD_PROOF_CHECK_TOKENS,
+  type CheckRunState,
+  type ModelApproveBound,
+} from '@/lib/auto-merge-bound';
+import {
+  isMissionIntegrationBase,
+  type MissionIntegrationFields,
+} from '@buildd/core/mission-integration';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -25,6 +35,27 @@ import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERA
  * Path checks are routed through the resolved policy:
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
+ *
+ * ## The one exemption (Option A′)
+ *
+ * `opts.mission` is the calling worker's mission, and it is read for two
+ * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
+ * shape test:
+ *
+ *  - whether this PR is the mission's integration PR, in which case the
+ *    AGGREGATE LINE THRESHOLD does not apply. Nothing else is relaxed — see the
+ *    comment at the size check;
+ *  - whether `opts.bound` may permit an unattended merge (below).
+ *
+ * Omit `opts` and this behaves exactly as it did before Option A′ existed.
+ *
+ * ## The bound (`opts.bound`)
+ *
+ * Set only when a *model* verdict is driving this merge (the reviewer approve
+ * path). It adds the base-ref-keyed rails in `auto-merge-bound.ts` on top of
+ * everything below: the mission's own integration branch as base, and positive
+ * proof that build/test actually ran green. A CI-green merge under a
+ * human-configured policy passes no bound and is unaffected.
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
@@ -32,15 +63,21 @@ export async function evaluateAutoMergeSafety(
   prNumber: number,
   headSha: string,
   policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  // One options bag, because the bound now needs the mission row too: the
+  // authoritative "is this ref the mission's integration branch" question is
+  // asked of `opts.mission`, so a second positional parameter would have to
+  // carry a duplicate of what `opts` already holds.
+  opts?: { mission?: MissionIntegrationFields | null; bound?: ModelApproveBound },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  let checkRuns: CheckRunState[] = [];
+
   // CI completeness check — verify no check runs are still pending or failing.
   try {
     const checkRunsData = await githubApi(
       installationId,
       `/repos/${repoFullName}/commits/${headSha}/check-runs`,
     );
-    const checkRuns: Array<{ name: string; status: string; conclusion: string | null }> =
-      checkRunsData?.check_runs ?? [];
+    checkRuns = checkRunsData?.check_runs ?? [];
 
     const pendingOrFailed = checkRuns.filter(
       (r) => r.status === 'in_progress' || r.status === 'queued' || r.conclusion === 'failure',
@@ -52,9 +89,11 @@ export async function evaluateAutoMergeSafety(
       };
     }
 
-    // Warn if expected named checks are absent — likely means no test suite is configured.
+    // Warn if expected named checks are absent — likely means no test suite is
+    // configured. Under `bound` the same observation is a hard refusal rather
+    // than a log line (see hasBuildProof).
     const runNames = checkRuns.map((r) => r.name.toLowerCase());
-    const missingChecks = ['typecheck', 'build', 'test'].filter(
+    const missingChecks = BUILD_PROOF_CHECK_TOKENS.filter(
       (c) => !runNames.some((n) => n.includes(c)),
     );
     if (missingChecks.length > 0) {
@@ -63,7 +102,17 @@ export async function evaluateAutoMergeSafety(
       );
     }
   } catch (err) {
+    // Fail closed. This is the only read that proves CI is green; allowing the
+    // merge when it fails means a GitHub API blip silently becomes a merge with
+    // no CI verification at all. Refusing parks the PR for a human instead,
+    // which is recoverable — an unverified merge into dev is not.
     console.warn(`Could not verify check runs for ${repoFullName}@${headSha}:`, err);
+    return {
+      ok: false,
+      reason: `could not verify CI status — GitHub check-runs lookup failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
   }
 
   const denyPaths =
@@ -118,12 +167,67 @@ export async function evaluateAutoMergeSafety(
     }
   }
 
+  // Read the PR once. Hoisted above the size check (it also feeds the
+  // mergeable_state check below) because the PR's HEAD ref is what identifies
+  // the mission integration PR. Both refs are read here: HEAD for the size-gate
+  // exemption, BASE for the model-approve bound.
+  //
+  // Fails soft by default: an unreadable PR leaves the head ref and
+  // mergeable_state unknown, which keeps the size gate ON and leaves the
+  // conflict check a soft pass — exactly as before. It fails CLOSED only under
+  // `opts.bound`, where the base ref is a hard input (see below).
+  let prData: {
+    mergeable_state?: string;
+    head?: { ref?: string | null };
+    base?: { ref?: string | null };
+  } | null = null;
+  let prReadError: unknown = null;
+  try {
+    prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+  } catch (err) {
+    prReadError = err;
+    console.warn(`Could not read PR ${repoFullName}#${prNumber}:`, err);
+  }
+
+  // Is this the mission's integration PR (integration branch → trunk)?
+  //
+  // `isMissionIntegrationBase` asks "is this ref the mission's integration
+  // branch"; for the mission PR the ref of interest is its HEAD, since its BASE
+  // is trunk. Authoritative predicate rather than the `mission/` shape
+  // heuristic: the only caller can reach the mission row, and a false positive
+  // here would drop the size gate for any branch that merely looks like a
+  // mission branch. An unknown head ref or a mission that has not opted in is
+  // false, so nothing changes for a mission that is not using Option A′.
+  const isMissionIntegrationPr = isMissionIntegrationBase({
+    baseRef: prData?.head?.ref ?? null,
+    mission: opts?.mission ?? null,
+  });
+
   const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
   const sourceFiles = files.filter(
     (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
   );
   const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
-  if (totalLines > maxLines) {
+  // Option A′: the AGGREGATE line threshold does not apply to a mission
+  // integration PR. That PR is the union of every task diff in the mission, and
+  // each of those diffs was already size-gated when it merged into the
+  // integration branch — 800 lines is the right granularity per task, and
+  // re-applying it to the union double-counts a check that already passed.
+  // Under the DEFAULT policy the union is over the cap essentially by
+  // construction, which would make every mission PR unmergeable by the platform
+  // and reduce "the tier applies at the mission PR" to a claim that only holds
+  // for operators who explicitly configured a tier.
+  //
+  // ONLY the aggregate size gate is exempt. Everything else in this function
+  // still runs for a mission PR, unchanged and in the same order: CI-green
+  // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
+  // operation-class inspector, and the conflict / branch-protection checks.
+  if (isMissionIntegrationPr && totalLines > maxLines) {
+    console.log(
+      `[auto-merge] ${repoFullName}#${prNumber}: mission integration PR — aggregate size gate not applied ` +
+        `(${totalLines} source lines > limit ${maxLines}); each task PR was size-gated on the way in`,
+    );
+  } else if (totalLines > maxLines) {
     return {
       ok: false,
       reason: `diff size ${totalLines} source lines > limit ${maxLines} (${files.length - sourceFiles.length} noise files excluded)`,
@@ -132,18 +236,41 @@ export async function evaluateAutoMergeSafety(
 
   // Conflict detection — check GitHub's mergeable_state before attempting merge.
   // 'dirty' = conflicts with base; 'blocked' = branch protection or review required.
-  // 'unknown' means GitHub is still computing — treat as a soft pass (do not block permanently).
-  try {
-    const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-    const mergeableState = prData?.mergeable_state as string | undefined;
-    if (mergeableState === 'dirty') {
-      return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
+  // 'unknown' (and an unreadable PR) means GitHub is still computing — treat as a
+  // soft pass (do not block permanently).
+  const mergeableState = prData?.mergeable_state;
+  if (mergeableState === 'dirty') {
+    return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
+  }
+  if (mergeableState === 'blocked') {
+    return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
+  }
+
+  if (opts?.bound) {
+    if (!prData) {
+      // Fail closed: without the base ref there is no bound to enforce, and an
+      // unbounded model-driven merge is the thing this rail exists to prevent.
+      return {
+        ok: false,
+        reason: `could not verify the PR base ref — GitHub PR lookup failed: ${
+          prReadError instanceof Error ? prReadError.message : String(prReadError)
+        }`,
+      };
     }
-    if (mergeableState === 'blocked') {
-      return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
+    // BASE ref here, HEAD ref for the size-gate exemption above — the same
+    // question ("is this ref the mission's integration branch") asked about the
+    // two different PRs in the topology. The mission PR runs integration branch
+    // → trunk, so its integration branch is its HEAD; a task PR runs task
+    // branch → integration branch, so its integration branch is its BASE.
+    const verdict = evaluateModelApproveBound({
+      baseRef: prData.base?.ref,
+      mission: opts.mission ?? null,
+      protectedBranches: opts.bound.protectedBranches,
+      checkRuns,
+    });
+    if (!verdict.permitted) {
+      return { ok: false, reason: verdict.reason };
     }
-  } catch (err) {
-    console.warn(`Could not check mergeable_state for ${repoFullName}#${prNumber}:`, err);
   }
 
   return { ok: true };
@@ -153,6 +280,10 @@ export async function evaluateAutoMergeSafety(
  * Enforce safety rails, then squash-merge the PR.
  * On a conflict (dirty mergeable_state), auto-dispatch a same-branch retry task.
  * On other rail violations, notify the mission feed instead of merging.
+ *
+ * Pass `bound` when a model `approve` verdict is what authorises this merge —
+ * see `auto-merge-bound.ts`. Omitting it means "CI green under a policy a human
+ * configured", which is not bounded by base ref.
  */
 export async function tryAutoMergeWorkerPr(params: {
   installationId: number;
@@ -161,10 +292,22 @@ export async function tryAutoMergeWorkerPr(params: {
   headSha: string;
   worker: { id: string; taskId: string | null; workspaceId?: string };
   policy: MergePolicy;
+  bound?: ModelApproveBound;
 }): Promise<void> {
-  const { installationId, repoFullName, prNumber, headSha, worker, policy } = params;
+  const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy);
+  // One mission read serves both callers of it inside the safety rails: the
+  // size-gate exemption and, when a model verdict authorised this merge, the
+  // bound's base-ref test.
+  const mission = await loadMissionIntegrationFields(worker.taskId);
+  const safetyCheck = await evaluateAutoMergeSafety(
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha,
+    policy,
+    { mission, bound },
+  );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 
@@ -248,6 +391,34 @@ export async function tryAutoMergeWorkerPr(params: {
         }
       }
     }
+  }
+}
+
+/**
+ * The mission integration fields for a worker's task, or null.
+ *
+ * One read on the merge path, so `evaluateAutoMergeSafety` can use the
+ * authoritative `isMissionIntegrationBase` instead of the `mission/` shape
+ * heuristic for both of the decisions that ask it: whether the aggregate size
+ * gate applies, and whether a model-authorised merge is landing somewhere
+ * quarantined. Fails soft to null, and null means "not a mission integration
+ * PR" — every gate then applies exactly as it did before Option A′, and a bound
+ * merge is refused outright.
+ */
+async function loadMissionIntegrationFields(
+  taskId: string | null,
+): Promise<MissionIntegrationFields | null> {
+  if (!taskId) return null;
+  try {
+    const task = await db.query.tasks.findFirst({
+      where: eq(tasks.id, taskId),
+      columns: { id: true },
+      with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
+    });
+    return (task as { mission?: MissionIntegrationFields | null } | undefined)?.mission ?? null;
+  } catch (err) {
+    console.warn(`[auto-merge] could not resolve mission for task ${taskId}:`, err);
+    return null;
   }
 }
 

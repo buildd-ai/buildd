@@ -34,6 +34,7 @@ import {
   sectionDenominator,
 } from '@/lib/health-metric-grammar';
 import type { RunnerHeartbeat } from '@/lib/runner-heartbeats-shared';
+import { countOf } from '@/lib/plural';
 
 // --- Runner health types (mirrors runner's DoctorReport) ---
 
@@ -313,7 +314,7 @@ export function HealthClient({
         ? (await historyRes.value.json()) as RunnerHistoryStats
         : undefined;
 
-      const errMsg = !doctor && !historyStats ? 'Runner unreachable — check that it is running and accessible.' : undefined;
+      const errMsg = !doctor && !historyStats ? 'Runner unreachable. Check that it is running and accessible.' : undefined;
 
       setRunnerHealth(prev => {
         const next = new Map(prev);
@@ -848,7 +849,7 @@ export function HealthClient({
                   <div className="font-medium text-status-warning">Duplicate crons detected</div>
                   <p className="text-text-secondary mt-1">
                     {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
-                    workspace — they fire simultaneously. Pause the stale copy below.
+                    workspace. They fire simultaneously, so pause the stale copy below.
                   </p>
                 </div>
               )}
@@ -860,8 +861,8 @@ export function HealthClient({
                   </div>
                   <p className="text-text-secondary mt-1">
                     {overdueHeartbeatCount === 1
-                      ? 'A heartbeat schedule missed its last run — the cron may have stalled or the run errored before advancing nextRunAt. Check the schedule below.'
-                      : `${overdueHeartbeatCount} heartbeat schedules missed their last run — the cron may have stalled. Check schedules below.`}
+                      ? 'A heartbeat schedule missed its last run. The cron may have stalled, or the run errored before advancing nextRunAt. Check the schedule below.'
+                      : `${overdueHeartbeatCount} heartbeat schedules missed their last run. The cron may have stalled. Check schedules below.`}
                   </p>
                 </div>
               )}
@@ -1071,7 +1072,7 @@ export function HealthClient({
               <p className="text-sm font-medium text-text-primary truncate">{scheduleToDelete.name}</p>
               <p className="text-xs text-text-muted font-mono">{scheduleToDelete.cronExpression}</p>
               <p className="text-xs text-text-muted">
-                {scheduleToDelete.totalRuns} runs · last {timeAgo(scheduleToDelete.lastRunAt, now)}
+                {countOf(scheduleToDelete.totalRuns, 'run')} · last {timeAgo(scheduleToDelete.lastRunAt, now)}
               </p>
             </div>
             <div className="flex gap-2">
@@ -1380,7 +1381,7 @@ const CBM_STATE: Record<
     label: 'Never queried',
     tone: 'text-error',
     hint: 'The graph was mounted and warm on every task and no agent called it. '
-      + 'Indexing is being paid for and nothing is using it — this is a steering problem, not an availability one.',
+      + 'Indexing is being paid for and nothing is using it. That is a steering problem, not an availability one.',
   },
   unavailable: {
     label: 'Not mounted',
@@ -1471,7 +1472,7 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
             {cbm.binaryAbsent > 0 && (
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-error">Binary absent from the runner image</span>
-                <span className="text-xs text-text-muted tabular-nums">{cbm.binaryAbsent} session(s)</span>
+                <span className="text-xs text-text-muted tabular-nums">{countOf(cbm.binaryAbsent, 'session')}</span>
               </div>
             )}
             {cbm.mountUnavailable > 0 && (
@@ -1482,7 +1483,7 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
                 >
                   Sandbox mount unavailable
                 </span>
-                <span className="text-xs text-text-muted tabular-nums">{cbm.mountUnavailable} session(s)</span>
+                <span className="text-xs text-text-muted tabular-nums">{countOf(cbm.mountUnavailable, 'session')}</span>
               </div>
             )}
             {cbm.topIndexFailReason && (
@@ -1641,7 +1642,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Collapsed learning sessions — one summary line instead of per-row cards */}
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
-            <span className="text-xs text-text-muted" title="No exhaustion events recorded — sessions only learn on hitting the session wall">
+            <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
               {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} — no exhaustion data
             </span>
           </div>
@@ -2005,7 +2006,7 @@ function FailureAnalyticsSection({
             <div>
               <span
                 className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
-                title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator — they have not had the chance to fail yet, and counting them made this number drift downward as work landed."
+                title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator. They have not had the chance to fail yet, and counting them made this number drift downward as work landed."
               >
                 Failure rate
               </span>

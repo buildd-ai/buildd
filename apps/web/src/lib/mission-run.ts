@@ -1,18 +1,23 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { missions, tasks, workspaces, missionNotes, workers } from '@buildd/core/db/schema';
 import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
+import { findBlockingPr, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
-import { githubApi } from '@/lib/github';
-import { getMissionPrState, notifyMissionPrReady } from '@/lib/mission-notifications';
+import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
+import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+
+// One durable note per mission, not one per organizer cycle. Matched by
+// title, so this string is load-bearing — the dedupe query reads it.
+const INTEGRATION_BRANCH_NOTE_TITLE = 'Integration branch unavailable';
 
 async function recordOrganizerDuplicate(
   task: typeof tasks.$inferSelect,
@@ -38,12 +43,152 @@ async function recordOrganizerDuplicate(
   });
 }
 
+/**
+ * Worker states in which a PR row still represents an open PR. Same set the
+ * claim route's path-overlap backstop uses (`api/workers/claim/route.ts`), so
+ * "open PR" means one thing at planning time and at claim time.
+ */
+const OPEN_PR_WORKER_STATUSES = ['running', 'idle', 'starting', 'waiting_input', 'completed'] as const;
+
+/** Task states whose declared paths are work this mission has not landed yet. */
+const REMAINING_TASK_STATUSES = new Set(['pending', 'assigned', 'in_progress']);
+
+export interface MissionOpenPrGate {
+  /** True when planning must pause. */
+  paused: boolean;
+  /** Every open, unmerged PR under this mission — not just `primaryPrNumber`. */
+  openPrCount: number;
+  /**
+   * Why the gate decided as it did. `scope_unknown` is the honest-uncertainty
+   * verdict: PRs are open but the remaining work declares no concrete paths, so
+   * no overlap claim can be made either way.
+   */
+  reason: 'overlap' | 'no_open_prs' | 'scope_unknown' | 'no_overlap';
+  prNumber: number | null;
+  prUrl: string | null;
+  headSha: string | null;
+  /** The declared paths that the blocking PR also touches. */
+  overlapPaths: string[];
+}
+
+/**
+ * Decide whether an open PR should pause this mission's planning.
+ *
+ * WHY THIS IS NOT KEYED ON `missions.primaryPrNumber` (B7/P3): that column means
+ * "the first PR any task of this mission opened", not "the mission's PR". Gating
+ * on it halted decomposition for whichever sibling PR happened to be first —
+ * while the mission's other open PRs went uncounted — and under any mission-PR
+ * model the primary PR is open for the mission's whole life, so the organizer
+ * would never plan again.
+ *
+ * The rule is now the one P3 asks for: pause on **an open PR whose paths overlap
+ * the next planned task**, answered with the same path-claim machinery the claim
+ * route uses (`findBlockingPr`, so the sentinel/advisory rules cannot diverge —
+ * see packages/core/path-overlap.ts).
+ *
+ * THE KNOWN LIMIT: the organizer's *next* task does not exist yet at gate time,
+ * so its paths are unknowable. The proxy is the mission's already-declared
+ * remaining scope (its pending/assigned/in_progress tasks). When that scope is
+ * undeclared — `null`, `[]`, or the `'**'` sentinel — this returns
+ * `scope_unknown` and does NOT pause: an honest "I cannot tell" beats halting
+ * every mission. The safety property that survives is narrower but real:
+ *
+ *   the organizer never fans out a planning cycle while an open PR of this
+ *   mission already owns a concrete path that the mission's own remaining work
+ *   has declared.
+ *
+ * What that costs: when the remaining scope is undeclared, task *creation* is no
+ * longer gated and the only protection left is claim time — layer 1
+ * (`findBlockingPr`), layer 2 (`path_claims`), and the mission advisory-manifest
+ * deferral. Those serialize execution, not creation, so a mission can accumulate
+ * pending tasks that then sit deferred. That is a WIP-visibility cost, not a
+ * conflicting-edit cost.
+ *
+ * Openness is read from worker rows (DB only, no GitHub round-trip), so a stale
+ * `workers.mergedAt` can delay one cycle; the next retrigger re-evaluates.
+ * `prLifecycleStatus` of `closed`/`merged` is excluded outright.
+ */
+export async function evaluateMissionOpenPrGate(missionId: string): Promise<MissionOpenPrGate> {
+  const idle: MissionOpenPrGate = {
+    paused: false, openPrCount: 0, reason: 'no_open_prs',
+    prNumber: null, prUrl: null, headSha: null, overlapPaths: [],
+  };
+
+  const missionTasks = (await db.query.tasks.findMany({
+    where: eq(tasks.missionId, missionId),
+    columns: { id: true, status: true, pathManifest: true },
+  })) ?? [];
+  if (missionTasks.length === 0) return idle;
+
+  const openPrWorkers = (await db.query.workers.findMany({
+    where: and(
+      inArray(workers.taskId, missionTasks.map(t => t.id)),
+      isNotNull(workers.prUrl),
+      isNull(workers.mergedAt),
+      inArray(workers.status, [...OPEN_PR_WORKER_STATUSES]),
+    ),
+    columns: { taskId: true, prNumber: true, prUrl: true, lastCommitSha: true, prLifecycleStatus: true },
+  })) ?? [];
+  const activeOpenPrWorkers = openPrWorkers.filter(
+    w => w.prLifecycleStatus !== 'closed' && w.prLifecycleStatus !== 'merged',
+  );
+  if (activeOpenPrWorkers.length === 0) return idle;
+
+  const manifestByTask = new Map(
+    missionTasks.map(t => [t.id, (t.pathManifest as string[] | null) ?? null]),
+  );
+  const prTaskIds = new Set(activeOpenPrWorkers.map(w => w.taskId).filter(Boolean) as string[]);
+  const openPrTasks = activeOpenPrWorkers.map(w => ({
+    pathManifest: w.taskId ? manifestByTask.get(w.taskId) ?? null : null,
+    prNumber: w.prNumber ?? null,
+    prUrl: w.prUrl ?? null,
+    headSha: w.lastCommitSha ?? null,
+  }));
+  const openPrCount = openPrTasks.length;
+
+  // Remaining scope: concrete paths declared by mission tasks that have not
+  // landed. Tasks that own one of the open PRs are excluded — a PR cannot block
+  // itself. The '**' sentinel is stripped rather than treated as a veto: it says
+  // "scope not fully declared", which is no reason to discard the parts that are
+  // (same reading as the claim route's layer-2 backstop).
+  const remainingScope = [...new Set(
+    missionTasks
+      .filter(t => REMAINING_TASK_STATUSES.has(t.status) && !prTaskIds.has(t.id))
+      .flatMap(t => ((t.pathManifest as string[] | null) ?? []))
+      .filter(p => p && p !== REPO_WIDE_SENTINEL),
+  )];
+  if (remainingScope.length === 0) {
+    return { ...idle, openPrCount, reason: 'scope_unknown' };
+  }
+
+  const blocking = findBlockingPr(remainingScope, openPrTasks);
+  if (!blocking) {
+    return { ...idle, openPrCount, reason: 'no_overlap' };
+  }
+
+  const blockingEntry = openPrTasks.find(
+    t => t.prNumber === blocking.prNumber && t.prUrl === blocking.prUrl,
+  );
+  const blockingManifest = blockingEntry?.pathManifest ?? [];
+  return {
+    paused: true,
+    openPrCount,
+    reason: 'overlap',
+    prNumber: blocking.prNumber,
+    prUrl: blocking.prUrl,
+    headSha: blockingEntry?.headSha ?? null,
+    overlapPaths: remainingScope.filter(p => pathsOverlap([p], blockingManifest)),
+  };
+}
+
 export interface RunMissionResult {
   task: typeof tasks.$inferSelect | null;
   /** True when an in-flight planning task was returned instead of creating a new one */
   deduped?: boolean;
-  /** True when planning was skipped because the mission's primary PR is awaiting review/CI */
+  /** True when planning was skipped because an open PR owns paths the mission's remaining work needs */
   skippedPrOpen?: boolean;
+  /** The PR that caused skippedPrOpen, when it could be identified */
+  blockingPrNumber?: number;
   /** True when planning was skipped because an upstream mission's gate condition is not yet met */
   skippedBlocked?: boolean;
   /** Human-readable reason for skippedBlocked (e.g. "Waiting for mission X to merge") */
@@ -179,21 +324,28 @@ export async function runMission(
     where: eq(workspaces.id, workspaceId),
   });
 
-  // If the mission has an open primary PR, don't fan out more planning work —
-  // a human (or auto-merge) needs to act on the PR first. Ping via push.
-  if (mission.primaryPrNumber && mission.primaryPrUrl) {
-    const prState = await getMissionPrState(missionId, githubApi);
-    if (prState && prState.state === 'open' && !prState.merged) {
+  // Open-PR planning gate. Pauses planning only when an open PR of this mission
+  // touches paths the mission's remaining work has already declared — see
+  // evaluateMissionOpenPrGate for why `primaryPrNumber` is the wrong key.
+  const prGate = await evaluateMissionOpenPrGate(missionId);
+  if (prGate.paused) {
+    if (prGate.prNumber && prGate.prUrl) {
       await notifyMissionPrReady(missionId, {
         title: `Mission PR awaiting review`,
-        prUrl: prState.prUrl,
-        prNumber: prState.prNumber,
-        headSha: prState.headSha,
+        prUrl: prGate.prUrl,
+        prNumber: prGate.prNumber,
+        headSha: prGate.headSha || String(prGate.prNumber),
         reason: 'awaiting_review',
-        message: `${mission.title} — PR #${prState.prNumber} is open. Planning paused until it merges.`,
+        message: `${mission.title} — PR #${prGate.prNumber} is open and owns files the next planned work needs (${prGate.overlapPaths.join(', ')}). Planning paused until it merges.`,
       });
-      return { task: null, skippedPrOpen: true };
     }
+    console.log(`[runMission] Mission ${missionId} planning paused: PR #${prGate.prNumber ?? '?'} overlaps ${prGate.overlapPaths.join(', ')}`);
+    return { task: null, skippedPrOpen: true, blockingPrNumber: prGate.prNumber ?? undefined };
+  }
+  if (prGate.openPrCount > 0) {
+    // Deliberately not a pause. Recorded so "the organizer planned while N PRs
+    // were open" is answerable after the fact.
+    console.log(`[runMission] Mission ${missionId}: ${prGate.openPrCount} open PR(s), planning anyway (${prGate.reason})`);
   }
 
   // Generate a shared mission working branch on first task. All mission tasks
@@ -218,6 +370,89 @@ export async function runMission(
         columns: { workingBranch: true },
       }))?.workingBranch
       ?? candidate;
+  }
+
+  // Option A′: an opted-in mission's integration branch has to exist on the
+  // remote before any task PR can target it — GitHub rejects a PR whose base
+  // ref is absent. Doing it here (rather than only at opt-in time) covers the
+  // mission that was opted in before it had a `workingBranch` at all, which is
+  // the common case: the branch name is generated a few lines above, on the
+  // first organizer pass.
+  if (workingBranch && mission.integrationBranchEnabled) {
+    const ensured = await ensureMissionIntegrationBranch(missionId);
+    if (!ensured.ok) {
+      console.error(
+        `[runMission] Mission ${missionId}: integration branch ${workingBranch} unavailable (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''})`,
+      );
+      const noteBody = `This mission uses an integration branch (\`${workingBranch}\`), but it could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs cannot open against a base that does not exist, so this blocks the mission's deliverable work until it is resolved.`;
+      // Post once, not once per organizer cycle: repeating a durable failure
+      // every heartbeat would bury the mission feed.
+      const existingNote = await db.query.missionNotes.findFirst({
+        where: and(
+          eq(missionNotes.missionId, missionId),
+          eq(missionNotes.title, INTEGRATION_BRANCH_NOTE_TITLE),
+          eq(missionNotes.status, 'open'),
+        ),
+        columns: { id: true },
+      });
+      if (!existingNote) {
+        await db.insert(missionNotes).values({
+          missionId,
+          authorType: 'system',
+          type: 'decision',
+          title: INTEGRATION_BRANCH_NOTE_TITLE,
+          body: noteBody,
+          status: 'open',
+        });
+      } else {
+        // Still broken, and possibly for a DIFFERENT reason than the one on the
+        // open note. "Post once" must not mean "report the first reason forever":
+        // refresh the body in place so the one open blocker note always describes
+        // the current failure, rather than dropping the new reason on the floor.
+        // Same shape as the dead-PR escalation note.
+        await db
+          .update(missionNotes)
+          .set({ body: noteBody })
+          .where(eq(missionNotes.id, existingNote.id));
+      }
+    } else {
+      // ── Resolve the blocker note now that the branch exists ────────────────
+      // Nothing used to clear this note, and because the dedupe above keys on
+      // `status='open'`, a stale one did more than linger: it SUPPRESSED the next
+      // genuine failure, which is the report an operator actually needs. So a
+      // success closes it.
+      //
+      // 'superseded' rather than 'dismissed': dismissal is the human/API action
+      // (see VALID_STATUSES in the notes routes), while 'superseded' is what the
+      // system uses when an event makes a note untrue — the same status
+      // escalation-supersession and dead-pr-shutdown set. The row stays as an
+      // audit trail. `supersededByPrNumber` is left null: there is no successor
+      // PR here, the condition simply resolved.
+      //
+      // One atomic UPDATE with the "still open" predicate in the WHERE, so a note
+      // a human has already answered or dismissed is not reopened or relabelled,
+      // and .returning() is the did-anything-change signal.
+      try {
+        const resolved = await db
+          .update(missionNotes)
+          .set({ status: 'superseded' })
+          .where(and(
+            eq(missionNotes.missionId, missionId),
+            eq(missionNotes.title, INTEGRATION_BRANCH_NOTE_TITLE),
+            eq(missionNotes.status, 'open'),
+          ))
+          .returning({ id: missionNotes.id });
+        if (resolved.length > 0) {
+          console.log(
+            `[runMission] Mission ${missionId}: integration branch ${ensured.branch} available — resolved ${resolved.length} open '${INTEGRATION_BRANCH_NOTE_TITLE}' note(s)`,
+          );
+        }
+      } catch (err) {
+        // Never fail an organizer pass over feed bookkeeping. A missed resolution
+        // is retried on the next pass, since this runs on every cycle.
+        console.error(`[runMission] Mission ${missionId}: failed to resolve integration-branch note:`, err);
+      }
+    }
   }
 
   const baseBranch = workspace?.gitConfig?.defaultBranch || 'main';
@@ -286,7 +521,20 @@ export async function runMission(
     cycleNumber: cycleCtx.cycleNumber,
     triggerChainId: cycleCtx.triggerChainId,
     triggerSource: cycleCtx.triggerSource,
-    ...(workingBranch ? { headBranch: workingBranch, baseBranch } : {}),
+    // The organizer's planning task must NOT be checked out on the integration
+    // branch once that branch is real work.
+    //
+    // `headBranch` is used verbatim by the claim route, so the planning worker's
+    // `workers.branch` becomes `mission/<slug>-<id8>` — and the runner then
+    // creates a LOCAL branch of that name pointing at trunk. Harmless while the
+    // column was inert bookkeeping; under Option A′ that remote ref holds every
+    // merged task PR of the mission, so a plain push is a non-fast-forward
+    // reject and a force-push would reset the integration branch to trunk and
+    // destroy the mission's landed work. The organizer plans; it does not need
+    // the mission's branch, so opted-in missions give it its own task branch.
+    ...(workingBranch && !mission.integrationBranchEnabled
+      ? { headBranch: workingBranch, baseBranch }
+      : {}),
   };
 
   // Get template config for mode/priority from schedule if available

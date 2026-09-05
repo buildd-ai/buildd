@@ -3,6 +3,10 @@ import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
+// One implementation of the primary-PR claim and of "what counts as trunk",
+// shared with the mission-PR opener. Two copies of a base-ref rule is how
+// the branch-name generator drifted (P8).
+import { claimMissionPrimaryPr, trunkBranches } from '@/lib/mission-pr';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -13,7 +17,8 @@ import {
   postConflictWarnings,
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
-import { escalateConflictExhaustion } from '@/lib/auto-merge';
+import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
+import { resolvePolicy } from '@/lib/merge-policy';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -145,13 +150,22 @@ export async function POST(req: NextRequest) {
       }
       const prNumberMatch = existingPrUrl.match(/\/pull\/(\d+)/);
       const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+      // NOTE: prBaseRef is deliberately NOT set here. This path registers a PR
+      // that was opened outside buildd (e.g. via gh CLI), so the only base we have
+      // is the caller-supplied `base` — an unverified claim about a PR we never
+      // saw. Recording it would let a wrong value drop a human merge gate; leaving
+      // it null keeps today's behaviour until the pull_request webhook reports the
+      // real base ref. Unknown degrades to the gate, never away from it.
       await db.update(workers).set({
         prUrl: existingPrUrl,
         prNumber,
         updatedAt: new Date(),
       }).where(eq(workers.id, workerId));
       if (prNumber) {
-        await persistMissionPrIfFirst(worker.task?.missionId, prNumber, existingPrUrl);
+        await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
+          baseRef: typeof base === 'string' ? base : null,
+          trunk: trunkBranches(worker.workspace?.gitConfig),
+        });
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prNumber);
       }
       return NextResponse.json({
@@ -171,13 +185,22 @@ export async function POST(req: NextRequest) {
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
         ),
-        columns: { prUrl: true, prNumber: true, id: true },
+        columns: { prUrl: true, prNumber: true, id: true, prBaseRef: true },
       });
       if (siblingWorkerWithPr?.prUrl && siblingWorkerWithPr.prNumber) {
-        // Mirror the PR onto this worker too so future calls hit the fast path
+        // Mirror the PR onto this worker too so future calls hit the fast path.
+        // The base ref is copied from the sibling because it is literally the same
+        // PR — but only when the sibling actually has one recorded. A sibling from
+        // before this column existed has null, and null must stay null rather than
+        // become a guess (see workers.prBaseRef).
         await db
           .update(workers)
-          .set({ prUrl: siblingWorkerWithPr.prUrl, prNumber: siblingWorkerWithPr.prNumber, updatedAt: new Date() })
+          .set({
+            prUrl: siblingWorkerWithPr.prUrl,
+            prNumber: siblingWorkerWithPr.prNumber,
+            ...(siblingWorkerWithPr.prBaseRef ? { prBaseRef: siblingWorkerWithPr.prBaseRef } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(workers.id, workerId));
         await supersedeAncestorEscalations(
           db,
@@ -264,11 +287,67 @@ export async function POST(req: NextRequest) {
             ...(typeof prDetail.base?.sha === 'string' && !worker.prOpenedBaseSha
               ? { prOpenedBaseSha: prDetail.base.sha }
               : {}),
+            // prBaseRef is deliberately NOT set here — see the guarded backfill
+            // immediately below. This UPDATE is keyed on the worker id alone, so
+            // anything in it wins unconditionally, and prBaseRef is the one
+            // column here whose stale value removes a safety gate.
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
 
-        await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url);
+        // ── prBaseRef: BACKFILL only, never overwrite ────────────────────────
+        // Our value comes from a `GET /pulls/{n}` taken earlier in this request,
+        // and the base ref is mutable — a retarget changes it and the
+        // `pull_request` webhook records that within the same seconds. We hold no
+        // ordering signal (no ETag, no updated_at comparison), so we cannot tell
+        // our snapshot from a fresher one, and "newest observation wins" is not a
+        // rule this path can actually implement.
+        //
+        // The two error directions are not symmetric. A NULL prBaseRef leaves the
+        // merge-policy chain untouched and the PR keeps the gate it already had.
+        // A WRONG prBaseRef — a mission integration branch on a PR that has since
+        // been retargeted to trunk — makes handleCheckSuiteEvent resolve Option
+        // A′, drop the tier to auto-threshold, and auto-merge into trunk with the
+        // human gate removed. So when in doubt: do not write.
+        //
+        // `isNull` in the WHERE (not just the in-memory check) is what makes that
+        // atomic: it is the same shape as the webhook's guarded write, which
+        // excludes its own no-op case in SQL and uses .returning() as the
+        // did-anything-change signal.
+        const adoptedBaseRefValue = prDetail.base?.ref ?? existing.base?.ref;
+        const adoptedBaseRef = typeof adoptedBaseRefValue === 'string' && adoptedBaseRefValue
+          ? adoptedBaseRefValue
+          : null;
+        if (adoptedBaseRef && !worker.prBaseRef) {
+          try {
+            const filled = await db
+              .update(workers)
+              .set({ prBaseRef: adoptedBaseRef, updatedAt: new Date() })
+              .where(and(eq(workers.id, workerId), isNull(workers.prBaseRef)))
+              .returning({ id: workers.id });
+            if (filled.length > 0) {
+              console.log(
+                `[create_pr] backfilled prBaseRef='${adoptedBaseRef}' on worker ${workerId} from adopted PR #${existing.number}`,
+              );
+            } else {
+              // Someone recorded a base ref between our read and this write.
+              // Theirs is newer than ours by construction; leaving it is correct.
+              console.log(
+                `[create_pr] prBaseRef already recorded for worker ${workerId} — adopt-path value '${adoptedBaseRef}' not applied`,
+              );
+            }
+          } catch (err) {
+            // Never fail PR adoption over bookkeeping: a missed backfill leaves
+            // the column null, which degrades to the existing merge gate, and the
+            // next pull_request event for this PR fills it in.
+            console.error(`[create_pr] failed to backfill prBaseRef for worker ${workerId}:`, err);
+          }
+        }
+
+        await claimMissionPrimaryPr(worker.task?.missionId, existing.number, existing.html_url, {
+          baseRef: prDetail.base?.ref ?? existing.base?.ref ?? null,
+          trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
+        });
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, existing.number);
 
         // Stamp retry attempt on the existing PR body so the attempt count is
@@ -353,11 +432,21 @@ export async function POST(req: NextRequest) {
         ...(typeof prData.changed_files === 'number' ? { filesChanged: prData.changed_files } : {}),
         // Base branch SHA at PR open time — used by the base-history-rewrite detector
         ...(typeof prData.base?.sha === 'string' ? { prOpenedBaseSha: prData.base.sha } : {}),
+        // Base REF as GitHub resolved it — deliberately GitHub's value, not the
+        // `base` we sent, because that input goes through a 7-way fallback below
+        // and GitHub is the only authority on where the PR actually points.
+        // Decides whether the merge-policy tier applies to this PR (resolvePolicy).
+        ...(typeof prData.base?.ref === 'string' && prData.base.ref
+          ? { prBaseRef: prData.base.ref }
+          : {}),
         updatedAt: new Date(),
       })
       .where(eq(workers.id, workerId));
 
-    await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
+    await claimMissionPrimaryPr(worker.task?.missionId, prData.number, prData.html_url, {
+      baseRef: prData.base?.ref ?? null,
+      trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
+    });
     await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
 
     // Guaranteed supersede: when a fallback creates a new PR (resume branch was
@@ -598,6 +687,106 @@ export async function PUT(req: NextRequest) {
           mergeCommitSha: idemMergeCommitSha,
         },
       });
+    }
+
+    // ── Merge-policy gate ────────────────────────────────────────────────────
+    //
+    // Until this existed, `merge_pr` was the ONLY route to a merge that
+    // evaluated no policy at all: authenticate, check tenancy, merge. Both
+    // other routes — auto-merge on green CI, and the reviewer `approve` path —
+    // run `evaluateAutoMergeSafety` first. And `merge_pr` sits in
+    // `workerActions`, so every worker token can call it. An agent could
+    // therefore bypass CI, deny paths, the migration operation-class inspector
+    // and the size cap by calling the tool directly, and under `agent-review`
+    // it could merge its own PR without a reviewer ever seeing it.
+    //
+    // The workspace's merge policy tier decides, because the tier already
+    // encodes who is allowed to end a PR:
+    //
+    //   auto-threshold — the platform may merge unattended, so an agent asking
+    //                    for the same thing is permitted *if* the same safety
+    //                    check passes.
+    //   agent-review   — the reviewer's verdict is the gate. A self-merge
+    //                    routes around the reviewer entirely, so it is refused
+    //                    no matter how green the PR is.
+    //   human          — refused, which is what the tier means.
+    const force = body.force === true;
+    if (force && account.level !== 'admin') {
+      return NextResponse.json({
+        error: 'force merge requires an admin token',
+        hint: '`force` bypasses the workspace merge policy, so it is reserved for a human-held admin token. Drop `force` to merge under policy.',
+      }, { status: 403 });
+    }
+
+    if (!force) {
+      let policyPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
+      try {
+        policyPr = await githubApi(
+          repo.installation.installationId,
+          `/repos/${repo.fullName}/pulls/${prNumber}`,
+        );
+      } catch (err) {
+        console.warn(`[merge_pr] Could not read ${repo.fullName}#${prNumber} for policy:`, err);
+      }
+
+      const headSha = policyPr?.head?.sha ?? null;
+      if (!headSha) {
+        // Fail closed. This read is what identifies the commit the policy is
+        // evaluated against; merging without it would be a merge with no
+        // policy, which is the hole this gate closes.
+        return NextResponse.json({
+          error: 'could not read the PR head to evaluate merge policy — refusing the merge',
+          hint: 'Retry, or have a human merge from the escalation inbox.',
+        }, { status: 403 });
+      }
+
+      const task = worker.taskId
+        ? await db.query.tasks.findFirst({
+            where: eq(tasks.id, worker.taskId),
+            columns: { id: true, requiresReview: true, missionId: true },
+          })
+        : null;
+      const mission = task?.missionId
+        ? await db.query.missions.findFirst({
+            where: eq(missions.id, task.missionId),
+            columns: { mergePolicy: true, requiresReview: true },
+          })
+        : null;
+
+      const policy = resolvePolicy(workspace, mission, task, {
+        baseRef: policyPr?.base?.ref ?? null,
+      });
+
+      if (policy.tier === 'human') {
+        return NextResponse.json({
+          error: `merge policy tier is 'human' — this PR must be merged by a person`,
+          tier: policy.tier,
+          hint: 'Report completion and let the owner merge from the escalation inbox.',
+        }, { status: 403 });
+      }
+
+      if (policy.tier === 'agent-review') {
+        return NextResponse.json({
+          error: `merge policy tier is 'agent-review' — a reviewer decides this PR, so it cannot be self-merged`,
+          tier: policy.tier,
+          hint: 'Use request_pr_review to dispatch the reviewer, then get_pr_review for the verdict. An approve merges the PR for you when policy permits.',
+        }, { status: 403 });
+      }
+
+      const safety = await evaluateAutoMergeSafety(
+        repo.installation.installationId,
+        repo.fullName,
+        prNumber,
+        headSha,
+        policy,
+      );
+      if (!safety.ok) {
+        return NextResponse.json({
+          error: `merge policy refused this merge: ${safety.reason}`,
+          tier: policy.tier,
+          hint: 'Fix the cause and retry, or report completion and let a human merge.',
+        }, { status: 403 });
+      }
     }
 
     const result = await mergePullRequest(
@@ -896,17 +1085,6 @@ export async function GET(req: NextRequest) {
   }
 }
 
-async function persistMissionPrIfFirst(
-  missionId: string | null | undefined,
-  prNumber: number,
-  prUrl: string,
-): Promise<void> {
-  if (!missionId) return;
-  await db
-    .update(missions)
-    .set({ primaryPrNumber: prNumber, primaryPrUrl: prUrl, updatedAt: new Date() })
-    .where(and(eq(missions.id, missionId), isNull(missions.primaryPrNumber)));
-}
 
 /**
  * Close open PRs from ancestor retry tasks when a fallback opens a new PR.

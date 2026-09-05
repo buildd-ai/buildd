@@ -32,10 +32,15 @@ class FakeRepository implements SubjectIntakeRepository<SubjectTask> {
       canonicalTaskId: null,
       reservationToken: input.token,
       reservationExpiresAt: input.expiresAt,
+      generation: 1,
     };
     return this.claim;
   }
-  async getActiveClaim() { return this.claim; }
+  // A claim read is a SNAPSHOT: production hands back a row, not a live handle,
+  // so a caller keeps looking at the generation it read while another caller
+  // rotates the real row. Returning `this.claim` directly would hide every
+  // stale-read bug this fake exists to expose.
+  async getActiveClaim() { return this.claim ? { ...this.claim } : null; }
   async takeReservation(_id: string, expected: string | null, token: string, expiresAt: Date) {
     if (this.claim?.reservationToken !== expected) return false;
     this.claim.reservationToken = token;
@@ -50,22 +55,66 @@ class FakeRepository implements SubjectIntakeRepository<SubjectTask> {
     return true;
   }
   async releaseReservation() { this.claim = null; }
-  async rotateClaim(_id: string, canonicalTaskId: string, token: string, expiresAt: Date) {
-    if (!this.claim) return false;
+  // Mirrors the guarded UPDATE in subject-intake-db.ts, including the
+  // generation compare-and-swap. `rotations` records every attempt so a test can
+  // assert what the production code passed, not just what the fake accepted.
+  rotations: Array<{ expectedGeneration: number; accepted: boolean }> = [];
+  async rotateClaim(
+    _id: string,
+    canonicalTaskId: string,
+    token: string,
+    expiresAt: Date,
+    expectedGeneration: number,
+  ) {
+    const accepted = Boolean(
+      this.claim
+      && this.claim.generation === expectedGeneration
+      && this.claim.canonicalTaskId !== null
+      && this.claim.reservationToken === null,
+    );
+    this.rotations.push({ expectedGeneration, accepted });
+    if (!accepted || !this.claim) return false;
     this.claim.canonicalTaskId = canonicalTaskId;
     this.claim.reservationToken = token;
     this.claim.reservationExpiresAt = expiresAt;
+    this.claim.generation += 1;
     return true;
   }
   async getTask(id: string) { return this.tasks.get(id) ?? null; }
-  async getConnectedTasks() { return [...this.tasks.values()]; }
+  // Parking hook for the stale-read race. `gateConnectedCall` names the call
+  // index that snapshots the chain and then blocks, so a test can hold one caller
+  // between its read and its rotation while another caller finishes — the only
+  // interleaving in which a stale generation reaches rotateClaim.
+  connectedCalls = 0;
+  gateConnectedCall: number | null = null;
+  private gateRelease: (() => void) | null = null;
+  private gateParked: (() => void) | null = null;
+  parked: Promise<void> = new Promise(resolve => { this.gateParked = resolve; });
+  releaseGate() { this.gateRelease?.(); }
+  async getConnectedTasks() {
+    this.connectedCalls += 1;
+    // Copies, not live objects: a DB read hands back a snapshot, and a caller
+    // that keeps seeing later mutations cannot act on stale state at all.
+    const snapshot = [...this.tasks.values()].map(task => ({ ...task }));
+    if (this.gateConnectedCall === this.connectedCalls) {
+      await new Promise<void>(resolve => {
+        this.gateRelease = resolve;
+        this.gateParked?.();
+      });
+    }
+    return snapshot;
+  }
   async createTask(input: { id: string; subjectDedupeScope: 'active' | 'none'; subjectResolution?: 'filed_anyway' }) {
     this.createCount += 1;
     const task = {
       id: input.id,
       status: 'pending',
       parentTaskId: null,
-      createdAt: new Date(),
+      // Strictly increasing, unlike `new Date()`: two inserts inside one
+      // millisecond would leave canonicalTask() tie-breaking on uuid order, which
+      // is not how a real insert sequence behaves and makes "the newest live
+      // member" mean whatever the random ids happened to sort to.
+      createdAt: new Date(Date.now() + this.createCount),
       subjectDedupeScope: input.subjectDedupeScope,
       subjectResolution: input.subjectResolution,
     };
@@ -227,6 +276,95 @@ describe('subject intake', () => {
       { id: 'new-live', status: 'assigned', parentTaskId: 'new-terminal', createdAt: new Date(2) },
     ];
     expect(canonicalTask(tasks)?.id).toBe('new-live');
+  });
+
+  // ── generation: the rotation counter is the optimistic lock ────────────────
+  // The schema promises "monotonic counter bumped on each supersession". Nothing
+  // wrote it, so every row sat at 1 and rotateClaim's guards
+  // (canonical_task_id IS NOT NULL AND reservation_token IS NULL) were passable
+  // by a caller working from state it read BEFORE another caller's rotation:
+  // an ABA lost update. These tests pin the counter's two jobs — it advances,
+  // and a rotation quoting a superseded value is refused.
+
+  it('refuses a rotation quoting a stale generation and re-reads instead', async () => {
+    const repository = new FakeRepository();
+    const first = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'webhook', repository });
+    first.task.parentTaskId = 'ancestor';
+    repository.tasks.set('ancestor', {
+      id: 'ancestor', status: 'failed', parentTaskId: null, createdAt: new Date(0),
+    });
+    const retry = () => intakeSubject({
+      workspaceId: 'ws',
+      policy: propose,
+      anchor,
+      origin: 'webhook',
+      parentTaskId: first.task.id,
+      repository,
+    });
+
+    // Caller B reads the claim at generation 1 and the pre-race chain, then parks.
+    repository.gateConnectedCall = 1;
+    const slow = retry();
+    await repository.parked;
+
+    // Caller A runs a complete trusted retry: claim rotates to generation 2 and
+    // the canonical owner becomes A's successor.
+    repository.gateConnectedCall = null;
+    const fast = await retry();
+    expect(fast.outcome).toMatchObject({ action: 'superseded', taskId: first.task.id });
+
+    // B now attempts its rotation with the generation it read.
+    repository.releaseGate();
+    const slowResult = await slow;
+
+    // The stale rotation was refused...
+    expect(repository.rotations).toContainEqual({ expectedGeneration: 1, accepted: false });
+    // ...and B restarted, so it supersedes what A actually installed rather than
+    // rotating A's successor away behind its back.
+    expect(slowResult.outcome).toMatchObject({
+      action: 'superseded',
+      taskId: fast.task.id,
+      successorTaskId: slowResult.task.id,
+    });
+    // One unbroken chain: T0 -> A's successor -> B's successor. Overwriting
+    // first.task's edge with B's successor is the lost update this guards.
+    expect(first.task.subjectSupersededByTaskId).toBe(fast.task.id);
+    expect(repository.tasks.get(fast.task.id)?.subjectSupersededByTaskId).toBe(slowResult.task.id);
+    // Two accepted rotations, one per successor.
+    expect(repository.claim?.generation).toBe(3);
+  });
+
+  it('advances the counter on the terminal-canonical rotation and quotes the current value', async () => {
+    const repository = new FakeRepository();
+    const first = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'api', repository });
+    first.task.status = 'completed';
+    const second = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'api', repository });
+    expect(second.outcome.action).toBe('created');
+    repository.tasks.get(second.task.id)!.status = 'failed';
+    const third = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'api', repository });
+    expect(third.outcome.action).toBe('created');
+
+    // Each rotation quotes the generation it read — a hardcoded value would make
+    // the second attempt quote a value the row no longer carries.
+    expect(repository.rotations).toEqual([
+      { expectedGeneration: 1, accepted: true },
+      { expectedGeneration: 2, accepted: true },
+    ]);
+    expect(repository.claim?.generation).toBe(3);
+  });
+
+  it('gives up instead of retrying forever when a rotation can never be accepted', async () => {
+    const repository = new FakeRepository();
+    const first = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'api', repository });
+    first.task.status = 'completed';
+    // A rotation that always loses (in production: a caller quoting a generation
+    // the row will never carry again) used to recurse without bound.
+    repository.rotateClaim = async () => false;
+    await expect(intakeSubject({
+      workspaceId: 'ws', policy: propose, anchor, origin: 'api', repository,
+    })).rejects.toThrow('subject_claim_contended');
+    // The failed attempts created nothing.
+    expect(repository.createCount).toBe(1);
   });
 
   it('keeps observe mode behavior unchanged', async () => {

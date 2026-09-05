@@ -14,7 +14,7 @@ import type { LoopState } from '@buildd/shared';
 import type { TaskType } from '@buildd/core/mission-helpers';
 import type { StageCounts } from '@/components/MissionProgressBar';
 
-interface GridTask {
+export interface GridTask {
   id: string;
   title: string;
   status: string;
@@ -73,6 +73,26 @@ function timeAgo(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+/**
+ * The PR-provenance props handed to `TaskCard`. Extracted so the handoff is
+ * testable: `TaskCard` re-derives its own stage via `deriveStage()`, which reads
+ * `prLifecycleStatus`. Dropping that field here made a merged task render an
+ * `OPEN #123` chip while `deriveGridTaskStage()` (and therefore the group
+ * histogram) counted the same row as `DONE`. These three fields must travel
+ * together — the card's stage and the histogram's stage read the same input.
+ */
+export function gridTaskPrProps(task: GridTask): {
+  prUrl: string | null;
+  prNumber: number | null;
+  prLifecycleStatus: string | null;
+} {
+  return {
+    prUrl: task.prUrl,
+    prNumber: task.prNumber,
+    prLifecycleStatus: task.prLifecycleStatus ?? null,
+  };
+}
+
 function deriveSwipeCardType(task: GridTask): SwipeCardType {
   if (task.status === 'completed') return 'completed-task';
   if (task.chain?.blockedBy && task.chain.blockedBy.length > 0) return 'blocked-task';
@@ -118,8 +138,7 @@ function renderTaskCard(
         attemptCurrent={task.attemptCurrent}
         attemptTotal={task.attemptTotal}
         runnerName={task.runnerName}
-        prUrl={task.prUrl}
-        prNumber={task.prNumber}
+        {...gridTaskPrProps(task)}
         taskType={task.taskType}
         subjectDead={task.subjectDead}
         missionBudgetExhausted={task.missionBudgetExhausted}
@@ -209,7 +228,7 @@ interface MissionGroup {
 
 // ─── Stage derivation from GridTask (no new column needed) ───────────────────
 
-function deriveGridTaskStage(task: GridTask): keyof StageCounts {
+export function deriveGridTaskStage(task: GridTask): keyof StageCounts {
   if (task.status === 'failed') return 'FAILED';
   if (task.workerStatus === 'running' || task.workerStatus === 'starting' ||
       task.workerStatus === 'idle' || task.workerStatus === 'waiting_input') return 'RUNNING';
@@ -671,7 +690,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="Search tasks..."
+                placeholder="Search tasks…"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 className="w-full px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"
@@ -742,7 +761,7 @@ export default function TaskGrid({ tasks, missionFilter, missionTitle, workspace
             <div className="flex-1" />
             <input
               type="text"
-              placeholder="Search tasks..."
+              placeholder="Search tasks…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-[200px] px-3 py-1.5 text-[13px] rounded-md border border-border-strong bg-transparent text-text-primary placeholder:text-text-muted focus:outline-none focus:border-text-secondary"

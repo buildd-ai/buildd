@@ -10,10 +10,27 @@ let selectCallCount = 0;
 let tasksFindManyResults: any[][] = [];
 let tasksFindManyCallCount = 0;
 let insertedNoteData: any[] = [];
+// Rows returned to the open-PR planning gate: the mission's own tasks (with
+// pathManifest) and the worker rows carrying their open PRs.
+let missionScopeTasks: any[] = [];
+let openPrWorkers: any[] = [];
 
 // Injected directly — no mock.module needed for mission-run
 const mockRunMission = mock(() => Promise.resolve({ task: { id: 'new-task' } }));
 const mockTriggerEvent = mock(() => Promise.resolve());
+
+// pre-fix guard (which asked GitHub for the primary PR's state) was reachable —
+// the real one returns null without a GitHub installation, which would have
+// no-opped the guard. The gate no longer calls it; the stub stays so the
+// replaced module keeps its full shape.
+const mockGetMissionPrState = mock(() => Promise.resolve(null as any));
+const mockNotifyMissionPrReady = mock(() => Promise.resolve({ notified: true }));
+mock.module('@/lib/mission-notifications', () => ({
+  notifyMissionPrReady: mockNotifyMissionPrReady,
+}));
+mock.module('@/lib/github', () => ({
+  githubApi: mock(() => Promise.resolve({})),
+}));
 
 // Mock drizzle-orm operators (only used as opaque args to mocked db calls)
 mock.module('drizzle-orm', () => ({
@@ -31,6 +48,8 @@ mock.module('drizzle-orm', () => ({
   lte: (col: any, val: any) => ({ _op: 'lte', col, val }),
   ne: (col: any, val: any) => ({ _op: 'ne', col, val }),
   asc: (col: any) => ({ _op: 'asc', col }),
+  isNotNull: (col: any) => ({ _op: 'isNotNull', col }),
+  not: (arg: any) => ({ _op: 'not', arg }),
 }));
 
 // Mock schema types (used only as keys into mocked db calls)
@@ -39,6 +58,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: Symbol('tasks'),
   taskSchedules: Symbol('taskSchedules'),
   missionNotes: Symbol('missionNotes'),
+  workers: { id: 'id', taskId: 'taskId', status: 'status', prUrl: 'prUrl', prNumber: 'prNumber', mergedAt: 'mergedAt', lastCommitSha: 'lastCommitSha', prLifecycleStatus: 'prLifecycleStatus' },
 }));
 
 // Uses the REAL @buildd/core/mission-helpers (isDeliverableTask) — no mock, so
@@ -54,10 +74,16 @@ mock.module('@buildd/core/db', () => ({
       },
       tasks: {
         findFirst: () => Promise.resolve(taskFindFirstResult),
-        findMany: () => {
+        // The open-PR gate is the only caller that selects pathManifest, so it
+        // gets its own rows instead of consuming the sequential stall-check list.
+        findMany: (args?: any) => {
+          if (args?.columns?.pathManifest) return Promise.resolve(missionScopeTasks);
           const idx = tasksFindManyCallCount++;
           return Promise.resolve(tasksFindManyResults[idx] || []);
         },
+      },
+      workers: {
+        findMany: () => Promise.resolve(openPrWorkers),
       },
     },
     select: () => ({
@@ -130,6 +156,12 @@ function resetAll() {
   tasksFindManyResults = [];
   tasksFindManyCallCount = 0;
   insertedNoteData = [];
+  missionScopeTasks = [];
+  openPrWorkers = [];
+  mockGetMissionPrState.mockReset();
+  mockGetMissionPrState.mockImplementation(() => Promise.resolve(null as any));
+  mockNotifyMissionPrReady.mockReset();
+  mockNotifyMissionPrReady.mockImplementation(() => Promise.resolve({ notified: true }));
   mockRunMission.mockReset();
   mockRunMission.mockImplementation(() => Promise.resolve({ task: { id: 'new-task' } }));
   mockTriggerEvent.mockReset();
@@ -525,6 +557,86 @@ describe('mission-loop', () => {
     expect((runCall[1] as any).cycleContext.cycleNumber).toBe(2);
     expect((runCall[1] as any).cycleContext.triggerSource).toBe('retrigger');
     expect((runCall[1] as any).cycleContext.triggerChainId).toBe('chain-1');
+  });
+
+  // ── Open-PR planning gate (B7 / P3) ───────────────────────────────────────
+  //
+  // `missions.primaryPrNumber` is "the first PR any mission task opened", so
+  // gating the retrigger on it stopped the whole mission for one arbitrary
+  // sibling PR while the mission's other open PRs went uncounted. The gate now
+  // asks whether an open PR overlaps the mission's known remaining scope.
+
+  function guardsPass() {
+    missionFindFirstResult = { id: 'm1', title: 'My Mission', status: 'active', scheduleId: null, updatedAt: new Date(Date.now() - 30000) };
+    updateReturningResult = [{ id: 'm1' }];
+    taskFindFirstResult = { context: { cycleNumber: 1, triggerChainId: 'chain-1' }, result: {} };
+    selectResults = [[{ count: 1 }]];
+    tasksFindManyResults = [[{ id: 'pt1' }], [{ id: 'child-1' }]];
+  }
+
+  it('retriggers when the open PR does not overlap the remaining scope', async () => {
+    guardsPass();
+    missionFindFirstResult.primaryPrNumber = 41;
+    missionFindFirstResult.primaryPrUrl = 'https://github.com/o/r/pull/41';
+    mockGetMissionPrState.mockImplementation(() => Promise.resolve({
+      prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', state: 'open', merged: false,
+      headSha: 'sha-41', mergeable: true, installationId: 1, repoFullName: 'o/r',
+    }));
+    missionScopeTasks = [
+      { id: 'task-a', status: 'completed', pathManifest: ['docs/readme.md'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ];
+    openPrWorkers = [
+      { taskId: 'task-a', prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', lastCommitSha: 'sha-41', prLifecycleStatus: 'pr_open' },
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    expect(mockRunMission).toHaveBeenCalledTimes(1);
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('skips when a sibling open PR overlaps the remaining scope, even though it is not the primary PR', async () => {
+    guardsPass();
+    missionFindFirstResult.primaryPrNumber = null;
+    missionFindFirstResult.primaryPrUrl = null;
+    missionScopeTasks = [
+      { id: 'task-a', status: 'completed', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ];
+    openPrWorkers = [
+      { taskId: 'task-a', prNumber: 77, prUrl: 'https://github.com/o/r/pull/77', lastCommitSha: 'sha-77', prLifecycleStatus: 'pr_open' },
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('skipped');
+    expect(mockRunMission).not.toHaveBeenCalled();
+    const [, opts] = mockNotifyMissionPrReady.mock.calls[0] as any[];
+    expect(opts.prNumber).toBe(77);
+    expect(opts.message).toContain('apps/web/src/lib/foo.ts');
+    const stalled = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'mission:loop_stalled');
+    expect((stalled as any)?.[2]).toMatchObject({ reason: 'pr_awaiting_review', prNumber: 77 });
+  });
+
+  it('retriggers when the remaining scope is undeclared — the overlap is unknowable', async () => {
+    guardsPass();
+    missionFindFirstResult.primaryPrNumber = 41;
+    missionFindFirstResult.primaryPrUrl = 'https://github.com/o/r/pull/41';
+    mockGetMissionPrState.mockImplementation(() => Promise.resolve({
+      prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', state: 'open', merged: false,
+      headSha: 'sha-41', mergeable: true, installationId: 1, repoFullName: 'o/r',
+    }));
+    missionScopeTasks = [
+      { id: 'task-a', status: 'completed', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'task-b', status: 'pending', pathManifest: null },
+    ];
+    openPrWorkers = [
+      { taskId: 'task-a', prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', lastCommitSha: 'sha-41', prLifecycleStatus: 'pr_open' },
+    ];
+
+    const result = await retrigger('m1', 'pt1');
+    expect(result.action).toBe('retriggered');
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
   });
 
   // ── Dormancy: proposes, does not decide ───────────────────────────────────

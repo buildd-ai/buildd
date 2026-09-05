@@ -82,21 +82,37 @@ async function resolveWriteAuth(req: NextRequest) {
     return { user, apiAccount };
 }
 
-// Verify that the requesting auth has write access to workspaceId.
-async function verifyWriteAccess(auth: { user: any; apiAccount: any }, workspaceId: string): Promise<boolean> {
+/**
+ * Verify that the requesting auth may WRITE workspaceId's config.
+ *
+ * Three outcomes rather than a boolean, so the caller can tell a member who can
+ * see the workspace ('forbidden') from someone who cannot ('not_found') — a 404
+ * for a workspace sitting in your own sidebar is a confusing lie.
+ *
+ * Session writers must be admin or owner. Bare membership is not enough: an
+ * `accessMode: 'open'` workspace resolves ANY authenticated user to role
+ * 'member', and this route writes release config, so a member could otherwise
+ * retarget where the workspace deploys.
+ */
+async function verifyWriteAccess(
+    auth: { user: any; apiAccount: any },
+    workspaceId: string,
+): Promise<'ok' | 'forbidden' | 'not_found'> {
     const { user, apiAccount } = auth;
     if (user && !apiAccount) {
         const access = await verifyWorkspaceAccess(user.id, workspaceId);
-        return Boolean(access);
+        if (!access) return 'not_found';
+        return access.role === 'owner' || access.role === 'admin' ? 'ok' : 'forbidden';
     }
     if (apiAccount) {
         const ws = await db.query.workspaces.findFirst({
             where: eq(workspaces.id, workspaceId),
             columns: { teamId: true, accessMode: true },
         });
-        return Boolean(ws && (ws.teamId === apiAccount.teamId || ws.accessMode === 'open'));
+        if (!ws) return 'not_found';
+        return ws.teamId === apiAccount.teamId || ws.accessMode === 'open' ? 'ok' : 'not_found';
     }
-    return false;
+    return 'not_found';
 }
 
 // GET /api/workspaces/[id]/config - Get workspace git config
@@ -192,11 +208,24 @@ export async function POST(
     }
 
     try {
-        // For session auth, verify workspace access via team membership
+        // For session auth, verify workspace access via team membership.
+        //
+        // This handler writes `bypassPermissions`, so bare access is not enough:
+        // an `accessMode: 'open'` workspace resolves ANY authenticated user to
+        // role 'member', and a member must not be able to widen what agents may
+        // do. Admin or owner only. The role is compared here rather than passed
+        // to verifyWorkspaceAccess so a real member gets a 403 that says why,
+        // instead of a 404 for a workspace they can plainly see.
         if (user && !apiAccount) {
             const access = await verifyWorkspaceAccess(user.id, id);
             if (!access) {
                 return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+            }
+            if (access.role !== 'owner' && access.role !== 'admin') {
+                return NextResponse.json(
+                    { error: 'Requires workspace admin' },
+                    { status: 403 },
+                );
             }
         }
         // For API key/OAuth auth, verify workspace belongs to the key's team
@@ -402,9 +431,12 @@ export async function PATCH(
     }
 
     try {
-        const hasAccess = await verifyWriteAccess(auth, id);
-        if (!hasAccess) {
+        const access = await verifyWriteAccess(auth, id);
+        if (access === 'not_found') {
             return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+        }
+        if (access === 'forbidden') {
+            return NextResponse.json({ error: 'Requires workspace admin' }, { status: 403 });
         }
 
         let body: unknown;

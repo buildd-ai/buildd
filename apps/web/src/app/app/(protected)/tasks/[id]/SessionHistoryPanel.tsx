@@ -214,7 +214,7 @@ export default function SessionHistoryPanel({ localUiUrl, viewerToken, workerId 
               {messagesLoading && messages.length === 0 ? (
                 <div className="flex items-center gap-2 text-xs text-text-muted py-2">
                   <Spinner size="xs" aria-label="Loading messages" />
-                  Loading messages...
+                  Loading messages…
                 </div>
               ) : messages.length === 0 ? (
                 <p className="text-xs text-text-muted py-2">No messages found</p>
@@ -229,7 +229,7 @@ export default function SessionHistoryPanel({ localUiUrl, viewerToken, workerId 
                       disabled={messagesLoading}
                       className="w-full text-xs text-primary hover:text-primary-hover py-1.5 disabled:opacity-50"
                     >
-                      {messagesLoading ? 'Loading...' : 'Load more'}
+                      {messagesLoading ? 'Loading…' : 'Load more'}
                     </button>
                   )}
                 </div>

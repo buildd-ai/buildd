@@ -7,11 +7,6 @@ UPDATE users SET
   name  = 'QA User ' || LEFT(id::text, 8)
 WHERE email NOT LIKE '%@qa.example.com';
 
--- accounts: scrub stored Anthropic API keys (workspaces has no webhook_secret column;
--- sensitive keys live here and in the secrets table)
-UPDATE accounts SET anthropic_api_key = 'sk-scrubbed'
-WHERE anthropic_api_key IS NOT NULL;
-
 -- accounts: scrub deprecated OAuth token column (superseded by secrets table but may still be populated)
 UPDATE accounts SET oauth_token = NULL
 WHERE oauth_token IS NOT NULL;

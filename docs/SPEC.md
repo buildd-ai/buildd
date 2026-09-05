@@ -55,8 +55,9 @@ billing:
 typically has separate trigger vs. worker accounts. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
-> **Deprecated:** `accounts.oauthToken` / `anthropicApiKey` columns — credentials now
-> live in the `secrets` table. Columns kept for back-compat, slated for removal.
+> **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
+> `secrets` table. Kept for back-compat, slated for removal. The parallel
+> `anthropicApiKey` column has already been dropped.
 
 ### Workspace
 A repo + config boundary. Holds tasks, workers, missions, roles/skills, schedules.
@@ -75,8 +76,22 @@ Key config (all JSONB, migration-free to evolve):
 A first-class **goal** that aggregates tasks. Status: `active | paused | completed |
 archived` (lifecycle is stored; *health* is derived from task state via
 `deriveMissionHealth`, not stored). Notable fields:
-- **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — all mission tasks push to one
-  shared branch tracked by a single PR.
+- **`workingBranch`** + `primaryPrNumber`/`primaryPrUrl` — the mission's **integration
+  branch** (shape `mission/<slug>-<id8>`, generated lazily once the mission's workspace
+  has a repo) and the mission-level PR that tracks it. Mission tasks do **not** share a
+  branch: every task gets its own branch and its own PR, always. `workingBranch` is the
+  **base** those task PRs are cut from only for a mission that opted in
+  (`missions.integrationBranchEnabled`, default **false**). For an opted-in mission the
+  task PRs merge into the integration branch, and the mission's work reaches trunk
+  through a single PR from that branch — the mission integration PR, which is the
+  mission's one human gate. That PR is opened automatically: when a task PR merges,
+  the `pull_request` webhook calls `maybeOpenMissionIntegrationPr`, which opens it
+  (via `openMissionIntegrationPr`) once no deliverable task of the mission is left
+  unfinished or unmerged. A mission that has not opted in — the default — behaves as it always
+  has: each task PR targets the workspace's trunk branch and nothing retargets it.
+  `primaryPrNumber`/`primaryPrUrl` are reserved for a **trunk-based** PR under the
+  mission, i.e. the mission integration PR where one exists; a PR based on the mission
+  branch never claims the slot. Both fields stay null for workspace-less missions.
 - `scheduleId` — link to a `task_schedule` for recurring missions. **Lifecycle rule:** heartbeat schedules are owned by their mission. An *explicit* status write to `completed` or `archived` (dashboard / MCP) **deletes** the linked schedule; an *automated* completion through `completeMissionIfVerified` **disables** it (`enabled = false`) instead, so a mission that later reopens — or one refused by the goal-criteria gate — keeps its heartbeat. When the mission is `paused`, the schedule is disabled (not deleted). When the mission is re-activated (`active`), the schedule is re-enabled. Deleting a mission also deletes its schedule. Either way a heartbeat schedule cannot outlive the mission that owns it.
 - **`goalCriteria`** (jsonb) + **`goalCriteriaState`** (jsonb) + `autoVerify` — the
   completion gate. `goalCriteria` is a list of outcome criteria
@@ -185,8 +200,7 @@ no separate namespace). Swappable `KnowledgeStore` interface (same pattern as
 (pattern-matched tool errors, throttled), `artifacts` (deliverables, S3/R2-backed,
 shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
 `task_schedules` (cron + conditional triggers + suggestions), `task_outcomes`
-(routing-calibration telemetry), `file_reservations` (advisory edit locks),
-`watched_projects` + `watcher_events` (CI/prod health monitors that auto-file tasks),
+(routing-calibration telemetry), `watched_projects` + `watcher_events` (CI/prod health monitors that auto-file tasks),
 `github_installations` + `github_repos`, `device_codes` (CLI device-code auth),
 `oauth_clients`/`oauth_codes`/`oauth_refresh_tokens` (OAuth 2.1 PKCE for MCP clients),
 `user_feedback`, `system_cache`, `tenant_budgets`.
@@ -241,7 +255,7 @@ the route tree is authoritative.)
   `notes/[noteId]/reply`).
 - **Workspaces:** `workspaces` (+ `by-repo`, `match-repos`, `create-repo`),
   `workspaces/[id]/{config,runners,schedules,skills,memory,projects,
-  watched-projects,webhook,integrations/slack,codex-credential}` and nested CRUD.
+  watched-projects,webhook,codex-credential}` and nested CRUD.
 - **Teams:** `teams`, `teams/[id]` (+ `members`, `invitations`), `invitations/[token]/accept`.
 - **Roles/Skills:** `roles`; skill CRUD under `workspaces/[id]/skills`.
 - **Secrets:** `secrets`.
@@ -388,4 +402,7 @@ This file is the input; docs/site are outputs. To keep it from rotting:
    store (separate dev-loop pipeline; see the skill) and diffs *claims vs. reality*,
    filing drift as tasks.
 3. `buildd-docs` and `buildd-site` are reconciled *against this file*, never the
-   reverse. Open drift items live in `docs/reports/doc-drift-punchlist.md`.
+   reverse. Drift is **regenerated on demand** by the `spec-sync` skill — do not
+   act on a checked-in drift list. A stale one is worse than none: the last
+   committed punchlist told a reader to delete two docs pages that had since
+   been rewritten into accurate ones.

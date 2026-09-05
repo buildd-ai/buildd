@@ -235,7 +235,6 @@ export interface Account {
   authType: AuthTypeValue;
 
   // For API-based auth (pay-per-token)
-  anthropicApiKey: string | null;
   maxCostPerDay: number | null;
   totalCost: number;
 
@@ -363,6 +362,15 @@ export interface WorkspacePolicyConfig {
   riskClasses: RiskClassEntry[];
   /** Required when preset implies agent-review escalation for any class. */
   reviewerRole?: string;
+  /**
+   * Pre-inject the PR's patch text into the reviewer task, instead of only the
+   * changed-filename list. Off by default: it changes what the reviewer's
+   * verdict is based on, so a workspace opts in rather than discovering it.
+   * See `docs/design/reviewer-evidence-and-verification.md`.
+   */
+  reviewerPatchEvidence?: boolean;
+  /** Token ceiling for that patch. Defaults to `REVIEWER_PATCH_TOKEN_BUDGET`. */
+  reviewerPatchTokenBudget?: number;
 }
 
 // ============================================================================
@@ -956,7 +964,6 @@ export interface CreateAccountInput {
   authType?: AuthTypeValue;
 
   // For API auth
-  anthropicApiKey?: string;
   maxCostPerDay?: number;
 
   // For OAuth auth

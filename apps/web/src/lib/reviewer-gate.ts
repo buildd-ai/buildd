@@ -9,9 +9,23 @@
  * eventually ran against an already-merged PR. `resolveReviewerGate` is the
  * single predicate both directions must agree with: PENDING or RUNNING
  * reviewer work means the agent still owns this PR.
+ *
+ * A third owner joined those two under Option A′: a task PR based on a mission
+ * integration branch is owned by neither the reviewer nor the human — buildd
+ * merges it unattended. See `isMissionIntegrationTaskPr`.
  */
 
-export type ReviewerGateActor = 'human' | 'agent';
+/**
+ * Who owns the next move on this PR.
+ *
+ * `platform` is neither of the other two on purpose: no reviewer agent is
+ * involved and no human is expected to act, because buildd itself will merge
+ * the PR unattended once its rails pass. It exists for Option A′ task PRs,
+ * whose base is a mission integration branch — see `resolveReviewerGate`.
+ * Surfaces must render it as neither an in-flight review nor a human queue
+ * item; the safest handling is to render nothing.
+ */
+export type ReviewerGateActor = 'human' | 'agent' | 'platform';
 
 export type ReviewerTaskStatus =
   | 'pending'
@@ -41,6 +55,17 @@ export interface ReviewerGateInput {
   now: Date;
   /** Minutes a reviewer may sit unclaimed before "not started" counts as "not coming". Default 30. */
   queuedThresholdMinutes?: number;
+  /**
+   * Option A′: is this a TASK PR whose base is its mission's integration
+   * branch? Callers must compute it with `isMissionIntegrationBase` (the
+   * authoritative predicate, which consults the mission's opt-in) and default
+   * it to false — "we do not know where this PR is going" must never resolve to
+   * "quarantined", because that is the direction that drops a review gate.
+   *
+   * False for the mission PR itself: its base is trunk, which is precisely why
+   * the tier applies there.
+   */
+  isMissionIntegrationTaskPr?: boolean;
 }
 
 export interface ReviewerGateResult {
@@ -71,6 +96,28 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
   }
   if (input.approvalSummary != null) {
     return { actor: 'human', reason: 'Reviewer approved — awaiting human merge' };
+  }
+
+  // Option A′: a task PR based on the mission's integration branch. It resolved
+  // to `auto-threshold` so it could land unattended into a branch that is by
+  // construction quarantined from trunk — the human gate for this work is the
+  // ONE mission PR. Every human handoff below is derived from "no reviewer is
+  // going to act on this", which is true here and yet means the opposite: the
+  // platform will merge it. Without this branch, opting a mission in DEMOTES
+  // its task PRs and then presents every one of them as a manual merge.
+  //
+  // Placed below the three checks above, and that order is the contract:
+  //   - `policyTier === 'human'` comes from task.requiresReview (resolvePolicy
+  //     rule 1 beats rule 2), an explicit per-task operator act A′ must not revoke;
+  //   - an escalation or approval note is an agent handing the PR back by name,
+  //     which the escalation inbox also honours ahead of any tier check.
+  // Everything below is reviewer-task inference, and none of it should page a
+  // human about a PR nobody is waiting on.
+  if (input.isMissionIntegrationTaskPr) {
+    return {
+      actor: 'platform',
+      reason: 'Merges into the mission integration branch — the mission PR is the review gate',
+    };
   }
 
   const rt = input.reviewerTask;

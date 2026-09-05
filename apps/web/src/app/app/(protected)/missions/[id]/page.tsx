@@ -21,6 +21,7 @@ import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
+import { buildAttemptStrips, partitionBookkeeping, repoFullNameFromPrUrl } from '@/lib/attempt-strip';
 import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
 import StructureView from './StructureView';
@@ -48,7 +49,16 @@ import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { MissionReleaseSection, deriveReleaseNowState } from './MissionReleaseSection';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import type { ReleaseStrategy, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { ReleaseStrategy, WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
+import { shouldQueryRelease } from '@/lib/release-state';
+import { countOf } from '@/lib/plural';
+import {
+  deriveMissionIntegrationPr,
+  deriveMissionProgressSubline,
+  shouldRenderMissionPrBlock,
+  MISSION_PR_STATE_LABEL,
+} from '@/lib/mission-integration-pr';
 
 export const dynamic = 'force-dynamic';
 
@@ -93,6 +103,11 @@ export default async function MissionDetailPage({
           loopIteration: true,
           startAt: true,
           reviewerRetryPrNumber: true,
+          // Attempt-strip provenance (U8): deriveTaskOrigin reads the three
+          // retry counters plus context to say why each attempt exists.
+          ciRetryPrNumber: true,
+          conflictRetryPrNumber: true,
+          context: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -175,7 +190,8 @@ export default async function MissionDetailPage({
                   updatedAt: true, result: true, mode: true, roleSlug: true,
                   creationSource: true, dependsOn: true, parentTaskId: true, category: true,
                   taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
-                  reviewerRetryPrNumber: true,
+                  reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
+                  context: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -294,6 +310,15 @@ export default async function MissionDetailPage({
   // Progress uses deliverable non-cancelled tasks only so cancelled duplicates
   // don't inflate the denominator and block the mission from reaching 100%.
   const { totalTasks, completedTasks, awaitingMerge, segments } = computeMissionProgress(mission.tasks || []);
+  // Option A′: the mission integration PR is a different object from the task
+  // PRs, and no progress counter sees it — `computeMissionProgress` counts
+  // deliverable tasks only, and `awaitingMerge` counts task PRs, which for an
+  // opted-in mission have all merged into `mission/<slug>` while none of the
+  // mission's diff is on trunk. Null for every mission that has not opted in.
+  const missionIntegrationPr = deriveMissionIntegrationPr({
+    mission: mission as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
+    tasks: (mission.tasks ?? []) as Array<{ id: string; title: string | null; taskClass: string | null; workers?: Array<{ prUrl?: string | null; prNumber?: number | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }> | null }>,
+  });
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
@@ -464,16 +489,44 @@ export default async function MissionDetailPage({
     }
   }
 
-  // §3.6: Deliverable tasks appear in the timeline; bookkeeping tasks (attempts,
-  // reviewer runs, orchestration planning) collapse to the expandable footer.
-  // taskClass='work' → timeline; 'attempt'|'bookkeeping' → housekeeping footer.
-  const isBookkeeping = (t: typeof allTasks[0]): boolean => t.taskClass !== 'work';
+  // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
+  const timelineTasks = allTasks.filter(t => t.taskClass === 'work');
 
-  const timelineTasks = allTasks.filter(t => !isBookkeeping(t));
+  // U8: attempts move onto their parent task's row via `attachAttempts` (wrapped
+  // by buildAttemptStrips), so the footer keeps only genuine housekeeping —
+  // orchestration planning runs, plus any attempt whose parent row is not
+  // rendered (dropping those would delete the run's only published trace).
+  const renderedTaskIds = new Set(timelineTasks.map(t => t.id));
+  const attemptStrips = buildAttemptStrips(
+    allTasks.map(t => ({
+      id: t.id,
+      status: t.status,
+      taskClass: t.taskClass,
+      parentTaskId: t.parentTaskId,
+      roleSlug: t.roleSlug,
+      creationSource: t.creationSource,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      ciRetryPrNumber: (t as any).ciRetryPrNumber ?? null,
+      reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
+      conflictRetryPrNumber: (t as any).conflictRetryPrNumber ?? null,
+      context: (t.context as Record<string, unknown> | null) ?? null,
+    })),
+    {
+      // No repo column is loaded here; every PR url on this mission points at
+      // the same repo, so the first one names it. Null → no PR link, never a
+      // guessed one.
+      repoFullName: repoFullNameFromPrUrl(
+        allTasks.flatMap(t => (t.workers || []) as Array<{ prUrl?: string | null }>).find(w => w.prUrl)?.prUrl,
+      ),
+      roleNameBySlug: new Map(roles.map(r => [r.slug, r.name])),
+    },
+  );
+
+  const { footer: footerTasks } = partitionBookkeeping(allTasks, renderedTaskIds);
 
   // Collect bookkeeping tasks for the expandable footer
-  const bookkeepingTasksRaw = allTasks.filter(t => isBookkeeping(t));
-  const bookkeepingTasks: BookkeepingTask[] = bookkeepingTasksRaw.map(t => {
+  const bookkeepingTasks: BookkeepingTask[] = footerTasks.map(t => {
     const lw = (t.workers as any[])?.[0];
     return {
       id: t.id,
@@ -601,6 +654,7 @@ export default async function MissionDetailPage({
         : null,
       reviewerTaskHref: reviewerTaskRef ? `/app/tasks/${reviewerTaskRef.id}` : null,
       reviewerRetryTask: reviewerRetryMap.get(task.id) ?? null,
+      attempts: attemptStrips.get(task.id) ?? null,
     };
   }
 
@@ -705,7 +759,16 @@ export default async function MissionDetailPage({
     | { id: string; name: string; gitConfig: unknown; releaseConfig: WorkspaceReleaseConfig | null }
     | null
     | undefined;
-  const releaseFooterData = releaseWorkspace
+  // §9.1 / AC-42: `none` skips the baseline and queue queries entirely.
+  // detectArchetype is pure (config only, no I/O), so this gate costs nothing.
+  const releaseArchetype: ReleaseArchetype = releaseWorkspace
+    ? detectArchetype({
+        name: releaseWorkspace.name,
+        releaseConfig: releaseWorkspace.releaseConfig,
+        gitConfig: releaseWorkspace.gitConfig as WorkspaceGitConfig | null,
+      })
+    : 'none';
+  const releaseFooterData = shouldQueryRelease(releaseArchetype) && releaseWorkspace
     ? await loadReleaseFooterData({
         id: releaseWorkspace.id,
         name: releaseWorkspace.name,
@@ -804,13 +867,55 @@ export default async function MissionDetailPage({
               </span>
             </div>
             <MissionProgressBar density="full" missionId={id} segments={segments} completedTasks={completedTasks} totalTasks={totalTasks} inFlightTasks={inFlightTasks} />
-            {/* BT-13: 'awaiting merge' count in progress display */}
+            {/* BT-13: 'awaiting merge' count. Under Option A′ this line also
+                carries the mission PR, because every task-level counter reads
+                "done" while the mission's diff sits on the integration branch
+                (lib/mission-integration-pr.ts). */}
             <div className="text-[12px] md:text-[11px] text-text-muted mt-1.5">
-              {mission.status === 'completed'
-                ? `${totalTasks} tasks · ${completedTasks} completed`
-                : awaitingMerge > 0
-                  ? `${completedTasks}/${totalTasks} done · ${awaitingMerge} awaiting merge`
-                  : `${completedTasks} of ${totalTasks} tasks complete`}
+              {deriveMissionProgressSubline({
+                missionStatus: mission.status,
+                totalTasks,
+                completedTasks,
+                awaitingMerge,
+                integrationPr: missionIntegrationPr,
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Mission integration PR (Option A′) — the mission's review gate, and a
+            different object from the task PRs that fed the branch. Exactly one
+            exists per mission by construction; a mission that never opted in
+            renders nothing here. */}
+        {shouldRenderMissionPrBlock(missionIntegrationPr, { workLanded: totalTasks > 0 && completedTasks >= totalTasks }) && missionIntegrationPr && (
+          <div className={`card p-4 mb-4 border-l-2 ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40' : 'border-status-warning/40'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-text-muted">Mission PR</span>
+                  <span className={`shrink-0 border px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-wide ${missionIntegrationPr.state === 'merged' ? 'border-status-success/40 text-status-success' : missionIntegrationPr.state === 'closed' ? 'border-status-error/40 text-status-error' : 'border-status-warning/40 text-status-warning'}`}>
+                    {MISSION_PR_STATE_LABEL[missionIntegrationPr.state]}
+                  </span>
+                  <span className="text-[10px] font-mono text-text-muted truncate">{missionIntegrationPr.branch}</span>
+                </div>
+                <p className="text-[13px] text-text-secondary">
+                  {missionIntegrationPr.state === 'not_opened'
+                    ? `Every task PR under this mission merges into its integration branch. No PR from that branch into the target branch exists yet — so none of this mission's work has reached the target branch.`
+                    : missionIntegrationPr.state === 'merged'
+                      ? `This mission's work reached the target branch through one PR from its integration branch.`
+                      : `This is the mission's review gate: one PR from the integration branch into the target branch. The merge policy applies here, not to the task PRs that fed it.`}
+                </p>
+              </div>
+              {missionIntegrationPr.prUrl && (
+                <a
+                  href={missionIntegrationPr.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="shrink-0 text-[12px] font-mono text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  #{missionIntegrationPr.prNumber} →
+                </a>
+              )}
             </div>
           </div>
         )}
@@ -820,6 +925,7 @@ export default async function MissionDetailPage({
             render nothing (§9.1). */}
         {mission.workspaceId && (
           <MissionReleaseSection
+            archetype={releaseArchetype}
             data={releaseFooterData}
             workspaceId={mission.workspaceId}
             releaseNowState={releaseNowState}
@@ -1042,7 +1148,7 @@ export default async function MissionDetailPage({
           gets alarm styling, and names the criterion + evidence when known. */}
       {criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
-          Completion gated by {missionCriteria!.length} criteri{missionCriteria!.length === 1 ? 'on' : 'a'} · not yet verified — see Goal Criteria below ↓
+          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
         </p>
       )}
       {criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (

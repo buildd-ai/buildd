@@ -1,4 +1,5 @@
 import { db } from '@buildd/core/db';
+import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
@@ -205,7 +206,10 @@ export async function dispatchCommandCriterionTask(opts: {
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
-    columns: { id: true, title: true, workspaceId: true, workingBranch: true },
+    // `integrationBranchEnabled` is load-bearing here, not decorative: the
+    // column list is explicit, so omitting it would read `undefined` and
+    // quietly send every mission's verify task at a branch that may not exist.
+    columns: { id: true, title: true, workspaceId: true, workingBranch: true, integrationBranchEnabled: true },
   });
   if (!mission) return { ok: false, reason: `Mission ${missionId} not found` };
   if (!mission.workspaceId) {
@@ -253,6 +257,33 @@ export async function dispatchCommandCriterionTask(opts: {
       context: {
         criteriaVerification: verificationContext,
         verificationCommand: command,
+        // Run the command against the mission's own code. The runner cuts the
+        // worktree from `context.baseBranch` (`resolveWorktreeBase`), so without
+        // this the command runs on the workspace default branch and the verdict
+        // describes code the mission has not landed — a criterion that goes
+        // green while the mission's work is still unverified (and one that can
+        // go red for a failure the mission already fixed).
+        //
+        // `baseBranch`, not `resumeBranch`: both feed the same base ladder, but
+        // `resumeBranch` also makes the runner build a "Prior Attempt — assess,
+        // then continue or restart" prompt section, which contradicts this
+        // task's observe-only instructions. `headBranch` alone would only rename
+        // the worker's push branch and leave the base wrong.
+        //
+        // Never the default branch: this is the mission's working branch, so it
+        // cannot reproduce the old degradation where a worktree asked to check
+        // out the default branch failed setup and fell back to the shared clone.
+        //
+        // Gated on the Option A′ opt-in, not merely on the column being set.
+        // `runMission` generates a `workingBranch` for EVERY mission with a
+        // repo, but nothing pushes to it unless the mission opted in — so for a
+        // non-opted-in mission this was naming a ref that does not exist on the
+        // remote. That degraded (the runner falls back to trunk) rather than
+        // failing, which is exactly why it went unnoticed; it also meant a
+        // `mission/*` base ref could be recorded for a mission that never opted
+        // in, which is the one input that makes the release queue's branch-shape
+        // heuristic wrong.
+        ...(missionIntegrationBase(mission) ? { baseBranch: missionIntegrationBase(mission)! } : {}),
         // Opt out of the mission-task auto-retry: a criterion deserves one honest
         // run, and a silent second attempt would delay the verdict it produces.
         retryCount: 1,

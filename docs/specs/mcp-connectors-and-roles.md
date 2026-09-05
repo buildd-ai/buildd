@@ -2,7 +2,7 @@
 title: MCP Connectors & Roles
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-09-05
 summary: Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 domain: mcp
 surfaces: [apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/connectors/route.ts, apps/web/src/lib/connector-status.ts, apps/web/src/lib/mcp-connector-refresh.ts]
@@ -66,7 +66,8 @@ supersedes: []
 > - `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`
 >   — role "Connectors" + `McpRegistryBrowser` (243–406, 733–768)
 > - `apps/web/src/app/api/connectors/*` + `apps/web/src/lib/mcp-oauth.ts` — team
->   connector CRUD, probe/discovery, OAuth callback, refresh
+>   connector CRUD, OAuth discovery + DCR (run inline from create and update —
+>   there is no standalone probe route), OAuth callback, refresh
 > - `docs/specs/SPEC-FORMAT.md` — this doc's format
 
 ---
@@ -251,9 +252,13 @@ a `mcpConnectors` array the runner merges verbatim into
   `mcpServers` key.
 
 **Code surface**:
-- Route: `apps/web/src/app/api/workers/claim/route.ts` (replace the legacy
-  980–1009 / 1174–1219 role-MCP assembly and generalize the 1228–1327 connector
-  block to filter by role `connectorRefs` + support `stdio`/`env`).
+- Route: `apps/web/src/app/api/workers/claim/route.ts` — entry point only; the
+  legacy inline role-MCP assembly is gone. Injection lives in the sibling
+  modules it calls: `apps/web/src/app/api/workers/claim/mcp-connector-injection.ts`
+  (`attachMcpConnectors` — role `connectorRefs` filter, credential decrypt,
+  `stdio`/`env`), `apps/web/src/app/api/workers/claim/connector-prefilter.ts`
+  (`runConnectorPreFilter` — visibility + credential taxonomy) and
+  `apps/web/src/app/api/workers/claim/connector-gate.ts`.
 - Runner: `apps/runner/src/workers.ts` (merge `mcpConnectors` — already consumes
   `cw.mcpConnectors`; extend to `stdio`/`env`).
 - Helper: `apps/web/src/lib/mcp-connector-refresh.ts` (claim-time refresh).
@@ -323,8 +328,19 @@ create (or reuse) a team `connectors` row and add its id to the role's
 `connectorRefs`; it MUST NOT write an inline server config onto the role.
 
 **Invariants**:
-- Installing a registry entry with a remote (`http`) transport probes the URL
-  (existing `/api/connectors/probe`) and sets `authMode` from discovery.
+- Installing a registry entry with a remote (`http`) transport MUST resolve
+  `authMode` from OAuth discovery of the URL.
+  **Not implemented as a separate endpoint.** No /api/connectors/probe route
+  exists in the tree — the pre-create probe described in
+  `docs/design/generic-mcp-connectors.md` §A/§C was never built, and nothing
+  may call it. What ships instead: `discoverOAuthMetadata` (plus `registerClient`
+  for DCR) runs *inline* inside `POST /api/connectors`, and again on
+  `PATCH /api/connectors/[id]` when the caller sends a new url or asks to
+  rediscover. Both call sites are gated on the caller *already* declaring
+  `authMode: 'oauth'` with a url, so discovery cannot currently be used to
+  *decide* `authMode` before the row exists. Closing this needs either a probe
+  endpoint or an unconditional discovery attempt on create; until then a
+  registry entry's `authMode` is whatever the caller asserted.
 - Installing a registry entry with an npm/stdio package creates a
   `transport='stdio'` connector with `command`/`args` from the registry entry
   and `envMapping` seeded from the entry's declared `environmentVariables`.
@@ -353,19 +369,48 @@ the user connects.
 
 ---
 
-## 6. API & auth surface (unchanged mechanics, restated)
+## 6. API & auth surface (as shipped)
 
-Team-connector CRUD, probe/discovery (RFC 9728/8414/7591 + PKCE S256), OAuth
-callback, and refresh are defined in `docs/design/generic-mcp-connectors.md`
-§A/§C/§G/§H and are unchanged. This doc only adds:
+Team-connector CRUD, discovery/DCR (RFC 9728/8414/7591 + PKCE S256), OAuth
+callback, and refresh follow `docs/design/generic-mcp-connectors.md`
+§A/§C/§G/§H, **except that two routes in that design doc do not exist in the
+tree** — see "Design-doc routes that never shipped" below. Treat the design doc
+as the intended mechanics, not as an inventory of callable endpoints.
+
+This doc adds:
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `PATCH` | `/api/workspaces/[id]/skills/[skillId]` | Workspace member | now accepts `connectorRefs: string[]` |
 | `POST` | `/api/connectors` | Team admin | now accepts `transport`, `command`, `args`, `envMapping`; create-or-reuse by `(teamId,name)` |
-| `PATCH` | `/api/connectors/[id]/workspaces/[wsId]` | Workspace member | enable/disable for workspace (existing) |
+| `PATCH` | `/api/workspaces/[id]/connectors` | Workspace member | enable/disable one connector for one workspace; body `{ connectorId, enabled }`; upserts `connector_workspaces`; rejects `404` for a connector neither owned by nor shared to the caller's team (§1b AC-2) |
 
 **AC**: GIVEN a non-admin member WHEN `POST /api/connectors` THEN `403`.
+
+### Design-doc routes that never shipped
+
+Both were previously described here as "existing". They are not. A reader may
+not call either one; building the behaviour means building the route.
+
+| Design-doc path | Reality |
+|---|---|
+| POST /api/connectors/probe | **Does not exist.** Discovery is inline in `POST /api/connectors` / `PATCH /api/connectors/[id]` (§5). There is no way to probe a URL before creating a connector row. |
+| PATCH /api/connectors/[id]/workspaces/[wsId] | **Does not exist.** Per-workspace enable/disable ships as `PATCH /api/workspaces/[id]/connectors` with the connector id in the body, i.e. keyed on workspace-then-connector, not connector-then-workspace. |
+
+These two survived because the spec linter existence-checked *file* paths and
+backticked symbols, but not route URLs. It now resolves route URLs as well
+(SPEC-FORMAT rule 8): a backticked `/api/...` path in an `active` spec must
+resolve to a `route.ts`, so asserting a route nobody serves fails `specs:lint`.
+That is why the two paths in the table above are written as plain text —
+backticks are the linter's signal for "this is live, go check it", so a route
+being asserted as ABSENT must not carry them.
+
+**Code surface**:
+- Role refs: `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts`
+- Connector CRUD: `apps/web/src/app/api/connectors/route.ts`,
+  `apps/web/src/app/api/connectors/[id]/route.ts`
+- Per-workspace enablement: `apps/web/src/app/api/workspaces/[id]/connectors/route.ts`
+- Discovery/DCR helper: `apps/web/src/lib/mcp-oauth.ts`
 
 ---
 

@@ -25,6 +25,7 @@ import {
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
+import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
 import { findBlockingPr, pathsOverlap, declaresNoScope, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -1369,28 +1370,18 @@ export async function POST(req: NextRequest) {
       defaultBranch?: string;
     } | null;
 
-    const sanitizedTitle = task.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .substring(0, 30);
-    const taskIdShort = task.id.substring(0, 8);
-
     // Shared mission branch (set by runMission) takes precedence — all mission
     // tasks push to the same branch so a single PR tracks the mission's work.
-    const sharedHeadBranch = (patchedContext as Record<string, unknown> | null)?.headBranch;
-
-    let branch: string;
-    if (typeof sharedHeadBranch === 'string' && sharedHeadBranch.length > 0) {
-      branch = sharedHeadBranch;
-    } else if (gitConfig?.branchingStrategy === 'none') {
-      branch = `task-${taskIdShort}`;
-    } else if (gitConfig?.useBuildBranch) {
-      branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
-    } else if (gitConfig?.branchPrefix) {
-      branch = `${gitConfig.branchPrefix}${taskIdShort}-${sanitizedTitle}`;
-    } else {
-      branch = `buildd/${taskIdShort}-${sanitizedTitle}`;
-    }
+    //
+    // The rule itself lives in @buildd/core/branch-names because approve-plan
+    // has to predict this exact name when it resolves a stacked baseBranch ref;
+    // its hand-mirrored copy of the chain below had already drifted.
+    const branch = generateTaskBranchName({
+      taskId: task.id,
+      title: task.title,
+      gitConfig,
+      sharedHeadBranch: (patchedContext as Record<string, unknown> | null)?.headBranch,
+    });
 
     // Atomic conditional insert: only creates worker if under concurrency limit
     // AND the task has no live worker already. This prevents two TOCTOU races:

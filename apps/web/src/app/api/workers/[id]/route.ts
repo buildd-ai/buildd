@@ -11,8 +11,6 @@ import { jsonResponse } from '@/lib/api-response';
 import { notify } from '@/lib/pushover';
 import { notifyTeam } from '@/lib/notify';
 import { isCredentialExpiredError } from '@/lib/notify-rules';
-import { notifySlack } from '@/lib/slack-notify';
-import { notifyDiscord } from '@/lib/discord-notify';
 import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
@@ -33,9 +31,12 @@ import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
 import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
+import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
+import { enforceServerSideEscalation } from '@/lib/reviewer';
+import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -2751,7 +2752,7 @@ export async function PATCH(
     );
   }
 
-  // Send Slack/Discord notifications and webhook callback on completion/failure
+  // Send the webhook callback on completion/failure
   // Smart suppression: skip notifications for heartbeat tasks with status "ok", auto-retried failures, or budget resets
   if ((status === 'completed' || status === 'failed') && worker.taskId && !isHeartbeatOk && !shouldAutoRetry && !isBudgetReset) {
     try {
@@ -2761,39 +2762,11 @@ export async function PATCH(
       });
 
       if (taskForNotify?.workspace) {
-        const ws = taskForNotify.workspace;
         const result = (taskForNotify as any).result as {
           summary?: string;
           prUrl?: string;
           structuredOutput?: unknown;
         } | null;
-        const summaryText = result?.summary
-          ? result.summary.slice(0, 200)
-          : undefined;
-
-        const emoji = status === 'completed' ? 'white_check_mark' : 'x';
-        const statusLabel = status === 'completed' ? 'completed' : 'failed';
-        const lines = [
-          `Task ${statusLabel}: "${taskForNotify.title}"`,
-          ...(summaryText ? [`Summary: ${summaryText}`] : []),
-          ...(result?.prUrl ? [`PR: ${result.prUrl}`] : []),
-          `Dashboard: https://buildd.dev/app/tasks/${taskForNotify.id}`,
-        ];
-        const message = lines.join('\n');
-
-        // Slack
-        notifySlack(ws as any, `:${emoji}: ${message}`).catch((err) =>
-          console.error('Slack notify error:', err)
-        );
-
-        // Discord
-        notifyDiscord(ws as any, message, {
-          title: `Task ${statusLabel}`,
-          description: lines.slice(1).join('\n'),
-          color: status === 'completed' ? 0x22c55e : 0xef4444,
-          url: `https://buildd.dev/app/tasks/${taskForNotify.id}`,
-        }).catch((err) => console.error('Discord notify error:', err));
-
         // Webhook callback (enriched with worker performance data)
         // Sensitive: redacted stub — no summary or structured output in payload
         const completedAt = updates.completedAt ?? worker.completedAt;
@@ -3014,48 +2987,119 @@ async function handleReviewerOutcomeIfNeeded(
 
   console.log(`[reviewer] Verdict for PR #${prNumber}: ${output.verdict} (confidence ${output.confidence})`);
 
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    // releaseConfig is read for prodBranch — one of the trunk branches a model
+    // verdict may never merge into (see protectedBaseBranches).
+    columns: { id: true, gitConfig: true, releaseConfig: true },
+  });
+  const missionForPolicy = missionId
+    ? await db.query.missions.findFirst({
+        where: eq(missions.id, missionId),
+        // Deliberately not `requiresReview`: this path has never resolved
+        // mission-level requiresReview, and Option A′ is not the change that
+        // should start. Only the two fields the base-ref rule needs.
+        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
+      })
+    : null;
+
+  // The PR being gated, read before the policy because the policy depends on it:
+  // under Option A′ a task PR based on the mission's integration branch is not
+  // the mission's review gate — the single PR from that branch into trunk is —
+  // so the tier drops here and applies there instead.
+  const gatedWorker = await db.query.workers.findFirst({
+    where: and(eq(workers.workspaceId, workspaceId), eq(workers.prNumber, prNumber)),
+    // `prBaseRef: null` means "unknown", which resolvePolicy treats as
+    // not-the-integration-branch — i.e. it degrades to today's gate.
+    columns: { id: true, taskId: true, prBaseRef: true },
+  });
+
+  const reviewPolicy = workspace
+    ? resolvePolicy(workspace, missionForPolicy, null, { baseRef: gatedWorker?.prBaseRef ?? null })
+    : null;
+
+  // Re-derive the escalation gates from the PR's CURRENT file list. Pre-flight
+  // ran at most once, on the webhook's `opened` action; a PR pushed to during a
+  // request-changes iteration is never re-gated, and POST /api/github/pr/review
+  // creates a reviewer task with no pre-flight at all. This is the last point
+  // before the merge, and it reads files only — never the model's own
+  // escalationReason, which is downstream of an untrusted diff.
+  let effectiveVerdict = output.verdict;
+  let serverOverrideReason: string | null = null;
+  if (output.verdict === 'approve' && reviewPolicy) {
+    let currentFiles: Array<{ filename: string }> = [];
+    let migrationSafety: MigrationSafety | undefined;
+    try {
+      const { githubApi } = await import('@/lib/github');
+      const fetched = await githubApi(
+        installationId,
+        `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
+      );
+      if (Array.isArray(fetched)) currentFiles = fetched;
+      const { inspectPullRequestMigrations } = await import('@/lib/migration-inspector');
+      migrationSafety = await inspectPullRequestMigrations({
+        installationId,
+        repoFullName,
+        prNumber,
+        headSha,
+        files: currentFiles as never,
+      });
+    } catch (err) {
+      // Leave currentFiles empty: the helper treats an unreadable file list as
+      // grounds to escalate, so a transient GitHub failure cannot grant a merge.
+      console.warn(`[reviewer] Could not re-check PR #${prNumber} files at verdict time:`, err);
+    }
+
+    const enforced = enforceServerSideEscalation({
+      verdict: output.verdict,
+      prFiles: currentFiles,
+      policy: reviewPolicy,
+      policyConfig: workspace?.gitConfig?.policyConfig ?? undefined,
+      migrationSafety,
+    });
+    effectiveVerdict = enforced.verdict;
+    serverOverrideReason = enforced.overrideReason;
+    if (serverOverrideReason) {
+      console.warn(
+        `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
+      );
+    }
+  }
+
   // Audit event — every decision is persisted as a mission note
   if (missionId) {
     await db.insert(missionNotes).values({
       missionId,
       taskId: originalTaskId,
       authorType: 'system',
-      type: output.verdict === 'approve'
+      type: effectiveVerdict === 'approve'
         ? 'reviewer_approved'
-        : output.verdict === 'request-changes'
+        : effectiveVerdict === 'request-changes'
           ? 'reviewer_request_changes'
           : 'reviewer_escalated',
-      title: output.verdict === 'approve'
+      title: effectiveVerdict === 'approve'
         ? `PR #${prNumber} approved by reviewer (confidence ${output.confidence.toFixed(2)})`
-        : output.verdict === 'request-changes'
+        : effectiveVerdict === 'request-changes'
           ? `PR #${prNumber}: reviewer requested changes (iteration ${currentIteration + 1}/${maxIterations})`
-          : `PR #${prNumber} escalated: ${output.escalationReason ?? 'see details'}`,
+          : `PR #${prNumber} escalated: ${serverOverrideReason ?? output.escalationReason ?? 'see details'}`,
       // Recommendation rides in the body behind a fixed marker so the escalation
       // card can lead with it (see selectReviewerEvidence).
-      body: (output.feedback ?? output.escalationReason ?? output.summary)
-        + (output.verdict === 'escalate' && output.recommendation
+      // A server override says so explicitly: the reviewer's own summary would
+      // otherwise read as an approval on a card that escalated.
+      body: (serverOverrideReason
+        ? `The reviewer approved this PR, but the file list requires a human: ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
+        : (output.feedback ?? output.escalationReason ?? output.summary))
+        + (effectiveVerdict === 'escalate' && output.recommendation
             ? `${RECOMMENDATION_MARKER}${output.recommendation}`
             : ''),
       status: 'open',
     });
   }
 
-  switch (output.verdict) {
+  switch (effectiveVerdict) {
     case 'approve': {
       // BT-7: Approve path — trigger auto-merge (unless gateCondition is 'approve-only')
-      const workspace = await db.query.workspaces.findFirst({
-        where: eq(workspaces.id, workspaceId),
-        columns: { id: true, gitConfig: true },
-      });
-
-      // Resolve policy to check gateCondition. approve-only = agent verifies, human merges.
-      const missionForPolicy = missionId
-        ? await db.query.missions.findFirst({
-            where: eq(missions.id, missionId),
-            columns: { mergePolicy: true },
-          })
-        : null;
-      const approvePolicy = workspace ? resolvePolicy(workspace, missionForPolicy) : null;
+      const approvePolicy = reviewPolicy;
 
       if (approvePolicy?.agentReview?.gateCondition === 'approve-only') {
         // Reviewer approved but gateCondition requires human to press merge.
@@ -3117,6 +3161,18 @@ async function handleReviewerOutcomeIfNeeded(
         headSha,
         worker: { id: originalWorker.id, taskId: originalWorker.taskId },
         policy: approvePolicy!,
+        // This merge is authorised by a MODEL verdict, so it is bounded by the
+        // branch it lands in: a quarantined mission integration branch, never
+        // the workspace's trunk. Keyed off the PR's real base ref inside
+        // evaluateAutoMergeSafety — not off a workspace-level flag, so a
+        // workspace whose task PRs still target dev cannot inherit unattended
+        // merges by accident.
+        bound: {
+          protectedBranches: protectedBaseBranches({
+            gitConfig: workspace.gitConfig,
+            releaseConfig: workspace.releaseConfig,
+          }),
+        },
       });
       break;
     }

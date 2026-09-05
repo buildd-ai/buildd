@@ -112,7 +112,19 @@ export default function TaskAutoRefresh({
       }
     };
 
+    // Task reset out from under the viewer. Published when a worker's budget is
+    // exhausted or an auth failover flips the backend, both of which set the task
+    // back to `pending` — so without this the page shows a running task that is
+    // no longer running, which is precisely the invisible-stall symptom that
+    // makes a budget reset look like a hung worker.
+    const handleTaskUpdated = (data: { task?: { id?: string } }) => {
+      if (data.task?.id === taskId) {
+        doRefresh();
+      }
+    };
+
     channel.bind('task:claimed', handleClaimed);
+    channel.bind('task:updated', handleTaskUpdated);
     channel.bind('worker:progress', handleWorkerEvent);
     channel.bind('worker:completed', handleWorkerEvent);
     channel.bind('worker:failed', handleWorkerEvent);
@@ -123,6 +135,7 @@ export default function TaskAutoRefresh({
 
     return () => {
       channel.unbind('task:claimed', handleClaimed);
+      channel.unbind('task:updated', handleTaskUpdated);
       channel.unbind('worker:progress', handleWorkerEvent);
       channel.unbind('worker:completed', handleWorkerEvent);
       channel.unbind('worker:failed', handleWorkerEvent);

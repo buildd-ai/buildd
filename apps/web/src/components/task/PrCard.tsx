@@ -1,4 +1,5 @@
 import { derivePrLifecycle, isPrMerged } from '@/lib/pr-presentation';
+import { countOf } from '@/lib/plural';
 
 const ExternalIcon = () => (
   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
@@ -71,7 +72,7 @@ export default function PrCard({
   const reviewLine = reviews && (reviews.approved + reviews.changesRequested + reviews.pending > 0)
     ? [
         reviews.approved > 0 ? `${reviews.approved} approved` : null,
-        reviews.changesRequested > 0 ? `${reviews.changesRequested} changes requested` : null,
+        reviews.changesRequested > 0 ? `${countOf(reviews.changesRequested, 'change')} requested` : null,
         reviews.pending > 0 ? `${reviews.pending} pending` : null,
       ].filter(Boolean).join(' · ')
     : 'no reviews';

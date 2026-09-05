@@ -275,7 +275,7 @@ export default function ObservationList({
                 disabled={saving}
                 className="px-3 py-1 text-sm bg-primary text-white rounded hover:bg-primary-hover disabled:opacity-50"
               >
-                {saving ? 'Saving...' : 'Save'}
+                {saving ? 'Saving…' : 'Save'}
               </button>
             </div>
           </div>
@@ -362,7 +362,7 @@ export default function ObservationList({
         />
         <input
           type="text"
-          placeholder="Search observations..."
+          placeholder="Search observations…"
           value={search}
           onChange={(e) => handleSearch(e.target.value)}
           className="flex-1 min-w-[200px] px-3 py-2 border border-border-default rounded-md bg-surface-1 text-sm"
@@ -393,7 +393,7 @@ export default function ObservationList({
 
       {/* List */}
       {loading ? (
-        <div className="text-center py-8 text-text-muted">Loading...</div>
+        <div className="text-center py-8 text-text-muted">Loading…</div>
       ) : observations.length === 0 ? (
         <div className="text-center py-8 text-text-muted">
           No observations yet. Add observations manually or let workers record them as they complete tasks.

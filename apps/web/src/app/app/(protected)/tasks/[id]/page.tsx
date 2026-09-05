@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes } from '@buildd/core/db/schema';
+import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied } from '@/lib/task-presentation';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
@@ -39,6 +39,7 @@ import { getBackendAvailability, teamEnabledBackends } from '@/lib/backend-failo
 import { backendLabel, failoverCandidates } from '@buildd/core/backend-policy';
 import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
+import { deriveTaskOrigin } from '@/lib/task-origin';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { githubApi } from '@/lib/github';
 import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
@@ -97,6 +98,14 @@ export default async function TaskDetailPage({
       },
       parentTask: { columns: { id: true, title: true, status: true } },
       subTasks: { columns: { id: true, title: true, status: true } },
+      // Provenance (U6): who created this task and by what mechanism. The
+      // creating worker has no page of its own, so we carry its task instead.
+      creatorAccount: { columns: { id: true, name: true } },
+      creatorWorker: {
+        columns: { id: true, name: true },
+        with: { task: { columns: { id: true, roleSlug: true } } },
+      },
+      schedule: { columns: { id: true, name: true } },
     },
   });
 
@@ -268,6 +277,42 @@ export default async function TaskDetailPage({
   });
   // Ship state (§10.3) — whether this task is attributed to a healthy release.
   const shippedRelease = await resolveShippedRelease(task.id);
+  // The `Shipped in <release>` line (U7) needs a name for the release the shared
+  // resolver identified. Read it by id — the release_tasks attribution join stays
+  // in resolveShippedRelease so no surface re-derives it.
+  let shippedReleaseLabel: string | null = null;
+  if (shippedRelease) {
+    const [rel] = await db
+      .select({ version: releases.version, unit: releases.unit, headSha: releases.headSha })
+      .from(releases)
+      .where(eq(releases.id, shippedRelease.releaseId))
+      .limit(1);
+    shippedReleaseLabel = rel?.version ?? rel?.unit ?? (rel?.headSha ? rel.headSha.slice(0, 7) : null);
+  }
+
+  // Origin (U6, Problem §4) — provenance from stored columns only, no title parsing.
+  // "You" is claimed only when the creating account is named after the viewer;
+  // dashboard creations record a team account, not a user identity, so a name
+  // match is the strongest honest signal available.
+  const viewerNames = [user.name, user.email, user.email?.split('@')[0]]
+    .filter((n): n is string => !!n)
+    .map(n => n.toLowerCase());
+  const creatorAccountName = task.creatorAccount?.name ?? null;
+  const origin = deriveTaskOrigin(task, {
+    actorName: creatorAccountName ?? task.creatorWorker?.name ?? null,
+    isSelf: !!creatorAccountName && viewerNames.includes(creatorAccountName.toLowerCase()),
+    creatorRoleSlug: task.creatorWorker?.task?.roleSlug ?? null,
+    creatorWorkerTaskId: task.creatorWorker?.task?.id ?? null,
+    scheduleName: task.schedule?.name ?? null,
+    missionTitle: task.mission?.title ?? null,
+    parentTaskTitle: task.parentTask?.title ?? null,
+    repoFullName: task.workspace?.repo
+      ? task.workspace.repo.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')
+      : null,
+    shippedRelease: shippedRelease
+      ? { releaseId: shippedRelease.releaseId, label: shippedReleaseLabel }
+      : null,
+  });
 
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
@@ -918,6 +963,60 @@ export default async function TaskDetailPage({
           </div>
         )}
 
+        {/* Origin (U6) — who created this task, by what mechanism, and because of
+            what. Every clause comes from a stored column via deriveTaskOrigin; the
+            `Shipped in` line is the §10.3 badge-class annotation, never a rail
+            segment. Renders nothing when nothing is recorded. */}
+        {(!origin.isEmpty || origin.shipped) && (
+          <div className="mb-6" data-testid="task-origin">
+            <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
+              Origin
+            </div>
+            <div className="card p-4 space-y-2">
+              {!origin.isEmpty && (
+                <div className="flex items-baseline gap-2 flex-wrap">
+                  <span className="text-[13px] text-text-primary" data-testid="task-origin-clause">
+                    {[origin.actor, ...origin.parts].filter(Boolean).join(' · ')}
+                  </span>
+                  {origin.links.length > 0 && (
+                    <span className="flex items-center gap-2 flex-wrap">
+                      {origin.links.map(link => (
+                        link.href.startsWith('/') ? (
+                          <Link
+                            key={`${link.key}-${link.href}`}
+                            href={link.href}
+                            className="text-[13px] text-primary hover:underline"
+                          >
+                            {link.label}
+                          </Link>
+                        ) : (
+                          <a
+                            key={`${link.key}-${link.href}`}
+                            href={link.href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-[13px] text-primary hover:underline"
+                          >
+                            {link.label} ↗
+                          </a>
+                        )
+                      ))}
+                    </span>
+                  )}
+                </div>
+              )}
+              {origin.shipped && (
+                <div className="text-[13px] text-text-secondary" data-testid="task-origin-shipped">
+                  Shipped in{' '}
+                  <Link href={origin.shipped.href} className="text-status-success hover:underline">
+                    {origin.shipped.label}
+                  </Link>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Description — for machine-generated tasks (reviewer/builder) this is a
             templated prompt, i.e. reference material, so it sits below the plan. */}
         {task.description && (
@@ -931,7 +1030,15 @@ export default async function TaskDetailPage({
 
         {/* Dependencies (dependsOn) */}
         {depTasks.length > 0 && (() => {
-          const allResolved = depTasks.every(d => d.status === 'completed');
+          // Reuses the already-gate-checked list rather than re-deriving it.
+          // The local copy here was `every(d => d.status === 'completed')`,
+          // which diverged from the real gate in both directions: it withheld
+          // the checkmark for a satisfying `cancelled` dep, and — worse — it
+          // showed "All dependencies resolved" for a `completed` dep whose PR
+          // was still open, which the gate treats as blocking. A green
+          // checkmark on a task that cannot be claimed is the phantom blocker
+          // inverted, and this file already imported the shared predicate.
+          const allResolved = unresolvedDeps.length === 0;
           return (
             <div className="mb-6">
               <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
@@ -1020,7 +1127,7 @@ export default async function TaskDetailPage({
               <div className="bg-status-running/10 border border-status-running/20 rounded-[10px] p-4 mb-6">
                 <div className="flex items-center gap-2 text-status-running font-medium text-sm">
                   <Spinner size="sm" className="text-status-running flex-shrink-0" aria-label="Generating plan" />
-                  Agent is generating a plan...
+                  Agent is generating a plan…
                 </div>
               </div>
             );

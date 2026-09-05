@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import type { ReleaseBaselineSource } from '@buildd/core/release-baseline';
+import type { ReleaseArchetype } from '@buildd/core/release-archetype';
+import { classifyReleaseState, isReleaseVisible } from '@/lib/release-state';
 
 export type GatedReleaseFooter = {
   archetype: 'gated';
@@ -35,25 +37,51 @@ export const CONTINUOUS_STATE_BADGE: Record<string, { label: string; cls: string
   pending_external: { label: 'Pending', cls: 'text-text-muted border-border-default' },
 };
 
-export function MissionReleaseFooter({ data }: { data: ReleaseFooterData }) {
-  if (!data) return null;
+/**
+ * The mission-list card footer.
+ *
+ * Visibility is decided by the shared `classifyReleaseState` helper, not by an
+ * inline copy of the §9.1 branches. AC-45 requires that this card and the
+ * mission-detail section classify `none` / `unseeded` / `clean` identically
+ * *because they call the same helper* — they used to hold two hand-copied sets
+ * of branches, which is the divergence the doctrine exists to prevent.
+ *
+ * `archetype` is optional so the card grid does not have to thread it: absent,
+ * it is taken from the loader payload, which can only describe a release-capable
+ * workspace. Supplying it is strictly better — it is the only way to distinguish
+ * `none` from `clean`, and per AC-42 a `none` workspace should not have been
+ * queried at all.
+ */
+export function MissionReleaseFooter({
+  data,
+  archetype,
+}: {
+  data: ReleaseFooterData;
+  archetype?: ReleaseArchetype;
+}) {
+  const state = classifyReleaseState({
+    archetype: archetype ?? data?.archetype ?? 'none',
+    data,
+  });
+  if (!isReleaseVisible(state)) return null;
 
-  if (data.archetype === 'gated') {
-    // Unavailable (no baseline resolvable at all) or genuinely nothing to ship
-    // both render nothing — neither implies a pipeline the workspace doesn't have.
-    if (data.queueDepth.kind === 'unavailable' || data.queueDepth.value === 0) return null;
-    const ageText =
-      data.oldestMergedAt.kind === 'value' ? ` · oldest ${daysAgo(data.oldestMergedAt.value)}d ago` : '';
-    const noReleaseYet = data.baselineSource !== 'healthy';
+  // Render from the classified state, never from the raw loader payload. The
+  // classifier is what collapsed `DerivedMetric` into a plain number and a
+  // nullable date, so reading `data` again here would re-open the unnarrowed
+  // shape the helper exists to resolve — and did, briefly: dropping the inline
+  // `kind === 'unavailable'` guard removed the only thing narrowing
+  // `queueDepth`, so `data.queueDepth.value` stopped type-checking.
+  if (state.archetype === 'gated') {
+    const ageText = state.oldestMergedAt ? ` · oldest ${daysAgo(state.oldestMergedAt)}d ago` : '';
     return (
       <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
         <span className="text-[11px] font-mono text-text-muted">
-          {noReleaseYet && <span className="text-text-muted/70">no releases yet · </span>}
-          {data.queueDepth.value} unshipped{ageText}
+          {!state.seeded && <span className="text-text-muted/70">no releases yet · </span>}
+          {state.queueDepth} unshipped{ageText}
         </span>
-        {data.releaseId && (
+        {state.releaseId && (
           <Link
-            href={`/app/releases/${data.releaseId}`}
+            href={`/app/releases/${state.releaseId}`}
             className="text-[11px] font-mono text-text-muted hover:text-text-secondary transition-colors shrink-0"
             onClick={(e) => e.stopPropagation()}
           >
@@ -64,34 +92,32 @@ export function MissionReleaseFooter({ data }: { data: ReleaseFooterData }) {
     );
   }
 
-  if (data.archetype === 'continuous') {
-    if (!data.state) return null;
-    const badge = CONTINUOUS_STATE_BADGE[data.state] ?? { label: data.state, cls: 'text-text-muted border-border-default' };
-    const refDate = data.healthyAt ?? data.deployedAt;
-    return (
-      <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
-          <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border ${badge.cls}`}>
-            {badge.label}
+  const badge = CONTINUOUS_STATE_BADGE[state.deployState] ?? {
+    label: state.deployState,
+    cls: 'text-text-muted border-border-default',
+  };
+  const refDate = state.healthyAt ?? state.deployedAt;
+  return (
+    <div className="px-4 py-1.5 border-t border-border-default/50 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-1.5">
+        <span className={`text-[10px] font-mono font-medium px-1.5 py-0.5 border ${badge.cls}`}>
+          {badge.label}
+        </span>
+        {refDate && (
+          <span className="text-[11px] font-mono text-text-muted">
+            {daysAgo(refDate)}d ago
           </span>
-          {refDate && (
-            <span className="text-[11px] font-mono text-text-muted">
-              {daysAgo(refDate)}d ago
-            </span>
-          )}
-        </div>
-        {data.releaseId && (
-          <Link
-            href={`/app/releases/${data.releaseId}`}
-            className="text-[11px] font-mono text-text-muted hover:text-text-secondary transition-colors shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          >
-            Release →
-          </Link>
         )}
       </div>
-    );
-  }
-
-  return null;
+      {state.releaseId && (
+        <Link
+          href={`/app/releases/${state.releaseId}`}
+          className="text-[11px] font-mono text-text-muted hover:text-text-secondary transition-colors shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          Release →
+        </Link>
+      )}
+    </div>
+  );
 }

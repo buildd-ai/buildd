@@ -368,7 +368,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
                     className="text-left px-3 py-2 text-sm bg-surface-3 text-text-primary rounded border border-border-default hover:bg-surface-4 hover:border-text-muted transition-colors disabled:opacity-50 cursor-pointer"
                   >
                     <span className="flex items-center gap-2">
-                      <span className="font-medium">{answerSending === label ? 'Sending...' : label}</span>
+                      <span className="font-medium">{answerSending === label ? 'Sending…' : label}</span>
                       {recommended && (
                         <span className="text-[10px] font-mono uppercase tracking-wider text-status-success bg-status-success/10 px-1.5 py-0.5 rounded">Recommended</span>
                       )}

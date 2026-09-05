@@ -234,8 +234,7 @@ untouched.
 `packages/core/db/schema.ts` (`systemCache`),
 `apps/web/src/app/api/admin/refresh-model-aliases/route.ts` and its
 `route.test.ts`, `apps/web/src/components/ModelPicker.tsx` and
-`ModelPicker.test.tsx`, `packages/core/task-classifier.ts:72` (the only caller
-of `resolveModelName`).
+`ModelPicker.test.tsx`.
 
 **Out of scope**: the Anthropic catalog fetch itself, which belongs to the tier
 registry block above.
@@ -397,10 +396,11 @@ example containing both (`apps/web/src/lib/default-roles.ts:104`, `:118-119`).
 Every non-scheduled task therefore defaults to `engineering/normal` →
 `sonnet` → `standard`.
 
-**The alias subsystem has no live consumer.** `resolveModelName` is called from
-exactly one place, `packages/core/task-classifier.ts:72`, and that
-`classifyTask` has no production caller (`apps/web/src/app/api/tasks/route.ts`
-imports a same-named keyword classifier from `@/lib/task-category`). The
+**The alias subsystem has no live consumer.** Its only caller was `classifyTask`
+in `packages/core/task-classifier.ts`, which itself had no production caller and
+was deleted in v0.192.0 (#2006) — so `resolveModelName` now has none at all.
+`apps/web/src/app/api/tasks/route.ts` imports a same-named keyword classifier
+from `@/lib/task-category`, which is unrelated. The
 `task_classification` inference capability is declared
 (`packages/core/inference-policy.ts:78-84`) but nothing performs it. Nothing
 calls `updateModelAliases` except the admin route, contradicting the module

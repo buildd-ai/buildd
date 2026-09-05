@@ -290,7 +290,7 @@ jobs:
             <div className="pt-2 border-t border-primary/30">
               {taskCreated ? (
                 <div className="text-sm text-status-success">
-                  Setup task created! Check the tasks list.
+                  Setup task created. Check the tasks list.
                 </div>
               ) : (
                 <button
@@ -298,7 +298,7 @@ jobs:
                   disabled={creatingTask}
                   className="px-4 py-2 bg-primary text-white rounded-[10px] hover:bg-primary-hover disabled:opacity-50 text-sm"
                 >
-                  {creatingTask ? 'Creating...' : 'Create setup task for an agent to help'}
+                  {creatingTask ? 'Creating…' : 'Create setup task for an agent to help'}
                 </button>
               )}
             </div>

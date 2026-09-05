@@ -75,7 +75,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -542,6 +542,7 @@ export class WorkerManager {
       claimPendingTasks: () => this.claimPendingTasks(),
       claimAndStart: (task) => this.claimAndStart(task),
       getProbedWorkers: () => this.probedWorkers,
+      resolveRepoPath: (workspace) => this.resolver.resolve(workspace),
     });
     this.hookFactory = new HookFactory({
       config: { inputAsRetry: config.inputAsRetry },
@@ -1503,6 +1504,11 @@ export class WorkerManager {
       if (setupResult) {
         worker.worktreePath = setupResult.path;
         sessionCwd = setupResult.path;
+        // The base this worktree was actually cut from. Carried on the worker
+        // because the CBM seed decision happens later, in startSession, and the
+        // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
+        // there could disagree with the ref the worktree really uses.
+        worker.worktreeBaseRef = setupResult.base;
         // When the resume branch was honored, the worktree's git branch differs
         // from the task's own branch.  Update worker.branch so pushes target the
         // right ref and create_pr finds the existing open PR.
@@ -2483,12 +2489,23 @@ export class WorkerManager {
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
       // Codebase Memory (CBM) activation — see cbm-enforcement.ts for full spec.
+      //
+      // The repo's default base, so the seed lookup can tell "this task is on
+      // trunk" (which keeps using the existing unkeyed seed record, unchanged)
+      // from "this task is on a mission integration branch" (which needs its own).
+      const cbmDefaultBaseRef = `origin/${gitConfig?.defaultBranch || 'main'}`;
       const cbmActivation = buildCbmActivation({
         workerId: worker.id,
         worktreePath: worker.worktreePath,
         // The base clone, not the worktree: a shared seed is indexed at this path,
         // and CBM keys a project by the path it was indexed at.
         repoPath,
+        // ...and the base that path's seed must describe. A mission task based on
+        // the integration branch must not be served the trunk graph: its siblings
+        // have been merging into that base, so the trunk graph is wrong about
+        // exactly the code this task is most likely to touch.
+        baseRef: worker.worktreeBaseRef,
+        defaultBaseRef: cbmDefaultBaseRef,
         isCodexTask,
         cbmRoleDisabled: !!(worker as any).cbmDisabled,
       });
@@ -2503,6 +2520,7 @@ export class WorkerManager {
         cbmCacheDir = cbmActivation.cbmCacheDir;
         cbmRuntimeDir = cbmActivation.cbmRuntimeDir;
         cbmSharedCache = !!cbmActivation.sharedCache;
+        worker.cbmSharedCache = cbmSharedCache;
         mkdirSync(cbmCacheDir!, { recursive: true });
         // Daemon coordination dir — CBM will not start without it.
         ensureCbmRuntimeDir(cbmCacheDir!, cbmRuntimeDir);
@@ -2510,6 +2528,24 @@ export class WorkerManager {
           `[Worker ${worker.id}] CBM enforced — cache dir: ${cbmCacheDir}`
           + (cbmSharedCache ? ` (shared, pre-seeded project ${cbmActivation.cbmProject})` : ''),
         );
+
+        // A refused seed prints. Both refs, by name: the alternative was serving
+        // the trunk graph AND skipping this task's own index, which produces a
+        // confidently wrong answer with no trace of the decision that caused it.
+        if (cbmActivation.seedBaseMismatch) {
+          const { wanted, found } = cbmActivation.seedBaseMismatch;
+          worker.cbmSeedBaseMismatch = cbmActivation.seedBaseMismatch;
+          console.log(
+            `[Worker ${worker.id}] CBM: refused the shared seed — it describes base '${found}',`
+            + ` this task is based on '${wanted}'. Indexing this worktree instead;`
+            + ` a seed for '${wanted}' is being built for the next task on that base.`,
+          );
+          this.addMilestone(worker, {
+            type: 'status',
+            label: `graph_seed_base_mismatch wanted=${wanted} found=${found}`,
+            ts: Date.now(),
+          });
+        }
 
         // A seeded shared cache is already warm for this repo, so the per-task index
         // is pure waste: measured ~20s cold and ~11s for a warm re-index of the same
@@ -2555,7 +2591,29 @@ export class WorkerManager {
         // Keep the shared seed current, off the critical path. This worker already
         // has its graph (shared or per-worker); the refresh is for the next one, and
         // it exits immediately when HEAD has not moved.
-        if (repoPath) spawnCbmSeedRefresh(repoPath);
+        // Keyed on the base too, so a mission task's claim builds a seed for the
+        // MISSION base rather than re-stamping trunk. The seeder exits immediately
+        // when that ref has not moved, so this stays cheap on every claim.
+        // seedBaseRefFor collapses anything that is not a mission integration
+        // branch to the unkeyed slot, so a non-mission claim refreshes exactly
+        // the seed it refreshes today. Only a mission-integration base gets
+        // --base-ref and its own slot: "not the repo default" was a far larger
+        // set, and it sent CI-retry tasks, stacked plan phases and resumed tasks
+        // to slots nothing had ever written.
+        const seedBaseRef = seedBaseRefFor({
+          baseRef: worker.worktreeBaseRef,
+          defaultBaseRef: cbmDefaultBaseRef,
+        });
+        const seedOutcome = spawnCbmSeedRefresh(repoPath, {
+          ...(seedBaseRef ? { baseRef: seedBaseRef } : {}),
+        });
+        worker.cbmSeedRefresh = seedOutcome;
+        // Logged, not discarded: this return value was thrown away, and with the
+        // child on stdio:'ignore' that left no way to tell a seeded fleet from an
+        // unseeded one.
+        if (seedOutcome !== 'spawned' && seedOutcome !== 'recently_attempted') {
+          console.warn(`[Worker ${worker.id}] CBM seed refresh skipped: ${seedOutcome}`);
+        }
       }
 
       // CBM observability: provisional activation outcome + per-task counters.
@@ -3384,19 +3442,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
         // CBM observability: attach per-task metrics to resultMeta before completion.
         if (worker.cbmOutcome !== undefined) {
-          const cbmCounts = worker.cbmToolCounts ?? {};
-          const fileAccess = worker.cbmFileAccessCounts ?? { read: 0, grep: 0, glob: 0 };
-          const cbmMetrics = {
-            outcome: worker.cbmOutcome,
-            ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
-            ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
-            ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
-            toolCalls: cbmCounts,
-            totalCbmCalls: Object.values(cbmCounts).reduce((s, n) => s + n, 0),
-            readCount: fileAccess.read,
-            grepCount: fileAccess.grep,
-            globCount: fileAccess.glob,
-          };
+          const cbmMetrics = buildCbmMetrics(worker)!;
           // Merge into resultMeta so all metrics travel together to the server.
           if (worker.resultMeta) {
             worker.resultMeta.cbm = cbmMetrics;

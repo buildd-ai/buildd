@@ -191,7 +191,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
           <textarea
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Describe what should be changed in the plan..."
+            placeholder="Describe what should be changed in the plan…"
             className="w-full px-3 py-2 text-sm bg-surface-1 border border-border-default rounded-[6px] text-text-primary placeholder:text-text-muted resize-y min-h-[80px] focus:outline-none focus:border-primary"
             rows={3}
             disabled={rejecting}
@@ -210,7 +210,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
               className="px-4 py-2 text-sm bg-status-error text-white rounded-[6px] hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
             >
               {rejecting && <Spinner size="sm" className="text-white" aria-label="Rejecting" />}
-              {rejecting ? 'Rejecting...' : 'Submit Rejection'}
+              {rejecting ? 'Rejecting…' : 'Submit Rejection'}
             </button>
           </div>
         </div>
@@ -225,7 +225,7 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
             className="px-5 py-2.5 text-sm font-medium bg-status-success text-white rounded-[6px] hover:opacity-90 disabled:opacity-50 flex items-center gap-2"
           >
             {approving && <Spinner size="sm" className="text-white" aria-label="Approving" />}
-            {approving ? 'Approving...' : 'Approve Plan'}
+            {approving ? 'Approving…' : 'Approve Plan'}
           </button>
           {!showRejectForm && (
             <button

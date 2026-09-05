@@ -178,7 +178,7 @@ export default function MissionInlineEdit({
               description && !descriptionExpanded ? 'line-clamp-3' : ''
             }`}
           >
-            {description || 'Add a description...'}
+            {description || 'Add a description…'}
           </p>
           {description && description.length > 180 && (
             <button

@@ -38,7 +38,7 @@ export function Select({
   value,
   onChange,
   options,
-  placeholder = 'Select...',
+  placeholder = 'Select…',
   disabled = false,
   searchable = false,
   className = '',
@@ -200,7 +200,7 @@ export function Select({
           setHighlightedIndex(0);
         }}
         onKeyDown={!isMobile ? handleSearchKeyDown : undefined}
-        placeholder="Search..."
+        placeholder="Search…"
         className={`w-full bg-transparent text-text-primary placeholder-text-muted focus:outline-none ${
           isMobile ? 'px-1 py-1 text-base' : 'px-2 py-1 text-sm'
         }`}

@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import { ModelPicker } from '@/components/ModelPicker';
+import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -232,12 +233,12 @@ function McpRegistryBrowser({ onInstall, installedNames, installing }: {
           type="text"
           value={query}
           onChange={(e) => handleInput(e.target.value)}
-          placeholder="Search MCP Registry..."
+          placeholder="Search MCP Registry…"
           className="w-full px-2.5 py-1.5 border border-border-default rounded-md text-[12px] bg-surface-1 text-text-primary"
         />
       </div>
       {loading && (
-        <div className="px-3 py-3 text-[12px] text-text-muted">Searching...</div>
+        <div className="px-3 py-3 text-[12px] text-text-muted">Searching…</div>
       )}
       {!loading && searched && results.length === 0 && (
         <div className="px-3 py-3 text-[12px] text-text-muted">No servers found</div>
@@ -580,7 +581,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
             disabled={saving}
             className="px-5 py-2 bg-primary text-white rounded-md text-sm font-medium hover:bg-primary-hover disabled:opacity-50 transition-colors"
           >
-            {saving ? 'Saving...' : 'Save Changes'}
+            {saving ? 'Saving…' : 'Save Changes'}
           </button>
         </div>
 
@@ -662,7 +663,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 onChange={(e) => setContent(e.target.value)}
                 rows={14}
                 className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1 font-mono text-sm text-text-primary"
-                placeholder="You are Builder, a senior software engineer..."
+                placeholder="You are Builder, a senior software engineer…"
               />
               <p className="text-xs text-text-muted mt-1">Full SKILL.md content. This becomes the agent&apos;s system prompt.</p>
             </div>
@@ -835,12 +836,12 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               </div>
             </div>
 
-            {/* Allowed Tools (collapsed) */}
+            {/* Subagent Tools (collapsed) */}
             <details className="group">
               <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-text-primary">
-                Allowed Tools
+                {SUBAGENT_TOOLS_LABEL}
                 <span className="text-text-muted font-normal text-[12px]">
-                  {allowedTools.length === 0 ? 'All allowed' : `${allowedTools.length} restricted`}
+                  {subagentToolsSummary(allowedTools)}
                 </span>
               </summary>
               <div className="mt-3">
@@ -863,7 +864,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                     );
                   })}
                 </div>
-                <p className="text-xs text-text-muted mt-1">Empty = all tools allowed.</p>
+                <p className="text-xs text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE}</p>
               </div>
             </details>
 
@@ -946,7 +947,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                 disabled={deleting}
                 className="text-[13px] text-status-error hover:underline disabled:opacity-50"
               >
-                {deleting ? 'Deleting...' : 'Delete this role'}
+                {deleting ? 'Deleting…' : 'Delete this role'}
               </button>
             </div>
           </div>

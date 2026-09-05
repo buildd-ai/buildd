@@ -53,6 +53,9 @@ export async function POST(req: NextRequest) {
       prUrl: true,
       prNumber: true,
       completedAt: true,
+      // Option A': which PR this is decides whether a human is the gate at all.
+      // Null means unknown and resolves to today's gate, never to quarantined.
+      prBaseRef: true,
     },
     with: {
       task: {
@@ -72,6 +75,34 @@ export async function POST(req: NextRequest) {
     columns: { id: true, repo: true, gitConfig: true },
   });
   const wsMap = new Map(workspaceRows.map(ws => [ws.id, ws]));
+
+  // Option A': a task PR based on a mission's integration branch is not that
+  // mission's review gate — the single PR from that branch into trunk is — so it
+  // must not page anyone. Only the two fields the base-ref rule reads are
+  // selected: this cron has always resolved its policy from the workspace alone,
+  // and feeding it mission-level mergePolicy or requiresReview would change
+  // which PRs it pages about for reasons unrelated to integration branches.
+  const missionIdsForPolicy = [
+    ...new Set(
+      openPrWorkers
+        .map(w => (w.task as { missionId?: string | null } | null)?.missionId)
+        .filter((id): id is string => !!id),
+    ),
+  ];
+  const missionMap = new Map<string, { workingBranch: string | null; integrationBranchEnabled: boolean }>();
+  if (missionIdsForPolicy.length > 0) {
+    const missionRows = await db.query.missions.findMany({
+      where: inArray(missions.id, missionIdsForPolicy),
+      columns: { id: true, workingBranch: true, integrationBranchEnabled: true },
+    });
+    for (const m of missionRows) {
+      missionMap.set(m.id, {
+        workingBranch: m.workingBranch,
+        // A NULL opt-in is not an opt-in.
+        integrationBranchEnabled: m.integrationBranchEnabled ?? false,
+      });
+    }
+  }
 
   // Find tasks with reviewer_escalated notes
   const taskIds = openPrWorkers.map(w => w.taskId).filter(Boolean) as string[];
@@ -97,7 +128,13 @@ export async function POST(req: NextRequest) {
     const ws = wsMap.get(worker.workspaceId);
     if (!ws) continue;
 
-    const policy = resolvePolicy(ws);
+    const workerMissionId = (worker.task as { missionId?: string | null } | null)?.missionId ?? null;
+    const policy = resolvePolicy(
+      ws,
+      workerMissionId ? missionMap.get(workerMissionId) ?? null : null,
+      null,
+      { baseRef: worker.prBaseRef },
+    );
     const isEscalated = worker.taskId ? escalatedNoteTaskIds.has(worker.taskId) : false;
     const isHumanGate = policy.tier === 'human';
 
@@ -116,7 +153,7 @@ export async function POST(req: NextRequest) {
     if (waitingMs < stallMs) continue; // Not yet stalled
 
     // Check if we already notified within this stall window
-    const missionId = (worker.task as any)?.missionId;
+    const missionId = workerMissionId;
     const windowStart = new Date(now - stallMs);
     if (missionId) {
       const recentStallNote = await db.query.missionNotes.findFirst({

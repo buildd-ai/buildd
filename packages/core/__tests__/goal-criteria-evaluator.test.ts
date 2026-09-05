@@ -147,34 +147,187 @@ describe('evaluateGoalCriteria — all_prs_merged', () => {
     expect(state.overall).toBe('pass');
   });
 
-  it('returns UNVERIFIED when branch deleted status is unknown and requireBranchDeleted=true', () => {
+  // `requireBranchDeleted` is retired, not implemented. Nothing in this
+  // codebase has ever written a branch-deletion signal — there is no
+  // `workers.branch_deleted` column and no webhook handler for a deleted ref —
+  // so the option could only ever resolve to UNVERIFIED, which made a mission
+  // that ticked the box permanently uncompletable. A knob that can only block
+  // is worse than no knob. Under Option A' the meaningful form of "the mission
+  // branch is gone" is "the mission PR merged into trunk", which the criterion
+  // now checks for real.
+  it('ignores requireBranchDeleted rather than blocking on a signal nothing produces', () => {
     const workers = [
       { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.com/pr/1', branchName: 'feature/x' },
     ];
     const criterion: GoalCriterion = { type: 'all_prs_merged', requireBranchDeleted: true };
     const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
-    // branchDeleted is undefined → UNVERIFIED (explicitly required branch deletion)
-    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
-    expect(state.overall).toBe('UNVERIFIED');
-  });
-
-  it('fails when PRs merged but branch still live (requireBranchDeleted=true)', () => {
-    const workers = [
-      { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.com/pr/1', branchName: 'feature/x', branchDeleted: false },
-    ];
-    const criterion: GoalCriterion = { type: 'all_prs_merged', requireBranchDeleted: true };
-    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
-    expect(state.criteria[0].verdict).toBe('fail');
-    expect(state.criteria[0].evidence).toContain('Working branch still exists');
-  });
-
-  it('passes when PRs merged and branch is deleted', () => {
-    const workers = [
-      { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.com/pr/1', branchName: 'feature/x', branchDeleted: true },
-    ];
-    const criterion: GoalCriterion = { type: 'all_prs_merged', requireBranchDeleted: true };
-    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
     expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.overall).toBe('pass');
+  });
+
+  it('says plainly in its evidence that branch deletion was not verified', () => {
+    const workers = [
+      { taskId: 't1', mergedAt: new Date('2026-01-01'), prUrl: 'https://github.com/pr/1', branchName: 'feature/x' },
+    ];
+    const criterion: GoalCriterion = { type: 'all_prs_merged', requireBranchDeleted: true };
+    const state = evaluateGoalCriteria(MISSION, [criterion], makeCtx({ workers }));
+    expect(state.criteria[0].evidence).toContain('branch deletion is not verified');
+  });
+});
+
+// ─── Option A': all_prs_merged is base-ref aware ──────────────────────────────
+//
+// The inherited false green this closes: with task PRs based on the mission's
+// integration branch, "every PR under this mission has merged" was true the
+// moment the last task PR merged into that branch — with nothing at all on
+// trunk. The criterion now also requires the mission's own PR into trunk.
+
+const INTEGRATION_BRANCH = 'mission/illustrative-goal';
+const TRUNK = 'dev';
+
+/** A mission that has opted in to the integration branch. */
+const OPTED_IN = {
+  id: 'mission-1',
+  workingBranch: INTEGRATION_BRANCH,
+  integrationBranchEnabled: true,
+};
+
+/** The same mission before anyone flipped the flag. */
+const NOT_OPTED_IN = {
+  id: 'mission-1',
+  workingBranch: INTEGRATION_BRANCH,
+  integrationBranchEnabled: false,
+};
+
+const TASK_PR_TASK = { id: 'task-a', status: 'completed', taskClass: 'work', title: 'Do the work' };
+const MISSION_PR_TASK = {
+  id: 'ship-a',
+  status: 'completed',
+  taskClass: 'bookkeeping',
+  title: 'Ship mission: Illustrative goal',
+};
+
+function taskPrWorker(overrides: Record<string, unknown> = {}) {
+  return {
+    taskId: 'task-a',
+    mergedAt: new Date('2026-01-01'),
+    prUrl: 'https://github.example/pr/1',
+    branchName: 'task/a',
+    prBaseRef: INTEGRATION_BRANCH,
+    ...overrides,
+  };
+}
+
+function missionPrWorker(overrides: Record<string, unknown> = {}) {
+  return {
+    taskId: 'ship-a',
+    mergedAt: new Date('2026-01-02'),
+    prUrl: 'https://github.example/pr/9',
+    branchName: INTEGRATION_BRANCH,
+    prBaseRef: TRUNK,
+    ...overrides,
+  };
+}
+
+describe("evaluateGoalCriteria — all_prs_merged under Option A'", () => {
+  const criterion: GoalCriterion = { type: 'all_prs_merged' };
+
+  it('behaves exactly as before for a mission that has not opted in', () => {
+    // The whole safety argument for shipping this: with the flag off, a merged
+    // task PR still passes, even when its base ref happens to name a
+    // `mission/…` branch. Nothing about an existing mission changes.
+    const state = evaluateGoalCriteria(
+      NOT_OPTED_IN,
+      [criterion],
+      makeCtx({ tasks: [TASK_PR_TASK], workers: [taskPrWorker()] }),
+    );
+    expect(state.criteria[0].verdict).toBe('pass');
+    expect(state.overall).toBe('pass');
+  });
+
+  it('does not pass when every task PR has merged but no mission PR exists yet', () => {
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({ tasks: [TASK_PR_TASK], workers: [taskPrWorker()] }),
+    );
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state.overall).not.toBe('pass');
+    expect(state.criteria[0].evidence).toContain(INTEGRATION_BRANCH);
+    expect(state.criteria[0].evidence).toContain('no PR into trunk');
+  });
+
+  it('fails while the mission PR is open, and clears when it merges', () => {
+    const open = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, MISSION_PR_TASK],
+        workers: [taskPrWorker(), missionPrWorker({ mergedAt: null })],
+      }),
+    );
+    expect(open.criteria[0].verdict).toBe('fail');
+
+    const merged = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, MISSION_PR_TASK],
+        workers: [taskPrWorker(), missionPrWorker()],
+      }),
+    );
+    expect(merged.criteria[0].verdict).toBe('pass');
+    expect(merged.criteria[0].evidence).toContain(TRUNK);
+  });
+
+  it('does not accept a mission PR whose base ref is unknown as a landing on trunk', () => {
+    // `workers.prBaseRef` is null for "we do not know". Reading that as trunk is
+    // the one direction that invents a green.
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, MISSION_PR_TASK],
+        workers: [taskPrWorker(), missionPrWorker({ prBaseRef: null })],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state.criteria[0].evidence).toContain('base ref');
+  });
+
+  it('does not accept a mission PR aimed back at the integration branch', () => {
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, MISSION_PR_TASK],
+        workers: [taskPrWorker(), missionPrWorker({ prBaseRef: INTEGRATION_BRANCH })],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+  });
+
+  it('still requires a task PR based on trunk to have merged', () => {
+    // A task PR opened before the mission opted in targets trunk directly. It
+    // is deliverable work either way, so it must still be merged.
+    const state = evaluateGoalCriteria(
+      OPTED_IN,
+      [criterion],
+      makeCtx({
+        tasks: [TASK_PR_TASK, MISSION_PR_TASK],
+        workers: [
+          taskPrWorker({ prBaseRef: TRUNK, mergedAt: null }),
+          missionPrWorker(),
+        ],
+      }),
+    );
+    expect(state.criteria[0].verdict).toBe('fail');
+  });
+
+  it('is UNVERIFIED, not pass, for an opted-in mission with no PRs at all', () => {
+    const state = evaluateGoalCriteria(OPTED_IN, [criterion], makeCtx({ tasks: [TASK_PR_TASK] }));
+    expect(state.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(state.criteria[0].evidence).toContain('No PRs found');
   });
 });
 

@@ -21,13 +21,23 @@ function item(overrides: Partial<ReleaseReadinessItem> = {}): ReleaseReadinessIt
 describe('ReleaseWidget — release action button', () => {
   it('shows an enabled Release button when queue is over threshold and CI is green', () => {
     const html = renderToStaticMarkup(<ReleaseWidget items={[item()]} />);
-    expect(html).toContain('Release');
+    // Assert the rendered <button> carries the trigger label — a bare
+    // `toContain('Release')` also matches the "Release Queue" section label and
+    // the "Release →" ledger link, so it would pass with no button at all.
+    expect(html).toMatch(/<button[^>]*>Release<\/button>/);
     expect(html).not.toContain('disabled=""');
   });
 
-  it('does not show a Release button when CI is blocking', () => {
+  it('does not show a Release button when CI is blocking, only the CI state (AC-38)', () => {
     const html = renderToStaticMarkup(<ReleaseWidget items={[item({ ciState: 'failing' })]} />);
     expect(html).not.toContain('<button');
+    // ...and the CI-blocking state is what renders in its place, rather than
+    // the widget silently collapsing to the unshipped count alone.
+    expect(html).toContain('CI failing');
+    expect(html).toContain('3 unshipped');
+    // The release-detail link is part of the release affordance and must not
+    // survive into the blocking state either.
+    expect(html).not.toContain('/app/releases/');
   });
 
   it('renders nothing when queue is empty (widget hidden)', () => {

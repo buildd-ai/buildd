@@ -349,6 +349,11 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       initiativeId: true,
       goalCriteria: true,
       goalCriteriaState: true,
+      // Read so the sequencing hint below can name the branch shape this mission
+      // is actually in. Unselected, the predicate reads `undefined` and every
+      // mission silently gets the trunk-shape advice.
+      integrationBranchEnabled: true,
+      workingBranch: true,
     },
   });
   if (!mission) return null;
@@ -964,7 +969,25 @@ export async function buildMissionContext(missionId: string, templateContext?: R
 
   if (isBuild && taskPRs.length > 0) {
     descParts.push(
-      '**Sequencing**: Multiple PRs exist on this mission. Chain plan steps with `dependsOn` and `baseBranch` to avoid branch conflicts.'
+      // This used to read "Multiple PRs exist on this mission. Chain plan steps
+      // with `dependsOn` and `baseBranch` to avoid branch conflicts." PR count is
+      // not a reason to serialize and sibling task PRs are not a conflict — each
+      // task has its own branch and its own PR in either shape. Path overlap is
+      // the reason, and how far to chain beyond it depends on the shape, which
+      // this mission row now carries. See default-roles.ts → Sequencing Rules.
+      mission.integrationBranchEnabled
+        ? '**Sequencing**: This mission has task PRs and an integration branch'
+          + (mission.workingBranch ? ` (\`${mission.workingBranch}\`)` : '')
+          + ', so sibling task PRs are not a conflict: each targets the integration branch and merges '
+          + 'there unattended, and dependents unblock without a human. Chain a plan step with '
+          + '`dependsOn` and `baseBranch` only when it touches the same files as another step or as an '
+          + 'open PR of this mission. Chain on path overlap; the platform serializes '
+          + 'same-mission siblings at claim time regardless, so an integration branch buys '
+          + 'a shorter wait per link, not parallelism.'
+        : '**Sequencing**: This mission already has task PRs. That is not by itself a reason to '
+          + 'serialize — each task gets its own branch and its own PR. Chain a plan step with '
+          + '`dependsOn` and `baseBranch` when it touches the same files as another step or as an open '
+          + 'PR of this mission; beyond that, follow the Sequencing Rules in your role prompt.'
     );
   }
 

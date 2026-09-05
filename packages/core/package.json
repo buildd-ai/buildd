@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.198.0",
+  "version": "0.199.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -11,7 +11,6 @@
   "exports": {
     "./db": "./db/index.ts",
     "./db/*": "./db/*.ts",
-    "./buildd-mcp-server": "./buildd-mcp-server.ts",
     "./config": "./config.ts",
     "./mcp-tools": "./mcp-tools.ts",
     "./model-aliases": "./model-aliases.ts",
@@ -23,6 +22,7 @@
     "./model-tier-liveness": "./model-tier-liveness.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",
@@ -33,10 +33,11 @@
     "./runner-health": "./runner-health.ts",
     "./cbm-health": "./cbm-health.ts",
     "./secrets": "./secrets/index.ts",
-    "./file-reservations": "./file-reservations.ts",
     "./memory-store": "./memory-store.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./mission-integration": "./mission-integration.ts",
+    "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
     "./external-links": "./external-links.ts",
     "./release-strategy": "./release-strategy.ts",

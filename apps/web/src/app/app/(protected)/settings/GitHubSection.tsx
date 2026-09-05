@@ -111,7 +111,7 @@ export default function GitHubSection() {
       )}
 
       {loading ? (
-        <div className="text-text-secondary text-sm">Loading...</div>
+        <div className="text-text-secondary text-sm">Loading…</div>
       ) : installations.length === 0 ? (
         <div className="card p-6 text-center">
           <p className="text-text-muted mb-3 text-sm">No GitHub organizations connected</p>
@@ -152,7 +152,7 @@ export default function GitHubSection() {
                     disabled={syncing === inst.id}
                     className="btn"
                   >
-                    {syncing === inst.id ? 'Syncing...' : 'Sync'}
+                    {syncing === inst.id ? 'Syncing…' : 'Sync'}
                   </button>
                   <button
                     onClick={() => setDisconnecting({ id: inst.id, login: inst.accountLogin })}

@@ -288,7 +288,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
     setPickerOpen(false);
   };
 
-  const handleViewInDashboard = () => {
+  const handleRefresh = () => {
     router.refresh();
   };
 
@@ -402,14 +402,14 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
           <div className="flex-1">
-            <p className="text-sm text-text-primary font-medium">Task started!</p>
+            <p className="text-sm text-text-primary font-medium">Task started</p>
             <p className="text-xs text-text-secondary">A worker has picked up your task</p>
           </div>
           <button
-            onClick={handleViewInDashboard}
+            onClick={handleRefresh}
             className="px-3 py-1.5 text-xs bg-primary text-white rounded hover:bg-primary-hover transition-opacity"
           >
-            View in Dashboard
+            Refresh
           </button>
         </div>
       );
@@ -687,7 +687,7 @@ export default function StartTaskButton({ taskId, workspaceId }: Props) {
           onClick={handleRetry}
           className="px-4 py-2 text-sm bg-surface-3 rounded hover:bg-surface-4"
         >
-          Try Again
+          Try again
         </button>
         <button
           onClick={handleClose}

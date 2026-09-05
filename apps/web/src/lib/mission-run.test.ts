@@ -15,10 +15,40 @@ const mockPrepareSubjectFiling = mock(() => Promise.resolve({
 const mockRecordSubjectMatchObserved = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
 
+// pre-fix guard (which asked GitHub for the primary PR's state) was actually
+// reachable in these tests — with the real module it returns null for a mission
+// whose workspace has no installation, which would have no-opped the guard and
+// made the regression tests below pass for the wrong reason. The gate no longer
+// calls it; the stub stays so the replaced module keeps its full shape.
+const mockGetMissionPrState = mock(() => Promise.resolve(null as any));
+const mockNotifyMissionPrReady = mock(() => Promise.resolve({ notified: true }));
+
+mock.module('@/lib/mission-notifications', () => ({
+  notifyMissionPrReady: mockNotifyMissionPrReady,
+}));
+
+mock.module('@/lib/github', () => ({
+  githubApi: mock(() => Promise.resolve({})),
+}));
+
+// Option A′ integration branch. Mocked because runMission's contract with it is
+// only its RESULT — and the two things worth pinning here are what runMission
+// does with an `ok: false` (post a blocker note, once) and with an `ok: true`
+// (resolve a blocker note that is no longer true).
+const mockEnsureMissionIntegrationBranch = mock(() =>
+  Promise.resolve({ ok: true as const, branch: 'mission/my-mission-obj-1', created: false }) as any,
+);
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+}));
+
 // Only mock.module for DB/ORM (safe — these are universally mocked in all test files)
 const mockMissionsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
+const mockTasksFindMany = mock(() => Promise.resolve([] as any[]));
+const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockMissionNotesFindFirst = mock(() => null as any);
 const mockInsertReturning = mock(() => [] as any[]);
 const mockInsertOnConflictDoNothing = mock(() => ({ returning: mockInsertReturning }));
 const mockInsertValues = mock(() => ({ onConflictDoNothing: mockInsertOnConflictDoNothing }));
@@ -42,23 +72,36 @@ const mockSelect = mock(() => {
   return makeSelectChain(Promise.resolve(selectResults[idx] ?? []));
 });
 
-// Update mock — chainable so both `.where()` (direct await) and `.where().returning()` work.
-const mockUpdate = mock(() => ({
-  set: () => ({
-    where: () => {
-      const p: any = Promise.resolve([]);
-      p.returning = () => Promise.resolve([]);
-      return p;
-    },
-  }),
-}));
+/**
+ * Update mock — chainable so both `.where()` (direct await) and
+ * `.where().returning()` work, and RECORDING: it keeps the table, the values and
+ * the predicate for every call. Recording only the values would make a guarded
+ * write indistinguishable from an unguarded one.
+ */
+let recordedUpdates: Array<{ table: any; set: any; where: any }> = [];
+let updateReturningRows: any[] = [];
+function updateChain(table: any) {
+  return {
+    set: (vals: any) => ({
+      where: (cond: any) => {
+        recordedUpdates.push({ table, set: vals, where: cond });
+        const p: any = Promise.resolve(updateReturningRows);
+        p.returning = () => Promise.resolve(updateReturningRows);
+        return p;
+      },
+    }),
+  };
+}
+const mockUpdate = mock((table?: any) => updateChain(table));
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       missions: { findFirst: mockMissionsFindFirst },
-      tasks: { findFirst: mockTasksFindFirst },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
+      workers: { findMany: mockWorkersFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      missionNotes: { findFirst: mockMissionNotesFindFirst },
     },
     insert: mockInsert,
     select: mockSelect,
@@ -81,9 +124,10 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', workingBranch: 'workingBranch' },
-  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt', scheduleId: 'scheduleId', creationSource: 'creationSource' },
+  tasks: { id: 'id', workspaceId: 'workspaceId', roleSlug: 'roleSlug', mode: 'mode', missionId: 'missionId', status: 'status', createdAt: 'createdAt', scheduleId: 'scheduleId', creationSource: 'creationSource', pathManifest: 'pathManifest' },
+  workers: { id: 'id', taskId: 'taskId', status: 'status', prUrl: 'prUrl', prNumber: 'prNumber', mergedAt: 'mergedAt', lastCommitSha: 'lastCommitSha', prLifecycleStatus: 'prLifecycleStatus' },
   workspaces: { id: 'id' },
-  missionNotes: { id: 'id' },
+  missionNotes: { id: 'id', missionId: 'missionId', title: 'title', status: 'status' },
 }));
 
 import { runMission } from './mission-run';
@@ -99,11 +143,18 @@ const deps = {
   triggerEvent: mockTriggerEvent as any,
 };
 
-describe('runMission', () => {
-  beforeEach(() => {
+function resetMissionRunMocks() {
     mockTriggerEvent.mockClear();
     mockMissionsFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockGetMissionPrState.mockReset();
+    mockGetMissionPrState.mockResolvedValue(null);
+    mockNotifyMissionPrReady.mockReset();
+    mockNotifyMissionPrReady.mockResolvedValue({ notified: true });
     mockWorkspacesFindFirst.mockReset();
     mockInsert.mockReset();
     mockInsertValues.mockReset();
@@ -126,15 +177,15 @@ describe('runMission', () => {
     mockRecordSubjectMatchObserved.mockReset();
     mockRecordSubjectMatchObserved.mockResolvedValue();
     mockUpdate.mockReset();
-    mockUpdate.mockImplementation(() => ({
-      set: () => ({
-        where: () => {
-          const p: any = Promise.resolve([]);
-          p.returning = () => Promise.resolve([]);
-          return p;
-        },
-      }),
-    }));
+    mockUpdate.mockImplementation((table?: any) => updateChain(table));
+    recordedUpdates = [];
+    updateReturningRows = [];
+    mockMissionNotesFindFirst.mockReset();
+    mockMissionNotesFindFirst.mockResolvedValue(null);
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({
+      ok: true, branch: 'mission/my-mission-obj-1', created: false,
+    } as any);
     // Reset select call counter and results
     selectCallCount = 0;
     selectResults.length = 0;
@@ -143,8 +194,11 @@ describe('runMission', () => {
     mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
     mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
     // Default: no in-flight planning task (dedupe miss)
-    mockTasksFindFirst.mockResolvedValue(null);
-  });
+  mockTasksFindFirst.mockResolvedValue(null);
+}
+
+describe('runMission', () => {
+  beforeEach(resetMissionRunMocks);
 
   it('throws when mission not found', async () => {
     mockMissionsFindFirst.mockResolvedValue(null);
@@ -791,5 +845,290 @@ describe('runMission', () => {
     expect(result.task).not.toBeNull();
     expect(mockGetMissionSpendUsd).not.toHaveBeenCalled();
     expect(mockExhaustMissionBudget).not.toHaveBeenCalled();
+  });
+});
+
+// ── Open-PR planning gate (B7 / P3) ──────────────────────────────────────────
+// `missions.primaryPrNumber` is "the first PR any task of this mission opened",
+// not "the mission's PR". Gating planning on it halted the whole mission for
+// whichever sibling PR happened to be first, while the mission's other open PRs
+// went uncounted. The gate now keys off an open PR whose paths overlap the
+// mission's known remaining scope.
+describe('runMission — open-PR planning gate', () => {
+  beforeEach(resetMissionRunMocks);
+
+  const ACTIVE_MISSION = {
+    id: 'obj-1',
+    teamId: 'team-1',
+    workspaceId: 'ws-1',
+    status: 'active',
+    title: 'My Mission',
+    priority: 0,
+    schedule: null,
+    costBudgetUsd: null,
+  };
+
+  function armPlanningSuccess() {
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-new', workspaceId: 'ws-1', mode: 'planning' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+  }
+
+  it('plans anyway when the open PR does not overlap the remaining scope', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ ...ACTIVE_MISSION, primaryPrNumber: 41, primaryPrUrl: 'https://github.com/o/r/pull/41' });
+    // Pre-fix path: the guard asked GitHub for the primary PR and paused on it.
+    mockGetMissionPrState.mockResolvedValue({
+      prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', state: 'open', merged: false,
+      headSha: 'sha-41', mergeable: true, installationId: 1, repoFullName: 'o/r',
+    });
+    // PR #41 belongs to task-a (docs only). The mission's remaining work is
+    // task-b, which touches a completely different file.
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-a', status: 'completed', pathManifest: ['docs/readme.md'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([
+      { taskId: 'task-a', prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', lastCommitSha: 'sha-41', prLifecycleStatus: 'pr_open' },
+    ]);
+    armPlanningSuccess();
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.skippedPrOpen).toBeUndefined();
+    expect(result.task).not.toBeNull();
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('pauses on a sibling open PR that overlaps the remaining scope, even when it is not the primary PR', async () => {
+    // primaryPrNumber is unset — pre-fix this mission could never pause, so the
+    // organizer kept fanning out work onto files an open PR already owned.
+    mockMissionsFindFirst.mockResolvedValue({ ...ACTIVE_MISSION, primaryPrNumber: null, primaryPrUrl: null });
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-a', status: 'completed', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([
+      { taskId: 'task-a', prNumber: 77, prUrl: 'https://github.com/o/r/pull/77', lastCommitSha: 'sha-77', prLifecycleStatus: 'pr_open' },
+    ]);
+    armPlanningSuccess();
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.skippedPrOpen).toBe(true);
+    expect(result.task).toBeNull();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    const [missionId, opts] = mockNotifyMissionPrReady.mock.calls[0] as any[];
+    expect(missionId).toBe('obj-1');
+    expect(opts.prNumber).toBe(77);
+    expect(opts.headSha).toBe('sha-77');
+    expect(opts.message).toContain('apps/web/src/lib/foo.ts');
+  });
+
+  it('plans when the mission has no open PRs at all', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ ...ACTIVE_MISSION, primaryPrNumber: 41, primaryPrUrl: 'https://github.com/o/r/pull/41' });
+    mockGetMissionPrState.mockResolvedValue({
+      prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', state: 'open', merged: false,
+      headSha: 'sha-41', mergeable: true, installationId: 1, repoFullName: 'o/r',
+    });
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-a', status: 'completed', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    // PR #41 already merged — worker row carries mergedAt, so it is not open.
+    mockWorkersFindMany.mockResolvedValue([]);
+    armPlanningSuccess();
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.skippedPrOpen).toBeUndefined();
+    expect(result.task).not.toBeNull();
+  });
+
+  it('plans (does not pause) when the remaining scope is undeclared — the overlap is unknowable', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ ...ACTIVE_MISSION, primaryPrNumber: 41, primaryPrUrl: 'https://github.com/o/r/pull/41' });
+    mockGetMissionPrState.mockResolvedValue({
+      prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', state: 'open', merged: false,
+      headSha: 'sha-41', mergeable: true, installationId: 1, repoFullName: 'o/r',
+    });
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-a', status: 'completed', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      // Remaining work declares no scope: '**' and null are equally undeclared.
+      { id: 'task-b', status: 'pending', pathManifest: ['**'] },
+      { id: 'task-c', status: 'pending', pathManifest: null },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([
+      { taskId: 'task-a', prNumber: 41, prUrl: 'https://github.com/o/r/pull/41', lastCommitSha: 'sha-41', prLifecycleStatus: 'pr_open' },
+    ]);
+    armPlanningSuccess();
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.skippedPrOpen).toBeUndefined();
+    expect(result.task).not.toBeNull();
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('ignores an open PR whose own scope is undeclared (advisory only)', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ ...ACTIVE_MISSION, primaryPrNumber: null, primaryPrUrl: null });
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-a', status: 'completed', pathManifest: ['**'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([
+      { taskId: 'task-a', prNumber: 77, prUrl: 'https://github.com/o/r/pull/77', lastCommitSha: 'sha-77', prLifecycleStatus: 'pr_open' },
+    ]);
+    armPlanningSuccess();
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.skippedPrOpen).toBeUndefined();
+    expect(result.task).not.toBeNull();
+  });
+
+  it('ignores a closed PR', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ ...ACTIVE_MISSION, primaryPrNumber: null, primaryPrUrl: null });
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-a', status: 'completed', pathManifest: ['apps/web/src/lib/foo.ts'] },
+      { id: 'task-b', status: 'pending', pathManifest: ['apps/web/src/lib/foo.ts'] },
+    ]);
+    mockWorkersFindMany.mockResolvedValue([
+      { taskId: 'task-a', prNumber: 77, prUrl: 'https://github.com/o/r/pull/77', lastCommitSha: 'sha-77', prLifecycleStatus: 'closed' },
+    ]);
+    armPlanningSuccess();
+
+    const result = await runMission('obj-1', undefined, deps);
+
+    expect(result.skippedPrOpen).toBeUndefined();
+    expect(result.task).not.toBeNull();
+  });
+});
+
+/**
+ * The integration-branch blocker note must not outlive the failure it describes.
+ *
+ * The note is deduped on `(missionId, title, status='open')` so a durable failure
+ * is reported once instead of once per organizer cycle. That is right, but it has
+ * a second effect nobody asked for: while the note stays open it also SUPPRESSES
+ * the next report. Nothing ever resolved it, so after one transient failure the
+ * mission carried a permanently-open note that both said something untrue and
+ * swallowed the next genuine failure — the one an operator needed to see.
+ */
+describe('runMission — integration branch note lifecycle', () => {
+  beforeEach(resetMissionRunMocks);
+
+  const NOTE_TITLE = 'Integration branch unavailable';
+  const BRANCH = 'mission/my-mission-obj-1';
+  const OPTED_IN_MISSION = {
+    id: 'obj-1',
+    teamId: 'team-1',
+    workspaceId: 'ws-1',
+    status: 'active',
+    title: 'My Mission',
+    priority: 0,
+    schedule: null,
+    costBudgetUsd: null,
+    workingBranch: BRANCH,
+    integrationBranchEnabled: true,
+  };
+
+  function armPlanning() {
+    mockBuildMissionContext.mockResolvedValue({ description: '## Mission', context: {} });
+    mockInsertReturning.mockResolvedValue([{ id: 'task-new', workspaceId: 'ws-1', mode: 'planning' }]);
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS', repo: 'example-org/example-repo' });
+    mockInsert.mockReturnValue({ values: mockInsertValues });
+    mockInsertValues.mockReturnValue({ onConflictDoNothing: mockInsertOnConflictDoNothing });
+    mockInsertOnConflictDoNothing.mockReturnValue({ returning: mockInsertReturning });
+  }
+
+  /** Leaves of the mocked drizzle predicate tree. */
+  function leaves(cond: any): any[] {
+    if (!cond || typeof cond !== 'object') return [];
+    if (Array.isArray(cond.args)) return cond.args.flatMap(leaves);
+    if (Array.isArray(cond.conditions)) return cond.conditions.flatMap(leaves);
+    return [cond];
+  }
+
+  const noteInserts = () =>
+    mockInsertValues.mock.calls
+      .map(c => c[0] as any)
+      .filter(v => v?.title === NOTE_TITLE);
+
+  const noteUpdates = () =>
+    recordedUpdates.filter(u =>
+      leaves(u.where).some(l => l.field === 'title' && l.value === NOTE_TITLE)
+      || leaves(u.where).some(l => l.field === 'id' && l.value === 'note-stale'),
+    );
+
+  it('resolves the open blocker note once the branch exists', async () => {
+    // Otherwise the note is immortal: it stays open, keeps claiming the branch is
+    // missing, and its own dedupe key then eats the next real failure.
+    mockMissionsFindFirst.mockResolvedValue({ ...OPTED_IN_MISSION });
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: BRANCH, created: true } as any);
+    updateReturningRows = [{ id: 'note-stale' }];
+    armPlanning();
+
+    await runMission('obj-1', undefined, deps);
+
+    const resolutions = noteUpdates();
+    expect(resolutions).toHaveLength(1);
+    expect(resolutions[0].set.status).toBe('superseded');
+    // Scoped: this mission, this note title, and only rows still open.
+    const where = leaves(resolutions[0].where);
+    expect(where).toContainEqual({ field: 'missionId', value: 'obj-1', type: 'eq' });
+    expect(where).toContainEqual({ field: 'title', value: NOTE_TITLE, type: 'eq' });
+    expect(where).toContainEqual({ field: 'status', value: 'open', type: 'eq' });
+    // And nothing new is posted on a success.
+    expect(noteInserts()).toHaveLength(0);
+  });
+
+  it('posts the blocker note when the branch is unavailable and none is open', async () => {
+    mockMissionsFindFirst.mockResolvedValue({ ...OPTED_IN_MISSION });
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({
+      ok: false, reason: 'api_error', detail: 'Object does not exist',
+    } as any);
+    mockMissionNotesFindFirst.mockResolvedValue(null);
+    armPlanning();
+
+    await runMission('obj-1', undefined, deps);
+
+    const posted = noteInserts();
+    expect(posted).toHaveLength(1);
+    expect(posted[0].status).toBe('open');
+    expect(posted[0].body).toContain('api_error');
+    expect(posted[0].body).toContain(BRANCH);
+  });
+
+  it('refreshes the open note instead of adding a second row when it fails again', async () => {
+    // One open blocker note per mission — but it must describe the CURRENT
+    // failure. A second, different reason arriving while the note is open was
+    // dropped entirely, which is the same swallow in a shorter window.
+    mockMissionsFindFirst.mockResolvedValue({ ...OPTED_IN_MISSION });
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({
+      ok: false, reason: 'empty_repo', detail: 'Git Repository is empty.',
+    } as any);
+    mockMissionNotesFindFirst.mockResolvedValue({ id: 'note-stale' });
+    armPlanning();
+
+    await runMission('obj-1', undefined, deps);
+
+    expect(noteInserts()).toHaveLength(0);
+    const refreshed = noteUpdates();
+    expect(refreshed).toHaveLength(1);
+    expect(refreshed[0].set.body).toContain('empty_repo');
+    expect(refreshed[0].set.status).toBeUndefined(); // still open — still broken
+  });
+
+  it('leaves notes alone for a mission that has not opted in', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      ...OPTED_IN_MISSION,
+      integrationBranchEnabled: false,
+    });
+    armPlanning();
+
+    await runMission('obj-1', undefined, deps);
+
+    expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    expect(noteUpdates()).toHaveLength(0);
+    expect(noteInserts()).toHaveLength(0);
   });
 });

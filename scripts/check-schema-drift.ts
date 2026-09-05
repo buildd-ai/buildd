@@ -88,18 +88,20 @@ if (DATABASE_URL) {
 // column would be gone -- or it has not run yet. A column later re-added
 // appears in the latest snapshot, so it never reaches this path.
 //
-// Returns a set of "table.column" that some migration drops.
-function droppedByMigration(): Set<string> {
-  const dropped = new Set<string>();
+// Returns the sets of "table.column" and "table" that some migration drops.
+function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
+  const columns = new Set<string>();
+  const tables = new Set<string>();
   const migrationDir = join(SNAPSHOT_DIR, '..');
   let files: string[];
   try {
     files = readdirSync(migrationDir).filter((f) => f.endsWith('.sql'));
   } catch {
     console.log('  [warn] could not read migration dir — pending drops not considered');
-    return dropped;
+    return { columns, tables };
   }
-  const re = /ALTER\s+TABLE\s+"?(\w+)"?\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi;
+  const columnRe = /ALTER\s+TABLE\s+"?(\w+)"?\s+DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi;
+  const tableRe = /DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?"?(\w+)"?/gi;
   for (const f of files) {
     let sqlText: string;
     try {
@@ -108,9 +110,10 @@ function droppedByMigration(): Set<string> {
       continue;
     }
     let m: RegExpExecArray | null;
-    while ((m = re.exec(sqlText)) !== null) dropped.add(`${m[1]}.${m[2]}`);
+    while ((m = columnRe.exec(sqlText)) !== null) columns.add(`${m[1]}.${m[2]}`);
+    while ((m = tableRe.exec(sqlText)) !== null) tables.add(m[1]!);
   }
-  return dropped;
+  return { columns, tables };
 }
 
 // ─── Load latest snapshot ────────────────────────────────────────────────────
@@ -278,7 +281,7 @@ async function main() {
     // (expected — migrations run on deploy, after this gate), or it is manual DDL.
     for (const col of actualCols) {
       if (!expectedCols.has(col)) {
-        if (drops.has(`${tableName}.${col}`)) {
+        if (drops.columns.has(`${tableName}.${col}`)) {
           console.log(`  [pending] Column '${tableName}.${col}' still in DB — will be dropped on migrate`);
           continue;
         }
@@ -287,9 +290,14 @@ async function main() {
     }
   }
 
-  // Tables in DB but not in snapshot at all (manual CREATE TABLE)
+  // Tables in DB but not in snapshot at all (manual CREATE TABLE, or a DROP TABLE
+  // migration that has not run yet — migrations run during the deploy, after this gate).
   for (const tableName of actual.keys()) {
     if (!expected.has(tableName) && !MIGRATOR_OWNED_TABLES.has(tableName)) {
+      if (drops.tables.has(tableName)) {
+        console.log(`  [pending] Table '${tableName}' still in DB — will be dropped on migrate`);
+        continue;
+      }
       const cols = [...(actual.get(tableName) ?? [])].join(', ');
       driftLines.push(`  EXTRA TABLE    : ${tableName}  (columns: ${cols})  ← untracked manual DDL`);
     }

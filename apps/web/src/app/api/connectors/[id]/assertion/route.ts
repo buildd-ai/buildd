@@ -14,6 +14,7 @@ import { eq, and } from 'drizzle-orm';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getActiveSigningKey, signAssertion } from '@/lib/signing-keys';
 import { Redis } from '@upstash/redis';
+import { getIssuer } from '@/lib/oauth/config';
 
 // ---------------------------------------------------------------------------
 // Rate limiting via Redis (degrades to allow if Redis unavailable)
@@ -164,7 +165,11 @@ export async function POST(
   const jti = Array.from(jtiBytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
   const payload = {
-    iss: 'https://buildd.dev',
+    // Derived, not hardcoded. The literal made a preview deployment mint
+    // assertions claiming the production issuer — signed by the same
+    // production key set, so they verified. In production getIssuer() returns
+    // that same canonical host, so this changes nothing there.
+    iss: getIssuer(),
     sub,
     act: {
       sub: `worker:${workerId}`,

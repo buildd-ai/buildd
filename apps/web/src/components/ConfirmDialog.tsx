@@ -112,7 +112,7 @@ export default function ConfirmDialog({
             disabled={loading}
             className={`w-full sm:w-auto px-4 py-2 text-sm rounded-lg disabled:opacity-50 ${styles.button}`}
           >
-            {loading ? 'Processing...' : confirmLabel}
+            {loading ? 'Processing…' : confirmLabel}
           </button>
         </div>
       </div>

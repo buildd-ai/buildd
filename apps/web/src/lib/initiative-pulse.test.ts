@@ -24,6 +24,7 @@ import {
   zeroEffortWindow,
   derivePendingCounts,
   noPendingCounts,
+  countBlockedByPR,
   deriveVerdict,
   deriveConfidence,
   deriveInitiativeVerdict,
@@ -36,6 +37,7 @@ import {
   VERDICT_LABEL,
   type EffortRow,
   type PulseMission,
+  type BlockingTask,
   type VerdictInputs,
   type Verdict,
 } from './initiative-pulse';
@@ -194,6 +196,60 @@ describe('derivePendingCounts', () => {
     const out = derivePendingCounts([mission({ tasks: null })], { now: NOW });
 
     expect(out.get('init-1')).toEqual(noPendingCounts());
+  });
+
+  // ── The value invariant (spec §5.2a, AC-51 / AC-51a) ───────────────────────
+  //
+  // §5.2, AC-20 and AC-29 only require two surfaces to show the SAME number, so
+  // a shared wrong `0` satisfies all three. These two pin the VALUE for a
+  // mission using an integration branch, where every task PR merges into
+  // `mission/<slug>` and therefore carries `mergedAt` while none of that
+  // mission's diff is on trunk.
+  //
+  // What supplies the 1 is the bookkeeping task that owns the mission
+  // integration PR (`isMissionPrTask` / `MISSION_PR_TASK_PREFIX` — created by
+  // `openMissionIntegrationPr`): it is `completed` with an open, unmerged PR, so
+  // the per-task rule counts it once. Every caller feeds `derivePendingCounts`
+  // ALL of a mission's tasks, bookkeeping included — narrowing any of them to
+  // deliverable tasks would drop this row and take the count back to 0.
+
+  /** Two deliverable task PRs, both merged into the mission's integration branch. */
+  const taskPrsMergedIntoIntegrationBranch = [
+    { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/1', mergedAt: new Date(NOW - 3_600_000), prLifecycleStatus: 'merged' }] },
+    { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/2', mergedAt: new Date(NOW - 1_800_000), prLifecycleStatus: 'merged' }] },
+  ];
+
+  it('AC-51: a finished integration-branch mission contributes exactly 1, not 0 and not one per task', () => {
+    const out = derivePendingCounts(
+      [
+        mission({
+          tasks: [
+            ...taskPrsMergedIntoIntegrationBranch,
+            // The mission integration PR: bookkeeping row, open PR into trunk.
+            { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/3', mergedAt: null, prLifecycleStatus: 'pr_open' }] },
+          ],
+        }),
+      ],
+      { now: NOW },
+    );
+
+    expect(out.get('init-1')!.awaitingVerification).toBe(1);
+  });
+
+  it('AC-51a: the count drops to 0 once the integration PR itself merges', () => {
+    const out = derivePendingCounts(
+      [
+        mission({
+          tasks: [
+            ...taskPrsMergedIntoIntegrationBranch,
+            { status: 'completed', workers: [{ prUrl: 'https://example.invalid/pr/3', mergedAt: new Date(NOW), prLifecycleStatus: 'merged' }] },
+          ],
+        }),
+      ],
+      { now: NOW },
+    );
+
+    expect(out.get('init-1')!.awaitingVerification).toBe(0);
   });
 });
 
@@ -433,6 +489,53 @@ describe('assembleVerdictRollups', () => {
     expect(out.get('init-1')!.attempts7d).toBe(1);
   });
 
+  it('counts conflict retries as attempts via taskClass', () => {
+    // `[Conflict Retry #N]` matches none of deriveTaskType's prefixes, carries a
+    // parentTaskId and inherits mode 'execution' — so the title classifier reads
+    // it as fresh deliverable work and a workspace thrashing on merge conflicts
+    // renders `winning`. taskClass is the stored answer and says 'attempt'.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: 'Add pagination', parentTaskId: null, mode: 'execution', taskClass: 'work' },
+        { initiativeId: 'init-1', title: '[Conflict Retry #1] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: 'attempt' },
+        { initiativeId: 'init-1', title: '[Conflict Retry #2] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: 'attempt' },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(2);
+  });
+
+  it('does not count bookkeeping rows as attempts', () => {
+    // taskClass 'bookkeeping' is neither deliverable nor rework. Under the title
+    // classifier a prefixed bookkeeping row would have counted as thrash.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: '[reviewer] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: 'bookkeeping' },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(0);
+  });
+
+  it('falls back to deriveTaskType for pre-backfill rows with a null taskClass', () => {
+    // Rows that pre-date the taskClass backfill must keep their old
+    // classification rather than silently dropping out of the rework signal.
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      attemptRows: [
+        { initiativeId: 'init-1', title: '[CI Retry #2] Add pagination', parentTaskId: 'p', mode: 'execution', taskClass: null },
+        { initiativeId: 'init-1', title: 'Add pagination', parentTaskId: null, mode: 'execution', taskClass: null },
+      ],
+    });
+
+    expect(out.get('init-1')!.attempts7d).toBe(1);
+  });
+
   it('sums merges and buckets initiative-less rows under __unassigned__', () => {
     const out = assembleVerdictRollups({
       ...base,
@@ -501,5 +604,73 @@ describe('deriveInitiativeVerdict', () => {
     expect(
       deriveInitiativeVerdict({ rollup, effortDays, counts: { ...counts, blocked: 1 } }).verdict,
     ).toBe('stuck');
+  });
+});
+
+describe('countBlockedByPR', () => {
+  function blockingTask(over: Partial<BlockingTask> = {}): BlockingTask {
+    return { status: 'completed', workers: [], ...over };
+  }
+
+  const openPR = { prNumber: 7, mergedAt: null, prLifecycleStatus: 'open' };
+
+  it('counts a pending task whose completed dependency has an open PR', () => {
+    const index = new Map<string, BlockingTask>([
+      ['dep', blockingTask({ workers: [openPR] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['dep'] }], index)).toBe(1);
+  });
+
+  it('counts an open PR that sits on an older worker, not only the newest one', () => {
+    // A dependency retried: the newest worker produced no PR (or its PR is
+    // gone), while the PR the dependent task actually waits on belongs to an
+    // earlier attempt. Reading `workers[0]` alone scores this as unblocked and
+    // silently undercounts `blocked` on every surface at once.
+    const index = new Map<string, BlockingTask>([
+      [
+        'dep',
+        blockingTask({
+          workers: [
+            { prNumber: null, mergedAt: null, prLifecycleStatus: null },
+            openPR,
+          ],
+        }),
+      ],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['dep'] }], index)).toBe(1);
+  });
+
+  it('does not count a merged or closed PR on any worker', () => {
+    const index = new Map<string, BlockingTask>([
+      [
+        'merged',
+        blockingTask({ workers: [{ prNumber: 8, mergedAt: new Date('2026-08-01T00:00:00Z'), prLifecycleStatus: 'merged' }] }),
+      ],
+      ['closed', blockingTask({ workers: [{ prNumber: 9, mergedAt: null, prLifecycleStatus: 'closed' }] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['merged', 'closed'] }], index)).toBe(0);
+  });
+
+  it('counts a task with several blocking dependencies once', () => {
+    const index = new Map<string, BlockingTask>([
+      ['a', blockingTask({ workers: [openPR] })],
+      ['b', blockingTask({ workers: [{ prNumber: 11, mergedAt: null, prLifecycleStatus: 'open' }] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['a', 'b'] }], index)).toBe(1);
+  });
+
+  it('ignores non-pending tasks, unknown deps, and deps that are not completed', () => {
+    const index = new Map<string, BlockingTask>([
+      ['dep', blockingTask({ workers: [openPR] })],
+      ['running', blockingTask({ status: 'assigned', workers: [openPR] })],
+    ]);
+
+    expect(countBlockedByPR([{ status: 'assigned', dependsOn: ['dep'] }], index)).toBe(0);
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['missing'] }], index)).toBe(0);
+    expect(countBlockedByPR([{ status: 'pending', dependsOn: ['running'] }], index)).toBe(0);
   });
 });

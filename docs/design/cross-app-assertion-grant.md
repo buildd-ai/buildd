@@ -178,13 +178,39 @@ material (`x`, `y` for EC; `n`, `e` for RSA — but we use EC only).
 **Caching headers:**
 
 ```
-Cache-Control: public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400
+Cache-Control: public, max-age=3600, s-maxage=60, stale-while-revalidate=60
 ```
 
 Resource servers MUST cache for at least `max-age` (1 hour) to avoid hammering
 the JWKS endpoint. They MUST revalidate immediately when they encounter an
 unknown `kid` (cache miss on `kid` → fresh fetch → retry validation). If the
 `kid` is still absent after a fresh fetch, the assertion is rejected.
+
+The shared-cache directives are deliberately two orders of magnitude smaller
+than `max-age`, and this document originally had them equal, which quietly
+defeated the paragraph above. An intermediary answers the RS's "fresh fetch"
+from its own copy, so the RS cannot revalidate past it: with `s-maxage=3600` a
+newly-active `kid` was unpublishable for up to an hour after the signer had
+already switched to it, and `stale-while-revalidate=86400` let a shared cache
+serve a superseded key set for a day. Both were observed on the first live
+rotation — origin served the two-key document while the edge served one key.
+The bound that matters is `s-maxage + stale-while-revalidate ≪ RETIRING_WINDOW_FORCE_MS`;
+it is asserted in `apps/web/src/lib/signing-key-windows.test.ts`.
+
+The full sequence was measured end to end on that rotation, and it is worse
+than the arithmetic suggests. `stale-while-revalidate` does not expire on a
+timer — a shared cache revalidates only **when a request arrives**. So the
+one-key document was served fresh for the remainder of `max-age`, then went on
+being served as `STALE` for hours afterwards; it was observed at an `age` of
+roughly three hours, and the next request after that was the one that finally
+triggered the background refresh and returned the correct two-key set.
+
+The perverse consequence: **the less traffic the endpoint receives, the longer a
+superseded key set stays published.** A quiet JWKS endpoint — which is the
+normal state of one — holds its stale document closer to the
+`stale-while-revalidate` ceiling than to `s-maxage`. Sizing this directive as
+if it were a timeout is the mistake; it is a ceiling that traffic, not time,
+brings you down from.
 
 **Route:** `apps/web/src/app/api/.well-known/jwks.json/route.ts`
 
@@ -670,12 +696,22 @@ optional but recommended for production Cue deployments.
 then delays the RS's JWKS revalidation by exploiting the 1-hour `max-age`, so
 the compromised key remains accepted after rotation.
 
-**Mitigation.** Max cache TTL is 1 hour. Forced rotation (§B.3) shortens the
-compromised key's Retiring window to 10 minutes. RS deployments SHOULD support
-a forced JWKS cache flush endpoint accessible to the buildd ops team. Combined
-effect: compromised key no longer accepted within 70 minutes of forced rotation.
-Outstanding access tokens minted with assertions from the compromised key expire
-within their 5–15 minute TTL.
+**Mitigation.** Forced rotation (§B.3) shortens the compromised key's Retiring
+window to 10 minutes, and shared caches may hold a superseded key set for at
+most `s-maxage + stale-while-revalidate` (2 minutes) — so the key is genuinely
+gone from the published document inside the forced window. What remains is the
+RS's own 1-hour `max-age`, which only the RS can shorten; deployments SHOULD
+support a forced JWKS cache flush endpoint accessible to the buildd ops team.
+Combined effect: compromised key no longer accepted within roughly 70 minutes of
+forced rotation. Outstanding access tokens minted with assertions from the
+compromised key expire within their 5–15 minute TTL.
+
+That 70-minute figure was previously wrong rather than merely optimistic: it
+counted the RS's hour but not the intermediary's, and with `s-maxage=3600,
+stale-while-revalidate=86400` a shared cache could keep serving the compromised
+key for about a day — outliving the 10-minute forced window it was supposed to
+be bounded by, and making the forced-rotation path ineffective for exactly the
+attack it was designed against.
 
 ### H.4 Clock skew
 

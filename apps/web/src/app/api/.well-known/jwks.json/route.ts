@@ -4,11 +4,17 @@
 // used to verify assertion JWTs. Resource servers MUST cache this response
 // for at least max-age (1 hour) and MUST re-fetch on unknown kid.
 //
+// The shared-cache lifetime is much shorter than max-age on purpose — see
+// JWKS_SHARED_MAX_AGE_S. An intermediary answers the "re-fetch on unknown kid"
+// flush from its own copy, so its freshness, not the relying party's, decides
+// how long a new key stays unpublished and a revoked one stays trusted.
+//
 // On first call (no signing keys exist), generates an Active keypair and
 // returns it immediately so the endpoint is always ready.
 
 import { NextResponse } from 'next/server';
 import { getAllPublicKeys, createActiveSigningKey } from '@/lib/signing-keys';
+import { JWKS_CACHE_CONTROL } from '@/lib/signing-key-windows';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,7 +61,7 @@ export async function GET() {
     return NextResponse.json(jwks, {
       status: 200,
       headers: {
-        'Cache-Control': 'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400',
+        'Cache-Control': JWKS_CACHE_CONTROL,
       },
     });
   } catch (err) {

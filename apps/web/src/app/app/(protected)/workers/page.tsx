@@ -49,8 +49,8 @@ export default async function WorkersPage() {
     <main className="min-h-screen p-8">
       <div className="max-w-4xl mx-auto">
         <div className="mb-8">
-          <Link href="/app/dashboard" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
-            ← Dashboard
+          <Link href="/app/home" className="text-sm text-text-secondary hover:text-text-primary mb-2 block">
+            ← Home
           </Link>
           <h1 className="text-3xl font-bold">Workers</h1>
           <p className="text-text-secondary">Agents executing tasks</p>
@@ -75,7 +75,7 @@ export default async function WorkersPage() {
                 <div>
                   <p className="text-[13px] font-medium text-text-primary">No active workers</p>
                   <p className="text-[12px] text-text-muted mt-0.5">
-                    Workers appear here when connected agents claim and start executing tasks. Create a task to get started.
+                    Workers appear here when connected agents claim and start executing tasks. Create a task and one will pick it up.
                   </p>
                 </div>
               </div>

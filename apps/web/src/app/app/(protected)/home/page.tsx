@@ -12,7 +12,7 @@ import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, summariseActionQueueAge } from '@/lib/action-queue';
@@ -27,6 +27,7 @@ import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
 import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
 import TaskCard from '@/components/TaskCard';
@@ -42,10 +43,24 @@ import HomeAutoRefresh from './HomeAutoRefresh';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import { AgentHandledCard } from '@/components/AgentHandledCard';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
-import InitiativeRail from '@/components/InitiativeRail';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
-import { loadInitiativeList, type InitiativeListItem } from '@/lib/initiative-list';
+import { loadInitiativeList } from '@/lib/initiative-list';
 import { sortInitiatives } from '@/lib/initiative-presentation';
+import {
+  loadInitiativeEffort,
+  loadInitiativeVerdictInputs,
+  deriveInitiativeVerdict,
+  derivePendingCounts,
+  countBlockedByPR,
+  emptyVerdictRollup,
+  zeroEffortWindow,
+  noPendingCounts,
+  type EffortDay,
+  type VerdictRollup,
+  type BlockingTask,
+} from '@/lib/initiative-pulse';
+import type { PulseLineItem } from '@/lib/initiative-pulse-line';
+import { InitiativePulseLine } from './InitiativePulseLine';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -196,13 +211,14 @@ export default async function HomePage({
   // holds a stale action queue (e.g. a Merge card for an already-merged PR).
   let refreshWorkspaceIds: string[] = [];
 
-  // Durable-arc rail — additive, above the ephemeral feed. Empty ⇒ collapses.
-  let railInitiatives: InitiativeListItem[] = [];
-  const RAIL_LIMIT = 6;
   // Initiatives present among the Waiting-on-you items — drives the scoping chips.
   let actionQueueInitiatives: Array<{ id: string; title: string }> = [];
   // Arc headline: an initiative that crossed a milestone since this user's last visit.
   let arcHeadline: string | null = null;
+  // One verdict per initiative, feeding the one-line initiative pulse (§2 of
+  // docs/specs/surface-ia-home-missions-initiatives.md). Stays empty when every
+  // arc is winning/dormant/empty, and the line then renders as absence.
+  let pulseItems: PulseLineItem[] = [];
 
   const waitingOnYou: WaitingOnYouRawItem[] = [];
 
@@ -319,17 +335,22 @@ export default async function HomePage({
       }
       refreshWorkspaceIds = wsIds;
 
-      // Initiative rail — team-scoped (matching the cookie/team logic above),
+      // Initiative list — team-scoped (matching the cookie/team logic above),
       // optionally narrowed by the active workspace filter. Independent of the
       // task/worker wsIds queries below so it survives an empty workspace set.
+      // Feeds the arc headline and the queue scoping chips; the 160px card rail
+      // it used to feed is MUST NOT on Home (surface-IA spec §1, §2.1, AC-6).
       const initiativeTeamIds = activeTeamId ? [activeTeamId] : await getUserTeamIds(user.id);
       const sortedInitiatives = sortInitiatives(
         await loadInitiativeList({
           teamIds: initiativeTeamIds,
           workspaceIdFilter: wsFilter && wsIds.includes(wsFilter) ? wsFilter : null,
+          // The pulse line's `stuck` clause needs held / blocked / awaiting-merge
+          // counts, which `derivePendingCounts` reads off these mission rows. No
+          // extra round trip — the same relational query carries the columns.
+          pendingSignals: true,
         }),
       );
-      railInitiatives = sortedInitiatives.slice(0, RAIL_LIMIT);
       // Map every child mission → its initiative, for the queue scoping chips.
       const missionToInitiative = new Map<string, { id: string; title: string }>();
       for (const ini of sortedInitiatives) {
@@ -364,6 +385,57 @@ export default async function HomePage({
             target: [initiativeProgressSeen.userId, initiativeProgressSeen.initiativeId],
             set: { lastProgress: sql`excluded.last_progress`, updatedAt: sql`now()` },
           });
+      }
+
+      // Initiative pulse line (§2.2): one verdict per arc, from the shared
+      // loader — never a second query of our own, and never a call per
+      // initiative (§2.4, §6.2). Effort and verdict evidence are team-scoped on
+      // purpose (§6.5): a workspace-narrowed window would let the sidebar filter
+      // flip an arc's verdict.
+      if (sortedInitiatives.length > 0) {
+        const effortByInitiative = new Map<string, EffortDay[]>();
+        const rollupByInitiative = new Map<string, VerdictRollup>();
+        await Promise.all(
+          initiativeTeamIds.map(async (teamId) => {
+            const [effort, rollups] = await Promise.all([
+              loadInitiativeEffort({ teamId }),
+              loadInitiativeVerdictInputs({ teamId }),
+            ]);
+            for (const [id, days] of effort) effortByInitiative.set(id, days);
+            for (const [id, rollup] of rollups) rollupByInitiative.set(id, rollup);
+          }),
+        );
+
+        // `dependsOn` crosses mission boundaries, so the blocking index spans
+        // every mission loaded rather than being rebuilt per initiative.
+        const blockingIndex = new Map<string, BlockingTask>();
+        for (const ini of sortedInitiatives) {
+          for (const mission of ini.missions) {
+            for (const task of mission.tasks ?? []) blockingIndex.set(task.id, task);
+          }
+        }
+
+        pulseItems = sortedInitiatives.map((ini) => {
+          const rollup = rollupByInitiative.get(ini.id) ?? emptyVerdictRollup(ini.status);
+          const effortDays = effortByInitiative.get(ini.id) ?? zeroEffortWindow();
+          // A mission reads as shipped exactly when its status is 'completed' —
+          // the first rule of `deriveMissionHealth` — so these counts agree with
+          // the Missions tab without re-deriving full health here.
+          const counts =
+            derivePendingCounts(
+              ini.missions.map((mission) => ({
+                initiativeId: ini.id,
+                isHeld: mission.isHeld,
+                health: mission.status === 'completed' ? 'shipped' : mission.status,
+                lastActivityAt: mission.updatedAt,
+                blockedPRCount: countBlockedByPR(mission.tasks ?? [], blockingIndex),
+                tasks: mission.tasks ?? [],
+              })),
+            ).get(ini.id) ?? noPendingCounts();
+
+          const { verdict } = deriveInitiativeVerdict({ rollup, effortDays, counts });
+          return { id: ini.id, title: ini.title, verdict };
+        });
       }
 
       if (wsIds.length > 0) {
@@ -828,6 +900,9 @@ export default async function HomePage({
                       eq(tasks.workspaceId, wsId),
                       isNotNull(workers.mergedAt),
                       sql`${workers.mergedAt} > ${baseline.asOf}::timestamptz`,
+                      // A merge into a mission integration branch is not on
+                      // trunk — see core/release-queue-scope.
+                      notMissionIntegrationMerge(),
                     ),
                   );
 
@@ -862,11 +937,15 @@ export default async function HomePage({
               // Freshness inputs for the action-queue invariant: how old the PR
               // is (which tier it falls in) and when its state was last verified.
               createdAt: true, prLastCheckedAt: true,
+              // Where this PR points. Needed by resolvePolicy to tell a task PR
+              // into a mission integration branch (no human gate — the gate is on
+              // the mission PR) from a PR into trunk (gate applies).
+              prBaseRef: true,
             },
             with: {
               task: {
                 columns: { id: true, title: true, missionId: true, status: true, requiresReview: true, result: true },
-                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true } } },
+                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
           });
@@ -964,7 +1043,12 @@ export default async function HomePage({
               const ws = wsInboxMap.get(w.workspaceId);
               const mission = (w.task as any)?.mission ?? null;
               const policy = ws
-                ? resolvePolicy(ws, mission, { requiresReview: (w.task as any)?.requiresReview })
+                ? resolvePolicy(
+                    ws,
+                    mission,
+                    { requiresReview: (w.task as any)?.requiresReview },
+                    { baseRef: w.prBaseRef },
+                  )
                 : { tier: 'auto-threshold' as const };
               const rt = latestReviewerTaskByOrigId.get(w.taskId);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({
@@ -976,6 +1060,16 @@ export default async function HomePage({
                   : null,
                 prOpenedAt: w.completedAt ?? null,
                 now: gateNow,
+                // Option A′: the tier drop in resolvePolicy is also what removes
+                // the reviewer, and "no reviewer will ever run" otherwise reads
+                // as "a human must merge this" — the exact inverse of the intent.
+                // The gate needs the base-ref fact itself, not just its shadow
+                // in the tier. Authoritative predicate, because the mission row
+                // (workingBranch + integrationBranchEnabled) is selected above.
+                isMissionIntegrationTaskPr: isMissionIntegrationBase({
+                  baseRef: w.prBaseRef,
+                  mission,
+                }),
               }));
             }
             // ─────────────────────────────────────────────────────────────────────
@@ -1377,8 +1471,14 @@ export default async function HomePage({
                 // or running reviewer task means the agent still owns it — the
                 // dependency urgency is real, but the actor isn't the human, so it
                 // belongs on the in-flight card, not a Waiting on You MERGE card.
+                //
+                // `!== 'human'` rather than `=== 'agent'`: an Option A′ task PR is
+                // owned by the platform, which merges it unattended, so the
+                // dependency urgency is real but there is nothing to ask a human
+                // for. It has no in-flight card either (no reviewer is running),
+                // so it correctly renders nowhere at all.
                 const gate = reviewerGateMap.get(upstream.id);
-                if (gate && gate.actor === 'agent') {
+                if (gate && gate.actor !== 'human') {
                   const inFlightCard = agentReviewingPrs.find(c => c.taskId === upstream.id)
                     ?? reviewQueuedPrs.find(c => c.taskId === upstream.id);
                   if (inFlightCard) {
@@ -1640,8 +1740,9 @@ export default async function HomePage({
               </p>
             </div>
 
-            {/* Durable-arc rail — above the ephemeral feed; collapses when empty. */}
-            <InitiativeRail initiatives={railInitiatives} />
+            {/* Initiative pulse — at most one line, and nothing at all when
+                every arc is winning/dormant/empty (§2.1, §2.2, AC-1). */}
+            <InitiativePulseLine items={pulseItems} />
 
             {/* Waiting on You — unified action queue (MERGE · REVIEW · QUESTION · APPROVE · RESOLVING) */}
             {actionQueue.length > 0 && (
@@ -1922,7 +2023,7 @@ export default async function HomePage({
             {actionQueue.length === 0 && activeItems.length > 0 && (
               <div className="mb-8">
                 <div className="section-label mb-3">Waiting on You</div>
-                <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
+                <p className="text-[13px] text-text-muted">Nothing waiting on you. All in-flight work is autonomous.</p>
                 {resolvedEscalations.length > 0 && (
                   <ResolvedEscalationsGroup items={resolvedEscalations} />
                 )}

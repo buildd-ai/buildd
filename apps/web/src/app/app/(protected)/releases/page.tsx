@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { ReleaseRow } from './ReleaseRow';
+import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,7 +46,7 @@ export default async function ReleasesPage({
         </div>
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No team found.</p>
-          <p className="text-xs text-text-muted">Create a workspace to get started.</p>
+          <p className="text-xs text-text-muted"><Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> to track releases.</p>
         </div>
       </div>
     );

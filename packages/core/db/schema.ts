@@ -26,7 +26,6 @@ export const teams = pgTable('teams', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
   slug: text('slug').notNull().unique(),
-  plan: text('plan').notNull().$type<'free' | 'pro' | 'team'>().default('free'),
 
   // The team's canonical working zone (IANA, e.g. 'America/New_York'). NULL = UTC, so
   // teams that never set one behave exactly as before. Used for anything rendered to a
@@ -117,7 +116,6 @@ export const accounts = pgTable('accounts', {
   authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
 
   // For API-based auth (pay-per-token)
-  anthropicApiKey: text('anthropic_api_key'),
   maxCostPerDay: decimal('max_cost_per_day', { precision: 10, scale: 2 }),
   totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
 
@@ -597,7 +595,13 @@ export const workspaces = pgTable('workspaces', {
   githubRepoId: uuid('github_repo_id'),  // Will add FK after githubRepos is defined
   githubInstallationId: uuid('github_installation_id'),
   // Access control: 'open' = any token can claim, 'restricted' = only linked accounts
-  accessMode: text('access_mode').default('open').notNull().$type<'open' | 'restricted'>(),
+  // 'open' lets any authenticated user reach the workspace without team
+  // membership (verifyWorkspaceAccess returns role 'member' for them). That is
+  // useful for a single-tenant install and wrong as a default the moment a
+  // second person signs up, so new workspaces are 'restricted'. Existing rows
+  // are deliberately left alone — flipping them would revoke access people
+  // currently rely on.
+  accessMode: text('access_mode').default('restricted').notNull().$type<'open' | 'restricted'>(),
   // Data sensitivity class — controls knowledge ingestion, transcript retention, and redaction.
   // 'standard': default behaviour. 'sensitive': opts out of telemetry consumers.
   dataClass: text('data_class').default('standard').notNull().$type<'standard' | 'sensitive'>(),
@@ -614,22 +618,6 @@ export const workspaces = pgTable('workspaces', {
 
   // Webhook configuration for external agent dispatch (OpenClaw, etc.)
   webhookConfig: jsonb('webhook_config').$type<WorkspaceWebhookConfig>(),
-
-  // Discord integration
-  discordConfig: jsonb('discord_config').$type<{
-    guildId?: string;
-    channelId?: string;
-    botToken?: string;
-    enabled?: boolean;
-  }>(),
-
-  // Slack integration
-  slackConfig: jsonb('slack_config').$type<{
-    teamId?: string;
-    channelId?: string;
-    botToken?: string;
-    enabled?: boolean;
-  }>(),
 
   // Release configuration — controls whether tasks can trigger a prod deploy
   releaseConfig: jsonb('release_config').$type<WorkspaceReleaseConfig>(),
@@ -702,8 +690,14 @@ export const missions = pgTable('missions', {
   pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
   pacingMaxPerHour: integer('pacing_max_per_hour'),
   lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
-  // Shared feature branch for this mission. All mission tasks push commits here;
-  // a single PR tracks all mission work. Generated lazily on first task creation.
+  // Mission integration branch, shape `mission/<slug>-<id8>`. Generated lazily on
+  // first task creation.
+  //
+  // Each mission task still gets its OWN branch and its OWN PR — this branch is
+  // their shared BASE, not a branch everyone commits to directly, and it does not
+  // by itself collapse mission work into a single PR. It only acts as that base
+  // when `integrationBranchEnabled` is true; while that flag is false the column
+  // is inert bookkeeping and task PRs target trunk as they always have.
   workingBranch: text('working_branch'),
   primaryPrNumber: integer('primary_pr_number'),
   primaryPrUrl: text('primary_pr_url'),
@@ -714,6 +708,14 @@ export const missions = pgTable('missions', {
   // Per-mission merge policy override. When set, takes precedence over workspace.gitConfig.mergePolicy.
   // null means "use workspace default".
   mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
+  // Per-mission opt-in to mission integration branches: task PRs are based on
+  // `workingBranch` instead of trunk, and one mission PR takes the integration
+  // branch into trunk when the mission's work is done. The merge-policy tier then
+  // applies to that ONE mission PR; task PRs into the (quarantined) integration
+  // branch run auto-threshold — see resolvePolicy() in apps/web/src/lib/merge-policy.ts.
+  //
+  // Default false: nothing about any existing mission changes until this is true.
+  integrationBranchEnabled: boolean('integration_branch_enabled').default(false).notNull(),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -733,10 +735,23 @@ export const missions = pgTable('missions', {
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),
   startResolution: text('start_resolution').$type<'explicit' | 'relative' | 'known_budget_reset' | 'default_budget_window' | null>(),
-  // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
-  // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
-  // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
+  // Phase 2 of the mission release claim: set only AFTER a dispatch or merge
+  // reported success. Non-null means the mission's work was actually shipped.
+  // Nothing resets it; it is terminal.
   releasedAt: timestamp('released_at', { withTimezone: true }),
+  // Phase 1 of the mission release claim (trigger=on_mission_complete). The first
+  // caller whose UPDATE wins the isNull guard owns the attempt; concurrent
+  // completions see a non-null value and skip. Cleared on a failed attempt so the
+  // mission can be released again — previously `releasedAt` itself was claimed
+  // up-front, so any failure after the claim (strategy not configured, dispatch
+  // throw, executeRelease 'skipped') left the mission permanently marked released
+  // with nothing deployed and no way back.
+  //
+  // Safety bound: a stale attempt (process died between the two phases) is
+  // reclaimable only after MISSION_RELEASE_ATTEMPT_STALE_MS, and only while
+  // `releasedAt IS NULL`. That caps retries at roughly one per stale window
+  // rather than one per task completion.
+  releaseAttemptedAt: timestamp('release_attempted_at', { withTimezone: true }),
   // External issue tracker link (e.g. Linear project) — set via /link-linear or API
   externalIssueId: text('external_issue_id'),
   externalIssueUrl: text('external_issue_url'),
@@ -1028,12 +1043,25 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   canonicalTaskId: uuid('canonical_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
   reservationToken: uuid('reservation_token'),
   reservationExpiresAt: timestamp('reservation_expires_at', { withTimezone: true }),
-  // Monotonic counter bumped on each supersession (new head SHA = new generation).
+  // Monotonic counter bumped by every rotation of this row (a supersession, or a
+  // replacement of a terminal canonical task) — and, because the row is reused in
+  // place rather than replaced, it is ALSO the optimistic-lock token that makes a
+  // rotation from a stale reader fail. See `rotateClaim` in
+  // apps/web/src/lib/subject-intake-db.ts: the guarded UPDATE matches on the
+  // generation the caller read and increments it in the same statement, so a
+  // caller that observed generation N cannot rotate away the successor a
+  // concurrent caller installed at N+1 (an ABA lost update that would leave two
+  // live owners for one dedupe key and drop a retry-chain edge).
   generation: integer('generation').default(1).notNull(),
-  // 'active' = claim is live; 'released' = subject resolved (merged, closed, superseded).
-  state: text('state').notNull().default('active').$type<'active' | 'released'>(),
+  // Only 'active' is ever written. Supersession happens by rotating this row in
+  // place (see rotateClaim), which keeps the retry-chain and prior-terminal links
+  // that a release-and-reinsert would discard, so there is deliberately no code
+  // path that retires a claim. The index predicate below is therefore
+  // constant-true today; it is kept as the extension point for a release
+  // lifecycle if one is ever needed (docs/design/deliverable-uniqueness.md §4 is
+  // still Proposed, and would re-add its own timestamp column).
+  state: text('state').notNull().default('active').$type<'active'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  releasedAt: timestamp('released_at', { withTimezone: true }),
 }, (t) => ({
   workspaceIdx: index('task_subject_claims_workspace_idx').on(t.workspaceId),
   canonicalTaskIdx: index('task_subject_claims_canonical_task_idx').on(t.canonicalTaskId),
@@ -1113,6 +1141,17 @@ export const workers = pgTable('workers', {
   // Used by the base-history-rewrite detector to identify force-pushes that
   // orphan the PR's merge base.
   prOpenedBaseSha: text('pr_opened_base_sha'),
+  // The PR's base ref as GitHub reports it — recorded at open time from
+  // `pull_request.base.ref` and refreshed by the pull_request webhook (which is
+  // what catches a RETARGET, i.e. someone changing a PR's base after it opened).
+  // This is the local source of truth for "did this land on trunk, or on a
+  // mission integration branch", which decides whether the merge-policy tier
+  // applies to this PR (see resolvePolicy()).
+  //
+  // Nullable: pre-migration workers and non-PR workers have none. A null must
+  // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
+  // because guessing wrong here silently deletes a human review gate.
+  prBaseRef: text('pr_base_ref'),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
@@ -1506,7 +1545,12 @@ export const watchedProjects = pgTable('watched_projects', {
 }));
 
 // Dedupe ledger for watcher firings. Unique on (projectId, kind, dedupeKey)
-// so the same PR head SHA or deploy ID doesn't spawn duplicate tasks.
+// so the same PR head SHA or deploy ID doesn't spawn duplicate tasks. Insert-only
+// by design: nothing selects these rows, the INSERT *failing* is the read, and
+// the writer deletes the task it just created when that happens
+// (apps/web/src/lib/health-watcher.ts). Pruned by age in
+// /api/cron/task-archive — see WATCHER_EVENTS_RETENTION_DAYS for why the window
+// is deliberately long.
 export const watcherEvents = pgTable('watcher_events', {
   id: uuid('id').primaryKey().defaultRandom(),
   projectId: uuid('project_id').references(() => watchedProjects.id, { onDelete: 'cascade' }).notNull(),
@@ -2107,26 +2151,6 @@ export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
   team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
 }));
 
-// Advisory file reservations — prevents concurrent workers from editing the same files
-export const fileReservations = pgTable('file_reservations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
-  filePath: text('file_path').notNull(),
-  acquiredAt: timestamp('acquired_at', { withTimezone: true }).defaultNow().notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}, (t) => ({
-  // Only one active reservation per file per workspace (enforced at app level with expiry check)
-  workspaceFileIdx: uniqueIndex('file_reservations_workspace_file_idx').on(t.workspaceId, t.filePath),
-  workerIdx: index('file_reservations_worker_idx').on(t.workerId),
-  expiresIdx: index('file_reservations_expires_idx').on(t.expiresAt),
-}));
-
-export const fileReservationsRelations = relations(fileReservations, ({ one }) => ({
-  workspace: one(workspaces, { fields: [fileReservations.workspaceId], references: [workspaces.id] }),
-  worker: one(workers, { fields: [fileReservations.workerId], references: [workers.id] }),
-}));
-
 // System cache — generic key-value store for cached data (model lists, etc.)
 export const systemCache = pgTable('system_cache', {
   key: text('key').primaryKey(),
@@ -2170,7 +2194,6 @@ export const backendPauses = pgTable('backend_pauses', {
   backend: agentBackendEnum('backend').notNull(),
   /** 'budget' (session/rate-limit) | 'auth' (credential rejected). */
   reason: text('reason').notNull().default('budget'),
-  pausedAt: timestamp('paused_at', { withTimezone: true }).defaultNow().notNull(),
   resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
   sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2368,8 +2391,6 @@ export const externalLinks = pgTable('external_links', {
   externalUrl: text('external_url'),
   // Phase 3 echo-suppression watermark — last-seen external mtime.
   externalUpdatedAt: timestamp('external_updated_at', { withTimezone: true }),
-  // Phase 3 echo-suppression — hash of the last payload we pushed.
-  lastPushedHash: text('last_pushed_hash'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -2529,7 +2550,6 @@ export const pathClaims = pgTable('path_claims', {
   path: text('path').notNull(),
   claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
   releasedAt: timestamp('released_at', { withTimezone: true }),
-  releaseReason: text('release_reason'),
 }, (t) => ({
   activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
   taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
@@ -2576,9 +2596,6 @@ export const releases = pgTable('releases', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   archetype: text('archetype').notNull().$type<'gated' | 'continuous' | 'store' | 'package' | 'none'>(),
   unit: text('unit'),
-  strategy: text('strategy').$type<'workflow_dispatch' | 'branch_merge' | 'script'>(),
-  sourceRef: text('source_ref'),
-  targetRef: text('target_ref'),
   headSha: text('head_sha'),
   previousSha: text('previous_sha'),
   version: text('version'),

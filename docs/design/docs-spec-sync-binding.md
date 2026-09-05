@@ -5,8 +5,7 @@
 - `docs/specs/SPEC-FORMAT.md` — the spec contract this binds against
 - `scripts/check-specs.ts` — the code→spec gate (symbol liveness, `verified_by`, surface coverage)
 - `docs/SPEC.md` §11 — the current maintenance chain (code → SPEC.md → docs/site)
-- `.claude/skills/spec-sync/SKILL.md` — the semantic drift loop this complements
-- `docs/reports/doc-drift-punchlist.md` — where drift is recorded by hand today
+- `.claude/skills/spec-sync/` — regenerates drift on demand; there is deliberately no checked-in drift list
 - `buildd-ai/buildd-docs` — Fumadocs site at `docs.buildd.dev` (sibling repo)
 
 ---
@@ -28,8 +27,10 @@ The chain in `docs/SPEC.md` §11 is *code → `docs/SPEC.md` → buildd-docs*, r
   remembers to run it, and its corpus refresh depends on a knowledge-ingest workflow
   that no longer exists in `.github/workflows/` — so `knowledge-eval.yml:18`'s
   `workflow_run: workflows: ["Knowledge Ingest"]` trigger cannot fire.
-- **`docs/reports/doc-drift-punchlist.md` is a snapshot**, and `docs/reports/README.md`
-  says so: rebuildable, may be stale, never a source of truth.
+- **A checked-in drift list rots into bad instructions.** The last one told a reader
+  to delete two docs pages that had since been rewritten correctly, so it was
+  deleted. `docs/reports/README.md` already says what the whole folder is:
+  rebuildable, may be stale, never a source of truth.
 
 Meanwhile the *other* two arrows just got mechanical. `scripts/check-specs.ts` now
 checks that a spec's named symbols exist, that an `active` spec names the tests

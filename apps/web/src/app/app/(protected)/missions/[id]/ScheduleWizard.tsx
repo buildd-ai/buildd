@@ -129,7 +129,7 @@ export default function ScheduleWizard({
               : 'bg-surface-3 text-text-secondary hover:text-text-primary border border-card-border'
           }`}
         >
-          Custom...
+          Custom…
         </button>
       </div>
 
@@ -162,7 +162,7 @@ export default function ScheduleWizard({
       {/* No workspaces warning */}
       {!hasWorkspace && workspaces.length === 0 && cronExpression && (
         <div className="mb-3 p-2 bg-status-warning/5 border border-status-warning/20 rounded-lg text-[12px] text-status-warning">
-          No workspaces available. Create a workspace first to enable scheduling.
+          No workspaces available. Create one to schedule this mission.
         </div>
       )}
 
@@ -198,7 +198,7 @@ export default function ScheduleWizard({
       )}
 
       {loading && (
-        <div className="mb-3 text-[11px] text-text-secondary">Validating...</div>
+        <div className="mb-3 text-[11px] text-text-secondary">Validating…</div>
       )}
 
       {/* Enable button */}
@@ -208,7 +208,7 @@ export default function ScheduleWizard({
           disabled={!canEnable || saving}
           className="px-4 py-2 text-[13px] font-medium bg-accent/20 text-accent-text rounded-lg hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {saving ? 'Enabling...' : 'Enable Schedule'}
+          {saving ? 'Enabling…' : 'Enable Schedule'}
         </button>
       )}
     </div>

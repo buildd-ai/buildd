@@ -429,7 +429,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     mockDepTasksFindMany.mockResolvedValue([{
       id: 'dep-1',
       status: 'completed',
-      workers: [{ prNumber: 10, mergedAt: new Date().toISOString(), prLifecycleStatus: 'merged' }],
+      workers: [{ prUrl: 'https://example.test/pr/10', prNumber: 10, mergedAt: new Date().toISOString(), prLifecycleStatus: 'merged' }],
     }]);
 
     const res = await callGET('task-unblocked');
@@ -491,7 +491,7 @@ describe('GET /api/tasks/[id]/summary', () => {
     mockDepTasksFindMany.mockResolvedValue([{
       id: 'dep-pr',
       status: 'completed',
-      workers: [{ prNumber: 99, mergedAt: null, prLifecycleStatus: 'open' }],
+      workers: [{ prUrl: 'https://example.test/pr/99', prNumber: 99, mergedAt: null, prLifecycleStatus: 'open' }],
     }]);
 
     const res = await callGET('task-pr-blocked');
@@ -522,10 +522,51 @@ describe('GET /api/tasks/[id]/summary', () => {
     mockDepTasksFindMany.mockResolvedValue([{
       id: 'dep-closed',
       status: 'completed',
-      workers: [{ prNumber: 55, mergedAt: null, prLifecycleStatus: 'closed' }],
+      workers: [{ prUrl: 'https://example.test/pr/55', prNumber: 55, mergedAt: null, prLifecycleStatus: 'closed' }],
     }]);
 
     const res = await callGET('task-closed-pr');
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.blockedByCount).toBe(0);
+  });
+
+  // The gap that let a hand-rolled copy of the gate ship here. Six
+  // blockedByCount tests covered completed, pending, open PR and closed PR —
+  // and none covered `cancelled`, which is the one case the local copy got
+  // wrong. `d.status !== 'completed' => blocking` counts a cancelled dep as a
+  // blocker, but cancelling is a deliberate "this won't be delivered" signal
+  // that releases dependents, so consumers were told a claimable task was
+  // blocked. Cancelled deps are not rare: the subject sweep cancels tasks whose
+  // subject PR died.
+  it('does not count a cancelled dep as a blocker', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-cancelled-dep',
+      title: 'Cancelled dep task',
+      status: 'pending',
+      description: null,
+      mode: null,
+      roleSlug: null,
+      createdAt: new Date().toISOString(),
+      missionId: null,
+      workspaceId: 'ws-1',
+      result: null,
+      backend: null,
+      context: null,
+      dependsOn: ['dep-cancelled'],
+    });
+    mockWorkersFindMany.mockResolvedValue([]);
+    // A cancelled dep satisfies the gate outright — and unlike `completed` it
+    // carries no open-PR guard, so a dangling unmerged PR must not resurrect it
+    // as a blocker either.
+    mockDepTasksFindMany.mockResolvedValue([{
+      id: 'dep-cancelled',
+      status: 'cancelled',
+      workers: [{ prUrl: 'https://example.test/pr/7', prNumber: 7, mergedAt: null, prLifecycleStatus: 'open' }],
+    }]);
+
+    const res = await callGET('task-cancelled-dep');
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.blockedByCount).toBe(0);

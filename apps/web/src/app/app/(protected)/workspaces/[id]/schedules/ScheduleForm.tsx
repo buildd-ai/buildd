@@ -274,7 +274,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
               className="w-full px-3 py-2 border border-border-default rounded-md bg-surface-1"
-              placeholder="Run the full test suite and report any failures..."
+              placeholder="Run the full test suite and report any failures…"
             />
           </div>
 
@@ -358,7 +358,7 @@ export function ScheduleForm({ workspaceId, initialData }: Props) {
           disabled={saving}
           className="px-4 py-2 bg-primary text-white hover:bg-primary-hover rounded-md disabled:opacity-50"
         >
-          {saving ? 'Saving...' : isEdit ? 'Update Schedule' : 'Create Schedule'}
+          {saving ? 'Saving…' : isEdit ? 'Update Schedule' : 'Create Schedule'}
         </button>
 
         <a

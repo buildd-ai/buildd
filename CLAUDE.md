@@ -80,7 +80,8 @@ an empty pattern.
 - **Flow**: Push to `dev` → CI runs. `dev` does **not** auto-merge to `main` — ship via a release PR.
 - **PRs**: Target `dev` for features, `main` for hotfixes only. Use conventional PR titles (e.g., `feat:`, `fix:`, `ci:`, `refactor:`, `docs:`)
 - **Release**: `bun run release` (or `release.yml` / `trigger_release` MCP) opens a `Release vX.Y.Z` PR (dev→main); merge tags + deploys. `release:hotfix` = branch→main, patch bump.
-- **CI**: `.github/workflows/build.yml` runs type check + build; `.github/workflows/preview-tests.yml` runs API integration tests against Vercel preview deploys
+- **CI**: `.github/workflows/build.yml` is the only workflow that runs tests (push to `dev`; PRs to `main`/`dev`). Jobs: `build` (lints + type check + unit tests + build), `sandbox-isolation`, `schema-drift`, and `changes` → `integration`.
+- **Integration/E2E only run on PRs targeting `main`**, and are skipped when the head branch is `dev` — so they never gate a `dev` PR or a release PR. There is no `preview-tests.yml`.
 - **Vercel**: Only deploys from `main` (dev deploys disabled)
 
 Do NOT commit directly to `main` unless it's an emergency hotfix.

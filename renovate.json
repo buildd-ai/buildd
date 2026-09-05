@@ -3,14 +3,22 @@
   "extends": ["config:recommended"],
   "schedule": ["before 9am every weekday"],
   "timezone": "America/New_York",
+  "platformAutomerge": false,
   "packageRules": [
+    {
+      "matchUpdateTypes": ["patch", "minor", "digest"],
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "automerge": false
+    },
     {
       "matchPackageNames": ["@anthropic-ai/{/,}**"],
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "Anthropic AI SDK",
       "automerge": true,
-      "automergeType": "pr",
-      "platformAutomerge": true
+      "automergeType": "pr"
     },
     {
       "matchPackageNames": ["@anthropic-ai/{/,}**"],

@@ -14,6 +14,8 @@ const mockMergePullRequest = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGithubReposFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
+const mockTasksFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 const mockWorkersUpdate = mock(() => ({
@@ -48,6 +50,12 @@ mock.module('@buildd/core/db', () => ({
       },
       githubRepos: { findFirst: mockGithubReposFindFirst },
       workspaces: { findMany: mockWorkspacesFindMany },
+      // `claimMissionPrimaryPr` reads the mission to check whether it opted
+      // into an integration branch: under Option A′ only the mission's own PR
+      // may take the slot, while for every other mission the column keeps its
+      // legacy meaning. Null = not opted in, which is what these cases assert.
+      missions: { findFirst: mockMissionsFindFirst },
+      tasks: { findFirst: mockTasksFindFirst },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -64,7 +72,7 @@ mock.module('drizzle-orm', () => ({
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', workspaceId: 'workspaceId', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
+  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', prBaseRef: 'prBaseRef', workspaceId: 'workspaceId', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
   missions: { id: 'id', primaryPrNumber: 'primaryPrNumber', primaryPrUrl: 'primaryPrUrl', updatedAt: 'updatedAt' },
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
@@ -394,6 +402,101 @@ describe('POST /api/github/pr', () => {
     expect(capturedSetData.prUrl).toBe('https://github.com/owner/repo/pull/42');
     expect(capturedSetData.prNumber).toBe(42);
     expect(capturedSetData.updatedAt).toBeInstanceOf(Date);
+  });
+
+  // ── missions.primaryPrNumber may only be claimed by a mission-level PR (P2) ──
+  //
+  // The slot used to go to whichever PR under the mission arrived first, so under
+  // the integration-branch model the first *task* PR steals it. Only a PR based
+  // on the workspace trunk is the mission's PR.
+  function captureUpdatePayloads(): any[] {
+    const payloads: any[] = [];
+    mockWorkersUpdate.mockImplementation(() => ({
+      set: (data: any) => {
+        payloads.push(data);
+        return { where: () => Promise.resolve() };
+      },
+    }));
+    return payloads;
+  }
+
+  const MISSION_WORKER = {
+    id: 'w-1',
+    accountId: 'account-1',
+    name: 'test-worker',
+    workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
+    task: { id: 't-1', missionId: 'obj-1' },
+  };
+
+  it('does not claim the mission PR slot for a task PR based on a mission integration branch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(MISSION_WORKER);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'mission/checkout-arc-1a2b3c4d' },
+    });
+    const payloads = captureUpdatePayloads();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(payloads.some(p => 'primaryPrNumber' in p)).toBe(false);
+  });
+
+  it('claims the mission PR slot for a PR based on the workspace trunk', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(MISSION_WORKER);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'dev' },
+    });
+    const payloads = captureUpdatePayloads();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'mission/checkout-arc-1a2b3c4d' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const missionPayload = payloads.find(p => 'primaryPrNumber' in p);
+    expect(missionPayload).toBeDefined();
+    expect(missionPayload.primaryPrNumber).toBe(42);
+    expect(missionPayload.primaryPrUrl).toBe('https://github.com/owner/repo/pull/42');
+  });
+
+  it('does not claim the mission PR slot when the base ref is unknown', async () => {
+    // The prUrl-registration path never talks to GitHub, so an unclassifiable PR
+    // must not populate a slot that means "this is the mission's PR".
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(MISSION_WORKER);
+    const payloads = captureUpdatePayloads();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'My PR',
+        head: 'buildd/t-1-do-thing',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(payloads.some(p => 'primaryPrNumber' in p)).toBe(false);
   });
 
   it('calls githubApi with correct parameters', async () => {
@@ -886,6 +989,347 @@ describe('POST /api/github/pr', () => {
     expect(capturedSetData.prNumber).toBe(77);
   });
 
+  // ── prBaseRef recording (Option A' — mission integration branches) ────────
+  // These assert the .set() payload, which the db mock passes through verbatim.
+  // (The WHERE clause is NOT observable under this mock — a known trap — so
+  // these tests are scoped to "what value do we write", not "to which row".)
+  it("records prBaseRef from GitHub's own base.ref when creating a PR", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]); // no existing PR for this head
+    mockGithubApi.mockResolvedValueOnce({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'mission/example-slug-0a1b2c3d', sha: 'basesha1' },
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it("prefers GitHub's base.ref over the base the caller asked for", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 43,
+      html_url: 'https://github.com/owner/repo/pull/43',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'dev', sha: 'basesha2' },
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      // Caller claims a mission branch; GitHub says the PR actually points at dev.
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch', base: 'mission/example-slug-0a1b2c3d' },
+    });
+    await POST(req);
+
+    expect(capturedSetData.prBaseRef).toBe('dev');
+  });
+
+  it('leaves prBaseRef unset when GitHub returns no base', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 44,
+      html_url: 'https://github.com/owner/repo/pull/44',
+      state: 'open',
+      title: 'My PR',
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    // Absent, not null and not a guess — unknown must degrade to today's gate.
+    expect('prBaseRef' in capturedSetData).toBe(false);
+  });
+
+  /**
+   * Record every `db.update(workers)` call with BOTH halves — the values and
+   * the predicate. A recorder that keeps only `set()` cannot see the guard at
+   * all: a write and a guarded write look identical from the values alone,
+   * which is how an unconditional overwrite hides in a green suite.
+   */
+  function recordWorkerUpdates(): Array<{ set: any; where: any }> {
+    const calls: Array<{ set: any; where: any }> = [];
+    mockWorkersUpdate.mockReturnValue({
+      set: (data: any) => {
+        const call = { set: data, where: null as any };
+        calls.push(call);
+        return {
+          where: (cond: any) => {
+            call.where = cond;
+            const p: any = Promise.resolve([]);
+            p.returning = () => Promise.resolve([{ id: 'w-1' }]);
+            return p;
+          },
+        };
+      },
+    } as any);
+    return calls;
+  }
+
+  /** Flatten the mocked drizzle predicate tree into its leaf descriptors. */
+  function predicateLeaves(cond: any): any[] {
+    if (!cond || typeof cond !== 'object') return [];
+    if (Array.isArray(cond.conditions)) return cond.conditions.flatMap(predicateLeaves);
+    return [cond];
+  }
+
+  function adoptedPrWithBase(baseRef: string) {
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing',
+      base: { ref: baseRef, sha: 'basesha3' },
+    });
+  }
+
+  it('backfills prBaseRef when adopting an existing PR for the same head', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: null,
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    const baseRefWrite = updates.find(c => 'prBaseRef' in c.set);
+    expect(baseRefWrite?.set.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('guards the adopt-path prBaseRef write so it can only fill a NULL', async () => {
+    // The value comes from a `GET /pulls/{n}` taken earlier in this request, so
+    // it can already be older than what the `pull_request` webhook recorded —
+    // and there is no ordering signal here to tell. An unguarded write can
+    // therefore move prBaseRef BACKWARDS onto a mission integration branch that
+    // a retarget already left, and handleCheckSuiteEvent then resolves the merge
+    // policy from that stale value: the tier drops to auto-threshold and the PR
+    // can auto-merge into trunk with the human gate removed. So the write is
+    // restricted to the one case that cannot be wrong: filling an unknown.
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: null,
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    }));
+
+    const baseRefWrite = updates.find(c => 'prBaseRef' in c.set);
+    expect(baseRefWrite).toBeDefined();
+    const leaves = predicateLeaves(baseRefWrite!.where);
+    expect(leaves).toContainEqual({ field: 'prBaseRef', type: 'isNull' });
+    expect(leaves).toContainEqual({ field: 'id', value: 'w-1', type: 'eq' });
+  });
+
+  it('does not write prBaseRef at all when the worker already has one', async () => {
+    // A recorded value came from somewhere newer than our snapshot (the webhook,
+    // or this route's own create path). Not writing is the safe direction:
+    // leaving a correct value alone costs nothing, replacing it with a stale one
+    // costs a review gate.
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: 'trunk-branch', // already retargeted off the mission branch
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    }));
+
+    expect(updates.find(c => 'prBaseRef' in c.set)).toBeUndefined();
+    // The rest of the adopt bookkeeping still happens.
+    expect(updates.some(c => c.set.prNumber === 55)).toBe(true);
+  });
+
+  it('keeps prBaseRef out of the unconditional adopt write', async () => {
+    // If it rides along in the eq(id)-only UPDATE, the guard above is dead code.
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: null,
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    }));
+
+    const adoptWrite = updates.find(c => c.set.prNumber === 55);
+    expect(adoptWrite).toBeDefined();
+    expect('prBaseRef' in adoptWrite!.set).toBe(false);
+  });
+
+  it("copies the sibling's prBaseRef when mirroring a same-task PR", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-new',
+      accountId: 'account-1',
+      taskId: 'task-shared',
+      prUrl: null,
+      prNumber: null,
+      name: 'worker-retry',
+      workspace: WORKSPACE_OK,
+    });
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-original',
+      prUrl: 'https://github.com/owner/repo/pull/77',
+      prNumber: 77,
+      prBaseRef: 'mission/example-slug-0a1b2c3d',
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-new', title: 'My PR', head: 'buildd/taskshare-fix' },
+    });
+    await POST(req);
+
+    expect(capturedSetData.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it("does not invent a prBaseRef when the sibling has none", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-new',
+      accountId: 'account-1',
+      taskId: 'task-shared',
+      prUrl: null,
+      prNumber: null,
+      name: 'worker-retry',
+      workspace: WORKSPACE_OK,
+    });
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-original',
+      prUrl: 'https://github.com/owner/repo/pull/77',
+      prNumber: 77,
+      prBaseRef: null, // pre-migration sibling
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-new', title: 'My PR', head: 'buildd/taskshare-fix' },
+    });
+    await POST(req);
+
+    expect('prBaseRef' in capturedSetData).toBe(false);
+  });
+
   it('returns 500 when githubApi throws an error', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -1150,6 +1594,29 @@ describe('PUT /api/github/pr', () => {
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
     });
+    mockTasksFindFirst.mockReset();
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockMissionsFindFirst.mockResolvedValue(null);
+    // The merge-policy gate reads the PR, its check runs and its files. Model a
+    // green, clean, small PR by default so each test states its own refusal
+    // rather than inheriting one from a missing fixture.
+    mockGithubApi.mockImplementation((_inst: number, path: string) => {
+      if (/\/check-runs$/.test(path)) {
+        return Promise.resolve({
+          check_runs: [
+            { name: 'typecheck', status: 'completed', conclusion: 'success' },
+            { name: 'build', status: 'completed', conclusion: 'success' },
+            { name: 'test', status: 'completed', conclusion: 'success' },
+          ],
+        });
+      }
+      if (/\/files/.test(path)) {
+        return Promise.resolve([
+          { filename: 'apps/web/src/lib/foo.ts', additions: 10, deletions: 2, status: 'modified' },
+        ]);
+      }
+      return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+    });
   });
 
   it('returns 401 when not authenticated', async () => {
@@ -1248,6 +1715,191 @@ describe('PUT /api/github/pr', () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toBe('GitHub repo not found');
+  });
+
+  describe('merge-policy gate', () => {
+    function workerOk() {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1',
+        accountId: 'account-1',
+        taskId: 'task-1',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+
+    const put = () => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42 },
+    }));
+
+    it("refuses under 'agent-review' — a self-merge routes around the reviewer", async () => {
+      // The most important refusal: green CI does not substitute for the
+      // verdict, so this cannot be satisfied by making the PR cleaner.
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } } },
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.tier).toBe('agent-review');
+      expect(data.error).toContain('cannot be self-merged');
+      expect(data.hint).toContain('request_pr_review');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses under 'human'", async () => {
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).tier).toBe('human');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses when the task itself requires review, whatever the workspace tier", async () => {
+      workerOk();
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', requiresReview: true, missionId: null });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).tier).toBe('human');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses when CI is not green, naming the failing check', async () => {
+      workerOk();
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({
+            check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }],
+          });
+        }
+        if (/\/files/.test(path)) return Promise.resolve([{ filename: 'a.ts', additions: 1, deletions: 0, status: 'modified' }]);
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('build');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the PR touches a configured deny path', async () => {
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: {
+          ...WORKSPACE_OK,
+          gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: ['packages/core/db/'] } } },
+        },
+      });
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+        }
+        if (/\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'packages/core/db/schema.ts', additions: 4, deletions: 0, status: 'modified' }]);
+        }
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the PR head cannot be read — fail closed', async () => {
+      // This read identifies the commit the policy is evaluated against.
+      // Merging without it is a merge with no policy, which is the hole.
+      workerOk();
+      mockGithubApi.mockImplementation(() => Promise.reject(new Error('502 Bad Gateway')));
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('could not read the PR head');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('merges under auto-threshold when the same safety check auto-merge uses passes', async () => {
+      // The positive case. Without it, every refusal above would also pass on a
+      // route that refused unconditionally.
+      workerOk();
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects force from a worker-level token', async () => {
+      workerOk();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'worker' });
+
+      const res = await PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, force: true },
+      }));
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('admin token');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('lets an admin token force past the policy', async () => {
+      // A human-held admin token is the human. Refusing it would make the gate
+      // unbypassable, which turns a stuck PR into a support ticket.
+      workerOk();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+      });
+
+      const res = await PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42, force: true },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('still reports an already-merged PR without evaluating policy', async () => {
+      // Reporting an existing merge is not a merge; a `human` tier must not
+      // turn idempotent success into a 403.
+      workerOk();
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        mergedAt: new Date('2026-09-01T00:00:00Z'),
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'human' } } },
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.alreadyMerged).toBe(true);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
   });
 
   it('merges PR successfully and stamps worker mergedAt', async () => {

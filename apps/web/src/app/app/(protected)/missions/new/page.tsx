@@ -8,6 +8,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 import NewMissionForm from './NewMissionForm';
+import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +24,7 @@ export default async function NewMissionPage() {
   if (teamIds.length === 0) {
     return (
       <div className="p-8 text-center text-text-secondary">
-        No team found. Create a workspace to get started.
+        No team found. <Link href="/app/teams/new" className="text-primary hover:underline">Create a team</Link> before planning a mission.
       </div>
     );
   }

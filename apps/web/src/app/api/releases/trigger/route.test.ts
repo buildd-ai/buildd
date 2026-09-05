@@ -70,6 +70,8 @@ mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKe
 mock.module('@/lib/github', () => ({ isGitHubAppConfigured: mockIsGitHubAppConfigured }));
 mock.module('@/lib/release/target', () => ({ resolveReleaseTarget: mockResolveReleaseTarget }));
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: mockResolveReleaseStrategy,
 }));
 mock.module('@/lib/release/dispatch', () => ({

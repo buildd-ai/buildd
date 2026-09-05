@@ -89,7 +89,10 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass, discordConfig, teamId, gitConfig, maxConcurrentTasks } = body;
+    const {
+      name, repo, repoUrl, localPath, defaultBranch, accessMode, dataClass, teamId,
+      gitConfig, maxConcurrentTasks, connectorAdvisoryMode,
+    } = body;
 
     const updates: Record<string, unknown> = {
       updatedAt: new Date(),
@@ -129,12 +132,37 @@ export async function PATCH(
     if (dataClass !== undefined && (dataClass === 'standard' || dataClass === 'sensitive')) {
       updates.dataClass = dataClass;
     }
-    if (discordConfig !== undefined) updates.discordConfig = discordConfig;
     // Max parallel workers per repo-backed workspace (>= 1). Worktree isolation makes
     // parallel work safe; this just bounds branch fan-out. Clamp to a sane floor of 1.
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null) {
       const n = Math.floor(Number(maxConcurrentTasks));
       if (!Number.isNaN(n)) updates.maxConcurrentTasks = Math.max(1, n);
+    }
+
+    // Connector degraded mode (docs/design/connector-availability-degraded-mode.md
+    // Phase 1: ship the machinery, opt in per workspace, default stays block).
+    // This is the flag's only writer: with it, a task whose role names a failing
+    // connector claims anyway and carries a degradedConnectors notice, instead of
+    // being deferred until someone notices. Two backstops make opting in safe and
+    // both are already shipped: a task may name `requiredConnectors`, whose
+    // failure still blocks, and total degradation (every connector for the role
+    // unavailable) holds the task regardless of this flag.
+    //
+    // Phase 2 — flipping the DEFAULT to advisory — is deliberately NOT done here.
+    // That changes behaviour for every existing workspace and the design gates it
+    // on Phase 1 running clean plus an audit of roles whose connectors are
+    // genuinely load-bearing.
+    //
+    // Strict boolean: a coerced value would let the string "false" turn a claim
+    // gate off.
+    if (connectorAdvisoryMode !== undefined) {
+      if (typeof connectorAdvisoryMode !== 'boolean') {
+        return NextResponse.json(
+          { error: 'connectorAdvisoryMode must be a boolean' },
+          { status: 400 },
+        );
+      }
+      updates.connectorAdvisoryMode = connectorAdvisoryMode;
     }
 
     // Partial gitConfig merge (e.g. { autoMergePR: true }). Reads the existing

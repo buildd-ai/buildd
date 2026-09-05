@@ -155,6 +155,9 @@ mock.module('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
+  not: (condition: any) => ({ condition, type: 'not' }),
+  or: (...conditions: any[]) => ({ conditions, type: 'or' }),
+  ne: (field: any, value: any) => ({ field, value, type: 'ne' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
 }));
 
@@ -162,7 +165,7 @@ const schemaMock = {
   githubInstallations: { id: 'id', installationId: 'installationId' },
   githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId', fullName: 'fullName' },
   tasks: { id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status' },
-  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId' },
+  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef' },
   workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
   releases: { id: 'id', workspaceId: 'workspaceId', state: 'state', runUrl: 'runUrl' },
@@ -194,14 +197,50 @@ const mockResolveReleaseStrategy = mock((config: any) => {
   return { ok: false, reason: 'invalid', message: 'unknown strategy' };
 });
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: mockResolveReleaseStrategy,
 }));
 
 // Mock mission-release helpers
 const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
+// Two-phase release claim. `claim` returning true means this caller owns the
+// attempt and must resolve it; commit/abandon are the two resolutions. Asserting
+// on WHICH one fired is how the "no poisoned mission" guarantee is tested.
+const mockClaimMissionReleaseAttempt = mock(() => Promise.resolve(true));
+const mockCommitMissionRelease = mock(() => Promise.resolve());
+const mockAbandonMissionReleaseAttempt = mock(() => Promise.resolve());
 mock.module('@/lib/mission-release', () => ({
   countPendingTasksForMission: mockCountPendingTasksForMission,
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
+  claimMissionReleaseAttempt: mockClaimMissionReleaseAttempt,
+  commitMissionRelease: mockCommitMissionRelease,
+  abandonMissionReleaseAttempt: mockAbandonMissionReleaseAttempt,
+}));
+
+// Mission dependency gate. `dependencyMetAt` has exactly one writer, and the
+// `merged` gate is cleared only by that column — so whether this fires is the
+// difference between a downstream mission starting and waiting forever.
+const mockCheckAndUnblockDependentMissions = mock(() => Promise.resolve([] as string[]));
+mock.module('@/lib/mission-dependency', () => ({
+  checkAndUnblockDependentMissions: mockCheckAndUnblockDependentMissions,
+  // Full module surface, deliberately: mock.module replaces a module for the
+  // whole process, and a partial stub would delete these for every other
+  // importer loaded in it.
+  isMissionBlocked: mock(() => Promise.resolve({ blocked: false })),
+  wouldCreateCycle: mock(() => Promise.resolve(false)),
+}));
+
+// The shared completion predicate. The webhook release path used to check only
+// "no pending tasks", so a mission whose goal criteria read `fail` could ship
+// here and be refused by the completion path in the same minute. Default: clear.
+const mockCanCompleteMission = mock(() => Promise.resolve({
+  ok: true,
+  code: 'ok',
+  reason: 'All goal criteria pass',
+}) as any);
+mock.module('@/lib/mission-completion', () => ({
+  canCompleteMission: mockCanCompleteMission,
 }));
 
 // Mock workflow dispatch so tests don't hit real GitHub or block on setTimeout polling
@@ -399,6 +438,14 @@ function resetAll() {
   mockMissionsFindFirst.mockReset();
   mockResolveReleaseStrategy.mockReset();
   mockCountPendingTasksForMission.mockReset();
+  mockClaimMissionReleaseAttempt.mockReset();
+  mockClaimMissionReleaseAttempt.mockReturnValue(Promise.resolve(true));
+  mockCommitMissionRelease.mockReset();
+  mockAbandonMissionReleaseAttempt.mockReset();
+  mockCanCompleteMission.mockReset();
+  mockCanCompleteMission.mockReturnValue(Promise.resolve({ ok: true, code: 'ok', reason: 'clear' }) as any);
+  mockCheckAndUnblockDependentMissions.mockReset();
+  mockCheckAndUnblockDependentMissions.mockReturnValue(Promise.resolve([]));
   mockResolvePolicy.mockReset();
   mockCreateReviewerTask.mockReset();
   mockPreflightEscalationCheck.mockReset();
@@ -1106,6 +1153,43 @@ describe('POST /api/github/webhook', () => {
       });
     }
 
+    it('resolves the merge policy from the payload base ref, not a stale stored one', async () => {
+      // This is a gate that decides whether auto-merge fires, and a retargeted
+      // PR leaves `workers.prBaseRef` stale in the one direction that matters:
+      // a stale `mission/*` value makes Option A′'s rule drop the tier to
+      // auto-threshold, so the PR can merge into trunk with the human gate
+      // removed. The payload is authoritative and race-free.
+      withSuccessWorkerPr();
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1', taskId: 't1', prNumber: 42,
+        prBaseRef: 'mission/example-slug-0a1b2c3d', // stale: the PR was retargeted to trunk
+      });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload({
+        check_suite: { conclusion: 'success' },
+      })));
+
+      const opts = (mockResolvePolicy.mock.calls[0] as any[])[3];
+      expect(opts.baseRef).toBe('main');
+    });
+
+    it('falls back to the stored base ref when the payload carries none', async () => {
+      withSuccessWorkerPr();
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1', taskId: 't1', prNumber: 42, prBaseRef: 'dev',
+      });
+
+      await POST(createWebhookRequest('check_suite', makeCheckSuitePayload({
+        check_suite: {
+          conclusion: 'success',
+          pull_requests: [{ number: 42, head: { sha: 'abc123', ref: 'buildd/task-1-fix-bug' } }],
+        },
+      })));
+
+      const opts = (mockResolvePolicy.mock.calls[0] as any[])[3];
+      expect(opts.baseRef).toBe('dev');
+    });
+
     it('holds PR and notifies when resolvePolicy returns tier=human', async () => {
       withSuccessWorkerPr();
       mockResolvePolicy.mockReturnValueOnce({ tier: 'human' });
@@ -1462,6 +1546,145 @@ describe('POST /api/github/webhook', () => {
 
       expect(res.status).toBe(200);
       expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
+      // Phase 2 on success: the mission is marked released only now.
+      expect(mockCommitMissionRelease).toHaveBeenCalledWith('mission-1');
+      expect(mockAbandonMissionReleaseAttempt).not.toHaveBeenCalled();
+    });
+
+    it('workflow_dispatch + on_mission_complete: refuses when the shared completion predicate refuses', async () => {
+      // B3. This path used to dispatch on "no pending tasks" alone, so a mission
+      // whose goal criteria read `fail` shipped here while the completion path
+      // refused it — same mission, same minute, two answers.
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 20,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t20-feat', sha: 'sha-20' },
+          html_url: 'https://github.com/test-org/test-repo/pull/20',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w20',
+        task: { id: 't20', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockCanCompleteMission.mockReturnValue(Promise.resolve({
+        ok: false,
+        code: 'criteria_failed',
+        reason: 'goal criterion 1 reads fail',
+      }) as any);
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+      // A refusal must not consume the claim either.
+      expect(mockClaimMissionReleaseAttempt).not.toHaveBeenCalled();
+      expect(mockCommitMissionRelease).not.toHaveBeenCalled();
+    });
+
+    it('workflow_dispatch + on_mission_complete: uses the same gate options as every other completion path', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 21,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t21-feat', sha: 'sha-21' },
+          html_url: 'https://github.com/test-org/test-repo/pull/21',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w21',
+        task: { id: 't21', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      // `evaluateCriteria: false` — a release READS a verdict, it must not
+      // dispatch verification tasks or spend tokens producing one.
+      expect(mockCanCompleteMission).toHaveBeenCalledWith('mission-1', {
+        path: 'release_trigger',
+        acceptCompleted: true,
+        evaluateCriteria: false,
+      });
+    });
+
+    it('workflow_dispatch + on_mission_complete: hands back the claim when dispatch fails', async () => {
+      // B1. The claim used to be `releasedAt` itself, taken before the dispatch,
+      // so a throw here left the mission permanently marked released with
+      // nothing deployed and only a console.error to show for it.
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 22,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t22-feat', sha: 'sha-22' },
+          html_url: 'https://github.com/test-org/test-repo/pull/22',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w22',
+        task: { id: 't22', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockDispatchWorkflowRelease.mockImplementation(() => Promise.reject(new Error('github 502')) as any);
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      expect(mockCommitMissionRelease).not.toHaveBeenCalled();
+      expect(mockAbandonMissionReleaseAttempt).toHaveBeenCalledTimes(1);
+      const [missionId, code, reason] = mockAbandonMissionReleaseAttempt.mock.calls[0] as any[];
+      expect(missionId).toBe('mission-1');
+      expect(code).toBe('dispatch_failed');
+      expect(String(reason)).toContain('github 502');
     });
 
     it('workflow_dispatch + on_mission_complete: does NOT dispatch when tasks are still pending', async () => {
@@ -2454,5 +2677,344 @@ describe('workflow_run → releases state advancement', () => {
 
     const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
     expect(releaseUpdate).toBeUndefined();
+  });
+});
+
+
+// ── pull_request_review (B14) ────────────────────────────────────────────────
+//
+// The event was absent from the switch entirely, so a maintainer clicking
+// Approve in GitHub's UI produced no state in buildd: nothing in the mission
+// feed, and no answer to "who cleared this?". The handler is deliberately
+// record-only — see its docstring for why merge behaviour is untouched.
+
+describe('POST /api/github/webhook — pull_request_review', () => {
+  beforeEach(resetAll);
+
+  function reviewPayload(state: string, overrides: Record<string, any> = {}) {
+    return {
+      action: 'submitted',
+      review: {
+        state,
+        body: 'Looks right to me.',
+        user: { login: 'a-maintainer' },
+        ...overrides,
+      },
+      pull_request: { number: 42, html_url: 'https://github.com/test-org/test-repo/pull/42' },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+  }
+
+  function workerOnMission() {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-42',
+      taskId: 't-42',
+      task: { id: 't-42', title: 'Add pagination', missionId: 'mission-9' },
+    });
+  }
+
+  it('records an approval as a reviewer_approved mission note', async () => {
+    workerOnMission();
+
+    const res = await POST(createWebhookRequest('pull_request_review', reviewPayload('approved')));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values).toMatchObject({
+      missionId: 'mission-9',
+      taskId: 't-42',
+      workerId: 'w-42',
+      // A person acting in GitHub, not a worker inside a task.
+      authorType: 'user',
+      type: 'reviewer_approved',
+      body: 'Looks right to me.',
+    });
+    expect(insertCalls[0].values.title).toContain('#42');
+    expect(insertCalls[0].values.actorLabel).toContain('a-maintainer');
+  });
+
+  it('records changes_requested distinctly from an approval', async () => {
+    workerOnMission();
+
+    await POST(createWebhookRequest('pull_request_review', reviewPayload('changes_requested')));
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values.type).toBe('reviewer_request_changes');
+  });
+
+  it('ignores a bare comment — a remark is not a verdict', async () => {
+    workerOnMission();
+
+    const res = await POST(createWebhookRequest('pull_request_review', reviewPayload('commented')));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('ignores non-submitted actions', async () => {
+    workerOnMission();
+
+    const payload = { ...reviewPayload('approved'), action: 'dismissed' };
+    await POST(createWebhookRequest('pull_request_review', payload));
+
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('does nothing when the PR does not belong to a mission task', async () => {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-42',
+      taskId: 't-42',
+      task: { id: 't-42', title: 'Standalone', missionId: null },
+    });
+
+    const res = await POST(createWebhookRequest('pull_request_review', reviewPayload('approved')));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('does not merge, complete a task, or clear a review gate', async () => {
+    // The safety property. Whether a GitHub approval should satisfy buildd's
+    // `agent-review` gate is an open policy question; deciding it as a side
+    // effect here would silently change when things merge.
+    workerOnMission();
+
+    await POST(createWebhookRequest('pull_request_review', reviewPayload('approved')));
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.setValues?.status === 'completed')).toHaveLength(0);
+  });
+
+  it('survives a malformed payload without throwing', async () => {
+    const res = await POST(createWebhookRequest('pull_request_review', { action: 'submitted' }));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
+  });
+});
+
+// ── prBaseRef sync on pull_request events (Option A' — mission integration
+// branches) ─────────────────────────────────────────────────────────────────
+// The load-bearing case is `edited` + changes.base — a RETARGET. No other branch
+// in handlePullRequestEvent handles that action, so without this sync a PR moved
+// between trunk and a mission integration branch would keep resolving its merge
+// policy against a stale base and either lose or keep a human gate wrongly.
+describe('pull_request → workers.prBaseRef sync', () => {
+  beforeEach(resetAll);
+
+  function makeRetargetPayload(overrides: Record<string, any> = {}) {
+    return {
+      action: 'edited',
+      changes: { base: { ref: { from: 'dev' } } },
+      pull_request: {
+        number: 9,
+        merged: false,
+        draft: false,
+        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9' },
+        base: { ref: 'mission/example-slug-0a1b2c3d' },
+        html_url: 'https://github.com/test-org/test-repo/pull/9',
+      },
+      installation: { id: 12345 },
+      repository: { full_name: 'test-org/test-repo' },
+      ...overrides,
+    };
+  }
+
+  it('records the new base ref when a PR is retargeted', async () => {
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    expect(baseRefWrites.length).toBe(1);
+    expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('records the base ref on PR open too, not just retarget', async () => {
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({
+      action: 'opened',
+      changes: undefined,
+    })));
+
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    expect(baseRefWrites.length).toBe(1);
+    expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('writes nothing when the payload carries no base ref', async () => {
+    const payload = makeRetargetPayload();
+    delete (payload.pull_request as any).base;
+    await POST(createWebhookRequest('pull_request', payload));
+
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    expect(baseRefWrites.length).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Merging the mission PR on GitHub must fire the same post-merge effects as
+// merging it from the dashboard.
+//
+// The post-merge block was gated on `worker.task.status !== 'completed'`. The
+// bookkeeping task that owns a mission PR is created ALREADY completed — nothing
+// should ever claim it — so when the mission PR itself merged, the whole block
+// was skipped: no `merged` dependency signal, no Path-B release trigger. A
+// downstream mission with gateCondition 'merged' then waited forever, but only
+// when the human clicked Merge on GitHub rather than in buildd (the dashboard
+// merge route fires the signal itself, which is why this was easy to miss).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('pull_request merged — effects that belong to the merge, not the transition', () => {
+  beforeEach(resetAll);
+
+  function mergedPrPayload(overrides: Record<string, any> = {}) {
+    return {
+      action: 'closed',
+      pull_request: {
+        number: 77,
+        merged: true,
+        draft: false,
+        head: { ref: 'mission/example-slug-0a1b2c3d', sha: 'sha-77' },
+        base: { ref: 'main' },
+        html_url: 'https://github.com/test-org/test-repo/pull/77',
+        ...overrides.pull_request,
+      },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+  }
+
+  /**
+   * The worker row that owns a mission integration PR: a bookkeeping task that
+   * was `completed` the moment it was created, and a PR nobody has merged yet.
+   */
+  function missionPrWorker(overrides: Record<string, any> = {}) {
+    return {
+      id: 'w-mission-pr',
+      workspaceId: 'ws1',
+      taskId: 't-mission-pr',
+      prNumber: 77,
+      mergedAt: null,
+      task: {
+        id: 't-mission-pr',
+        status: 'completed',
+        taskClass: 'bookkeeping',
+        workspaceId: 'ws1',
+        release: 'false',
+        title: 'Ship mission: Example',
+        missionId: 'm1',
+      },
+      ...overrides,
+    };
+  }
+
+  it('fires the merged dependency signal when the merged PR belongs to an already-completed task', async () => {
+    mockWorkersFindFirst.mockReturnValue(missionPrWorker());
+
+    const res = await POST(createWebhookRequest('pull_request', mergedPrPayload()));
+
+    expect(res.status).toBe(200);
+    expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m1', 'merged');
+  });
+
+  it('still does not rewrite tasks.status for a task that was already completed', async () => {
+    mockWorkersFindFirst.mockReturnValue(missionPrWorker());
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload()));
+
+    // The status write is the one thing that genuinely belongs to the
+    // transition. Re-stamping it would churn updatedAt on every redelivery.
+    expect(updateCalls.some(c => (c.setValues as any).status === 'completed')).toBe(false);
+  });
+
+  it('fires the Path-B release trigger when the mission PR merges', async () => {
+    mockWorkersFindFirst.mockReturnValue(
+      missionPrWorker({ task: { ...missionPrWorker().task, release: 'true' } }),
+    );
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1',
+      releaseConfig: {
+        enabled: true,
+        strategy: 'workflow_dispatch',
+        workflowFile: 'ship.yml',
+        ref: 'dev',
+        trigger: 'every_merge',
+      },
+      gitConfig: { defaultBranch: 'dev' },
+    });
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload()));
+
+    expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('branch_merge still refuses Path B for an already-completed task (Path A is authoritative)', async () => {
+    mockWorkersFindFirst.mockReturnValue(
+      missionPrWorker({ task: { ...missionPrWorker().task, release: 'true' } }),
+    );
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1',
+      releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' },
+      gitConfig: { defaultBranch: 'dev' },
+    });
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload()));
+
+    // The invariant the status guard used to enforce by accident, now explicit.
+    expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+  });
+
+  it('a redelivered merge does not fire the release trigger a second time', async () => {
+    // GitHub redelivers. `workers.mergedAt` already set means this merge was
+    // processed before, and the effects that belong to it have already run.
+    mockWorkersFindFirst.mockReturnValue(
+      missionPrWorker({
+        mergedAt: new Date('2026-01-01T00:00:00Z'),
+        task: { ...missionPrWorker().task, release: 'true' },
+      }),
+    );
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws1',
+      releaseConfig: {
+        enabled: true,
+        strategy: 'workflow_dispatch',
+        workflowFile: 'ship.yml',
+        ref: 'dev',
+        trigger: 'every_merge',
+      },
+      gitConfig: { defaultBranch: 'dev' },
+    });
+    mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload()));
+
+    expect(mockDispatchWorkflowRelease).not.toHaveBeenCalled();
+  });
+
+  it('a task PR merging still fires the dependency signal on the normal transition', async () => {
+    // Regression guard for the split: the non-completed path must keep both the
+    // status write and the merge effects.
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-task',
+      workspaceId: 'ws1',
+      taskId: 't-task',
+      mergedAt: null,
+      task: {
+        id: 't-task',
+        status: 'in_progress',
+        taskClass: 'work',
+        workspaceId: 'ws1',
+        release: 'false',
+        title: 'Do the work',
+        missionId: 'm2',
+      },
+    });
+
+    await POST(createWebhookRequest('pull_request', mergedPrPayload({
+      pull_request: { head: { ref: 'buildd/abc12345-fix', sha: 'sha-77' } },
+    })));
+
+    expect(updateCalls.some(c => (c.setValues as any).status === 'completed')).toBe(true);
+    expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
   });
 });

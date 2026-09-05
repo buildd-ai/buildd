@@ -140,20 +140,47 @@ Navigate to `http://localhost:3001/app/dev/fixtures?state=<state>` to view worke
 
 ## CI/CD Strategy
 
+All automated tests run from a single workflow, `.github/workflows/build.yml`
+(`on: push` to `dev`, `on: pull_request` to `main` or `dev`). It has no
+top-level `concurrency:` group, so overlapping pushes to the same branch each
+get a full run. There is no `preview-tests.yml`, and nothing tests against
+Vercel preview deploys — the integration/E2E jobs stand up their own server.
+
 ```yaml
 # .github/workflows/build.yml
-unit-tests:
-  - Run on every commit
-  - Fast feedback (<30s)
-  - Block merge if failing
 
-# .github/workflows/preview-tests.yml
-integration-tests:
-  - Run against Vercel preview deploys
-  - Medium feedback (1-2 min)
-  - Block merge if failing
-  - Requires test API key
+build:            # every push to dev + every PR — the required check
+  - specs lint, env contract, migration + journal checks, model-ID lint
+  - type check, unit tests, apps/web build
+  - Fast feedback; blocks merge if failing
+
+sandbox-isolation: # bwrap probe, runs alongside build
+schema-drift:      # prod schema drift; gated to PRs targeting main
+
+changes:          # PRs targeting main only
+  - Path filter -> api / runner / needs_server outputs
+  - api    = apps/web/src, packages/core, packages/shared
+  - runner = apps/runner
+
+integration:      # needs: changes; only when needs_server, skipped if head is dev
+  - Neon preview branch + migrations, then a preview server (and runner,
+    if runner code changed) on a self-hosted test machine reached over Tailscale
+  - "Integration tests" step (when api changed):
+      apps/web/tests/integration/concurrency.test.ts
+      apps/web/tests/integration/worker-state-machine.test.ts
+      apps/web/tests/integration/schedule-triggers.test.ts
+      apps/web/tests/integration/artifacts.test.ts
+      apps/web/tests/integration/missions-smoke.test.ts
+      apps/runner/__tests__/integration-config.test.ts
+  - "E2E tests" step: tests/e2e/server-worker-flow.test.ts
+      E2E_SCOPE=all when runner changed, otherwise api
+      exit 75 (quota exhausted) is warned, not failed
+  - Requires BUILDD_API_KEY / BUILDD_ADMIN_API_KEY secrets
 ```
+
+Because `changes` is gated to `github.base_ref == 'main'`, integration and E2E
+do **not** run on feature PRs into `dev` or on pushes to `dev` — they run on the
+PR that promotes work to `main` (release PRs excepted, since their head is `dev`).
 
 ---
 

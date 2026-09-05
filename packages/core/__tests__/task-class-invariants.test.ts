@@ -12,18 +12,53 @@ import { computeMissionProgress, isWork, isBookkeeping, isAttempt, attachAttempt
 //   - mode===planning: requires mode===planning to appear BEFORE .filter on the same line
 //     (i.e. used as an exclusion predicate passed to filter, not found inside a filter callback)
 //   - title.startsWith: requires a .filter( on the same line before the startsWith call
-//   - deriveTaskType !== null: exact old collapse-predicate form
+//   - deriveTaskType compared to null: BOTH directions. The gate originally
+//     covered only `!== null`, while the live violation in initiative-pulse.ts
+//     was written `=== null` + `continue` — so the one call site that changed a
+//     rendered verdict was outside the pattern it was written for.
 
-const BANNED_PATTERNS: Array<{ label: string; re: RegExp }> = [
+/**
+ * A deliberate title-classifier use, permitted only for rows that pre-date the
+ * `taskClass` backfill (`taskClass IS NULL`). Must appear on the same line.
+ *
+ * Kept narrow on purpose: a bare allowlist of file paths is how a gate quietly
+ * stops measuring anything. The marker has to sit on the offending line, and
+ * `EXPECTED_FALLBACK_FILES` below pins which files may carry it at all, so a new
+ * use is a visible, reviewed edit rather than a silent one.
+ */
+const FALLBACK_MARKER = 'taskclass:pre-backfill-fallback';
+
+/** Files permitted to carry {@link FALLBACK_MARKER}, relative to the repo root. */
+const EXPECTED_FALLBACK_FILES = [
+  'apps/web/src/lib/initiative-pulse.ts',
+];
+
+const BANNED_PATTERNS: Array<{ label: string; re: RegExp; sample: string }> = [
   // .filter(t => !t.parentTaskId) — raw root/child split
-  { label: 'raw root/child split: !parentTaskId inside .filter()', re: /filter\s*\([^)]*!\s*\w*\.?parentTaskId/ },
+  {
+    label: 'raw root/child split: !parentTaskId inside .filter()',
+    re: /filter\s*\([^)]*!\s*\w*\.?parentTaskId/,
+    sample: 'const roots = tasks.filter(t => !t.parentTaskId);',
+  },
   // mode===planning used as a classification predicate *before* .filter on the same line
   // Does NOT fire when mode===planning appears inside a filter callback (filter comes first)
-  { label: 'mode===planning as pre-filter exclusion variable', re: /mode\s*===?\s*['"]planning['"][^;\n]*\.filter\s*\(/ },
+  {
+    label: 'mode===planning as pre-filter exclusion variable',
+    re: /mode\s*===?\s*['"]planning['"][^;\n]*\.filter\s*\(/,
+    sample: "const planning = t.mode === 'planning' ? [] : tasks.filter(x => x.id);",
+  },
   // title.startsWith inside a .filter( callback on the same line
-  { label: 'title.startsWith(bookkeeping prefix) inside .filter()', re: /\.filter\s*\([^;\n]*title.*\.startsWith\s*\(\s*['"](?:Aggregate|Mission:|Evaluate|Close mission)/ },
-  // Old collapse predicate: deriveTaskType(t) !== null
-  { label: 'old collapse predicate: deriveTaskType(...) !== null', re: /deriveTaskType[^)]*\)\s*!==?\s*null/ },
+  {
+    label: 'title.startsWith(bookkeeping prefix) inside .filter()',
+    re: /\.filter\s*\([^;\n]*title.*\.startsWith\s*\(\s*['"](?:Aggregate|Mission:|Evaluate|Close mission)/,
+    sample: "const bk = tasks.filter(t => t.title.startsWith('Aggregate results'));",
+  },
+  // Old collapse predicate, either direction: deriveTaskType(t) !== null / === null
+  {
+    label: 'old collapse predicate: deriveTaskType(...) compared to null',
+    re: /deriveTaskType[^)]*\)\s*[!=]==?\s*null/,
+    sample: 'if (deriveTaskType(t) === null) continue;',
+  },
 ];
 
 function collectTsFiles(dir: string): string[] {
@@ -39,32 +74,68 @@ function collectTsFiles(dir: string): string[] {
   return results;
 }
 
-// Scan apps/web/src/app/**/page.tsx and route.ts
-const appDir = join(__dirname, '../../../apps/web/src/app');
+const repoRoot = join(__dirname, '../../..');
+
+// Scan apps/web/src/app/**/{page.tsx,route.ts} plus TaskGrid...
+const appDir = join(repoRoot, 'apps/web/src/app');
 const uiFiles = collectTsFiles(appDir).filter(f =>
   f.endsWith('/page.tsx') || f.endsWith('/route.ts') || f.endsWith('/TaskGrid.tsx'),
 );
 
+// ...and ALL of apps/web/src/lib. The classifier that decides a rendered
+// initiative verdict lives there (`initiative-pulse.ts`), so scoping the gate to
+// route/page files left the highest-consequence read site unguarded: a stale
+// classifier there miscounted every conflict retry and flipped the verdict.
+const libDir = join(repoRoot, 'apps/web/src/lib');
+const libFiles = collectTsFiles(libDir).filter(f => !f.endsWith('.test.ts') && !f.endsWith('.test.tsx'));
+
+const scannedFiles = [...uiFiles, ...libFiles];
+
 describe('banned predicate enforcement (A.5.i)', () => {
+  // The gate scans real files, so "0 violations" is also what a gate that found
+  // no files reports. Pin the scope: if a refactor moves these trees, this fails
+  // instead of passing vacuously.
+  it('scans a non-empty set covering both app and lib', () => {
+    expect(uiFiles.length).toBeGreaterThan(0);
+    expect(libFiles.length).toBeGreaterThan(0);
+    expect(scannedFiles.some(f => f.endsWith('apps/web/src/lib/initiative-pulse.ts'))).toBe(true);
+  });
+
+  // Every pattern must match its own canonical old form. Without this a typo in
+  // a regex reads as a clean repo forever.
+  for (const { label, re, sample } of BANNED_PATTERNS) {
+    it(`pattern actually matches the old form it bans: ${label}`, () => {
+      expect(re.test(sample)).toBe(true);
+    });
+  }
+
   for (const { label, re } of BANNED_PATTERNS) {
-    it(`no UI file uses: ${label}`, () => {
+    it(`no scanned file uses: ${label}`, () => {
       const violations: string[] = [];
-      for (const file of uiFiles) {
+      for (const file of scannedFiles) {
         const src = readFileSync(file, 'utf8');
         const lines = src.split('\n');
         for (let i = 0; i < lines.length; i++) {
-          if (re.test(lines[i])) {
-            // Ignore comment-only lines
-            const trimmed = lines[i].trimStart();
-            if (!trimmed.startsWith('//') && !trimmed.startsWith('*')) {
-              violations.push(`${file}:${i + 1}: ${lines[i].trim()}`);
-            }
-          }
+          if (!re.test(lines[i])) continue;
+          // Ignore comment-only lines
+          const trimmed = lines[i].trimStart();
+          if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
+          // Ignore the annotated pre-backfill fallback.
+          if (lines[i].includes(FALLBACK_MARKER)) continue;
+          violations.push(`${file}:${i + 1}: ${lines[i].trim()}`);
         }
       }
       expect(violations).toEqual([]);
     });
   }
+
+  it('only the expected files claim the pre-backfill fallback', () => {
+    const claiming = scannedFiles
+      .filter(f => readFileSync(f, 'utf8').includes(FALLBACK_MARKER))
+      .map(f => f.slice(repoRoot.length + 1))
+      .sort();
+    expect(claiming).toEqual([...EXPECTED_FALLBACK_FILES].sort());
+  });
 });
 
 // ── PRS ≤ TASKS invariant (A.5.ii) ──────────────────────────────────────────

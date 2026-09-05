@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
-import { eq, and, isNull, inArray, count } from 'drizzle-orm';
-import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { missions, missionNotes, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
+import { eq, and, or, lt, isNull, inArray, count } from 'drizzle-orm';
+import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { githubApi } from '@/lib/github';
 import { executeRelease } from '@/lib/release-executor';
@@ -20,20 +20,132 @@ export async function countPendingTasksForMission(missionId: string): Promise<nu
   return Number(result[0]?.count ?? 0);
 }
 
-// Attempt an atomic claim on missions.releasedAt so exactly one concurrent
-// task completion fires the release. Returns true iff this caller won the claim.
-async function claimMissionRelease(missionId: string): Promise<boolean> {
+/**
+ * How long a claimed-but-uncommitted release attempt is honoured before another
+ * caller may reclaim it.
+ *
+ * Safety bound. A process that dies between phase 1 and phase 2 cannot clear its
+ * own attempt, so without a window the mission would be stuck exactly the way
+ * the one-phase claim used to stick it. With it, a mission retries a release at
+ * most about once per window — not once per task completion — and only while
+ * `releasedAt IS NULL`. Once `releasedAt` is set nothing retries at all.
+ */
+export const MISSION_RELEASE_ATTEMPT_STALE_MS = 30 * 60 * 1000;
+
+/** Why a release attempt ended, for the durable record. */
+export type MissionReleaseFailure =
+  | 'not_configured'
+  | 'no_installation'
+  | 'dispatch_failed'
+  | 'execute_failed'
+  | 'strategy_unhandled'
+  | 'skipped';
+
+/**
+ * Phase 1 of the release claim: take ownership of the attempt.
+ *
+ * Claims `releaseAttemptedAt`, NOT `releasedAt`. Exactly one concurrent caller
+ * wins. Returns true iff this caller owns the attempt and must go on to call
+ * either {@link commitMissionRelease} or {@link abandonMissionReleaseAttempt}.
+ *
+ * Reclaimable only when the prior attempt is older than
+ * {@link MISSION_RELEASE_ATTEMPT_STALE_MS}, and never once `releasedAt` is set.
+ */
+export async function claimMissionReleaseAttempt(missionId: string): Promise<boolean> {
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - MISSION_RELEASE_ATTEMPT_STALE_MS);
   const claimed = await db
     .update(missions)
-    .set({ releasedAt: new Date() })
+    .set({ releaseAttemptedAt: now })
     .where(
       and(
         eq(missions.id, missionId),
-        isNull(missions.releasedAt)
+        // Terminal: a released mission is never re-released.
+        isNull(missions.releasedAt),
+        or(
+          isNull(missions.releaseAttemptedAt),
+          lt(missions.releaseAttemptedAt, staleBefore),
+        ),
       )
     )
     .returning({ id: missions.id });
   return claimed.length > 0;
+}
+
+/**
+ * Phase 2, success: the dispatch or merge reported success, so record the ship.
+ *
+ * Guarded on `isNull(releasedAt)` so a reclaimed-stale duplicate cannot move the
+ * timestamp of a release that already landed.
+ */
+export async function commitMissionRelease(missionId: string): Promise<void> {
+  const now = new Date();
+  await db
+    .update(missions)
+    .set({ releasedAt: now, updatedAt: now })
+    .where(and(eq(missions.id, missionId), isNull(missions.releasedAt)));
+}
+
+/**
+ * Phase 2, failure: release the claim and record why.
+ *
+ * Clears `releaseAttemptedAt` so the next completion can try again, and writes a
+ * `decision` note so the reason is legible from the mission feed. Before this,
+ * every one of these paths was a `console.log` against an already-consumed
+ * claim: the mission read as released, nothing was deployed, and no surface
+ * showed either fact.
+ *
+ * Note insertion is best-effort — a failed note must not mask the release
+ * failure or, worse, leave the claim held.
+ */
+export async function abandonMissionReleaseAttempt(
+  missionId: string,
+  code: MissionReleaseFailure,
+  reason: string,
+  /**
+   * Clear the claim without posting a `decision` note.
+   *
+   * For a *policy* refusal, not a failure. Under Option A′ an opted-in mission
+   * releases through its mission PR, so `executeRelease` refuses every
+   * per-task attempt by design — and the note said "Mission release attempt
+   * failed" on the intended path, every time completion was evaluated. A feed
+   * that cries failure on the happy path stops being read.
+   *
+   * The claim invariant is unchanged: `releaseAttemptedAt` is still cleared, so
+   * the mission can be released again. Only the note is suppressed, and the
+   * refusal is still logged.
+   */
+  quiet = false,
+): Promise<void> {
+  await db
+    .update(missions)
+    .set({ releaseAttemptedAt: null, updatedAt: new Date() })
+    .where(and(eq(missions.id, missionId), isNull(missions.releasedAt)));
+
+  if (quiet) {
+    console.log(`[mission-release] mission ${missionId}: release refused by policy — ${code}: ${reason}`);
+    return;
+  }
+
+  console.error(`[mission-release] mission ${missionId}: release attempt failed — ${code}: ${reason}`);
+
+  try {
+    await db.insert(missionNotes).values({
+      missionId,
+      authorType: 'system',
+      type: 'decision',
+      title: 'Mission release attempt failed',
+      body:
+        `${reason}\n\n` +
+        `Reason code: \`${code}\`. The mission is NOT marked released and the ` +
+        `release will be retried on the next task completion. ` +
+        `Fix the release configuration (workspace → Config → Release) or fire it ` +
+        `manually with \`trigger_release\`.`,
+      actorLabel: 'release trigger (on_mission_complete)',
+    });
+  } catch (err) {
+    console.error(`[mission-release] mission ${missionId}: failed to record release decision note:`, err);
+  }
 }
 
 // Called after a task completes. If the workspace trigger is `on_mission_complete`
@@ -51,7 +163,7 @@ export async function fireMissionReleaseIfComplete(
     columns: { releaseConfig: true, githubRepoId: true },
   });
 
-  const trigger = workspace?.releaseConfig?.trigger ?? 'every_merge';
+  const trigger = resolveReleaseTrigger(workspace?.releaseConfig);
   if (trigger !== 'on_mission_complete') return;
 
   // Check that all tasks in the mission have reached terminal state. This bar is
@@ -82,14 +194,19 @@ export async function fireMissionReleaseIfComplete(
     return;
   }
 
-  // Atomic dedup: only the first caller to set releasedAt fires the release
-  const won = await claimMissionRelease(missionId);
+  // Phase 1: claim the ATTEMPT, not the release. Every exit below either commits
+  // (success) or abandons (failure) — the claim is never simply dropped.
+  const won = await claimMissionReleaseAttempt(missionId);
   if (!won) return;
 
   const releaseConfig = workspace?.releaseConfig ?? null;
   const resolution = resolveReleaseStrategy(releaseConfig);
   if (!resolution.ok) {
-    console.log(`[mission-release] workspace ${workspaceId}: not configured — ${resolution.message}`);
+    await abandonMissionReleaseAttempt(
+      missionId,
+      'not_configured',
+      `Workspace ${workspaceId} has no usable release strategy: ${resolution.message}`,
+    );
     return;
   }
 
@@ -103,7 +220,11 @@ export async function fireMissionReleaseIfComplete(
       : null;
 
     if (!repo?.installation) {
-      console.error(`[mission-release] mission ${missionId}: no GitHub installation — skipping`);
+      await abandonMissionReleaseAttempt(
+        missionId,
+        'no_installation',
+        'The workspace has no linked GitHub installation, so the release workflow cannot be dispatched.',
+      );
       return;
     }
 
@@ -119,8 +240,13 @@ export async function fireMissionReleaseIfComplete(
         },
       );
       console.log(`[mission-release] mission ${missionId}: dispatched ${workflowFile}@${ref}`);
+      await commitMissionRelease(missionId);
     } catch (err) {
-      console.error(`[mission-release] mission ${missionId}: workflow dispatch failed:`, err);
+      await abandonMissionReleaseAttempt(
+        missionId,
+        'dispatch_failed',
+        `Dispatching ${workflowFile}@${ref} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   } else if (resolution.strategy.kind === 'branch_merge') {
     // For branch_merge: delegate to executeRelease with isMissionRelease=true
@@ -129,10 +255,34 @@ export async function fireMissionReleaseIfComplete(
     try {
       const result = await executeRelease({ taskId, workerId, workspaceId, isMissionRelease: true });
       console.log(`[mission-release] mission ${missionId}: branch_merge result: ${result.status} — ${result.message}`);
+      // 'skipped' is a refusal, not a release. It is also the DEFAULT outcome on
+      // this repo's own topology (a releaseBranch workspace skips any task whose
+      // `release` flag is 'inherit'), which is precisely the case the one-phase
+      // claim used to burn silently.
+      if (result.status === 'skipped') {
+        await abandonMissionReleaseAttempt(
+          missionId,
+          'skipped',
+          result.message,
+          // A′ refusals are the designed path for an opted-in mission, so they
+          // clear the claim without a failure note on the mission feed.
+          result.skipReason === 'mission_integration_branch',
+        );
+      } else {
+        await commitMissionRelease(missionId);
+      }
     } catch (err) {
-      console.error(`[mission-release] mission ${missionId}: executeRelease failed:`, err);
+      await abandonMissionReleaseAttempt(
+        missionId,
+        'execute_failed',
+        `executeRelease threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   } else {
-    console.log(`[mission-release] mission ${missionId}: strategy ${resolution.strategy.kind} not handled in mission release`);
+    await abandonMissionReleaseAttempt(
+      missionId,
+      'strategy_unhandled',
+      `Release strategy '${resolution.strategy.kind}' is not handled by the mission release path.`,
+    );
   }
 }

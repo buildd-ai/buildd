@@ -97,7 +97,6 @@ export const events = {
   TASK_FAILED: 'task:failed',
   // Task assigned to specific runner
   TASK_ASSIGNED: 'task:assigned',
-  WORKER_STARTED: 'worker:started',
   WORKER_PROGRESS: 'worker:progress',
   WORKER_COMPLETED: 'worker:completed',
   WORKER_FAILED: 'worker:failed',
@@ -110,6 +109,9 @@ export const events = {
   CHILDREN_COMPLETED: 'task:children_completed',
   TASK_UNBLOCKED: 'task:unblocked',
   TASK_DEPENDENCY_FAILED: 'task:dependency_failed',
+  // Option A′: a mission integration branch advanced, so any codebase-graph seed
+  // keyed on that base ref is stale. Consumed by the runner, not the dashboard.
+  GRAPH_BASE_ADVANCED: 'graph:base-advanced',
   // Mission loop events
   MISSION_CYCLE_STARTED: 'mission:cycle_started',
   MISSION_LOOP_COMPLETED: 'mission:loop_completed',

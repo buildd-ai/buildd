@@ -10,6 +10,7 @@ import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { getWorkspaceRoles } from '@/lib/mission-context';
 import { packageRoleConfig, uploadRoleConfig } from '@/lib/role-config';
 import { isStorageConfigured } from '@/lib/storage';
+import { isReservedRoleSlug } from '@/lib/reserved-slugs';
 
 function generateSlug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -104,6 +105,15 @@ export async function POST(req: NextRequest) {
     if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(slug)) {
       return NextResponse.json(
         { error: 'slug must be lowercase alphanumeric with hyphens' },
+        { status: 400 }
+      );
+    }
+
+    // `/app/team/new` is a static route, so a role with this slug could never
+    // reach its own detail page. See lib/reserved-slugs.ts.
+    if (isReservedRoleSlug(slug)) {
+      return NextResponse.json(
+        { error: `"${slug}" is reserved because /app/team/${slug} is a built-in page. Pick a different slug.` },
         { status: 400 }
       );
     }
