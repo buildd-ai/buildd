@@ -56,17 +56,39 @@ export interface InitiativeListItem {
 }
 
 /**
+ * Keep only the newest worker per task, for the rollup.
+ *
+ * Worker rows arrive newest-first (see the `orderBy` on the sub-query), so the
+ * newest is index 0. The latest worker is what decides `ghost` (in flight) vs
+ * `half` (PR open) vs `solid`; an older worker left in the list would let a
+ * stale live attempt ghost a task that has since shipped.
+ *
+ * This mirrors `latestWorkerPerTask` on the initiative detail page, which is the
+ * rule the two surfaces must share. It is duplicated rather than imported
+ * because that helper lives under `app/`, and nothing in `lib/` imports from
+ * `app/`; hoisting it into `lib/` is the right follow-up.
+ */
+function newestWorkerOnly<T extends { workers?: unknown[] | null }>(tasks: T[]): T[] {
+  return tasks.map((t) => ({ ...t, workers: (t.workers ?? []).slice(0, 1) }));
+}
+
+/**
  * Load the caller's initiatives with rolled-up progress. Shared by
  * `GET /api/initiatives` and the initiatives list page so the two cannot drift.
  *
  * - Rollup + segments come from the shared `computeInitiative*` helpers (read
  *   time; the `progressCache` column stays dormant). Tasks are loaded once to
  *   compute both.
- * - Workers are loaded with a narrow column set — PR identity and merge state
- *   only — because the Initiatives list is the triage host (spec §4) and
- *   `derivePendingCounts` needs them for `awaitingVerification` and `blocked`.
- *   They are deliberately not enough for segment nuance, so ghost/half segments
- *   still collapse to solid/empty here; the detail page carries the live nuance.
+ * - Workers carry PR identity, merge state AND `status`, newest first, because
+ *   the Initiatives list is the triage host (spec §4) and must agree with
+ *   initiative detail count-for-count (§5.2, AC-20, AC-29). `status` is what
+ *   `deriveMissionSegmentState` reads to return `ghost`; without it an in-flight
+ *   retry of a completed task read as `solid` here and `ghost` on detail, and
+ *   `completedTasks` — so `progress` — disagreed between the two surfaces.
+ *   The rollup sees only the newest worker per task (`newestWorkerOnly`, the
+ *   same narrowing detail applies via `latestWorkerPerTask`); the returned rows
+ *   keep every worker, because the open PR that makes a task await merge is not
+ *   always on the newest one.
  * - `hasLinearLink` is one batched existence query over every child mission id,
  *   never one query per card.
  * - Ordering is left to the caller (the UI sorts blocked-first, then
@@ -106,7 +128,11 @@ export async function loadInitiativeList(opts: {
               ? {
                   with: {
                     workers: {
-                      columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+                      // `status` is load-bearing: `deriveMissionSegmentState`
+                      // needs it to reach `ghost`. Newest first, so the rollup's
+                      // narrowing picks the same worker detail picks.
+                      columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+                      orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
                     },
                   },
                 }
@@ -137,7 +163,7 @@ export async function loadInitiativeList(opts: {
     const missionsRaw = (initiative.missions || []) as any[];
     const children: ChildMissionProgress[] = [];
     const perChild = missionsRaw.map((m) => {
-      const r = computeMissionProgress(m.tasks || []);
+      const r = computeMissionProgress(newestWorkerOnly(m.tasks || []));
       children.push({ status: m.status as ChildMissionProgress['status'], totalTasks: r.totalTasks, completedTasks: r.completedTasks });
       return r;
     });

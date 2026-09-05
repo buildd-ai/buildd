@@ -3,6 +3,7 @@
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriterionType } from '@buildd/shared';
+import { validateGoalCriteria } from '@buildd/core/mission-helpers';
 
 interface Props {
   missionId: string;
@@ -72,8 +73,13 @@ function AddCriterionForm({ onAdd, onCancel }: {
   const [requireBranchDeleted, setRequireBranchDeleted] = useState(false);
   const [description, setDescription] = useState('');
   const [notMechanizableReason, setNotMechanizableReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
-  function buildCriterion(): GoalCriterion | null {
+  // Build the shape the API would receive; do NOT re-decide whether it is valid.
+  // The rules live in the write-boundary validator that POST/PATCH
+  // /api/missions already call, so this must not hold a second copy — it
+  // previously did, including a hand-written 10-character minimum.
+  function buildCriterion(): GoalCriterion {
     const base = label ? { label } : {};
     if (type === 'all_prs_merged') {
       return { type, ...base, requireBranchDeleted: requireBranchDeleted || undefined };
@@ -81,28 +87,41 @@ function AddCriterionForm({ onAdd, onCancel }: {
     if (type === 'no_open_tasks') return { type, ...base };
     if (type === 'artifact_exists') return { type, ...base, key: artifactKey || undefined, artifactType: artifactType || undefined };
     if (type === 'command') {
-      if (!command.trim()) return null;
-      return { type, command: command.trim(), ...base };
+      return { type, command: command.trim(), ...base } as GoalCriterion;
     }
     if (type === 'metric') {
-      const t = parseFloat(metricThreshold);
-      if (!metricQuery.trim() || isNaN(t)) return null;
-      return { type, query: metricQuery.trim(), operator: metricOp, threshold: t, unit: metricUnit || undefined, ...base };
+      return {
+        type,
+        query: metricQuery.trim(),
+        operator: metricOp,
+        threshold: parseFloat(metricThreshold),
+        unit: metricUnit || undefined,
+        ...base,
+      } as GoalCriterion;
     }
-    if (type === 'description') {
-      // A prose criterion needs a live model to grade it, so the API requires a
-      // stated reason why no mechanical form works. Mirror that here rather than
-      // letting the save fail with a 400.
-      if (!description.trim() || notMechanizableReason.trim().length < 10) return null;
-      return { type, description: description.trim(), notMechanizableReason: notMechanizableReason.trim(), ...base };
-    }
-    return null;
+    return {
+      type,
+      description: description.trim(),
+      notMechanizableReason: notMechanizableReason.trim(),
+      ...base,
+    } as GoalCriterion;
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const c = buildCriterion();
-    if (c) onAdd(c);
+    const candidate = buildCriterion();
+    // This used to `return null` from buildCriterion on any incomplete input
+    // and then `if (c) onAdd(c)` — so an empty command, an unparseable metric
+    // threshold, or a too-short reason produced a button that did nothing at
+    // all, with no message anywhere. Surface the validator's own words, which
+    // are the words the API's 400 would have used.
+    const message = validateGoalCriteria([candidate]);
+    if (message) {
+      setError(message);
+      return;
+    }
+    setError(null);
+    onAdd(candidate);
   }
 
   return (
@@ -260,6 +279,14 @@ function AddCriterionForm({ onAdd, onCancel }: {
           Cancel
         </button>
       </div>
+
+      {/* The refusal, in the validator's own words. Without this the button
+          simply did nothing. */}
+      {error && (
+        <p role="alert" className="text-[11px] font-mono text-status-error" data-testid="criterion-error">
+          {error}
+        </p>
+      )}
     </form>
   );
 }

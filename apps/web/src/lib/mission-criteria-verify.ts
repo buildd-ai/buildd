@@ -253,6 +253,23 @@ export async function dispatchCommandCriterionTask(opts: {
       context: {
         criteriaVerification: verificationContext,
         verificationCommand: command,
+        // Run the command against the mission's own code. The runner cuts the
+        // worktree from `context.baseBranch` (`resolveWorktreeBase`), so without
+        // this the command runs on the workspace default branch and the verdict
+        // describes code the mission has not landed — a criterion that goes
+        // green while the mission's work is still unverified (and one that can
+        // go red for a failure the mission already fixed).
+        //
+        // `baseBranch`, not `resumeBranch`: both feed the same base ladder, but
+        // `resumeBranch` also makes the runner build a "Prior Attempt — assess,
+        // then continue or restart" prompt section, which contradicts this
+        // task's observe-only instructions. `headBranch` alone would only rename
+        // the worker's push branch and leave the base wrong.
+        //
+        // Never the default branch: this is the mission's working branch, so it
+        // cannot reproduce the old degradation where a worktree asked to check
+        // out the default branch failed setup and fell back to the shared clone.
+        ...(mission.workingBranch ? { baseBranch: mission.workingBranch } : {}),
         // Opt out of the mission-task auto-retry: a criterion deserves one honest
         // run, and a silent second attempt would delay the verdict it produces.
         retryCount: 1,

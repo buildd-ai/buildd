@@ -101,6 +101,21 @@ export default function MissionAutoRefresh({
     const handleNotePosted = () => doRefresh();
     missionChannel?.bind('mission:note_posted', handleNotePosted);
 
+    // Completion decision — the gate ran and said yes or no. This event is
+    // emitted for every real decision per docs/specs/mission-task-lifecycle.md
+    // and, until now, had no subscriber anywhere: the refusal code and reason
+    // existed only in the feed and the server logs, so the page a reader opens
+    // to ask "why is this not done" did not update when the answer changed.
+    //
+    // Payload carries `allowed`, `code` and `reason`; a refresh is the right
+    // response either way, because both outcomes change what the page renders —
+    // a refusal updates the goal-criteria panel and the feed, and an approval
+    // moves the mission to completed. `mission_not_found` / `mission_not_active`
+    // are already filtered out server-side, so every event here is a real
+    // decision and the debounce absorbs bursts from a batch of terminal tasks.
+    const handleCompletionDecision = () => doRefresh();
+    missionChannel?.bind('mission:completion_decision', handleCompletionDecision);
+
     return () => {
       channel.unbind('task:created', handleTaskCreated);
       channel.unbind('task:claimed', handleTaskClaimed);
@@ -110,6 +125,7 @@ export default function MissionAutoRefresh({
       channel.unbind('task:children_completed', handleChildrenCompleted);
       unsubscribeFromChannel(channelName);
       missionChannel?.unbind('mission:note_posted', handleNotePosted);
+      missionChannel?.unbind('mission:completion_decision', handleCompletionDecision);
       unsubscribeFromChannel(missionChannelName);
       if (refreshTimerRef.current) {
         clearTimeout(refreshTimerRef.current);

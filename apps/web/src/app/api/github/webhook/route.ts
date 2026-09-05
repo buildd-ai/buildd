@@ -10,8 +10,14 @@ import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
-import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
-import { countPendingTasksForMission } from '@/lib/mission-release';
+import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
+import {
+  countPendingTasksForMission,
+  claimMissionReleaseAttempt,
+  commitMissionRelease,
+  abandonMissionReleaseAttempt,
+} from '@/lib/mission-release';
+import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
@@ -77,6 +83,10 @@ export async function POST(req: NextRequest) {
 
       case 'pull_request':
         await handlePullRequestEvent(data);
+        break;
+
+      case 'pull_request_review':
+        await handlePullRequestReviewEvent(data);
         break;
 
       case 'workflow_run':
@@ -811,28 +821,33 @@ async function handlePullRequestEvent(event: {
           if (resolution.strategy.kind === 'branch_merge') {
             // no-op: Path A is authoritative for branch_merge workspaces
           } else if (resolution.strategy.kind === 'workflow_dispatch') {
-            const trigger = releaseConfig?.trigger ?? 'every_merge';
+            const trigger = resolveReleaseTrigger(releaseConfig);
 
             if (trigger === 'manual') {
               // no-op: owner fires trigger_release manually
             } else if (trigger === 'on_mission_complete') {
               // Only dispatch if this task's mission is now all-terminal
               if (mergedTask.missionId) {
-                const pending = await countPendingTasksForMission(mergedTask.missionId);
+                const missionId = mergedTask.missionId;
+                const pending = await countPendingTasksForMission(missionId);
                 if (pending === 0) {
-                  // Atomic dedup: only the first caller that sets releasedAt fires
-                  const claimed = await db
-                    .update(missions)
-                    .set({ releasedAt: new Date() })
-                    .where(
-                      and(
-                        eq(missions.id, mergedTask.missionId),
-                        isNull(missions.releasedAt),
-                      )
-                    )
-                    .returning({ id: missions.id });
-
-                  if (claimed.length > 0) {
+                  // Same predicate as every other completion path, including the
+                  // goal-criteria gate. This side used to check only "no pending
+                  // tasks" and dispatch, so a mission whose criteria read `fail`
+                  // could be shipped here and refused by the completion path in
+                  // the same minute. `evaluateCriteria: false` — a release READS a
+                  // verdict, it does not manufacture one.
+                  const decision = await canCompleteMission(missionId, {
+                    path: 'release_trigger',
+                    acceptCompleted: true,
+                    evaluateCriteria: false,
+                  });
+                  if (!decision.ok) {
+                    console.log(
+                      `[webhook] mission ${missionId}: not releasing — ${decision.code}: ${decision.reason}`,
+                    );
+                  } else if (await claimMissionReleaseAttempt(missionId)) {
+                    // Phase 1 claimed the ATTEMPT. Both exits below resolve it.
                     const { workflowFile, ref, inputs } = resolution.strategy;
                     const [owner, name] = repository.full_name.split('/');
                     try {
@@ -844,7 +859,7 @@ async function handlePullRequestEvent(event: {
                       );
                       const releaseResult: ReleaseResult = {
                         status: 'pending_ci',
-                        message: `Release: dispatched ${workflowFile}@${ref} for mission ${mergedTask.missionId} — awaiting workflow completion`,
+                        message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
                         runId: dispatchResult.runId,
                         runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
                         runStatus: dispatchResult.runStatus,
@@ -854,9 +869,14 @@ async function handlePullRequestEvent(event: {
                         .update(tasks)
                         .set({ releaseResult, updatedAt: new Date() })
                         .where(eq(tasks.id, mergedTask.id));
-                      console.log(`[webhook] Mission ${mergedTask.missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
+                      await commitMissionRelease(missionId);
+                      console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
                     } catch (err) {
-                      console.error(`[webhook] Mission release dispatch failed for ${repository.full_name}:`, err);
+                      await abandonMissionReleaseAttempt(
+                        missionId,
+                        'dispatch_failed',
+                        `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
+                      );
                     }
                   }
                 }
@@ -1816,4 +1836,73 @@ async function maybePostWorkTrackerIssueUpdate(
     prUrl,
     merged,
   });
+}
+
+
+/**
+ * A human (or an outside bot) reviewed a PR in GitHub's own UI.
+ *
+ * Until this existed, that produced no state in buildd at all: the event was not
+ * in the switch, so approval was only ever observable through the reviewer
+ * task's own completion PATCH. A maintainer clicking Approve left the mission
+ * feed showing nothing, and "who cleared this?" had no answer.
+ *
+ * Deliberately record-only. It writes the reviewer note types the schema already
+ * carries and changes NO merge behaviour: it does not satisfy the `agent-review`
+ * gate, does not trigger auto-merge, and does not complete a task. Whether a
+ * human approval in GitHub should clear buildd's review gate is a policy
+ * question (see docs/design/mission-delivery-arc.md — the merge-policy tier
+ * placement crux), and answering it by side effect here would be a silent
+ * change to when things merge. So the default is a no-op on merging.
+ */
+async function handlePullRequestReviewEvent(event: any): Promise<void> {
+  const action = event?.action as string | undefined;
+  const review = event?.review;
+  const pr = event?.pull_request;
+  const repository = event?.repository;
+
+  // 'submitted' is the only action that carries a verdict; 'edited' and
+  // 'dismissed' change a review that was already recorded.
+  if (action !== 'submitted') return;
+  if (!review || !pr?.number || !repository?.full_name) return;
+
+  // GitHub sends 'approved' | 'changes_requested' | 'commented'. A bare comment
+  // is not a verdict — recording it would turn every drive-by remark into a
+  // decision row.
+  const state = String(review.state ?? '').toLowerCase();
+  const noteType =
+    state === 'approved' ? 'reviewer_approved' as const
+    : state === 'changes_requested' ? 'reviewer_request_changes' as const
+    : null;
+  if (!noteType) return;
+
+  const worker = await db.query.workers.findFirst({
+    where: workerOwnsPr(repository.full_name, pr.number),
+    columns: { id: true, taskId: true },
+    with: { task: { columns: { id: true, title: true, missionId: true } } },
+  });
+
+  const missionId = worker?.task?.missionId;
+  if (!missionId) return;
+
+  const reviewer = typeof review.user?.login === 'string' ? review.user.login : 'a reviewer';
+  const verdict = noteType === 'reviewer_approved' ? 'approved' : 'requested changes';
+  const body = String(review.body ?? '').trim();
+
+  await db.insert(missionNotes).values({
+    missionId,
+    taskId: worker?.taskId ?? null,
+    workerId: worker?.id ?? null,
+    // 'user' — a person acting on the PR in GitHub, not a worker inside a task.
+    authorType: 'user',
+    type: noteType,
+    title: `PR #${pr.number} ${verdict} on GitHub`,
+    body: body.length > 0 ? body : null,
+    actorLabel: `${reviewer} (GitHub review)`,
+  });
+
+  console.log(
+    `[webhook] pull_request_review: ${reviewer} ${verdict} PR #${pr.number} ` +
+    `(mission ${missionId}) — recorded, merge behaviour unchanged`,
+  );
 }

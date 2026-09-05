@@ -97,7 +97,6 @@ export const events = {
   TASK_FAILED: 'task:failed',
   // Task assigned to specific runner
   TASK_ASSIGNED: 'task:assigned',
-  WORKER_STARTED: 'worker:started',
   WORKER_PROGRESS: 'worker:progress',
   WORKER_COMPLETED: 'worker:completed',
   WORKER_FAILED: 'worker:failed',

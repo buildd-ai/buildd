@@ -120,6 +120,34 @@ describe('resolveCommandCriterion — dispatch', () => {
     expect(row.description).toContain('do NOT open a PR');
   });
 
+  // A verdict is a statement about the mission's code. The runner cuts the
+  // verification worktree from `context.baseBranch` (see
+  // `resolveWorktreeBase`); with no branch on the context it cuts from the
+  // workspace default branch instead and the command verifies code the mission
+  // has not landed — a green criterion that proves nothing about the mission.
+  it('runs the command against the mission working branch, not the default branch', async () => {
+    missionRow = { id: 'm1', title: 'Empty-source rendering', workspaceId: 'ws-1', workingBranch: 'buildd/mission-m1' };
+
+    await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    const row = insertedValues[0];
+    expect(row.context.baseBranch).toBe('buildd/mission-m1');
+  });
+
+  it('emits no branch on the context when the mission has no working branch', async () => {
+    missionRow = { id: 'm1', title: 'No branch yet', workspaceId: 'ws-1', workingBranch: null };
+
+    await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    const row = insertedValues[0];
+    // Absent, not null/empty-string: the runner's branch ladder tests for a
+    // non-empty string, and a default-branch value here is the exact shape that
+    // used to degrade worktree setup into the shared main clone.
+    expect('baseBranch' in row.context).toBe(false);
+    expect('resumeBranch' in row.context).toBe(false);
+    expect('headBranch' in row.context).toBe(false);
+  });
+
   it('reports unavailable — not a pass — when the mission has no workspace to run in', async () => {
     missionRow = { id: 'm1', title: 'Coordination mission', workspaceId: null, workingBranch: null };
 

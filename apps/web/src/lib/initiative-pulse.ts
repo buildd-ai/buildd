@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, missions, initiatives } from '@buildd/core/db/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
-import { deriveTaskType } from '@buildd/core/mission-helpers';
+import { deriveTaskType, isAttempt } from '@buildd/core/mission-helpers';
 import type { Verdict, Confidence } from './verdict-presentation';
 
 /**
@@ -286,8 +286,16 @@ export function countBlockedByPR(
     for (const depId of task.dependsOn ?? []) {
       const dep = taskIndex.get(depId);
       if (!dep || dep.status !== 'completed') continue;
-      const worker = dep.workers?.[0];
-      if (worker?.prNumber && !worker.mergedAt && worker.prLifecycleStatus !== 'closed') {
+      // EVERY worker, not just the newest: a retried dependency can carry the
+      // PR the dependent task waits on an attempt or two back, and reading
+      // `workers[0]` alone scored that as unblocked — an undercount that hit
+      // every surface at once, so the §5.2 agreement invariant still passed.
+      // Matches `derivePendingCounts`, which already scans all workers for the
+      // awaiting-merge count.
+      const openPR = (dep.workers ?? []).some(
+        (w) => w?.prNumber && !w.mergedAt && w.prLifecycleStatus !== 'closed',
+      );
+      if (openPR) {
         count++;
         break;
       }
@@ -498,16 +506,19 @@ export async function loadInitiativeVerdictInputs(opts: {
       .groupBy(missions.initiativeId),
 
     // Rework: tasks created in the window, classified in TS rather than SQL so
-    // `deriveTaskType`'s rules stay the single source of truth. `mode` is part
-    // of that classification — a spawned builder task (parentTaskId set,
-    // mode 'execution', no prefix) is a deliverable, not an attempt — so
-    // omitting it would read approve_plan children as thrash.
+    // one classifier serves every surface. `taskClass` is the stored answer;
+    // `title`/`parentTaskId`/`mode` are carried only for the pre-backfill
+    // fallback (see classifyAttemptRow), where `mode` decides attempt vs.
+    // deliverable — a spawned builder task (parentTaskId set, mode 'execution',
+    // no prefix) is a deliverable, so omitting it would read approve_plan
+    // children as thrash.
     db
       .select({
         initiativeId: missions.initiativeId,
         title: tasks.title,
         parentTaskId: tasks.parentTaskId,
         mode: tasks.mode,
+        taskClass: tasks.taskClass,
       })
       .from(tasks)
       .innerJoin(missions, eq(missions.id, tasks.missionId))
@@ -542,8 +553,29 @@ export interface AttemptRow {
   initiativeId: string | null;
   title: string;
   parentTaskId: string | null;
-  /** 'execution' | 'planning'. Required: it decides attempt vs. deliverable. */
+  /** 'execution' | 'planning'. Decides attempt vs. deliverable in the fallback. */
   mode: string | null;
+  /**
+   * 'work' | 'attempt' | 'bookkeeping', the stored discriminator and the primary
+   * signal. NULL only for rows that pre-date the backfill.
+   */
+  taskClass?: string | null;
+}
+
+/**
+ * Is this row rework?
+ *
+ * `taskClass` is the single classifier (`docs/specs/mission-task-lifecycle.md`).
+ * The title-prefix classifier is a fallback for pre-backfill rows only: it does
+ * not know about `[Conflict Retry #N]` (`conflict-retry.ts`), which carries a
+ * `parentTaskId` and inherits `mode: 'execution'`, so it read every conflict
+ * retry as fresh deliverable work — a workspace thrashing on merge conflicts
+ * rendered `winning`.
+ */
+export function classifyAttemptRow(row: AttemptRow): boolean {
+  if (row.taskClass != null) return isAttempt(row);
+  // Pre-backfill row: keep the legacy title/mode classification.
+  return deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId, mode: row.mode }) !== null; // taskclass:pre-backfill-fallback
 }
 
 /**
@@ -592,8 +624,7 @@ export function assembleVerdictRollups(input: {
   }
 
   for (const row of input.attemptRows) {
-    const type = deriveTaskType({ title: row.title, parentTaskId: row.parentTaskId, mode: row.mode });
-    if (type === null) continue;
+    if (!classifyAttemptRow(row)) continue;
     bucket(row.initiativeId ?? UNASSIGNED_INITIATIVE_KEY).attempts7d++;
   }
 

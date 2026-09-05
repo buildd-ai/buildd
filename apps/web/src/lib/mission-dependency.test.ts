@@ -8,6 +8,21 @@ const mockUpdate = mock(() => ({ set: mockUpdateSet }));
 const mockUpdateSet = mock(() => ({ where: mockUpdateWhere }));
 const mockUpdateWhere = mock(() => Promise.resolve([{ id: 'updated' }]));
 
+/**
+ * The two COUNT(*) probes behind the `merged` gate, in the order
+ * `missionHasUnmergedWork` runs them:
+ *   1. workers ⨝ tasks — workers holding an open PR
+ *   2. tasks — non-terminal deliverable rows whose PR has not been opened yet
+ *
+ * Queued as a list so a test can say "no open PRs, but one task still pending".
+ * Default (empty queue) is zero, i.e. nothing outstanding.
+ */
+let countQueue: number[] = [];
+const mockSelectWhere = mock(() => {
+  const next = countQueue.shift() ?? 0;
+  return Promise.resolve([{ count: next }]) as any;
+});
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -17,13 +32,26 @@ mock.module('@buildd/core/db', () => ({
       },
     },
     update: mockUpdate,
+    // db.select({...}).from(t)[.innerJoin(...)].where(expr) → awaitable
+    select: () => {
+      const node: any = {
+        where: mockSelectWhere,
+        innerJoin: () => node,
+      };
+      return { from: () => node };
+    },
   },
 }));
 
 mock.module('drizzle-orm', () => ({
   eq: (a: any, b: any) => ({ type: 'eq', a, b }),
   and: (...args: any[]) => ({ type: 'and', args }),
+  or: (...args: any[]) => ({ type: 'or', args }),
+  ne: (a: any, b: any) => ({ type: 'ne', a, b }),
   isNull: (a: any) => ({ type: 'isNull', a }),
+  isNotNull: (a: any) => ({ type: 'isNotNull', a }),
+  inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
+  count: () => ({ type: 'count' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -33,6 +61,8 @@ mock.module('@buildd/core/db/schema', () => ({
     gateCondition: 'gate_condition',
     dependencyMetAt: 'dependency_met_at',
   },
+  tasks: { id: 'id', missionId: 'mission_id', status: 'status', taskClass: 'task_class' },
+  workers: { taskId: 'task_id', prUrl: 'pr_url', mergedAt: 'merged_at' },
 }));
 
 import {
@@ -201,6 +231,8 @@ describe('checkAndUnblockDependentMissions', () => {
     mockUpdate.mockReset();
     mockUpdateSet.mockReset();
     mockUpdateWhere.mockReset();
+    mockSelectWhere.mockClear();
+    countQueue = [];
     mockUpdate.mockReturnValue({ set: mockUpdateSet });
     mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
     mockUpdateWhere.mockResolvedValue([{ id: 'unblocked' }]);
@@ -234,6 +266,75 @@ describe('checkAndUnblockDependentMissions', () => {
 
     const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'completed');
     expect(unblocked).toHaveLength(0);
+  });
+
+  // ── The `merged` gate is mission-wide (B13) ───────────────────────────────
+  //
+  // All three raisers of this signal (the webhook's worker-match and
+  // branch-match paths, and the manual merge route) fire on ONE PR merging.
+  // Taken at face value that unblocked a downstream mission on 1-of-N while the
+  // UI still read "Waiting for mission X PRs to merge".
+
+  it('does NOT unblock on merged while a sibling PR is still open', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-1', gateCondition: 'merged' },
+    ] as any);
+    countQueue = [1]; // one worker still holds an open PR
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
+
+    expect(unblocked).toHaveLength(0);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does NOT unblock on merged while a deliverable task has yet to open its PR', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-1', gateCondition: 'merged' },
+    ] as any);
+    countQueue = [0, 2]; // no open PRs, but two deliverables still moving
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
+
+    expect(unblocked).toHaveLength(0);
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  it('unblocks on merged once nothing is outstanding', async () => {
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-1', gateCondition: 'merged' },
+    ] as any);
+    countQueue = [0, 0];
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
+
+    expect(unblocked).toEqual(['downstream-1']);
+    expect(mockUpdate).toHaveBeenCalled();
+  });
+
+  it('does not probe the mission at all when no dependent waits on this signal', async () => {
+    // The predicate costs two COUNT(*) queries, so it must not run on the
+    // common path where a merge has no downstream waiter.
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-1', gateCondition: 'completed' },
+    ] as any);
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'merged');
+
+    expect(unblocked).toHaveLength(0);
+    expect(mockSelectWhere).not.toHaveBeenCalled();
+  });
+
+  it('leaves the completed signal alone — it is already mission-wide', async () => {
+    // `completed` is raised by completeMissionIfVerified, which has already run
+    // the whole completion gate. Re-probing PRs there would double-gate it.
+    mockMissionsFindMany.mockResolvedValue([
+      { id: 'downstream-1', gateCondition: 'completed' },
+    ] as any);
+
+    const unblocked = await checkAndUnblockDependentMissions('upstream-1', 'completed');
+
+    expect(unblocked).toEqual(['downstream-1']);
+    expect(mockSelectWhere).not.toHaveBeenCalled();
   });
 
   it('unblocks on completed signal for completed-gate missions', async () => {

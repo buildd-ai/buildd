@@ -1,6 +1,7 @@
 process.env.NODE_ENV = 'test';
 
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 // ── Mocks (must be set up before any import of the module under test) ─────────
 
@@ -16,6 +17,12 @@ const mockDbInsertOnConflict = mock(() => ({ returning: mockDbInsertReturning })
 const mockDbInsertValues = mock(() => ({ onConflictDoNothing: mockDbInsertOnConflict }));
 const mockDbInsert = mock(() => ({ values: mockDbInsertValues }));
 
+// Healthy-promotion update chain: update().set().where().returning()
+const mockDbUpdateReturning = mock(() => Promise.resolve([{ id: 'release-abc' }] as any[]));
+const mockDbUpdateWhere = mock((_pred?: unknown) => ({ returning: mockDbUpdateReturning }));
+const mockDbUpdateSet = mock((_values?: unknown) => ({ where: mockDbUpdateWhere }));
+const mockDbUpdate = mock((_table?: unknown) => ({ set: mockDbUpdateSet }));
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -25,6 +32,7 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     insert: mockDbInsert,
+    update: mockDbUpdate,
   },
 }));
 
@@ -38,8 +46,17 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
 }));
 
+const mockTriggerEvent = mock(() => Promise.resolve());
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: { workspace: (id: string) => `private-workspace-${id}` },
+  events: { RELEASE_UPDATED: 'release:updated' },
+}));
+
 // Mimic production resolve logic: absent strategy => branch_merge
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: (config: any) => {
     if (!config || !config.enabled) {
       return { ok: false, reason: 'not_configured', message: 'not configured' };
@@ -61,7 +78,12 @@ import { classifyCheckRuns } from '@/lib/release/dispatch';
 mock.module('@/lib/release/dispatch', () => ({ classifyCheckRuns }));
 
 // ── Now import the module under test ─────────────────────────────────────────
-import { findReleasePr, executeRelease } from './release-executor';
+import { findReleasePr, executeRelease, _setSleeper } from './release-executor';
+
+// The executor sleeps 8s before polling Vercel and 10s between polls. Real
+// sleeps would blow the test timeout, so swap in a no-op (same injection
+// pattern release-verification.ts already uses for its retry sleeper).
+_setSleeper(() => Promise.resolve());
 
 // ── findReleasePr ─────────────────────────────────────────────────────────────
 
@@ -556,16 +578,155 @@ describe('executeRelease — releases row creation', () => {
     expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
-  it('does not insert a releases row for a gated workspace (trigger route owns that)', async () => {
-    // Gated workspace with releaseBranch — executeRelease skips row creation
+  it('writes no row when a feature task is skipped before any merge happens', async () => {
+    // Renamed from "does not insert for a gated workspace (trigger route owns
+    // that)": this case never reached the archetype check at all. With
+    // releaseBranch set and release flag 'inherit', executeRelease returns
+    // `skipped` long before maybeCreateReleaseRow, so the test proved only that
+    // a no-op writes nothing — not anything about gated archetypes.
     mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
     setupWorker();
     setupGatedWorkspace();
     setupRepo();
 
-    // releaseBranch path: task release flag is 'inherit' so it returns skipped early
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     expect(result.status).toBe('skipped');
+    expect(mockDbInsert).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Drive the gated path all the way to a merged release PR.
+   *
+   * githubApi call order in the releaseBranch branch:
+   *   1. GET pulls?base=<prod>&head=<owner>:<releaseBranch>&state=open  → the release PR
+   *   2. GET commits/<headSha>/check-runs                              → CI verdict
+   *   3. GET git/ref/heads/<prod>                                      → previousSha
+   *   4. PUT pulls/<n>/merge                                           → merge sha
+   */
+  function setupGatedReleasePrMerge() {
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 77, head: { sha: 'prheadsha' }, html_url: 'https://github.com/org/repo/pull/77', title: 'Release v1.2.3' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [{ name: 'Build & Test', status: 'completed', conclusion: 'success' }],
+    });
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevmain111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'mergedmain222', commit: {} });
+  }
+
+  it('inserts a releases row for a gated workspace when the release PR merges', async () => {
+    // The regression. A gated release IS a release: the release PR just landed on
+    // the prod branch. Skipping the row wrote no release history and no
+    // release_tasks edges, so a gated workspace had no task→release link and its
+    // queue baseline fell through to the prod-branch-HEAD rung on every read.
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
+
+    expect(mockDbInsert).toHaveBeenCalledTimes(1);
+    expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      archetype: 'gated',
+      state: 'deploying',
+      strategy: 'branch_merge',
+      headSha: 'mergedmain222',
+      previousSha: 'prevmain111',
+      // sourceRef is the release branch, not a worker branch
+      sourceRef: 'dev',
+      targetRef: 'main',
+      // Matches api/releases/trigger: gated releases are HTTP-verifiable. Still
+      // inert unless the workspace configures a verificationUrl.
+      verificationStrategy: 'http',
+    }));
+  });
+
+  it('attributes the gated release so release_tasks edges exist', async () => {
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+    expect(mockAttributeRelease).toHaveBeenCalledWith(expect.objectContaining({
+      releaseId: 'release-abc',
+      workspaceId: 'ws-1',
+      // gated → attribution walks the compare range by PR number
+      archetype: 'gated',
+      previousSha: 'prevmain111',
+      headSha: 'mergedmain222',
+    }));
+  });
+
+  it('marks a continuous release http-verifiable when the workspace configures a probe URL', async () => {
+    // Regression: `archetype === 'gated' ? 'http' : 'none'` stamped every
+    // continuous release `'none'`, and `verifyReleaseDeployment` returns early
+    // unless the strategy is exactly `'http'`. So configuring a verificationUrl
+    // on a continuous workspace made it strictly worse off — the probe never
+    // ran and the row never left `deploying`.
+    setupTask();
+    setupWorker();
+    mockWorkspacesFindFirst.mockResolvedValue({
+      name: 'trunk-ops',
+      releaseConfig: {
+        enabled: true,
+        strategy: 'branch_merge',
+        prodBranch: 'main',
+        verificationUrl: 'https://example.test/healthz',
+      },
+      gitConfig: { requiresPR: false, defaultBranch: 'main' },
+      githubRepoId: 'repo-1',
+    });
+    mockDetectArchetype.mockReturnValue('continuous');
+    setupRepo();
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      archetype: 'continuous',
+      verificationStrategy: 'http',
+    }));
+  });
+
+  it('keeps a gated release http-verifiable with no probe URL, so the 24h sweep still sees it', async () => {
+    // The additive half: gated rows must not lose `'http'`, or the cron's
+    // stale-`deploying` sweep stops hard-failing them and they sit forever.
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      archetype: 'gated',
+      verificationStrategy: 'http',
+    }));
+  });
+
+  it('still writes no row for archetypes that are not this strategy', async () => {
+    // store/package/none do not release via branch_merge, so widening the gate
+    // to `gated` must not widen it to everything.
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    mockDetectArchetype.mockReturnValue('package');
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
     expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
@@ -585,5 +746,216 @@ describe('executeRelease — releases row creation', () => {
     // headSha is undefined → early return in maybeCreateReleaseRow
     expect(mockDbInsert).not.toHaveBeenCalled();
     expect(mockAttributeRelease).not.toHaveBeenCalled();
+  });
+});
+
+// ── Healthy promotion on deploy success ───────────────────────────────────────
+//
+// `state: 'healthy'` had exactly one writer (verifyReleaseDeployment) and that
+// writer returns early unless the workspace has BOTH
+// `verificationStrategy: 'http'` and a `releaseConfig.verificationUrl`. A
+// workspace with no verificationUrl therefore had no path to `healthy` at all —
+// its rows sat in `deploying` forever, so `MAX(healthy_at)` stayed NULL and the
+// baseline ladder never reached its top rung.
+//
+// Policy: with no verificationUrl a successful deploy is the only health signal
+// available, so READY promotes. SKIPPED means VERCEL_TOKEN was absent, i.e. the
+// deploy was never verified at all — it MUST NOT promote. When a verificationUrl
+// IS configured the HTTP probe stays authoritative and the executor promotes
+// nothing.
+
+const dialect = new PgDialect();
+
+function renderPromotionWhere(): string {
+  const pred = mockDbUpdateWhere.mock.calls[0]?.[0];
+  return dialect.sqlToQuery(pred as any).sql.replace(/\s+/g, ' ').trim();
+}
+
+describe('executeRelease — healthy promotion on deploy success', () => {
+  function setupTask() {
+    mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
+  }
+  function setupWorker() {
+    mockWorkersFindFirst.mockResolvedValue({ branch: 'buildd/my-feat', prNumber: null, prUrl: null });
+  }
+  function setupRepo() {
+    mockGithubReposFindFirst.mockResolvedValue({
+      id: 'repo-1',
+      fullName: 'org/repo',
+      installation: { installationId: 99 },
+    });
+  }
+  function setupContinuousWorkspace(releaseConfigExtra: Record<string, unknown> = {}) {
+    mockWorkspacesFindFirst.mockResolvedValue({
+      name: 'trunk-ops',
+      releaseConfig: {
+        enabled: true,
+        strategy: 'branch_merge',
+        prodBranch: 'main',
+        deployTarget: { type: 'vercel', projectId: 'proj_abc' },
+        ...releaseConfigExtra,
+      },
+      gitConfig: { requiresPR: false, defaultBranch: 'main' },
+      githubRepoId: 'repo-1',
+    });
+    mockDetectArchetype.mockReturnValue('continuous');
+  }
+  // ref lookup → previousSha, then the merge itself.
+  function setupMerge() {
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevsha111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'headsha222', commit: {} });
+  }
+
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockDbInsert.mockReset();
+    mockDbInsertValues.mockReset();
+    mockDbInsertOnConflict.mockReset();
+    mockDbInsertReturning.mockReset();
+    mockDbInsert.mockReturnValue({ values: mockDbInsertValues });
+    mockDbInsertValues.mockReturnValue({ onConflictDoNothing: mockDbInsertOnConflict });
+    mockDbInsertOnConflict.mockReturnValue({ returning: mockDbInsertReturning });
+    mockDbInsertReturning.mockResolvedValue([{ id: 'release-abc' }]);
+    mockDbUpdate.mockReset();
+    mockDbUpdateSet.mockReset();
+    mockDbUpdateWhere.mockReset();
+    mockDbUpdateReturning.mockReset();
+    mockDbUpdate.mockReturnValue({ set: mockDbUpdateSet });
+    mockDbUpdateSet.mockReturnValue({ where: mockDbUpdateWhere });
+    mockDbUpdateWhere.mockReturnValue({ returning: mockDbUpdateReturning });
+    mockDbUpdateReturning.mockResolvedValue([{ id: 'release-abc' }]);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined as any);
+    mockAttributeRelease.mockReset();
+    mockAttributeRelease.mockResolvedValue({ attributed: 1, skipped: 0 });
+    mockDetectArchetype.mockReturnValue('none');
+    delete process.env.VERCEL_TOKEN;
+    (globalThis as any).fetch = undefined;
+  });
+
+  it('promotes the inserted release to healthy when the deploy is READY and no verificationUrl is set', async () => {
+    process.env.VERCEL_TOKEN = 'illustrative-token';
+    (globalThis as any).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ deployments: [{ uid: 'dpl_1', state: 'READY', url: 'example.invalid' }] }),
+      } as any),
+    );
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    setupMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('completed');
+    expect(result.deployState).toBe('READY');
+    expect(mockDbUpdate).toHaveBeenCalledTimes(1);
+    const setValues = mockDbUpdateSet.mock.calls[0]?.[0] as any;
+    expect(setValues.state).toBe('healthy');
+    expect(setValues.healthyAt).toBeInstanceOf(Date);
+  });
+
+  it('guards the promotion UPDATE on id AND state=deploying so it cannot resurrect a failed/degraded row', async () => {
+    process.env.VERCEL_TOKEN = 'illustrative-token';
+    (globalThis as any).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ deployments: [{ uid: 'dpl_1', state: 'READY', url: 'example.invalid' }] }),
+      } as any),
+    );
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    setupMerge();
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    const where = renderPromotionWhere();
+    expect(where).toContain('"releases"."id" = ');
+    expect(where).toContain('"releases"."state" = ');
+  });
+
+  it('emits RELEASE_UPDATED with state healthy so live surfaces do not stay on `deploying`', async () => {
+    process.env.VERCEL_TOKEN = 'illustrative-token';
+    (globalThis as any).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ deployments: [{ uid: 'dpl_1', state: 'READY', url: 'example.invalid' }] }),
+      } as any),
+    );
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    setupMerge();
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent.mock.calls[0]?.[2]).toMatchObject({ releaseId: 'release-abc', state: 'healthy' });
+  });
+
+  it('does NOT promote on deployState SKIPPED — VERCEL_TOKEN absent means the deploy was never verified', async () => {
+    // VERCEL_TOKEN stays unset (beforeEach), so pollVercelDeployment returns SKIPPED.
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    setupMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.deployState).toBe('SKIPPED');
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('does NOT promote when the workspace configures a verificationUrl — the HTTP probe stays authoritative', async () => {
+    process.env.VERCEL_TOKEN = 'illustrative-token';
+    (globalThis as any).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ deployments: [{ uid: 'dpl_1', state: 'READY', url: 'example.invalid' }] }),
+      } as any),
+    );
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace({ verificationUrl: 'https://example.invalid/api/version' });
+    setupRepo();
+    setupMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.deployState).toBe('READY');
+    expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does NOT promote when the insert conflicted — a retried release of the same sha owns no row to promote', async () => {
+    process.env.VERCEL_TOKEN = 'illustrative-token';
+    (globalThis as any).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ deployments: [{ uid: 'dpl_1', state: 'READY', url: 'example.invalid' }] }),
+      } as any),
+    );
+    // onConflictDoNothing returned no row.
+    mockDbInsertReturning.mockResolvedValue([]);
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    setupMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    expect(result.status).toBe('completed');
+    expect(mockDbUpdate).not.toHaveBeenCalled();
   });
 });

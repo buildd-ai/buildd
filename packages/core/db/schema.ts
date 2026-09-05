@@ -739,10 +739,23 @@ export const missions = pgTable('missions', {
   // active, but their schedule and organizer are inert until this floor.
   startAt: timestamp('start_at', { withTimezone: true }),
   startResolution: text('start_resolution').$type<'explicit' | 'relative' | 'known_budget_reset' | 'default_budget_window' | null>(),
-  // Set when a mission-scoped release fires (trigger=on_mission_complete). Acts as an atomic
-  // claim: the first worker task whose UPDATE wins (via isNull guard) fires the release;
-  // subsequent completions see a non-null value and skip. Nullable — null means not yet released.
+  // Phase 2 of the mission release claim: set only AFTER a dispatch or merge
+  // reported success. Non-null means the mission's work was actually shipped.
+  // Nothing resets it; it is terminal.
   releasedAt: timestamp('released_at', { withTimezone: true }),
+  // Phase 1 of the mission release claim (trigger=on_mission_complete). The first
+  // caller whose UPDATE wins the isNull guard owns the attempt; concurrent
+  // completions see a non-null value and skip. Cleared on a failed attempt so the
+  // mission can be released again — previously `releasedAt` itself was claimed
+  // up-front, so any failure after the claim (strategy not configured, dispatch
+  // throw, executeRelease 'skipped') left the mission permanently marked released
+  // with nothing deployed and no way back.
+  //
+  // Safety bound: a stale attempt (process died between the two phases) is
+  // reclaimable only after MISSION_RELEASE_ATTEMPT_STALE_MS, and only while
+  // `releasedAt IS NULL`. That caps retries at roughly one per stale window
+  // rather than one per task completion.
+  releaseAttemptedAt: timestamp('release_attempted_at', { withTimezone: true }),
   // External issue tracker link (e.g. Linear project) — set via /link-linear or API
   externalIssueId: text('external_issue_id'),
   externalIssueUrl: text('external_issue_url'),

@@ -151,7 +151,10 @@ export async function POST(req: NextRequest) {
         updatedAt: new Date(),
       }).where(eq(workers.id, workerId));
       if (prNumber) {
-        await persistMissionPrIfFirst(worker.task?.missionId, prNumber, existingPrUrl);
+        await persistMissionPrIfFirst(worker.task?.missionId, prNumber, existingPrUrl, {
+          baseRef: typeof base === 'string' ? base : null,
+          trunk: trunkBranches(worker.workspace?.gitConfig),
+        });
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prNumber);
       }
       return NextResponse.json({
@@ -268,7 +271,10 @@ export async function POST(req: NextRequest) {
           })
           .where(eq(workers.id, workerId));
 
-        await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url);
+        await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url, {
+          baseRef: prDetail.base?.ref ?? existing.base?.ref ?? null,
+          trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
+        });
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, existing.number);
 
         // Stamp retry attempt on the existing PR body so the attempt count is
@@ -357,7 +363,10 @@ export async function POST(req: NextRequest) {
       })
       .where(eq(workers.id, workerId));
 
-    await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url);
+    await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url, {
+      baseRef: prData.base?.ref ?? null,
+      trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
+    });
     await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prData.number);
 
     // Guaranteed supersede: when a fallback creates a new PR (resume branch was
@@ -896,12 +905,54 @@ export async function GET(req: NextRequest) {
   }
 }
 
+/**
+ * The branches a *mission-level* PR can target: the workspace's own trunk.
+ *
+ * `gitConfig.targetBranch` is where this workspace lands work (`dev` here),
+ * `gitConfig.defaultBranch` / `repo.defaultBranch` are the fallbacks the PR
+ * creation path itself uses, so the two agree by construction.
+ */
+function trunkBranches(
+  gitConfig: { targetBranch?: string | null; defaultBranch?: string | null } | null | undefined,
+  repoDefaultBranch?: string | null,
+): string[] {
+  return [gitConfig?.targetBranch, gitConfig?.defaultBranch, repoDefaultBranch]
+    .filter((b): b is string => !!b);
+}
+
+/**
+ * Claim `missions.primaryPrNumber` for the mission's PR — and only for it.
+ *
+ * The slot used to go to whichever PR under the mission arrived first (P2/B7),
+ * which is why the column's real meaning drifted to "the first PR any mission
+ * task opened". Under the integration-branch model the first *task* PR — based
+ * on `mission/<slug>`, not the trunk — would steal it outright, and everything
+ * downstream (mission card, PR-state notifications, the planning gate) would
+ * then be reading one task's PR as the mission's.
+ *
+ * Gate: the PR must be based on a trunk branch. Today every task PR targets
+ * `dev`, so this is close to a no-op; it is the prerequisite that keeps it a
+ * no-op once task PRs stop targeting `dev`.
+ *
+ * An unknown base ref does NOT claim the slot. The prUrl-registration path never
+ * talks to GitHub, so a PR there is unclassifiable — and those workspaces have no
+ * GitHub installation, so any reader of the slot would need one before it could
+ * resolve the PR at all. Populating it would only store an unusable value.
+ */
 async function persistMissionPrIfFirst(
   missionId: string | null | undefined,
   prNumber: number,
   prUrl: string,
+  opts: { baseRef: string | null | undefined; trunk: string[] },
 ): Promise<void> {
   if (!missionId) return;
+  if (!opts.baseRef || !opts.trunk.includes(opts.baseRef)) {
+    console.log(
+      `[github/pr] PR #${prNumber} base '${opts.baseRef ?? 'unknown'}' is not mission-level `
+      + `(trunk: ${opts.trunk.join(', ') || 'none'}) — not claiming primaryPrNumber for mission ${missionId}`,
+    );
+    return;
+  }
   await db
     .update(missions)
     .set({ primaryPrNumber: prNumber, primaryPrUrl: prUrl, updatedAt: new Date() })

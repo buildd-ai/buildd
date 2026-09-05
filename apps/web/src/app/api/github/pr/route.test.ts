@@ -396,6 +396,101 @@ describe('POST /api/github/pr', () => {
     expect(capturedSetData.updatedAt).toBeInstanceOf(Date);
   });
 
+  // ── missions.primaryPrNumber may only be claimed by a mission-level PR (P2) ──
+  //
+  // The slot used to go to whichever PR under the mission arrived first, so under
+  // the integration-branch model the first *task* PR steals it. Only a PR based
+  // on the workspace trunk is the mission's PR.
+  function captureUpdatePayloads(): any[] {
+    const payloads: any[] = [];
+    mockWorkersUpdate.mockImplementation(() => ({
+      set: (data: any) => {
+        payloads.push(data);
+        return { where: () => Promise.resolve() };
+      },
+    }));
+    return payloads;
+  }
+
+  const MISSION_WORKER = {
+    id: 'w-1',
+    accountId: 'account-1',
+    name: 'test-worker',
+    workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
+    task: { id: 't-1', missionId: 'obj-1' },
+  };
+
+  it('does not claim the mission PR slot for a task PR based on a mission integration branch', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(MISSION_WORKER);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'mission/checkout-arc-1a2b3c4d' },
+    });
+    const payloads = captureUpdatePayloads();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(payloads.some(p => 'primaryPrNumber' in p)).toBe(false);
+  });
+
+  it('claims the mission PR slot for a PR based on the workspace trunk', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(MISSION_WORKER);
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValue({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'dev' },
+    });
+    const payloads = captureUpdatePayloads();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'mission/checkout-arc-1a2b3c4d' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const missionPayload = payloads.find(p => 'primaryPrNumber' in p);
+    expect(missionPayload).toBeDefined();
+    expect(missionPayload.primaryPrNumber).toBe(42);
+    expect(missionPayload.primaryPrUrl).toBe('https://github.com/owner/repo/pull/42');
+  });
+
+  it('does not claim the mission PR slot when the base ref is unknown', async () => {
+    // The prUrl-registration path never talks to GitHub, so an unclassifiable PR
+    // must not populate a slot that means "this is the mission's PR".
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue(MISSION_WORKER);
+    const payloads = captureUpdatePayloads();
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'My PR',
+        head: 'buildd/t-1-do-thing',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(payloads.some(p => 'primaryPrNumber' in p)).toBe(false);
+  });
+
   it('calls githubApi with correct parameters', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
