@@ -515,13 +515,29 @@ export function renderReviewerPatch(
 // Fetch
 // ---------------------------------------------------------------------------
 
-interface GithubPrFile {
+export interface GithubPrFile {
   filename: string;
   status: string;
   additions: number;
   deletions: number;
   patch?: string | null;
   previous_filename?: string | null;
+}
+
+/**
+ * GitHub's payload is snake_case. Normalising at every entry point rather than
+ * accepting both spellings internally keeps `previous_filename` from being
+ * silently dropped by a caller that hands the raw payload straight through.
+ */
+export function normalizeGithubPrFiles(raw: GithubPrFile[]): ReviewerPatchFile[] {
+  return raw.map((f) => ({
+    filename: f.filename,
+    status: f.status,
+    additions: f.additions ?? 0,
+    deletions: f.deletions ?? 0,
+    patch: f.patch ?? null,
+    previousFilename: f.previous_filename ?? null,
+  }));
 }
 
 /**
@@ -547,17 +563,9 @@ export async function fetchReviewerPatch(params: {
     );
     if (!Array.isArray(files)) return null;
 
-    return renderReviewerPatch(
-      files.map((f) => ({
-        filename: f.filename,
-        status: f.status,
-        additions: f.additions ?? 0,
-        deletions: f.deletions ?? 0,
-        patch: f.patch ?? null,
-        previousFilename: f.previous_filename ?? null,
-      })),
-      { tokenBudget: params.tokenBudget },
-    );
+    return renderReviewerPatch(normalizeGithubPrFiles(files), {
+      tokenBudget: params.tokenBudget,
+    });
   } catch (err) {
     console.warn(`[reviewer-patch] Failed to fetch patch for PR #${params.prNumber}:`, err);
     return null;
