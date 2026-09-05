@@ -390,6 +390,40 @@ describe('fireMissionReleaseIfComplete', () => {
       expect(String(noteInserts[0].body)).toContain('skipped');
     });
 
+    it('an Option A′ policy refusal clears the claim WITHOUT a failure note', async () => {
+      // For an opted-in mission every per-task release attempt is refused by
+      // design — the mission releases through its mission PR. The note said
+      // "Mission release attempt failed" on the intended path, every time
+      // completion was evaluated, and a feed that cries failure on the happy
+      // path stops being read.
+      mockExecuteRelease.mockResolvedValue({
+        status: 'skipped',
+        message: 'Release: task PR targets the mission integration branch (mission/example-slug-0a1b2c3d)',
+        skipReason: 'mission_integration_branch',
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      // The claim invariant is untouched: never released, attempt handed back.
+      expect(missionWrites.some(w => w.releasedAt instanceof Date)).toBe(false);
+      expect(missionWrites.some(w => w.releaseAttemptedAt === null)).toBe(true);
+      // Only the note is suppressed.
+      expect(noteInserts).toHaveLength(0);
+    });
+
+    it('still posts a note for a skipped release that is NOT an A′ refusal', async () => {
+      // The suppression must be keyed on the discriminator, not on `skipped` —
+      // otherwise it would silence the very regression the note exists for.
+      mockExecuteRelease.mockResolvedValue({
+        status: 'skipped',
+        message: 'feature task — code lands on dev and is promoted by the release task',
+      });
+
+      await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
+
+      expect(noteInserts).toHaveLength(1);
+    });
+
     it('releases the claim when the strategy is not configured', async () => {
       mockWorkspacesFindFirst.mockResolvedValue({
         releaseConfig: { enabled: false, trigger: 'on_mission_complete' },

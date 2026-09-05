@@ -60,12 +60,22 @@ remains available if long missions turn out to end in conflict resolution often
 enough to pay for it — that is the failure mode to watch, and it is recoverable
 per-mission, which is why it was not worth building up front.
 
-**6. The CBM seed refresh is driven by the next claim, not by the merge
-webhook.** The seed cache is a directory on the runner host; the webhook is
-serverless. There is no web→runner channel for this today, and a Pusher
-subscriber nothing publishes to would be a path that looks wired and measures
-nothing. The two lines that would close the latency gap are recorded in the
-follow-ups.
+**6. The CBM seed refresh is driven by BOTH the next claim and a
+`graph:base-advanced` Pusher event.** The seed cache is a directory on the
+runner host and the webhook is serverless, so this needs a publisher and a
+subscriber; shipping either half alone would be a path that looks wired and
+measures nothing, which is why the first cut deliberately built neither and
+recorded the two lines as a follow-up. Both halves landed together later in the
+same branch: the webhook announces when a merged PR's base was a mission
+integration branch, and the runner resolves its own checkout and refreshes.
+Next-claim refresh remains the fallback, so a lost event costs latency and
+nothing else.
+
+The gate that keeps this honest is `pusher-subscriber-coverage.test.ts`'s new
+`RUNNER_CONSUMED_EVENTS` category, which asserts the runner really binds each
+event rather than trusting a prose reason — `task:assigned` had sat in the
+server-only allowlist explaining that the runner consumes it, with nothing
+checking that it still did.
 
 **Two defects this work found rather than inherited**, both of which A′ turns
 from annoying into destructive:
@@ -791,13 +801,17 @@ this must read `workers.branch` / `missions.workingBranch` instead of re-derivin
 keyed on `(repoPath, baseRef)`. Two corrections to the finding below: the file is
 `apps/runner/src/cbm-enforcement.ts`, not under `apps/web` — the whole seed path
 is runner-side — and the record's field is `ref`, not `baseRef`. That first one
-matters: **there is no web→runner channel for a webhook-driven refresh**, so the
-refresh is driven by the next claim in the mission instead, and the two lines
-that would close the latency gap (a `graph:base-advanced` Pusher event plus a
-subscriber) are recorded rather than built, because a subscriber nothing
-publishes to is a path that looks wired and measures nothing. A base equal to the
-repo default **must** collapse into the legacy unkeyed slot or every ordinary
-task misses a slot nothing ever wrote, losing the shared cache fleet-wide.
+matters: **there was no web→runner channel for a webhook-driven refresh**, so
+next-claim refresh is the fallback and the latency gap is closed by a
+`graph:base-advanced` Pusher event plus a runner subscriber — built together, in
+the same branch, because either half alone is a path that looks wired and
+measures nothing. A base equal to the repo default **must** collapse into the
+legacy unkeyed slot or every ordinary task misses a slot nothing ever wrote,
+losing the shared cache fleet-wide. **And "not the repo default" is not the same
+set as "is a mission integration branch"** — that gap sent CI-retry tasks,
+stacked plan phases, resumed tasks and mission verify tasks to named slots
+nothing had written, so the composite key is narrowed to actual mission
+integration branches.
 Original finding: Two pieces. First, fix
 B15 — it is a live defect and it is also what makes today's fleet slow. Second, key
 the seed record and `spawnCbmSeedRefresh` on `(repoPath, baseRef)`; both fields
@@ -949,6 +963,120 @@ mission at a time" real rather than aspirational.
    `mission:completion_decision` (U10). **Do the `initiativeGroups` deletion before
    any A′ edit to `MissionGrid.tsx`**, or the two collide.
 
+## Review findings (2026-09-05)
+
+Three adversarial reviews ran against the implemented branch. The dep-gate
+deadlock that killed Option A was confirmed **not** to recur — but only because
+the bookkeeping owner row carries no `pathManifest` and is never named in
+another task's `dependsOn`, so `findBlockingPr` skips it. That is one undocumented
+line of defence; anything that later back-fills a manifest onto bookkeeping rows
+turns the mission PR into a repo-wide claim-time mutex.
+
+What the reviews found instead was that **the mission PR had exactly one trigger
+and several ways to never open**, and the completion gate now *refuses* in that
+state — so every transient gap became terminal. Fixed:
+
+- A closed-unmerged PR on any deliverable pinned the mission at `prs_unmerged`
+  forever. Every other gate in the codebase carries that exclusion; this one did
+  not. Also now reads the **newest** worker per task, ordered in JS because
+  `workers.startedAt` is nullable and Postgres `DESC` sorts NULLs first.
+- Landedness now comes from `workers.mergedAt`, not `tasks.status`. The webhook
+  stamps the former before the latter, so two final task PRs merging
+  concurrently each saw the other's task as `in_progress` and **both** declined
+  to open the mission PR.
+- A **merged** mission PR no longer short-circuits the opener. It did, so work
+  filed after the mission PR merged was stranded on the integration branch while
+  the completion gate — seeing a merged mission PR — passed the mission as
+  shipped. A false green, not a stall.
+- A **closed** mission PR now reports `mission_pr_closed` rather than looking
+  like an open one. Reopening automatically would fight an explicit human
+  decision; silence left the mission unable to complete with nothing saying why.
+- The opener reuses the mission's existing owner rows and **adopts a PR GitHub
+  already has** (pre-check, and again on 422). The old insert-before-POST comment
+  claimed a failed create left "a row to attach to on the next pass" — nothing
+  attached, so each retrigger leaked a dead task+worker pair, one of which the
+  completion gate could pick and refuse on forever.
+- `canCompleteMission` and the opener now share **one** implementation of "what
+  state is the mission PR in". They answered it separately and disagreed.
+- Completion is gated only when something actually landed on the integration
+  branch, so an all-cancelled mission is still closable — the rule stated a few
+  checks earlier in that same function.
+- The release path must never merge from the integration branch, in either
+  direction: not a deliverable task's branch cut from it, and not the branch
+  itself via the bookkeeping owner row.
+- The organizer's planning task no longer takes `headBranch = workingBranch` for
+  an opted-in mission. The claim route uses it verbatim, so the planning worker's
+  branch *was* the integration branch, cut from trunk — a force-push there would
+  have reset the branch and destroyed the mission's landed work.
+- `mission-criteria-verify` now gates its `baseBranch` on the opt-in. It named
+  `workingBranch` for every mission, which for a non-opted-in one is a ref that
+  does not exist on the remote.
+- The primary-PR slot is restricted to the mission's own PR for an opted-in
+  mission. The trunk gate alone was not the same rule: a task PR passing an
+  explicit `base` to `create_pr` still lands on trunk and would take the slot,
+  making the real mission PR's guarded claim a silent no-op. **P2's "DONE" was
+  therefore an overstatement until this landed.**
+
+### The inertness claim, stated accurately
+
+The earlier phrasing — *"every path added returns today's answer when the flag is
+off"* — is too strong. The precise version:
+
+> Every path **gated on `integrationBranchEnabled`** returns today's answer when
+> it is false. Five changes are deliberately not gated on it.
+
+Those five, so nobody has to rediscover them:
+
+1. **`notMissionIntegrationMerge()`** keys on the `mission/` **branch-name
+   shape**, because release accounting walks `workers` and never has a mission
+   row. Its one reachable false-positive path — a verify task recording a
+   `mission/*` base for a mission that never opted in — is closed above.
+2. **The CBM seed composite key** keyed on "base ≠ repo default", which is a
+   much larger set than "is a mission integration branch" and caught CI-retry
+   tasks, stacked plan phases, resumed tasks and verify tasks. Narrowed.
+3. **`resolveWorktreeBase`'s divergence rule** keys on which context field the
+   candidate came from, so it changes behaviour for stacked phases too. Judged
+   correct — a declared base being ahead of trunk is the point of the branch.
+4. **`requireBranchDeleted`** is retired unconditionally, which *loosens* a
+   completion gate for any stored criterion that set it. Deliberate: nothing has
+   ever populated `workers.branchDeleted` — there is no such column — so the
+   option could only ever resolve `UNVERIFIED`, and it was a live checkbox that
+   made a mission permanently uncompletable.
+5. **The organizer prompt text** changed for both shapes, and the seeded
+   `default-roles.ts` string only reaches **new teams** — so existing teams get
+   no A′ guidance even after opting a mission in. Worth closing separately.
+
+### Recorded, not fixed
+
+- **The default tier cannot ship a mission** unless the aggregate size gate is
+  exempted for the mission PR: `DEFAULT_MERGE_POLICY` is `auto-threshold` with
+  `maxLines: 800`, and the mission PR is the union of every task diff. "The tier
+  applies at the mission PR" is only meaningful once that is true.
+- **The planner is told to stop chaining and the platform serializes anyway.**
+  `PlanStep` has no `pathManifest` field and `approve-plan` never sets one, so
+  every child has `pathManifest = null`, `declaresNoScope` is true, and claim
+  time defers mission siblings with undeclared scope. The promised parallelism
+  cannot happen, and dropping `dependsOn` removes the only ordering guarantee
+  while buying nothing. Self-clearing, so not a deadlock.
+- **The `prBaseRef` webhook sync bumps `workers.updatedAt`**, which is the
+  stale-worker clock and feeds `COALESCE(completedAt, updatedAt)` on the
+  initiative surfaces. Unconditional on the first `pull_request` event per PR.
+- **The tier a card *displays* is not the tier that admitted it.** The escalation
+  inbox and Home both compute the `policyTier` they render from
+  `resolvePolicy(ws)` alone — no mission, no base ref — while admission uses the
+  full four-argument call. Pre-existing and cosmetic, but it is the same class of
+  drift this whole review kept finding.
+- **`merged_unshipped` no longer fits an A′ mission awaiting its gate.** Ship
+  state now correctly reads `building` for "all task PRs merged into the
+  integration branch, mission PR open, nothing on trunk" — truthful, but it reads
+  as "still producing its diff" and loses the "awaiting the single review gate"
+  nuance. A distinct derived state (input: `findMissionPrOwner().state`, no
+  schema change) is a design decision rather than a bug fix.
+- **The default `auto-threshold` size cap was a hardcoded fallback too.**
+  `auto-merge.ts` reads `policy.threshold?.maxLines ?? 800`, so a policy carrying
+  no threshold at all was also size-gated — the mission-PR exemption had to
+  cover that path, not just `DEFAULT_MERGE_POLICY`.
+
 **Follow-ups opened by building A′ (2026-09-05).**
 
 - **A stale `context.baseBranch` survives a `'missing'` fallback.** When the
@@ -958,11 +1086,9 @@ mission at a time" real rather than aspirational.
   reachable **without** A′: step-2 stacks on step-1's branch, step-1's PR merges,
   GitHub auto-deletes the branch, step-2 claims. Wants a guard in the
   PR-creation path (verify the base exists, else fall back to trunk and say so).
-- **CBM refresh latency.** The seed refreshes on the next claim in the mission,
-  not on the merge. Closing that costs exactly two lines — a
-  `graph:base-advanced` Pusher event from the webhook and a subscriber in
-  `pusher-manager.ts` — deliberately not built, because a subscriber nothing
-  publishes to would be another path that looks wired and measures nothing.
+- ~~**CBM refresh latency.**~~ **Closed.** The `graph:base-advanced` event and
+  its runner subscriber landed together later in the same branch, with
+  next-claim refresh kept as the fallback so a lost event costs latency only.
 - **`readCbmSeedRecord`'s record/ref agreement check is unreachable through the
   public API** and stays green when mutated alone; it is a second independent
   barrier, not dead code, and it is flagged rather than claimed as covered.

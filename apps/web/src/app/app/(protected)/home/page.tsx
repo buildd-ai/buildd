@@ -12,7 +12,7 @@ import { getUserWorkspaceIds, getUserTeamIds, getTeamWorkspaceIds } from '@/lib/
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, summariseActionQueueAge } from '@/lib/action-queue';
@@ -1060,6 +1060,16 @@ export default async function HomePage({
                   : null,
                 prOpenedAt: w.completedAt ?? null,
                 now: gateNow,
+                // Option A′: the tier drop in resolvePolicy is also what removes
+                // the reviewer, and "no reviewer will ever run" otherwise reads
+                // as "a human must merge this" — the exact inverse of the intent.
+                // The gate needs the base-ref fact itself, not just its shadow
+                // in the tier. Authoritative predicate, because the mission row
+                // (workingBranch + integrationBranchEnabled) is selected above.
+                isMissionIntegrationTaskPr: isMissionIntegrationBase({
+                  baseRef: w.prBaseRef,
+                  mission,
+                }),
               }));
             }
             // ─────────────────────────────────────────────────────────────────────
@@ -1461,8 +1471,14 @@ export default async function HomePage({
                 // or running reviewer task means the agent still owns it — the
                 // dependency urgency is real, but the actor isn't the human, so it
                 // belongs on the in-flight card, not a Waiting on You MERGE card.
+                //
+                // `!== 'human'` rather than `=== 'agent'`: an Option A′ task PR is
+                // owned by the platform, which merges it unattended, so the
+                // dependency urgency is real but there is nothing to ask a human
+                // for. It has no in-flight card either (no reviewer is running),
+                // so it correctly renders nowhere at all.
                 const gate = reviewerGateMap.get(upstream.id);
-                if (gate && gate.actor === 'agent') {
+                if (gate && gate.actor !== 'human') {
                   const inFlightCard = agentReviewingPrs.find(c => c.taskId === upstream.id)
                     ?? reviewQueuedPrs.find(c => c.taskId === upstream.id);
                   if (inFlightCard) {

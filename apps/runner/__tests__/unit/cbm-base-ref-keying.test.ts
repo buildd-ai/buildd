@@ -31,6 +31,7 @@ import {
   normalizeBaseRef,
   readCbmSeedRecord,
   refreshCbmSeedForBaseAdvance,
+  spawnCbmSeedRefresh,
   resetCbmSeedRefreshState,
   SEED_RETRY_COOLDOWN_MS,
   seedBaseRefFor,
@@ -356,5 +357,204 @@ describe('refreshCbmSeedForBaseAdvance — bounded, dropped not queued', () => {
     const h = harness();
     expect(h.run(REPO, '   ')).toBe('no_base_ref');
     expect(h.calls).toHaveLength(0);
+  });
+});
+
+/**
+ * The in-flight lease has a HOLDER, not just a key.
+ *
+ * The lease lapses (see above), which is what stops a lost exit signal from
+ * latching the key forever — but that means two spawns can legitimately be
+ * alive for one key at once, and release was keyed only by the key. So a wedged
+ * seeder's late exit deleted whichever lease happened to be there, including a
+ * newer holder's, and the very next request spawned a SECOND concurrent seeder
+ * for the same `(repoPath, baseRef)`. Both then index the same seed clone under
+ * the same fixed `CBM_RUNTIME_DIR` — the shared-runtime-dir contention this
+ * fleet has already been bitten by.
+ *
+ * Same argument for the cooldown record: a late non-zero exit must not clear a
+ * cooldown that a newer caller set, or one wedged child re-opens the burst the
+ * cooldown exists to absorb.
+ */
+describe('seed refresh lease — released only by its own holder', () => {
+  /** Like the harness above, but exits are addressable per spawn. */
+  function holderHarness(now: () => number) {
+    const calls: Array<{ args: string[] }> = [];
+    const exits: Array<Array<(code: number | null) => void>> = [];
+    const spawnProcess = ((_cmd: string, args: string[]) => {
+      const mine: Array<(code: number | null) => void> = [];
+      calls.push({ args });
+      exits.push(mine);
+      return {
+        unref: () => {},
+        on: (ev: string, cb: (code: number | null) => void) => { if (ev === 'exit') mine.push(cb); },
+      };
+    }) as any;
+    const deps = {
+      spawnProcess,
+      pathExists: () => true,
+      scriptPath: '/runner/scripts/cbm-seed.ts',
+      runtime: '/usr/bin/bun',
+      openLogFd: () => 7,
+      now,
+    };
+    return {
+      calls,
+      /** Fire the exit of the Nth spawn (0-indexed), in spawn order. */
+      exitOf: (n: number, code: number | null) => exits[n].forEach(cb => cb(code)),
+      advance: (repoPath: string, baseRef: string) =>
+        refreshCbmSeedForBaseAdvance({ repoPath, baseRef }, deps),
+      claim: (repoPath: string, baseRef: string) =>
+        spawnCbmSeedRefresh(repoPath, { ...deps, baseRef }),
+    };
+  }
+
+  test("a wedged seeder's late exit does not release a newer holder's lease", () => {
+    let clock = 1_000;
+    const h = holderHarness(() => clock);
+
+    // A spawns and wedges.
+    expect(h.advance(REPO, MISSION)).toBe('spawned');
+
+    // The lease lapses, so B is allowed to spawn for the same key.
+    clock += SEED_RETRY_COOLDOWN_MS + 1;
+    expect(h.advance(REPO, MISSION)).toBe('spawned');
+
+    // A's wedged child finally exits. It is no longer the holder — B is.
+    clock += 1_000;
+    h.exitOf(0, 0);
+
+    // So C must still be refused: B is genuinely in flight, and a second
+    // concurrent seeder would collide with it in the shared runtime dir.
+    expect(h.advance(REPO, MISSION)).toBe('already_in_flight');
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test("the holder's own exit still releases the lease", () => {
+    // The guard must not become the permanent latch it is protecting against.
+    let clock = 1_000;
+    const h = holderHarness(() => clock);
+    expect(h.advance(REPO, MISSION)).toBe('spawned');
+    h.exitOf(0, 0);
+    expect(h.advance(REPO, MISSION)).toBe('spawned');
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test("a wedged seeder's late failure does not clear a newer caller's cooldown", () => {
+    let clock = 1_000;
+    const h = holderHarness(() => clock);
+
+    // A spawns on the claim path (cooldown applies) and wedges.
+    expect(h.claim(REPO, MISSION)).toBe('spawned');
+
+    // Cooldown and lease both lapse; B spawns and sets a fresh cooldown.
+    clock += SEED_RETRY_COOLDOWN_MS + 1;
+    expect(h.claim(REPO, MISSION)).toBe('spawned');
+
+    // B finishes cleanly, releasing its own lease and leaving its cooldown.
+    h.exitOf(1, 0);
+
+    // A's wedged child now exits non-zero. Clearing the cooldown here would be
+    // clearing B's, and the next claim would spawn inside B's cooldown window.
+    h.exitOf(0, 1);
+
+    expect(h.claim(REPO, MISSION)).toBe('recently_attempted');
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test("a failing holder still clears its own cooldown so one failure cannot suppress the next attempt", () => {
+    let clock = 1_000;
+    const h = holderHarness(() => clock);
+    expect(h.claim(REPO, MISSION)).toBe('spawned');
+    h.exitOf(0, 1);
+    expect(h.claim(REPO, MISSION)).toBe('spawned');
+    expect(h.calls).toHaveLength(2);
+  });
+
+  test('resetCbmSeedRefreshState clears leases regardless of holder', () => {
+    let clock = 1_000;
+    const h = holderHarness(() => clock);
+    expect(h.advance(REPO, MISSION)).toBe('spawned');
+    expect(h.advance(REPO, MISSION)).toBe('already_in_flight');
+    resetCbmSeedRefreshState();
+    expect(h.claim(REPO, MISSION)).toBe('spawned');
+  });
+});
+
+/**
+ * A composite slot is for a MISSION INTEGRATION BRANCH — not for "anything that
+ * is not the repo default".
+ *
+ * The two are wildly different sets. `worktreeBaseRef` is
+ * `origin/<context.resumeBranch ?? context.baseBranch>` (resolveWorktreeBase),
+ * and four ordinary paths declare a base that is not trunk and has nothing to do
+ * with the A′ opt-in flag:
+ *
+ *   - a CI retry (`ci-retry.ts` sets baseBranch = resumeBranch = worker.branch),
+ *   - any resumed attempt, same field,
+ *   - a stacked plan phase (`approve-plan.ts` resolves the predecessor's
+ *     `buildd/…` branch into `context.baseBranch`),
+ *   - and every mission command-criterion verify task (`mission-criteria-verify`
+ *     declares the mission working branch).
+ *
+ * For the `buildd/…` ones a composite slot is wrong twice over. On the read side
+ * the task misses the shared trunk seed it used to hit and pays a full bootstrap
+ * index — while the log line reads like a correct safety refusal, so it looks
+ * fine. On the write side the claim-path refresh then indexes a NEW PERMANENT CBM
+ * project for a branch that will be deleted on merge, and the seeder prunes
+ * nothing. It also loosens the concurrency bound: the cooldown used to admit one
+ * seeder per repo, and a per-(repo, base) key admits one per declared base.
+ *
+ * So: mission integration branches get their own slot, everything else is
+ * byte-identical to pre-P9.
+ */
+describe('seedBaseRefFor — only a mission integration branch earns its own slot', () => {
+  const CI_RETRY_BASE = 'origin/buildd/abcd1234-fix-failing-ci';
+  const STACKED_BASE = 'origin/buildd/ef567890-phase-one';
+
+  test('a CI-retry / resume branch collapses to the unkeyed slot', () => {
+    expect(seedBaseRefFor({ baseRef: CI_RETRY_BASE, defaultBaseRef: TRUNK })).toBeUndefined();
+  });
+
+  test("a stacked phase's predecessor branch collapses to the unkeyed slot", () => {
+    expect(seedBaseRefFor({ baseRef: STACKED_BASE, defaultBaseRef: TRUNK })).toBeUndefined();
+  });
+
+  test('an arbitrary human branch collapses to the unkeyed slot', () => {
+    expect(seedBaseRefFor({ baseRef: 'origin/feat/some-experiment', defaultBaseRef: TRUNK }))
+      .toBeUndefined();
+  });
+
+  test('a mission integration branch still gets its own slot, in every spelling', () => {
+    // The shared, long-lived, genuinely divergent base — the case P9 is about.
+    expect(seedBaseRefFor({ baseRef: MISSION, defaultBaseRef: TRUNK })).toBe(normalizeBaseRef(MISSION));
+    expect(seedBaseRefFor({ baseRef: 'mission/tidy-imports-1a2b3c4d', defaultBaseRef: TRUNK }))
+      .toBe(normalizeBaseRef(MISSION));
+    expect(seedBaseRefFor({ baseRef: 'refs/remotes/origin/mission/tidy-imports-1a2b3c4d', defaultBaseRef: TRUNK }))
+      .toBe(normalizeBaseRef(MISSION));
+  });
+
+  test('a CI-retry task hits the existing unkeyed trunk seed instead of paying a full index', () => {
+    // The whole point: pre-P9 behaviour, restored. A hit here is what keeps
+    // skipBootstrapIndex true for a retry, as it was before the composite key.
+    registerSeed(REPO, TRUNK, 'proj-trunk', true);
+    const a = buildCbmActivation(ctx({ baseRef: CI_RETRY_BASE, defaultBaseRef: TRUNK }));
+    expect(a.sharedCache).toBe(true);
+    expect(a.skipBootstrapIndex).toBe(true);
+    expect(a.cbmProject).toBe('proj-trunk');
+    // And it is NOT reported as a base mismatch — nothing was refused.
+    expect(a.seedBaseMismatch).toBeUndefined();
+  });
+
+  test('a mission task is still refused the trunk seed', () => {
+    // The narrowing must not undo P9 itself: a trunk graph handed to a mission
+    // task together with skipBootstrapIndex is the confidently-wrong-answer case.
+    registerSeed(REPO, TRUNK, 'proj-trunk', true);
+    const a = buildCbmActivation(ctx({ baseRef: MISSION, defaultBaseRef: TRUNK }));
+    expect(a.skipBootstrapIndex).toBeFalsy();
+    expect(a.seedBaseMismatch).toEqual({
+      wanted: normalizeBaseRef(MISSION)!,
+      found: normalizeBaseRef(TRUNK)!,
+    });
   });
 });

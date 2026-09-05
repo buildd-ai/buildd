@@ -21,18 +21,52 @@ import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 
-/** Extract the HTTP status out of the error `githubApi` throws on non-2xx. */
+/**
+ * Extract the HTTP status out of the error `githubApi` throws on non-2xx.
+ *
+ * The thrown message is `GitHub API error: ${status} ${body}` (see
+ * `@/lib/github`), so the response body travels with the status and the
+ * predicates below can read it.
+ */
 function githubErrorStatus(err: unknown): number | null {
   const msg = err instanceof Error ? err.message : String(err);
   const m = /GitHub API error: (\d{3})/.exec(msg);
   return m ? Number(m[1]) : null;
 }
 
+function githubErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Does this 422 mean "the ref you asked me to create is already there"?
+ *
+ * 422 is NOT a synonym for that. `POST /git/refs` also answers 422 for a sha
+ * that does not exist (mistyped, or GC'd between the trunk lookup and the
+ * create), for a ref name it refuses, and for generic validation failures. In
+ * every one of those the branch was not created — so reporting success means
+ * the caller posts no note, nothing points at the branch, and then every task
+ * PR of the mission fails to open against a base ref that is absent. The only
+ * 422 whose post-condition matches ours is the one that says so.
+ */
+function isReferenceAlreadyExists(err: unknown): boolean {
+  return /reference already exists/i.test(githubErrorMessage(err));
+}
+
+/**
+ * An unborn repository — no commits, so `refs/heads/*` cannot exist and cannot
+ * be created. Its own reason because it is the one failure here that no retry
+ * fixes: somebody has to push a first commit.
+ */
+function isEmptyRepository(err: unknown): boolean {
+  return githubErrorStatus(err) === 409 && /repository is empty/i.test(githubErrorMessage(err));
+}
+
 export type EnsureIntegrationBranchResult =
   | { ok: true; branch: string; created: boolean }
   | {
       ok: false;
-      reason: 'not_opted_in' | 'no_working_branch' | 'no_repo' | 'api_error';
+      reason: 'not_opted_in' | 'no_working_branch' | 'no_repo' | 'empty_repo' | 'api_error';
       detail?: string;
     };
 
@@ -45,9 +79,10 @@ export type EnsureIntegrationBranchResult =
  * opted-in mission would fail to open a PR at all.
  *
  * Idempotent, and safe under concurrency — two callers racing to create the
- * same ref produce one 201 and one 422 "Reference already exists", and 422 is
- * treated as success rather than as an error, because it means exactly what we
- * wanted to be true.
+ * same ref produce one 201 and one 422 "Reference already exists", and THAT
+ * 422 is treated as success rather than as an error, because it means exactly
+ * what we wanted to be true. Every other 422 is a failure: see
+ * `isReferenceAlreadyExists`.
  */
 export async function ensureMissionIntegrationBranch(
   missionId: string,
@@ -88,8 +123,11 @@ export async function ensureMissionIntegrationBranch(
     await githubApi(installationId, `/repos/${repo.fullName}/git/ref/heads/${branch}`);
     return { ok: true, branch, created: false };
   } catch (err) {
+    if (isEmptyRepository(err)) {
+      return { ok: false, reason: 'empty_repo', detail: githubErrorMessage(err) };
+    }
     if (githubErrorStatus(err) !== 404) {
-      return { ok: false, reason: 'api_error', detail: err instanceof Error ? err.message : String(err) };
+      return { ok: false, reason: 'api_error', detail: githubErrorMessage(err) };
     }
   }
 
@@ -118,9 +156,16 @@ export async function ensureMissionIntegrationBranch(
     );
     return { ok: true, branch, created: true };
   } catch (err) {
-    // 422 = the ref already exists. A concurrent caller won the race; the
-    // post-condition we care about holds either way.
-    if (githubErrorStatus(err) === 422) return { ok: true, branch, created: false };
-    return { ok: false, reason: 'api_error', detail: err instanceof Error ? err.message : String(err) };
+    // A concurrent caller won the race and the ref is already there: the
+    // post-condition we care about holds, so this is success. Read the BODY,
+    // not just the 422 — see isReferenceAlreadyExists for why a bare status
+    // check turns three real failures into a silent success.
+    if (githubErrorStatus(err) === 422 && isReferenceAlreadyExists(err)) {
+      return { ok: true, branch, created: false };
+    }
+    if (isEmptyRepository(err)) {
+      return { ok: false, reason: 'empty_repo', detail: githubErrorMessage(err) };
+    }
+    return { ok: false, reason: 'api_error', detail: githubErrorMessage(err) };
   }
 }

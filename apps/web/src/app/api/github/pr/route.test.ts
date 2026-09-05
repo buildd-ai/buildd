@@ -14,6 +14,7 @@ const mockMergePullRequest = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGithubReposFindFirst = mock(() => null as any);
+const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 const mockWorkersUpdate = mock(() => ({
@@ -48,6 +49,11 @@ mock.module('@buildd/core/db', () => ({
       },
       githubRepos: { findFirst: mockGithubReposFindFirst },
       workspaces: { findMany: mockWorkspacesFindMany },
+      // `claimMissionPrimaryPr` reads the mission to check whether it opted
+      // into an integration branch: under Option A′ only the mission's own PR
+      // may take the slot, while for every other mission the column keeps its
+      // legacy meaning. Null = not opted in, which is what these cases assert.
+      missions: { findFirst: mockMissionsFindFirst },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -64,7 +70,7 @@ mock.module('drizzle-orm', () => ({
 
 // Mock schema
 mock.module('@buildd/core/db/schema', () => ({
-  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', workspaceId: 'workspaceId', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
+  workers: { id: 'id', accountId: 'accountId', taskId: 'taskId', prUrl: 'prUrl', prNumber: 'prNumber', prBaseRef: 'prBaseRef', workspaceId: 'workspaceId', updatedAt: 'updatedAt', mergedAt: 'mergedAt', prLifecycleStatus: 'prLifecycleStatus', lastCommitSha: 'lastCommitSha' },
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
   missions: { id: 'id', primaryPrNumber: 'primaryPrNumber', primaryPrUrl: 'primaryPrUrl', updatedAt: 'updatedAt' },
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
@@ -1098,6 +1104,49 @@ describe('POST /api/github/pr', () => {
     expect('prBaseRef' in capturedSetData).toBe(false);
   });
 
+  /**
+   * Record every `db.update(workers)` call with BOTH halves — the values and
+   * the predicate. A recorder that keeps only `set()` cannot see the guard at
+   * all: a write and a guarded write look identical from the values alone,
+   * which is how an unconditional overwrite hides in a green suite.
+   */
+  function recordWorkerUpdates(): Array<{ set: any; where: any }> {
+    const calls: Array<{ set: any; where: any }> = [];
+    mockWorkersUpdate.mockReturnValue({
+      set: (data: any) => {
+        const call = { set: data, where: null as any };
+        calls.push(call);
+        return {
+          where: (cond: any) => {
+            call.where = cond;
+            const p: any = Promise.resolve([]);
+            p.returning = () => Promise.resolve([{ id: 'w-1' }]);
+            return p;
+          },
+        };
+      },
+    } as any);
+    return calls;
+  }
+
+  /** Flatten the mocked drizzle predicate tree into its leaf descriptors. */
+  function predicateLeaves(cond: any): any[] {
+    if (!cond || typeof cond !== 'object') return [];
+    if (Array.isArray(cond.conditions)) return cond.conditions.flatMap(predicateLeaves);
+    return [cond];
+  }
+
+  function adoptedPrWithBase(baseRef: string) {
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing',
+      base: { ref: baseRef, sha: 'basesha3' },
+    });
+  }
+
   it('backfills prBaseRef when adopting an existing PR for the same head', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({
@@ -1109,22 +1158,8 @@ describe('POST /api/github/pr', () => {
       prBaseRef: null,
       workspace: WORKSPACE_OK,
     });
-    mockGithubReposFindFirst.mockResolvedValue(REPO);
-    mockGithubApi.mockResolvedValueOnce([
-      { number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing' },
-    ]);
-    mockGithubApi.mockResolvedValueOnce({
-      number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing',
-      base: { ref: 'mission/example-slug-0a1b2c3d', sha: 'basesha3' },
-    });
-
-    let capturedSetData: any = null;
-    const mockWhere = mock(() => Promise.resolve());
-    const mockSet = mock((data: any) => {
-      capturedSetData = data;
-      return { where: mockWhere };
-    });
-    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1132,7 +1167,95 @@ describe('POST /api/github/pr', () => {
     });
     await POST(req);
 
-    expect(capturedSetData.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+    const baseRefWrite = updates.find(c => 'prBaseRef' in c.set);
+    expect(baseRefWrite?.set.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('guards the adopt-path prBaseRef write so it can only fill a NULL', async () => {
+    // The value comes from a `GET /pulls/{n}` taken earlier in this request, so
+    // it can already be older than what the `pull_request` webhook recorded —
+    // and there is no ordering signal here to tell. An unguarded write can
+    // therefore move prBaseRef BACKWARDS onto a mission integration branch that
+    // a retarget already left, and handleCheckSuiteEvent then resolves the merge
+    // policy from that stale value: the tier drops to auto-threshold and the PR
+    // can auto-merge into trunk with the human gate removed. So the write is
+    // restricted to the one case that cannot be wrong: filling an unknown.
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: null,
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    }));
+
+    const baseRefWrite = updates.find(c => 'prBaseRef' in c.set);
+    expect(baseRefWrite).toBeDefined();
+    const leaves = predicateLeaves(baseRefWrite!.where);
+    expect(leaves).toContainEqual({ field: 'prBaseRef', type: 'isNull' });
+    expect(leaves).toContainEqual({ field: 'id', value: 'w-1', type: 'eq' });
+  });
+
+  it('does not write prBaseRef at all when the worker already has one', async () => {
+    // A recorded value came from somewhere newer than our snapshot (the webhook,
+    // or this route's own create path). Not writing is the safe direction:
+    // leaving a correct value alone costs nothing, replacing it with a stale one
+    // costs a review gate.
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: 'trunk-branch', // already retargeted off the mission branch
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    }));
+
+    expect(updates.find(c => 'prBaseRef' in c.set)).toBeUndefined();
+    // The rest of the adopt bookkeeping still happens.
+    expect(updates.some(c => c.set.prNumber === 55)).toBe(true);
+  });
+
+  it('keeps prBaseRef out of the unconditional adopt write', async () => {
+    // If it rides along in the eq(id)-only UPDATE, the guard above is dead code.
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: null,
+      workspace: WORKSPACE_OK,
+    });
+    adoptedPrWithBase('mission/example-slug-0a1b2c3d');
+    const updates = recordWorkerUpdates();
+
+    await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    }));
+
+    const adoptWrite = updates.find(c => c.set.prNumber === 55);
+    expect(adoptWrite).toBeDefined();
+    expect('prBaseRef' in adoptWrite!.set).toBe(false);
   });
 
   it("copies the sibling's prBaseRef when mirroring a same-task PR", async () => {

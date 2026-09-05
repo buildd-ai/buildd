@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
-import { missionIntegrationBase } from '@buildd/core/mission-integration';
+import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { jsonResponse } from '@/lib/api-response';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { resolveCreatorContext } from '@/lib/task-service';
@@ -860,7 +860,12 @@ export async function POST(req: NextRequest) {
           title.startsWith('Aggregate results:') ||
           title.startsWith('Evaluate mission completion:') ||
           title.startsWith('Mission:') ||
-          title.startsWith('Close mission')
+          title.startsWith('Close mission') ||
+          // Option A′: the row that owns a mission integration PR. The opener
+          // sets `taskClass` directly, but a caller can create one through this
+          // route, and as `work` it would become a deliverable of the very
+          // mission whose completion it is waiting on.
+          title.startsWith(MISSION_PR_TASK_PREFIX)
         ) ? 'bookkeeping' : 'work',
         runnerPreference: runnerPreference || 'any',
         requiredCapabilities: requiredCapabilities || [],

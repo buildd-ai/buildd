@@ -340,7 +340,23 @@ export interface ReleaseInput {
   isMissionRelease?: boolean;
 }
 
-export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult> {
+/**
+ * `ReleaseResult` plus the reason a `skipped` was a *policy* refusal rather than
+ * a failure.
+ *
+ * Declared here rather than widened in `packages/core/db/schema.ts` on purpose:
+ * that interface is the `$type` of `tasks.releaseResult`, and editing it — even
+ * type-only — invites the "changed schema.ts without a migration" gate. This
+ * field never needs to persist; it exists so the caller can tell "this mission
+ * releases through its mission PR" from "the release broke", which reads
+ * identically today and puts a `Mission release attempt failed` note on the
+ * mission feed for the intended path.
+ */
+export type ReleaseOutcome = ReleaseResult & {
+  skipReason?: 'mission_integration_branch';
+};
+
+export async function executeRelease(input: ReleaseInput): Promise<ReleaseOutcome> {
   const { taskId, workerId, workspaceId, isMissionRelease = false } = input;
 
   // Fetch task release flag and worker PR info
@@ -391,6 +407,40 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
       message:
         `Release: task PR targets the mission integration branch `
         + `(${task?.mission?.workingBranch ?? 'unknown'}) — the mission PR is the release unit, not this task.`,
+      skipReason: 'mission_integration_branch',
+    };
+  }
+
+  // Second arm: the release SOURCE must never be the integration branch itself.
+  //
+  // The arm above asks "where does this task's PR land", which catches a
+  // deliverable task of an A′ mission. It says nothing about the mission's own
+  // bookkeeping owner row, whose `prBaseRef` is TRUNK — the mission PR's base —
+  // while its `workers.branch` IS the integration branch. The worker-branch path
+  // below would then mergeIntoProd(worker.branch): `mission/<slug>` straight into
+  // the prod branch, bypassing both the mission PR and trunk, carrying every
+  // sibling commit on that branch to production unreviewed.
+  //
+  // Reachable today, and nondeterministically so: attemptMissionRelease releases
+  // through the mission's most recently updated completed task that has a worker
+  // (`tasks.updatedAt desc`), so whether a mission hit the arm above or this
+  // direct-to-prod merge depended on which row that ordering surfaced.
+  //
+  // `isMissionIntegrationBase` reads oddly with a branch in the `baseRef` slot,
+  // but it is exactly the question being asked — "is this ref this mission's
+  // integration branch" — and it is the authoritative form, comparing against
+  // `missions.workingBranch` rather than pattern-matching a name. It is also
+  // flag-gated, so a mission that never opted in is untouched even if its working
+  // branch is named `mission/…`. (Where the mission row is not in scope, the
+  // shape fallback is `looksLikeMissionIntegrationBranch` from the same module.)
+  if (isMissionIntegrationBase({ baseRef: worker?.branch, mission: task?.mission })) {
+    return {
+      status: 'skipped',
+      message:
+        `Release: the release source is the mission integration branch `
+        + `(${worker?.branch}) — it reaches production through the mission PR into `
+        + `trunk, never by a direct merge to the prod branch.`,
+      skipReason: 'mission_integration_branch',
     };
   }
 

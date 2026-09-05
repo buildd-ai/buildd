@@ -17,6 +17,10 @@ import { isGeneratedPath } from '@buildd/shared';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { isGeneratedMigrationPath } from '@/lib/migration-safety';
 import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
+import {
+  isMissionIntegrationBase,
+  type MissionIntegrationFields,
+} from '@buildd/core/mission-integration';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -25,6 +29,14 @@ import { classifyMergeFailure, dispatchConflictRetry, DEFAULT_MAX_CONFLICT_ITERA
  * Path checks are routed through the resolved policy:
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
+ *
+ * ## The one exemption (Option A′)
+ *
+ * `opts.mission` is the calling worker's mission, and it exists for exactly one
+ * decision: whether this PR is the mission's integration PR, in which case the
+ * AGGREGATE LINE THRESHOLD does not apply. Nothing else is relaxed — see the
+ * comment at the size check. Omit `opts` and this behaves exactly as it did
+ * before Option A′ existed.
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
@@ -32,6 +44,7 @@ export async function evaluateAutoMergeSafety(
   prNumber: number,
   headSha: string,
   policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  opts?: { mission?: MissionIntegrationFields | null },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   // CI completeness check — verify no check runs are still pending or failing.
   try {
@@ -128,12 +141,57 @@ export async function evaluateAutoMergeSafety(
     }
   }
 
+  // Read the PR once. Hoisted above the size check (it also feeds the
+  // mergeable_state check below) because the PR's HEAD ref is what identifies
+  // the mission integration PR. Fails soft: an unreadable PR leaves both the
+  // head ref and mergeable_state unknown, which keeps the size gate ON and
+  // leaves the conflict check a soft pass — exactly as before.
+  let prData: { mergeable_state?: string; head?: { ref?: string | null } } | null = null;
+  try {
+    prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+  } catch (err) {
+    console.warn(`Could not read PR ${repoFullName}#${prNumber}:`, err);
+  }
+
+  // Is this the mission's integration PR (integration branch → trunk)?
+  //
+  // `isMissionIntegrationBase` asks "is this ref the mission's integration
+  // branch"; for the mission PR the ref of interest is its HEAD, since its BASE
+  // is trunk. Authoritative predicate rather than the `mission/` shape
+  // heuristic: the only caller can reach the mission row, and a false positive
+  // here would drop the size gate for any branch that merely looks like a
+  // mission branch. An unknown head ref or a mission that has not opted in is
+  // false, so nothing changes for a mission that is not using Option A′.
+  const isMissionIntegrationPr = isMissionIntegrationBase({
+    baseRef: prData?.head?.ref ?? null,
+    mission: opts?.mission ?? null,
+  });
+
   const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
   const sourceFiles = files.filter(
     (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
   );
   const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
-  if (totalLines > maxLines) {
+  // Option A′: the AGGREGATE line threshold does not apply to a mission
+  // integration PR. That PR is the union of every task diff in the mission, and
+  // each of those diffs was already size-gated when it merged into the
+  // integration branch — 800 lines is the right granularity per task, and
+  // re-applying it to the union double-counts a check that already passed.
+  // Under the DEFAULT policy the union is over the cap essentially by
+  // construction, which would make every mission PR unmergeable by the platform
+  // and reduce "the tier applies at the mission PR" to a claim that only holds
+  // for operators who explicitly configured a tier.
+  //
+  // ONLY the aggregate size gate is exempt. Everything else in this function
+  // still runs for a mission PR, unchanged and in the same order: CI-green
+  // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
+  // operation-class inspector, and the conflict / branch-protection checks.
+  if (isMissionIntegrationPr && totalLines > maxLines) {
+    console.log(
+      `[auto-merge] ${repoFullName}#${prNumber}: mission integration PR — aggregate size gate not applied ` +
+        `(${totalLines} source lines > limit ${maxLines}); each task PR was size-gated on the way in`,
+    );
+  } else if (totalLines > maxLines) {
     return {
       ok: false,
       reason: `diff size ${totalLines} source lines > limit ${maxLines} (${files.length - sourceFiles.length} noise files excluded)`,
@@ -142,18 +200,14 @@ export async function evaluateAutoMergeSafety(
 
   // Conflict detection — check GitHub's mergeable_state before attempting merge.
   // 'dirty' = conflicts with base; 'blocked' = branch protection or review required.
-  // 'unknown' means GitHub is still computing — treat as a soft pass (do not block permanently).
-  try {
-    const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-    const mergeableState = prData?.mergeable_state as string | undefined;
-    if (mergeableState === 'dirty') {
-      return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
-    }
-    if (mergeableState === 'blocked') {
-      return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
-    }
-  } catch (err) {
-    console.warn(`Could not check mergeable_state for ${repoFullName}#${prNumber}:`, err);
+  // 'unknown' (and an unreadable PR) means GitHub is still computing — treat as a
+  // soft pass (do not block permanently).
+  const mergeableState = prData?.mergeable_state;
+  if (mergeableState === 'dirty') {
+    return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
+  }
+  if (mergeableState === 'blocked') {
+    return { ok: false, reason: `PR is blocked (mergeable_state: blocked) — branch protection or review required` };
   }
 
   return { ok: true };
@@ -174,7 +228,15 @@ export async function tryAutoMergeWorkerPr(params: {
 }): Promise<void> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy } = params;
 
-  const safetyCheck = await evaluateAutoMergeSafety(installationId, repoFullName, prNumber, headSha, policy);
+  const mission = await loadMissionIntegrationFields(worker.taskId);
+  const safetyCheck = await evaluateAutoMergeSafety(
+    installationId,
+    repoFullName,
+    prNumber,
+    headSha,
+    policy,
+    { mission },
+  );
   if (!safetyCheck.ok) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${safetyCheck.reason}`);
 
@@ -258,6 +320,32 @@ export async function tryAutoMergeWorkerPr(params: {
         }
       }
     }
+  }
+}
+
+/**
+ * The mission integration fields for a worker's task, or null.
+ *
+ * One read on the merge path, so `evaluateAutoMergeSafety` can use the
+ * authoritative `isMissionIntegrationBase` instead of the `mission/` shape
+ * heuristic when it decides whether the aggregate size gate applies. Fails soft
+ * to null, and null means "not a mission integration PR" — every gate then
+ * applies exactly as it did before Option A′.
+ */
+async function loadMissionIntegrationFields(
+  taskId: string | null,
+): Promise<MissionIntegrationFields | null> {
+  if (!taskId) return null;
+  try {
+    const task = await db.query.tasks.findFirst({
+      where: eq(tasks.id, taskId),
+      columns: { id: true },
+      with: { mission: { columns: { workingBranch: true, integrationBranchEnabled: true } } },
+    });
+    return (task as { mission?: MissionIntegrationFields | null } | undefined)?.mission ?? null;
+  } catch (err) {
+    console.warn(`[auto-merge] could not resolve mission for task ${taskId}:`, err);
+    return null;
   }
 }
 

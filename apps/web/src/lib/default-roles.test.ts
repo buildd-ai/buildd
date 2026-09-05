@@ -94,7 +94,10 @@ describe('DEFAULT_ROLES', () => {
 
     it('keeps ONE task = ONE branch = ONE PR and says the base is what varies', () => {
       expect(c()).toContain('ONE task = ONE branch = ONE PR');
-      expect(c()).toMatch(/base/);
+      // NOT /base/ — the word appears in the `baseBranch` field list above this
+      // section, so that assertion stayed green with the whole section deleted.
+      // Match a phrase only the rewritten section contains.
+      expect(c()).toMatch(/the platform picks the base, not you/);
       // The clause must not read as a prohibition on the integration branch.
       expect(c()).not.toContain('Never fan out parallel tasks that touch the same files.');
     });
@@ -131,6 +134,16 @@ describe('DEFAULT_ROLES', () => {
       // shape that branch is their shared *base*, not their shared head.
       expect(c()).not.toMatch(/share (one|a single|the same) branch/i);
       expect(c()).not.toMatch(/push (commits )?to (one|the same|a shared) branch/i);
+    });
+
+    it('does not promise parallelism the platform will not deliver', () => {
+      // A plan step cannot declare its file scope (`PlanStep` has no
+      // `pathManifest` and approve-plan sets none), so claim time serializes
+      // same-mission siblings whatever the plan says. The prompt used to tell
+      // the organizer that disjoint-path steps run in parallel, which made it
+      // drop `dependsOn` and buy nothing but lost ordering.
+      expect(c()).not.toMatch(/run in parallel in the same repo/);
+      expect(c()).toMatch(/shorter wait per link/);
     });
 
     it('keeps the example plan valid JSON and consistent with the rules', () => {

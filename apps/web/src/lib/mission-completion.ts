@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, taskSchedules, missionNotes, workers } from '@buildd/core/db/schema';
-import { isMissionPrTask, missionIntegrationBase } from '@buildd/core/mission-integration';
+import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
+import { evaluateMissionWorkState, findMissionPrOwner } from '@/lib/mission-pr';
 import { eq, and, gte, desc } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import type { CriterionVerdict, GoalCriteriaState, GoalCriterion } from '@buildd/shared';
@@ -366,39 +367,59 @@ export async function canCompleteMission(
   // completing in that window would close a mission whose diff never reached
   // trunk and never will.
   if (missionIntegrationBase(mission)) {
-    const ownerTask = allTasks.find(t => isMissionPrTask(t));
-    const ownerWorker = ownerTask
-      ? (ownerTask as unknown as {
-          workers?: Array<{ prUrl: string | null; prNumber: number | null; mergedAt: Date | string | null }>;
-        }).workers?.[0]
-      : undefined;
+    // Only gate a mission that actually put something on the integration
+    // branch. A mission whose work was all cancelled, or that produced no code
+    // PRs at all, has nothing for a mission PR to carry — and demanding one
+    // would silently revoke the rule stated a few checks above this:
+    // all-cancelled deliverables DO allow completion, because the work was
+    // deliberately called off, which is a decision, not an absence.
+    const work = await evaluateMissionWorkState(missionId);
+    if (work.landedOnIntegrationCount > 0) {
+      // One implementation of "what state is the mission PR in", shared with
+      // the opener. These two used to answer it separately and disagreed: the
+      // opener scanned every worker of the mission while this took `workers[0]`
+      // of an unordered query, so with two owner rows in play whichever row
+      // Postgres happened to return first decided whether the mission closed.
+      const owner = await findMissionPrOwner(missionId);
 
-    if (!ownerTask || !ownerWorker?.prUrl) {
-      return {
-        ...base,
-        ok: false,
-        code: 'awaiting_mission_pr',
-        reason:
-          `This mission uses an integration branch (\`${mission.workingBranch}\`) and its work has not `
-          + `reached trunk yet — the mission PR has not been opened.`,
-      };
-    }
-    if (!ownerWorker.mergedAt) {
-      base.awaitingMerge = 1;
-      base.awaitingMergeDetails = [{
-        taskId: ownerTask.id,
-        title: ownerTask.title,
-        prNumber: ownerWorker.prNumber ?? null,
-        prUrl: ownerWorker.prUrl,
-      }];
-      return {
-        ...base,
-        ok: false,
-        code: 'awaiting_mission_pr',
-        reason:
-          `Mission PR${ownerWorker.prNumber ? ` #${ownerWorker.prNumber}` : ''} is open and unmerged — `
-          + `the mission's work is on \`${mission.workingBranch}\`, not on trunk.`,
-      };
+      if (!owner) {
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason:
+            `This mission uses an integration branch (\`${mission.workingBranch}\`) and its work has not `
+            + `reached trunk yet — the mission PR has not been opened.`,
+        };
+      }
+      if (owner.state === 'closed') {
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason:
+            `Mission PR${owner.prNumber ? ` #${owner.prNumber}` : ''} was closed without merging, so the `
+            + `mission's work is still only on \`${mission.workingBranch}\`. Reopen it or land the work `
+            + `another way — this will not resolve on its own.`,
+        };
+      }
+      if (owner.state === 'open') {
+        base.awaitingMerge = 1;
+        base.awaitingMergeDetails = [{
+          taskId: owner.taskId,
+          title: `${MISSION_PR_TASK_PREFIX}${mission.title}`,
+          prNumber: owner.prNumber,
+          prUrl: owner.prUrl,
+        }];
+        return {
+          ...base,
+          ok: false,
+          code: 'awaiting_mission_pr',
+          reason:
+            `Mission PR${owner.prNumber ? ` #${owner.prNumber}` : ''} is open and unmerged — `
+            + `the mission's work is on \`${mission.workingBranch}\`, not on trunk.`,
+        };
+      }
     }
   }
 

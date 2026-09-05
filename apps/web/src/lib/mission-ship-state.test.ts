@@ -1,5 +1,6 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { isMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 
 // ── db mock ──────────────────────────────────────────────────────────────────
 // A mocked `db` makes every predicate unobservable, so this file captures the
@@ -11,6 +12,26 @@ let capturedWhere: unknown = null;
 let selectRows: Array<Record<string, unknown>> = [];
 let selectCallCount = 0;
 
+// Option A' fixture mode. The mocked db cannot execute SQL, so when this is set
+// the aggregate row is computed FROM the query the loader actually built: the
+// base-ref exclusion is applied only if the query carries it. That is what makes
+// the Option A' assertions below value assertions that fail when the filter is
+// missing, rather than a restatement of the classifier's own precedence.
+let fixtureMissionMerges: Array<{ taskId: string; prBaseRef: string | null }> | null = null;
+
+function rowFromFixture(): Record<string, unknown> {
+  const mergedSql = render(capturedSelectFields?.mergedTaskCount);
+  const excludesMissionBranches = /pr_base_ref/.test(mergedSql) && /not like/i.test(mergedSql);
+  const counted = fixtureMissionMerges!.filter(
+    (m) => !(excludesMissionBranches && isMissionIntegrationMerge(m.prBaseRef)),
+  );
+  return {
+    openWorkCount: 0,
+    mergedTaskCount: new Set(counted.map((m) => m.taskId)).size,
+    shippedTaskCount: 0,
+  };
+}
+
 const mockSelect = mock((fields: Record<string, unknown>) => {
   selectCallCount++;
   capturedSelectFields = fields;
@@ -20,7 +41,7 @@ const mockSelect = mock((fields: Record<string, unknown>) => {
   chain.innerJoin = () => chain;
   chain.where = (pred: unknown) => {
     capturedWhere = pred;
-    return Promise.resolve(selectRows);
+    return Promise.resolve(fixtureMissionMerges ? [rowFromFixture()] : selectRows);
   };
   return chain;
 });
@@ -251,5 +272,82 @@ describe('loadMissionShipState', () => {
       gatedWorkspace,
     );
     expect(out).toBe('building');
+  });
+});
+
+// ── Option A': merges into a mission integration branch are not on trunk ─────
+// `packages/core/release-queue-scope.ts` exists because a mission that opts into
+// an integration branch stamps `workers.mergedAt` once per task PR while nothing
+// of that mission has reached trunk. Four release-queue queries carry its
+// base-ref filter; this module's `mergedTaskCount` was the fifth and missed it,
+// so an A' mission with every task PR merged into the integration branch and the
+// mission PR still open reported `merged_unshipped` — "everything is merged, the
+// release queue is what's next" — while trunk had none of it.
+
+describe("loadMissionShipState — Option A' integration-branch merges", () => {
+  const MISSION_BRANCH = 'mission/example-slug-0a1b2c3d';
+  const gatedWorkspace = {
+    name: 'illustrative-workspace',
+    releaseConfig: { enabled: true, prodBranch: 'main' },
+    gitConfig: { requiresPR: true, defaultBranch: 'dev' },
+  };
+  const mission = { id: 'm-1', workspaceId: 'ws-1', releaseAttemptedAt: null };
+
+  beforeEach(() => {
+    mockSelect.mockClear();
+    selectCallCount = 0;
+    capturedSelectFields = null;
+    capturedWhere = null;
+    selectRows = [];
+    fixtureMissionMerges = null;
+  });
+
+  afterEach(() => {
+    fixtureMissionMerges = null;
+  });
+
+  it('the merged partition carries the base-ref exclusion, and an unknown base still counts', async () => {
+    selectRows = [{ openWorkCount: 0, mergedTaskCount: 0, shippedTaskCount: 0 }];
+
+    await loadMissionShipState(mission, gatedWorkspace);
+
+    const merged = render(capturedSelectFields?.mergedTaskCount);
+    expect(merged).toContain('"workers"."merged_at"');
+    expect(merged).toContain('"workers"."pr_base_ref"');
+    expect(merged).toMatch(/not like/i);
+    expect(renderParams(capturedSelectFields?.mergedTaskCount)).toContain('mission/%');
+    // A null base ref means "we do not know", which must never read as
+    // quarantined — every row merged before the column existed is null.
+    expect(merged).toContain('is null');
+  });
+
+  it('a mission whose task PRs all merged into its integration branch is NOT merged_unshipped', async () => {
+    fixtureMissionMerges = [
+      { taskId: 't-1', prBaseRef: MISSION_BRANCH },
+      { taskId: 't-2', prBaseRef: MISSION_BRANCH },
+    ];
+
+    const out = await loadMissionShipState(mission, gatedWorkspace);
+
+    // Nothing is on trunk and the mission is still awaiting its one review gate.
+    expect(out).toBe('building');
+    expect(out).not.toBe('merged_unshipped');
+  });
+
+  it('the mission PR itself (base = trunk) does count as merged work', async () => {
+    // The bookkeeping owner row for the mission PR merges into trunk, and that
+    // merge IS releasable work — the filter must not swallow it too.
+    fixtureMissionMerges = [
+      { taskId: 't-1', prBaseRef: MISSION_BRANCH },
+      { taskId: 't-owner', prBaseRef: 'dev' },
+    ];
+
+    expect(await loadMissionShipState(mission, gatedWorkspace)).toBe('merged_unshipped');
+  });
+
+  it('a merge with an unknown base ref still counts — pre-A\' rows keep their behaviour', async () => {
+    fixtureMissionMerges = [{ taskId: 't-1', prBaseRef: null }];
+
+    expect(await loadMissionShipState(mission, gatedWorkspace)).toBe('merged_unshipped');
   });
 });

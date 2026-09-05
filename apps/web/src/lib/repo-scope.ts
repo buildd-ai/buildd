@@ -42,8 +42,11 @@ export function workspaceRepoMatches(repoFullName: string): SQL {
 }
 
 /**
- * The canonical `workers.prUrl` value for a PR. Verified against production:
- * all 979 worker rows with a prNumber store exactly this shape, none null.
+ * The canonical `workers.prUrl` value for a PR.
+ *
+ * Checked against live data when this was written: every worker row carrying a
+ * `prNumber` stored exactly this shape, with no nulls. Stated qualitatively on
+ * purpose — this repo is public, and a row count is production data.
  */
 export function prUrlFor(repoFullName: string, prNumber: number): string {
   return `https://github.com/${repoFullName}/pull/${prNumber}`;

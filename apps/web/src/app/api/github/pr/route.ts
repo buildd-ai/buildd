@@ -286,17 +286,62 @@ export async function POST(req: NextRequest) {
             ...(typeof prDetail.base?.sha === 'string' && !worker.prOpenedBaseSha
               ? { prOpenedBaseSha: prDetail.base.sha }
               : {}),
-            // Adopting an existing PR: take its base ref from the fetched detail.
-            // Unlike prOpenedBaseSha this is refreshed unconditionally — the base
-            // ref is mutable (a retarget changes it) so the newest observation
-            // wins, whereas the open-time SHA is a historical fact.
-            ...(typeof (prDetail.base?.ref ?? existing.base?.ref) === 'string'
-              && (prDetail.base?.ref ?? existing.base?.ref)
-              ? { prBaseRef: prDetail.base?.ref ?? existing.base?.ref }
-              : {}),
+            // prBaseRef is deliberately NOT set here — see the guarded backfill
+            // immediately below. This UPDATE is keyed on the worker id alone, so
+            // anything in it wins unconditionally, and prBaseRef is the one
+            // column here whose stale value removes a safety gate.
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
+
+        // ── prBaseRef: BACKFILL only, never overwrite ────────────────────────
+        // Our value comes from a `GET /pulls/{n}` taken earlier in this request,
+        // and the base ref is mutable — a retarget changes it and the
+        // `pull_request` webhook records that within the same seconds. We hold no
+        // ordering signal (no ETag, no updated_at comparison), so we cannot tell
+        // our snapshot from a fresher one, and "newest observation wins" is not a
+        // rule this path can actually implement.
+        //
+        // The two error directions are not symmetric. A NULL prBaseRef leaves the
+        // merge-policy chain untouched and the PR keeps the gate it already had.
+        // A WRONG prBaseRef — a mission integration branch on a PR that has since
+        // been retargeted to trunk — makes handleCheckSuiteEvent resolve Option
+        // A′, drop the tier to auto-threshold, and auto-merge into trunk with the
+        // human gate removed. So when in doubt: do not write.
+        //
+        // `isNull` in the WHERE (not just the in-memory check) is what makes that
+        // atomic: it is the same shape as the webhook's guarded write, which
+        // excludes its own no-op case in SQL and uses .returning() as the
+        // did-anything-change signal.
+        const adoptedBaseRefValue = prDetail.base?.ref ?? existing.base?.ref;
+        const adoptedBaseRef = typeof adoptedBaseRefValue === 'string' && adoptedBaseRefValue
+          ? adoptedBaseRefValue
+          : null;
+        if (adoptedBaseRef && !worker.prBaseRef) {
+          try {
+            const filled = await db
+              .update(workers)
+              .set({ prBaseRef: adoptedBaseRef, updatedAt: new Date() })
+              .where(and(eq(workers.id, workerId), isNull(workers.prBaseRef)))
+              .returning({ id: workers.id });
+            if (filled.length > 0) {
+              console.log(
+                `[create_pr] backfilled prBaseRef='${adoptedBaseRef}' on worker ${workerId} from adopted PR #${existing.number}`,
+              );
+            } else {
+              // Someone recorded a base ref between our read and this write.
+              // Theirs is newer than ours by construction; leaving it is correct.
+              console.log(
+                `[create_pr] prBaseRef already recorded for worker ${workerId} — adopt-path value '${adoptedBaseRef}' not applied`,
+              );
+            }
+          } catch (err) {
+            // Never fail PR adoption over bookkeeping: a missed backfill leaves
+            // the column null, which degrades to the existing merge gate, and the
+            // next pull_request event for this PR fills it in.
+            console.error(`[create_pr] failed to backfill prBaseRef for worker ${workerId}:`, err);
+          }
+        }
 
         await claimMissionPrimaryPr(worker.task?.missionId, existing.number, existing.html_url, {
           baseRef: prDetail.base?.ref ?? existing.base?.ref ?? null,

@@ -2594,9 +2594,12 @@ export class WorkerManager {
         // Keyed on the base too, so a mission task's claim builds a seed for the
         // MISSION base rather than re-stamping trunk. The seeder exits immediately
         // when that ref has not moved, so this stays cheap on every claim.
-        // seedBaseRefFor collapses a trunk base to the unkeyed slot, so a
-        // non-mission claim refreshes exactly the seed it refreshes today. Only a
-        // genuinely non-default base gets --base-ref and its own slot.
+        // seedBaseRefFor collapses anything that is not a mission integration
+        // branch to the unkeyed slot, so a non-mission claim refreshes exactly
+        // the seed it refreshes today. Only a mission-integration base gets
+        // --base-ref and its own slot: "not the repo default" was a far larger
+        // set, and it sent CI-retry tasks, stacked plan phases and resumed tasks
+        // to slots nothing had ever written.
         const seedBaseRef = seedBaseRefFor({
           baseRef: worker.worktreeBaseRef,
           defaultBaseRef: cbmDefaultBaseRef,

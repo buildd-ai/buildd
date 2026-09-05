@@ -15,6 +15,7 @@
 
 import type { CbmMetrics } from './types.js';
 import { join } from 'path';
+import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 
 import { CBM_BINARY_PATH } from './bwrap-mount-allowlist';
 
@@ -238,12 +239,41 @@ export function normalizeBaseRef(ref: string | null | undefined): string | undef
  * already-seeded host, where the one record per repo describes the default branch.
  * Collapsing the default here means:
  *   - a trunk task keeps hitting the seed it hits today, with no migration and no
- *     re-indexing of the whole fleet,
+ *     re-indexing of the whole fleet, and
  *   - a task whose base ref could not be resolved lands in the same slot as a
  *     trunk task, which is the correct degradation because trunk is what an
- *     unresolved base almost always is, and
- *   - a composite slot exists only for a base that genuinely is NOT trunk — which
- *     is exactly the mission-integration-branch case P9 is about.
+ *     unresolved base almost always is.
+ *
+ * A COMPOSITE SLOT IS FOR A MISSION INTEGRATION BRANCH, and the predicate says so
+ * rather than saying "not the default". Those two are very different sets, and the
+ * difference is not academic: `worktreeBaseRef` is
+ * `origin/<context.resumeBranch ?? context.baseBranch>` (resolveWorktreeBase), and
+ * four ordinary paths declare a non-trunk base with no A′ flag in sight — a CI
+ * retry and any resumed attempt (`ci-retry.ts` sets both fields to the previous
+ * worker's `buildd/…` branch), a stacked plan phase (`approve-plan.ts` resolves the
+ * predecessor's branch into `context.baseBranch`), and every mission
+ * command-criterion verify task.
+ *
+ * Giving a throwaway `buildd/…` branch its own slot is wrong in both directions:
+ *   - READ: it misses the shared trunk seed it used to hit and pays a full
+ *     bootstrap index, while the log line reads like a correct safety refusal.
+ *   - WRITE: the claim-path refresh then indexes a NEW PERMANENT CBM project for a
+ *     branch that is deleted on merge, and the seeder prunes nothing. It also
+ *     loosens the concurrency bound — the cooldown admits one seeder per key, so
+ *     N declared bases admit N simultaneous full indexes on one host.
+ *
+ * A mission integration branch has none of those properties: it is shared by the
+ * mission's tasks, long-lived, and genuinely divergent from trunk because siblings
+ * keep merging into it — which is precisely why the trunk graph is the wrong answer
+ * for it and worth a slot of its own.
+ *
+ * The runner is not told which mission a task belongs to (nothing on the claimed
+ * worker payload carries `missionId` or the mission's working branch), so the
+ * question is answered by the shared name predicate in
+ * `@buildd/core/mission-integration` — the same one the server uses to decide
+ * whether a merge is worth announcing as a base advance. Name-based, but it is the
+ * one generator of those names (`mission-run.ts`), and being wrong here costs a
+ * cache slot, not a correctness gate.
  *
  * Returns undefined for "the unkeyed slot".
  */
@@ -254,7 +284,10 @@ export function seedBaseRefFor(input: {
   const base = normalizeBaseRef(input.baseRef);
   if (base === undefined) return undefined;
   const dflt = normalizeBaseRef(input.defaultBaseRef);
-  return dflt !== undefined && dflt === base ? undefined : base;
+  if (dflt !== undefined && dflt === base) return undefined;
+  // Normalized first: the predicate matches the `mission/` prefix, and the raw
+  // ref arrives as `origin/mission/…` or `refs/remotes/origin/mission/…`.
+  return looksLikeMissionIntegrationBranch(base) ? base : undefined;
 }
 
 /**
@@ -559,7 +592,7 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
  * Deduped per repo per process so a burst of claims does not spawn a burst of
  * indexers; the HEAD stamp covers the cross-process case.
  */
-const seedRefreshAttempts = new Map<string, number>();
+const seedRefreshAttempts = new Map<string, SeedLease>();
 
 /**
  * Refreshes currently running, keyed the same way as the records themselves.
@@ -583,8 +616,40 @@ const seedRefreshAttempts = new Map<string, number>();
  * already had once (see SEED_RETRY_COOLDOWN_MS) — "no seed, no retry, no log line
  * until someone restarts the runner". Expiry makes it converge either way, which
  * is the direction that fails safe.
+ *
+ * Because the lease LAPSES, two spawns for one key can legitimately be alive at
+ * once, so the record names its HOLDER as well as its time. Release is keyed on
+ * `(key, token)`: a wedged seeder that finally exits after its lease lapsed must
+ * not delete the successor's lease, or the next request spawns a SECOND
+ * concurrent seeder for the same `(repoPath, baseRef)` — two indexers over one
+ * seed clone under one fixed CBM_RUNTIME_DIR, which is contention this fleet has
+ * already been bitten by.
  */
-const seedRefreshInFlight = new Map<string, number>();
+const seedRefreshInFlight = new Map<string, SeedLease>();
+
+/**
+ * A lease record: WHEN it was taken (expiry) and WHO took it (release).
+ *
+ * The token is a process-local monotonic counter rather than a timestamp — two
+ * spawns within one millisecond must still be distinguishable, and an injected
+ * clock is free to stand still.
+ */
+interface SeedLease {
+  token: number;
+  at: number;
+}
+
+let seedLeaseCounter = 0;
+
+/**
+ * Drop a lease / cooldown record only while we are still its holder.
+ *
+ * A no-op when someone else holds it — which is the whole point: our exit says
+ * nothing about their run.
+ */
+function releaseSeedRecord(map: Map<string, SeedLease>, key: string, token: number): void {
+  if (map.get(key)?.token === token) map.delete(key);
+}
 
 /** The one composite key. Records, cooldown and in-flight slot must never disagree. */
 function seedRefreshKey(repoPath: string, baseRef?: string | null): string {
@@ -685,7 +750,7 @@ export function spawnCbmSeedRefresh(
 
   if (!deps.ignoreCooldown) {
     const lastAttempt = seedRefreshAttempts.get(key);
-    if (lastAttempt !== undefined && now() - lastAttempt < SEED_RETRY_COOLDOWN_MS) {
+    if (lastAttempt !== undefined && now() - lastAttempt.at < SEED_RETRY_COOLDOWN_MS) {
       return 'recently_attempted';
     }
   }
@@ -695,7 +760,7 @@ export function spawnCbmSeedRefresh(
   // deliberately: "an attempt older than the cooldown no longer counts" is one
   // rule, whether or not we ever saw the child exit.
   const inFlightSince = seedRefreshInFlight.get(key);
-  if (inFlightSince !== undefined && now() - inFlightSince < SEED_RETRY_COOLDOWN_MS) {
+  if (inFlightSince !== undefined && now() - inFlightSince.at < SEED_RETRY_COOLDOWN_MS) {
     return 'already_in_flight';
   }
 
@@ -703,8 +768,11 @@ export function spawnCbmSeedRefresh(
   if (!pathExists(script)) return 'script_absent';
 
   const baseRefArgs = deps.baseRef ? ['--base-ref', deps.baseRef] : [];
-  seedRefreshAttempts.set(key, now());
-  seedRefreshInFlight.set(key, now());
+  // One token for this attempt, stamped on both records, so every later release
+  // can ask "is this still mine?" instead of assuming it is.
+  const token = ++seedLeaseCounter;
+  seedRefreshAttempts.set(key, { token, at: now() });
+  seedRefreshInFlight.set(key, { token, at: now() });
   try {
     const spawn = deps.spawnProcess ?? (require('child_process') as typeof import('child_process')).spawn;
     const logFd = (deps.openLogFd ?? openSeedLogFd)();
@@ -721,12 +789,16 @@ export function spawnCbmSeedRefresh(
     // seeder must not hold the cooldown, or one early failure suppresses every
     // later attempt for the life of the process.
     child.on?.('exit', (code: number | null) => {
-      // Always release the slot. A leaked slot is the permanent-latch bug the
-      // cooldown replaced, and on an advancing base it would freeze the seed at
-      // the first advance for the life of the runner process.
-      seedRefreshInFlight.delete(key);
+      // Release OUR slot. A leaked slot is the permanent-latch bug the cooldown
+      // replaced, and on an advancing base it would freeze the seed at the first
+      // advance for the life of the runner process — but releasing someone
+      // else's is the mirror-image bug: a wedged child exiting long after its
+      // lease lapsed would hand the key to a second concurrent seeder.
+      releaseSeedRecord(seedRefreshInFlight, key, token);
       if (code !== 0) {
-        seedRefreshAttempts.delete(key);
+        // Same rule for the cooldown: clearing it must not clear a newer
+        // caller's, or one wedged child re-opens the burst window.
+        releaseSeedRecord(seedRefreshAttempts, key, token);
         console.warn(`[cbm-seed] seeder for ${key.replace('\n', ' @ ')} exited ${code} — see ${cbmSeedLogPath()}`);
       }
     });
@@ -734,8 +806,10 @@ export function spawnCbmSeedRefresh(
     return 'spawned';
   } catch {
     // A failed refresh must never affect the worker — it just means no seed yet.
-    seedRefreshAttempts.delete(key);
-    seedRefreshInFlight.delete(key);
+    // Holder-checked like every other release, even though nothing can have
+    // taken the key since the two `set`s above: one rule, no exceptions to audit.
+    releaseSeedRecord(seedRefreshAttempts, key, token);
+    releaseSeedRecord(seedRefreshInFlight, key, token);
     return 'spawn_failed';
   }
 }

@@ -119,7 +119,7 @@ Your plan is a JSON array in your structured output. Each item has:
 - **Do not chain for any other reason.** "Same mission" is not a reason. "Several PRs are already open" is not a reason. A chain you add out of caution costs real wall-clock time, because each link waits for a merge.
 - **How much to chain depends on the shape:**
   - Without an integration branch, tasks on the **same repo** MUST be chained with \`dependsOn\` AND \`baseBranch\`. Parallel tasks are only safe across different repos or different workspaces. Unblocking a dependent here needs a merge into trunk, which may wait on a person, so keep chains as short as the real path overlap allows.
-  - With an integration branch, chain only on genuine path overlap. Sibling task PRs that touch disjoint paths can run in parallel in the same repo: they merge into the integration branch within minutes, no human in the loop, and dependents unblock on their own.
+  - With an integration branch, chain only on genuine path overlap — but still chain: a plan step cannot declare its file scope, so the platform cannot tell your disjoint steps apart and serializes same-mission siblings at claim time anyway. What the integration branch buys is not parallelism, it is a **shorter wait per link**: each merge is an unattended CI-gated auto-merge into the integration branch rather than a person clicking Merge into trunk. Keep chains as short as the real path overlap allows, and expect them to run in order.
 - The first task has no dependsOn. Each subsequent task in a chain depends on its predecessor.
 - \`baseBranch\` tells the worker to start from the predecessor task's branch instead of the mission's base branch.
 - **DONE = MERGED.** The platform enforces this: a dependent task cannot be claimed until the upstream PR is actually merged (not just when \`complete_task\` is called). Design chains accordingly — a task completing early does NOT unblock its successors. On an integration-branch mission "merged" means merged into the integration branch, which is an unattended auto-merge gated on CI rather than on a person — the wait is shorter, but it is still a wait.
@@ -131,7 +131,7 @@ Example plan for a code mission (the default, trunk-based shape — the two step
   { "ref": "step-2", "title": "Add UI for new endpoint", "description": "...", "roleSlug": "builder", "dependsOn": ["step-1"], "baseBranch": "step-1", "outputRequirement": "pr_required", "priority": 2, "kind": "engineering", "complexity": "normal" }
 ]
 \`\`\`
-On a mission with an integration branch, the same two steps drop \`dependsOn\` and \`baseBranch\` **if** they touch disjoint files — and keep both if they do not.
+On a mission with an integration branch the plan looks the same; what changes is that step-1's merge into the integration branch is unattended, so step-2 starts sooner.
 
 ## Handling Failures
 - **First failure**: Retry with failureContext and a DIFFERENT approach (not the same instructions)
