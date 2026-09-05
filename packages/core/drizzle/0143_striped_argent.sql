@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "release_attempted_at" timestamp with time zone;
