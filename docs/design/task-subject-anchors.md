@@ -289,9 +289,18 @@ active row per dedupe key:
 
 ```text
 workspace_id, key_type, key_hash, canonical_task_id, generation,
-state, created_at, released_at
+state, created_at
 UNIQUE (workspace_id, key_type, key_hash) WHERE state = 'active'
 ```
+
+**As shipped, a claim is never released.** Supersession rotates the existing row
+(drop the canonical owner, take a fresh reservation, bump `generation`), because
+that keeps the retry-chain and prior-terminal links a release-and-reinsert would
+discard. `state` is therefore always `'active'`, and the `released_at` column
+this section originally listed was dropped in migration 0147 having never been
+written. `generation` is load-bearing: it is the optimistic-lock token that makes
+a rotation computed from stale state fail rather than overwrite a successor
+installed concurrently.
 
 The server first attempts the subject claim with `INSERT ... ON CONFLICT`.
 The winner creates the task; the loser reads `canonical_task_id` and attaches.

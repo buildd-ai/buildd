@@ -1043,12 +1043,25 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   canonicalTaskId: uuid('canonical_task_id').references(() => tasks.id, { onDelete: 'cascade' }),
   reservationToken: uuid('reservation_token'),
   reservationExpiresAt: timestamp('reservation_expires_at', { withTimezone: true }),
-  // Monotonic counter bumped on each supersession (new head SHA = new generation).
+  // Monotonic counter bumped by every rotation of this row (a supersession, or a
+  // replacement of a terminal canonical task) — and, because the row is reused in
+  // place rather than replaced, it is ALSO the optimistic-lock token that makes a
+  // rotation from a stale reader fail. See `rotateClaim` in
+  // apps/web/src/lib/subject-intake-db.ts: the guarded UPDATE matches on the
+  // generation the caller read and increments it in the same statement, so a
+  // caller that observed generation N cannot rotate away the successor a
+  // concurrent caller installed at N+1 (an ABA lost update that would leave two
+  // live owners for one dedupe key and drop a retry-chain edge).
   generation: integer('generation').default(1).notNull(),
-  // 'active' = claim is live; 'released' = subject resolved (merged, closed, superseded).
-  state: text('state').notNull().default('active').$type<'active' | 'released'>(),
+  // Only 'active' is ever written. Supersession happens by rotating this row in
+  // place (see rotateClaim), which keeps the retry-chain and prior-terminal links
+  // that a release-and-reinsert would discard, so there is deliberately no code
+  // path that retires a claim. The index predicate below is therefore
+  // constant-true today; it is kept as the extension point for a release
+  // lifecycle if one is ever needed (docs/design/deliverable-uniqueness.md §4 is
+  // still Proposed, and would re-add its own timestamp column).
+  state: text('state').notNull().default('active').$type<'active'>(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
-  releasedAt: timestamp('released_at', { withTimezone: true }),
 }, (t) => ({
   workspaceIdx: index('task_subject_claims_workspace_idx').on(t.workspaceId),
   canonicalTaskIdx: index('task_subject_claims_canonical_task_idx').on(t.canonicalTaskId),

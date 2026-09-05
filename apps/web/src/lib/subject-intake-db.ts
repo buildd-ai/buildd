@@ -5,7 +5,7 @@ import {
   tasks,
   workers,
 } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, isNull, lt, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, or, sql } from 'drizzle-orm';
 import type { SubjectIntakeRepository, SubjectTask } from './subject-intake';
 
 type IntakeTask = typeof tasks.$inferSelect & SubjectTask;
@@ -83,13 +83,23 @@ export function createSubjectIntakeRepository(
       ));
     },
 
-    async rotateClaim(claimId, _successorTaskId, token, expiresAt) {
+    // Rotate the claim to the next generation. `generation` is the optimistic
+    // lock: the UPDATE matches the value the caller read and increments it in the
+    // same statement, so of two callers that both observed generation N exactly
+    // one rotates. Without it the second caller's rotation still passes the
+    // canonical/reservation guards once the first has finalized (canonical set,
+    // token cleared again) and silently rotates away a successor it never saw —
+    // two live owners for one dedupe key, and the first successor left with no
+    // incoming supersession edge.
+    async rotateClaim(claimId, _successorTaskId, token, expiresAt, expectedGeneration) {
       const [claim] = await db.update(taskSubjectClaims).set({
         canonicalTaskId: null,
         reservationToken: token,
         reservationExpiresAt: expiresAt,
+        generation: sql`${taskSubjectClaims.generation} + 1`,
       }).where(and(
         eq(taskSubjectClaims.id, claimId),
+        eq(taskSubjectClaims.generation, expectedGeneration),
         isNotNull(taskSubjectClaims.canonicalTaskId),
         isNull(taskSubjectClaims.reservationToken),
       )).returning({ id: taskSubjectClaims.id });

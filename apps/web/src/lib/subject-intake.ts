@@ -23,6 +23,13 @@ export interface SubjectClaim {
   canonicalTaskId: string | null;
   reservationToken: string | null;
   reservationExpiresAt: Date | null;
+  /**
+   * Rotation counter, and the optimistic-lock token for {@link
+   * SubjectIntakeRepository.rotateClaim}. Every caller that rotates a claim must
+   * pass back the generation it read, so a rotation computed from stale state
+   * fails instead of overwriting a successor installed in the meantime.
+   */
+  generation: number;
 }
 
 export interface SubjectIntakeRepository<TTask extends SubjectTask> {
@@ -37,7 +44,19 @@ export interface SubjectIntakeRepository<TTask extends SubjectTask> {
   takeReservation(claimId: string, expectedToken: string | null, token: string, expiresAt: Date): Promise<boolean>;
   finalizeReservation(claimId: string, token: string, taskId: string): Promise<boolean>;
   releaseReservation(claimId: string, token: string, restoreCanonicalTaskId?: string | null): Promise<void>;
-  rotateClaim(claimId: string, canonicalTaskId: string, token: string, expiresAt: Date): Promise<boolean>;
+  /**
+   * Reuse an owned claim for the next generation: drop the canonical owner, take
+   * a fresh reservation, bump `generation`. Guarded on `expectedGeneration` —
+   * returns false when the row has rotated since it was read, which the caller
+   * MUST treat as "re-read and start over", never as a no-op.
+   */
+  rotateClaim(
+    claimId: string,
+    canonicalTaskId: string,
+    token: string,
+    expiresAt: Date,
+    expectedGeneration: number,
+  ): Promise<boolean>;
   getTask(taskId: string): Promise<TTask | null>;
   getConnectedTasks(taskId: string): Promise<TTask[]>;
   createTask(input: { id: string; subjectDedupeScope: 'active' | 'none'; subjectResolution?: 'filed_anyway' }): Promise<TTask>;
@@ -70,6 +89,16 @@ const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const TRUSTED_RETRY_ORIGINS = new Set<SubjectFilingOrigin>(['webhook', 'watcher']);
 const FILE_ANYWAY_ORIGINS = new Set<SubjectFilingOrigin>(['dashboard', 'api', 'mcp']);
 const RESERVATION_MS = 15_000;
+/**
+ * Bound on the re-read-and-start-over loop below. Every retry is triggered by
+ * losing a guarded write (a reservation takeover, or a `generation` mismatch on
+ * rotation), and each one re-reads fresh state, so real contention clears in one
+ * or two passes. The cap exists because the alternative is unbounded recursion
+ * hammering the DB: before the generation lock a rotation could effectively only
+ * fail transiently, but a caller quoting a value the row will never carry again
+ * would otherwise retry forever.
+ */
+const MAX_INTAKE_ATTEMPTS = 5;
 
 export function subjectClaimKey(
   workspaceId: string,
@@ -131,7 +160,12 @@ async function waitForCanonical<TTask extends SubjectTask>(
 
 export async function intakeSubject<TTask extends SubjectTask>(
   input: SubjectIntakeInput<TTask>,
+  attempt = 0,
 ): Promise<{ task: TTask; outcome: SubjectIntakeOutcome }> {
+  const restart = () => {
+    if (attempt + 1 >= MAX_INTAKE_ATTEMPTS) throw new Error('subject_claim_contended');
+    return intakeSubject(input, attempt + 1);
+  };
   if (input.fileAnywayReason !== undefined && typeof input.fileAnywayReason !== 'string') {
     throw new Error('file_anyway_reason_required');
   }
@@ -185,7 +219,7 @@ export async function intakeSubject<TTask extends SubjectTask>(
       token,
       expiresAt,
     );
-    if (!recovered) return intakeSubject(input);
+    if (!recovered) return restart();
     try {
       const task = await input.repository.createTask({
         id: randomUUID(),
@@ -262,8 +296,8 @@ export async function intakeSubject<TTask extends SubjectTask>(
   );
   if (trustedRetry) {
     const successorId = randomUUID();
-    if (!await input.repository.rotateClaim(claim.id, successorId, token, expiresAt)) {
-      return intakeSubject(input);
+    if (!await input.repository.rotateClaim(claim.id, successorId, token, expiresAt, claim.generation)) {
+      return restart();
     }
     try {
       const successor = await input.repository.createTask({
@@ -287,8 +321,8 @@ export async function intakeSubject<TTask extends SubjectTask>(
 
   if (!isLive(canonical)) {
     const successorId = randomUUID();
-    if (!await input.repository.rotateClaim(claim.id, successorId, token, expiresAt)) {
-      return intakeSubject(input);
+    if (!await input.repository.rotateClaim(claim.id, successorId, token, expiresAt, claim.generation)) {
+      return restart();
     }
     try {
       const task = await input.repository.createTask({
