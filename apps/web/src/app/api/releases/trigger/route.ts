@@ -181,9 +181,6 @@ export async function POST(req: NextRequest) {
       .values({
         workspaceId: target.workspaceId,
         archetype,
-        strategy: 'workflow_dispatch',
-        sourceRef,
-        targetRef: prodBranch,
         headSha,
         previousSha,
         state: 'dispatched',

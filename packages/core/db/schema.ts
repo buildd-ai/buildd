@@ -116,7 +116,6 @@ export const accounts = pgTable('accounts', {
   authType: text('auth_type').default('api').notNull().$type<'api' | 'oauth'>(),
 
   // For API-based auth (pay-per-token)
-  anthropicApiKey: text('anthropic_api_key'),
   maxCostPerDay: decimal('max_cost_per_day', { precision: 10, scale: 2 }),
   totalCost: decimal('total_cost', { precision: 10, scale: 2 }).default('0').notNull(),
 
@@ -2109,26 +2108,6 @@ export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
   team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
 }));
 
-// Advisory file reservations — prevents concurrent workers from editing the same files
-export const fileReservations = pgTable('file_reservations', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
-  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
-  filePath: text('file_path').notNull(),
-  acquiredAt: timestamp('acquired_at', { withTimezone: true }).defaultNow().notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-}, (t) => ({
-  // Only one active reservation per file per workspace (enforced at app level with expiry check)
-  workspaceFileIdx: uniqueIndex('file_reservations_workspace_file_idx').on(t.workspaceId, t.filePath),
-  workerIdx: index('file_reservations_worker_idx').on(t.workerId),
-  expiresIdx: index('file_reservations_expires_idx').on(t.expiresAt),
-}));
-
-export const fileReservationsRelations = relations(fileReservations, ({ one }) => ({
-  workspace: one(workspaces, { fields: [fileReservations.workspaceId], references: [workspaces.id] }),
-  worker: one(workers, { fields: [fileReservations.workerId], references: [workers.id] }),
-}));
-
 // System cache — generic key-value store for cached data (model lists, etc.)
 export const systemCache = pgTable('system_cache', {
   key: text('key').primaryKey(),
@@ -2172,7 +2151,6 @@ export const backendPauses = pgTable('backend_pauses', {
   backend: agentBackendEnum('backend').notNull(),
   /** 'budget' (session/rate-limit) | 'auth' (credential rejected). */
   reason: text('reason').notNull().default('budget'),
-  pausedAt: timestamp('paused_at', { withTimezone: true }).defaultNow().notNull(),
   resetsAt: timestamp('resets_at', { withTimezone: true }).notNull(),
   sourceWorkerId: uuid('source_worker_id').references(() => workers.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2370,8 +2348,6 @@ export const externalLinks = pgTable('external_links', {
   externalUrl: text('external_url'),
   // Phase 3 echo-suppression watermark — last-seen external mtime.
   externalUpdatedAt: timestamp('external_updated_at', { withTimezone: true }),
-  // Phase 3 echo-suppression — hash of the last payload we pushed.
-  lastPushedHash: text('last_pushed_hash'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
@@ -2531,7 +2507,6 @@ export const pathClaims = pgTable('path_claims', {
   path: text('path').notNull(),
   claimedAt: timestamp('claimed_at', { withTimezone: true }).defaultNow().notNull(),
   releasedAt: timestamp('released_at', { withTimezone: true }),
-  releaseReason: text('release_reason'),
 }, (t) => ({
   activeIdx: index('path_claims_active_idx').on(t.workspaceId, t.path).where(sql`${t.releasedAt} IS NULL`),
   taskIdx: index('path_claims_task_idx').on(t.taskId).where(sql`${t.releasedAt} IS NULL`),
@@ -2578,9 +2553,6 @@ export const releases = pgTable('releases', {
   workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
   archetype: text('archetype').notNull().$type<'gated' | 'continuous' | 'store' | 'package' | 'none'>(),
   unit: text('unit'),
-  strategy: text('strategy').$type<'workflow_dispatch' | 'branch_merge' | 'script'>(),
-  sourceRef: text('source_ref'),
-  targetRef: text('target_ref'),
   headSha: text('head_sha'),
   previousSha: text('previous_sha'),
   version: text('version'),

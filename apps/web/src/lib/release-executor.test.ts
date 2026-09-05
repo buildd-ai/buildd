@@ -500,9 +500,6 @@ describe('executeRelease — releases row creation', () => {
       triggeredBy: 'auto',
       headSha: 'headsha222',
       previousSha: 'prevsha111',
-      targetRef: 'main',
-      sourceRef: 'buildd/my-feat',
-      strategy: 'branch_merge',
     }));
   });
 
@@ -633,12 +630,8 @@ describe('executeRelease — releases row creation', () => {
       workspaceId: 'ws-1',
       archetype: 'gated',
       state: 'deploying',
-      strategy: 'branch_merge',
       headSha: 'mergedmain222',
       previousSha: 'prevmain111',
-      // sourceRef is the release branch, not a worker branch
-      sourceRef: 'dev',
-      targetRef: 'main',
       // Matches api/releases/trigger: gated releases are HTTP-verifiable. Still
       // inert unless the workspace configures a verificationUrl.
       verificationStrategy: 'http',

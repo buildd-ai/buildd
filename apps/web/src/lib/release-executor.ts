@@ -232,11 +232,9 @@ async function maybeCreateReleaseRow(params: {
   workspace: { name?: string | null; releaseConfig?: WorkspaceReleaseConfig | null; gitConfig?: WorkspaceGitConfig | null } | null | undefined;
   headSha: string | undefined;
   previousSha: string | undefined;
-  sourceRef: string | undefined;
-  prodBranch: string;
   repo: { fullName: string; installation: { installationId: number } };
 }): Promise<string | null> {
-  const { workspaceId, workspace, headSha, previousSha, sourceRef, prodBranch, repo } = params;
+  const { workspaceId, workspace, headSha, previousSha, repo } = params;
   if (!headSha) return null;
 
   const archetype = detectArchetype({
@@ -274,11 +272,8 @@ async function maybeCreateReleaseRow(params: {
       verificationStrategy: (workspace?.releaseConfig?.verificationUrl || archetype === 'gated') ? 'http' : 'none',
       triggeredBy: 'auto',
       deployedAt: new Date(),
-      sourceRef,
-      targetRef: prodBranch,
       headSha,
       previousSha,
-      strategy: 'branch_merge',
     })
     // Idempotent on the (workspace_id, head_sha) unique index — a retried
     // release of the same merge commit must not double-count.
@@ -523,7 +518,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     mergedAt = new Date().toISOString();
     mergeSha = mergeResp.sha as string | undefined;
 
-    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, sourceRef: branchMerge.releaseBranch, prodBranch, repo });
+    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, repo });
   } else if (worker?.branch) {
     // Worker-branch path: merge the worker's feature branch into prodBranch
 
@@ -553,7 +548,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     mergedAt = new Date().toISOString();
     mergeSha = mergeResult.sha;
 
-    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, sourceRef: worker.branch, prodBranch, repo });
+    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, repo });
   }
 
   // Step 2: Poll Vercel for deployment
