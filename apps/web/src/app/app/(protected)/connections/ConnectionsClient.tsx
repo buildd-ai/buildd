@@ -380,7 +380,7 @@ export default function ConnectionsClient({
       ) : connectors.length === 0 ? (
         <div className="card p-10 text-center">
           <p className="text-text-muted text-sm mb-3">No connections yet.</p>
-          <p className="text-text-muted text-xs mb-4">Add a remote MCP server to get started.</p>
+          <p className="text-text-muted text-xs mb-4">Add a remote MCP server to give agents its tools.</p>
           <button
             onClick={() => setShowAddModal(true)}
             className="text-sm text-primary hover:underline"

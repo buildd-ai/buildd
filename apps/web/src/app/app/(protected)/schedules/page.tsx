@@ -22,7 +22,7 @@ export default async function SchedulesPage() {
     return (
       <div className="max-w-4xl mx-auto p-6">
         <h1 className="text-2xl font-bold text-text-primary mb-2">Schedules</h1>
-        <p className="text-text-secondary">No workspaces found. Create a workspace to get started.</p>
+        <p className="text-text-secondary">No workspaces found. Create one to schedule work.</p>
       </div>
     );
   }

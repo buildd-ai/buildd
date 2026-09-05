@@ -162,7 +162,7 @@ export default function ScheduleWizard({
       {/* No workspaces warning */}
       {!hasWorkspace && workspaces.length === 0 && cronExpression && (
         <div className="mb-3 p-2 bg-status-warning/5 border border-status-warning/20 rounded-lg text-[12px] text-status-warning">
-          No workspaces available. Create a workspace first to enable scheduling.
+          No workspaces available. Create one to schedule this mission.
         </div>
       )}
 

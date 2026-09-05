@@ -313,7 +313,7 @@ export function HealthClient({
         ? (await historyRes.value.json()) as RunnerHistoryStats
         : undefined;
 
-      const errMsg = !doctor && !historyStats ? 'Runner unreachable — check that it is running and accessible.' : undefined;
+      const errMsg = !doctor && !historyStats ? 'Runner unreachable. Check that it is running and accessible.' : undefined;
 
       setRunnerHealth(prev => {
         const next = new Map(prev);
@@ -848,7 +848,7 @@ export function HealthClient({
                   <div className="font-medium text-status-warning">Duplicate crons detected</div>
                   <p className="text-text-secondary mt-1">
                     {duplicateScheduleIds.size} enabled schedules share the same cron and timezone within one
-                    workspace — they fire simultaneously. Pause the stale copy below.
+                    workspace. They fire simultaneously, so pause the stale copy below.
                   </p>
                 </div>
               )}
@@ -860,8 +860,8 @@ export function HealthClient({
                   </div>
                   <p className="text-text-secondary mt-1">
                     {overdueHeartbeatCount === 1
-                      ? 'A heartbeat schedule missed its last run — the cron may have stalled or the run errored before advancing nextRunAt. Check the schedule below.'
-                      : `${overdueHeartbeatCount} heartbeat schedules missed their last run — the cron may have stalled. Check schedules below.`}
+                      ? 'A heartbeat schedule missed its last run. The cron may have stalled, or the run errored before advancing nextRunAt. Check the schedule below.'
+                      : `${overdueHeartbeatCount} heartbeat schedules missed their last run. The cron may have stalled. Check schedules below.`}
                   </p>
                 </div>
               )}
@@ -1380,7 +1380,7 @@ const CBM_STATE: Record<
     label: 'Never queried',
     tone: 'text-error',
     hint: 'The graph was mounted and warm on every task and no agent called it. '
-      + 'Indexing is being paid for and nothing is using it — this is a steering problem, not an availability one.',
+      + 'Indexing is being paid for and nothing is using it. That is a steering problem, not an availability one.',
   },
   unavailable: {
     label: 'Not mounted',
@@ -1641,7 +1641,7 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Collapsed learning sessions — one summary line instead of per-row cards */}
         {learningSessions.length > 0 && (
           <div className="px-4 py-2.5">
-            <span className="text-xs text-text-muted" title="No exhaustion events recorded — sessions only learn on hitting the session wall">
+            <span className="text-xs text-text-muted" title="No exhaustion events recorded. Sessions only learn on hitting the session wall.">
               {learningSessions.length} session{learningSessions.length !== 1 ? 's' : ''} — no exhaustion data
             </span>
           </div>
@@ -2005,7 +2005,7 @@ function FailureAnalyticsSection({
             <div>
               <span
                 className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
-                title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator — they have not had the chance to fail yet, and counting them made this number drift downward as work landed."
+                title="Failed / terminal workers in the window. Workers still in flight are excluded from the denominator. They have not had the chance to fail yet, and counting them made this number drift downward as work landed."
               >
                 Failure rate
               </span>

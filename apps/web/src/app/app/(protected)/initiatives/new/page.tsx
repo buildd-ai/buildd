@@ -21,7 +21,7 @@ export default async function NewInitiativePage() {
   if (teamIds.length === 0) {
     return (
       <div className="p-8 text-center text-text-secondary">
-        No team found. Create a workspace to get started.
+        No team found. Create a workspace before planning an initiative.
       </div>
     );
   }

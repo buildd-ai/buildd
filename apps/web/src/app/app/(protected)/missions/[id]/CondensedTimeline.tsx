@@ -663,8 +663,8 @@ function SummaryView({
       {(!criteriaGate || criteriaGate.state === 'unverified') && !hasTasks && (
         <p className="text-[13px] text-text-muted italic">
           {criteriaGate?.state === 'unverified'
-            ? 'Completion gated by goal criteria — not yet verified. Switch to Timeline for full history.'
-            : 'No actions needed — switch to Timeline for full history.'}
+            ? 'Completion gated by goal criteria, not yet verified. Switch to Timeline for full history.'
+            : 'No actions needed. Switch to Timeline for full history.'}
         </p>
       )}
 

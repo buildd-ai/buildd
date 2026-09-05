@@ -25,6 +25,14 @@ const nextConfig = {
         destination: '/app/home',
         permanent: false,
       },
+      // The standalone /memory marketing page is gone. It kept an id="pricing"
+      // anchor for inbound links predating the move to a built-in feature, so
+      // send that traffic to the docs page it used to link out to.
+      {
+        source: '/memory',
+        destination: 'https://docs.buildd.dev/docs/features/memory',
+        permanent: true,
+      },
     ];
   },
 };

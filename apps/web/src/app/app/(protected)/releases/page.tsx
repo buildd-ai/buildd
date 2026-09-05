@@ -45,7 +45,7 @@ export default async function ReleasesPage({
         </div>
         <div className="card p-8 text-center">
           <p className="text-sm text-text-secondary mb-1">No team found.</p>
-          <p className="text-xs text-text-muted">Create a workspace to get started.</p>
+          <p className="text-xs text-text-muted">Create a workspace to track releases.</p>
         </div>
       </div>
     );

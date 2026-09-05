@@ -134,8 +134,8 @@ export default async function WorkspacesPage() {
       <div className="max-w-4xl mx-auto">
         <div className="flex justify-between items-center mb-8">
           <div>
-            <Link href="/app/dashboard" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
-              ← Dashboard
+            <Link href="/app/home" className="text-sm text-text-muted hover:text-text-secondary mb-2 block">
+              ← Home
             </Link>
             <h1 className="text-3xl font-bold">Workspaces</h1>
           </div>

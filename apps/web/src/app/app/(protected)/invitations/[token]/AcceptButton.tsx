@@ -26,7 +26,7 @@ export default function AcceptInvitationButton({ token }: { token: string }) {
       router.push('/app/workspaces');
       router.refresh();
     } catch {
-      setError('Something went wrong. Please try again.');
+      setError('Could not reach buildd. The invitation is unchanged.');
     } finally {
       setLoading(false);
     }

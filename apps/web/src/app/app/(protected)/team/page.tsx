@@ -76,7 +76,7 @@ export default async function TeamPage() {
       <main className="min-h-screen p-8">
         <div className="max-w-5xl mx-auto">
           <h1 className="hidden md:block text-3xl font-bold mb-2">The Team</h1>
-          <p className="text-text-secondary">No workspaces found. Create a workspace first.</p>
+          <p className="text-text-secondary">No workspaces found. Create one to define agent roles.</p>
         </div>
       </main>
     );

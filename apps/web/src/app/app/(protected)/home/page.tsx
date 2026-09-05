@@ -1994,7 +1994,7 @@ export default async function HomePage({
             {actionQueue.length === 0 && activeItems.length > 0 && (
               <div className="mb-8">
                 <div className="section-label mb-3">Waiting on You</div>
-                <p className="text-[13px] text-text-muted">Nothing waiting on you — all in-flight work is autonomous.</p>
+                <p className="text-[13px] text-text-muted">Nothing waiting on you. All in-flight work is autonomous.</p>
                 {resolvedEscalations.length > 0 && (
                   <ResolvedEscalationsGroup items={resolvedEscalations} />
                 )}
