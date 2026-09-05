@@ -1,5 +1,6 @@
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
+import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -96,6 +97,7 @@ export default async function WorkspaceConfigPage({
                     workspaceId={workspace.id}
                     teamId={workspace.teamId}
                     initialReleaseConfig={workspace.releaseConfig as WorkspaceReleaseConfig | null}
+                    effectiveTrigger={resolveReleaseTrigger(workspace.releaseConfig as WorkspaceReleaseConfig | null)}
                     hasRepo={Boolean(workspace.repo)}
                 />
 

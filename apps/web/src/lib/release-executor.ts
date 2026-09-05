@@ -3,7 +3,7 @@ import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
-import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
@@ -230,7 +230,13 @@ async function maybeCreateReleaseRow(params: {
     releaseConfig: workspace?.releaseConfig,
     gitConfig: workspace?.gitConfig,
   });
-  if (archetype !== 'continuous') return;
+  // `gated` and `continuous` both genuinely release here: the gated path has
+  // just merged a release PR into the prod branch, which is the release event.
+  // Skipping it wrote no `releases` row and therefore no `release_tasks` edges,
+  // so a gated workspace had no release history, no task→release link, and its
+  // queue baseline fell through to the prod-branch-HEAD rung — a GitHub call on
+  // every read, forever. `store`/`package`/`none` are not this strategy.
+  if (archetype !== 'continuous' && archetype !== 'gated') return;
 
   const inserted = await db
     .insert(releases)
@@ -238,6 +244,10 @@ async function maybeCreateReleaseRow(params: {
       workspaceId,
       archetype,
       state: 'deploying',
+      // Matches the manual trigger route: a gated release is HTTP-verifiable,
+      // a continuous one is not. Still inert unless the workspace configures a
+      // `verificationUrl`, so this changes nothing until someone opts in.
+      verificationStrategy: archetype === 'gated' ? 'http' : 'none',
       triggeredBy: 'auto',
       deployedAt: new Date(),
       sourceRef,
@@ -246,6 +256,8 @@ async function maybeCreateReleaseRow(params: {
       previousSha,
       strategy: 'branch_merge',
     })
+    // Idempotent on the (workspace_id, head_sha) unique index — a retried
+    // release of the same merge commit must not double-count.
     .onConflictDoNothing()
     .returning({ id: releases.id });
 
@@ -303,7 +315,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   // Trigger policy: governs cadence. Per-task releases check this; mission-
   // driven releases (isMissionRelease=true) bypass so the hook actually fires.
   if (!isMissionRelease) {
-    const trigger = releaseConfig?.trigger ?? 'every_merge';
+    const trigger = resolveReleaseTrigger(releaseConfig);
     if (trigger === 'manual') {
       return { status: 'skipped', message: 'Release: trigger=manual — use trigger_release to release manually.' };
     }

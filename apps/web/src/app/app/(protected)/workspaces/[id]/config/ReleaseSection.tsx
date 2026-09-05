@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import type { WorkspaceReleaseConfig, ReleaseTrigger, ReleaseStrategy } from '@buildd/core/db/schema';
+import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
 
 type StrategyOption = ReleaseStrategy | 'none';
 
@@ -35,6 +36,14 @@ interface Props {
   workspaceId: string;
   teamId: string;
   initialReleaseConfig: WorkspaceReleaseConfig | null;
+  /**
+   * The trigger policy the server will actually run, resolved server-side via
+   * `resolveReleaseTrigger`. Passed in so this form never displays a default
+   * the server does not use (invariant 4, docs/design/mission-delivery-arc.md).
+   * Optional only for older call sites; the fallback uses the same function, so
+   * the two can never diverge.
+   */
+  effectiveTrigger?: ReleaseTrigger;
   hasRepo: boolean;
 }
 
@@ -83,7 +92,7 @@ function StatusBadge({ status }: { status: string | null | undefined }) {
   );
 }
 
-export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, hasRepo }: Props) {
+export default function ReleaseSection({ workspaceId, teamId, initialReleaseConfig, effectiveTrigger, hasRepo }: Props) {
   const cfg = initialReleaseConfig;
 
   const [strategy, setStrategy] = useState<StrategyOption>(
@@ -92,7 +101,12 @@ export default function ReleaseSection({ workspaceId, teamId, initialReleaseConf
   const [prodBranch, setProdBranch] = useState(cfg?.prodBranch ?? 'main');
   const [ref, setRef] = useState(cfg?.ref ?? 'dev');
   const [workflowFile, setWorkflowFile] = useState(cfg?.workflowFile ?? 'release.yml');
-  const [trigger, setTrigger] = useState<ReleaseTrigger>(cfg?.trigger ?? 'on_mission_complete');
+  // Never re-guess the default here: `resolveReleaseTrigger` is the single
+  // source shared with the server readers (mission-release.ts,
+  // release-executor.ts, api/github/webhook/route.ts).
+  const [trigger, setTrigger] = useState<ReleaseTrigger>(
+    effectiveTrigger ?? resolveReleaseTrigger(cfg)
+  );
 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);

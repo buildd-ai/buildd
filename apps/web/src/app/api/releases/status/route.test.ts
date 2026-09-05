@@ -58,6 +58,8 @@ mock.module('@/lib/release/target', () => ({
 }));
 
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: mockResolveReleaseStrategy,
 }));
 

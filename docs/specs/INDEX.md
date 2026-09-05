@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (31)
+## Active (30)
 
 ### auth (3)
 
@@ -83,7 +83,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Timezone Resolution](./timezone-resolution.md) · @max — verified 2026-09-02
   buildd MUST store exactly two timezones — one detected per user and one canonical per team — and MUST resolve every rendered or scheduled wall clock from that pair with a UTC fallback, never from a workspace.
 
-### tasks (6)
+### tasks (5)
 
 - [Artifacts and Sharing](./artifacts-and-sharing.md) · @max — verified 2026-08-30
   Artifacts MUST be created private, be publicly readable only via an explicitly issued share token that revocation immediately invalidates, and be stored under an object key confined to the owning workspace's prefix.
@@ -93,13 +93,13 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A claimed task MUST resolve to exactly one model id at claim time under a fixed precedence — explicit pin, role pin, task tier, then kind×complexity baseline under budget gates — recorded on tasks.predicted_model.
 - [PR Lifecycle Reconciliation](./pr-lifecycle-reconciliation.md) · @max — verified 2026-09-01
   The PR lifecycle status shown on every surface MUST reflect live GitHub CI state within one read cycle, with terminal states (merged/closed) never overwritten by later CI events.
-- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-08-27
-  A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (1)
+## Draft (2)
 
+- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-04
+  A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-01
   Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 

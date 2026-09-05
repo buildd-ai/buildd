@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { missions, missionNotes, tasks, workspaces, githubRepos } from '@buildd/core/db/schema';
 import { eq, and, or, lt, isNull, inArray, count } from 'drizzle-orm';
-import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
+import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { githubApi } from '@/lib/github';
 import { executeRelease } from '@/lib/release-executor';
@@ -144,7 +144,7 @@ export async function fireMissionReleaseIfComplete(
     columns: { releaseConfig: true, githubRepoId: true },
   });
 
-  const trigger = workspace?.releaseConfig?.trigger ?? 'every_merge';
+  const trigger = resolveReleaseTrigger(workspace?.releaseConfig);
   if (trigger !== 'on_mission_complete') return;
 
   // Check that all tasks in the mission have reached terminal state. This bar is

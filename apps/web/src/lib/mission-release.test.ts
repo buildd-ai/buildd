@@ -76,6 +76,8 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: (config: any) => {
     if (!config?.enabled) {
       return { ok: false, reason: 'not_configured', message: 'not configured' };

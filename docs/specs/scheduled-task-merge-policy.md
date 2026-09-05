@@ -1,8 +1,8 @@
 ---
 title: Scheduled-task merge policy override
-status: active
+status: draft
 owner: max
-last_verified: 2026-08-27
+last_verified: 2026-09-04
 summary: A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 domain: tasks
 surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/workspace-policy.ts, packages/shared/src/types.ts]
@@ -12,6 +12,30 @@ supersedes: []
 ---
 
 # Scheduled-task merge policy override
+
+> **Status: `draft` — nothing in this spec is implemented.** It was carried as
+> `active` while none of AC-1…AC-6 held, which is the one thing a spec may not
+> be: `active` asserts what the system does today. Verified 2026-09-04 against
+> `dev`:
+>
+> - There is no `tasks.merge_policy` column. `merge_policy` appears once in
+>   `packages/core/db/schema.ts`, on `missions`.
+> - `resolvePolicy` (`apps/web/src/lib/merge-policy.ts`) has no task-policy step,
+>   and its signature cannot accept one.
+> - The schedule cron does not propagate the template's merge policy — zero
+>   occurrences in `apps/web/src/app/api/cron/schedules/route.ts`.
+> - `parseMergePolicy` is wired only into `apps/web/src/app/api/missions/route.ts`
+>   and `apps/web/src/app/app/api/workspaces/[id]/config/route.ts`.
+>
+> The design is still wanted; `draft` is the honest home for it, and per
+> `SPEC-FORMAT.md` a draft is where naming not-yet-existing symbols is correct.
+>
+> **Before implementing, resolve one open question first.**
+> `docs/design/mission-delivery-arc.md` turns on *where the merge-policy tier
+> applies* — the mission's PR or each task's PR. That decision changes the
+> granularity this spec is written at, so building `tasks.mergePolicy` now risks
+> cementing the wrong one. Promote this back to `active` in the PR that
+> implements it, with `verified_by` populated.
 
 **Capability statement**: A task schedule MUST be able to declare its own
 `MergePolicy` that overrides the workspace/mission default for every task it

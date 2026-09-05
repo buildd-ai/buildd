@@ -194,6 +194,8 @@ const mockResolveReleaseStrategy = mock((config: any) => {
   return { ok: false, reason: 'invalid', message: 'unknown strategy' };
 });
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: mockResolveReleaseStrategy,
 }));
 
@@ -2620,5 +2622,119 @@ describe('workflow_run → releases state advancement', () => {
 
     const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
     expect(releaseUpdate).toBeUndefined();
+  });
+});
+
+
+// ── pull_request_review (B14) ────────────────────────────────────────────────
+//
+// The event was absent from the switch entirely, so a maintainer clicking
+// Approve in GitHub's UI produced no state in buildd: nothing in the mission
+// feed, and no answer to "who cleared this?". The handler is deliberately
+// record-only — see its docstring for why merge behaviour is untouched.
+
+describe('POST /api/github/webhook — pull_request_review', () => {
+  beforeEach(resetAll);
+
+  function reviewPayload(state: string, overrides: Record<string, any> = {}) {
+    return {
+      action: 'submitted',
+      review: {
+        state,
+        body: 'Looks right to me.',
+        user: { login: 'a-maintainer' },
+        ...overrides,
+      },
+      pull_request: { number: 42, html_url: 'https://github.com/test-org/test-repo/pull/42' },
+      repository: { full_name: 'test-org/test-repo' },
+      installation: { id: 5000 },
+    };
+  }
+
+  function workerOnMission() {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-42',
+      taskId: 't-42',
+      task: { id: 't-42', title: 'Add pagination', missionId: 'mission-9' },
+    });
+  }
+
+  it('records an approval as a reviewer_approved mission note', async () => {
+    workerOnMission();
+
+    const res = await POST(createWebhookRequest('pull_request_review', reviewPayload('approved')));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values).toMatchObject({
+      missionId: 'mission-9',
+      taskId: 't-42',
+      workerId: 'w-42',
+      // A person acting in GitHub, not a worker inside a task.
+      authorType: 'user',
+      type: 'reviewer_approved',
+      body: 'Looks right to me.',
+    });
+    expect(insertCalls[0].values.title).toContain('#42');
+    expect(insertCalls[0].values.actorLabel).toContain('a-maintainer');
+  });
+
+  it('records changes_requested distinctly from an approval', async () => {
+    workerOnMission();
+
+    await POST(createWebhookRequest('pull_request_review', reviewPayload('changes_requested')));
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].values.type).toBe('reviewer_request_changes');
+  });
+
+  it('ignores a bare comment — a remark is not a verdict', async () => {
+    workerOnMission();
+
+    const res = await POST(createWebhookRequest('pull_request_review', reviewPayload('commented')));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('ignores non-submitted actions', async () => {
+    workerOnMission();
+
+    const payload = { ...reviewPayload('approved'), action: 'dismissed' };
+    await POST(createWebhookRequest('pull_request_review', payload));
+
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('does nothing when the PR does not belong to a mission task', async () => {
+    mockWorkersFindFirst.mockReturnValue({
+      id: 'w-42',
+      taskId: 't-42',
+      task: { id: 't-42', title: 'Standalone', missionId: null },
+    });
+
+    const res = await POST(createWebhookRequest('pull_request_review', reviewPayload('approved')));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
+  });
+
+  it('does not merge, complete a task, or clear a review gate', async () => {
+    // The safety property. Whether a GitHub approval should satisfy buildd's
+    // `agent-review` gate is an open policy question; deciding it as a side
+    // effect here would silently change when things merge.
+    workerOnMission();
+
+    await POST(createWebhookRequest('pull_request_review', reviewPayload('approved')));
+
+    expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.setValues?.status === 'completed')).toHaveLength(0);
+  });
+
+  it('survives a malformed payload without throwing', async () => {
+    const res = await POST(createWebhookRequest('pull_request_review', { action: 'submitted' }));
+
+    expect(res.status).toBe(200);
+    expect(insertCalls).toHaveLength(0);
   });
 });

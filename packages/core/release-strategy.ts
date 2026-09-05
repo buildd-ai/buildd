@@ -10,7 +10,7 @@
 // else: an unconfigured workspace resolves to `not_configured`, not to buildd's
 // own shape.
 
-import type { WorkspaceReleaseConfig, ReleaseStrategy } from './db/schema';
+import type { WorkspaceReleaseConfig, ReleaseStrategy, ReleaseTrigger } from './db/schema';
 
 export type ResolvedReleaseStrategy =
   | {
@@ -50,6 +50,18 @@ export interface ReleaseOverrides {
 // Absent strategy ⇒ legacy 'branch_merge' (the original pre-strategy shape).
 export function effectiveStrategy(config: WorkspaceReleaseConfig): ReleaseStrategy {
   return config.strategy ?? 'branch_merge';
+}
+
+// Absent trigger ⇒ 'every_merge' (preserves pre-trigger behaviour).
+//
+// THE single source of the trigger default. Server readers (mission-release.ts,
+// release-executor.ts, api/github/webhook/route.ts) and the workspace config
+// form must all resolve through this function — otherwise the UI can display a
+// policy the server does not run (invariant 4, docs/design/mission-delivery-arc.md).
+export function resolveReleaseTrigger(
+  config: WorkspaceReleaseConfig | null | undefined,
+): ReleaseTrigger {
+  return config?.trigger ?? 'every_merge';
 }
 
 export function resolveReleaseStrategy(

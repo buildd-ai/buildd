@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { missions } from '@buildd/core/db/schema';
-import { eq, and, isNull } from 'drizzle-orm';
+import { missions, tasks, workers } from '@buildd/core/db/schema';
+import { eq, and, or, ne, isNull, isNotNull, inArray, count } from 'drizzle-orm';
 
 type MissionForBlockCheck = {
   id: string;
@@ -100,9 +100,58 @@ export async function wouldCreateCycle(
 }
 
 /**
+ * Does the upstream mission actually have nothing left to merge?
+ *
+ * The `merged` gate is worded "PRs to merge" — plural — and it means it. The
+ * signal that drives it fires from a single PR's merge webhook, so on its own it
+ * says only "one PR of this mission merged". Two things still count as
+ * outstanding:
+ *
+ *  1. a worker holding an open PR (`prUrl` set, `mergedAt` null), and
+ *  2. a non-terminal deliverable task, whose PR has not been opened yet.
+ *
+ * Bookkeeping rows are excluded: an aggregator or planning slot is not a
+ * deliverable and must not hold a downstream mission behind it. Rows predating
+ * the `taskClass` backfill (NULL) are counted, which errs toward staying
+ * blocked — the safe direction for a gate.
+ */
+async function missionHasUnmergedWork(missionId: string): Promise<boolean> {
+  const [openPrs] = await db
+    .select({ count: count() })
+    .from(workers)
+    .innerJoin(tasks, eq(tasks.id, workers.taskId))
+    .where(
+      and(
+        eq(tasks.missionId, missionId),
+        isNotNull(workers.prUrl),
+        isNull(workers.mergedAt),
+      ),
+    );
+  if (Number(openPrs?.count ?? 0) > 0) return true;
+
+  const [pendingWork] = await db
+    .select({ count: count() })
+    .from(tasks)
+    .where(
+      and(
+        eq(tasks.missionId, missionId),
+        inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
+        or(isNull(tasks.taskClass), ne(tasks.taskClass, 'bookkeeping')),
+      ),
+    );
+  return Number(pendingWork?.count ?? 0) > 0;
+}
+
+/**
  * Called when an upstream mission satisfies the gate condition.
  * Finds all blocked dependents with a matching gateCondition and sets
  * their dependencyMetAt, releasing the block.
+ *
+ * For the `merged` signal the caller only knows that *a* PR merged, so the
+ * mission-wide predicate is re-checked here rather than trusted. Putting it here
+ * rather than at the call sites is deliberate: three separate places raise this
+ * signal (the webhook's worker-match and branch-match paths, and the manual
+ * merge route) and they must not be able to drift apart.
  *
  * Returns the IDs of missions that were unblocked.
  */
@@ -122,6 +171,12 @@ export async function checkAndUnblockDependentMissions(
 
   const toUnblock = dependents.filter(d => d.gateCondition === signal);
   if (toUnblock.length === 0) return [];
+
+  // Checked only after we know a dependent is actually waiting on this signal,
+  // so the common no-dependents case costs no extra queries.
+  if (signal === 'merged' && await missionHasUnmergedWork(upstreamMissionId)) {
+    return [];
+  }
 
   const now = new Date();
   const unblockedIds: string[] = [];

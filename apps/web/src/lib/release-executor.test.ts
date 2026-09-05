@@ -40,6 +40,8 @@ mock.module('@/lib/github', () => ({
 
 // Mimic production resolve logic: absent strategy => branch_merge
 mock.module('@buildd/core/release-strategy', () => ({
+  // Mirrors the real module: the trigger default lives in ONE place.
+  resolveReleaseTrigger: (c: any) => c?.trigger ?? 'every_merge',
   resolveReleaseStrategy: (config: any) => {
     if (!config || !config.enabled) {
       return { ok: false, reason: 'not_configured', message: 'not configured' };
@@ -556,16 +558,106 @@ describe('executeRelease — releases row creation', () => {
     expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
-  it('does not insert a releases row for a gated workspace (trigger route owns that)', async () => {
-    // Gated workspace with releaseBranch — executeRelease skips row creation
+  it('writes no row when a feature task is skipped before any merge happens', async () => {
+    // Renamed from "does not insert for a gated workspace (trigger route owns
+    // that)": this case never reached the archetype check at all. With
+    // releaseBranch set and release flag 'inherit', executeRelease returns
+    // `skipped` long before maybeCreateReleaseRow, so the test proved only that
+    // a no-op writes nothing — not anything about gated archetypes.
     mockTasksFindFirst.mockResolvedValue({ release: 'inherit' });
     setupWorker();
     setupGatedWorkspace();
     setupRepo();
 
-    // releaseBranch path: task release flag is 'inherit' so it returns skipped early
     const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
     expect(result.status).toBe('skipped');
+    expect(mockDbInsert).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Drive the gated path all the way to a merged release PR.
+   *
+   * githubApi call order in the releaseBranch branch:
+   *   1. GET pulls?base=<prod>&head=<owner>:<releaseBranch>&state=open  → the release PR
+   *   2. GET commits/<headSha>/check-runs                              → CI verdict
+   *   3. GET git/ref/heads/<prod>                                      → previousSha
+   *   4. PUT pulls/<n>/merge                                           → merge sha
+   */
+  function setupGatedReleasePrMerge() {
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 77, head: { sha: 'prheadsha' }, html_url: 'https://github.com/org/repo/pull/77', title: 'Release v1.2.3' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [{ name: 'Build & Test', status: 'completed', conclusion: 'success' }],
+    });
+    mockGithubApi.mockResolvedValueOnce({ object: { sha: 'prevmain111' } });
+    mockGithubApi.mockResolvedValueOnce({ sha: 'mergedmain222', commit: {} });
+  }
+
+  it('inserts a releases row for a gated workspace when the release PR merges', async () => {
+    // The regression. A gated release IS a release: the release PR just landed on
+    // the prod branch. Skipping the row wrote no release history and no
+    // release_tasks edges, so a gated workspace had no task→release link and its
+    // queue baseline fell through to the prod-branch-HEAD rung on every read.
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
+
+    expect(mockDbInsert).toHaveBeenCalledTimes(1);
+    expect(mockDbInsertValues).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      archetype: 'gated',
+      state: 'deploying',
+      strategy: 'branch_merge',
+      headSha: 'mergedmain222',
+      previousSha: 'prevmain111',
+      // sourceRef is the release branch, not a worker branch
+      sourceRef: 'dev',
+      targetRef: 'main',
+      // Matches api/releases/trigger: gated releases are HTTP-verifiable. Still
+      // inert unless the workspace configures a verificationUrl.
+      verificationStrategy: 'http',
+    }));
+  });
+
+  it('attributes the gated release so release_tasks edges exist', async () => {
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+    expect(mockAttributeRelease).toHaveBeenCalledWith(expect.objectContaining({
+      releaseId: 'release-abc',
+      workspaceId: 'ws-1',
+      // gated → attribution walks the compare range by PR number
+      archetype: 'gated',
+      previousSha: 'prevmain111',
+      headSha: 'mergedmain222',
+    }));
+  });
+
+  it('still writes no row for archetypes that are not this strategy', async () => {
+    // store/package/none do not release via branch_merge, so widening the gate
+    // to `gated` must not widen it to everything.
+    mockTasksFindFirst.mockResolvedValue({ release: 'true' });
+    setupWorker();
+    setupGatedWorkspace();
+    mockDetectArchetype.mockReturnValue('package');
+    setupRepo();
+    setupGatedReleasePrMerge();
+
+    const result = await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+    expect(result.status).toBe('completed');
     expect(mockDbInsert).not.toHaveBeenCalled();
   });
 
