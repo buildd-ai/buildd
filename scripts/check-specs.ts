@@ -8,8 +8,9 @@
  * Also regenerates docs/specs/INDEX.md so the live/retired split is always
  * visible at a glance.
  *
- * Beyond hygiene, three checks test whether a spec is TRUE, not just well-formed:
+ * Beyond hygiene, four checks test whether a spec is TRUE, not just well-formed:
  *   - symbol liveness: every backticked code symbol a spec names must exist
+ *   - route liveness:  every backticked `/api/...` URL must resolve to a route.ts
  *   - verified_by:     an `active` spec must name the tests asserting its invariants
  *   - surface coverage: reports high-value modules no live spec claims (advisory)
  *
@@ -20,7 +21,8 @@
  * Exit codes:
  *   0  clean (warnings allowed)
  *   1  one or more errors (missing frontmatter, dead code-surface path,
- *      duplicate active slug, superseded-without-successor)
+ *      dead route URL in an `active` spec, duplicate active slug,
+ *      superseded-without-successor)
  *
  * Usage:
  *   bun run scripts/check-specs.ts            # lint + rewrite INDEX.md
@@ -282,6 +284,222 @@ export function resolveSymbols(symbols: string[]): Set<string> {
     }
   }
   return new Set(symbols.filter((s) => !found.has(s)));
+}
+
+// ─── Route-URL liveness ──────────────────────────────────────────────────────
+//
+// `codeSurfacePaths` checks FILE paths and `claimedSymbols` checks identifiers.
+// Nothing checked the third kind of claim a spec makes: an endpoint URL in prose.
+// mcp-connectors-and-roles.md asserted two routes as "(existing)" — a probe
+// endpoint and a per-workspace enable/disable PATCH — and neither had ever been
+// built. An agent reading that spec believes it may call them, so it does not
+// build them, and the lie survives every gate. Route URLs are now resolved the
+// same way symbols are.
+
+/**
+ * URL-shaped tokens. Deliberately greedy over placeholder punctuation
+ * (`[id]`, `{wsId}`, `<ws>`, `${id}`, `*`) because every one of those spellings
+ * occurs in the corpus, and a truncated URL resolves against nothing.
+ */
+const API_URL_RE = /\/api\/[A-Za-z0-9_\-/[\].$:<>*{}]*/g;
+
+/** A route directory that matches one segment: `[id]`, `[workspaceId]`. */
+const DIR_DYNAMIC = /^\[[^\]]+\]$/;
+/** `[...slug]` — one or more segments. Always the last segment of a route. */
+const DIR_CATCH_ALL = /^\[\.\.\.[^\]]+\]$/;
+/** `[[...slug]]` — zero or more segments. */
+const DIR_OPT_CATCH_ALL = /^\[\[\.\.\..+\]\]$/;
+
+/**
+ * Spellings a spec uses for "an id goes here". The parameter NAME is not the
+ * contract — a spec may write `[wsId]` where the directory is `[workspaceId]`,
+ * and that must resolve. Single capitals are included because the corpus uses
+ * `/api/missions/M/artifacts` style stand-ins in acceptance criteria.
+ */
+function isParamPlaceholder(seg: string): boolean {
+  return (
+    /^\[.*\]$/.test(seg) || // [id], [...slug]
+    /^\$?\{.*\}$/.test(seg) || // ${id}, {workspaceId}
+    /^<.*>?$/.test(seg) || // <ws>, and `<old token>` truncated at the space
+    /^:.+$/.test(seg) || // :id
+    /^[A-Z]\d*$/.test(seg) // M, W, X2
+  );
+}
+
+/** `*` in `/api/cron/*` — matches any one route segment, literal or dynamic. */
+const WILDCARD = '*';
+
+/**
+ * Normalize one raw token into a comparable URL, or null if it is not a URL
+ * claim at all. A `.ts` path is a file — `codeSurfacePaths` owns those, and
+ * treating them as URLs would flag every `route.ts` citation in the corpus.
+ */
+function normalizeApiUrl(token: string): string | null {
+  let u = token.split('?')[0].split('#')[0];
+  u = u.replace(/:\d+(-\d+)?$/, ''); // `route.ts:45`, `route.ts:15-46`
+  for (;;) {
+    const last = u.at(-1);
+    if (!last) break;
+    if ('.,;:)\'"`/'.includes(last)) {
+      u = u.slice(0, -1);
+      continue;
+    }
+    // Strip a closing bracket only when it closes nothing — `…/[id])` yes,
+    // `…/[id]` no. Same for `>` so `<workspace>` survives intact.
+    const unbalanced = (open: string, close: string) =>
+      (u.match(new RegExp(`\\${open}`, 'g')) ?? []).length <
+      (u.match(new RegExp(`\\${close}`, 'g')) ?? []).length;
+    if (last === ']' && unbalanced('[', ']')) {
+      u = u.slice(0, -1);
+      continue;
+    }
+    if (last === '>' && unbalanced('<', '>')) {
+      u = u.slice(0, -1);
+      continue;
+    }
+    break;
+  }
+  if (/\.(ts|tsx|js|jsx|mjs|cjs)$/.test(u)) return null; // a file, not a URL
+  if (u === '/api' || u === '') return null; // bare namespace root, says nothing
+  return u;
+}
+
+/**
+ * Every `/api/...` URL a spec body claims.
+ *
+ * Backticks are the signal, exactly as they are for symbols (SPEC-FORMAT rule
+ * 7): a URL inside inline code or a fenced block is a claim that the endpoint
+ * is live, and prose is not. That is what makes it possible to say a route is
+ * NOT implemented — write the path as plain text and the linter stays out of
+ * it. Scanning bare prose instead would make the honest statement unwritable
+ * and push authors to delete the requirement, which is the worse outcome.
+ */
+export function claimedApiRoutes(body: string): string[] {
+  const out = new Set<string>();
+  const spans = [...body.matchAll(/```[\s\S]*?```/g), ...body.matchAll(/`[^`\n]+`/g)];
+  for (const span of spans) {
+    for (const m of span[0].matchAll(API_URL_RE)) {
+      const u = normalizeApiUrl(m[0]);
+      if (u) out.add(u);
+    }
+  }
+  return [...out];
+}
+
+function segmentsOf(url: string): string[] {
+  return url.split('/').filter(Boolean);
+}
+
+/**
+ * Does `spec` name exactly this route? Strict in one direction on purpose: a
+ * LITERAL spec segment must match a LITERAL directory. Letting a literal fall
+ * through to `[id]` is what hid `/api/connectors/probe` — Next.js would route
+ * that request to the `[id]` handler, so a lenient matcher calls it live while
+ * the endpoint the spec describes does not exist.
+ */
+function matchesRoute(spec: string[], route: string[]): boolean {
+  let i = 0;
+  for (let j = 0; j < route.length; j++) {
+    const r = route[j];
+    if (DIR_OPT_CATCH_ALL.test(r)) return true; // eats 0+, always last
+    if (DIR_CATCH_ALL.test(r)) return spec.length - i >= 1; // eats 1+, always last
+    if (i >= spec.length) return false;
+    const s = spec[i++];
+    if (s === WILDCARD) continue;
+    if (DIR_DYNAMIC.test(r)) {
+      if (!isParamPlaceholder(s)) return false;
+      continue;
+    }
+    if (isParamPlaceholder(s)) return false;
+    if (s !== r) return false;
+  }
+  return i === spec.length;
+}
+
+let routeTableCache: string[][] | null = null;
+
+/**
+ * Every HTTP path this repo serves, as segment arrays.
+ *
+ * Two sources, one table, because one matcher is easier to trust than two:
+ *   - the Next.js app-router tree (route groups `(protected)` contribute no
+ *     segment, per app-router semantics)
+ *   - literal `/api/...` paths registered by the runner's own local server,
+ *     which is a Bun `switch`, not a file tree. Without these a spec citing
+ *     `/api/doctor` would be flagged as fabricated.
+ *
+ * Known limitation: the table does not record WHICH server owns a path, so a
+ * spec that attributes a runner-local path to the web app still passes. It
+ * catches the failure that actually happened — a route nobody serves at all.
+ */
+export function apiRouteTable(): string[][] {
+  if (routeTableCache) return routeTableCache;
+  const table: string[][] = [];
+
+  const walk = (dir: string, segs: string[]) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of entries) {
+      if (d.isDirectory()) {
+        walk(join(dir, d.name), /^\(.*\)$/.test(d.name) ? segs : [...segs, d.name]);
+      } else if (d.name === 'route.ts' || d.name === 'route.tsx') {
+        table.push(segs);
+      }
+    }
+  };
+  walk(join(ROOT, 'apps/web/src/app'), []);
+
+  const runnerSrc = join(ROOT, 'apps/runner/src');
+  const walkFiles = (dir: string) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const d of entries) {
+      const p = join(dir, d.name);
+      if (d.isDirectory()) walkFiles(p);
+      else if (/\.tsx?$/.test(d.name)) {
+        let text: string;
+        try {
+          text = readFileSync(p, 'utf8');
+        } catch {
+          continue;
+        }
+        for (const m of text.matchAll(/['"`](\/api\/[^'"`\s$]*)['"`]/g)) {
+          table.push(segmentsOf(m[1]));
+        }
+      }
+    }
+  };
+  walkFiles(runnerSrc);
+
+  routeTableCache = table;
+  return table;
+}
+
+/**
+ * `route`      — a handler serves exactly this path.
+ * `namespace`  — the path is a proper prefix of real routes (`/api/cron`,
+ *                `/api/.well-known`). Prose legitimately names a family, so
+ *                this is resolved, not reported: three active specs do it.
+ * `null`       — nothing in the repo serves this path or anything under it.
+ */
+export function resolveApiRoute(
+  url: string,
+  table: string[][] = apiRouteTable(),
+): 'route' | 'namespace' | null {
+  const spec = segmentsOf(url);
+  if (spec.length === 0) return null;
+  if (table.some((r) => matchesRoute(spec, r))) return 'route';
+  if (table.some((r) => r.length > spec.length && matchesRoute(spec, r.slice(0, spec.length))))
+    return 'namespace';
+  return null;
 }
 
 function loadSpecs(): SpecFile[] {
@@ -552,6 +770,37 @@ const crossErrors = crossChecks(specs);
       else spec.errors.push(`${msg} — the claim is stale`);
     }
   }
+}
+
+// Route-URL liveness: same status ladder as symbols, for the same reason.
+// `active` claims what IS, so an endpoint nobody serves is an error; a `draft`
+// legitimately describes routes that are not built yet, so it warns.
+//
+// No grandfather set. Measured on the corpus at the time this landed, exactly
+// two active-spec URLs failed — both in mcp-connectors-and-roles.md, both
+// fabricated "(existing)" endpoints — and both were corrected in the same
+// change. VERIFIED_BY_DEBT exists because 18 specs could not be fixed at once;
+// two could, so grandfathering here would only preserve a lie.
+{
+  const live = specs.filter((s) => s.fm.status !== 'superseded');
+  let urlsSeen = 0;
+  for (const spec of live) {
+    for (const url of claimedApiRoutes(spec.body)) {
+      urlsSeen++;
+      if (resolveApiRoute(url)) continue;
+      const msg = `claims route \`${url}\`, which no route.ts in apps/web/src/app (nor the runner's local server) serves`;
+      if (spec.fm.status === 'draft')
+        spec.warnings.push(`${msg} — expected for a draft, but it cannot be verified`);
+      else spec.errors.push(`${msg} — the endpoint does not exist`);
+    }
+  }
+  // A check that measures nothing passes forever. If extraction ever silently
+  // stops matching (a regex edit, a corpus-wide reformat), fail loudly rather
+  // than reporting a clean corpus.
+  if (live.length > 0 && urlsSeen === 0)
+    crossErrors.push(
+      `route-URL check extracted 0 \`/api/...\` URLs from ${live.length} live spec(s) — it measured nothing; the gate is not wired`,
+    );
 }
 
 let errorCount = crossErrors.length;

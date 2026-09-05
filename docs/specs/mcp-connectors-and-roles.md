@@ -330,7 +330,7 @@ create (or reuse) a team `connectors` row and add its id to the role's
 **Invariants**:
 - Installing a registry entry with a remote (`http`) transport MUST resolve
   `authMode` from OAuth discovery of the URL.
-  **Not implemented as a separate endpoint.** No `/api/connectors/probe` route
+  **Not implemented as a separate endpoint.** No /api/connectors/probe route
   exists in the tree — the pre-create probe described in
   `docs/design/generic-mcp-connectors.md` §A/§C was never built, and nothing
   may call it. What ships instead: `discoverOAuthMetadata` (plus `registerClient`
@@ -394,12 +394,16 @@ not call either one; building the behaviour means building the route.
 
 | Design-doc path | Reality |
 |---|---|
-| `POST /api/connectors/probe` | **Does not exist.** Discovery is inline in `POST /api/connectors` / `PATCH /api/connectors/[id]` (§5). There is no way to probe a URL before creating a connector row. |
-| `PATCH /api/connectors/[id]/workspaces/[wsId]` | **Does not exist.** Per-workspace enable/disable ships as `PATCH /api/workspaces/[id]/connectors` with the connector id in the body, i.e. keyed on workspace-then-connector, not connector-then-workspace. |
+| POST /api/connectors/probe | **Does not exist.** Discovery is inline in `POST /api/connectors` / `PATCH /api/connectors/[id]` (§5). There is no way to probe a URL before creating a connector row. |
+| PATCH /api/connectors/[id]/workspaces/[wsId] | **Does not exist.** Per-workspace enable/disable ships as `PATCH /api/workspaces/[id]/connectors` with the connector id in the body, i.e. keyed on workspace-then-connector, not connector-then-workspace. |
 
-The spec linter existence-checks *file* paths, not route URLs, which is why
-these two survived. When a spec asserts a route, cite its `route.ts` in the
-Code surface block so the check can bite.
+These two survived because the spec linter existence-checked *file* paths and
+backticked symbols, but not route URLs. It now resolves route URLs as well
+(SPEC-FORMAT rule 8): a backticked `/api/...` path in an `active` spec must
+resolve to a `route.ts`, so asserting a route nobody serves fails `specs:lint`.
+That is why the two paths in the table above are written as plain text —
+backticks are the linter's signal for "this is live, go check it", so a route
+being asserted as ABSENT must not carry them.
 
 **Code surface**:
 - Role refs: `apps/web/src/app/api/workspaces/[id]/skills/[skillId]/route.ts`

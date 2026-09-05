@@ -188,7 +188,8 @@ explicit denyPaths are optional for schedules.
 
 ## Validation
 
-`POST /api/schedules` and `PATCH /api/schedules/[id]` MUST validate
+`POST /api/workspaces/[id]/schedules` and
+`PATCH /api/workspaces/[id]/schedules/[scheduleId]` MUST validate
 `taskTemplate.mergePolicy` with `parseMergePolicy()` before persisting. An
 invalid policy MUST be rejected with HTTP 400 and a message identifying the
 offending field.
@@ -241,7 +242,7 @@ The schedule update is applied via `manage_workspaces`-equivalent API or direct
 
 - **AC-4**: GIVEN a task with `mergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 200 } }` and a PR with 250 changed lines, WHEN the CI check-suite event fires, THEN the PR is NOT auto-merged (diff exceeds threshold) and the stall-notify path fires.
 
-- **AC-5**: GIVEN a schedule with `taskTemplate.mergePolicy = { tier: 'invalid-tier' }`, WHEN `POST /api/schedules` is called, THEN the server returns HTTP 400 with an error identifying `mergePolicy.tier`.
+- **AC-5**: GIVEN a schedule with `taskTemplate.mergePolicy = { tier: 'invalid-tier' }`, WHEN `POST /api/workspaces/[id]/schedules` is called, THEN the server returns HTTP 400 with an error identifying `mergePolicy.tier`.
 
 - **AC-6**: GIVEN a task with both `requiresReview = true` and `mergePolicy = { tier: 'auto-threshold' }`, WHEN `resolvePolicy()` is called, THEN it returns `{ tier: 'human' }` (requiresReview takes precedence).
 
