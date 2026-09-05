@@ -17,6 +17,8 @@ import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
 import type { MissionSegment, TaskType, CriteriaGatePresentation } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
+import AttemptStrip from './AttemptStrip';
+import type { AttemptStrip as AttemptStripData } from '@/lib/attempt-strip';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -61,6 +63,13 @@ export type CondensedTimelineTask = {
    * mission row is already fetched in full and it costs no extra columns.
    */
   missionBudgetExhausted?: boolean;
+  /**
+   * Attempts and reviewer runs belonging to this task, pre-assembled by
+   * `buildAttemptStrips` (U8). They used to collapse into the bookkeeping
+   * footer, which published neither the reason for the attempt nor how many
+   * remained. Absent/empty renders no strip.
+   */
+  attempts?: AttemptStripData | null;
 };
 
 /** Minimal bookkeeping task row for the expandable footer (§3.6). */
@@ -326,6 +335,9 @@ function TaskRow({
       {showPrLine && (
         <PrStatusLine task={task} effectivePolicyTier={effectivePolicyTier} />
       )}
+
+      {/* Attempt strip — the agent chain, rendered where the work is (U8) */}
+      <AttemptStrip strip={task.attempts ?? null} />
 
       {/* Failed task retry */}
       {isFailed && (

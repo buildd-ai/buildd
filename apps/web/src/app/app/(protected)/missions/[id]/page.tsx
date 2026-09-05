@@ -21,6 +21,7 @@ import MissionAutoRefresh from './MissionAutoRefresh';
 import MissionReconcileOnOpen from './MissionReconcileOnOpen';
 import CondensedTimeline from './CondensedTimeline';
 import type { CondensedTimelineGroups, CondensedTimelineTask, BookkeepingTask } from './CondensedTimeline';
+import { buildAttemptStrips, partitionBookkeeping, repoFullNameFromPrUrl } from '@/lib/attempt-strip';
 import { groupChainUnits } from '@/lib/condensed-timeline';
 import type { CondensedTask, CondensedTaskWorker, ChainUnit } from '@/lib/condensed-timeline';
 import StructureView from './StructureView';
@@ -95,6 +96,11 @@ export default async function MissionDetailPage({
           loopIteration: true,
           startAt: true,
           reviewerRetryPrNumber: true,
+          // Attempt-strip provenance (U8): deriveTaskOrigin reads the three
+          // retry counters plus context to say why each attempt exists.
+          ciRetryPrNumber: true,
+          conflictRetryPrNumber: true,
+          context: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -177,7 +183,8 @@ export default async function MissionDetailPage({
                   updatedAt: true, result: true, mode: true, roleSlug: true,
                   creationSource: true, dependsOn: true, parentTaskId: true, category: true,
                   taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
-                  reviewerRetryPrNumber: true,
+                  reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
+                  context: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -466,16 +473,44 @@ export default async function MissionDetailPage({
     }
   }
 
-  // §3.6: Deliverable tasks appear in the timeline; bookkeeping tasks (attempts,
-  // reviewer runs, orchestration planning) collapse to the expandable footer.
-  // taskClass='work' → timeline; 'attempt'|'bookkeeping' → housekeeping footer.
-  const isBookkeeping = (t: typeof allTasks[0]): boolean => t.taskClass !== 'work';
+  // §3.6: Deliverable tasks appear in the timeline; taskClass='work' → timeline.
+  const timelineTasks = allTasks.filter(t => t.taskClass === 'work');
 
-  const timelineTasks = allTasks.filter(t => !isBookkeeping(t));
+  // U8: attempts move onto their parent task's row via `attachAttempts` (wrapped
+  // by buildAttemptStrips), so the footer keeps only genuine housekeeping —
+  // orchestration planning runs, plus any attempt whose parent row is not
+  // rendered (dropping those would delete the run's only published trace).
+  const renderedTaskIds = new Set(timelineTasks.map(t => t.id));
+  const attemptStrips = buildAttemptStrips(
+    allTasks.map(t => ({
+      id: t.id,
+      status: t.status,
+      taskClass: t.taskClass,
+      parentTaskId: t.parentTaskId,
+      roleSlug: t.roleSlug,
+      creationSource: t.creationSource,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      ciRetryPrNumber: (t as any).ciRetryPrNumber ?? null,
+      reviewerRetryPrNumber: (t as any).reviewerRetryPrNumber ?? null,
+      conflictRetryPrNumber: (t as any).conflictRetryPrNumber ?? null,
+      context: (t.context as Record<string, unknown> | null) ?? null,
+    })),
+    {
+      // No repo column is loaded here; every PR url on this mission points at
+      // the same repo, so the first one names it. Null → no PR link, never a
+      // guessed one.
+      repoFullName: repoFullNameFromPrUrl(
+        allTasks.flatMap(t => (t.workers || []) as Array<{ prUrl?: string | null }>).find(w => w.prUrl)?.prUrl,
+      ),
+      roleNameBySlug: new Map(roles.map(r => [r.slug, r.name])),
+    },
+  );
+
+  const { footer: footerTasks } = partitionBookkeeping(allTasks, renderedTaskIds);
 
   // Collect bookkeeping tasks for the expandable footer
-  const bookkeepingTasksRaw = allTasks.filter(t => isBookkeeping(t));
-  const bookkeepingTasks: BookkeepingTask[] = bookkeepingTasksRaw.map(t => {
+  const bookkeepingTasks: BookkeepingTask[] = footerTasks.map(t => {
     const lw = (t.workers as any[])?.[0];
     return {
       id: t.id,
@@ -603,6 +638,7 @@ export default async function MissionDetailPage({
         : null,
       reviewerTaskHref: reviewerTaskRef ? `/app/tasks/${reviewerTaskRef.id}` : null,
       reviewerRetryTask: reviewerRetryMap.get(task.id) ?? null,
+      attempts: attemptStrips.get(task.id) ?? null,
     };
   }
 
