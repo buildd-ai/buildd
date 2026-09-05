@@ -3,6 +3,10 @@ import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
 import { githubApi, mergePullRequest } from '@/lib/github';
+// One implementation of the primary-PR claim and of "what counts as trunk",
+// shared with the mission-PR opener. Two copies of a base-ref rule is how
+// the branch-name generator drifted (P8).
+import { claimMissionPrimaryPr, trunkBranches } from '@/lib/mission-pr';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -145,13 +149,19 @@ export async function POST(req: NextRequest) {
       }
       const prNumberMatch = existingPrUrl.match(/\/pull\/(\d+)/);
       const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+      // NOTE: prBaseRef is deliberately NOT set here. This path registers a PR
+      // that was opened outside buildd (e.g. via gh CLI), so the only base we have
+      // is the caller-supplied `base` — an unverified claim about a PR we never
+      // saw. Recording it would let a wrong value drop a human merge gate; leaving
+      // it null keeps today's behaviour until the pull_request webhook reports the
+      // real base ref. Unknown degrades to the gate, never away from it.
       await db.update(workers).set({
         prUrl: existingPrUrl,
         prNumber,
         updatedAt: new Date(),
       }).where(eq(workers.id, workerId));
       if (prNumber) {
-        await persistMissionPrIfFirst(worker.task?.missionId, prNumber, existingPrUrl, {
+        await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
           baseRef: typeof base === 'string' ? base : null,
           trunk: trunkBranches(worker.workspace?.gitConfig),
         });
@@ -174,13 +184,22 @@ export async function POST(req: NextRequest) {
           isNotNull(workers.prUrl),
           isNotNull(workers.prNumber),
         ),
-        columns: { prUrl: true, prNumber: true, id: true },
+        columns: { prUrl: true, prNumber: true, id: true, prBaseRef: true },
       });
       if (siblingWorkerWithPr?.prUrl && siblingWorkerWithPr.prNumber) {
-        // Mirror the PR onto this worker too so future calls hit the fast path
+        // Mirror the PR onto this worker too so future calls hit the fast path.
+        // The base ref is copied from the sibling because it is literally the same
+        // PR — but only when the sibling actually has one recorded. A sibling from
+        // before this column existed has null, and null must stay null rather than
+        // become a guess (see workers.prBaseRef).
         await db
           .update(workers)
-          .set({ prUrl: siblingWorkerWithPr.prUrl, prNumber: siblingWorkerWithPr.prNumber, updatedAt: new Date() })
+          .set({
+            prUrl: siblingWorkerWithPr.prUrl,
+            prNumber: siblingWorkerWithPr.prNumber,
+            ...(siblingWorkerWithPr.prBaseRef ? { prBaseRef: siblingWorkerWithPr.prBaseRef } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(workers.id, workerId));
         await supersedeAncestorEscalations(
           db,
@@ -267,11 +286,19 @@ export async function POST(req: NextRequest) {
             ...(typeof prDetail.base?.sha === 'string' && !worker.prOpenedBaseSha
               ? { prOpenedBaseSha: prDetail.base.sha }
               : {}),
+            // Adopting an existing PR: take its base ref from the fetched detail.
+            // Unlike prOpenedBaseSha this is refreshed unconditionally — the base
+            // ref is mutable (a retarget changes it) so the newest observation
+            // wins, whereas the open-time SHA is a historical fact.
+            ...(typeof (prDetail.base?.ref ?? existing.base?.ref) === 'string'
+              && (prDetail.base?.ref ?? existing.base?.ref)
+              ? { prBaseRef: prDetail.base?.ref ?? existing.base?.ref }
+              : {}),
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
 
-        await persistMissionPrIfFirst(worker.task?.missionId, existing.number, existing.html_url, {
+        await claimMissionPrimaryPr(worker.task?.missionId, existing.number, existing.html_url, {
           baseRef: prDetail.base?.ref ?? existing.base?.ref ?? null,
           trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
         });
@@ -359,11 +386,18 @@ export async function POST(req: NextRequest) {
         ...(typeof prData.changed_files === 'number' ? { filesChanged: prData.changed_files } : {}),
         // Base branch SHA at PR open time — used by the base-history-rewrite detector
         ...(typeof prData.base?.sha === 'string' ? { prOpenedBaseSha: prData.base.sha } : {}),
+        // Base REF as GitHub resolved it — deliberately GitHub's value, not the
+        // `base` we sent, because that input goes through a 7-way fallback below
+        // and GitHub is the only authority on where the PR actually points.
+        // Decides whether the merge-policy tier applies to this PR (resolvePolicy).
+        ...(typeof prData.base?.ref === 'string' && prData.base.ref
+          ? { prBaseRef: prData.base.ref }
+          : {}),
         updatedAt: new Date(),
       })
       .where(eq(workers.id, workerId));
 
-    await persistMissionPrIfFirst(worker.task?.missionId, prData.number, prData.html_url, {
+    await claimMissionPrimaryPr(worker.task?.missionId, prData.number, prData.html_url, {
       baseRef: prData.base?.ref ?? null,
       trunk: trunkBranches(workspace.gitConfig, repo.defaultBranch),
     });
@@ -905,59 +939,6 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/**
- * The branches a *mission-level* PR can target: the workspace's own trunk.
- *
- * `gitConfig.targetBranch` is where this workspace lands work (`dev` here),
- * `gitConfig.defaultBranch` / `repo.defaultBranch` are the fallbacks the PR
- * creation path itself uses, so the two agree by construction.
- */
-function trunkBranches(
-  gitConfig: { targetBranch?: string | null; defaultBranch?: string | null } | null | undefined,
-  repoDefaultBranch?: string | null,
-): string[] {
-  return [gitConfig?.targetBranch, gitConfig?.defaultBranch, repoDefaultBranch]
-    .filter((b): b is string => !!b);
-}
-
-/**
- * Claim `missions.primaryPrNumber` for the mission's PR — and only for it.
- *
- * The slot used to go to whichever PR under the mission arrived first (P2/B7),
- * which is why the column's real meaning drifted to "the first PR any mission
- * task opened". Under the integration-branch model the first *task* PR — based
- * on `mission/<slug>`, not the trunk — would steal it outright, and everything
- * downstream (mission card, PR-state notifications, the planning gate) would
- * then be reading one task's PR as the mission's.
- *
- * Gate: the PR must be based on a trunk branch. Today every task PR targets
- * `dev`, so this is close to a no-op; it is the prerequisite that keeps it a
- * no-op once task PRs stop targeting `dev`.
- *
- * An unknown base ref does NOT claim the slot. The prUrl-registration path never
- * talks to GitHub, so a PR there is unclassifiable — and those workspaces have no
- * GitHub installation, so any reader of the slot would need one before it could
- * resolve the PR at all. Populating it would only store an unusable value.
- */
-async function persistMissionPrIfFirst(
-  missionId: string | null | undefined,
-  prNumber: number,
-  prUrl: string,
-  opts: { baseRef: string | null | undefined; trunk: string[] },
-): Promise<void> {
-  if (!missionId) return;
-  if (!opts.baseRef || !opts.trunk.includes(opts.baseRef)) {
-    console.log(
-      `[github/pr] PR #${prNumber} base '${opts.baseRef ?? 'unknown'}' is not mission-level `
-      + `(trunk: ${opts.trunk.join(', ') || 'none'}) — not claiming primaryPrNumber for mission ${missionId}`,
-    );
-    return;
-  }
-  await db
-    .update(missions)
-    .set({ primaryPrNumber: prNumber, primaryPrUrl: prUrl, updatedAt: new Date() })
-    .where(and(eq(missions.id, missionId), isNull(missions.primaryPrNumber)));
-}
 
 /**
  * Close open PRs from ancestor retry tasks when a fallback opens a new PR.

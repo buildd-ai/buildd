@@ -17,8 +17,17 @@ mock.module('@/lib/team-access', () => ({
   getUserWorkspaceIds: mockGetUserWorkspaceIds,
 }));
 
+// The stub keeps the simple workspace-tier shortcut these tests rely on, but
+// delegates the Option A' base-ref rule to the REAL predicate so it cannot drift
+// from production. Without this the 4th argument would be silently discarded and
+// the wiring below would be untested.
+import { isMissionIntegrationBase } from '@/lib/merge-policy';
 mock.module('@/lib/merge-policy', () => ({
-  resolvePolicy: (ws: any) => {
+  isMissionIntegrationBase,
+  resolvePolicy: (ws: any, mission?: any, _task?: any, pr?: any) => {
+    if (isMissionIntegrationBase({ baseRef: pr?.baseRef, mission })) {
+      return { tier: 'auto-threshold' };
+    }
     const tier = ws?.gitConfig?.mergePolicy?.tier ?? 'auto-threshold';
     return { tier };
   },
@@ -51,6 +60,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workers: {
     workspaceId: 'workspaceId',
+    prBaseRef: 'prBaseRef',
     prUrl: 'prUrl',
     mergedAt: 'mergedAt',
     prLifecycleStatus: 'prLifecycleStatus',
@@ -128,6 +138,92 @@ describe('GET /api/prs/escalation-inbox', () => {
     expect(body.count).toBe(1);
     expect(body.items[0].prNumber).toBe(42);
     expect(body.items[0].leaseState).toBe('pending_human');
+  });
+
+  it("excludes a task PR based on the mission's integration branch (opt-in ON)", async () => {
+    // The human gate for this work is the MISSION PR, not each task PR into the
+    // quarantined integration branch — so this must not land in a human's inbox.
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker({
+      prBaseRef: 'mission/example-slug-0a1b2c3d',
+      task: {
+        id: 't-1',
+        title: 'Build thing',
+        missionId: 'm-1',
+        mission: { workingBranch: 'mission/example-slug-0a1b2c3d', integrationBranchEnabled: true },
+      },
+    })]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(0);
+  });
+
+  it('still shows the task PR when the mission has not opted in', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker({
+      prBaseRef: 'mission/example-slug-0a1b2c3d',
+      task: {
+        id: 't-1',
+        title: 'Build thing',
+        missionId: 'm-1',
+        mission: { workingBranch: 'mission/example-slug-0a1b2c3d', integrationBranchEnabled: false },
+      },
+    })]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(1);
+  });
+
+  it('still shows the mission PR itself (base = trunk) with opt-in ON', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker({
+      prBaseRef: 'dev',
+      task: {
+        id: 't-1',
+        title: 'Build thing',
+        missionId: 'm-1',
+        mission: { workingBranch: 'mission/example-slug-0a1b2c3d', integrationBranchEnabled: true },
+      },
+    })]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(1);
+  });
+
+  it('still shows the PR when the base ref is unknown (null) with opt-in ON', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([makeWorker({
+      prBaseRef: null,
+      task: {
+        id: 't-1',
+        title: 'Build thing',
+        missionId: 'm-1',
+        mission: { workingBranch: 'mission/example-slug-0a1b2c3d', integrationBranchEnabled: true },
+      },
+    })]);
+    mockMissionNotesFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockResolvedValue([
+      { id: 'ws-1', name: 'Acme', gitConfig: { mergePolicy: { tier: 'human' } } },
+    ]);
+    const res = await GET(makeRequest());
+    const body = await res.json();
+    expect(body.count).toBe(1);
   });
 
   it('excludes closed PR from inbox even if DB returns it', async () => {

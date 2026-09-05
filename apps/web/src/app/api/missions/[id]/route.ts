@@ -11,6 +11,7 @@ import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
+import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { resolveTimezone } from '@buildd/core/timezone';
 import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabel } from '@/lib/mission-feed';
@@ -199,6 +200,7 @@ export async function PATCH(
     const { title, description, status, priority, cronExpression, workspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
+      integrationBranchEnabled,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm, actorWorkerId } = body;
@@ -363,6 +365,18 @@ export async function PATCH(
     }
     if (orchestrationMode !== undefined) {
       updateData.orchestrationMode = orchestrationMode;
+    }
+    // Option A′ opt-in. Off is the default and the only state that leaves this
+    // mission's behaviour identical to before the feature existed, so the flag
+    // is strictly boolean — no "null means inherit" third state to reason about.
+    if (integrationBranchEnabled !== undefined) {
+      if (typeof integrationBranchEnabled !== 'boolean') {
+        return NextResponse.json(
+          { error: 'integrationBranchEnabled must be a boolean' },
+          { status: 400 },
+        );
+      }
+      updateData.integrationBranchEnabled = integrationBranchEnabled;
     }
     if (costBudgetUsd !== undefined) {
       updateData.costBudgetUsd = costBudgetUsd != null ? String(costBudgetUsd) : null;
@@ -540,6 +554,30 @@ export async function PATCH(
       .where(eq(missions.id, id))
       .returning();
 
+    // Opting a mission in has one side effect that cannot wait for the next
+    // organizer cycle: the integration branch must exist on the remote before
+    // any task PR can target it, because GitHub rejects a PR whose base ref is
+    // absent. A mission with no `workingBranch` yet is fine — `runMission`
+    // generates one and ensures the ref on its next pass.
+    if (integrationBranchEnabled === true && existing.integrationBranchEnabled !== true) {
+      const ensured = await ensureMissionIntegrationBranch(id).catch(err => ({
+        ok: false as const,
+        reason: 'api_error' as const,
+        detail: err instanceof Error ? err.message : String(err),
+      }));
+      if (!ensured.ok && ensured.reason !== 'no_working_branch') {
+        // Do not fail the PATCH — the flag is set and correct. Say so where an
+        // operator will see it rather than only in the server log.
+        await postMissionFeedEvent({
+          missionId: id,
+          type: 'update',
+          title: 'Integration branch could not be created',
+          body: `Option A′ is enabled for this mission, but its integration branch could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs will fail to open until this is resolved.`,
+          actor,
+        }).catch(e => console.error('[missions/patch] Failed to emit integration-branch note:', e));
+      }
+    }
+
     // Status transitions (including reopening a completed/archived mission) always
     // get their own feed row — rare and consequential enough to never collapse.
     if (status !== undefined && status !== existing.status) {
@@ -607,6 +645,7 @@ export async function PATCH(
       { key: 'maxConcurrentTasks', label: 'maxConcurrentTasks' },
       { key: 'autoVerify', label: 'autoVerify' },
       { key: 'mergePolicy', label: 'mergePolicy', format: v => (v ? JSON.stringify(v) : 'null') },
+      { key: 'integrationBranchEnabled', label: 'integrationBranchEnabled' },
     ];
     const configChanges: string[] = [];
     for (const f of CONFIG_FIELDS) {

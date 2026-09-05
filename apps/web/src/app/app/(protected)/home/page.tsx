@@ -933,11 +933,15 @@ export default async function HomePage({
               // Freshness inputs for the action-queue invariant: how old the PR
               // is (which tier it falls in) and when its state was last verified.
               createdAt: true, prLastCheckedAt: true,
+              // Where this PR points. Needed by resolvePolicy to tell a task PR
+              // into a mission integration branch (no human gate — the gate is on
+              // the mission PR) from a PR into trunk (gate applies).
+              prBaseRef: true,
             },
             with: {
               task: {
                 columns: { id: true, title: true, missionId: true, status: true, requiresReview: true, result: true },
-                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true } } },
+                with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
           });
@@ -1035,7 +1039,12 @@ export default async function HomePage({
               const ws = wsInboxMap.get(w.workspaceId);
               const mission = (w.task as any)?.mission ?? null;
               const policy = ws
-                ? resolvePolicy(ws, mission, { requiresReview: (w.task as any)?.requiresReview })
+                ? resolvePolicy(
+                    ws,
+                    mission,
+                    { requiresReview: (w.task as any)?.requiresReview },
+                    { baseRef: w.prBaseRef },
+                  )
                 : { tier: 'auto-threshold' as const };
               const rt = latestReviewerTaskByOrigId.get(w.taskId);
               reviewerGateMap.set(w.taskId, resolveReviewerGate({

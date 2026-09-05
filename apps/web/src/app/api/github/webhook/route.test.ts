@@ -155,6 +155,9 @@ mock.module('drizzle-orm', () => ({
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
+  not: (condition: any) => ({ condition, type: 'not' }),
+  or: (...conditions: any[]) => ({ conditions, type: 'or' }),
+  ne: (field: any, value: any) => ({ field, value, type: 'ne' }),
   sql: Object.assign((strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }), {}),
 }));
 
@@ -162,7 +165,7 @@ const schemaMock = {
   githubInstallations: { id: 'id', installationId: 'installationId' },
   githubRepos: { id: 'id', repoId: 'repoId', installationId: 'installationId', fullName: 'fullName' },
   tasks: { id: 'id', externalId: 'externalId', parentTaskId: 'parentTaskId', status: 'status' },
-  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId' },
+  workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef' },
   workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
   releases: { id: 'id', workspaceId: 'workspaceId', state: 'state', runUrl: 'runUrl' },
@@ -2736,5 +2739,61 @@ describe('POST /api/github/webhook — pull_request_review', () => {
 
     expect(res.status).toBe(200);
     expect(insertCalls).toHaveLength(0);
+  });
+});
+
+// ── prBaseRef sync on pull_request events (Option A' — mission integration
+// branches) ─────────────────────────────────────────────────────────────────
+// The load-bearing case is `edited` + changes.base — a RETARGET. No other branch
+// in handlePullRequestEvent handles that action, so without this sync a PR moved
+// between trunk and a mission integration branch would keep resolving its merge
+// policy against a stale base and either lose or keep a human gate wrongly.
+describe('pull_request → workers.prBaseRef sync', () => {
+  beforeEach(resetAll);
+
+  function makeRetargetPayload(overrides: Record<string, any> = {}) {
+    return {
+      action: 'edited',
+      changes: { base: { ref: { from: 'dev' } } },
+      pull_request: {
+        number: 9,
+        merged: false,
+        draft: false,
+        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9' },
+        base: { ref: 'mission/example-slug-0a1b2c3d' },
+        html_url: 'https://github.com/test-org/test-repo/pull/9',
+      },
+      installation: { id: 12345 },
+      repository: { full_name: 'test-org/test-repo' },
+      ...overrides,
+    };
+  }
+
+  it('records the new base ref when a PR is retargeted', async () => {
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload()));
+
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    expect(baseRefWrites.length).toBe(1);
+    expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('records the base ref on PR open too, not just retarget', async () => {
+    await POST(createWebhookRequest('pull_request', makeRetargetPayload({
+      action: 'opened',
+      changes: undefined,
+    })));
+
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    expect(baseRefWrites.length).toBe(1);
+    expect(baseRefWrites[0].setValues.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it('writes nothing when the payload carries no base ref', async () => {
+    const payload = makeRetargetPayload();
+    delete (payload.pull_request as any).base;
+    await POST(createWebhookRequest('pull_request', payload));
+
+    const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
+    expect(baseRefWrites.length).toBe(0);
   });
 });

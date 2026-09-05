@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases } from '@buildd/core/db/schema';
-import { and, eq, sql, inArray, isNull, not } from 'drizzle-orm';
+import { and, eq, sql, inArray, isNull, not, or, ne } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -9,6 +9,7 @@ import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
+import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -449,16 +450,24 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         }
 
         // Resolve merge policy via the single precedence chain:
-        //   task.requiresReview → mission.mergePolicy → mission.requiresReview → workspace.mergePolicy → default
-        let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null } | undefined;
+        //   task.requiresReview → mission integration branch → mission.mergePolicy
+        //   → mission.requiresReview → workspace.mergePolicy → default
+        let workerTask: { requiresReview: boolean; missionId: string | null; title: string; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
         if (worker.taskId) {
           workerTask = await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
-            with: { mission: { columns: { mergePolicy: true, requiresReview: true } } },
+            with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
             columns: { id: true, requiresReview: true, missionId: true, title: true },
           }) as typeof workerTask;
         }
-        const policy = resolvePolicy(workspace, workerTask?.mission ?? null, workerTask ?? null);
+        // worker.prBaseRef is the local record of where this PR points, kept live
+        // by the pull_request webhook. Null (unknown) leaves the chain untouched.
+        const policy = resolvePolicy(
+          workspace,
+          workerTask?.mission ?? null,
+          workerTask ?? null,
+          { baseRef: worker.prBaseRef },
+        );
 
         if (policy.tier === 'human') {
           console.log(`PR held for human review (policy.tier=human) — ${repository.full_name}#${pr.number}`);
@@ -515,8 +524,47 @@ async function handlePullRequestEvent(event: {
   };
   installation?: { id: number };
   repository: { full_name: string };
+  changes?: { base?: { ref?: { from?: string } } };
 }) {
   const { action, pull_request: pr, repository } = event;
+
+  // ── Keep workers.prBaseRef in step with GitHub's base ref ────────────────
+  // Runs for EVERY pull_request action, before any action-specific branching,
+  // because the action that matters most here is one none of the branches below
+  // handle: `edited` with changes.base — a RETARGET. Somebody changing a PR's
+  // base after it opened is precisely what makes the merge-policy decision
+  // stale (a task PR moved off a mission integration branch onto trunk must get
+  // its human gate back, and vice versa).
+  //
+  // Single atomic UPDATE with the no-op case excluded in the WHERE clause, so a
+  // routine `synchronize` on an unchanged base costs no write. .returning() is
+  // therefore also the retarget detector: a row comes back only on a real change.
+  if (pr.base?.ref) {
+    const observedBaseRef = pr.base.ref;
+    try {
+      const rebased = await db
+        .update(workers)
+        .set({ prBaseRef: observedBaseRef, updatedAt: new Date() })
+        .where(and(
+          workerOwnsPr(repository.full_name, pr.number),
+          or(isNull(workers.prBaseRef), ne(workers.prBaseRef, observedBaseRef)),
+        ))
+        .returning({ id: workers.id });
+      // RETURNING yields post-update values, so the prior ref is not recoverable
+      // here — the WHERE clause is what proves this was a change, not a no-op.
+      for (const row of rebased) {
+        console.log(
+          `[webhook] PR #${pr.number} base ref now '${observedBaseRef}' `
+          + `on worker ${row.id} [action=${action}]`,
+        );
+      }
+    } catch (err) {
+      // Never fail the webhook over bookkeeping — a missed sync self-heals on the
+      // next pull_request event for this PR, and a null/stale value degrades to
+      // the existing merge gate rather than skipping one.
+      console.error(`[webhook] failed to sync prBaseRef for PR #${pr.number}:`, err);
+    }
+  }
 
   // Track PR lifecycle status on open/reopen/synchronize events
   if (
@@ -775,6 +823,33 @@ async function handlePullRequestEvent(event: {
       evaluateAndAdvanceLoopOnMerge(worker.id, worker.taskId, worker.workspaceId).catch((e) =>
         console.error(`[webhook] evaluateAndAdvanceLoopOnMerge failed for task ${worker.taskId}:`, e)
       );
+    }
+
+    // Option A′: a task PR landing on the mission's integration branch is the
+    // event that can make the mission's work complete, so it is where the one
+    // mission PR gets opened. Awaited, not fire-and-forget: this opens a PR,
+    // and a detached promise in a serverless handler can be killed mid-call,
+    // which would leave a mission whose work is done and whose PR never
+    // appeared — the exact silent stall A′ exists to remove.
+    //
+    // `assumeCompletedTaskIds` because `tasks.status` for THIS task is stamped
+    // further down; `workers.mergedAt` is already stamped above.
+    if (worker.task.missionId && pr.base?.ref) {
+      const opened = await maybeOpenMissionIntegrationPr(worker.task.missionId, {
+        assumeCompletedTaskIds: [worker.task.id],
+      }).catch(e => {
+        console.error(`[webhook] mission PR open failed for mission ${worker.task!.missionId}:`, e);
+        return null;
+      });
+      if (opened && !opened.ok && opened.reason !== 'work_incomplete') {
+        // `work_incomplete` is the normal answer on all but the last merge and
+        // is not worth a line. Anything else means an opted-in mission finished
+        // its work and still has no PR, which must not be silent.
+        console.error(
+          `[webhook] mission ${worker.task.missionId} work is done but its PR did not open: `
+          + `${opened.reason}${opened.detail ? ` (${opened.detail})` : ''}`,
+        );
+      }
     }
   }
 
@@ -1310,7 +1385,7 @@ async function fetchCIFailureLogs(
 async function maybeDispatchReviewer(
   installationId: number,
   repoFullName: string,
-  pr: { number: number; head: { sha: string }; html_url: string },
+  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string } },
   openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
 ): Promise<boolean> {
   try {
@@ -1326,15 +1401,23 @@ async function maybeDispatchReviewer(
     if (!task) return false;
 
     // Load mission separately to resolve merge policy
-    let mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null } | null = null;
+    type PolicyMission = {
+      mergePolicy?: import('@buildd/shared').MergePolicy | null;
+      workingBranch?: string | null;
+      integrationBranchEnabled?: boolean;
+    };
+    let mission: PolicyMission | null = null;
     if (task.missionId) {
       const row = await db.query.missions.findFirst({
         where: eq(missions.id, task.missionId),
-        columns: { mergePolicy: true },
+        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
       });
-      if (row) mission = row as { mergePolicy?: import('@buildd/shared').MergePolicy | null };
+      if (row) mission = row as PolicyMission;
     }
-    const basePolicy = resolvePolicy(workspace, mission);
+    // Take the base ref straight off the webhook payload rather than re-reading
+    // workers.prBaseRef: this runs on PR open, where the DB write from the create
+    // call and this event race. The payload is authoritative and race-free.
+    const basePolicy = resolvePolicy(workspace, mission, null, { baseRef: pr.base?.ref ?? null });
 
     // Fetch PR files first (needed for policyConfig override AND pre-flight check)
     let prFiles: Array<{
@@ -1481,7 +1564,7 @@ async function maybeDispatchReviewer(
 async function maybeAutoMergeNoCiPr(
   installationId: number,
   repoFullName: string,
-  pr: { number: number; head: { sha: string } },
+  pr: { number: number; head: { sha: string }; base?: { ref: string } },
 ): Promise<void> {
   const linkedWorkspaces = await db.query.workspaces.findMany({
     where: workspaceRepoMatches(repoFullName),
@@ -1500,15 +1583,23 @@ async function maybeAutoMergeNoCiPr(
     }
 
     // Resolve merge policy with task/mission context
-    let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean } | null } | undefined;
+    let workerTask: { requiresReview: boolean; mission: { mergePolicy?: import('@buildd/shared').MergePolicy | null; requiresReview: boolean; workingBranch: string | null; integrationBranchEnabled: boolean } | null } | undefined;
     if (worker.taskId) {
       workerTask = await db.query.tasks.findFirst({
         where: eq(tasks.id, worker.taskId),
-        with: { mission: { columns: { mergePolicy: true, requiresReview: true } } },
+        with: { mission: { columns: { mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
         columns: { id: true, requiresReview: true },
       }) as typeof workerTask;
     }
-    const policy = resolvePolicy(workspace, workerTask?.mission ?? null, workerTask ?? null);
+    // Prefer the webhook payload's base ref (authoritative, no race with the
+    // create-PR write); fall back to the recorded column when this handler is
+    // reached from a path that carries no base.
+    const policy = resolvePolicy(
+      workspace,
+      workerTask?.mission ?? null,
+      workerTask ?? null,
+      { baseRef: pr.base?.ref ?? worker.prBaseRef },
+    );
 
     if (policy.tier !== 'auto-threshold') {
       // 'human': surface in escalation inbox (notification fired by check_suite or PR open handler)

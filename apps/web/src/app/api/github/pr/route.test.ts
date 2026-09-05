@@ -981,6 +981,230 @@ describe('POST /api/github/pr', () => {
     expect(capturedSetData.prNumber).toBe(77);
   });
 
+  // ── prBaseRef recording (Option A' — mission integration branches) ────────
+  // These assert the .set() payload, which the db mock passes through verbatim.
+  // (The WHERE clause is NOT observable under this mock — a known trap — so
+  // these tests are scoped to "what value do we write", not "to which row".)
+  it("records prBaseRef from GitHub's own base.ref when creating a PR", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]); // no existing PR for this head
+    mockGithubApi.mockResolvedValueOnce({
+      number: 42,
+      html_url: 'https://github.com/owner/repo/pull/42',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'mission/example-slug-0a1b2c3d', sha: 'basesha1' },
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    expect(capturedSetData).not.toBeNull();
+    expect(capturedSetData.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it("prefers GitHub's base.ref over the base the caller asked for", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 43,
+      html_url: 'https://github.com/owner/repo/pull/43',
+      state: 'open',
+      title: 'My PR',
+      base: { ref: 'dev', sha: 'basesha2' },
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      // Caller claims a mission branch; GitHub says the PR actually points at dev.
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch', base: 'mission/example-slug-0a1b2c3d' },
+    });
+    await POST(req);
+
+    expect(capturedSetData.prBaseRef).toBe('dev');
+  });
+
+  it('leaves prBaseRef unset when GitHub returns no base', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 44,
+      html_url: 'https://github.com/owner/repo/pull/44',
+      state: 'open',
+      title: 'My PR',
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    // Absent, not null and not a guess — unknown must degrade to today's gate.
+    expect('prBaseRef' in capturedSetData).toBe(false);
+  });
+
+  it('backfills prBaseRef when adopting an existing PR for the same head', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      prBaseRef: null,
+      workspace: WORKSPACE_OK,
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([
+      { number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing' },
+    ]);
+    mockGithubApi.mockResolvedValueOnce({
+      number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing',
+      base: { ref: 'mission/example-slug-0a1b2c3d', sha: 'basesha3' },
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'My PR', head: 'feature-branch' },
+    });
+    await POST(req);
+
+    expect(capturedSetData.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it("copies the sibling's prBaseRef when mirroring a same-task PR", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-new',
+      accountId: 'account-1',
+      taskId: 'task-shared',
+      prUrl: null,
+      prNumber: null,
+      name: 'worker-retry',
+      workspace: WORKSPACE_OK,
+    });
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-original',
+      prUrl: 'https://github.com/owner/repo/pull/77',
+      prNumber: 77,
+      prBaseRef: 'mission/example-slug-0a1b2c3d',
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-new', title: 'My PR', head: 'buildd/taskshare-fix' },
+    });
+    await POST(req);
+
+    expect(capturedSetData.prBaseRef).toBe('mission/example-slug-0a1b2c3d');
+  });
+
+  it("does not invent a prBaseRef when the sibling has none", async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-new',
+      accountId: 'account-1',
+      taskId: 'task-shared',
+      prUrl: null,
+      prNumber: null,
+      name: 'worker-retry',
+      workspace: WORKSPACE_OK,
+    });
+    mockWorkersFindFirst.mockResolvedValueOnce({
+      id: 'w-original',
+      prUrl: 'https://github.com/owner/repo/pull/77',
+      prNumber: 77,
+      prBaseRef: null, // pre-migration sibling
+    });
+
+    let capturedSetData: any = null;
+    const mockWhere = mock(() => Promise.resolve());
+    const mockSet = mock((data: any) => {
+      capturedSetData = data;
+      return { where: mockWhere };
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mockSet });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-new', title: 'My PR', head: 'buildd/taskshare-fix' },
+    });
+    await POST(req);
+
+    expect('prBaseRef' in capturedSetData).toBe(false);
+  });
+
   it('returns 500 when githubApi throws an error', async () => {
     mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
     mockWorkersFindFirst.mockResolvedValue({

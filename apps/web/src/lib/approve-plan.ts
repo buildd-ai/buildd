@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { desc, eq } from 'drizzle-orm';
+import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import type { PlanStep } from '@buildd/shared';
 
@@ -46,6 +47,20 @@ export async function approvePlan(
 
   const gitConfig = (workspace?.gitConfig as BranchNameGitConfig) || null;
 
+  // Option A′: when the mission has opted into an integration branch, that
+  // branch is the DEFAULT base for every child this plan creates. A step that
+  // names a predecessor via `baseBranch` still stacks on it (resolved in the
+  // second pass below) — this only fills in the base for steps that named none,
+  // which today means trunk. Null for every mission that has not opted in, so
+  // the context those children carry is byte-identical to before.
+  const mission = task.missionId
+    ? await db.query.missions.findFirst({
+        where: eq(missions.id, task.missionId),
+        columns: { workingBranch: true, integrationBranchEnabled: true },
+      })
+    : null;
+  const integrationBase = missionIntegrationBase(mission);
+
   // Guard: prevent duplicate approval
   const existingChildren = await db.query.tasks.findMany({
     where: eq(tasks.parentTaskId, planningTaskId),
@@ -89,6 +104,7 @@ export async function approvePlan(
           ...(step.model ? { model: step.model } : {}),
           ...(step.skillSlugs?.length ? { skillSlugs: step.skillSlugs } : {}),
           ...(options?.autoApproved ? { autoApproved: true } : {}),
+          ...(integrationBase ? { baseBranch: integrationBase } : {}),
         },
       })
       .returning();

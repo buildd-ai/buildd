@@ -8,11 +8,16 @@ import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace }
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
+import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
+
+// One durable note per mission, not one per organizer cycle. Matched by
+// title, so this string is load-bearing — the dedupe query reads it.
+const INTEGRATION_BRANCH_NOTE_TITLE = 'Integration branch unavailable';
 
 async function recordOrganizerDuplicate(
   task: typeof tasks.$inferSelect,
@@ -365,6 +370,42 @@ export async function runMission(
         columns: { workingBranch: true },
       }))?.workingBranch
       ?? candidate;
+  }
+
+  // Option A′: an opted-in mission's integration branch has to exist on the
+  // remote before any task PR can target it — GitHub rejects a PR whose base
+  // ref is absent. Doing it here (rather than only at opt-in time) covers the
+  // mission that was opted in before it had a `workingBranch` at all, which is
+  // the common case: the branch name is generated a few lines above, on the
+  // first organizer pass.
+  if (workingBranch && mission.integrationBranchEnabled) {
+    const ensured = await ensureMissionIntegrationBranch(missionId);
+    if (!ensured.ok) {
+      console.error(
+        `[runMission] Mission ${missionId}: integration branch ${workingBranch} unavailable (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''})`,
+      );
+      // Post once, not once per organizer cycle. The failure is durable — a
+      // missing repo link or a rejected ref creation does not fix itself — so
+      // repeating it every heartbeat would bury the mission feed.
+      const existingNote = await db.query.missionNotes.findFirst({
+        where: and(
+          eq(missionNotes.missionId, missionId),
+          eq(missionNotes.title, INTEGRATION_BRANCH_NOTE_TITLE),
+          eq(missionNotes.status, 'open'),
+        ),
+        columns: { id: true },
+      });
+      if (!existingNote) {
+        await db.insert(missionNotes).values({
+          missionId,
+          authorType: 'system',
+          type: 'decision',
+          title: INTEGRATION_BRANCH_NOTE_TITLE,
+          body: `This mission uses an integration branch (\`${workingBranch}\`), but it could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs cannot open against a base that does not exist, so this blocks the mission's deliverable work until it is resolved.`,
+          status: 'open',
+        });
+      }
+    }
   }
 
   const baseBranch = workspace?.gitConfig?.defaultBranch || 'main';

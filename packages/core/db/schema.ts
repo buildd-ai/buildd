@@ -690,8 +690,14 @@ export const missions = pgTable('missions', {
   pacingMode: text('pacing_mode').default('eager').notNull().$type<'eager' | 'paced'>(),
   pacingMaxPerHour: integer('pacing_max_per_hour'),
   lastTaskStartedAt: timestamp('last_task_started_at', { withTimezone: true }),
-  // Shared feature branch for this mission. All mission tasks push commits here;
-  // a single PR tracks all mission work. Generated lazily on first task creation.
+  // Mission integration branch, shape `mission/<slug>-<id8>`. Generated lazily on
+  // first task creation.
+  //
+  // Each mission task still gets its OWN branch and its OWN PR — this branch is
+  // their shared BASE, not a branch everyone commits to directly, and it does not
+  // by itself collapse mission work into a single PR. It only acts as that base
+  // when `integrationBranchEnabled` is true; while that flag is false the column
+  // is inert bookkeeping and task PRs target trunk as they always have.
   workingBranch: text('working_branch'),
   primaryPrNumber: integer('primary_pr_number'),
   primaryPrUrl: text('primary_pr_url'),
@@ -702,6 +708,14 @@ export const missions = pgTable('missions', {
   // Per-mission merge policy override. When set, takes precedence over workspace.gitConfig.mergePolicy.
   // null means "use workspace default".
   mergePolicy: jsonb('merge_policy').$type<MergePolicy | null>(),
+  // Per-mission opt-in to mission integration branches: task PRs are based on
+  // `workingBranch` instead of trunk, and one mission PR takes the integration
+  // branch into trunk when the mission's work is done. The merge-policy tier then
+  // applies to that ONE mission PR; task PRs into the (quarantined) integration
+  // branch run auto-threshold — see resolvePolicy() in apps/web/src/lib/merge-policy.ts.
+  //
+  // Default false: nothing about any existing mission changes until this is true.
+  integrationBranchEnabled: boolean('integration_branch_enabled').default(false).notNull(),
   // Controls whether the orchestrator acts autonomously ('auto') or only when explicitly triggered
   // by a human ('manual'). In manual mode, heartbeat cron and loop retriggering are suppressed;
   // tasks filed into the mission still execute normally. 'Run now' always works as a one-shot.
@@ -1114,6 +1128,17 @@ export const workers = pgTable('workers', {
   // Used by the base-history-rewrite detector to identify force-pushes that
   // orphan the PR's merge base.
   prOpenedBaseSha: text('pr_opened_base_sha'),
+  // The PR's base ref as GitHub reports it — recorded at open time from
+  // `pull_request.base.ref` and refreshed by the pull_request webhook (which is
+  // what catches a RETARGET, i.e. someone changing a PR's base after it opened).
+  // This is the local source of truth for "did this land on trunk, or on a
+  // mission integration branch", which decides whether the merge-policy tier
+  // applies to this PR (see resolvePolicy()).
+  //
+  // Nullable: pre-migration workers and non-PR workers have none. A null must
+  // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
+  // because guessing wrong here silently deletes a human review gate.
+  prBaseRef: text('pr_base_ref'),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),
