@@ -1,0 +1,1 @@
+ALTER TABLE "workspaces" ALTER COLUMN "access_mode" SET DEFAULT 'restricted';

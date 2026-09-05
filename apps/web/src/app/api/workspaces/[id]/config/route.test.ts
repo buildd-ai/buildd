@@ -211,8 +211,45 @@ describe('POST /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(404);
   });
 
+  // This handler writes `bypassPermissions`, which widens what every agent in
+  // the workspace may do without asking. An `accessMode: 'open'` workspace
+  // resolves ANY authenticated user to role 'member', so 'member' cannot be
+  // enough here — otherwise a passer-by could grant bypass to themselves.
+  it('refuses a member — writing bypassPermissions requires admin', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'member' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ bypassPermissions: true }),
+    });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(403);
+    // A member can see the workspace, so 404 would be a confusing lie.
+    expect(await res.json()).toMatchObject({ error: 'Requires workspace admin' });
+  });
+
+  it('admits an admin', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'admin' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ defaultBranch: 'main' }),
+    });
+    const res = await POST(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+  });
+
   it('saves git config successfully', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
 
     const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
