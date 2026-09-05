@@ -10,8 +10,33 @@ import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { SegmentStrip } from '@/components/SegmentStrip';
+import { SparklineBar } from '@/components/SparklineBar';
 import { deriveTaskHealthSignal, formatNextRun } from '@/lib/mission-helpers';
 import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
+import {
+  loadInitiativeEffort,
+  loadInitiativeVerdictInputs,
+  deriveInitiativeVerdict,
+  derivePendingCounts,
+  countBlockedByPR,
+  emptyVerdictRollup,
+  zeroEffortWindow,
+  noPendingCounts,
+  type BlockingTask,
+} from '@/lib/initiative-pulse';
+import { verdictChip } from '@/lib/verdict-presentation';
+import {
+  missionContributions,
+  buildPendingChips,
+  formatVerdictEvidence,
+  formatEffortTotal,
+  latestWorkerPerTask,
+  verdictEvidenceAnchor,
+  DETAIL_SPARKLINE_WIDTH,
+  DETAIL_SPARKLINE_HEIGHT,
+  KPI_ANCHOR,
+  MISSIONS_ANCHOR,
+} from './verdict-blocks';
 import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
 import InitiativeKPIPanel from './InitiativeKPIPanel';
 
@@ -42,14 +67,21 @@ export default async function InitiativeDetailPage({
     with: {
       workspace: { columns: { id: true, name: true } },
       missions: {
-        columns: { id: true, title: true, status: true, priority: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
+        // isHeld + updatedAt feed the `held` and `shippedThisWeek` pending
+        // counts (§6.1) from rows this page already loads — §6.2's "a surface
+        // that renders missions pays nothing extra for its counts".
+        columns: { id: true, title: true, status: true, priority: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, isHeld: true, updatedAt: true },
         orderBy: [desc(missions.priority), desc(missions.createdAt)],
         with: {
           tasks: {
-            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, taskClass: true },
-            // Latest worker per task drives ghost (in-flight) / half (PR-open) segment states,
-            // matching GET /api/initiatives/[id]. Without it segments collapse to status-only.
-            with: { workers: { columns: { status: true, prUrl: true, mergedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+            // dependsOn is what `countBlockedByPR` walks.
+            columns: { id: true, status: true, kind: true, title: true, mode: true, creationSource: true, category: true, parentTaskId: true, taskClass: true, dependsOn: true },
+            // ALL workers, newest first. The latest one drives ghost (in-flight)
+            // / half (PR-open) segment states — `latestWorkerPerTask` below
+            // narrows to it, so widening this cannot move the progress bar. The
+            // full list is what `derivePendingCounts` needs: the open PR that
+            // makes a task await merge is not always on the newest worker.
+            with: { workers: { columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)] } },
           },
         },
       },
@@ -72,7 +104,9 @@ export default async function InitiativeDetailPage({
   const noNextRun = formatNextRun(null, null);
   const children: ChildMissionProgress[] = [];
   const missionRows = (initiative.missions || []).map((m: any) => {
-    const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(m.tasks || []);
+    const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(
+      latestWorkerPerTask(m.tasks || []),
+    );
     const health = deriveTaskHealthSignal(
       { dependsOnMissionId: m.dependsOnMissionId, dependencyMetAt: m.dependencyMetAt },
       m.tasks || [],
@@ -84,6 +118,53 @@ export default async function InitiativeDetailPage({
   // Aggregate every child's task segments into one run for the rollup bar — the
   // same SegmentStrip primitive the mission surfaces use, never a parallel renderer.
   const aggregateSegments = computeInitiativeSegments(missionRows);
+
+  // ── The initiative pulse (§5.1) ──
+  //
+  // §6.2: ONE loader, three callers. Everything below comes from
+  // `lib/initiative-pulse.ts` — the same functions `/app/initiatives` calls —
+  // so this page cannot disagree with the row that links to it (§5.2). No
+  // verdict is re-derived and no count is recomputed here.
+  const [effortByInitiative, rollupByInitiative] = await Promise.all([
+    loadInitiativeEffort({ teamId: initiative.teamId }),
+    loadInitiativeVerdictInputs({ teamId: initiative.teamId }),
+  ]);
+  const effortDays = effortByInitiative.get(id) ?? zeroEffortWindow();
+  const rollupInputs = rollupByInitiative.get(id) ?? emptyVerdictRollup(initiative.status);
+
+  // `dependsOn` crosses mission boundaries, so the blocking index spans every
+  // mission loaded above rather than being rebuilt per mission. It cannot see a
+  // dependency on a task outside this initiative — the same blind spot the list
+  // has, which is why the two still agree.
+  const taskIndex = new Map<string, BlockingTask>();
+  for (const m of (initiative.missions || []) as any[]) {
+    for (const t of m.tasks ?? []) taskIndex.set(t.id, t);
+  }
+
+  // A mission reads as shipped exactly when its status is 'completed' — the
+  // first rule of `deriveMissionHealth` — matching how the list builds this.
+  const pulseMissions = ((initiative.missions || []) as any[]).map((m) => ({
+    id: m.id as string,
+    initiativeId: id,
+    isHeld: Boolean(m.isHeld),
+    health: m.status === 'completed' ? 'shipped' : m.status,
+    lastActivityAt: m.updatedAt ? new Date(m.updatedAt).toISOString() : null,
+    blockedPRCount: countBlockedByPR(m.tasks ?? [], taskIndex),
+    tasks: m.tasks ?? [],
+  }));
+
+  const counts = derivePendingCounts(pulseMissions).get(id) ?? noPendingCounts();
+  const { verdict, confidence, tokens7d } = deriveInitiativeVerdict({
+    rollup: rollupInputs,
+    effortDays,
+    counts,
+  });
+  const chip = verdictChip(verdict);
+  const kpiCount = ((initiative.kpis as any[]) ?? []).length;
+  const evidenceAnchor = verdictEvidenceAnchor({ confidence, kpiCount });
+  const pendingChips = buildPendingChips(missionContributions(pulseMissions, id), {
+    initiativeId: id,
+  });
 
   const initiativeArtifacts = await db.query.artifacts.findMany({
     where: eq(artifacts.initiativeId, id),
@@ -155,6 +236,45 @@ export default async function InitiativeDetailPage({
             {initiative.status}
           </span>
         </div>
+        {/* Verdict and its evidence (§5.1, §6.5) — the page's first claim.
+            The verdict answers "are we winning"; the percentage below is the
+            scope meter and MUST NOT be read as the headline. The evidence line
+            is mandatory: a verdict a reader cannot audit is a slogan. */}
+        <div className="flex items-center gap-2 flex-wrap mb-3">
+          <span
+            className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border ${chip.className}`}
+          >
+            {chip.label}
+          </span>
+          {/* Confidence is a qualifier and never changes the verdict (§6.5). It
+              links to the KPI panel when there is one to fix. */}
+          {confidence === 'unverified' && (
+            evidenceAnchor ? (
+              <a
+                href={evidenceAnchor}
+                className="shrink-0 text-[11px] text-text-muted underline decoration-dotted hover:text-text-secondary transition-colors"
+                title="No goal criteria or KPI has checked this outcome — review the KPIs"
+              >
+                unverified
+              </a>
+            ) : (
+              <span
+                className="shrink-0 text-[11px] text-text-muted"
+                title="No goal criteria or KPI has checked this outcome"
+              >
+                unverified
+              </span>
+            )
+          )}
+          <span className="text-[12px] text-text-muted tabular-nums">
+            {formatVerdictEvidence({
+              merges7d: rollupInputs.merges7d,
+              attempts7d: rollupInputs.attempts7d,
+              tokens7d,
+            })}
+          </span>
+        </div>
+
         {initiative.description && (
           <p className="text-sm text-text-secondary mb-3 whitespace-pre-wrap">{initiative.description}</p>
         )}
@@ -212,6 +332,38 @@ export default async function InitiativeDetailPage({
         )}
       </div>
 
+      {/* Pending-action strip (§5.1) — one chip per non-zero count, each a link
+          to the surface that resolves it. A zero count renders no chip, and an
+          all-zero initiative renders no strip: absence is the empty state. */}
+      {pendingChips.length > 0 && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-5">
+          {pendingChips.map((pendingChip) => (
+            <a
+              key={pendingChip.key}
+              href={pendingChip.href}
+              className="text-[11px] font-mono px-2 py-0.5 border border-border-default text-text-secondary rounded-sm hover:border-border-hover hover:text-text-primary transition-colors"
+            >
+              {pendingChip.label}
+            </a>
+          ))}
+        </div>
+      )}
+
+      {/* 14-day effort sparkline (§5.1, §6.4) at the ≥168×32 detail mount, plus
+          the window total as text. Unconditional: an initiative with no activity
+          renders 14 minimum-height bars and `0 tokens · 14d` (AC-21), never an
+          absent element — "silent" is a finding, not a missing widget. */}
+      <div className="flex items-center gap-2 mb-6">
+        <SparklineBar
+          days={effortDays}
+          width={DETAIL_SPARKLINE_WIDTH}
+          height={DETAIL_SPARKLINE_HEIGHT}
+        />
+        <span className="text-[11px] text-text-muted tabular-nums">
+          {formatEffortTotal(effortDays)}
+        </span>
+      </div>
+
       {/* Linear Phase 2 — read-back tracking (only when a child mission is linked) */}
       {hasLinearLink && (
         <div className="mb-8">
@@ -219,18 +371,22 @@ export default async function InitiativeDetailPage({
         </div>
       )}
 
-      {/* KPI panel — only renders when KPIs are set */}
-      {((initiative.kpis as any[]) ?? []).length > 0 && (
-        <InitiativeKPIPanel
-          initiativeId={id}
-          kpis={(initiative.kpis as any) ?? []}
-          kpiState={(initiative.kpiState as any) ?? null}
-          autoVerify={(initiative.autoVerify as boolean | null) ?? null}
-        />
+      {/* KPI panel — only renders when KPIs are set. The id is where an
+          `unverified` verdict points (`verdictEvidenceAnchor`). */}
+      {kpiCount > 0 && (
+        <div id={KPI_ANCHOR.slice(1)}>
+          <InitiativeKPIPanel
+            initiativeId={id}
+            kpis={(initiative.kpis as any) ?? []}
+            kpiState={(initiative.kpiState as any) ?? null}
+            autoVerify={(initiative.autoVerify as boolean | null) ?? null}
+          />
+        </div>
       )}
 
-      {/* Missions */}
-      <div className="mb-8">
+      {/* Missions — `MISSIONS_ANCHOR` is where a pending chip owned by more
+          than one mission lands. */}
+      <div id={MISSIONS_ANCHOR.slice(1)} className="mb-8">
         <div className="flex items-center justify-between mb-2">
           <h2 className="text-xs font-medium text-text-secondary uppercase tracking-wide">
             Missions ({missionRows.length})

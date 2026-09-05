@@ -1,0 +1,185 @@
+import { describe, it, expect, beforeEach, mock } from 'bun:test';
+
+/**
+ * `approvePlan` resolves a plan step's `baseBranch` ref into the branch name of
+ * the dependency task. That name must be the branch that will ACTUALLY exist —
+ * the claim route is the only thing that names a task's branch, and the runner
+ * fetches `origin/<baseBranch>` and degrades (fresh start from the default
+ * branch) when it is absent.
+ *
+ * The original implementation hand-mirrored the claim route's generator and
+ * drifted from it (P8): it omitted `useBuildBranch`, and it never read the real
+ * branch (`workers.branch`) or the shared mission branch (`context.headBranch`,
+ * seeded from `missions.workingBranch`) — so it predicted refs that never exist.
+ */
+
+// ── Mock state ────────────────────────────────────────────────────────────────
+let planningTaskRow: any = null;
+let workspaceRow: any = null;
+/** id → task row, consulted by db.query.tasks.findFirst via the eq() id arg. */
+let taskRows: Record<string, any> = {};
+/** taskId → worker row, consulted by db.query.workers.findFirst. */
+let workerRows: Record<string, any> = {};
+/** plan-step index → context to persist on the created row (emulates a stamp). */
+let contextSeeds: Record<number, any> = {};
+let childrenRows: any[] = [];
+const insertedValues: any[] = [];
+const updateCalls: { id: string; set: any }[] = [];
+
+let nextIdN = 0;
+const NEXT_IDS = [
+  'aaaaaaaa-0000-4000-8000-000000000001',
+  'bbbbbbbb-0000-4000-8000-000000000002',
+  'cccccccc-0000-4000-8000-000000000003',
+];
+
+mock.module('drizzle-orm', () => ({
+  eq: (col: any, val: any) => ({ _op: 'eq', args: [col, val] }),
+  and: (...args: any[]) => ({ _op: 'and', args }),
+  desc: (col: any) => ({ _op: 'desc', col }),
+}));
+
+mock.module('@buildd/core/db/schema', () => ({
+  tasks: { id: 'tasks.id', parentTaskId: 'tasks.parent_task_id' },
+  workspaces: { id: 'workspaces.id' },
+  workers: { taskId: 'workers.task_id', createdAt: 'workers.created_at' },
+}));
+
+/** Pull the value side of an `eq(col, value)` predicate (possibly inside and()). */
+function eqValue(where: any): string | undefined {
+  if (!where) return undefined;
+  if (where._op === 'eq') return where.args[1];
+  if (where._op === 'and') {
+    for (const part of where.args) {
+      const v = eqValue(part);
+      if (v !== undefined) return v;
+    }
+  }
+  return undefined;
+}
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: {
+      tasks: {
+        findFirst: (args: any) => {
+          const id = eqValue(args?.where);
+          return Promise.resolve(id ? taskRows[id] : undefined);
+        },
+        findMany: () => Promise.resolve(childrenRows),
+      },
+      workspaces: { findFirst: () => Promise.resolve(workspaceRow) },
+      workers: {
+        findFirst: (args: any) => {
+          const taskId = eqValue(args?.where);
+          return Promise.resolve(taskId ? workerRows[taskId] : undefined);
+        },
+      },
+    },
+    insert: () => ({
+      values: (v: any) => {
+        const index = insertedValues.length;
+        insertedValues.push(v);
+        const id = NEXT_IDS[nextIdN++] ?? `dddddddd-0000-4000-8000-00000000000${nextIdN}`;
+        const row = { ...v, id, context: contextSeeds[index] ?? v.context };
+        taskRows[id] = row;
+        return { returning: () => Promise.resolve([row]) };
+      },
+    }),
+    update: () => ({
+      set: (data: any) => ({
+        where: (w: any) => {
+          updateCalls.push({ id: eqValue(w)!, set: data });
+          return Promise.resolve();
+        },
+      }),
+    }),
+  },
+}));
+
+import { approvePlan } from './approve-plan';
+
+const PLANNING_TASK_ID = 'eeeeeeee-0000-4000-8000-00000000000f';
+const DEP_ID8 = NEXT_IDS[0].substring(0, 8);
+
+function reset() {
+  nextIdN = 0;
+  taskRows = {};
+  workerRows = {};
+  contextSeeds = {};
+  childrenRows = [];
+  insertedValues.length = 0;
+  updateCalls.length = 0;
+  planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
+  workspaceRow = { gitConfig: null };
+  taskRows[PLANNING_TASK_ID] = planningTaskRow;
+}
+
+/** Two-step plan: `build` stacks on top of `schema`. */
+const PLAN = [
+  { ref: 'schema', title: 'Add schema migration' },
+  { ref: 'build', title: 'Wire the UI', baseBranch: 'schema', dependsOn: ['schema'] },
+];
+
+/** The `baseBranch` approvePlan wrote onto the dependent (second) task. */
+function writtenBaseBranch(): string | undefined {
+  const call = updateCalls.find(c => c.id === NEXT_IDS[1] && c.set?.context);
+  return call?.set?.context?.baseBranch;
+}
+
+describe('approvePlan — baseBranch resolution', () => {
+  beforeEach(reset);
+
+  it('uses the claim route generator shape for a plain workspace (no gitConfig)', async () => {
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe(`buildd/${DEP_ID8}-add-schema-migration`);
+  });
+
+  it('honours branchingStrategy=none', async () => {
+    workspaceRow = { gitConfig: { branchingStrategy: 'none' } };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe(`task-${DEP_ID8}`);
+  });
+
+  it('honours a custom branchPrefix', async () => {
+    workspaceRow = { gitConfig: { branchPrefix: 'agent/' } };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe(`agent/${DEP_ID8}-add-schema-migration`);
+  });
+
+  it('keeps dependsOn resolution working alongside baseBranch', async () => {
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    const call = updateCalls.find(c => c.id === NEXT_IDS[1]);
+    expect(call?.set?.dependsOn).toEqual([NEXT_IDS[0]]);
+  });
+
+  // ── Defect P8 ──────────────────────────────────────────────────────────────
+
+  it('honours useBuildBranch, which outranks branchPrefix in the claim route', async () => {
+    // The claim route checks useBuildBranch BEFORE branchPrefix, so this
+    // workspace's task branches are `buildd/...`, never `agent/...`.
+    workspaceRow = { gitConfig: { branchPrefix: 'agent/', useBuildBranch: true } };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe(`buildd/${DEP_ID8}-add-schema-migration`);
+  });
+
+  it('reads workers.branch when the dependency already has a worker', async () => {
+    // A worker row carries the branch that was actually checked out — which the
+    // claim route may have resolved to a shared or suffixed name. Never predict
+    // over an observed value.
+    workerRows[NEXT_IDS[0]] = { branch: 'mission/checkout-arc-1a2b3c4d' };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe('mission/checkout-arc-1a2b3c4d');
+  });
+
+  it('reads the shared mission branch off the dependency context (headBranch)', async () => {
+    // A mission task whose context carries headBranch (seeded from
+    // missions.workingBranch) is claimed onto THAT branch verbatim — the
+    // generator is not consulted at all.
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    contextSeeds[0] = { headBranch: 'mission/delivery-arc-1a2b3c4d' };
+    await approvePlan(PLANNING_TASK_ID, PLAN as any);
+    expect(writtenBaseBranch()).toBe('mission/delivery-arc-1a2b3c4d');
+  });
+});

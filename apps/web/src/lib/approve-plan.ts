@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
-import { tasks, workspaces } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { desc, eq } from 'drizzle-orm';
+import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import type { PlanStep } from '@buildd/shared';
 
 // PlanStep is defined once in @buildd/shared (the planning contract). Re-exported
@@ -43,10 +44,7 @@ export async function approvePlan(
       })
     : null;
 
-  const gitConfig = (workspace?.gitConfig as {
-    branchingStrategy?: string;
-    branchPrefix?: string;
-  }) || null;
+  const gitConfig = (workspace?.gitConfig as BranchNameGitConfig) || null;
 
   // Guard: prevent duplicate approval
   const existingChildren = await db.query.tasks.findMany({
@@ -113,24 +111,13 @@ export async function approvePlan(
       }
     }
 
-    // Resolve baseBranch ref to predicted branch name
+    // Resolve baseBranch ref to the dependency's actual branch
     if (step.baseBranch && refToId[step.baseBranch]) {
-      const depTaskId = refToId[step.baseBranch];
-      const depTitle = refToTitle[step.baseBranch];
-      const sanitizedTitle = depTitle
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .substring(0, 30);
-      const taskIdShort = depTaskId.substring(0, 8);
-
-      let predictedBranch: string;
-      if (gitConfig?.branchingStrategy === 'none') {
-        predictedBranch = `task-${taskIdShort}`;
-      } else if (gitConfig?.branchPrefix) {
-        predictedBranch = `${gitConfig.branchPrefix}${taskIdShort}-${sanitizedTitle}`;
-      } else {
-        predictedBranch = `buildd/${taskIdShort}-${sanitizedTitle}`;
-      }
+      const resolvedBase = await resolveDependencyBranch(
+        refToId[step.baseBranch],
+        refToTitle[step.baseBranch],
+        gitConfig,
+      );
 
       // Merge baseBranch into existing context
       const existingCtx = (await db.query.tasks.findFirst({
@@ -138,7 +125,7 @@ export async function approvePlan(
         columns: { context: true },
       }))?.context as Record<string, unknown> || {};
 
-      updates.context = { ...existingCtx, baseBranch: predictedBranch };
+      updates.context = { ...existingCtx, baseBranch: resolvedBase };
     }
 
     if (Object.keys(updates).length > 1) { // more than just updatedAt
@@ -150,6 +137,54 @@ export async function approvePlan(
   }
 
   return { taskIds: createdTaskIds };
+}
+
+/**
+ * The branch a plan step should stack on top of: the branch of the dependency
+ * task it named via `baseBranch`.
+ *
+ * Read, do not re-derive. In order:
+ *
+ *  1. `workers.branch` — the observed branch. Once a worker row exists this is
+ *     the branch that IS checked out, including names no formula reproduces:
+ *     the claim route's shared mission branch, or the runner's
+ *     `<branch>-w<workerId8>` fallback when the requested branch was already
+ *     held by another worktree (`git-operations.ts` shared-branch guard).
+ *  2. `context.headBranch` — the shared mission working branch (seeded from
+ *     `missions.workingBranch`). The claim route uses it verbatim and never
+ *     consults the generator, so reading the dependency's persisted context is
+ *     how the mission branch is honoured. Today nothing stamps `headBranch`
+ *     onto approve-plan's children — only the organizer's own planning task
+ *     carries it (`mission-run.ts`) — so this is the branch that starts
+ *     mattering the moment a mission integration branch does.
+ *  3. Only if neither exists: predict, via the SAME generator the claim route
+ *     calls. This is genuinely unavoidable here — pass 1 has only just created
+ *     the dependency, so no worker can exist yet — but it is now one function,
+ *     not a copy that can drift.
+ */
+async function resolveDependencyBranch(
+  depTaskId: string,
+  depTitle: string,
+  gitConfig: BranchNameGitConfig | null,
+): Promise<string> {
+  const worker = await db.query.workers.findFirst({
+    where: eq(workers.taskId, depTaskId),
+    orderBy: desc(workers.createdAt),
+    columns: { branch: true },
+  });
+  if (worker?.branch) return worker.branch;
+
+  const depContext = (await db.query.tasks.findFirst({
+    where: eq(tasks.id, depTaskId),
+    columns: { context: true },
+  }))?.context as Record<string, unknown> | null | undefined;
+
+  return generateTaskBranchName({
+    taskId: depTaskId,
+    title: depTitle,
+    gitConfig,
+    sharedHeadBranch: depContext?.headBranch,
+  });
 }
 
 /**

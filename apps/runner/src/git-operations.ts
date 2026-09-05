@@ -133,17 +133,57 @@ function listBranchOwners(
   execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
 ): Map<string, string> {
   const owners = new Map<string, string>();
+  for (const entry of listWorktreeEntries(execOpts)) {
+    if (entry.branch) owners.set(entry.branch, entry.path);
+  }
+  return owners;
+}
+
+/**
+ * Every worktree git has registered for this repo (the main working copy
+ * included). Best-effort: on any git error we return an empty list, so every
+ * guard built on it degrades to the old, unguarded behaviour.
+ */
+function listWorktreeEntries(
+  execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
+): { path: string; branch: string | null }[] {
   try {
     const porcelain = String(
       execSync('git worktree list --porcelain', { ...execOpts, timeout: 5000 }) ?? '',
     );
-    for (const entry of parseWorktreeList(porcelain)) {
-      if (entry.branch) owners.set(entry.branch, entry.path);
-    }
+    return parseWorktreeList(porcelain);
   } catch {
     // No remote/unusual state — treat as "nothing known to be held".
+    return [];
   }
-  return owners;
+}
+
+/**
+ * May a REGISTERED worktree at `worktreePath` be reclaimed (deleted) by another
+ * worker? Only when its working tree is provably clean.
+ *
+ * `git worktree remove --force` exits 0 on a worktree with uncommitted changes:
+ * it deletes the work and reports success. So this probe is the only thing
+ * standing between a worktree-path collision and another live worker losing its
+ * edits. An inconclusive probe (timeout, corrupt index, git error) is treated as
+ * NOT reclaimable — the cost of being wrong is a second directory, versus
+ * destroying work in progress.
+ *
+ * Callers must only ask about paths git reports as worktrees; a plain leftover
+ * directory is not this function's business (it is always removable).
+ */
+function worktreeIsReclaimable(
+  worktreePath: string,
+  execOpts: { cwd: string; timeout: number; encoding: 'utf-8' },
+): boolean {
+  try {
+    const status = String(
+      execSync('git status --porcelain', { ...execOpts, cwd: worktreePath, timeout: 5000 }) ?? '',
+    );
+    return status.trim().length === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -187,7 +227,12 @@ export async function setupWorktree(
   // Worktrees live in .buildd-worktrees/ inside the repo
   const worktreeBase = join(repoPath, '.buildd-worktrees');
   const safeBranch = branch.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const worktreePath = join(worktreeBase, safeBranch);
+  // Keyed on the REQUESTED branch, so two workers asking for the same branch
+  // (a mission carrying a stable `headBranch`, a shared base) compute the same
+  // directory even though the shared-branch guard below gives them distinct
+  // branches. Reassigned below when that path turns out to be occupied by a
+  // worktree with live, uncommitted work.
+  let worktreePath = join(worktreeBase, safeBranch);
 
   try {
     // Ensure worktree base directory exists
@@ -210,15 +255,44 @@ export async function setupWorktree(
       console.warn(`[Worker ${workerId}] git fetch failed (continuing with local state):`, err instanceof Error ? err.message : err);
     }
 
-    // Clean up stale worktree at this path if it exists
+    // Clean up stale worktree at this path if it exists.
+    //
+    // "Stale" is an assumption, and it used to be unchecked: `git worktree
+    // remove --force` exits 0 on a worktree with uncommitted changes, so a
+    // second worker whose requested branch produced the same directory would
+    // silently delete the first worker's in-progress work and report success.
+    // Only reclaim a path that is either not a registered worktree at all
+    // (plain leftover directory) or registered with a clean tree. Otherwise
+    // leave it to its owner and take a worker-scoped path instead — unique per
+    // attempt by construction, the same escape the branch ladder below uses.
     if (existsSync(worktreePath)) {
-      console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
-      try {
-        execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
-      } catch {
-        // Force-remove the directory if git worktree remove fails
-        rmSync(worktreePath, { recursive: true, force: true });
-        try { execSync('git worktree prune', execOpts); } catch {}
+      const registered = listWorktreeEntries(execOpts).some(e => e.path === worktreePath);
+      if (registered && !worktreeIsReclaimable(worktreePath, execOpts)) {
+        const diverted = `${worktreePath}-w${workerId.slice(0, 8)}`;
+        console.warn(
+          `[Worker ${workerId}] Worktree path ${worktreePath} is a registered worktree that is ` +
+          `not provably clean — refusing to force-remove it (that deletes another worker's ` +
+          `uncommitted work and still exits 0). Using ${diverted} instead.`,
+        );
+        worktreePath = diverted;
+        if (existsSync(worktreePath)) {
+          // Our own leftover from a previous attempt with this worker id.
+          try {
+            execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+          } catch {
+            rmSync(worktreePath, { recursive: true, force: true });
+            try { execSync('git worktree prune', execOpts); } catch {}
+          }
+        }
+      } else {
+        console.log(`[Worker ${workerId}] Cleaning up stale worktree at ${worktreePath}`);
+        try {
+          execSync(`git worktree remove --force "${worktreePath}"`, execOpts);
+        } catch {
+          // Force-remove the directory if git worktree remove fails
+          rmSync(worktreePath, { recursive: true, force: true });
+          try { execSync('git worktree prune', execOpts); } catch {}
+        }
       }
     }
 
@@ -246,26 +320,6 @@ export async function setupWorktree(
       }
     } catch {
       // Non-zero exit means sparse checkout is not configured — normal state.
-    }
-
-    // Stale-branch guard: warn when the default branch has advanced significantly since
-    // the last fetch. Agents starting on a stale base risk merge conflicts or CI failures
-    // caused by unrelated upstream changes. Non-blocking — this is advisory only.
-    try {
-      const behindStr = execSync(
-        `git rev-list --count HEAD..origin/${defaultBranch}`,
-        { ...execOpts, timeout: 5000 },
-      ).trim();
-      const commitsBehind = parseInt(behindStr, 10);
-      if (!isNaN(commitsBehind) && commitsBehind > 10) {
-        console.warn(
-          `[Worker ${workerId}] ⚠ Stale-branch warning: the working tree is ${commitsBehind} commits ` +
-          `behind origin/${defaultBranch}. Consider running: git fetch origin && git rebase origin/${defaultBranch} ` +
-          `before pushing. Past CI retry chains were caused by this kind of staleness.`,
-        );
-      }
-    } catch {
-      // Non-fatal: git rev-list can fail for repos with no remote or unusual HEAD state.
     }
 
     // Create worktree with new branch — from resumeBranch/baseBranch (retry) or default branch (fresh)
@@ -300,6 +354,39 @@ export async function setupWorktree(
         clearResumeContext(taskContext);
       },
     });
+
+    // Stale-base guard: warn when the ref this task will build on has fallen
+    // significantly behind the default branch. Agents starting on a stale base
+    // risk merge conflicts or CI failures caused by unrelated upstream changes.
+    //
+    // It must measure `base` — the ref the worktree is cut from. It used to run
+    // `HEAD..origin/<default>` under `cwd: repoPath`, i.e. the MAIN CLONE's
+    // HEAD: not this worktree (which does not exist yet) and not the branch the
+    // task will work on. That is an unrelated tree, so the number it printed
+    // described nothing about this task. A task cut straight from the default
+    // branch now measures zero and stays quiet, which is correct.
+    //
+    // Non-blocking and advisory, deliberately: it never changes the base, never
+    // fails setup, and the log line names the ref it measured so a wrong-tree
+    // measurement is visible next time instead of inferred.
+    try {
+      const behindStr = execSync(
+        `git rev-list --count "${base}..origin/${defaultBranch}"`,
+        { ...execOpts, timeout: 5000 },
+      ).trim();
+      const commitsBehind = parseInt(behindStr, 10);
+      if (!isNaN(commitsBehind) && commitsBehind > 10) {
+        console.warn(
+          `[Worker ${workerId}] ⚠ Stale-base warning: the base ref "${base}" this worktree is ` +
+          `cut from is ${commitsBehind} commits behind origin/${defaultBranch}. ` +
+          `Consider running: git fetch origin && git rebase origin/${defaultBranch} before pushing. ` +
+          `Past CI retry chains were caused by this kind of staleness.`,
+        );
+      }
+    } catch {
+      // Non-fatal: git rev-list can fail for repos with no remote or when the
+      // base ref is not yet a local remote-tracking ref.
+    }
 
     // When the resume candidate was usable (no fallback), check out THAT branch
     // directly so the worker pushes to the existing PR's branch rather than

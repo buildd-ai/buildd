@@ -23,6 +23,7 @@
     "./model-tier-liveness": "./model-tier-liveness.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
+    "./branch-names": "./branch-names.ts",
     "./budget-alerts": "./budget-alerts.ts",
     "./oauth-budget": "./oauth-budget.ts",
     "./inference-client": "./inference-client.ts",

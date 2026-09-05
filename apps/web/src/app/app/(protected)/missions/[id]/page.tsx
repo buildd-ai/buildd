@@ -48,7 +48,9 @@ import { refreshWorkerMergeStateIfStale } from '@/lib/pr-reconcile';
 import { loadReleaseFooterData } from '@/lib/release-footer';
 import { MissionReleaseSection, deriveReleaseNowState } from './MissionReleaseSection';
 import { getSecretsProvider } from '@buildd/core/secrets';
-import type { ReleaseStrategy, WorkspaceReleaseConfig } from '@buildd/core/db/schema';
+import type { ReleaseStrategy, WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
+import { shouldQueryRelease } from '@/lib/release-state';
 
 export const dynamic = 'force-dynamic';
 
@@ -705,7 +707,16 @@ export default async function MissionDetailPage({
     | { id: string; name: string; gitConfig: unknown; releaseConfig: WorkspaceReleaseConfig | null }
     | null
     | undefined;
-  const releaseFooterData = releaseWorkspace
+  // §9.1 / AC-42: `none` skips the baseline and queue queries entirely.
+  // detectArchetype is pure (config only, no I/O), so this gate costs nothing.
+  const releaseArchetype: ReleaseArchetype = releaseWorkspace
+    ? detectArchetype({
+        name: releaseWorkspace.name,
+        releaseConfig: releaseWorkspace.releaseConfig,
+        gitConfig: releaseWorkspace.gitConfig as WorkspaceGitConfig | null,
+      })
+    : 'none';
+  const releaseFooterData = shouldQueryRelease(releaseArchetype) && releaseWorkspace
     ? await loadReleaseFooterData({
         id: releaseWorkspace.id,
         name: releaseWorkspace.name,
@@ -820,6 +831,7 @@ export default async function MissionDetailPage({
             render nothing (§9.1). */}
         {mission.workspaceId && (
           <MissionReleaseSection
+            archetype={releaseArchetype}
             data={releaseFooterData}
             workspaceId={mission.workspaceId}
             releaseNowState={releaseNowState}
