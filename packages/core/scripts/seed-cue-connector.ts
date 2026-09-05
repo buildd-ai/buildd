@@ -11,7 +11,7 @@
  * Idempotent: re-running is a no-op (ON CONFLICT DO NOTHING + ref-presence check).
  *
  * Usage:
- *   cd packages/core && DATABASE_URL="..." bun scripts/seed-cue-connector.ts
+ *   cd packages/core && CUE_WORKSPACE_ID=<workspace-id> DATABASE_URL="..." bun scripts/seed-cue-connector.ts
  *
  * Core logic (`seedCueConnector`) is DB-agnostic — it drives a `SeedStore`.
  * `createDrizzleStore` binds it to the real neon-http client; tests bind an in-memory store.
@@ -23,7 +23,24 @@ import type { NewConnector } from '../db/schema';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-export const CUE_WORKSPACE_ID = 'c3ecacc4-a77a-468c-9d1a-389f41c9434f';
+/**
+ * The workspace this seed targets, supplied at run time.
+ *
+ * Deliberately NOT a literal: this repo is public, and a workspace id is
+ * production data (see CLAUDE.md → "This Repo Is Public"). It is required
+ * rather than defaulted, so a missing value fails loudly instead of seeding
+ * a connector into the wrong workspace.
+ */
+export function cueWorkspaceId(): string {
+  const id = process.env.CUE_WORKSPACE_ID;
+  if (!id) {
+    throw new Error(
+      'CUE_WORKSPACE_ID is required. Pass the target workspace id: ' +
+        'CUE_WORKSPACE_ID=<workspace-id> DATABASE_URL="..." bun scripts/seed-cue-connector.ts',
+    );
+  }
+  return id;
+}
 export const CUE_CONNECTOR_NAME = 'cue';
 export const CUE_CONNECTOR_URL = 'https://cue.buildd.dev/api/mcp';
 export const CUE_ASSERTION_AUDIENCE = 'https://cue.buildd.dev/api/mcp';
@@ -76,7 +93,9 @@ export interface SeedResult {
 
 export async function seedCueConnector(
   store: SeedStore,
-  workspaceId = CUE_WORKSPACE_ID,
+  // Default evaluated only when omitted, so a caller that passes an explicit id
+  // (every test does) never needs the env var set.
+  workspaceId: string = cueWorkspaceId(),
 ): Promise<SeedResult> {
   const result: SeedResult = {
     workspaceFound: false,
@@ -225,7 +244,7 @@ if (import.meta.main) {
     const result = await seedCueConnector(store);
 
     if (!result.workspaceFound) {
-      console.error(`Workspace ${CUE_WORKSPACE_ID} not found — is DATABASE_URL pointing at the right DB?`);
+      console.error(`Workspace ${cueWorkspaceId()} not found — is DATABASE_URL pointing at the right DB?`);
       process.exit(1);
     }
 

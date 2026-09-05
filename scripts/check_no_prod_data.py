@@ -167,6 +167,31 @@ class Report:
               f"The match is not printed: this log is world-readable.")
 
 
+# `+++ b/path` names the file that the following `+` lines belong to. Tracking it
+# is what lets the UUID scan skip test paths without skipping the rest of a diff.
+DIFF_FILE_RE = re.compile(r"^\+\+\+ b/(.*)$")
+TEST_PATH_RE = re.compile(r"(^|/)__tests__/|\.test\.[jt]sx?$|(^|/)tests/")
+
+
+def added_source_lines(diff: str) -> list[tuple[str, str]]:
+    """`(path, line)` for every added line that is NOT in a test file.
+
+    Walks the raw diff so the owning path is known per line; the caller's
+    pre-filtered `+`-only list has already thrown that away.
+    """
+    out: list[tuple[str, str]] = []
+    path = "?"
+    for line in diff.splitlines():
+        header = DIFF_FILE_RE.match(line)
+        if header:
+            path = header.group(1)
+            continue
+        if line.startswith("+") and not line.startswith("+++"):
+            if not TEST_PATH_RE.search(path):
+                out.append((path, line))
+    return out
+
+
 def scan_prose(text: str, where: str, rep: Report, check_counts: bool) -> None:
     ident = os.environ.get("NO_PROD_DATA_IDENTIFIERS", "").strip()
     ident_re = re.compile(ident, re.I) if ident else None
@@ -227,15 +252,40 @@ def main() -> int:
     if msgs.strip():
         scan_prose(msgs, "commit message", rep, check_counts)
 
+    excludes = [f":(exclude){p}" for p in SELF]
+    diff = subprocess.run(
+        ["git", "diff", f"{base}...HEAD", "--", ".",
+         ":(exclude)packages/core/drizzle/meta", *excludes],
+        capture_output=True, text=True).stdout
+    added = [l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
+
+    # Added SOURCE lines: UUIDs. Needs no secret, so unlike the identifier half
+    # below it cannot silently no-op.
+    #
+    # This existed only for prose (PR title/body/commit messages) until a real
+    # workspace id sat in a committed .ts file for months: code was never
+    # scanned for UUIDs at all, so the rule was enforced on the description of a
+    # change and not on the change.
+    #
+    # Test files are excluded deliberately. They are full of UUID-shaped
+    # fixtures, and a good number are high-entropy enough to be indistinguishable
+    # from real ones by shape or by character variety — measured on this repo,
+    # `aabbccdd-1234-5678-9abc-def012345678` (synthetic) and
+    # `d7e60452-8a4d-49e6-9cf3-60221baf12dd` (looks real) both use 16 distinct
+    # hex characters, so no entropy threshold separates them. Every real-looking
+    # UUID in the tree today lives under a test path. KNOWN GAP: a genuine id
+    # pasted into a test file still passes. Narrow and stated beats broad and
+    # switched off for noise.
+    if check_counts:
+        for i, (path, line) in enumerate(added_source_lines(diff), 1):
+            if UUID_RE.search(line):
+                rep.hit(f"added source line ({path})", "UUID", i, line,
+                        "pass it in at run time (env var or argument); "
+                        "row identifiers must not enter a public repo")
+
     # Added code lines: identifiers only.
     ident = os.environ.get("NO_PROD_DATA_IDENTIFIERS", "").strip()
     if ident:
-        excludes = [f":(exclude){p}" for p in SELF]
-        diff = subprocess.run(
-            ["git", "diff", f"{base}...HEAD", "--", ".",
-             ":(exclude)packages/core/drizzle/meta", *excludes],
-            capture_output=True, text=True).stdout
-        added = [l for l in diff.splitlines() if l.startswith("+") and not l.startswith("+++")]
         rx = re.compile(ident, re.I)
         for i, line in enumerate(added, 1):
             if rx.search(line):

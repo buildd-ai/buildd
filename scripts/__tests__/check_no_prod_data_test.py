@@ -151,6 +151,50 @@ def guard_integrity_failures(tmp: Path) -> list[str]:
     return bad
 
 
+
+# ── Added-source UUID scan ────────────────────────────────────────────────────
+# This half did not exist until a real workspace id sat in a committed .ts file
+# for months: UUIDs were checked in the PR *description* and never in the change.
+# Both directions matter — catching the source case is the point, and ignoring
+# test fixtures is what keeps it switched on.
+
+def added_source_uuid_failures() -> list[str]:
+    bad = []
+
+    def diff_for(path: str, body: str) -> str:
+        return f"diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n+{body}\n"
+
+    real = "bf442fcb-6179-43b3-aa92-2564b1ad24b8"
+
+    # 1. A UUID added to a source file must be reported.
+    got = chk.added_source_lines(diff_for("packages/core/scripts/seed.ts",
+                                          f"const WS = '{real}';"))
+    if not any(chk.UUID_RE.search(l) for _, l in got):
+        bad.append("SOURCE UUID NOT SEEN: added_source_lines dropped a "
+                   "non-test source line carrying a UUID")
+
+    # 2. The path must travel with the line, or the finding cannot name a file.
+    if got and got[0][0] != "packages/core/scripts/seed.ts":
+        bad.append(f"PATH LOST: expected the source path, got {got[0][0]!r}")
+
+    # 3. Test fixtures must NOT be reported. Every real-looking UUID in the tree
+    #    lives under a test path, so scanning them would fire on ~40 existing
+    #    files and the check would be disabled within a week.
+    for p in ("apps/web/src/lib/task-id.test.ts",
+              "packages/core/__tests__/foo.ts",
+              "tests/e2e/flow.test.ts"):
+        if chk.added_source_lines(diff_for(p, f"const id = '{real}';")):
+            bad.append(f"TEST FIXTURE FLAGGED: {p} was scanned for UUIDs")
+
+    # 4. A deletion must not count. Removing a UUID is the fix, not the offence.
+    d = diff_for("packages/core/scripts/seed.ts", "ok")
+    d = d.replace("+const", "-const").replace("+ok", f"-const WS = '{real}';")
+    if any(chk.UUID_RE.search(l) for _, l in chk.added_source_lines(d)):
+        bad.append("DELETED LINE FLAGGED: a removed UUID was treated as added")
+
+    return bad
+
+
 def main() -> int:
     bad = []
     for line in MUST_PASS:
@@ -166,6 +210,8 @@ def main() -> int:
     for line in ALLOW_MUST_TRIGGER:
         if not chk.ALLOW_RE.search(line):
             bad.append(f"ALLOW NOT HONOURED: {line!r}")
+
+    bad.extend(added_source_uuid_failures())
 
     import tempfile
     with tempfile.TemporaryDirectory() as td:
