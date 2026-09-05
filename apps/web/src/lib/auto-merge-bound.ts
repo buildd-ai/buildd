@@ -3,31 +3,37 @@
  *
  * A reviewer agent's `approve` can drive auto-merge, but the trade only holds
  * because of where the merge lands. Under the mission integration model a task
- * PR targets `mission/<slug>`, an approved merge lands in a quarantined branch,
- * and the human gate sits once at the integration → trunk PR. An injected or
- * manipulated `approve` therefore costs a bad commit on a branch that is itself
- * reviewed before anything reaches the trunk.
+ * PR targets the mission's integration branch, an approved merge lands in a
+ * quarantined branch, and the human gate sits once at the integration → trunk
+ * PR. An injected or manipulated `approve` therefore costs a bad commit on a
+ * branch that is itself reviewed before anything reaches the trunk.
  *
  * That argument evaporates the moment the base ref *is* the trunk. So the
  * permission keys off the PR's actual base ref — never a workspace-level flag —
- * and a workspace that still merges task PRs straight into `dev` cannot inherit
- * unattended merges by accident.
+ * and a workspace that still merges task PRs straight into its trunk cannot
+ * inherit unattended merges by accident.
+ *
+ * The base-ref test itself is `isMissionIntegrationBase` from `core`: it
+ * compares the ref against the mission's own `workingBranch` rather than
+ * pattern-matching a name. A shape heuristic is the wrong instrument for a
+ * permission — a workspace is free to carry a `mission/…` branch that no
+ * mission owns, and a false positive here is exactly the direction that removes
+ * a human gate.
  *
  * Everything here is a pure function of server-read GitHub state (base ref,
- * check runs, file list). Nothing in it reads model-reported text such as
- * `escalationReason`, which is attacker-influenced.
+ * check runs) plus the mission row. Nothing in it reads model-reported text
+ * such as `escalationReason`, which is attacker-influenced.
  */
 
-import { isSchemaTouchingFile } from './migration-safety';
-
-export const MISSION_BRANCH_PREFIX = 'mission/';
+import { isMissionIntegrationBase, type MissionIntegrationFields } from '@buildd/core/mission-integration';
 
 /**
  * Check-run name tokens that identify the repo's build/test workflow.
  *
  * GitHub names an Actions check run after the *job*, not the workflow, so this
- * matches on substrings ('build', 'test', 'typecheck') exactly as the
- * CI-completeness warning in `evaluateAutoMergeSafety` already does.
+ * matches on substrings ('build', 'test', 'typecheck'). Exported and consumed
+ * by the CI-completeness warning in `evaluateAutoMergeSafety` too, so the
+ * warning and the hard refusal can never drift apart on which checks count.
  */
 export const BUILD_PROOF_CHECK_TOKENS = ['typecheck', 'build', 'test'] as const;
 
@@ -40,20 +46,6 @@ export interface CheckRunState {
 }
 
 /**
- * True for a mission integration branch — the only base a model verdict may
- * merge into unattended.
- *
- * Deliberately a prefix test on the whole ref: `feat/mission/x` is somebody's
- * feature branch, `missionary/x` is not a mission branch, and a bare
- * `mission/` is not a branch at all.
- */
-export function isMissionIntegrationBranch(ref: string | null | undefined): boolean {
-  if (typeof ref !== 'string') return false;
-  if (!ref.startsWith(MISSION_BRANCH_PREFIX)) return false;
-  return ref.length > MISSION_BRANCH_PREFIX.length;
-}
-
-/**
  * The branches a model verdict may never merge into: the workspace's own trunk
  * (`gitConfig.targetBranch` / `defaultBranch` — `dev` here), its production
  * branch (`releaseConfig.prodBranch`), and `main` unconditionally.
@@ -62,6 +54,11 @@ export function isMissionIntegrationBranch(ref: string | null | undefined): bool
  * a release config must not become the one where an unattended merge reaches
  * production. A release PR is exactly a PR whose base is `main`/`prodBranch`,
  * so this list is also what makes release PRs unmergeable on a model verdict.
+ *
+ * Not redundant with the positive mission test below, because the mission row
+ * is data an agent can write: a mission whose `workingBranch` had been set to
+ * the workspace trunk would otherwise satisfy `isMissionIntegrationBase` for a
+ * PR based on trunk. This list is checked first so it cannot.
  */
 export function protectedBaseBranches(input: {
   gitConfig?: { targetBranch?: string | null; defaultBranch?: string | null } | null;
@@ -80,11 +77,12 @@ export function protectedBaseBranches(input: {
  * Require positive proof that the build/test workflow ran AND succeeded for
  * this head SHA.
  *
- * "Checks are not failing" is not "checks passed". `.github/workflows/build.yml`
- * filters `pull_request` by base branch, so a PR based on an unlisted branch
- * gets no run at all — and a zero-run PR is indistinguishable from a green one
- * to any predicate that only looks for failures. A skipped or neutral
- * conclusion is likewise not a pass.
+ * "Checks are not failing" is not "checks passed", and that is the gap this
+ * closes: `evaluateAutoMergeSafety` rejects pending and failed check runs, but
+ * when the expected checks are *absent* it only warns — so a PR with zero runs
+ * is indistinguishable from a green one. `.github/workflows/build.yml` filters
+ * `pull_request` by base branch, which is exactly how a PR ends up with no run
+ * at all. A skipped or neutral conclusion is likewise not a pass.
  */
 export function hasBuildProof(checkRuns: CheckRunState[]): BoundVerdict {
   const named = checkRuns.filter((run) =>
@@ -111,14 +109,21 @@ export function hasBuildProof(checkRuns: CheckRunState[]): BoundVerdict {
 }
 
 export interface ModelApproveBoundInput {
-  /** `pull_request.base.ref` as read from GitHub. Never taken from the model. */
+  /**
+   * `pull_request.base.ref` as read from GitHub. Never taken from the model.
+   *
+   * The BASE ref, because the PR being gated here is a *task* PR: task branch →
+   * integration branch. (The size-gate exemption in `evaluateAutoMergeSafety`
+   * asks the same question of the mission PR, whose integration branch is its
+   * HEAD ref because its base is trunk.)
+   */
   baseRef: string | null | undefined;
+  /** The mission row that says which branch is its integration branch. */
+  mission: MissionIntegrationFields | null | undefined;
   /** From `protectedBaseBranches` for the PR's workspace. */
   protectedBranches: string[];
   /** Check runs GitHub reports for the PR's head SHA. */
   checkRuns: CheckRunState[];
-  /** The PR's file list, as read from GitHub. */
-  files: Array<{ filename: string }>;
 }
 
 /**
@@ -126,19 +131,17 @@ export interface ModelApproveBoundInput {
  *
  * Refusal is not a rejection of the PR — the caller leaves it for a human,
  * which is what `escalate` would have produced anyway.
+ *
+ * Schema and migration files are deliberately NOT re-gated here. That gate is
+ * already enforced on this exact path, twice: `enforceServerSideEscalation`
+ * rewrites a model `approve` to `escalate` at verdict time from the PR's
+ * current file list, and `evaluateAutoMergeSafety` runs the migration
+ * operation-class inspector before it reaches this function. A third copy would
+ * only differ by overriding the inspector's deliberate EXPAND-passes rule,
+ * which is a separate policy decision and not this bound's job.
  */
 export function evaluateModelApproveBound(input: ModelApproveBoundInput): BoundVerdict {
-  // 1. File-list gates first: these hold regardless of verdict or base, and are
-  //    read from GitHub's file list rather than anything the model reported.
-  const schemaHit = input.files.find((file) => isSchemaTouchingFile(file.filename));
-  if (schemaHit) {
-    return {
-      permitted: false,
-      reason: `model approve cannot merge a schema change unattended (${schemaHit.filename}) — human merge required`,
-    };
-  }
-
-  // 2. Unknown base ref ⇒ fail closed. We cannot bound what we cannot read.
+  // 1. Unknown base ref ⇒ fail closed. We cannot bound what we cannot read.
   const baseRef = input.baseRef;
   if (typeof baseRef !== 'string' || baseRef.length === 0) {
     return {
@@ -147,9 +150,9 @@ export function evaluateModelApproveBound(input: ModelApproveBoundInput): BoundV
     };
   }
 
-  // 3. Explicit trunk deny list, checked BEFORE the positive mission test so a
-  //    workspace whose trunk happens to match the naming convention cannot
-  //    inherit unattended merges from it.
+  // 2. Explicit trunk deny list, checked BEFORE the positive mission test so a
+  //    mission whose working branch had been pointed at the trunk cannot make
+  //    the trunk look quarantined.
   if (input.protectedBranches.includes(baseRef)) {
     return {
       permitted: false,
@@ -157,21 +160,24 @@ export function evaluateModelApproveBound(input: ModelApproveBoundInput): BoundV
     };
   }
 
-  // 4. Positive test: only a quarantined mission integration branch qualifies.
-  if (!isMissionIntegrationBranch(baseRef)) {
+  // 3. Positive test: only the mission's own integration branch qualifies.
+  //    Authoritative (mission row), not a `mission/` name-shape heuristic — a
+  //    mission that has not opted in, or a ref that is not its working branch,
+  //    is false and therefore refused.
+  if (!isMissionIntegrationBase({ baseRef, mission: input.mission })) {
     return {
       permitted: false,
       reason:
-        `model approve: base '${baseRef}' is not a mission integration branch `
-        + `(${MISSION_BRANCH_PREFIX}**) — human merge required`,
+        `model approve: base '${baseRef}' is not this mission's integration branch `
+        + '— human merge required',
     };
   }
 
-  // 5. CI must have actually run and passed on this head SHA.
+  // 4. CI must have actually run and passed on this head SHA.
   return hasBuildProof(input.checkRuns);
 }
 
-/** Passed to `evaluateAutoMergeSafety` when a model verdict is driving the merge. */
+/** Passed in `evaluateAutoMergeSafety`'s opts when a model verdict is driving the merge. */
 export interface ModelApproveBound {
   protectedBranches: string[];
 }

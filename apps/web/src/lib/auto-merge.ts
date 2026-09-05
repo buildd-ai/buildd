@@ -36,20 +36,26 @@ import {
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  *
- * `opts.bound` is set only when a *model* verdict is driving this merge (the
- * reviewer approve path). It adds the base-ref-keyed rails in
- * `auto-merge-bound.ts` on top of everything below: mission integration base
- * only, no schema changes, and positive proof that build/test actually ran
- * green. A CI-green merge under a human-configured policy passes no bound and
- * is unaffected.
- *
  * ## The one exemption (Option A′)
  *
- * `opts.mission` is the calling worker's mission, and it exists for exactly one
- * decision: whether this PR is the mission's integration PR, in which case the
- * AGGREGATE LINE THRESHOLD does not apply. Nothing else is relaxed — see the
- * comment at the size check. Omit `opts` and this behaves exactly as it did
- * before Option A′ existed.
+ * `opts.mission` is the calling worker's mission, and it is read for two
+ * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
+ * shape test:
+ *
+ *  - whether this PR is the mission's integration PR, in which case the
+ *    AGGREGATE LINE THRESHOLD does not apply. Nothing else is relaxed — see the
+ *    comment at the size check;
+ *  - whether `opts.bound` may permit an unattended merge (below).
+ *
+ * Omit `opts` and this behaves exactly as it did before Option A′ existed.
+ *
+ * ## The bound (`opts.bound`)
+ *
+ * Set only when a *model* verdict is driving this merge (the reviewer approve
+ * path). It adds the base-ref-keyed rails in `auto-merge-bound.ts` on top of
+ * everything below: the mission's own integration branch as base, and positive
+ * proof that build/test actually ran green. A CI-green merge under a
+ * human-configured policy passes no bound and is unaffected.
  */
 export async function evaluateAutoMergeSafety(
   installationId: number,
@@ -57,6 +63,10 @@ export async function evaluateAutoMergeSafety(
   prNumber: number,
   headSha: string,
   policy: Pick<MergePolicy, 'tier' | 'threshold' | 'agentReview'>,
+  // One options bag, because the bound now needs the mission row too: the
+  // authoritative "is this ref the mission's integration branch" question is
+  // asked of `opts.mission`, so a second positional parameter would have to
+  // carry a duplicate of what `opts` already holds.
   opts?: { mission?: MissionIntegrationFields | null; bound?: ModelApproveBound },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
@@ -159,9 +169,13 @@ export async function evaluateAutoMergeSafety(
 
   // Read the PR once. Hoisted above the size check (it also feeds the
   // mergeable_state check below) because the PR's HEAD ref is what identifies
-  // the mission integration PR. Fails soft: an unreadable PR leaves both the
-  // head ref and mergeable_state unknown, which keeps the size gate ON and
-  // leaves the conflict check a soft pass — exactly as before.
+  // the mission integration PR. Both refs are read here: HEAD for the size-gate
+  // exemption, BASE for the model-approve bound.
+  //
+  // Fails soft by default: an unreadable PR leaves the head ref and
+  // mergeable_state unknown, which keeps the size gate ON and leaves the
+  // conflict check a soft pass — exactly as before. It fails CLOSED only under
+  // `opts.bound`, where the base ref is a hard input (see below).
   let prData: {
     mergeable_state?: string;
     head?: { ref?: string | null };
@@ -243,11 +257,16 @@ export async function evaluateAutoMergeSafety(
         }`,
       };
     }
+    // BASE ref here, HEAD ref for the size-gate exemption above — the same
+    // question ("is this ref the mission's integration branch") asked about the
+    // two different PRs in the topology. The mission PR runs integration branch
+    // → trunk, so its integration branch is its HEAD; a task PR runs task
+    // branch → integration branch, so its integration branch is its BASE.
     const verdict = evaluateModelApproveBound({
       baseRef: prData.base?.ref,
+      mission: opts.mission ?? null,
       protectedBranches: opts.bound.protectedBranches,
       checkRuns,
-      files,
     });
     if (!verdict.permitted) {
       return { ok: false, reason: verdict.reason };
@@ -277,6 +296,9 @@ export async function tryAutoMergeWorkerPr(params: {
 }): Promise<void> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
+  // One mission read serves both callers of it inside the safety rails: the
+  // size-gate exemption and, when a model verdict authorised this merge, the
+  // bound's base-ref test.
   const mission = await loadMissionIntegrationFields(worker.taskId);
   const safetyCheck = await evaluateAutoMergeSafety(
     installationId,
@@ -377,9 +399,11 @@ export async function tryAutoMergeWorkerPr(params: {
  *
  * One read on the merge path, so `evaluateAutoMergeSafety` can use the
  * authoritative `isMissionIntegrationBase` instead of the `mission/` shape
- * heuristic when it decides whether the aggregate size gate applies. Fails soft
- * to null, and null means "not a mission integration PR" — every gate then
- * applies exactly as it did before Option A′.
+ * heuristic for both of the decisions that ask it: whether the aggregate size
+ * gate applies, and whether a model-authorised merge is landing somewhere
+ * quarantined. Fails soft to null, and null means "not a mission integration
+ * PR" — every gate then applies exactly as it did before Option A′, and a bound
+ * merge is refused outright.
  */
 async function loadMissionIntegrationFields(
   taskId: string | null,
