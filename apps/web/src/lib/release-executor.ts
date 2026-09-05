@@ -1,12 +1,22 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
+import { triggerEvent, channels, events } from '@/lib/pusher';
+
+// Injectable for tests — do not use in production code. Mirrors the same
+// affordance in release-verification.ts; without it the 8s pre-poll wait and the
+// 10s poll interval below are real sleeps that blow any unit-test timeout.
+let sleeper = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+export function _setSleeper(fn: (ms: number) => Promise<void>): void {
+  sleeper = fn;
+}
 
 // Vercel deployment readback — polls until terminal state.
 // Returns { state: 'SKIPPED', url: null } when VERCEL_TOKEN is absent so the
@@ -51,7 +61,7 @@ async function pollVercelDeployment(
       }
     }
 
-    await new Promise((res) => setTimeout(res, pollIntervalMs));
+    await sleeper(pollIntervalMs);
   }
 
   return { state: 'TIMEOUT', url: null };
@@ -213,6 +223,10 @@ async function mergeIntoProd(
   }
 }
 
+// Returns the id of the `releases` row this call inserted, or null when it
+// inserted none (not a releasing archetype, no headSha, or the
+// (workspace_id, head_sha) unique index rejected a retry of the same merge).
+// The caller needs that distinction: only the inserter may promote the row.
 async function maybeCreateReleaseRow(params: {
   workspaceId: string;
   workspace: { name?: string | null; releaseConfig?: WorkspaceReleaseConfig | null; gitConfig?: WorkspaceGitConfig | null } | null | undefined;
@@ -221,9 +235,9 @@ async function maybeCreateReleaseRow(params: {
   sourceRef: string | undefined;
   prodBranch: string;
   repo: { fullName: string; installation: { installationId: number } };
-}): Promise<void> {
+}): Promise<string | null> {
   const { workspaceId, workspace, headSha, previousSha, sourceRef, prodBranch, repo } = params;
-  if (!headSha) return;
+  if (!headSha) return null;
 
   const archetype = detectArchetype({
     name: workspace?.name,
@@ -236,7 +250,7 @@ async function maybeCreateReleaseRow(params: {
   // so a gated workspace had no release history, no task→release link, and its
   // queue baseline fell through to the prod-branch-HEAD rung — a GitHub call on
   // every read, forever. `store`/`package`/`none` are not this strategy.
-  if (archetype !== 'continuous' && archetype !== 'gated') return;
+  if (archetype !== 'continuous' && archetype !== 'gated') return null;
 
   const inserted = await db
     .insert(releases)
@@ -244,10 +258,20 @@ async function maybeCreateReleaseRow(params: {
       workspaceId,
       archetype,
       state: 'deploying',
-      // Matches the manual trigger route: a gated release is HTTP-verifiable,
-      // a continuous one is not. Still inert unless the workspace configures a
-      // `verificationUrl`, so this changes nothing until someone opts in.
-      verificationStrategy: archetype === 'gated' ? 'http' : 'none',
+      // A release is HTTP-verifiable when the workspace gives us something to
+      // probe, OR when it is gated (which keeps gated rows inside the cron's
+      // stale-`deploying` sweep, so they still hard-fail at 24h rather than
+      // sitting forever).
+      //
+      // The `verificationUrl` half fixes a perverse case: this used to read
+      // `archetype === 'gated' ? 'http' : 'none'`, and `verifyReleaseDeployment`
+      // returns early unless the strategy is exactly `'http'`. So a *continuous*
+      // workspace that configured a `verificationUrl` was stamped `'none'`, its
+      // probe never ran, and it never reached `healthy` — strictly worse than
+      // the same workspace with no URL configured at all, which at least gets
+      // promoted on a READY deploy below. Strictly additive: no row that was
+      // `'http'` becomes `'none'`.
+      verificationStrategy: (workspace?.releaseConfig?.verificationUrl || archetype === 'gated') ? 'http' : 'none',
       triggeredBy: 'auto',
       deployedAt: new Date(),
       sourceRef,
@@ -261,8 +285,8 @@ async function maybeCreateReleaseRow(params: {
     .onConflictDoNothing()
     .returning({ id: releases.id });
 
-  const releaseId = inserted[0]?.id;
-  if (!releaseId || !previousSha) return;
+  const releaseId = inserted[0]?.id ?? null;
+  if (!releaseId || !previousSha) return releaseId;
 
   attributeRelease({
     releaseId,
@@ -273,6 +297,41 @@ async function maybeCreateReleaseRow(params: {
     repoFullName: repo.fullName,
     githubInstallationId: repo.installation.installationId,
     db,
+  }).catch(() => {});
+
+  return releaseId;
+}
+
+// Promote a just-deployed release to `healthy`.
+//
+// Why this is a dedicated UPDATE and not a call to verifyReleaseDeployment:
+//   1. It *cannot* be that call. verifyReleaseDeployment returns early unless
+//      the release carries verificationStrategy 'http' AND the workspace has a
+//      releaseConfig.verificationUrl — which is exactly the branch this function
+//      exists to cover. Calling it here would always no-op.
+//   2. verifyReleaseDeployment sleeps up to 5x15s around an HTTP probe. This
+//      runs inside the worker-report request path, so it must not block on that;
+//      and fire-and-forget is not an alternative — a dropped timer in a
+//      serverless handler is the exact failure mode already documented in the
+//      release-health-check cron header. A single UPDATE on the primary key is
+//      cheap enough to await inline.
+//
+// The `state = 'deploying'` predicate is the optimistic lock (neon-http has no
+// interactive transactions): if the webhook's verification path, the stale-
+// deploying cron sweep, or the degrade watch already moved this row, this UPDATE
+// matches nothing and promotes nothing rather than resurrecting a terminal row.
+async function promoteReleaseToHealthy(releaseId: string, workspaceId: string): Promise<void> {
+  const [promoted] = await db
+    .update(releases)
+    .set({ state: 'healthy', healthyAt: new Date() })
+    .where(and(eq(releases.id, releaseId), eq(releases.state, 'deploying')))
+    .returning({ id: releases.id });
+
+  if (!promoted) return;
+
+  await triggerEvent(channels.workspace(workspaceId), events.RELEASE_UPDATED, {
+    releaseId,
+    state: 'healthy',
   }).catch(() => {});
 }
 
@@ -354,6 +413,8 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
   // Step 1: Merge into prodBranch
   let mergedAt: string | undefined;
   let mergeSha: string | undefined;
+  // Non-null only when THIS call inserted the releases row (see Step 2.5).
+  let createdReleaseId: string | null = null;
 
   // Get GitHub repo for this workspace (needed for both releaseBranch and worker-branch paths)
   const repo = workspace?.githubRepoId
@@ -462,7 +523,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     mergedAt = new Date().toISOString();
     mergeSha = mergeResp.sha as string | undefined;
 
-    await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, sourceRef: branchMerge.releaseBranch, prodBranch, repo });
+    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: rbPreviousSha, sourceRef: branchMerge.releaseBranch, prodBranch, repo });
   } else if (worker?.branch) {
     // Worker-branch path: merge the worker's feature branch into prodBranch
 
@@ -492,7 +553,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
     mergedAt = new Date().toISOString();
     mergeSha = mergeResult.sha;
 
-    await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, sourceRef: worker.branch, prodBranch, repo });
+    createdReleaseId = await maybeCreateReleaseRow({ workspaceId, workspace, headSha: mergeSha, previousSha: wbPreviousSha, sourceRef: worker.branch, prodBranch, repo });
   }
 
   // Step 2: Poll Vercel for deployment
@@ -513,7 +574,7 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
       // Only wait for Vercel to pick up the push when we can actually verify.
       // When VERCEL_TOKEN is absent, pollVercelDeployment returns SKIPPED immediately.
       if (process.env.VERCEL_TOKEN) {
-        await new Promise((res) => setTimeout(res, 8_000));
+        await sleeper(8_000);
       }
       const deploy = await pollVercelDeployment(projectId, teamId, prodBranch);
       deployState = deploy.state;
@@ -541,6 +602,25 @@ export async function executeRelease(input: ReleaseInput): Promise<ReleaseResult
         error: msg,
       };
     }
+  }
+
+  // Step 2.5: promote to `healthy` when a successful deploy is the only health
+  // signal this workspace has.
+  //
+  // Before this, `healthy` had exactly one writer (verifyReleaseDeployment) and
+  // that writer bails unless a releaseConfig.verificationUrl is configured. A
+  // workspace without one had no path to `healthy` at all: rows sat in
+  // `deploying` forever, MAX(healthy_at) stayed NULL, and the baseline ladder
+  // could never reach its top rung.
+  //
+  // Two deliberate non-promotions:
+  //   - `SKIPPED` means VERCEL_TOKEN was absent, so pollVercelDeployment never
+  //     looked at the deployment. That is *unverified*, not healthy — promoting
+  //     it would launder a missing credential into a green release.
+  //   - a configured verificationUrl means the HTTP probe is authoritative;
+  //     the executor promotes nothing and lets that path decide.
+  if (createdReleaseId && deployState === 'READY' && !releaseConfig?.verificationUrl) {
+    await promoteReleaseToHealthy(createdReleaseId, workspaceId);
   }
 
   // Step 3: Post-deploy hooks
