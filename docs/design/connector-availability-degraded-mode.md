@@ -354,6 +354,12 @@ Ship the advisory machinery (typed failures, `degradedConnectors` payload, notif
 workspace-level feature flag `connector_advisory_mode: boolean` (default `false`). Workspaces that
 opt in get the new behaviour; all others continue blocking.
 
+**Status: shipped and opt-in-able.** The claim-path machinery (T1, T2) and the per-task
+`requiredConnectors` escape hatch (T3) are live. Opting a workspace in is
+`PATCH /api/workspaces/[id]` with `{ "connectorAdvisoryMode": true }` — that route is the flag's
+only writer, and it takes a strict boolean. Until it existed, the flag could never be true, so the
+whole advisory path was tested but unreachable in production.
+
 ### Phase 2 — Flip the default (advisory becomes standard)
 
 After Phase 1 has been running for ≥2 weeks with no regressions:
