@@ -388,4 +388,7 @@ This file is the input; docs/site are outputs. To keep it from rotting:
    store (separate dev-loop pipeline; see the skill) and diffs *claims vs. reality*,
    filing drift as tasks.
 3. `buildd-docs` and `buildd-site` are reconciled *against this file*, never the
-   reverse. Open drift items live in `docs/reports/doc-drift-punchlist.md`.
+   reverse. Drift is **regenerated on demand** by the `spec-sync` skill — do not
+   act on a checked-in drift list. A stale one is worse than none: the last
+   committed punchlist told a reader to delete two docs pages that had since
+   been rewritten into accurate ones.
