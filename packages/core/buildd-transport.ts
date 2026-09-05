@@ -22,8 +22,7 @@ export interface BuilddTransportConfig {
   apiKey: string;
   /**
    * Per-request AbortSignal timeout in milliseconds.
-   * Omit to send no timeout signal (matches apiCall() behavior in
-   * buildd-mcp-server.ts). Set 30_000 for runner, 120_000 for ingest.
+   * Omit to send no timeout signal. Set 30_000 for runner, 120_000 for ingest.
    */
   timeoutMs?: number;
   /**

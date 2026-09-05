@@ -55,8 +55,9 @@ billing:
 typically has separate trigger vs. worker accounts. `account_workspaces` is the
 M2M grant of which workspaces an account `canClaim` / `canCreate` from.
 
-> **Deprecated:** `accounts.oauthToken` / `anthropicApiKey` columns — credentials now
-> live in the `secrets` table. Columns kept for back-compat, slated for removal.
+> **Deprecated:** the `accounts.oauthToken` column — credentials now live in the
+> `secrets` table. Kept for back-compat, slated for removal. The parallel
+> `anthropicApiKey` column has already been dropped.
 
 ### Workspace
 A repo + config boundary. Holds tasks, workers, missions, roles/skills, schedules.
@@ -185,8 +186,7 @@ no separate namespace). Swappable `KnowledgeStore` interface (same pattern as
 (pattern-matched tool errors, throttled), `artifacts` (deliverables, S3/R2-backed,
 shareable via `shareToken`), `mission_notes` (append-only agent↔user feed),
 `task_schedules` (cron + conditional triggers + suggestions), `task_outcomes`
-(routing-calibration telemetry), `file_reservations` (advisory edit locks),
-`watched_projects` + `watcher_events` (CI/prod health monitors that auto-file tasks),
+(routing-calibration telemetry), `watched_projects` + `watcher_events` (CI/prod health monitors that auto-file tasks),
 `github_installations` + `github_repos`, `device_codes` (CLI device-code auth),
 `oauth_clients`/`oauth_codes`/`oauth_refresh_tokens` (OAuth 2.1 PKCE for MCP clients),
 `user_feedback`, `system_cache`, `tenant_budgets`.

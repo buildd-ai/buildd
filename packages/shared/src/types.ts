@@ -235,7 +235,6 @@ export interface Account {
   authType: AuthTypeValue;
 
   // For API-based auth (pay-per-token)
-  anthropicApiKey: string | null;
   maxCostPerDay: number | null;
   totalCost: number;
 
@@ -965,7 +964,6 @@ export interface CreateAccountInput {
   authType?: AuthTypeValue;
 
   // For API auth
-  anthropicApiKey?: string;
   maxCostPerDay?: number;
 
   // For OAuth auth
