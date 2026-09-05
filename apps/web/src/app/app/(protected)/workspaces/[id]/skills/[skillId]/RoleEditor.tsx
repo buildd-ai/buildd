@@ -7,6 +7,7 @@ import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ScopeSelector } from '@/components/ScopeSelector';
 import { ModelPicker } from '@/components/ModelPicker';
+import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 
 const AVAILABLE_TOOLS = [
   'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob',
@@ -835,12 +836,12 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
               </div>
             </div>
 
-            {/* Allowed Tools (collapsed) */}
+            {/* Subagent Tools (collapsed) */}
             <details className="group">
               <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-text-primary">
-                Allowed Tools
+                {SUBAGENT_TOOLS_LABEL}
                 <span className="text-text-muted font-normal text-[12px]">
-                  {allowedTools.length === 0 ? 'All allowed' : `${allowedTools.length} restricted`}
+                  {subagentToolsSummary(allowedTools)}
                 </span>
               </summary>
               <div className="mt-3">
@@ -863,7 +864,7 @@ export function RoleEditor({ workspaceId, workspaceName, skill, delegateOptions,
                     );
                   })}
                 </div>
-                <p className="text-xs text-text-muted mt-1">Empty = all tools allowed.</p>
+                <p className="text-xs text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE}</p>
               </div>
             </details>
 

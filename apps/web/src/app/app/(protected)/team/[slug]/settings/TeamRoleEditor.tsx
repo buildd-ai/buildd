@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { Select } from '@/components/ui/Select';
 import { BackendSelect, type BackendValue } from '@/components/ui/BackendSelect';
 import { ModelPicker } from '@/components/ModelPicker';
+import { SUBAGENT_TOOLS_LABEL, SUBAGENT_TOOLS_NOTE, subagentToolsSummary } from '@/lib/role-tool-scope';
 
 type Scope = 'team' | 'workspace';
 
@@ -62,7 +63,7 @@ interface Props {
 /** Fields that can be individually overridden per workspace */
 type OverridableField = 'allowedTools' | 'content' | 'mcpServers';
 const OVERRIDABLE_FIELDS: { key: OverridableField; label: string }[] = [
-  { key: 'allowedTools', label: 'Allowed Tools' },
+  { key: 'allowedTools', label: SUBAGENT_TOOLS_LABEL },
   { key: 'content', label: 'Instructions' },
   { key: 'mcpServers', label: 'Connectors (MCP)' },
 ];
@@ -183,10 +184,10 @@ function WorkspaceOverrideEditor({
 
       {expanded && (
         <div className="p-4 space-y-5">
-          {/* Allowed Tools */}
+          {/* Subagent Tools */}
           <div>
             <div className="flex items-center gap-2 mb-1.5">
-              <label className="text-sm font-medium text-text-primary">Allowed Tools</label>
+              <label className="text-sm font-medium text-text-primary">{SUBAGENT_TOOLS_LABEL}</label>
               {overrideField.has('allowedTools') ? (
                 <>
                   <OverrideBadge />
@@ -234,7 +235,7 @@ function WorkspaceOverrideEditor({
             ) : (
               <div className="flex flex-wrap gap-1.5 opacity-50 pointer-events-none">
                 {teamDefault.allowedTools.length === 0 ? (
-                  <span className="text-xs text-text-muted">All tools allowed (inherited)</span>
+                  <span className="text-xs text-text-muted">Subagent defaults (inherited)</span>
                 ) : (
                   teamDefault.allowedTools.map(tool => (
                     <span key={tool} className="px-2 py-0.5 rounded text-[11px] font-mono border bg-text-primary text-white border-text-primary">
@@ -244,6 +245,7 @@ function WorkspaceOverrideEditor({
                 )}
               </div>
             )}
+            <p className="text-[11px] text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE}</p>
           </div>
 
           {/* Instructions */}
@@ -660,12 +662,12 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
               </div>
             )}
 
-            {/* Allowed Tools */}
+            {/* Subagent Tools */}
             <details className="group">
               <summary className="flex items-center gap-2 cursor-pointer text-sm font-medium text-text-primary">
-                Allowed Tools
+                {SUBAGENT_TOOLS_LABEL}
                 <span className="text-text-muted font-normal text-[12px]">
-                  {allowedTools.length === 0 ? 'All allowed' : `${allowedTools.length} restricted`}
+                  {subagentToolsSummary(allowedTools)}
                 </span>
               </summary>
               <div className="mt-3">
@@ -688,7 +690,7 @@ export function TeamRoleEditor({ role, overrides, workspaces: userWorkspaces, de
                     );
                   })}
                 </div>
-                <p className="text-xs text-text-muted mt-1">Individual workspaces can override tool access.</p>
+                <p className="text-xs text-text-muted mt-1">{SUBAGENT_TOOLS_NOTE} Individual workspaces can override it.</p>
               </div>
             </details>
 
