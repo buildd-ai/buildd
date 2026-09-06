@@ -244,7 +244,7 @@ export default async function HomePage({
     /** Freshness inputs — buildActionQueue refuses a merge CTA on stale state. */
     prLifecycleStatus: string | null;
     prOpenedAt: Date | null;
-    prLifecycleCheckedAt: Date | null;
+    prLifecycleVerifiedAt: Date | null;
   }[] = [];
 
   let resolvedEscalations: ResolvedEscalationItem[] = [];
@@ -936,7 +936,7 @@ export default async function HomePage({
               prLifecycleStatus: true, completedAt: true,
               // Freshness inputs for the action-queue invariant: how old the PR
               // is (which tier it falls in) and when its state was last verified.
-              createdAt: true, prLastCheckedAt: true,
+              createdAt: true, prLastVerifiedAt: true,
               // Where this PR points. Needed by resolvePolicy to tell a task PR
               // into a mission integration branch (no human gate — the gate is on
               // the mission PR) from a PR into trunk (gate applies).
@@ -1313,7 +1313,7 @@ export default async function HomePage({
                   // resolution is.
                   prLifecycleStatus: w.prLifecycleStatus ?? null,
                   prOpenedAt: w.completedAt ?? w.createdAt ?? null,
-                  prLifecycleCheckedAt: w.prLastCheckedAt ?? null,
+                  prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
                 };
               })
               .sort((a, b) => {
@@ -1427,7 +1427,7 @@ export default async function HomePage({
                       prUrl: true, prNumber: true, prLifecycleStatus: true,
                       // Freshness inputs — a blocker-derived merge card is still
                       // a claim that this PR is open right now.
-                      completedAt: true, createdAt: true, prLastCheckedAt: true,
+                      completedAt: true, createdAt: true, prLastVerifiedAt: true,
                     },
                     orderBy: desc(workers.createdAt),
                     limit: 1,
@@ -1494,7 +1494,7 @@ export default async function HomePage({
                   prNumber: w.prNumber,
                   prLifecycleStatus: (w.prLifecycleStatus as 'open' | 'merged' | 'closed' | 'unresolvable' | null) ?? null,
                   prOpenedAt: w.completedAt ?? w.createdAt ?? null,
-                  prLifecycleCheckedAt: w.prLastCheckedAt ?? null,
+                  prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
                   upstreamTaskId: upstream.id,
                   upstreamTaskTitle: upstream.title,
                   unblockCount: blockedTasks.length,

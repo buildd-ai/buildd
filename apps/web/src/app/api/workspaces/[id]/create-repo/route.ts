@@ -178,7 +178,9 @@ async function linkRepoToWorkspace(
   await db
     .update(workspaces)
     .set({
-      repo: repoData.html_url || `https://github.com/${repoData.full_name}`,
+      // Canonical `owner/name` — GitHub just handed it to us, so there is no
+      // reason to store a URL and make every consumer parse it back out.
+      repo: repoData.full_name,
       githubRepoId: upserted.id,
       updatedAt: new Date(),
     })

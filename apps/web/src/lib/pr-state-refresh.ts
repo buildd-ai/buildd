@@ -25,10 +25,10 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import {
   WORKSPACE_INSTALLATION_WITH,
-  pickWorkspaceInstallationId,
+  pickWorkspaceRepoIdentity,
   installationIdForRepo,
 } from '@/lib/workspace-installation';
-import { normalizeRepoFullName, resolvePrRepo } from '@/lib/repo-scope';
+import { resolvePrRepo } from '@/lib/repo-scope';
 
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -162,8 +162,10 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    const workspaceRepo = normalizeRepoFullName(ws?.repo);
-    const workspaceInstallationId = pickWorkspaceInstallationId(ws);
+    // Repo identity from the linked github_repos row, not the free-text column.
+    const wsIdentity = pickWorkspaceRepoIdentity(ws);
+    const workspaceRepo = wsIdentity.fullName;
+    const workspaceInstallationId = wsIdentity.installationId;
 
     for (let i = 0; i < wsWorkers.length; i++) {
       const worker = wsWorkers[i];
@@ -171,7 +173,7 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       // The PR's own repo first, the workspace only as a fallback — see
       // lib/repo-scope.ts. `workspaces.repo` holds a URL rather than a slug,
       // and the PR is often in a different repo than the workspace anyway.
-      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: ws?.repo });
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
       if (!repo) continue;
 
       const installationId =
@@ -192,8 +194,13 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
 
         const now = new Date();
         // The PR resolved, so whatever failure streak this row had is over.
+        // Reaching this line means the GitHub call above returned successfully
+        // (a throw would have skipped straight to the catch), so this is
+        // always a CONFIRMED state — prLastVerifiedAt advances alongside
+        // prLastCheckedAt, unlike the catch branch below.
         const update: Record<string, unknown> = {
           prLastCheckedAt: now,
+          prLastVerifiedAt: now,
           prCheckFailureCount: 0,
           updatedAt: now,
         };

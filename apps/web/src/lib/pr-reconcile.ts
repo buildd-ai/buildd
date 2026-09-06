@@ -43,10 +43,10 @@ import { and, isNull, isNotNull, eq, gt, or, notInArray, sql } from 'drizzle-orm
 import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
-  pickWorkspaceInstallationId,
+  pickWorkspaceRepoIdentity,
   installationIdForRepo,
 } from '@/lib/workspace-installation';
-import { normalizeRepoFullName, resolvePrRepo } from '@/lib/repo-scope';
+import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import {
   TIER_SLA_MS,
   HOT_MAX_AGE_MS,
@@ -88,7 +88,14 @@ export async function refreshWorkerMergeStateIfStale(
     if (pr.merged && pr.merged_at) {
       const now = new Date();
       await db.update(workers)
-        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, prCheckFailureCount: 0, updatedAt: now })
+        .set({
+          mergedAt: new Date(pr.merged_at),
+          prLifecycleStatus: 'merged',
+          prLastCheckedAt: now,
+          prLastVerifiedAt: now,
+          prCheckFailureCount: 0,
+          updatedAt: now,
+        })
         .where(eq(workers.id, worker.id));
       return true;
     }
@@ -218,12 +225,29 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
   };
   if (candidates.length === 0) return result;
 
-  /** Advance the check clock so the row rotates to the back of the queue. */
-  const recordCheck = async (id: string, extra: Record<string, unknown> = {}) => {
+  /**
+   * Advance the ATTEMPT clock so the row rotates to the back of the queue.
+   * Pass `verified: true` only when GitHub actually returned a PR state
+   * (merged / closed / confirmed-open) — that also advances the VERIFICATION
+   * clock (`prLastVerifiedAt`), the one lib/pr-freshness.ts reads to decide
+   * whether a row's lifecycle state is fresh. A failed check must NEVER pass
+   * `verified: true`: prLastCheckedAt saying "we looked" must not be mistaken
+   * for prLastVerifiedAt saying "we know" — that conflation is the exact bug
+   * this two-clock split exists to fix.
+   */
+  const recordCheck = async (
+    id: string,
+    extra: Record<string, unknown> = {},
+    opts: { verified?: boolean } = {},
+  ) => {
     const now = new Date();
     await db
       .update(workers)
-      .set({ prLastCheckedAt: now, ...extra })
+      .set({
+        prLastCheckedAt: now,
+        ...(opts.verified ? { prLastVerifiedAt: now } : {}),
+        ...extra,
+      })
       .where(eq(workers.id, id));
   };
 
@@ -299,8 +323,12 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    const workspaceRepo = normalizeRepoFullName(workspace?.repo);
-    const workspaceInstallationId = pickWorkspaceInstallationId(workspace);
+    // Workspace repo identity comes from the linked `github_repos` row, not the
+    // free-text column — see pickWorkspaceRepoIdentity. The text follows no
+    // rename, so a fallback built from it can be confidently wrong.
+    const wsIdentity = pickWorkspaceRepoIdentity(workspace);
+    const workspaceRepo = wsIdentity.fullName;
+    const workspaceInstallationId = wsIdentity.installationId;
 
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
@@ -310,7 +338,8 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       // was wrong three ways at once: the column holds a URL rather than a
       // slug, the PR often lives in a different repo, and coordination
       // workspaces have no repo while still owning real PRs.
-      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: workspace?.repo });
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
+      const repoSource = repoFullNameFromPrUrl(worker.prUrl) ? 'pr_url' : wsIdentity.source;
       if (!repo) {
         result.skipped++;
         await recordFailure(worker, 'No GitHub repo resolvable from the PR url or the workspace');
@@ -349,7 +378,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             prLifecycleStatus: 'merged',
             prCheckFailureCount: 0,
             updatedAt: new Date(),
-          });
+          }, { verified: true });
           result.stamped++;
           // Option A': the webhook was the only trigger for the mission PR, and
           // `workers.mergedAt` is documented as lossy. Healing the row without
@@ -403,19 +432,27 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             prLifecycleStatus: 'closed',
             prCheckFailureCount: 0,
             updatedAt: new Date(),
-          });
+          }, { verified: true });
           result.closed++;
         } else {
           // Still open — record the check and clear the failure streak. The PR
-          // resolved fine; it simply has not landed yet.
-          await recordCheck(worker.id, { prCheckFailureCount: 0 });
+          // resolved fine; it simply has not landed yet. GitHub gave a real
+          // answer, so this advances the verification clock too.
+          await recordCheck(worker.id, { prCheckFailureCount: 0 }, { verified: true });
           result.skipped++;
         }
       } catch (err) {
         // Network error, 404 (PR deleted / repo moved), rate-limit. Recorded as
         // a failure so a permanently unresolvable row costs one call per run
         // and then retires, instead of being retried until the end of time.
-        console.warn(`[pr-reconcile] worker ${worker.id} PR #${worker.prNumber}:`, err);
+        // Log where the repo came from. When a resolved repo still 404s, "the
+        // FK said this" and "a stale free-text column said this" are different
+        // bugs with different fixes, and the reason string is the only place
+        // that distinction survives.
+        console.warn(
+          `[pr-reconcile] worker ${worker.id} PR #${worker.prNumber} repo ${repo} (via ${repoSource}):`,
+          err,
+        );
         result.errors++;
         await recordFailure(worker, err instanceof Error ? err.message : String(err));
       }

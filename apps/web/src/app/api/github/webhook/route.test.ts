@@ -340,6 +340,14 @@ mock.module('@/lib/release-verification', () => ({
   verifyReleaseDeployment: mock(() => Promise.resolve()),
 }));
 
+// recordDirectProdMerge's own repo→workspace resolution and row-insert logic
+// are covered at the unit level in release-executor.test.ts; here we only
+// assert the webhook wires it up with the right args.
+const mockRecordDirectProdMerge = mock(() => Promise.resolve());
+mock.module('@/lib/release-executor', () => ({
+  recordDirectProdMerge: mockRecordDirectProdMerge,
+}));
+
 // On-demand review callbacks — asserted below, stubbed here.
 const mockDeliverPrReviewCallback = mock(() => Promise.resolve('fired' as const));
 mock.module('@/lib/pr-review-request', () => ({
@@ -461,6 +469,8 @@ function resetAll() {
   mockTryAutoMergeWorkerPr.mockReset();
   mockDispatchWorkflowRelease.mockReset();
   mockTriggerEvent.mockReset();
+  mockRecordDirectProdMerge.mockReset();
+  mockRecordDirectProdMerge.mockReturnValue(Promise.resolve());
 
   insertCalls = [];
   deleteCalls = [];
@@ -2010,6 +2020,60 @@ describe('POST /api/github/webhook', () => {
       const jobInserts = insertCalls.filter(c => c.table === schemaMock.knowledgeIngestJobs);
       expect(jobInserts.length).toBe(1);
       expect(jobInserts[0].values.sha).toBe('head-sha-81');
+    });
+
+    it('records a direct-prod-merge release for any merged PR, independent of worker ownership', async () => {
+      // No worker owns this PR — this is the release PR / hotfix shape:
+      // scripts/release.sh opens it via `gh`, and CI or a human merges it.
+      mockWorkersFindFirst.mockReturnValue(null);
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 90,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-90',
+          head: { ref: 'dev', sha: 'head-sha-90' },
+          base: { ref: 'main', sha: 'base-sha-90' },
+          html_url: 'https://github.com/test-org/test-repo/pull/90',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      expect(mockRecordDirectProdMerge).toHaveBeenCalledTimes(1);
+      expect(mockRecordDirectProdMerge.mock.calls[0]?.[0]).toMatchObject({
+        repoFullName: 'test-org/test-repo',
+        installationId: 5000,
+        baseRef: 'main',
+        headSha: 'merge-sha-90',
+        previousSha: 'base-sha-90',
+      });
+    });
+
+    it('does not record a direct-prod-merge release for a closed-unmerged PR', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 91,
+          merged: false,
+          draft: false,
+          head: { ref: 'dev', sha: 'head-sha-91' },
+          base: { ref: 'main', sha: 'base-sha-91' },
+          html_url: 'https://github.com/test-org/test-repo/pull/91',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      expect(mockRecordDirectProdMerge).not.toHaveBeenCalled();
     });
 
     it('calls tryAutoMergeWorkerPr regardless of drizzle/lockfile noise in diff', async () => {

@@ -2,7 +2,7 @@ import { db } from '@buildd/core/db';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
 import { tasks, workers, workspaces, githubRepos, releases } from '@buildd/core/db/schema';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig, ReleaseResult } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
@@ -228,7 +228,7 @@ async function mergeIntoProd(
 // inserted none (not a releasing archetype, no headSha, or the
 // (workspace_id, head_sha) unique index rejected a retry of the same merge).
 // The caller needs that distinction: only the inserter may promote the row.
-async function maybeCreateReleaseRow(params: {
+export async function maybeCreateReleaseRow(params: {
   workspaceId: string;
   workspace: { name?: string | null; releaseConfig?: WorkspaceReleaseConfig | null; gitConfig?: WorkspaceGitConfig | null } | null | undefined;
   headSha: string | undefined;
@@ -298,6 +298,65 @@ async function maybeCreateReleaseRow(params: {
   return releaseId;
 }
 
+// Record a release for a merge into a workspace's configured prod branch that
+// did NOT go through `executeRelease` at all.
+//
+// `scripts/release.sh` opens the release PR (dev → prodBranch) and the hotfix
+// PR (feature branch → prodBranch) with the `gh` CLI; either one is then
+// merged by CI/auto-merge or a human clicking the GitHub merge button, never
+// by `mergeIntoProd`. No buildd worker owns that PR — a worker's `branch` and
+// `prNumber` track a task's OWN feature branch into the release branch, not
+// the release/hotfix PR itself — so Path A (this file, driven by a worker
+// completing a task) never runs for these merges. That is the actual majority
+// of a `branch_merge` workspace's real deploys, and until now none of them
+// produced a `releases` row.
+//
+// Called from the GitHub webhook for every merged PR, independent of whether
+// a worker owns it. Idempotent via the same `(workspaceId, headSha)` unique
+// index `maybeCreateReleaseRow` already relies on: a worker-owned merge that
+// Path A already recorded (worker-branch or release-PR flow) produces the
+// identical headSha here and the insert is a no-op.
+export async function recordDirectProdMerge(params: {
+  repoFullName: string;
+  installationId: number;
+  baseRef: string;
+  headSha: string | undefined;
+  previousSha: string | undefined;
+}): Promise<void> {
+  const { repoFullName, installationId, baseRef, headSha, previousSha } = params;
+  if (!headSha) return;
+
+  const repoRows = await db
+    .select({ id: githubRepos.id })
+    .from(githubRepos)
+    .where(eq(githubRepos.fullName, repoFullName));
+  if (repoRows.length === 0) return;
+
+  const boundWorkspaces = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      releaseConfig: workspaces.releaseConfig,
+      gitConfig: workspaces.gitConfig,
+    })
+    .from(workspaces)
+    .where(inArray(workspaces.githubRepoId, repoRows.map((r) => r.id)));
+
+  for (const workspace of boundWorkspaces) {
+    const resolution = resolveReleaseStrategy(workspace.releaseConfig);
+    if (!resolution.ok || resolution.strategy.kind !== 'branch_merge') continue;
+    if (resolution.strategy.prodBranch !== baseRef) continue;
+
+    await maybeCreateReleaseRow({
+      workspaceId: workspace.id,
+      workspace,
+      headSha,
+      previousSha,
+      repo: { fullName: repoFullName, installation: { installationId } },
+    });
+  }
+}
+
 // Promote a just-deployed release to `healthy`.
 //
 // Why this is a dedicated UPDATE and not a call to verifyReleaseDeployment:
@@ -317,10 +376,16 @@ async function maybeCreateReleaseRow(params: {
 // deploying cron sweep, or the degrade watch already moved this row, this UPDATE
 // matches nothing and promotes nothing rather than resurrecting a terminal row.
 async function promoteReleaseToHealthy(releaseId: string, workspaceId: string): Promise<void> {
+  // `isNotNull(headSha)` is not defensive filler: every release this function
+  // promotes was inserted by `maybeCreateReleaseRow`, which already refuses a
+  // missing headSha — but the invariant belongs on the write that flips a row
+  // terminal, not on trust that every caller upstream got it right. A release
+  // with no head sha has no commit range, so attribution could never have run
+  // for it; letting it reach `healthy` anyway is the exact bug this guards.
   const [promoted] = await db
     .update(releases)
     .set({ state: 'healthy', healthyAt: new Date() })
-    .where(and(eq(releases.id, releaseId), eq(releases.state, 'deploying')))
+    .where(and(eq(releases.id, releaseId), eq(releases.state, 'deploying'), isNotNull(releases.headSha)))
     .returning({ id: releases.id });
 
   if (!promoted) return;

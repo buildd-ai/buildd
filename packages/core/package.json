@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.199.1",
+  "version": "0.200.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -66,6 +66,7 @@
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
     "./subject-anchor-observe": "./subject-anchor-observe.ts",
+    "./retrieval-clusters": "./retrieval-clusters.ts",
     "./prose-gate": "./prose-gate.ts",
     "./release-archetype": "./release-archetype.ts",
     "./release-attribution": "./release-attribution.ts",

@@ -43,6 +43,7 @@ mock.module('@buildd/core/db/schema', () => ({
     updatedAt: 'updatedAt',
     prLifecycleStatus: 'prLifecycleStatus',
     prLastCheckedAt: 'prLastCheckedAt',
+    prLastVerifiedAt: 'prLastVerifiedAt',
     workspaceId: 'workspaceId',
     id: 'id',
   },
@@ -139,7 +140,15 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
     expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'merged', prLastCheckedAt: expect.any(Date) }),
+      expect.objectContaining({
+        prLifecycleStatus: 'merged',
+        prLastCheckedAt: expect.any(Date),
+        // AC-4: this write only ever happens after a successful GitHub call
+        // (the catch branch below writes nothing at all), so it is always a
+        // confirmed answer — the verification clock advances alongside the
+        // attempt clock.
+        prLastVerifiedAt: expect.any(Date),
+      }),
     );
     expect(mockTriggerEvent).toHaveBeenCalledWith(
       expect.stringContaining('ws1'),
@@ -187,12 +196,16 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
     expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLifecycleStatus: 'closed', prLastCheckedAt: expect.any(Date) }),
+      expect.objectContaining({
+        prLifecycleStatus: 'closed',
+        prLastCheckedAt: expect.any(Date),
+        prLastVerifiedAt: expect.any(Date),
+      }),
     );
     expect(mockCheckDependsOnResolved).not.toHaveBeenCalled();
   });
 
-  it('stamps only prLastCheckedAt for open PRs (no lifecycle change)', async () => {
+  it('stamps prLastCheckedAt and prLastVerifiedAt for open PRs (no lifecycle change)', async () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 7, workspaceId: 'ws1', taskId: 'task1' },
     ]);
@@ -203,7 +216,7 @@ describe('refreshStaleWorkersForWorkspaces', () => {
     await refreshStaleWorkersForWorkspaces(['ws1']);
 
     expect(setMock).toHaveBeenCalledWith(
-      expect.objectContaining({ prLastCheckedAt: expect.any(Date) }),
+      expect.objectContaining({ prLastCheckedAt: expect.any(Date), prLastVerifiedAt: expect.any(Date) }),
     );
     expect(setMock).toHaveBeenCalledWith(
       expect.not.objectContaining({ prLifecycleStatus: 'merged' }),
@@ -629,6 +642,23 @@ describe('pr-state-refresh repo resolution', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ prLifecycleStatus: 'merged' }),
     );
+  });
+
+  it('takes the fallback repo from the linked row, not the stale text column', async () => {
+    // See the matching case in pr-reconcile.test.ts: the linked github_repos
+    // row follows a repo rename, the free-text column does not.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/old-name',
+      githubRepo: { fullName: 'owner/new-name', repoId: 12345, installation: { installationId: 123 } },
+    });
+    makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/new-name/pulls/42');
   });
 
   it('asks for prUrl in the candidate column set', async () => {

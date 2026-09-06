@@ -3,12 +3,14 @@ import { missions, tasks, workspaces, missionNotes, workers } from '@buildd/core
 import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
 import { findBlockingPr, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import {
   prepareSubjectFiling,
@@ -352,13 +354,7 @@ export async function runMission(
   // push commits to this branch so a single PR tracks the entire mission.
   let workingBranch = mission.workingBranch;
   if (!workingBranch && workspace?.repo) {
-    const slug = mission.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'mission';
-    const shortId = mission.id.slice(0, 8);
-    const candidate = `mission/${slug}-${shortId}`;
+    const candidate = generateMissionBranchName({ missionId: mission.id, title: mission.title });
     const [updated] = await db
       .update(missions)
       .set({ workingBranch: candidate, updatedAt: new Date() })
@@ -541,9 +537,9 @@ export async function runMission(
   const template = (mission.schedule as any)?.taskTemplate;
   const subjectObservation = await prepareSubject({
     workspaceId,
-    workspaceRepo: workspace?.repo
-      ?.replace(/^https?:\/\/github\.com\//, '')
-      .replace(/\.git$/, ''),
+    // One normalizer, not a partial inline copy: this one missed `git@`,
+    // `www.` and trailing slashes. See lib/repo-scope.ts.
+    workspaceRepo: normalizeRepoFullName(workspace?.repo) ?? undefined,
     gitConfig: workspace?.gitConfig,
     title: taskTitle,
     description: taskDescription ?? undefined,

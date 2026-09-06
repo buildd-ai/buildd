@@ -45,6 +45,13 @@ let insertedNotes: any[] = [];
 let recentCollapseNote: any = null;
 const mockMissionNotesFindFirst = mock(() => Promise.resolve(recentCollapseNote));
 
+const mockEnsureMissionIntegrationBranch = mock(() =>
+  Promise.resolve({ ok: true as const, branch: 'mission/existing-mission-obj-1', created: true })
+);
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+}));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -150,6 +157,8 @@ describe('PATCH /api/missions/[id]', () => {
     recentCollapseNote = null;
     mockMissionNotesFindFirst.mockReset();
     mockMissionNotesFindFirst.mockImplementation(() => Promise.resolve(recentCollapseNote));
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -752,6 +761,67 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(200);
     expect(updatedSetData.initiativeId).toBeNull();
   });
+
+  describe('branchStrategy', () => {
+    it('rejects an invalid branchStrategy value', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'trunk' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('branchStrategy');
+      expect(mockMissionsUpdate).not.toHaveBeenCalled();
+    });
+
+    it('branchStrategy=mission-branch sets integrationBranchEnabled and ensures the branch (opt-in transition)', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'mission-branch' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(true);
+      expect(mockEnsureMissionIntegrationBranch).toHaveBeenCalledWith('obj-1');
+    });
+
+    it('branchStrategy=direct sets integrationBranchEnabled to false and never calls ensure', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'direct' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(false);
+      expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    });
+
+    it('branchStrategy takes precedence over a raw integrationBranchEnabled in the same request', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'direct', integrationBranchEnabled: true }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(false);
+      expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    });
+
+    it('posts a feed note (never a silent success) when the remote ref cannot be created', async () => {
+      mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: false, reason: 'api_error', detail: 'boom' } as any);
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'mission-branch' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(true);
+      const branchNote = insertedNotes.find(n => n.title === 'Integration branch could not be created');
+      expect(branchNote).toBeDefined();
+      expect(branchNote.body).toContain('api_error');
+    });
+  });
 });
 
 describe('PATCH /api/missions/[id] — mission feed', () => {
@@ -766,6 +836,8 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     recentCollapseNote = null;
     mockMissionNotesFindFirst.mockReset();
     mockMissionNotesFindFirst.mockImplementation(() => Promise.resolve(recentCollapseNote));
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -828,6 +900,81 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     const note = insertedNotes.find((n) => n.title === 'Mission status changed');
     expect(note).toBeDefined();
     expect(note.body).toBe('active → paused');
+  });
+
+  it('records an override note when completed while criteria are failing', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
+    expect(note).toBeDefined();
+    expect(note.body).toContain('set to completed');
+    expect(note.body).toContain('fail');
+  });
+
+  it('records an override note when archived directly while criteria are unverified — skipping "completed" must not skip the audit', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'UNVERIFIED', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'archived' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
+    expect(note).toBeDefined();
+    expect(note.body).toContain('set to archived');
+    expect(note.body).toContain('UNVERIFIED');
+  });
+
+  it('does not re-audit archiving a mission that already completed cleanly', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'completed',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'archived' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(insertedNotes.some((n) => n.title === 'Goal criteria gate overridden')).toBe(false);
   });
 
   it('names each added goal criterion', async () => {
