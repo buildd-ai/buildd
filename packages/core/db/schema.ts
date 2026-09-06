@@ -1394,6 +1394,73 @@ export const artifacts = pgTable('artifacts', {
 }));
 
 // Mission notes — lightweight append-only feed for agent↔user communication
+/**
+ * Review feedback on a PR, captured for RETRIEVAL rather than for the activity
+ * feed.
+ *
+ * Why this exists separately from `mission_notes`, which already records a
+ * reviewer verdict: that row is a timeline entry. It is gated on the task having
+ * a mission (dropping the majority of PR-owning workers), it holds no file path,
+ * and it is not indexed for lookup. So the most valuable engineering context the
+ * system produces — "a reviewer already objected to exactly this, on exactly
+ * this file" — could not be surfaced to the next agent about to edit that file.
+ *
+ * The point is prevention. An objection retrieved BEFORE the code is written
+ * avoids a round trip; the same objection read after review has already cost it.
+ * That makes this the one corpus whose value does not depend on volume: a single
+ * "don't use db.transaction() with the neon-http driver" is useful the first
+ * time it is retrieved.
+ *
+ * Rows are facts about what a reviewer said. Nothing here is derived, scored, or
+ * summarised — a later ingest step indexes `body` into the knowledge store and
+ * that is where interpretation belongs.
+ */
+export const reviewFeedback = pgTable('review_feedback', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /**
+   * GitHub's own id for the review or comment. UNIQUE, because the webhook is
+   * lossy in both directions: it drops deliveries and it redelivers them. Dedupe
+   * has to key on the upstream identity, not on our insert time.
+   */
+  githubId: text('github_id').notNull(),
+  workspaceId: uuid('workspace_id').notNull(),
+  /** Nullable: a review can arrive for a PR whose worker row we cannot resolve. */
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  repoFullName: text('repo_full_name').notNull(),
+  prNumber: integer('pr_number').notNull(),
+  /** Head SHA the review was submitted against — the code actually being judged. */
+  headSha: text('head_sha'),
+  /**
+   * `review` is a top-level submission (carries a verdict, often no path);
+   * `inline_comment` is anchored to a file and line, which is what makes it
+   * retrievable by path.
+   */
+  kind: text('kind').notNull().$type<'review' | 'inline_comment'>(),
+  state: text('state').$type<'approved' | 'changes_requested' | 'commented'>(),
+  /** Repo-relative path this feedback is anchored to. Null for top-level reviews. */
+  path: text('path'),
+  line: integer('line'),
+  /**
+   * The diff hunk the comment was left on. Kept because an objection is often
+   * unintelligible without the code it points at, and the hunk is the only
+   * record of what that code looked like at the time.
+   */
+  diffHunk: text('diff_hunk'),
+  body: text('body').notNull(),
+  authorLogin: text('author_login'),
+  authorType: text('author_type').notNull().$type<'user' | 'bot'>(),
+  /** When GitHub recorded it, not when we did — the webhook can be hours late. */
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  githubIdUnique: uniqueIndex('review_feedback_github_id_unique').on(t.githubId),
+  // The retrieval path: "what has a reviewer said about this file before".
+  workspacePathIdx: index('review_feedback_workspace_path_idx').on(t.workspaceId, t.path),
+  prIdx: index('review_feedback_pr_idx').on(t.workspaceId, t.prNumber),
+  taskIdx: index('review_feedback_task_idx').on(t.taskId),
+}));
+
 export const missionNotes = pgTable('mission_notes', {
   id: uuid('id').primaryKey().defaultRandom(),
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),

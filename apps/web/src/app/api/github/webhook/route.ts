@@ -1,12 +1,19 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases } from '@buildd/core/db/schema';
+import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
+import {
+  reviewRowFromEvent,
+  commentRowFromEvent,
+  withOwner,
+  type ReviewFeedbackRow,
+  type PrOwner,
+} from '@/lib/review-feedback';
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
@@ -90,6 +97,10 @@ export async function POST(req: NextRequest) {
 
       case 'pull_request_review':
         await handlePullRequestReviewEvent(data);
+        break;
+
+      case 'pull_request_review_comment':
+        await handlePullRequestReviewCommentEvent(data);
         break;
 
       case 'workflow_run':
@@ -2125,6 +2136,88 @@ async function maybePostWorkTrackerIssueUpdate(
  * placement crux), and answering it by side effect here would be a silent
  * change to when things merge. So the default is a no-op on merging.
  */
+/**
+ * Persist one piece of review feedback for later retrieval.
+ *
+ * Deliberately separate from the `mission_notes` write below, which is a
+ * timeline entry and stays exactly as it was. This row exists so the next agent
+ * about to edit a file can be shown what a reviewer already said about it — see
+ * the `reviewFeedback` table comment.
+ *
+ * Two properties this has to hold:
+ *
+ *  - **Idempotent on GitHub's id.** The webhook both drops and redelivers
+ *    events, so `onConflictDoNothing` against the unique `github_id` is the
+ *    dedupe, not an insert-time check.
+ *  - **Never throws into the webhook.** A failure here must not cost us the
+ *    retry and merge handling that runs alongside it.
+ *
+ * Row construction lives in `@/lib/review-feedback` so it is testable without
+ * stubbing the database.
+ */
+async function captureReviewFeedback(
+  row: ReviewFeedbackRow | null,
+  owner: PrOwner,
+  pr: { repoFullName: string; prNumber: number },
+): Promise<void> {
+  if (!row) return;
+  if (!owner?.workspaceId) return;
+
+  try {
+    await db.insert(reviewFeedback).values({
+      ...withOwner(row, owner),
+      workspaceId: owner.workspaceId,
+      repoFullName: pr.repoFullName,
+      prNumber: pr.prNumber,
+    }).onConflictDoNothing();
+  } catch (err) {
+    console.warn('[webhook] review feedback capture failed (non-fatal):', err);
+  }
+}
+
+/** Resolve the worker that owns a PR, plus the workspace the row needs. */
+async function resolvePrOwner(repoFullName: string, prNumber: number) {
+  return db.query.workers.findFirst({
+    where: workerOwnsPr(repoFullName, prNumber),
+    columns: { id: true, taskId: true, workspaceId: true },
+    with: { task: { columns: { id: true, title: true, missionId: true } } },
+  });
+}
+
+/**
+ * Inline review comments — `pull_request_review_comment`.
+ *
+ * These are the highest-value feedback the system sees and were previously
+ * discarded entirely: unlike a top-level review they carry `path`, `line`, and
+ * `diff_hunk` from GitHub, which is exactly what makes an objection retrievable
+ * by the file it concerns.
+ */
+async function handlePullRequestReviewCommentEvent(event: any): Promise<void> {
+  const action = event?.action as string | undefined;
+  const comment = event?.comment;
+  const pr = event?.pull_request;
+  const repository = event?.repository;
+
+  // 'edited' and 'deleted' mutate a comment already captured. Re-capturing an
+  // edit would need a different conflict policy than dedupe, so it is out of
+  // scope rather than silently half-handled.
+  if (action !== 'created') return;
+  if (!comment || !pr?.number || !repository?.full_name) return;
+
+  const owner = await resolvePrOwner(repository.full_name, pr.number);
+  if (!owner?.workspaceId) return;
+
+  await captureReviewFeedback(
+    commentRowFromEvent(comment),
+    owner,
+    { repoFullName: repository.full_name, prNumber: pr.number },
+  );
+
+  console.log(
+    `[webhook] review comment captured: PR #${pr.number} ${comment.path ?? '(no path)'}`,
+  );
+}
+
 async function handlePullRequestReviewEvent(event: any): Promise<void> {
   const action = event?.action as string | undefined;
   const review = event?.review;
@@ -2144,20 +2237,31 @@ async function handlePullRequestReviewEvent(event: any): Promise<void> {
     state === 'approved' ? 'reviewer_approved' as const
     : state === 'changes_requested' ? 'reviewer_request_changes' as const
     : null;
+
+  const worker = await resolvePrOwner(repository.full_name, pr.number);
+
+  // Capture runs BEFORE both gates below, and that ordering is the point.
+  //
+  // The verdict gate is right for the timeline — a drive-by `commented` review
+  // is not a decision — but a reviewer explaining a problem without formally
+  // requesting changes is exactly the engineering content we want retrievable.
+  // The mission gate is right for the timeline too, and was silently discarding
+  // review text for the majority of PR-owning workers (measured at well over
+  // half). Retrieval has no reason to care about either distinction.
+  await captureReviewFeedback(
+    reviewRowFromEvent(review),
+    worker,
+    { repoFullName: repository.full_name, prNumber: pr.number },
+  );
+
   if (!noteType) return;
-
-  const worker = await db.query.workers.findFirst({
-    where: workerOwnsPr(repository.full_name, pr.number),
-    columns: { id: true, taskId: true },
-    with: { task: { columns: { id: true, title: true, missionId: true } } },
-  });
-
-  const missionId = worker?.task?.missionId;
-  if (!missionId) return;
 
   const reviewer = typeof review.user?.login === 'string' ? review.user.login : 'a reviewer';
   const verdict = noteType === 'reviewer_approved' ? 'approved' : 'requested changes';
   const body = String(review.body ?? '').trim();
+
+  const missionId = worker?.task?.missionId;
+  if (!missionId) return;
 
   await db.insert(missionNotes).values({
     missionId,
