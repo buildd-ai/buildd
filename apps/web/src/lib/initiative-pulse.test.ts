@@ -175,30 +175,10 @@ describe('derivePendingCounts', () => {
   it('counts a shipped mission only when its activity is inside 7 days', () => {
     const out = derivePendingCounts(
       [
-        mission({ shipped: true, lastActivityAt: new Date(NOW - 2 * 86_400_000).toISOString() }),
-        mission({ shipped: true, lastActivityAt: new Date(NOW - 9 * 86_400_000).toISOString() }),
-        mission({ shipped: false, lastActivityAt: new Date(NOW).toISOString() }),
+        mission({ health: 'shipped', lastActivityAt: new Date(NOW - 2 * 86_400_000).toISOString() }),
+        mission({ health: 'shipped', lastActivityAt: new Date(NOW - 9 * 86_400_000).toISOString() }),
+        mission({ health: 'idle', lastActivityAt: new Date(NOW).toISOString() }),
       ],
-      { now: NOW },
-    );
-
-    expect(out.get('init-1')!.shippedThisWeek).toBe(1);
-  });
-
-  it('counts by ship state, not by the mission.status row transition — a completed mission with nothing in a healthy release does not count', () => {
-    // The bug this fixes: `health: 'shipped'` used to mean `mission.status ===
-    // 'completed'`, so a mission that finished but never shipped counted here.
-    const out = derivePendingCounts(
-      [mission({ shipped: false, health: 'shipped', lastActivityAt: new Date(NOW).toISOString() })],
-      { now: NOW },
-    );
-
-    expect(out.get('init-1')!.shippedThisWeek).toBe(0);
-  });
-
-  it('falls back to the legacy health field for a caller that has not migrated to `shipped` yet', () => {
-    const out = derivePendingCounts(
-      [mission({ health: 'shipped', lastActivityAt: new Date(NOW - 2 * 86_400_000).toISOString() })],
       { now: NOW },
     );
 

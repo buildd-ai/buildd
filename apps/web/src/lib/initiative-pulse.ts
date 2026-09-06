@@ -185,19 +185,7 @@ export interface PendingCounts {
 export interface PulseMission {
   initiativeId: string | null;
   isHeld?: boolean | null;
-  /**
-   * Whether this mission's work has landed in a `healthy` release —
-   * `mission-ship-state.ts` / `mission-production-status.ts` — and feeds
-   * `shippedThisWeek`. Preferred over `health` when both are supplied.
-   */
-  shipped?: boolean;
-  /**
-   * @deprecated Row-transition proxy (`deriveMissionHealth`'s `'shipped'` means
-   * `mission.status === 'completed'`, not production). Kept only so a caller
-   * that has not migrated to `shipped` yet keeps its previous — wrong —
-   * behaviour rather than silently losing the count. New callers should
-   * compute `shipped` instead of setting this.
-   */
+  /** Health as derived by `deriveMissionHealth`; 'shipped' feeds shippedThisWeek. */
   health?: string | null;
   lastActivityAt?: string | Date | null;
   /** Pre-computed by the caller (it already resolves dependsOn across missions). */
@@ -263,8 +251,7 @@ export function derivePendingCounts(
     counts.blocked += m.blockedPRCount ?? 0;
     if (m.isHeld) counts.held++;
 
-    const isShipped = m.shipped ?? m.health === 'shipped';
-    if (isShipped && m.lastActivityAt) {
+    if (m.health === 'shipped' && m.lastActivityAt) {
       const age = now - new Date(m.lastActivityAt as any).getTime();
       if (age <= SEVEN_DAYS_MS) counts.shippedThisWeek++;
     }

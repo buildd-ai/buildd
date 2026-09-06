@@ -16,7 +16,6 @@ import {
   type VerdictRollup,
   type BlockingTask,
 } from '@/lib/initiative-pulse';
-import { loadShippedMissionIds } from '@/lib/mission-ship-state';
 import {
   partitionInitiativeZones,
   VERDICT_LABEL,
@@ -89,23 +88,19 @@ export default async function InitiativesListPage() {
     }
   }
 
-  // Ship state, not the mission.status row transition (docs/design/mission-delivery-arc.md,
-  // "The missing dimension: ship state"): `shippedThisWeek` must count missions
-  // whose work landed in a healthy release, not missions whose row merely closed.
-  // One batched query for every mission on the page, not one per mission.
-  const allMissionIds = initiatives.flatMap((initiative) => initiative.missions.map((m) => m.id));
-  const shippedMissionIds = await loadShippedMissionIds(allMissionIds);
-
   const pulses: InitiativePulse[] = initiatives.map((initiative) => {
     const rollup = rollupByInitiative.get(initiative.id) ?? emptyVerdictRollup(initiative.status);
     const effortDays = effortByInitiative.get(initiative.id) ?? zeroEffortWindow();
 
+    // A mission reads as shipped exactly when its status is 'completed' — the
+    // first rule of `deriveMissionHealth` — so the counts agree with the Missions
+    // tab without re-deriving full health here.
     const counts =
       derivePendingCounts(
         initiative.missions.map((mission) => ({
           initiativeId: initiative.id,
           isHeld: mission.isHeld,
-          shipped: shippedMissionIds.has(mission.id),
+          health: mission.status === 'completed' ? 'shipped' : mission.status,
           lastActivityAt: mission.updatedAt,
           blockedPRCount: countBlockedByPR(mission.tasks ?? [], taskIndex),
           tasks: mission.tasks ?? [],
