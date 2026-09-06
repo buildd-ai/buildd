@@ -1947,14 +1947,13 @@ describe('PATCH /api/workers/[id]', () => {
   });
 
   describe('output requirement validation ordering', () => {
-    it('allows completion with warning when commits exist but no PR (auto mode)', async () => {
-      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
-      mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
-          where: mock(() => ({
-            returning: mock(() => [updatedWorker]),
-          })),
-        })),
+    it('refuses completion when commits exist but no PR or artifact (auto mode)', async () => {
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
       });
 
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
@@ -1972,6 +1971,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
       mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
 
       const req = createMockRequest({
         method: 'PATCH',
@@ -1980,10 +1980,117 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const res = await PATCH(req, { params: mockParams });
 
-      // auto mode allows completion with a warning instead of blocking
-      expect(res.status).toBe(200);
+      // A worker that committed code and produced neither a PR nor an artifact
+      // must not be allowed to report completion — the commit would be stranded
+      // on the branch while the record asserts the work landed.
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
       const data = await res.json();
-      expect(data.outputWarning).toContain('no tracked PR or artifact');
+      expect(data.error).toContain('3 commit(s)');
+      expect(data.hint).toBe('create_pr');
+    });
+
+    it('completes normally when there are zero commits and no PR (auto mode)', async () => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      // A research/recon task that legitimately produced no code and no PR
+      // completes exactly as it did before this change.
+      expect(res.status).toBe(200);
+    });
+
+    it('completes normally when commits belong to a pre-existing PR opened by an earlier worker on the same branch (auto mode)', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-2', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      // This worker row (a retry continuation) never called create_pr itself —
+      // its own prUrl is null — but the branch it pushed to already has an open
+      // PR opened by the earlier attempt's worker row.
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-2',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'task-1',
+          branch: 'buildd/retry-branch',
+          commitCount: 1,
+          prUrl: null,
+          prNumber: null,
+          pendingInstructions: null,
+        })
+        .mockResolvedValueOnce({
+          id: 'worker-2',
+          branch: 'buildd/retry-branch',
+          prUrl: 'https://github.com/org/repo/pull/77',
+          prNumber: 77,
+        });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockResolvedValue([
+        { html_url: 'https://github.com/org/repo/pull/77', number: 77, state: 'open' },
+      ]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.prNumber).toBe(77);
     });
 
     it('returns 400 without updating task when pr_required and no PR', async () => {
@@ -2092,16 +2199,7 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedTaskSet.result.prNumber).toBe(42);
     });
 
-    it('completes with warning when no PR found on GitHub either (auto mode)', async () => {
-      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
-      mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
-          where: mock(() => ({
-            returning: mock(() => [updatedWorker]),
-          })),
-        })),
-      });
-
+    it('refuses completion when no PR found on GitHub either (auto mode)', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue(baseWorker);
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
@@ -2120,22 +2218,12 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const res = await PATCH(req, { params: mockParams });
 
-      // auto mode allows completion with warning
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       const data = await res.json();
-      expect(data.outputWarning).toContain('no tracked PR or artifact');
+      expect(data.hint).toBe('create_pr');
     });
 
-    it('completes with warning when GitHub API fails (auto mode)', async () => {
-      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
-      mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
-          where: mock(() => ({
-            returning: mock(() => [updatedWorker]),
-          })),
-        })),
-      });
-
+    it('refuses completion when GitHub API fails (auto mode)', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue(baseWorker);
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
@@ -2154,21 +2242,12 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const res = await PATCH(req, { params: mockParams });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       const data = await res.json();
-      expect(data.outputWarning).toContain('no tracked PR or artifact');
+      expect(data.hint).toBe('create_pr');
     });
 
-    it('completes with warning when worker has no branch (auto mode)', async () => {
-      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
-      mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
-          where: mock(() => ({
-            returning: mock(() => [updatedWorker]),
-          })),
-        })),
-      });
-
+    it('refuses completion when worker has no branch (auto mode)', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker, branch: null });
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
@@ -2180,20 +2259,11 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const res = await PATCH(req, { params: mockParams });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       expect(mockGithubApi).not.toHaveBeenCalled();
     });
 
-    it('completes with warning when workspace has no GitHub repo (auto mode)', async () => {
-      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
-      mockWorkersUpdate.mockReturnValue({
-        set: mock(() => ({
-          where: mock(() => ({
-            returning: mock(() => [updatedWorker]),
-          })),
-        })),
-      });
-
+    it('refuses completion when workspace has no GitHub repo (auto mode)', async () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       mockWorkersFindFirst.mockResolvedValue(baseWorker);
       mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
@@ -2206,7 +2276,7 @@ describe('PATCH /api/workers/[id]', () => {
       });
       const res = await PATCH(req, { params: mockParams });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(400);
       expect(mockGithubApi).not.toHaveBeenCalled();
     });
 

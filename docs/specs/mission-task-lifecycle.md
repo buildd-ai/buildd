@@ -47,6 +47,14 @@ an enum) to allow extension without migrations.
   `idle`) MUST NOT be reset to `pending` while that worker is alive.
 - `outputRequirement = 'pr_required'` MUST block `complete_task` unless
   `workers.prUrl` is set.
+- `outputRequirement = 'auto'` (the default) MUST block `complete_task` when the
+  worker has committed at least one commit and has neither a tracked/detected PR
+  nor a deliverable artifact — a commit with no PR and no artifact is a stranded
+  change that a bare "completed" status would misrepresent as landed. A task
+  with zero commits (e.g. research/recon) is unaffected. GitHub auto-detection
+  by branch name (not worker id) means a branch whose PR was opened by an
+  earlier worker row — e.g. a CI/conflict retry continuing on the same branch —
+  still satisfies the gate.
 - A task transitions to `failed` permanently after `MAX_WORKER_RETRIES = 3`
   failed workers with no deliverables.
 - A task with `roleSlug = null` is claimable by any runner with access to the
@@ -64,6 +72,11 @@ an enum) to allow extension without migrations.
 - AC-3: GIVEN `outputRequirement = 'pr_required'` and `prUrl` is null WHEN
   `complete_task` is called THEN the server returns an error — the task is NOT
   completed.
+- AC-3a: GIVEN `outputRequirement = 'auto'`, `commitCount > 0`, no PR detected
+  (worker-reported or via GitHub branch lookup), and no deliverable artifact
+  WHEN `complete_task` is called THEN the server returns a 400 with
+  `hint: 'create_pr'` — the task is NOT completed. GIVEN the same worker has
+  zero commits, completion succeeds unchanged.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`

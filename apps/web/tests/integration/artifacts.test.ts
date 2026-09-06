@@ -202,19 +202,17 @@ describe('PR-or-Artifact Enforcement', () => {
     cleanup.dispose();
   });
 
-  test('completing with commits but no PR or artifact succeeds with warning (auto mode)', async () => {
-    const updated = await api(`/api/workers/${workerId}`, {
+  test('completing with commits but no PR or artifact is refused (auto mode)', async () => {
+    await expect(api(`/api/workers/${workerId}`, {
       method: 'PATCH',
       body: JSON.stringify({
         status: 'completed',
-        summary: 'Done (no PR or artifact, but auto mode allows it)',
+        summary: 'Done (no PR or artifact)',
       }),
-    });
-    expect(updated.status).toBe('completed');
-    // auto mode warns but does not block
-    if (updated.outputWarning) {
-      expect(updated.outputWarning).toContain('commit');
-    }
+    })).rejects.toThrow(/400/);
+
+    const worker = await api(`/api/workers/${workerId}`);
+    expect(worker.status).not.toBe('completed');
   }, TIMEOUT);
 });
 
