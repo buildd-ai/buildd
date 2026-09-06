@@ -424,6 +424,7 @@ brutalist UI.
 | `knowledge-store.md` | Hybrid retrieval design | Implemented |
 | `design/workspace-knowledge-management.md` | Per-PR ingestion, code graph, consolidation | Draft |
 | `design/reviewer-evidence-and-verification.md` | Reviewer patch evidence, filters, verification | Partly shipped |
+| `design/cross-workspace-retrieval.md` | Team-scoped docs retrieval across workspaces | Proposed |
 | `design/mission-delivery-arc.md` | Mission integration branch (Option A′) | Implemented |
 | `testing.md`, `testing-strategy.md` | TDD, test layers, fixtures | Implemented |
 | `plans/archive/remove-objectives.md` | Objectives→Mission port | Shipped/historical |
