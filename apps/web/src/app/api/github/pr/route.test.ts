@@ -1900,6 +1900,77 @@ describe('PUT /api/github/pr', () => {
       expect(data.alreadyMerged).toBe(true);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
+
+    it('merges a task PR based on a mission integration branch under auto-threshold, bypassing workspace agent-review tier', async () => {
+      // Under Option A′, a task PR whose base is the mission's integration branch
+      // should run auto-threshold (the tier applies to the mission PR into trunk,
+      // not to task PRs that feed it). This requires the mission query to select
+      // workingBranch and integrationBranchEnabled so resolvePolicy can tell
+      // whether the PR is based on an integration branch.
+      //
+      // The buggy route selects only mergePolicy and requiresReview, missing the
+      // two fields that isMissionIntegrationBase needs. This test mimics what
+      // the database returns for those exact columns: only those two fields present.
+      workerOk();
+      const missionId = 'mission-123';
+      const integrationBranch = 'mission/integration-0a1b2c3d';
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: { ...WORKSPACE_OK, gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } } },
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        requiresReview: false,
+        missionId,
+      });
+      // The mission has integrationBranchEnabled: true with the matching workingBranch.
+      // With the fix, the route query now selects these fields, so isMissionIntegrationBase
+      // can properly recognize that the PR base matches the mission's integration branch.
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: null,
+        requiresReview: false,
+        workingBranch: integrationBranch,
+        integrationBranchEnabled: true,
+      });
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({
+            check_runs: [
+              { name: 'typecheck', status: 'completed', conclusion: 'success' },
+              { name: 'build', status: 'completed', conclusion: 'success' },
+              { name: 'test', status: 'completed', conclusion: 'success' },
+            ],
+          });
+        }
+        if (/\/files/.test(path)) {
+          return Promise.resolve([
+            { filename: 'apps/web/src/lib/foo.ts', additions: 10, deletions: 2, status: 'modified' },
+          ]);
+        }
+        return Promise.resolve({
+          number: 42,
+          head: { sha: 'sha-42' },
+          base: { ref: integrationBranch },
+          mergeable_state: 'clean',
+        });
+      });
+
+      const res = await put();
+
+      // With the bug, this FAILS with 403 agent-review because resolvePolicy cannot
+      // tell that the PR is based on the mission's integration branch (the needed fields
+      // are missing from the mission object). The PR is incorrectly gated as if it were
+      // going to trunk. This test SHOULD PASS after the fix is applied.
+      //
+      // After the fix, this will merge successfully (status 200) because the mission
+      // query will include workingBranch and integrationBranchEnabled, so resolvePolicy
+      // can correctly identify that the base is the integration branch and drop the tier
+      // to auto-threshold for task PRs.
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('merges PR successfully and stamps worker mergedAt', async () => {

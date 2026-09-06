@@ -40,7 +40,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
@@ -3020,10 +3020,7 @@ async function handleReviewerOutcomeIfNeeded(
   const missionForPolicy = missionId
     ? await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        // Deliberately not `requiresReview`: this path has never resolved
-        // mission-level requiresReview, and Option A′ is not the change that
-        // should start. Only the two fields the base-ref rule needs.
-        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
+        columns: RESOLVE_POLICY_MISSION_COLUMNS,
       })
     : null;
 

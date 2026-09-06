@@ -30,6 +30,19 @@ export const DEFAULT_MERGE_POLICY: MergePolicy = {
 };
 
 /**
+ * Standard column set for missions when passed to resolvePolicy.
+ * Every caller of resolvePolicy must use this to ensure the predicate has
+ * all fields it needs: mergePolicy and requiresReview for the precedence chain,
+ * workingBranch and integrationBranchEnabled for isMissionIntegrationBase.
+ */
+export const RESOLVE_POLICY_MISSION_COLUMNS = {
+  mergePolicy: true,
+  requiresReview: true,
+  workingBranch: true,
+  integrationBranchEnabled: true,
+} as const;
+
+/**
  * Parse a stored MergePolicy value on the read path — fail soft.
  * Malformed policy logs a warning and returns the default; never throws.
  */
