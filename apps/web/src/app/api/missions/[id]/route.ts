@@ -122,6 +122,9 @@ export async function GET(
       (task.workers || []).map((w: any) => ({
         id: w.id as string,
         prNumber: (w.prNumber ?? null) as number | null,
+        // Carries the repo the PR is actually in — the mission's tasks can span
+        // repos, so the workspace repo is not a safe substitute.
+        prUrl: (w.prUrl ?? null) as string | null,
         workspaceId: mission.workspaceId as string,
         taskId: task.id as string,
         prLifecycleStatus: (w.prLifecycleStatus ?? null) as string | null,

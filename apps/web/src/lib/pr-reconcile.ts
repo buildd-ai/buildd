@@ -44,7 +44,9 @@ import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceInstallationId,
+  installationIdForRepo,
 } from '@/lib/workspace-installation';
+import { normalizeRepoFullName, resolvePrRepo } from '@/lib/repo-scope';
 import {
   TIER_SLA_MS,
   HOT_MAX_AGE_MS,
@@ -74,9 +76,8 @@ export async function refreshWorkerMergeStateIfStale(
 ): Promise<boolean> {
   if (worker.mergedAt) return false;
 
-  const match = worker.prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\//);
-  if (!match) return false;
-  const repo = match[1];
+  const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: null });
+  if (!repo) return false;
 
   try {
     const pr = await githubApi(
@@ -191,6 +192,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     columns: {
       id: true,
       prNumber: true,
+      prUrl: true,
       workspaceId: true,
       taskId: true,
       completedAt: true,
@@ -256,6 +258,22 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     }
   };
 
+  /**
+   * Repo → installation, memoized for the run. Repos repeat heavily inside a
+   * batch (a workspace's PRs, an org's sibling repos), and this is a DB round
+   * trip per miss.
+   */
+  const installationByRepo = new Map<string, number | null>();
+  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
+    if (!installationByRepo.has(repo)) {
+      installationByRepo.set(
+        repo,
+        await installationIdForRepo(repo).catch(() => null),
+      );
+    }
+    return installationByRepo.get(repo) ?? null;
+  };
+
   // Group by workspace so we share one installation token per workspace
   const byWorkspace = new Map<string, Candidate[]>();
   for (const w of candidates) {
@@ -281,28 +299,40 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    const installationId = pickWorkspaceInstallationId(workspace);
-
-    if (!workspace?.repo || !installationId) {
-      // Unreconcilable, and NOT transient: without a repo + installation no
-      // GitHub call is possible, and nothing about this row will change that.
-      // The old code recorded a bare check here, which made the row look
-      // healthy and hid the problem forever. Count it as a failure instead so
-      // the row eventually retires to `unresolvable` and shows up on Health.
-      const reason = !workspace?.repo
-        ? 'Workspace has no linked GitHub repo'
-        : 'Workspace has no usable GitHub App installation';
-      for (const worker of wsWorkers) {
-        result.skipped++;
-        await recordFailure(worker, reason);
-      }
-      continue;
-    }
-
-    const { repo } = workspace;
+    const workspaceRepo = normalizeRepoFullName(workspace?.repo);
+    const workspaceInstallationId = pickWorkspaceInstallationId(workspace);
 
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
+
+      // The PR's OWN repo, from its prUrl, with the workspace only as a
+      // fallback — see lib/repo-scope.ts. Reading the repo off the workspace
+      // was wrong three ways at once: the column holds a URL rather than a
+      // slug, the PR often lives in a different repo, and coordination
+      // workspaces have no repo while still owning real PRs.
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: workspace?.repo });
+      if (!repo) {
+        result.skipped++;
+        await recordFailure(worker, 'No GitHub repo resolvable from the PR url or the workspace');
+        continue;
+      }
+
+      // The workspace pointer only answers for the workspace's own repo; for
+      // anything else the covering installation has to be looked up by repo.
+      const installationId =
+        (repo === workspaceRepo ? workspaceInstallationId : null)
+        ?? await resolveInstallationCached(repo)
+        ?? workspaceInstallationId;
+
+      if (!installationId) {
+        // Unreconcilable, and NOT transient. The old code recorded a bare
+        // check here, which made the row look healthy and hid the problem
+        // forever. Count it as a failure so the row eventually retires to
+        // `unresolvable` and shows up on Health.
+        result.skipped++;
+        await recordFailure(worker, `No usable GitHub App installation for ${repo}`);
+        continue;
+      }
 
       if (callIndex > 0) await new Promise<void>(r => setTimeout(r, RATE_LIMIT_MS));
       callIndex++;
