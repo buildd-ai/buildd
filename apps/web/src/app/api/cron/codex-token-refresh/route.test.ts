@@ -83,8 +83,7 @@ const originalEnv = { ...process.env };
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe('GET /api/cron/codex-token-refresh', () => {
-  beforeEach(() => {
+describe('GET /api/cron/codex-token-refresh', () => {  beforeEach(() => {
     // Reset mocks
     mockSecretsFindMany.mockReset();
     mockTasksFindFirst.mockReset();
@@ -136,9 +135,14 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(res.status).toBe(500);
   });
 
-  it('accepts Vercel cron header without CRON_SECRET check', async () => {
+  it('rejects a platform cron header used in place of the secret', async () => {
+    // Platform-native cron does not fire in this project (cron-manifest.json is
+    // explicit; vercel.json declares no crons), so no legitimate caller ever
+    // sends this header. This route refreshes credentials, which is precisely
+    // what must not be reachable without the secret. CRON_SECRET is the single
+    // accepted credential.
     const res = await GET(makeRequest(undefined, true));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
 
   // ── Nudge mode (default) ──────────────────────────────────────────────────

@@ -13,7 +13,7 @@
 //   3. Deletes the expired lease row so the alert fires only once per expiry and a runner that
 //      comes back online can re-acquire the credential normally.
 //
-// Auth: Bearer CRON_SECRET or x-vercel-cron: 1 (Vercel native cron).
+// Auth: Bearer CRON_SECRET. The only accepted credential.
 //
 // Two triggers, both in cron-manifest.json (see lib/cron-due-queue.ts):
 //   - `?gate=due` every 5 minutes — reads the Redis due-queue and returns
@@ -38,16 +38,13 @@ import { LEASE_DUE_QUEUE } from '@/lib/lease-due-queue';
 export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
-  const isVercelCron = req.headers.get('x-vercel-cron') === '1';
-  if (!isVercelCron) {
-    const cronSecret = process.env.CRON_SECRET;
-    if (!cronSecret) {
-      return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-    }
-    const token = req.headers.get('authorization')?.replace('Bearer ', '');
-    if (token !== cronSecret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
+  }
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  if (token !== cronSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const gate = await gateOnDueQueue(LEASE_DUE_QUEUE, req.nextUrl.searchParams);

@@ -118,10 +118,15 @@ describe('GET /api/cron/lease-expiry-guard — auth', () => {
     expect(res.status).toBe(401);
   });
 
-  it('accepts x-vercel-cron: 1 without Bearer token', async () => {
+  it('rejects a platform cron header used in place of the secret', async () => {
+    // This route used to treat `x-vercel-cron: 1` as proof of authorization.
+    // Platform-native cron does not fire in this project at all (see
+    // cron-manifest.json; vercel.json declares no crons), so no legitimate
+    // caller ever sends that header — accepting it only widened the auth
+    // surface. CRON_SECRET is the single accepted credential.
     mockLeaseFindMany.mockImplementation(() => []);
     const res = await GET(makeRequest(undefined, true));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
 
   it('accepts valid CRON_SECRET', async () => {
