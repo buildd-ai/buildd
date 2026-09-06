@@ -12,6 +12,7 @@
  */
 
 import { KNOWN_ERROR_SLUGS, normalizeErrorSignature } from './subject-anchor-extractor';
+import { CORPUS_AUTHORITY } from './knowledge-store/recency-authority';
 import type { Corpus, QueryMode, QueryResult } from './knowledge-store/types';
 
 // ── Vocabulary ────────────────────────────────────────────────────────────────
@@ -33,36 +34,33 @@ import type { Corpus, QueryMode, QueryResult } from './knowledge-store/types';
  * involved, so restating it would duplicate a column.
  *
  * A value ending in `_match` is misnamed — "match" asserts the result was
- * correct, which is exactly the judgment the code is not entitled to make. The
- * mechanical truth is only ever "a query keyed on X returned this at rank N".
+ * correct, which is exactly the judgment the code is not entitled to make.
  *
- * `step_query_empty` and `step_skipped_no_keys` are deliberately distinct: a
- * query that came back empty and a query that was never issued are different
- * facts about the recipe, and collapsing them makes the fallback rate
- * unreadable. Neither is a `_query_hit` with `rank: 0` — a "hit" that did not
- * happen would break the rule above from the inside.
+ * The four step-level values are mutually exclusive and exhaustive: every step
+ * of every assembly emits exactly one item row, or one row per hit. A step with
+ * NO row would be indistinguishable from a recipe that has no such step.
  *
- * Reserved but deliberately NOT members of this union, so that no cohort query
- * can be written over a value that cannot occur:
+ * Reserved but deliberately NOT members of this union, so no cohort query can
+ * be written over a value that cannot occur:
  *   `failing_test_query_hit`  needs CI check names (normalizeFailingCheckNames)
- *   `stack_symbol_query_hit`  needs a runtime-exception subject, which the
- *                             scanner catalog cannot produce — see SCOPE on
- *                             TOOL_INFRA_ERROR_V1
+ *   `stack_symbol_query_hit`  needs a subject the scanner cannot produce — see
+ *                             SCOPE on TOOL_INFRA_ERROR_V1
  *   `spec_symbol_query_hit`   needs the docs-corpus recipe
- *   `memory_semantic_query_hit` needs a recipe whose memory step is keyed on
- *                             prose; tool-infra-error-v1 keys memory on the
- *                             signature, and prose fan-out items are
- *                             `fallback_semantic_search`
+ *   `memory_semantic_query_hit` needs a recipe keying memory on prose
  * Add the member in the same commit that emits it, not before.
  */
 export type RetrievalReason =
+  // Item-level: a query keyed on X returned this at rank N.
   | 'error_signature_query_hit'
   | 'touched_file_query_hit'
   | 'pr_path_query_hit'
+  | 'graph_expansion_hit'
   | 'fallback_semantic_search'
-  | 'memory_skipped_sensitive'
+  // Step-level: what the step did instead of returning a hit.
+  | 'step_query_empty'
   | 'step_skipped_no_keys'
-  | 'step_query_empty';
+  | 'step_skipped_priors_strong'
+  | 'memory_skipped_sensitive';
 
 /**
  * How the search key fed to a step was produced. Separate from the reason so
@@ -70,10 +68,98 @@ export type RetrievalReason =
  * cohort is distinguishable from deterministic extraction rather than blended
  * into it.
  *
+ * `regex_path_extract` and `pattern_component_table` are separate because
+ * `inferFrictionManifest` can return either, and the obvious cohort question —
+ * did keying on a path the error actually named beat keying on a static
+ * per-slug component guess — is unanswerable if both wear one label.
+ *
  * Reserved, not yet emitted: `regex_anchor_extract` (symbol extraction, lands
  * with the conflict recipe), `regex_stack_extract`, `llm_query_transform`.
  */
-export type DerivedBy = 'subject_anchor' | 'path_manifest' | 'regex_path_extract';
+export type DerivedBy =
+  | 'subject_anchor'
+  | 'path_manifest'
+  | 'regex_path_extract'
+  | 'pattern_component_table'
+  | 'prose_goal';
+
+// ── Strength signal ───────────────────────────────────────────────────────────
+
+/**
+ * Which number a step's strength was judged on.
+ *
+ * This exists because `QueryResult.score` is NOT a comparable relevance figure
+ * and cannot be thresholded. `PgVectorStore._finalize` runs
+ * `applyRecencyAuthority` AFTER rerank, so the returned `score` is
+ * `relevance × CORPUS_AUTHORITY[corpus] × recencyDecay(age)`. Concretely: the
+ * `task` corpus has authority 0.4, so a perfectly relevant, brand-new task
+ * chunk still scores at most 0.4 — while a `docs` chunk of identical relevance
+ * scores 0.9. Any single absolute threshold on `score` therefore encodes corpus
+ * authority and chunk age, not strength.
+ *
+ * The first version of this predicate thresholded `score` at 0.5 across every
+ * step. That made steps 1-3 of the error recipe UNCONDITIONALLY weak — the
+ * `task` step provably so — which turned the escalation flag into a constant
+ * and the day-one metric into a measurement of nothing.
+ *
+ * `scoreBreakdown` carries the pre-decay components, so the fix is to judge on
+ * those instead and record which one was used. The earlier design note was
+ * aimed at the right problem (scores from different pipelines are not on one
+ * scale) but at the wrong axis: the scale is set by WHICH SIGNAL produced the
+ * number, not by which step asked for it.
+ */
+export type StrengthSignal = 'rerank' | 'rrf' | 'dense' | 'lexical' | 'none';
+
+/**
+ * Minimum value for a hit to count as strong, keyed on the signal that produced
+ * it. Thresholds live here rather than on the step because the signal is what
+ * sets the scale.
+ *
+ * `rerank` is cross-encoder relevance in [0,1] and is the only corpus- and
+ * age-independent figure available. `rrf` is Reciprocal Rank Fusion with k=60,
+ * so a single list's first place contributes 1/61 ≈ 0.0164 — the threshold
+ * below is therefore "at least one retriever ranked this first".
+ *
+ * These are still guesses about where "strong" sits. What they are not is
+ * arithmetically unreachable, which the previous single constant was. The value
+ * to tune them from is the observed escalation rate, which is why every item
+ * records the signal and the number it was judged on.
+ */
+export const MIN_STRONG_BY_SIGNAL: Record<Exclude<StrengthSignal, 'none'>, number> = {
+  rerank: 0.5,
+  rrf: 1 / 61,
+  dense: 0.5,
+  lexical: 0.05,
+};
+
+/**
+ * The comparable strength of one hit, and which signal it came from.
+ *
+ * Deliberately does NOT fall back to `score`: a post-decay number thresholded
+ * against a pre-decay constant is the bug this type exists to prevent. When no
+ * breakdown is present the signal is `'none'` and strength is unjudgeable, so
+ * the step falls back to counting results (see `evaluateStep`).
+ */
+export function strengthOf(r: Pick<QueryResult, 'scoreBreakdown'>): {
+  value: number | null;
+  signal: StrengthSignal;
+} {
+  const b = r.scoreBreakdown;
+  if (b) {
+    if (typeof b.rerank === 'number') return { value: b.rerank, signal: 'rerank' };
+    if (typeof b.rrf === 'number') return { value: b.rrf, signal: 'rrf' };
+    if (typeof b.dense === 'number') return { value: b.dense, signal: 'dense' };
+    if (typeof b.lexical === 'number') return { value: b.lexical, signal: 'lexical' };
+  }
+  return { value: null, signal: 'none' };
+}
+
+/** True when this hit clears the threshold for whichever signal produced it. */
+export function isStrongHit(r: Pick<QueryResult, 'scoreBreakdown'>): boolean {
+  const { value, signal } = strengthOf(r);
+  if (value === null || signal === 'none') return false;
+  return value >= MIN_STRONG_BY_SIGNAL[signal];
+}
 
 // ── Recipe shape ──────────────────────────────────────────────────────────────
 
@@ -93,25 +179,13 @@ export interface ClusterStep {
   mode: QueryMode;
   topK: number;
   /**
-   * Weakness thresholds are PER STEP, keyed on (corpus, mode), not global.
-   *
-   * Not merely a distributional preference: `QueryResult.scoreBreakdown` shows
-   * a score can be dense, lexical BM25, RRF-fused, or cross-encoder rerank
-   * output, and steps deliberately differ in mode. Worse, the same corpus and
-   * mode yield differently-scaled scores depending on whether a reranker was in
-   * the pipeline — `QueryParams.recencyAuthority` documents that a configured
-   * reranker overwrites `score` outright, so identical code ranks by age decay
-   * without one and by cross-encoder relevance with one.
-   *
-   * v1 ships identical values across every step on purpose, so the first
-   * divergence is a deliberate act and the per-step structure costs nothing.
+   * How many strong hits the step needs to not be weak. Scale-free — it counts
+   * hits rather than thresholding a number — so unlike the score threshold this
+   * is meaningful on day one.
    */
   minStrongHits: number;
-  minStrongScore: number;
-  /** Runs only when every preceding non-fallback step came back weak. */
+  /** Runs only when every preceding step came back weak. */
   onlyWhenWeak?: boolean;
-  /** Marks the demoted default fan-out, not an extra hop. */
-  isFallback?: boolean;
 }
 
 export interface ClusterRecipe {
@@ -123,30 +197,29 @@ export interface ClusterRecipe {
   uncertaintyNote: string;
 }
 
-const V1_MIN_STRONG_HITS = 1;
-const V1_MIN_STRONG_SCORE = 0.5;
-
-/** Identical across steps in v1 — see ClusterStep.minStrongScore. */
-function v1Thresholds() {
-  return { minStrongHits: V1_MIN_STRONG_HITS, minStrongScore: V1_MIN_STRONG_SCORE };
-}
+/**
+ * Recipe name recorded for the untouched five-corpus prose fan-out.
+ *
+ * The fan-out emits a record too, carrying no items because it produces no
+ * per-item provenance. Without it there is no DENOMINATOR: "zero
+ * tool-infra-error-v1 lines" would be indistinguishable from "no eligible
+ * tasks" and from "the selector regressed", which is the green-over-an-empty-set
+ * shape this whole design is supposed to avoid rather than reproduce.
+ */
+export const DEFAULT_FAN_OUT_RECIPE = 'default-fan-out-v0';
 
 // ── tool-infra-error-v1 ───────────────────────────────────────────────────────
 
 /**
- * SCOPE: tool and infrastructure errors ONLY.
+ * SCOPE: the thirteen tool/infra slugs in KNOWN_ERROR_SLUGS, and nothing else.
  *
  * The name carries the scope deliberately. A recipe called `error-v1` reads as
- * covering all failures, which is the opposite of true: every one of the
- * thirteen KNOWN_ERROR_SLUGS is produced by apps/runner/src/error-trace-scanner.ts
- * and every one is a tool/infra failure. Compiler errors, test failures, and
- * runtime stack traces have no scanner pattern and therefore no subject at all,
- * so they never select this recipe. CI failures arrive through a different
- * field (normalizeFailingCheckNames), not a slug.
+ * covering all failures, which is the opposite of true: every one of those
+ * slugs is produced by apps/runner/src/error-trace-scanner.ts and every one is
+ * a tool/infra failure. Compiler errors, test failures, and runtime stack
+ * traces have no scanner pattern and therefore no subject at all.
  *
- * The scope is ENFORCED by isToolInfraSignature, not just documented — a
- * failure family that acquires a subject some other way cannot silently inherit
- * a recipe that was never designed for it.
+ * The scope is ENFORCED by isToolInfraSignature, not just documented.
  *
  * Consequence of that scope, worth stating because it shaped the step list:
  * the scanner emits only `{ pattern, excerpt }` — one raw line, no file, no
@@ -171,7 +244,7 @@ export const TOOL_INFRA_ERROR_V1: ClusterRecipe = {
       reasonOnHit: 'error_signature_query_hit',
       mode: 'hybrid',
       topK: 3,
-      ...v1Thresholds(),
+      minStrongHits: 1,
     },
     {
       step: 2,
@@ -183,7 +256,7 @@ export const TOOL_INFRA_ERROR_V1: ClusterRecipe = {
       reasonOnHit: 'error_signature_query_hit',
       mode: 'hybrid',
       topK: 3,
-      ...v1Thresholds(),
+      minStrongHits: 1,
     },
     {
       step: 3,
@@ -195,7 +268,7 @@ export const TOOL_INFRA_ERROR_V1: ClusterRecipe = {
       reasonOnHit: 'pr_path_query_hit',
       mode: 'hybrid',
       topK: 3,
-      ...v1Thresholds(),
+      minStrongHits: 1,
     },
     {
       step: 4,
@@ -210,33 +283,47 @@ export const TOOL_INFRA_ERROR_V1: ClusterRecipe = {
       // design exists to stop.
       mode: 'lexical',
       topK: 3,
+      minStrongHits: 1,
       onlyWhenWeak: true,
-      ...v1Thresholds(),
     },
   ],
 };
 
+/** Corpus-authority ceilings, exported so a reader can check the arithmetic above. */
+export const RECIPE_SCORE_CEILINGS = TOOL_INFRA_ERROR_V1.steps.map(s => ({
+  step: s.step,
+  corpus: s.corpus,
+  scoreCeiling: CORPUS_AUTHORITY[s.corpus],
+}));
+
 // ── Scope enforcement ─────────────────────────────────────────────────────────
 
 /**
- * Namespaces whose signatures are known to be tool/infra failures.
+ * True when `sig` names one of the tool/infra failures this recipe was built
+ * for — that is, a bare KNOWN_ERROR_SLUGS member.
  *
- * normalizeErrorSignature accepts ANY `namespace:slug` pair, so it is not
- * sufficient on its own: a future `compiler:ts2345` would pass it and silently
- * inherit this recipe. Only `worker-failure` (FRICTION_SIGNATURE_NAMESPACE, the
- * one namespaced producer in the repo) is in scope.
+ * NAMESPACED SIGNATURES ARE REJECTED, and that is the whole point of this
+ * function existing separately from `normalizeErrorSignature`. That validator
+ * accepts any `namespace:slug`, and the repo's one namespaced producer,
+ * `toFrictionSignature`, renders ANY error prose into
+ * `worker-failure:<stem>_<hash>` — a stale-worker timeout and a compiler error
+ * both pass it. Accepting the namespace would therefore have made the scope
+ * claim false in the most damaging possible way: the cohort would silently mix
+ * tool/infra failures with whatever a worker last died on, while the docs
+ * asserted it could not.
+ *
+ * The narrower rule costs coverage. `worker-failure:*` is the common anchor for
+ * agent-filed friction, so most error-subject tasks now take the default
+ * fan-out. That is the right trade for a phase whose entire output is a cohort
+ * comparison: a small clean population beats a large mixed one, and coverage is
+ * recoverable later by widening the scanner catalog, which widens this
+ * function automatically because it reads the catalog rather than restating it.
  */
-const TOOL_INFRA_SIGNATURE_NAMESPACES: ReadonlySet<string> = new Set(['worker-failure']);
-
-/** True when `sig` names a tool/infra failure TOOL_INFRA_ERROR_V1 was designed for. */
 export function isToolInfraSignature(sig: string | null | undefined): boolean {
   if (!sig) return false;
   const normalized = normalizeErrorSignature(sig);
   if (!normalized) return false;
-  if (KNOWN_ERROR_SLUGS.has(normalized)) return true;
-  const colon = normalized.indexOf(':');
-  if (colon === -1) return false;
-  return TOOL_INFRA_SIGNATURE_NAMESPACES.has(normalized.slice(0, colon));
+  return KNOWN_ERROR_SLUGS.has(normalized);
 }
 
 // ── Selection ─────────────────────────────────────────────────────────────────
@@ -264,52 +351,103 @@ export function selectExecCluster(subject: ExecClusterSubject): ClusterRecipe | 
 
 // ── Weakness predicate ────────────────────────────────────────────────────────
 
+export interface StepEvaluation {
+  weak: boolean;
+  strongHits: number;
+  /** The signal every hit was judged on, or 'none' when strength was unjudgeable. */
+  signal: StrengthSignal;
+  /** True when strength could not be judged and the step fell back to counting results. */
+  countOnly: boolean;
+}
+
 /**
- * A step is weak when it returns fewer than `minStrongHits` results scoring at
- * or above `minStrongScore`.
+ * Judge whether a step came back weak.
  *
- * Fallback rate per recipe is the load-bearing measurement here, because it is
- * scoreable on day one with no outcome labels at all: a recipe that falls back
- * ninety percent of the time does not work, and you know that before a single
- * goal criterion has moved.
+ * A step that returned nothing is weak, not neutral: a silent corpus and a
+ * corpus full of bad answers are equally good reasons to escalate, and the
+ * alternative reading would let an unindexed namespace quietly pin a recipe to
+ * its first few steps forever.
+ *
+ * When no hit carries a score breakdown, strength is unjudgeable and the step
+ * falls back to `results.length >= minStrongHits`. That is recorded
+ * (`countOnly`) rather than silently blended, because a count-only verdict and
+ * a rerank-backed one are not the same evidence.
  */
-export function isStepWeak(results: readonly Pick<QueryResult, 'score'>[], step: ClusterStep): boolean {
-  const strong = results.filter(r => r.score >= step.minStrongScore).length;
-  return strong < step.minStrongHits;
+export function evaluateStep(
+  results: readonly Pick<QueryResult, 'scoreBreakdown'>[],
+  step: Pick<ClusterStep, 'minStrongHits'>,
+): StepEvaluation {
+  if (results.length === 0) {
+    return { weak: true, strongHits: 0, signal: 'none', countOnly: false };
+  }
+  const signal = strengthOf(results[0]!).signal;
+  if (signal === 'none') {
+    return {
+      weak: results.length < step.minStrongHits,
+      strongHits: results.length,
+      signal,
+      countOnly: true,
+    };
+  }
+  const strongHits = results.filter(isStrongHit).length;
+  return { weak: strongHits < step.minStrongHits, strongHits, signal, countOnly: false };
 }
 
 // ── Assembly record ───────────────────────────────────────────────────────────
+
+/** Cap on a recorded path/id string, so one pathological value cannot blow the record up. */
+export const MAX_RECORDED_STRING = 200;
 
 /**
  * One retrieved item, or one step that produced nothing.
  *
  * References and provenance, never retrieved content — join back to
- * knowledge_chunks for the text. That keeps rows small and shrinks the
- * retention surface. `corpus` + `sourcePath` ride alongside `chunkId` because
- * the join can dangle: chunks are pruned (pruneOrphans) and superseded, so an
- * item may be gone before anyone analyses the cohort, and a row of dangling ids
- * is uninterpretable. These two fields say what an evicted item WAS without
- * storing what it SAID.
+ * knowledge_chunks for the text. `namespace` rather than just `corpus` because
+ * knowledge_chunks is unique on (namespace, source_id) and source_ids are
+ * composite `path#line` values: the same source_id exists in every workspace's
+ * `:code` namespace, so `chunkId` + `corpus` alone is an AMBIGUOUS join across
+ * tenants, not merely a dangling one.
  */
 export interface AssemblyItem {
   step: number;
   corpus?: Corpus;
+  namespace?: string;
   chunkId?: string;
   sourcePath?: string | null;
   reason: RetrievalReason;
   derivedBy?: DerivedBy;
-  mode?: QueryMode;
   /**
-   * Whether a reranker was in the pipeline for this item, read off
-   * `scoreBreakdown.rerank` rather than assumed from configuration.
-   *
-   * No cohort analysis may compare scores across rows that differ on this or on
-   * `mode`. mcp-tools.ts records the same bug class in prose: omitting the
-   * reranker on a fallback path made it rank by age decay while the primary
-   * path ranked by cross-encoder relevance, so one query got different
-   * semantics depending on which path served it.
+   * The mode the step REQUESTED. Not necessarily what ran: PgVectorStore
+   * downgrades `hybrid` to lexical-only when no embedder is configured, so this
+   * field states intent and `signals` below states what actually happened.
    */
-  reranked?: boolean;
+  modeRequested?: QueryMode;
+  /**
+   * Which score components came back, in order of preference. This is the
+   * mechanical record of what pipeline served the query — a `hybrid` request
+   * that returns only `lexical` was served lexically, whatever it asked for.
+   */
+  signals?: StrengthSignal[];
+  /** The value strength was judged on, and which signal it is. */
+  strength?: number | null;
+  strengthSignal?: StrengthSignal;
+  /**
+   * Whether a rerank score is present on THIS item. Named for the observation,
+   * not the configuration: `_finalize` reranks only when more than one result
+   * came back, so a single-hit step legitimately carries no rerank score even
+   * with a reranker fully configured. Reading it as "no reranker" would be
+   * wrong.
+   */
+  rerankApplied?: boolean;
+  /**
+   * Graph proximity, present when the store's 1-hop entity expansion is on.
+   * 1.0 marks a seed (the query actually returned it); below 1.0 marks a
+   * neighbour reached through an entity edge from a seed — which is why those
+   * items get `graph_expansion_hit` rather than the step's own reason. Stamping
+   * `error_signature_query_hit` on an entity-walk neighbour would assert the
+   * query returned something it never returned.
+   */
+  graphProximity?: number;
   rank?: number;
   score?: number;
   scoreBreakdown?: QueryResult['scoreBreakdown'];
@@ -330,11 +468,12 @@ export interface AssemblyChain {
   taskId?: string;
   workerId?: string;
   missionId?: string | null;
-  claimId?: string;
 }
 
 export interface ContextAssembly {
   assemblyId: string;
+  /** Emitted so the record is orderable and bucketable on its own terms, rather than depending on a log platform's line timestamp surviving whatever pipeline reads it. */
+  at: string;
   recipe: string;
   /**
    * Eval runs must not pollute live cohorts. eval-retrieval.ts and
@@ -342,6 +481,9 @@ export interface ContextAssembly {
    * reason; without this discriminator a cohort silently mixes two populations.
    */
   source: 'live' | 'eval';
+  /** Tenancy scope. Required to reconstruct an item's namespace and to segment or exclude a noisy tenant. */
+  workspaceId?: string | null;
+  teamId?: string | null;
   trigger: {
     layer: 'plan' | 'exec';
     subjectKind?: string | null;
@@ -349,29 +491,17 @@ export interface ContextAssembly {
   };
   /**
    * The query transformation, recorded so the measurement loop can be split on
-   * it. Production data: signatures, excerpts, and repo-relative paths. Never
-   * put captured values in fixtures or anything this repo publishes.
+   * it. These are the keys ACTUALLY QUERIED, after trimming and sentinel
+   * removal — recording the pre-filter values would put keys in the log that no
+   * query ever used and break any join against the task row.
    */
   derivedKeys: {
-    signature?: string | null;
     paths?: string[];
   };
   items: AssemblyItem[];
-  /**
-   * An `onlyWhenWeak` step ran because every preceding step came back weak —
-   * escalation WITHIN the recipe.
-   */
+  /** An `onlyWhenWeak` step's gate passed — escalation WITHIN the recipe. Set when the gate opens, not when the query succeeds, so an escalation that had no key to query still counts. */
   weakEscalationFired: boolean;
-  /**
-   * The recipe yielded nothing renderable and the default prose fan-out served
-   * the request instead — escalation OUT of the recipe.
-   *
-   * Kept separate from `weakEscalationFired` because they answer different
-   * questions and collapsing them would blunt the one metric that needs no
-   * outcome labels. "Step 4 had to fire" and "the recipe produced nothing at
-   * all" are not the same failure, and a recipe can do the first without the
-   * second on the same assembly.
-   */
+  /** The recipe yielded nothing renderable and the default fan-out served the request — escalation OUT of the recipe. Set by the executor, which is what knows. */
   fallbackFired: boolean;
   chain: AssemblyChain;
 }
@@ -384,3 +514,40 @@ export interface ContextAssembly {
  * log cannot support.
  */
 export const ASSEMBLY_LOG_PREFIX = '[context-assembly]';
+
+/**
+ * Prefix for the per-item detail line.
+ *
+ * Two lines, not one, and not a field reordering. A log line truncated
+ * mid-array is invalid JSON, so `JSON.parse` rejects the WHOLE line and any
+ * leading aggregate fields go with it — field order only helps a prefix-tolerant
+ * parser, which no standard log consumer is. Splitting the record means the
+ * aggregate line is small and bounded by construction and therefore cannot be
+ * the line that gets cut, while losing a detail line costs detail only.
+ *
+ * It matters that the loss would otherwise be non-random: the longest records
+ * are the escalated, many-hit assemblies, which are exactly the population the
+ * escalation metric is about.
+ */
+export const ASSEMBLY_ITEMS_LOG_PREFIX = '[context-assembly-items]';
+
+/**
+ * The bounded aggregate half of the record — everything the day-one metrics
+ * need, and nothing whose length a caller controls.
+ *
+ * `derivedKeys` rides the detail line instead, because the paths are
+ * length-unbounded (twenty of them, each up to MAX_RECORDED_STRING) and would
+ * be enough on their own to push this line past a log platform's ceiling — at
+ * which point the aggregate line becomes the line that gets cut, which is the
+ * whole thing the split exists to prevent. The summary keeps `pathCount`, which
+ * is what a cohort split on "did we have keys at all" actually needs.
+ */
+export type AssemblySummary = Omit<ContextAssembly, 'items' | 'derivedKeys'> & {
+  itemCount: number;
+  pathCount: number;
+};
+
+export function summarizeAssembly(a: ContextAssembly): AssemblySummary {
+  const { items, derivedKeys, ...rest } = a;
+  return { ...rest, itemCount: items.length, pathCount: derivedKeys.paths?.length ?? 0 };
+}

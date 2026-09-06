@@ -1,9 +1,9 @@
 # Mission Context Clusters — situational, observable, measurable retrieval
 
 **Status:** Partially implemented — `tool-infra-error-v1` and the assembly
-record are built (steps 0, 3, 4, and the shadow half of 5). Plan-time recipes
-and the assembly table are not. See "Decisions taken" and "Implementation
-sketch" for what is and is not in the code.
+record are built and emitted as logs; the assembly table and every plan-time
+recipe are not. See "Decisions taken" for what changed between the proposal and
+the code, and "Implementation sketch" for what is left.
 **Related:**
 - `apps/web/src/lib/knowledge-context.ts` — the shared retrieval path this changes
 - `apps/web/src/lib/mission-context.ts` — plan-time caller
@@ -28,12 +28,23 @@ resolved in favour of the narrow scope. `error-trace-scanner.ts` and
 PR that can land whenever, and the recipe widens with it automatically because
 the scope check reads the catalog rather than restating it.
 
-**2. The scope is enforced in code, and more narrowly than
-`normalizeErrorSignature` enforces it.** That validator accepts any
-`namespace:slug`, so `compiler:ts2345` would have passed it and silently
-inherited a recipe designed for tool failures. `isToolInfraSignature` therefore
-requires a `KNOWN_ERROR_SLUGS` member or a namespace on a small allowlist —
-today just `worker-failure`, the one namespaced producer in the repo.
+**2. The scope is enforced in code, and much more narrowly than
+`normalizeErrorSignature`.** That validator accepts any `namespace:slug`, and
+review caught that this is not a hypothetical loophole: the repo's one
+namespaced producer, `toFrictionSignature`, renders **any** error prose into
+`worker-failure:<stem>_<hash>`. A stale-worker timeout and a type error both
+pass it. An earlier version of this design allowed that namespace and claimed
+the scope was enforced — which would have been false in the most damaging
+possible way, mixing tool/infra failures with whatever a worker last died on
+while the docs asserted it could not.
+
+`isToolInfraSignature` therefore accepts **only a bare `KNOWN_ERROR_SLUGS`
+member**. That costs coverage: `worker-failure:*` is the common anchor for
+agent-filed friction, so most error-subject tasks now take the default fan-out.
+It is the right trade for a phase whose entire output is a cohort comparison —
+a small clean population beats a large mixed one — and coverage is recoverable
+by widening the scanner catalog, which widens the check automatically because it
+reads the catalog rather than restating it.
 
 **3. `stack_symbol_query_hit` and `regex_stack_extract` are not implemented,
 because within this scope they cannot occur.** The scanner emits `{ pattern,
@@ -77,25 +88,132 @@ the day-one signal, is answerable from the logs. The table is the next step, and
 because the record is already complete that step is a writer rather than a
 redesign.
 
-**8. Log field order is load-bearing.** A truncated log line is unparseable
-JSON, so whatever serializes last is what a long assembly silently loses. The
-aggregate fields the day-one metrics are computed from serialize first, with the
-unbounded `items` array last and an `itemCount` ahead of it, so truncation costs
-per-item detail instead of quietly biasing the fallback rate downward. This is
-the same green-over-an-empty-set shape as the rest — a metric that looks healthy
-because the rows that would have moved it were the ones that got cut.
+**8. The weakness predicate cannot threshold `QueryResult.score`, and the first
+version did.** This was the most serious defect review found, and it was
+arithmetic, not judgement. `PgVectorStore._finalize` runs
+`applyRecencyAuthority` **after** rerank, so the `score` a caller sees is
+`relevance × CORPUS_AUTHORITY[corpus] × recencyDecay(age)`. The `task` corpus has
+authority 0.4, so a perfectly relevant brand-new task chunk scores at most 0.4 —
+and the recipe thresholded every step at 0.5. Step 2 was therefore
+**provably weak for every possible input**, steps 1 and 3 (authority 0.5) weak
+for all but an unreachable perfect score, the escalation flag a constant, and
+the day-one metric a measurement of nothing. Without a reranker it is worse:
+`score` is raw RRF, ceiling ≈ 0.033.
+
+The unit tests could not see it, because the fixture store returned
+`score: 0.9` — a value the real pipeline cannot produce for any of these
+corpora. A fixture that can express impossible states will hide exactly this.
+
+The fix judges strength on `scoreBreakdown` instead, preferring `rerank` (the
+only corpus- and age-independent figure available), then `rrf`, then `dense`,
+then `lexical`, and records which one was used. Thresholds are keyed on the
+**signal**, not the step: an RRF value of 0.02 is strong and a rerank value of
+0.02 is not, so one constant across both is meaningless. When no breakdown is
+present, strength is unjudgeable and the step falls back to counting results,
+recorded as `countOnly` rather than blended in.
+
+The earlier "thresholds are per step" note was aimed at the right problem —
+numbers from different pipelines are not on one scale — but at the wrong axis.
+The scale is set by which signal produced the number, not by which step asked
+for it.
+
+**9. Graph neighbours do not get to claim the step's key.** `useGraph` defaults
+to true, so `_graphExpand` appends chunks reached by a 1-hop entity walk from a
+seed. Stamping those with `error_signature_query_hit` asserts "a query keyed on
+the signature returned this at rank N" about an item the query never returned —
+a direct breach of the crux, from inside the code meant to uphold it. They now
+carry `graph_expansion_hit` and their `graphProximity`, and they are excluded
+from the strength evaluation, since letting a neighbour satisfy a step would
+credit the key for what an entity edge produced.
+
+Expansion stays **on**. Turning it off would have been the easy fix and the
+wrong one: the fan-out has it on, so disabling it for recipes would make the two
+cohorts differ on two axes at once and confound the only comparison this phase
+is for.
+
+**10. The fan-out emits a record too — that is the denominator.** Recording only
+recipe assemblies leaves "no `tool-infra-error-v1` lines today" indistinguishable
+from "no eligible tasks" and from "the selector regressed". A metric with no
+denominator is the same green-over-an-empty-set shape this design keeps citing,
+so shipping one here would have been self-refuting. Every claim now emits exactly
+one record; the fan-out's carries no chunk references because the fan-out
+produces no per-item provenance, and that asymmetry is precisely what recipes
+change.
+
+**11. The record is two log lines, not one reordered line.** An earlier revision
+put the aggregate fields first on the theory that truncation would then cost only
+per-item detail. That does not work: a line truncated mid-array is invalid JSON,
+so `JSON.parse` rejects the whole line and the leading fields go with it. Field
+order only helps a prefix-tolerant parser, and no standard log consumer is one.
+
+The risk itself is real — worst case is roughly 5-6 KB against a ~4 KB ceiling,
+and the longest records are the escalated many-hit assemblies, so the loss would
+be non-random and biased against exactly the population the metric is about. The
+remedy is a size guarantee, not an ordering hope: a bounded summary line carrying
+every metric field, and a separate detail line joined on `assemblyId`. Length-
+unbounded fields (`derivedKeys.paths`) ride the detail line, and a test asserts
+the worst-case summary stays under the ceiling. That test failed on the first
+attempt, which is the only reason the guarantee is real.
+
+**12. Several smaller records were lying, and are not now.** Each was found by
+review, and each was a claim the code did not support:
+
+- `weakEscalationFired` was set after the escalated step resolved its key, so an
+  escalation that passed the gate and then had nothing to query recorded
+  `false` — undercounting the recipe's single most likely failure mode. It is
+  now set when the gate opens.
+- `fallbackFired` was set by the caller, while the executor is what knows the
+  body came back empty. A second caller that forgot would have logged
+  `fallbackFired: false` with zero items.
+- An `onlyWhenWeak` step whose gate held emitted **no row at all**, making "the
+  gate held" indistinguishable from "this recipe has no step 4". Now
+  `step_skipped_priors_strong`. Every step of every assembly emits exactly one
+  row.
+- Items recorded `corpus` but not `namespace`. `knowledge_chunks` is unique on
+  `(namespace, source_id)` and source ids are composite `path#line` values, so
+  the same id exists in every workspace's `:code` namespace: the join the
+  no-content decision rests on was **ambiguous across tenants**, not merely
+  liable to dangle. The record now carries `namespace`, plus `workspaceId` /
+  `teamId` and an `at` timestamp, without which the lines cannot be bucketed,
+  ordered, or segmented.
+- `mode` recorded what the step **requested**, and the store silently downgrades
+  `hybrid` to lexical-only with no embedder configured. It is now
+  `modeRequested`, alongside a `signals` list of which score components actually
+  came back — the mechanical record of what pipeline served the query.
+- `reranked` was read as "a reranker exists", but `_finalize` reranks only when
+  more than one result came back, so a single-hit step legitimately has none. It
+  is now `rerankApplied`, named for the observation.
+- `regex_path_extract` was stamped on paths that came from
+  `inferFrictionManifest`'s **static per-slug component table**, which is a guess
+  about which file owns a slug, not a path the error named. Those two are now
+  distinguished (`pattern_component_table`), because otherwise the most obvious
+  cohort question — does a named path retrieve better than a guessed one — is
+  unanswerable from the log. The extractor's two halves were split apart in
+  `friction-manifest.ts` to make the distinction honest rather than inferred.
+- Whitespace-only paths passed the sentinel filter into real queries, and
+  `derivedKeys` recorded the pre-filter values, so the log named keys no query
+  ever used. Keys are trimmed, deduped, capped, and recorded **as queried**.
+- A budget too tight for a single hit produced a block containing only a
+  truncation notice, which suppressed the fan-out in exchange for nothing; the
+  emptiness check ran before the budget rather than after. Truncation also cut
+  between a hit and its `⚠ MAY ALREADY BE SHIPPED` warning — showing the hit
+  while dropping the reason not to trust it. The budget now drops whole hit
+  groups and accounts for the headers it emits.
+- Error tasks lost the `query_knowledge before diagnosing` corpora hint, which
+  every claim previously received, because the hint rode on the fan-out. The
+  recipe emits it too.
 
 ## Problem
 
 One retrieval shape serves every question the system asks.
 
-`buildKnowledgeContext` (`knowledge-context.ts:125`) takes a single prose string
+`buildKnowledgeContext` (`knowledge-context.ts:131`) takes a single prose string
 and fans it to five namespaces — `memory`, `plan`, `task`, `pr`, `code` — at
-`topK: 3` each (`:141-147`). The same function, with the same signature, serves:
+`topK: 3` each (`:147-153`). The same function, with the same signature, serves:
 
 - the organizer planning a mission (`mission-context.ts:849`), where the query is
   `[mission.title, mission.description].join('\n')`
-- a worker claiming a task (`context-injection.ts:99`), where the query is the
+- a worker claiming a task (`context-injection.ts:197`), where the query is the
   task goal
 
 Nothing varies. Not the corpora, not the query text, not the depth. An organizer
@@ -254,12 +372,22 @@ entitled to make. The mechanical truth is only ever "a query keyed on X returned
 this at rank N."
 
 Emitted today, and therefore members of the union in
-`packages/core/retrieval-clusters.ts`:
+`packages/core/retrieval-clusters.ts`. Item-level first — a query keyed on X
+returned this:
 
 ```
-error_signature_query_hit   touched_file_query_hit    pr_path_query_hit
-fallback_semantic_search    memory_skipped_sensitive  step_skipped_no_keys
-step_query_empty
+error_signature_query_hit   touched_file_query_hit   pr_path_query_hit
+graph_expansion_hit         fallback_semantic_search
+```
+
+Then step-level — what a step did instead of returning a hit. These four are
+mutually exclusive and exhaustive: **every step of every assembly emits exactly
+one row.** A step with no row would be indistinguishable from a recipe that has
+no such step, which is how the escalation gate first managed to hold silently.
+
+```
+step_query_empty            step_skipped_no_keys
+step_skipped_priors_strong  memory_skipped_sensitive
 ```
 
 `step_query_empty` and `step_skipped_no_keys` are deliberately distinct: a query
@@ -268,7 +396,11 @@ the recipe, and collapsing them makes the fallback rate unreadable. Neither is a
 `_query_hit` at rank 0 — a "hit" that did not happen would break the naming rule
 from the inside, which is how the first draft of the record had it.
 
-Named and reserved, but deliberately **not** members of that union, so no cohort
+`graph_expansion_hit` exists because the store appends 1-hop entity-walk
+neighbours to every query. They are real retrieved items, but the step's key did
+not return them, so they must not wear the step's reason.
+
+Named and reserved, but deliberately **not** members of the union, so no cohort
 query can be written over a value that cannot occur:
 
 ```
@@ -280,7 +412,9 @@ memory_semantic_query_hit   needs a recipe keying memory on prose, not a signatu
 
 Add the member in the same commit that emits it, not before. A closed union of
 things that never happen is the same defect as a green check over an empty set,
-which this repo has been bitten by repeatedly.
+which this repo has been bitten by repeatedly — and review caught one anyway:
+`fallback_semantic_search` sat in the union with no emitter until the fan-out
+record (decision 10) gave it one.
 
 One note for whoever adds the next path-keyed step, not a decision to resolve
 first: `touched_file_query_hit` and `pr_path_query_hit` differ only by corpus,
@@ -292,43 +426,41 @@ restate a column.
 
 ```
 subject_anchor   path_manifest   regex_path_extract
+pattern_component_table   prose_goal
 ```
+
+`regex_path_extract` and `pattern_component_table` are separate on purpose —
+see decision 12. One is a path the error named; the other is a static guess
+about which file owns a slug.
 
 Reserved: `regex_anchor_extract` (symbol extraction, lands with the conflict
 recipe), `regex_stack_extract`, `llm_query_transform`.
 
 ### `tool-infra-error-v1`
 
-Scope: **tool and infrastructure errors only.** `subjectKind='error'` requires an
-`errorSignature`, and `normalizeErrorSignature`
-(`subject-anchor-extractor.ts:75`) rejects free-form text — it accepts a
-`KNOWN_ERROR_SLUGS` member (`:25`) or a `namespace:slug` pair. All thirteen slugs
-are produced by `apps/runner/src/error-trace-scanner.ts` and every one is a
-tool/infra failure: `cd_no_such_file`, `no_such_file`, `permission_denied`,
-`command_not_found`, `enoent`, `oom_killed`, `git_fatal`, `git_error`,
-`rate_limit`, `connection_refused`, `timeout`, `bwrap_namespace_denied`,
-`sandbox_mount_gap`.
+Scope: **the thirteen tool/infra slugs in `KNOWN_ERROR_SLUGS`, and nothing
+else.** All thirteen are produced by `apps/runner/src/error-trace-scanner.ts`
+and every one is a tool/infra failure: `cd_no_such_file`, `no_such_file`,
+`permission_denied`, `command_not_found`, `enoent`, `oom_killed`, `git_fatal`,
+`git_error`, `rate_limit`, `connection_refused`, `timeout`,
+`bwrap_namespace_denied`, `sandbox_mount_gap`.
 
 Compiler errors, test failures, and runtime stack traces have **no pattern and
 therefore no subject**. They are out of scope, permanently as far as this recipe
 is concerned — not pending. CI failures arrive through a different field,
 `normalizeFailingCheckNames`, not a slug.
 
-The name carries the scope deliberately: a recipe called `error-v1` would be read
-as covering all failures, which is the opposite of true. **And the scope is
-enforced, not just documented** — `isToolInfraSignature` declines to select
-otherwise, and the assembly falls through to the default fan-out.
+The name carries the scope deliberately: a recipe called `error-v1` would be
+read as covering all failures, which is the opposite of true.
 
-That check is deliberately **stricter than `normalizeErrorSignature`**, which is
-the part worth not losing. The validator accepts any `namespace:slug`, so a
-future `compiler:ts2345` or `vitest:auth-flow-spec` would have passed it and
-inherited a recipe built for tool failures. `isToolInfraSignature` therefore
-requires a `KNOWN_ERROR_SLUGS` member or a namespace on an allowlist — today
-just `worker-failure`, the sole namespaced producer in the repo
-(`FRICTION_SIGNATURE_NAMESPACE`). A new scanner pattern widens the recipe
-automatically, because the check reads the catalog rather than restating it; a
-failure family that acquires a subject some other way cannot silently inherit
-it.
+**And the scope is enforced by `isToolInfraSignature`, which is deliberately
+stricter than `normalizeErrorSignature`** — see decision 2 for why that gap
+matters. The validator accepts any `namespace:slug`, and
+`toFrictionSignature` turns *any* error prose into `worker-failure:<stem>_<hash>`,
+so accepting namespaced signatures would have admitted every failure family the
+scope claims to exclude. Only bare catalog members select the recipe. A new
+scanner pattern widens it automatically, because the check reads the catalog
+rather than restating it.
 
 The scanner emits `{ pattern, excerpt }` (`error-trace-scanner.ts:17`): one raw
 line, truncated to 500 chars, first match per pattern, throttled per
@@ -340,22 +472,23 @@ Steps:
 |---|---|---|---|---|---|
 | 1 | `memory` (team) | hybrid | error signature | `subject_anchor` | `error_signature_query_hit` |
 | 2 | `task` | hybrid | error signature | `subject_anchor` | `error_signature_query_hit` |
-| 3 | `pr` | hybrid | implicated paths, if any | `path_manifest` / `regex_path_extract` | `pr_path_query_hit` |
-| 4 | `code` | **lexical** | implicated paths | `path_manifest` / `regex_path_extract` | `touched_file_query_hit` |
+| 3 | `pr` | hybrid | implicated paths, if any | `path_manifest` / `regex_path_extract` / `pattern_component_table` | `pr_path_query_hit` |
+| 4 | `code` | **lexical** | implicated paths | same | `touched_file_query_hit` |
 
-Step 4 fires only when steps 1–3 come back weak **and** concrete keys exist.
-Step 1 is skipped in sensitive workspaces (see Safety) and logged as
-`memory_skipped_sensitive`.
+Steps 1-3 are unconditional and run **concurrently** — they have no data
+dependency, and awaiting them in sequence cost one embed-plus-rerank round trip
+each, per claimed worker, on a route with no `maxDuration`. Step 4 fires only
+when all three come back weak **and** concrete keys exist. Step 1 is skipped in
+sensitive workspaces (see Safety) and logged as `memory_skipped_sensitive`.
 
 Step 4 is lexical because its key is a list of literal repo-relative paths.
 Sending those through a dense embedder is the prose-against-code mismatch
 consequence 2 above is about, so the recipe would be reintroducing the defect it
 exists to fix. It keys on paths rather than symbols for the reason in decision 3.
 
-A step that returns nothing counts as **weak**, not as neutral. A silent corpus
-and a corpus full of bad answers are equally good reasons to escalate, and the
-alternative reading would let an unindexed namespace quietly pin the recipe to
-its first three steps forever.
+Any hit the store reached by graph expansion rather than by the step's key
+carries `graph_expansion_hit` instead of the reason in that last column, and is
+excluded from the strength judgement — decision 9.
 
 **Two extractors, not one.** `apps/web/src/lib/error-signature.ts`
 deliberately destroys exactly the fields step 4 needs: it keeps only the first
@@ -367,17 +500,24 @@ so recurring failures collapse to one row — and useless as a search key. So:
   `toFrictionSignature` (`packages/core/failure-friction-signature.ts`) →
   `worker-failure:<stem>_<hash>`
 - **search-key extractor** — turned out to already exist.
-  `inferFrictionManifest` (`packages/core/friction-manifest.ts`) runs on the raw
-  excerpt, extracts repo-relative paths, and falls back to a slug-keyed
-  component table for the patterns whose errors never name a file (`bwrap`,
-  `oom_killed`, `git_fatal`). `POST /api/tasks` already calls it to populate
-  `tasks.path_manifest`, so the recipe reads the column first and re-runs the
-  same extractor only when the column holds nothing but the `'**'` sentinel.
-  Both paths therefore agree by construction rather than by coincidence.
+  `packages/core/friction-manifest.ts` runs on the raw excerpt and extracts
+  repo-relative paths, falling back to a slug-keyed component table for the
+  patterns whose errors never name a file (`bwrap`, `oom_killed`, `git_fatal`).
+  `POST /api/tasks` already calls it to populate `tasks.path_manifest`, so the
+  recipe reads the column first and re-runs the same extraction only when the
+  column holds nothing but the `'**'` sentinel. Both paths therefore agree by
+  construction rather than by coincidence.
 
   Nothing new needed writing here, which is the useful outcome: the design
   called for a second extractor because the identity extractor destroys paths,
   and the repo had already built exactly that for a different reason.
+
+  **Its two halves are now separate functions** (`extractExcerptPaths` and
+  `componentTablePaths`) because they are not the same evidence. One is a path
+  the error named; the other is a static guess about which file owns a slug.
+  Recording both as `regex_path_extract` — which the first version did — makes
+  the most obvious cohort question unanswerable, so the split exists to keep the
+  provenance honest rather than inferred.
 
 Implementation hazard worth a comment at the call site: `normalizeErrorSignature`
 names **two different functions with incompatible contracts** — the prose
@@ -385,34 +525,85 @@ normalizer in `apps/web/src/lib/error-signature.ts` and the strict slug validato
 in `packages/core/subject-anchor-extractor.ts`. The bridge between them is
 `failure-friction-signature.ts`, whose header already documents the trap.
 
-Illustrative record (synthetic values):
+Record from an actual run against a fixture store (synthetic values, real
+shape — the previous hand-written example in this section could not have been
+produced by the code, which is how it managed to make the broken 0.5 threshold
+look attainable).
+
+The bounded summary line, which carries everything the day-one metrics need:
 
 ```json
+[context-assembly]
 {
-  "assemblyId": "…",
+  "assemblyId": "<uuid>",
+  "at": "2026-09-05T12:00:00.000Z",
   "recipe": "tool-infra-error-v1",
   "source": "live",
+  "workspaceId": "<ws>", "teamId": "<team>",
   "trigger": { "layer": "exec", "subjectKind": "error", "signature": "oom_killed" },
-  "derivedKeys": { "signature": "oom_killed", "paths": ["apps/runner/src/workers.ts"] },
-  "items": [
-    { "step": 1, "corpus": "memory", "chunkId": "…", "sourcePath": "docs/runbook.md",
-      "reason": "error_signature_query_hit", "derivedBy": "subject_anchor",
-      "mode": "hybrid", "reranked": true, "rank": 1, "score": 0.87,
-      "scoreBreakdown": { "dense": 0.81, "lexical": 0.44, "rrf": 0.031, "rerank": 0.93 } },
-    { "step": 2, "corpus": "task", "reason": "step_query_empty",
-      "derivedBy": "subject_anchor", "mode": "hybrid" },
-    { "step": 4, "corpus": "code", "reason": "step_skipped_no_keys",
-      "derivedBy": "path_manifest" }
-  ],
   "weakEscalationFired": false,
   "fallbackFired": false,
-  "chain": { "taskId": "…", "workerId": "…", "missionId": null }
+  "chain": { "taskId": "<task>", "workerId": "<worker>", "missionId": null },
+  "itemCount": 4, "pathCount": 1
 }
 ```
 
-The step-2 row is the "ran, returned nothing" record; the step-4 row is "never
-issued, no key to issue it with". Three outcomes per step, all distinguishable:
-hit, empty, skipped.
+The detail line, joined on `assemblyId`:
+
+```json
+[context-assembly-items]
+{
+  "assemblyId": "<uuid>",
+  "derivedKeys": { "paths": ["apps/runner/src/workers.ts"] },
+  "items": [
+    { "step": 1, "corpus": "memory", "namespace": "<team>:memory",
+      "chunkId": "docs/runbook.md#12", "sourcePath": "docs/runbook.md",
+      "reason": "error_signature_query_hit", "derivedBy": "subject_anchor",
+      "modeRequested": "hybrid", "signals": ["rerank", "rrf", "dense", "lexical"],
+      "strength": 0.87, "strengthSignal": "rerank", "rerankApplied": true,
+      "graphProximity": 1, "rank": 1, "score": 0.435,
+      "scoreBreakdown": { "dense": 0.81, "lexical": 0.44, "rrf": 0.031, "rerank": 0.87 } },
+
+    { "step": 2, "corpus": "task", "namespace": "<ws>:task",
+      "reason": "step_query_empty", "derivedBy": "subject_anchor",
+      "modeRequested": "hybrid" },
+
+    { "step": 3, "corpus": "pr", "namespace": "<ws>:pr",
+      "chunkId": "apps/runner/src/workers.ts#88",
+      "sourcePath": "apps/runner/src/workers.ts",
+      "reason": "graph_expansion_hit", "derivedBy": "path_manifest",
+      "modeRequested": "hybrid", "signals": ["rrf", "dense"],
+      "strength": null, "rerankApplied": false, "graphProximity": 0.6,
+      "rank": 1, "score": 0.12,
+      "scoreBreakdown": { "dense": 0.3, "rrf": 0.016 } },
+
+    { "step": 4, "corpus": "code",
+      "reason": "step_skipped_priors_strong", "derivedBy": "path_manifest" }
+  ]
+}
+```
+
+Four things in that output are worth reading closely, because each is a defect
+this design previously had:
+
+**`"score": 0.435` on a strong item.** That is `0.87 × 0.5` — relevance times
+the `memory` corpus authority. It is the whole of decision 8 in one field: the
+item is strong on the only comparable signal available (`rerank` 0.87, above the
+0.5 threshold for that signal) while its `score` sits below the same number. A
+predicate thresholding `score` would have called this weak.
+
+**Step 3 is a `graph_expansion_hit` with `strength: null`.** Its
+`graphProximity` is 0.6, so the store reached it by walking an entity edge from
+a seed rather than returning it for the path key. It renders into the prompt —
+it is a real retrieved item — but it does not claim the key returned it and it
+does not count toward step 3's strength.
+
+**Step 2 ran and got nothing; step 4 never ran.** Different rows, different
+reasons. Step 4's `step_skipped_priors_strong` is the gate holding, because step
+1 was strong — and it is a row rather than an absence, so "the gate held" is
+distinguishable from "this recipe has no step 4".
+
+**Every step has exactly one row.** Four steps, four rows, whatever happened.
 
 ### `conflict-v1`
 
@@ -435,45 +626,71 @@ what makes this a priority ordering rather than an exclusion list.
 
 ### The weakness predicate
 
-Explicit, in code (`isStepWeak`), and shared by every recipe: a step is **weak**
-when it returns fewer than `minStrongHits` results scoring at or above
-`minStrongScore`. A step that returned nothing is weak, not neutral.
+**It cannot be a threshold on `QueryResult.score`.** That is the single most
+important constraint here and the first version of this design got it wrong; see
+decision 8 for the arithmetic. `score` is post-rerank *and* post-decay —
+`relevance × CORPUS_AUTHORITY[corpus] × recencyDecay(age)` — so any absolute
+threshold on it encodes corpus authority and chunk age rather than strength. A
+`task` hit cannot exceed 0.4 no matter how relevant it is.
 
-Two escalations follow from it, recorded separately:
+So strength is judged on `scoreBreakdown`, in this preference order, and the
+choice is recorded per item:
 
-- `weakEscalationFired` — an `onlyWhenWeak` step ran because every preceding
-  step was weak. Escalation *within* the recipe.
+| Signal | Scale | Why |
+|---|---|---|
+| `rerank` | [0,1] | Cross-encoder relevance. The only corpus- and age-independent figure available. |
+| `rrf` | ≤ 2/61 | Reciprocal Rank Fusion, k=60. One list's first place is 1/61. |
+| `dense` / `lexical` | pipeline-specific | Single-retriever fallbacks. |
+| `none` | — | No breakdown at all: strength is unjudgeable, so the step falls back to counting results and records `countOnly`. |
+
+**Thresholds are keyed on the signal, not on the step.** An RRF value of 0.02 is
+strong; a rerank value of 0.02 is not. One constant across both is meaningless,
+which is what made the original single `MIN_STRONG_SCORE` degenerate rather than
+merely imprecise. The earlier "per step" framing was aimed at the right problem
+— numbers from different pipelines are not on one scale — but at the wrong axis.
+
+`minStrongHits` stays on the step, because counting strong hits is scale-free and
+therefore meaningful on day one in a way no score threshold is.
+
+A step that returned nothing is **weak, not neutral**: a silent corpus and a
+corpus full of bad answers are equally good reasons to escalate, and the
+alternative reading would let an unindexed namespace quietly pin a recipe to its
+first few steps forever. Same for a step that could not run — sensitivity-skipped
+or key-less. Graph-expansion neighbours are **excluded** from the judgement
+entirely, since the step's key did not return them (decision 9).
+
+Two escalations follow, recorded separately:
+
+- `weakEscalationFired` — an `onlyWhenWeak` step's gate opened because every
+  preceding step was weak. Set **when the gate opens**, not when the query
+  succeeds: an escalation that passed the gate and then had no key to query
+  still escalated, and that is the recipe's most likely failure mode.
 - `fallbackFired` — the recipe produced nothing renderable and the default prose
-  fan-out served the request. Escalation *out of* the recipe.
+  fan-out served the request. Set by the executor, which is what knows.
 
 Keeping them apart is not tidiness. "Step 4 had to fire" and "the recipe
 produced nothing at all" are different failures, one flag cannot express both,
 and a recipe can do the first without the second on the same assembly.
 
-**Both thresholds are per step, not global**, keyed on `(corpus, mode)`. A single
-`MIN_STRONG_SCORE` would be wrong for a mechanical reason, not just a
-distributional one: `QueryResult.scoreBreakdown` (`types.ts:114`) shows a score
-can be dense, lexical BM25, RRF-fused, or cross-encoder rerank output, and steps
-deliberately differ in mode — `spec_compare` uses `mode: 'lexical'` for its
-anchor hop while everything else runs hybrid. A BM25 score and a reranked score
-are not on one scale.
-
-Worse, **the same corpus and mode can yield differently-scaled scores depending
-on whether a reranker was in the pipeline.** This is already a known bug class
-here: the comment at `mcp-tools.ts:4310` records that omitting the reranker on a
-fallback path made it "rank by age decay while the server-built store ranked by
-cross-encoder relevance, so the same query got different semantics depending on
-which path served it." So each item records its `mode` and whether a reranker was
-present, and **no cohort analysis may compare scores across rows that differ on
-either.** v1 ships every step with identical threshold values, so the first
-config change is a deliberate one and the per-step structure costs nothing up
-front.
-
-This is the load-bearing measurement decision. **Fallback rate per recipe is
-scoreable on day one, with no outcome labels at all.** A recipe that falls back
-90% of the time does not work, and you know that before a single goal criterion
-has moved. `spec_compare` already has the prose version of this signal ("retrieval
+**These two rates are the load-bearing measurement, and they are scoreable on
+day one with no outcome labels at all.** A recipe that falls back ninety percent
+of the time does not work, and you know that before a single goal criterion has
+moved. `spec_compare` already has the prose version of this signal ("retrieval
 inconclusive — no implementation anchors could be extracted") and discards it.
+
+That is also exactly why the threshold bug mattered: an always-weak predicate
+makes the escalation rate a constant, and a constant looks like a working
+recipe.
+
+**Score incomparability, recorded but not solved.** Each item stores
+`modeRequested`, the `signals` that actually came back, `rerankApplied`, and
+`graphProximity`. No cohort analysis may compare `score` across rows differing
+on any of them — and `score` is not even on the same scale as its own
+breakdown, since it is post-decay and the components are pre-decay. This is a
+known bug class here, not a hypothetical: `mcp-tools.ts:4310` records that
+omitting the reranker on a fallback path made it "rank by age decay while the
+server-built store ranked by cross-encoder relevance, so the same query got
+different semantics depending on which path served it."
 
 ### The measurement loop
 
@@ -513,6 +730,12 @@ rows are queryable, which is step 6. The chain fields are in the record now so
 that step is a join rather than a backfill: an assembly whose task id was never
 recorded cannot be reattached to its outcome afterwards at any price.
 
+There is no claim id, because no claim-request identifier exists to record. The
+chain diagram above lists one as the plan-time analogue of `taskId`; a declared
+field that nothing ever sets is worse than an absent one, so it is absent. The
+consequence is that the several workers of one claim request cannot be grouped —
+`at` plus `taskId` is the closest available substitute.
+
 Outcome side reads `missions.goalCriteriaState` (`schema.ts:763`) plus the
 existing rearm fields (`criteriaRearmFingerprint`, `criteriaRearmCycles`) — a
 rearm means the gate refused, which is a labeled negative and causally tighter
@@ -532,39 +755,71 @@ Two existing facilities cover part of this and must not be confused with it:
   `packages/core/eval/retrieval-baseline.json`) — recall@k / MRR / NDCG against a
   golden set. **Reuse this for cohort scoring rather than inventing metrics.**
 
+**Every claim emits exactly one record, including the ones that took the
+fan-out.** That is the denominator, and it is what makes the two day-one rates
+computable rather than merely present:
+
+```
+grep '[context-assembly]' | jq -s 'group_by(.recipe)[] | {
+  recipe: .[0].recipe,
+  n: (map(.assemblyId) | unique | length),
+  fallbackRate:       (map(select(.fallbackFired))       | length) / length,
+  weakEscalationRate: (map(select(.weakEscalationFired)) | length) / length }'
+```
+
+Without the fan-out record that aggregation has no denominator: zero
+`tool-infra-error-v1` lines would be indistinguishable from no eligible tasks and
+from a regressed selector. It also supplies the control arm — the fan-out is the
+cohort the recipe has to beat.
+
+`at` is on the record rather than left to the log platform's line timestamp,
+because the first step of any pipeline that treats these as records is to strip
+the prefix, and that takes the platform timestamp with it.
+
 **This phase instruments only.** No policy is learned from `goalCriteriaState`.
 Cohorts are compared by hand; a learned retrieval policy is explicitly deferred
 (see Non-goals).
 
 ### What the assembly row stores
 
-References and provenance, **not retrieved content.** Per item: chunk id,
-corpus, `sourcePath`, step, reason, `derived_by`, mode, reranker presence, rank,
-score, `scoreBreakdown`. Full chunk text is never copied — join back to
-`knowledge_chunks`. That keeps rows small and shrinks the retention and
-disclosure surface to something manageable.
+References and provenance, **not retrieved content.** Full chunk text is never
+copied — join back to `knowledge_chunks`. That keeps rows small and shrinks the
+retention and disclosure surface to something manageable.
 
-Two honest qualifications on that:
+Per item: `namespace`, `corpus`, `chunkId`, `sourcePath`, step, reason,
+`derivedBy`, `modeRequested`, `signals`, `strength` + `strengthSignal`,
+`rerankApplied`, `graphProximity`, rank, `score`, `scoreBreakdown`. Per
+assembly: `assemblyId`, `at`, recipe, `source`, `workspaceId`, `teamId`,
+trigger, `derivedKeys`, the two escalation flags, and the chain.
 
-**The join can dangle.** Chunks are pruned and superseded — `pruneOrphans` in
-`apps/runner/src/knowledge-ingest.ts`, `supersedes`/`supersededBy` and
-`contentDedup` in `knowledge-store/types.ts`. A chunk retrieved today may be
-gone before anyone analyses the cohort, and an assembly row whose items are all
-dangling ids is uninterpretable. Hence `corpus` + `sourcePath` alongside the id:
-enough to tell what an evicted item *was* without storing what it *said*.
+Three qualifications, all of them things review had to correct:
 
-**Derived keys are still production data.** The record necessarily contains the
-error signature and repo-relative paths — that is the point of logging the
-transformation. Dropping chunk content reduces the volume a lot; it does not make
-the record non-sensitive. It stays out of fixtures, out of prompts and response
-bodies, and out of anything this repo publishes.
+**`namespace`, not just `corpus` — the join was ambiguous, not merely
+dangling.** `knowledge_chunks` is unique on `(namespace, source_id)`, and source
+ids are composite `path#line` values, so the same id exists in every workspace's
+`:code` namespace. Recording `chunkId` + `corpus` alone meant the join the
+no-content decision rests on could not identify a row across tenants. The
+assembly also carries `workspaceId` / `teamId`, without which the namespace
+cannot be reconstructed and no cohort can be segmented or have a noisy tenant
+excluded.
 
-In practice the exposure is narrower than the original wording implied. The
-signature is a scanner slug or a `worker-failure:<stem>_<hash>` from a hash of
-normalized text, and the paths are repo-relative — both already public-shaped
-for an open repo. The raw excerpt itself is **not** stored: it is read to
-extract paths and then dropped. Whether that stays true is the thing to guard if
-a future step keys on excerpt text directly.
+**The join can still dangle.** Chunks are pruned and superseded —
+`pruneOrphans` in `apps/runner/src/knowledge-ingest.ts`,
+`supersedes`/`supersededBy` and `contentDedup` in `knowledge-store/types.ts`. A
+chunk retrieved today may be gone before anyone analyses the cohort. Hence
+`sourcePath` alongside the id: enough to tell what an evicted item *was* without
+storing what it *said*. Note the limit of that mitigation — `memory` chunks are
+upserted with no `sourcePath`, so it is null on exactly the recipe's first step.
+
+**Derived keys are production data.** The record contains the error signature
+and repo-relative paths — that is the point of logging the transformation. The
+raw excerpt is **not** stored: it is read to extract paths and then dropped, and
+whether that stays true is the thing to guard if a future step keys on excerpt
+text directly. Paths are clamped, deduped, and capped. One honest gap:
+`friction-manifest.ts` returns a path unchanged when it matches neither
+`/apps/` nor `/packages/`, so an absolute host path from an error line can reach
+the log. No credential material, but host layout — and such a path is also
+useless as a search key, so dropping non-repo-relative paths would improve both.
 
 ### Where CBM fits
 
@@ -629,10 +884,17 @@ unfalsifiable.
    through to it.
 4. ~~Token caps + uncertainty notes.~~ `budgetChars` per recipe, truncating on
    whole lines, plus a per-recipe uncertainty trailer.
-5. ~~Assembly record.~~ Complete and emitted, one structured line per assembly
-   under `[context-assembly]` — references and provenance only, never chunk
-   content, with the chain identifiers rather than an outcome field.
+5. ~~Assembly record.~~ Emitted as two lines per assembly —
+   `[context-assembly]` (bounded aggregate) and `[context-assembly-items]`
+   (detail, joined on `assemblyId`) — references and provenance only, never
+   chunk content, with chain identifiers rather than an outcome field. Every
+   claim emits one, including fan-out claims, so the rates have a denominator.
    **Not yet persisted** — decision 7.
+
+   Complete for the metrics it was built for. Not complete in the abstract:
+   there is no claim id (nothing to record), plan-time triggers and
+   `source: 'eval'` are unreachable until a plan-time selector and an offline
+   caller exist, and `sourcePath` is null for `memory` chunks.
 
 **Next, in order.**
 
@@ -642,10 +904,15 @@ unfalsifiable.
    shape rather than a design question. Needs a retention answer (see Open
    questions).
 7. **Evaluate `tool-infra-error-v1` before adding a second recipe.** Fallback
-   rate and weak-escalation rate per recipe first — both are answerable from
-   the logs today and need no outcome labels. This gate is the point of the
-   phase; skipping it to add `conflict-v1` would forfeit the comparison that
-   justifies the whole design.
+   rate and weak-escalation rate per recipe first, against the fan-out cohort —
+   both answerable from the logs today with no outcome labels. This gate is the
+   point of the phase; skipping it to add `conflict-v1` would forfeit the
+   comparison that justifies the whole design.
+
+   Read the escalation rate before touching `MIN_STRONG_BY_SIGNAL`. The
+   thresholds are guesses; what makes them checkable now rather than later is
+   that a rate pinned at 0% or 100% is visible in the logs, which is exactly
+   what the previous `score`-based threshold hid.
 8. **Then plan-time.** `conflict-v1`, querying the `docs` corpus in the shared
    path, and lifting `extractImplementationAnchors` out of `mcp-tools.ts:4617`
    into a shared module for symbol-keyed `code` queries (regex, no model;
@@ -681,15 +948,27 @@ Also worth removing separately: the `spec`-namespace double-write at
   the vocabulary and recipe types are shared in `packages/core/retrieval-clusters.ts`,
   the selector is layer-specific (`selectExecCluster`). A plan-time selector
   lands with `conflict-v1`.
-- **Weakness thresholds.** Still open, and now the sharpest open question.
-  v1 ships `minStrongHits: 1` / `minStrongScore: 0.5` identically across every
-  step, which is a guess. It should come from the golden-query baseline
-  (`packages/core/scripts/eval/golden-queries.json`) instead — but the number
-  that actually matters is what fraction of real assemblies the threshold calls
-  weak, and that is only readable once `[context-assembly]` lines exist in
-  production. So the order is: ship the guess, read the escalation rate, then set
-  the value. A threshold that never fires and a threshold that always fires are
-  both invisible without that data, and both look like a working recipe.
+- **Weakness thresholds.** Still open, and still the sharpest question — but a
+  different one than before. `MIN_STRONG_BY_SIGNAL` ships `rerank: 0.5`,
+  `rrf: 1/61`, `dense: 0.5`, `lexical: 0.05`. Those are guesses. What changed is
+  that they are now guesses on a comparable scale rather than on a number whose
+  ceiling was below the threshold, so a rate pinned at 0% or 100% shows up in
+  the logs instead of looking like a working recipe. Order: ship the guess, read
+  the escalation rate against the fan-out cohort, then set the value — ideally
+  cross-checked against the golden-query baseline
+  (`packages/core/scripts/eval/golden-queries.json`).
+- **Whether `worker-failure:*` should ever select a recipe.** Excluding it
+  (decision 2) is right for a cohort-comparison phase, and it cuts the eligible
+  population hard, since that namespace is the common anchor for agent-filed
+  friction. The honest way back in is not to widen the allowlist but to widen
+  the scanner catalog, so those failures acquire a real slug. Worth revisiting
+  once there is a fallback rate to compare against.
+- **Non-repo-relative paths in derived keys.** `friction-manifest.ts` passes
+  through absolute host paths that match neither `/apps/` nor `/packages/`.
+  They are useless as search keys and they put host layout in the log, so
+  dropping them looks strictly better — but it changes `tasks.path_manifest`
+  inference for every friction task, not just this recipe, so it wants its own
+  change.
 
 ## Non-goals
 

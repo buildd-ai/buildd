@@ -59,6 +59,26 @@ const PATTERN_COMPONENT_MAP: Record<string, string[]> = {
 };
 
 /**
+ * Step 1 on its own: paths the error excerpt actually names.
+ *
+ * Split out from `inferFrictionManifest` because callers that RECORD where a
+ * search key came from need to distinguish "the error named this file" from
+ * "a static table guessed which component owns this slug". Those are different
+ * evidence, and the obvious question about them — does a named path retrieve
+ * better than a guessed one — is unanswerable if both wear one label.
+ */
+export function extractExcerptPaths(excerpt: string): string[] {
+  const rawMatches = typeof excerpt === 'string' ? excerpt.match(PATH_RE) : null;
+  if (!rawMatches || rawMatches.length === 0) return [];
+  return [...new Set(rawMatches.map(normalizePath))];
+}
+
+/** Step 2 on its own: the static per-slug component guess. */
+export function componentTablePaths(pattern: string): string[] {
+  return PATTERN_COMPONENT_MAP[pattern] ?? [];
+}
+
+/**
  * Infer a pathManifest for a friction task.
  *
  * @param pattern - The error-pattern slug (e.g. `bwrap_namespace_denied`).
@@ -66,13 +86,7 @@ const PATTERN_COMPONENT_MAP: Record<string, string[]> = {
  * @returns An array of repo-relative file paths, or [] if nothing can be inferred.
  */
 export function inferFrictionManifest(pattern: string, excerpt: string): string[] {
-  // Step 1: extract paths from the excerpt text.
-  const rawMatches = excerpt.match(PATH_RE);
-  if (rawMatches && rawMatches.length > 0) {
-    const normalized = [...new Set(rawMatches.map(normalizePath))];
-    return normalized;
-  }
-
-  // Step 2: fall back to the static component table.
-  return PATTERN_COMPONENT_MAP[pattern] ?? [];
+  const fromExcerpt = extractExcerptPaths(excerpt);
+  if (fromExcerpt.length > 0) return fromExcerpt;
+  return componentTablePaths(pattern);
 }

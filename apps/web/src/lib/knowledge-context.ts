@@ -9,15 +9,21 @@ import {
 } from '@buildd/core/knowledge-store';
 import type { QueryResult, CatalogEntity, QueryMode } from '@buildd/core/knowledge-store';
 import {
-  isStepWeak,
+  evaluateStep,
+  strengthOf,
+  summarizeAssembly,
   ASSEMBLY_LOG_PREFIX,
+  ASSEMBLY_ITEMS_LOG_PREFIX,
+  DEFAULT_FAN_OUT_RECIPE,
+  MAX_RECORDED_STRING,
   type ClusterRecipe,
   type ClusterStep,
   type ContextAssembly,
-  type AssemblyItem,
   type AssemblyChain,
   type DerivedBy,
+  type StrengthSignal,
 } from '@buildd/core/retrieval-clusters';
+import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 
 /** Minimal store shape used by buildKnowledgeContext (injectable for tests). */
 export type KnowledgeQuerier = {
@@ -192,14 +198,16 @@ export async function buildKnowledgeContext(
 
 /**
  * Render a hit and, where it applies, the stale-baseline warning underneath it.
- * Shared by the default fan-out and the clustered path so a cluster section can
- * never silently lose the warning the fan-out shows.
+ *
+ * Returned as a group and kept as a group: the budget below drops whole groups,
+ * because truncating between a hit and its "MAY ALREADY BE SHIPPED" warning
+ * would show the hit while silently dropping the reason not to trust it.
  */
 function renderHitLines(r: QueryResult): string[] {
   const lines = [renderHit(r)];
   if (isStaleBaseline(r)) {
     lines.push(
-      '  \u26a0 MAY ALREADY BE SHIPPED \u2014 read the merged diff before specing.' +
+      '  ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.' +
       ' Merged code may not be released, so the UI is not evidence.',
     );
   }
@@ -213,11 +221,9 @@ export type ClusterKeys = {
   /**
    * Provenance of `paths`, overriding the step's declared `derivedBy`.
    *
-   * A step declares the source it expects, but the truthful record is where the
-   * key actually came from on this assembly: `path_manifest` when the paths were
-   * read off tasks.path_manifest, `regex_path_extract` when they were pulled out
-   * of the error excerpt because the column was empty. Recording the step's
-   * expectation instead would put a claim in the log that the code did not make.
+   * A step declares the source it expects; the record stores where the key
+   * actually came from on this assembly. Recording the step's expectation would
+   * put a claim in the log that the code never made.
    */
   pathsDerivedBy?: DerivedBy;
   prose?: string;
@@ -237,18 +243,32 @@ export type ClusterRetrievalInput = {
 /** Cap on paths joined into one query key — mirrors the existing path lookup. */
 const MAX_KEY_PATHS = 20;
 
+/** Trim, drop blanks, drop the scope-undeclared sentinel, dedupe, cap. */
+function usablePaths(paths: readonly string[] | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of paths ?? []) {
+    if (typeof raw !== 'string') continue;
+    const p = raw.trim();
+    // The sentinel is not a path — it records that the filer never declared
+    // scope. Keying a query on it would ask for the whole repo.
+    if (!p || p === REPO_WIDE_SENTINEL || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p.length > MAX_RECORDED_STRING ? p.slice(0, MAX_RECORDED_STRING) : p);
+    if (out.length >= MAX_KEY_PATHS) break;
+  }
+  return out;
+}
+
+function keyForStep(step: ClusterStep, keys: ClusterKeys, paths: readonly string[]): string | null {
+  if (step.keyKind === 'signature') return keys.signature?.trim() || null;
+  if (step.keyKind === 'paths') return paths.length > 0 ? paths.join('\n') : null;
+  return keys.prose?.trim() || null;
+}
+
 function derivedByForStep(step: ClusterStep, keys: ClusterKeys): DerivedBy {
   if (step.keyKind === 'paths' && keys.pathsDerivedBy) return keys.pathsDerivedBy;
   return step.derivedBy;
-}
-
-function keyForStep(step: ClusterStep, keys: ClusterKeys): string | null {
-  if (step.keyKind === 'signature') return keys.signature?.trim() || null;
-  if (step.keyKind === 'paths') {
-    const paths = (keys.paths ?? []).filter(p => p && p !== '**');
-    return paths.length > 0 ? paths.slice(0, MAX_KEY_PATHS).join('\n') : null;
-  }
-  return keys.prose?.trim() || null;
 }
 
 function namespaceForStep(
@@ -260,23 +280,63 @@ function namespaceForStep(
   return workspaceId ? buildNamespace(workspaceId, step.corpus) : null;
 }
 
+function clamp(s: string | null | undefined): string | undefined {
+  if (typeof s !== 'string') return undefined;
+  return s.length > MAX_RECORDED_STRING ? s.slice(0, MAX_RECORDED_STRING) : s;
+}
+
+/** Round to 4dp so one full-precision float cannot bloat the detail line. */
+function round4(n: number | undefined): number | undefined {
+  return typeof n === 'number' ? Math.round(n * 1e4) / 1e4 : undefined;
+}
+
+/**
+ * A hit the store returned for the query, as opposed to a neighbour the graph
+ * walk appended. `_graphExpand` marks seeds with `graphProximity === 1.0` and
+ * neighbours below that; absent means expansion did not run at all.
+ */
+function isSeedHit(r: QueryResult): boolean {
+  return r.graphProximity === undefined || r.graphProximity >= 1;
+}
+
 /**
  * Apply the recipe's char budget to a rendered block.
  *
- * Truncation drops whole trailing lines rather than cutting mid-line, so a
- * clipped block never ends in half a file path that reads as a real one.
+ * Drops whole GROUPS — a hit and its warning travel together — and accounts for
+ * every line it emits, including the section headers, so `budgetChars` means
+ * what the type says it means. A section whose hits were all dropped is dropped
+ * with them rather than left as a dangling header.
  */
-function applyBudget(lines: string[], budgetChars: number): string[] {
-  let total = 0;
+function applyBudget(sections: string[][][], budgetChars: number): string[] {
   const kept: string[] = [];
-  for (const line of lines) {
-    if (total + line.length + 1 > budgetChars) {
-      kept.push(`  \u2026 truncated at the ${budgetChars}-char section budget.`);
-      break;
+  let total = 0;
+  let truncated = false;
+
+  for (const groups of sections) {
+    const [header, ...hitGroups] = groups;
+    if (!header) continue;
+    const headerLen = header.reduce((n, l) => n + l.length + 1, 0);
+    const pending: string[] = [];
+    let pendingLen = 0;
+
+    for (const group of hitGroups) {
+      const groupLen = group.reduce((n, l) => n + l.length + 1, 0);
+      if (total + headerLen + pendingLen + groupLen > budgetChars) {
+        truncated = true;
+        break;
+      }
+      pending.push(...group);
+      pendingLen += groupLen;
     }
-    kept.push(line);
-    total += line.length + 1;
+
+    if (pending.length > 0) {
+      kept.push(...header, ...pending);
+      total += headerLen + pendingLen;
+    }
+    if (truncated) break;
   }
+
+  if (truncated) kept.push(`  … truncated at the ${budgetChars}-char section budget.`);
   return kept;
 }
 
@@ -288,31 +348,38 @@ function applyBudget(lines: string[], budgetChars: number): string[] {
  *
  * 1. It never throws. Retrieval is best-effort on both call paths, so a broken
  *    recipe degrades to the caller's default fan-out rather than failing a
- *    claim or a planning pass.
- * 2. It never stores retrieved content in the assembly record — only chunk id,
- *    corpus, sourcePath, and provenance. Join back to knowledge_chunks for the
- *    text.
+ *    claim or a planning pass. The claim route calls its caller with no
+ *    try/catch, after the worker rows are already committed, so a throw here
+ *    would mean a 500 with tasks stranded in `assigned`.
+ * 2. It never stores retrieved content in the assembly record — only ids,
+ *    namespace, sourcePath, and provenance. Join back to knowledge_chunks for
+ *    the text.
  *
- * Steps are PRIORITIES, NOT EXCLUSIONS. An `onlyWhenWeak` step fires when every
- * preceding step came back weak, and the escalation is recorded. When the whole
- * recipe yields nothing renderable the caller falls back to the prose fan-out —
- * that is what keeps this an ordering rather than a filter.
+ * Steps are PRIORITIES, NOT EXCLUSIONS. The unconditional steps run in
+ * parallel; an `onlyWhenWeak` step then fires if every one of them came back
+ * weak. When the whole recipe yields nothing renderable the caller falls back
+ * to the prose fan-out, and `fallbackFired` records it.
  */
 export async function buildClusteredKnowledgeContext(
   input: ClusterRetrievalInput,
 ): Promise<{ parts: string[]; assembly: ContextAssembly }> {
   const { recipe, keys, workspaceId, teamId, trigger, chain } = input;
   const sensitive = input.opts?.sensitive ?? false;
+  const paths = usablePaths(keys.paths);
 
   const assembly: ContextAssembly = {
-    assemblyId: crypto.randomUUID(),
+    // Not crypto.randomUUID(): that would be the one line in a function
+    // documented as never throwing that could propagate.
+    assemblyId: '',
+    at: new Date().toISOString(),
     recipe: recipe.name,
     source: input.opts?.source ?? 'live',
+    workspaceId: workspaceId ?? null,
+    teamId: teamId ?? null,
     trigger,
-    derivedKeys: {
-      signature: keys.signature ?? null,
-      paths: (keys.paths ?? []).slice(0, MAX_KEY_PATHS),
-    },
+    // The keys ACTUALLY QUERIED, post-trim and post-sentinel-removal. Recording
+    // the raw input would log keys no query ever used.
+    derivedKeys: { paths },
     items: [],
     weakEscalationFired: false,
     fallbackFired: false,
@@ -320,32 +387,22 @@ export async function buildClusteredKnowledgeContext(
   };
 
   try {
+    assembly.assemblyId = crypto.randomUUID();
     const ks: KnowledgeQuerier = input.store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
-    const sections: string[][] = [];
-    // Weakness is judged over the unconditional steps only; an escalation step
-    // that fires must not then gate a later one on its own result.
-    const priorWeak: boolean[] = [];
 
-    for (const step of recipe.steps) {
+    /** Render + record one step's outcome. Returns the section's line groups, or null. */
+    const runStep = async (step: ClusterStep): Promise<{ weak: boolean; groups: string[][] | null }> => {
       // Sensitivity is a recipe change, not a filter: tool-infra-error-v1 loses
-      // its own first step in a sensitive workspace. Logged, because otherwise
+      // its own step 1 in a sensitive workspace. Logged, because otherwise
       // cohorts silently mix two populations.
       if (step.scope === 'team' && sensitive) {
         assembly.items.push({ step: step.step, corpus: step.corpus, reason: 'memory_skipped_sensitive' });
-        // A step that could not run is not evidence of strength. Same treatment
-        // as a step with no key below, so escalation depends on what retrieval
-        // actually found rather than on which reason stopped a step.
-        priorWeak.push(true);
-        continue;
-      }
-
-      if (step.onlyWhenWeak) {
-        const everyPriorWeak = priorWeak.length > 0 && priorWeak.every(Boolean);
-        if (!everyPriorWeak) continue;
+        // A step that could not run is not evidence of strength.
+        return { weak: true, groups: null };
       }
 
       const ns = namespaceForStep(step, workspaceId, teamId);
-      const text = keyForStep(step, keys);
+      const text = keyForStep(step, keys, paths);
       if (!ns || !text) {
         assembly.items.push({
           step: step.step,
@@ -353,101 +410,205 @@ export async function buildClusteredKnowledgeContext(
           reason: 'step_skipped_no_keys',
           derivedBy: derivedByForStep(step, keys),
         });
-        if (!step.onlyWhenWeak) priorWeak.push(true);
-        continue;
+        return { weak: true, groups: null };
       }
 
       const results = await ks
         .query(ns, { text, topK: step.topK, mode: step.mode })
         .catch(() => [] as QueryResult[]);
 
-      if (step.onlyWhenWeak) assembly.weakEscalationFired = true;
-      if (!step.onlyWhenWeak) priorWeak.push(isStepWeak(results, step));
+      // Strength is judged over SEED hits only. A graph neighbour was not
+      // returned by this query, so letting it satisfy the step's threshold
+      // would credit the key for a result an entity edge produced.
+      const seeds = results.filter(isSeedHit);
+      const evaluation = evaluateStep(seeds, step);
 
       if (results.length === 0) {
-        // The step ran and returned nothing. Recorded as its own reason rather
-        // than as a `_query_hit` at rank 0, which would be a hit that did not
-        // happen — the exact relevance claim the vocabulary forbids.
+        // The step ran and returned nothing. Its own reason, not a `_query_hit`
+        // at rank 0 — a hit that did not happen would break the naming rule
+        // from the inside.
         assembly.items.push({
           step: step.step,
           corpus: step.corpus,
+          namespace: ns,
           reason: 'step_query_empty',
           derivedBy: derivedByForStep(step, keys),
-          mode: step.mode,
+          modeRequested: step.mode,
         });
-        continue;
+        return { weak: evaluation.weak, groups: null };
       }
 
-      const lines = [`\n### ${step.label}`];
+      const groups: string[][] = [[`\n### ${step.label}`]];
       results.forEach((r, i) => {
-        lines.push(...renderHitLines(r));
+        groups.push(renderHitLines(r));
+        const seed = isSeedHit(r);
+        const { value, signal } = strengthOf(r);
+        const present: StrengthSignal[] = [];
+        if (typeof r.scoreBreakdown?.rerank === 'number') present.push('rerank');
+        if (typeof r.scoreBreakdown?.rrf === 'number') present.push('rrf');
+        if (typeof r.scoreBreakdown?.dense === 'number') present.push('dense');
+        if (typeof r.scoreBreakdown?.lexical === 'number') present.push('lexical');
+
         assembly.items.push({
           step: step.step,
           corpus: r.corpus ?? step.corpus,
-          chunkId: r.id,
-          sourcePath: r.sourcePath ?? null,
-          reason: step.reasonOnHit,
+          namespace: ns,
+          chunkId: clamp(r.id),
+          sourcePath: clamp(r.sourcePath) ?? null,
+          // A neighbour reached through an entity edge did not come back from a
+          // query keyed on this step's key, so it does not get to claim it did.
+          reason: seed ? step.reasonOnHit : 'graph_expansion_hit',
           derivedBy: derivedByForStep(step, keys),
-          mode: step.mode,
-          // Read off the breakdown rather than assumed from configuration: the
-          // same corpus and mode score differently with a reranker in the
-          // pipeline, so this is what makes rows comparable.
-          reranked: r.scoreBreakdown?.rerank !== undefined,
+          modeRequested: step.mode,
+          signals: present,
+          strength: seed ? round4(value ?? undefined) ?? null : null,
+          strengthSignal: seed ? signal : undefined,
+          rerankApplied: typeof r.scoreBreakdown?.rerank === 'number',
+          graphProximity: round4(r.graphProximity),
           rank: i + 1,
-          score: r.score,
-          scoreBreakdown: r.scoreBreakdown,
+          score: round4(r.score),
+          scoreBreakdown: r.scoreBreakdown && {
+            dense: round4(r.scoreBreakdown.dense),
+            lexical: round4(r.scoreBreakdown.lexical),
+            rrf: round4(r.scoreBreakdown.rrf),
+            rerank: round4(r.scoreBreakdown.rerank),
+          },
         });
       });
-      sections.push(lines);
+      return { weak: evaluation.weak, groups };
+    };
+
+    const unconditional = recipe.steps.filter(s => !s.onlyWhenWeak);
+    const escalations = recipe.steps.filter(s => s.onlyWhenWeak);
+
+    // Parallel: the unconditional steps have no data dependency on each other.
+    // Serially awaiting them cost one embed+rerank round-trip each, per worker,
+    // on a route with no maxDuration.
+    const settled = await Promise.all(unconditional.map(runStep));
+    const sections = settled.map(r => r.groups).filter((g): g is string[][] => g !== null);
+    const everyPriorWeak = settled.length > 0 && settled.every(r => r.weak);
+
+    for (const step of escalations) {
+      if (!everyPriorWeak) {
+        // The fourth outcome. Without this row, "the gate held" would be
+        // indistinguishable from "this recipe has no step 4".
+        assembly.items.push({
+          step: step.step,
+          corpus: step.corpus,
+          reason: 'step_skipped_priors_strong',
+          derivedBy: derivedByForStep(step, keys),
+        });
+        continue;
+      }
+      // Set when the GATE OPENS, not when the query succeeds: an escalation
+      // that passed the gate and then had no key to query still escalated, and
+      // that is the recipe's most likely failure mode.
+      assembly.weakEscalationFired = true;
+      const { groups } = await runStep(step);
+      if (groups) sections.push(groups);
     }
 
-    const body = sections.flat();
-    if (body.length === 0) return { parts: [], assembly };
+    // Budget first, emptiness after. A block whose only surviving line is the
+    // truncation notice carries no retrieved content, and treating it as a
+    // result would suppress the fan-out in exchange for nothing.
+    const body = applyBudget(sections, recipe.budgetChars);
+    const hasContent = body.some(line => line.startsWith('- '));
+    if (!hasContent) {
+      assembly.fallbackFired = true;
+      return { parts: [], assembly };
+    }
 
+    const hint = await buildCorporaHint(workspaceId, teamId, ks, sensitive);
     const parts = [
-      `\n## Related prior work \u2014 ${recipe.name}`,
-      ...applyBudget(body, recipe.budgetChars),
+      ...(hint ? [hint] : []),
+      `\n## Related prior work — ${recipe.name}`,
+      ...body,
       `\n_${recipe.uncertaintyNote}_`,
     ];
     return { parts, assembly };
   } catch {
-    // Non-fatal by contract. The assembly record survives so a failed recipe is
-    // visible as an empty one rather than as an absence.
+    // Non-fatal by contract. The record survives so a failed recipe is visible
+    // as an empty one rather than as an absence.
+    assembly.fallbackFired = true;
     return { parts: [], assembly };
   }
 }
 
 /**
- * Emit the assembly record.
+ * Build the record for a claim that took the untouched five-corpus fan-out.
  *
- * A single structured line with a stable prefix, greppable in production —
- * the same shadow-first shape the worker-lease rollout used before its own
- * table landed. Persisting these rows (and the criterion transitions that
- * follow them) is the next step; the record is complete here so that step is a
- * writer, not a redesign.
+ * This is the DENOMINATOR, and it is not optional. Without it, "no
+ * tool-infra-error-v1 lines today" is indistinguishable from "no eligible
+ * tasks" and from "the selector regressed" — the exact green-over-an-empty-set
+ * shape this design exists to avoid rather than reproduce. It also gives the
+ * cohort comparison its control arm.
  *
- * Never called for `source: 'eval'` cohorts by callers that run offline scoring.
+ * It carries one item and no chunk references because the fan-out produces no
+ * per-item provenance. That asymmetry is the point: the fan-out cannot say why
+ * it returned anything, which is the thing recipes change.
+ */
+export function buildFanOutAssembly(args: {
+  workspaceId?: string | null;
+  teamId?: string | null;
+  trigger: ContextAssembly['trigger'];
+  chain: AssemblyChain;
+  rendered: boolean;
+  source?: 'live' | 'eval';
+}): ContextAssembly {
+  let assemblyId = '';
+  try {
+    assemblyId = crypto.randomUUID();
+  } catch {
+    assemblyId = '';
+  }
+  return {
+    assemblyId,
+    at: new Date().toISOString(),
+    recipe: DEFAULT_FAN_OUT_RECIPE,
+    source: args.source ?? 'live',
+    workspaceId: args.workspaceId ?? null,
+    teamId: args.teamId ?? null,
+    trigger: args.trigger,
+    derivedKeys: {},
+    items: args.rendered
+      ? [{ step: 0, reason: 'fallback_semantic_search', derivedBy: 'prose_goal' }]
+      : [{ step: 0, reason: 'step_query_empty', derivedBy: 'prose_goal' }],
+    weakEscalationFired: false,
+    fallbackFired: false,
+    chain: args.chain,
+  };
+}
+
+/**
+ * Emit the assembly record as two lines: a bounded aggregate, then the items.
+ *
+ * Two lines rather than one because a log line truncated mid-array is invalid
+ * JSON — `JSON.parse` rejects the whole line, so any aggregate fields riding on
+ * it are lost with it regardless of where they sit. The aggregate line is small
+ * by construction and cannot be the line that gets cut; losing a detail line
+ * costs detail only. Joined on `assemblyId`.
+ *
+ * A shadow-first shape, the same one the worker-lease rollout used before its
+ * own table landed: greppable in production, no migration, and the record is
+ * already complete so the table is later a writer rather than a redesign.
  */
 export function logContextAssembly(assembly: ContextAssembly): void {
   try {
-    // Field order is load-bearing, not cosmetic. Log lines get truncated at a
-    // platform-defined length, and a truncated line is unparseable JSON — so
-    // whatever sits at the end is what a long assembly silently loses. The
-    // aggregate fields the day-one metrics are computed from go FIRST and the
-    // unbounded `items` array goes LAST, so truncation costs per-item detail
-    // rather than quietly biasing the fallback rate downward.
-    const { assemblyId, recipe, source, weakEscalationFired, fallbackFired, trigger, derivedKeys, chain, items } =
-      assembly;
-    const ordered = {
-      assemblyId, recipe, source,
-      weakEscalationFired, fallbackFired,
-      itemCount: items.length,
-      trigger, derivedKeys, chain,
-      items,
-    };
-    console.log(`${ASSEMBLY_LOG_PREFIX} ${JSON.stringify(ordered)}`);
+    console.log(`${ASSEMBLY_LOG_PREFIX} ${JSON.stringify(summarizeAssembly(assembly))}`);
   } catch {
     // Logging must never affect the request.
+  }
+  try {
+    if (assembly.items.length === 0) return;
+    console.log(
+      `${ASSEMBLY_ITEMS_LOG_PREFIX} ${JSON.stringify({
+        assemblyId: assembly.assemblyId,
+        derivedKeys: assembly.derivedKeys,
+        items: assembly.items,
+      })}`,
+    );
+  } catch {
+    // Ditto.
   }
 }
 
