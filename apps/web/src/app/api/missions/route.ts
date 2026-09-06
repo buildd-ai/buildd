@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, workspaces, taskSchedules, initiatives } from '@buildd/core/db/schema';
+import { missions, workspaces, taskSchedules, initiatives, type WorkspaceGitConfig } from '@buildd/core/db/schema';
+import { resolveBranchStrategy } from '@buildd/core/branch-strategy';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -231,11 +232,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    let workspaceGitConfig: WorkspaceGitConfig | null = null;
     if (workspaceId) {
       // Look up workspace without team filter — then verify user has access
       const ws = await db.query.workspaces.findFirst({
         where: eq(workspaces.id, workspaceId),
-        columns: { id: true, teamId: true, accessMode: true },
+        columns: { id: true, teamId: true, accessMode: true, gitConfig: true },
       });
       if (!ws) {
         return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
@@ -250,7 +252,13 @@ export async function POST(req: NextRequest) {
       }
       // Workspace is the stronger signal — derive team from it
       teamId = ws.teamId;
+      workspaceGitConfig = (ws.gitConfig as WorkspaceGitConfig | null) ?? null;
     }
+
+    // Workspace-level default for a NEW mission's git workflow. Resolved once,
+    // here, at create time only — an existing mission's own integrationBranchEnabled
+    // stays the runtime truth from then on (see missionIntegrationBase()).
+    const integrationBranchEnabled = resolveBranchStrategy(workspaceGitConfig) === 'mission-branch';
 
     // Cycle guard for dependency chain
     if (dependsOnMission) {
@@ -294,6 +302,7 @@ export async function POST(req: NextRequest) {
         createdByUserId: user?.id || null,
         orchestrationMode: effectiveOrchestrationMode,
         isHeld: effectiveIsHeld,
+        integrationBranchEnabled,
         ...(defaultBackend ? { defaultBackend } : {}),
         ...(requiresReview === true ? { requiresReview: true } : {}),
         ...(dependsOnMission ? { dependsOnMissionId: dependsOnMission, gateCondition: gateCondition || 'merged' } : {}),

@@ -164,6 +164,14 @@ export const accountWorkspaces = pgTable('account_workspaces', {
   pk: primaryKey({ columns: [t.accountId, t.workspaceId] }),
 }));
 
+// Which git workflow a new mission uses by default — see resolveBranchStrategy()
+// in branch-strategy.ts, the single place a workspace resolves to one of these.
+//   - 'mission-branch': task PRs base on the mission's shared integration
+//     branch; one mission PR carries the batch into the workspace's default
+//     branch, reviewed and revertable as one commit.
+//   - 'direct': every task PR merges into the default branch on its own.
+export type BranchStrategy = 'mission-branch' | 'direct';
+
 // Git workflow configuration type
 export interface WorkspaceGitConfig {
   // Branching
@@ -171,6 +179,18 @@ export interface WorkspaceGitConfig {
   branchingStrategy: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom';
   branchPrefix?: string;              // 'feature/', 'buildd/', null for none
   useBuildBranch?: boolean;          // Use buildd/task-id naming
+
+  // Default branch strategy for NEW missions (resolved via resolveBranchStrategy()
+  // in branch-strategy.ts — never inline `gitConfig?.branchStrategy ?? '...'` at a
+  // call site, that is how two defaults end up disagreeing six weeks apart).
+  // Applies only at mission-create time, setting the new mission's own
+  // `integrationBranchEnabled`; an existing mission's flag is the runtime truth
+  // from then on (see `missionIntegrationBase()` in mission-integration.ts).
+  //
+  // Absent ⇒ 'mission-branch' (opt-OUT) — the same shape as `autoMergeOnGreenCI`
+  // replacing `autoMergePR` below: an unconfigured workspace gets the newer,
+  // batched-PR default, not the legacy per-task one.
+  branchStrategy?: BranchStrategy;
 
   // Commit conventions
   commitStyle: 'conventional' | 'freeform' | 'custom';

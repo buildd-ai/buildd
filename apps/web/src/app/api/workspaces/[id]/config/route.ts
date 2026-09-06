@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy } from '@buildd/core/db/schema';
+import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type ReleaseTrigger, type ReleaseStrategy, type BranchStrategy } from '@buildd/core/db/schema';
+import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -290,6 +291,12 @@ export async function POST(
                 ? { mergePolicy: existing.gitConfig.mergePolicy }
                 : {}),
 
+            // Preserve branchStrategy — managed via explicit branchStrategy field below or
+            // PATCH gitConfig.branchStrategy, not this form.
+            ...(existing?.gitConfig?.branchStrategy
+                ? { branchStrategy: existing.gitConfig.branchStrategy }
+                : {}),
+
             // Agent instructions
             agentInstructions: body.agentInstructions || undefined,
             useClaudeMd: body.useClaudeMd ?? true,
@@ -394,6 +401,21 @@ export async function POST(
             }
         }
 
+        // branchStrategy write-path validation: unknown values rejected, not silently stored
+        if (body.branchStrategy !== undefined) {
+            if (body.branchStrategy === null) {
+                // Explicit null clears the override (falls back to 'mission-branch' at runtime)
+                gitConfig.branchStrategy = undefined;
+            } else if (!isValidBranchStrategy(body.branchStrategy)) {
+                return NextResponse.json(
+                    { error: `Invalid branchStrategy '${body.branchStrategy}'. Valid: ${BRANCH_STRATEGIES.join(', ')}` },
+                    { status: 400 },
+                );
+            } else {
+                gitConfig.branchStrategy = body.branchStrategy as BranchStrategy;
+            }
+        }
+
         await db
             .update(workspaces)
             .set({
@@ -410,15 +432,21 @@ export async function POST(
     }
 }
 
-// PATCH /api/workspaces/[id]/config — partial releaseConfig update
+// PATCH /api/workspaces/[id]/config — partial releaseConfig and/or branchStrategy update
 //
-// Accepts only { releaseConfig: Partial<WorkspaceReleaseConfig> }. Use POST for
-// gitConfig changes. PATCH is the preferred endpoint for the Release UI section.
+// Accepts { releaseConfig?: Partial<WorkspaceReleaseConfig>, branchStrategy?: BranchStrategy | null },
+// at least one of the two. Use POST for the rest of gitConfig. PATCH is the preferred
+// endpoint for the Release and Branch Strategy UI sections, since each writes
+// independently of the other gitConfig fields the full GitConfigForm manages.
 //
-// strategy='none' disables releases (sets enabled:false, clears strategy fields).
-// trigger validation enforces the ReleaseTrigger enum.
-// branch_merge: prodBranch must be a string if provided.
-// workflow_dispatch: workflowFile + ref must be strings if provided.
+// releaseConfig:
+//   strategy='none' disables releases (sets enabled:false, clears strategy fields).
+//   trigger validation enforces the ReleaseTrigger enum.
+//   branch_merge: prodBranch must be a string if provided.
+//   workflow_dispatch: workflowFile + ref must be strings if provided.
+//
+// branchStrategy: 'mission-branch' | 'direct' | null (null clears the override,
+// falling back to 'mission-branch' at runtime — see resolveBranchStrategy()).
 export async function PATCH(
     req: NextRequest,
     { params }: { params: Promise<{ id: string }> }
@@ -446,29 +474,59 @@ export async function PATCH(
             return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
         }
 
-        if (!body || typeof body !== 'object' || !('releaseConfig' in body)) {
-            return NextResponse.json({ error: 'Body must contain releaseConfig' }, { status: 400 });
+        const hasReleaseConfig = !!body && typeof body === 'object' && 'releaseConfig' in body;
+        const hasBranchStrategy = !!body && typeof body === 'object' && 'branchStrategy' in body;
+        if (!hasReleaseConfig && !hasBranchStrategy) {
+            return NextResponse.json({ error: 'Body must contain releaseConfig or branchStrategy' }, { status: 400 });
         }
 
-        const rc = (body as Record<string, unknown>).releaseConfig;
+        let responseBody: Record<string, unknown> = { success: true };
 
-        // null / explicit null disables releases
-        if (rc === null) {
-            await db.update(workspaces).set({ releaseConfig: null, updatedAt: new Date() }).where(eq(workspaces.id, id));
-            return NextResponse.json({ success: true, releaseConfig: null });
+        if (hasBranchStrategy) {
+            const bs = (body as Record<string, unknown>).branchStrategy;
+            if (bs !== null && !isValidBranchStrategy(bs)) {
+                return NextResponse.json(
+                    { error: `Invalid branchStrategy '${bs}'. Valid: ${BRANCH_STRATEGIES.join(', ')}` },
+                    { status: 400 },
+                );
+            }
+            const existing = await db.query.workspaces.findFirst({
+                where: eq(workspaces.id, id),
+                columns: { gitConfig: true },
+            });
+            const gitConfig: WorkspaceGitConfig = { ...(existing?.gitConfig ?? {} as WorkspaceGitConfig) };
+            if (bs === null) {
+                gitConfig.branchStrategy = undefined;
+            } else {
+                gitConfig.branchStrategy = bs as BranchStrategy;
+            }
+            await db.update(workspaces).set({ gitConfig, updatedAt: new Date() }).where(eq(workspaces.id, id));
+            responseBody = { ...responseBody, gitConfig };
         }
 
-        const parsed = parseReleaseConfig(rc);
-        if (!parsed.ok) {
-            return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+        if (hasReleaseConfig) {
+            const rc = (body as Record<string, unknown>).releaseConfig;
+
+            // null / explicit null disables releases
+            if (rc === null) {
+                await db.update(workspaces).set({ releaseConfig: null, updatedAt: new Date() }).where(eq(workspaces.id, id));
+                responseBody = { ...responseBody, releaseConfig: null };
+            } else {
+                const parsed = parseReleaseConfig(rc);
+                if (!parsed.ok) {
+                    return NextResponse.json({ error: parsed.error }, { status: parsed.status });
+                }
+
+                await db
+                    .update(workspaces)
+                    .set({ releaseConfig: parsed.config, updatedAt: new Date() })
+                    .where(eq(workspaces.id, id));
+
+                responseBody = { ...responseBody, releaseConfig: parsed.config };
+            }
         }
 
-        await db
-            .update(workspaces)
-            .set({ releaseConfig: parsed.config, updatedAt: new Date() })
-            .where(eq(workspaces.id, id));
-
-        return NextResponse.json({ success: true, releaseConfig: parsed.config });
+        return NextResponse.json(responseBody);
     } catch (error) {
         console.error('PATCH workspace config error:', error);
         return NextResponse.json({ error: 'Failed to save config' }, { status: 500 });

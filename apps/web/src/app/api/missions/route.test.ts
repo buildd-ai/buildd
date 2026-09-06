@@ -571,6 +571,64 @@ describe('POST /api/missions', () => {
     expect(insertedMissionValues.initiativeId).toBeNull();
   });
 
+  it('defaults integrationBranchEnabled to true when workspace has no branchStrategy set (opt-out default)', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', teamId: 'team-1', gitConfig: null });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Default strategy mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
+  it('sets integrationBranchEnabled to true when workspace explicitly resolves to mission-branch', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+      gitConfig: { branchStrategy: 'mission-branch' },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Explicit mission-branch mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
+  it('sets integrationBranchEnabled to false when workspace resolves to direct', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+      gitConfig: { branchStrategy: 'direct' },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Direct strategy mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(false);
+  });
+
+  it('defaults integrationBranchEnabled to true for a workspace-less mission', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'No workspace mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
   it('still succeeds when auto-start organizer fails', async () => {
     mockRunMission.mockRejectedValue(new Error('dispatch failed'));
 
