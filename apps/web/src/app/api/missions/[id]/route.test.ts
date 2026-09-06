@@ -830,6 +830,81 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(note.body).toBe('active → paused');
   });
 
+  it('records an override note when completed while criteria are failing', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
+    expect(note).toBeDefined();
+    expect(note.body).toContain('set to completed');
+    expect(note.body).toContain('fail');
+  });
+
+  it('records an override note when archived directly while criteria are unverified — skipping "completed" must not skip the audit', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'UNVERIFIED', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'archived' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
+    expect(note).toBeDefined();
+    expect(note.body).toContain('set to archived');
+    expect(note.body).toContain('UNVERIFIED');
+  });
+
+  it('does not re-audit archiving a mission that already completed cleanly', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'completed',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'archived' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(insertedNotes.some((n) => n.title === 'Goal criteria gate overridden')).toBe(false);
+  });
+
   it('names each added goal criterion', async () => {
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
