@@ -631,6 +631,23 @@ describe('pr-state-refresh repo resolution', () => {
     );
   });
 
+  it('takes the fallback repo from the linked row, not the stale text column', async () => {
+    // See the matching case in pr-reconcile.test.ts: the linked github_repos
+    // row follows a repo rename, the free-text column does not.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/old-name',
+      githubRepo: { fullName: 'owner/new-name', repoId: 12345, installation: { installationId: 123 } },
+    });
+    makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/new-name/pulls/42');
+  });
+
   it('asks for prUrl in the candidate column set', async () => {
     // Without the column the resolver only ever sees the workspace repo, which
     // silently reinstates both bugs.

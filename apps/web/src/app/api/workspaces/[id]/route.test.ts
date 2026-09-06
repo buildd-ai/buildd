@@ -45,12 +45,16 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
-  ilike: (field: any, value: any) => ({ field, value, type: 'ilike' }),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: any[]) => ({ op: 'sql', strings: [...strings], values }),
+    { raw: (v: string) => ({ op: 'sql.raw', v }) },
+  ),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   workspaces: { id: 'id', teamId: 'teamId' },
   githubRepos: { fullName: 'fullName' },
+  workers: { prNumber: 'prNumber', prUrl: 'prUrl' },
 }));
 
 const originalNodeEnv = process.env.NODE_ENV;
@@ -283,6 +287,74 @@ describe('PATCH /api/workspaces/[id]', () => {
     expect(data.success).toBe(true);
   });
 
+  // ── Repo normalization on write ──────────────────────────────────────────
+  //
+  // `workspaces.repo` was stored exactly as pasted, so the column filled up
+  // with `https://github.com/owner/name` and every consumer that interpolated
+  // it into a GitHub API path 404'd (PR #2125). Normalizing on write means new
+  // rows cannot drift into that shape regardless of what a caller sends.
+  //
+  // The two tests above this only asserted a 200, which is why the shape of
+  // what got written was never checked.
+
+  it('stores a pasted repo url as a canonical owner/name slug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { repoUrl: 'https://github.com/org/new-repo' },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(capturedUpdates.repo).toBe('org/new-repo');
+  });
+
+  it('normalizes every stored form to the same slug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    for (const raw of [
+      'org/new-repo',
+      'https://github.com/org/new-repo',
+      'https://github.com/org/new-repo.git',
+      'git@github.com:org/new-repo.git',
+      'https://www.github.com/org/new-repo/',
+    ]) {
+      const req = createMockRequest({ method: 'PATCH', body: { repo: raw } });
+      await PATCH(req, { params: mockParams });
+      expect(capturedUpdates.repo).toBe('org/new-repo');
+    }
+  });
+
+  it('keeps input it cannot parse instead of destroying it', async () => {
+    // The column's remaining job is user-declared intent — a repo the App is
+    // not installed on, or a non-GitHub host. Those must survive verbatim
+    // rather than be nulled out or mangled into a fake slug.
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    for (const raw of ['https://gitlab.com/org/new-repo', 'some-internal-name']) {
+      const req = createMockRequest({ method: 'PATCH', body: { repo: raw } });
+      await PATCH(req, { params: mockParams });
+      expect(capturedUpdates.repo).toBe(raw);
+    }
+  });
+
+  it('does not auto-link a github repo from a branch or PR url', async () => {
+    // Regression: the old parser took the LAST two path segments, so
+    // `.../owner/name/tree/dev` yielded `tree/dev` — a lookup for a repo that
+    // does not exist, and an ingest job enqueued against it.
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGithubReposFindFirst.mockReset();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      body: { repo: 'https://github.com/org/new-repo/tree/dev' },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockGithubReposFindFirst).not.toHaveBeenCalled();
+    expect(capturedUpdates).not.toHaveProperty('githubRepoId');
+  });
+
   it('updates workspace defaultBranch', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 
@@ -367,17 +439,18 @@ describe('PATCH /api/workspaces/[id]', () => {
     mockGithubReposFindFirst.mockResolvedValue({
       id: 'github-repo-uuid',
       installationId: 'installation-uuid',
-      fullName: 'buildd-ai/dispatch',
+      fullName: 'some-org/linked-repo',
     });
 
     const req = createMockRequest({
       method: 'PATCH',
-      body: { repoUrl: 'https://github.com/buildd-ai/dispatch' },
+      body: { repoUrl: 'https://github.com/some-org/linked-repo' },
     });
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(200);
-    expect(capturedUpdates.repo).toBe('https://github.com/buildd-ai/dispatch');
+    // Stored as a slug, not as pasted — see the normalization cases above.
+    expect(capturedUpdates.repo).toBe('some-org/linked-repo');
     expect(capturedUpdates.githubRepoId).toBe('github-repo-uuid');
     expect(capturedUpdates.githubInstallationId).toBe('installation-uuid');
   });
@@ -393,7 +466,7 @@ describe('PATCH /api/workspaces/[id]', () => {
     const res = await PATCH(req, { params: mockParams });
 
     expect(res.status).toBe(200);
-    expect(capturedUpdates.repo).toBe('https://github.com/some-org/unknown-repo');
+    expect(capturedUpdates.repo).toBe('some-org/unknown-repo');
     expect(capturedUpdates.githubRepoId).toBeUndefined();
     expect(capturedUpdates.githubInstallationId).toBeUndefined();
   });

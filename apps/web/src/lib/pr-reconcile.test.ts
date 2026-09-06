@@ -1072,6 +1072,29 @@ describe('reconcileStalePrWorkers repo resolution', () => {
     expect(written.prCheckFailureCount).toBe(1);
   });
 
+  it('takes the fallback repo from the linked row, not the stale text column', async () => {
+    // The rename case, and the reason identity comes from `github_repos`:
+    // that table is keyed on GitHub's immutable repoId and refreshed on every
+    // installation sync, so it follows a rename. `workspaces.repo` never does.
+    // Normalizing the text column would have produced a well-formed slug for
+    // a repo that no longer exists — a 404 that passes every validation.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', prUrl: null, prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/old-name',
+      githubRepo: {
+        fullName: 'owner/new-name',
+        repoId: 12345,
+        installation: { installationId: 123 },
+      },
+    });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/new-name/pulls/42');
+  });
+
   it('does not fabricate a PR number from a pull/new compare url', async () => {
     // A worker that prepared a branch but never opened a PR stores
     // `.../pull/new/<branch>` with prNumber NULL. If such a row ever reaches

@@ -254,6 +254,49 @@ describe('POST /api/workspaces', () => {
     expect(res.status).toBe(200);
   });
 
+  // ── Repo normalization on write ──────────────────────────────────────────
+  //
+  // See the PATCH cases in [id]/route.test.ts. The column filled up with
+  // `https://github.com/owner/name`, and every consumer that built a GitHub
+  // API path from it 404'd (PR #2125). Normalizing here keeps new rows clean.
+
+  it('stores a pasted repo url as a canonical owner/name slug', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'my-repo' }]) }));
+    mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+
+    const req = createMockPostRequest({ repoUrl: 'https://github.com/user/my-repo.git' });
+    await POST(req);
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'user/my-repo' }),
+    );
+  });
+
+  it('keeps repo input it cannot parse instead of destroying it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'x' }]) }));
+    mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+
+    const req = createMockPostRequest({ name: 'x', repoUrl: 'https://gitlab.com/user/my-repo' });
+    await POST(req);
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ repo: 'https://gitlab.com/user/my-repo' }),
+    );
+  });
+
+  it('stores null, not an empty string, when no repo is given', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const valuesMock = mock(() => ({ returning: mock(() => [{ id: 'ws-new', name: 'x' }]) }));
+    mockWorkspacesInsert.mockReturnValue({ values: valuesMock });
+
+    const req = createMockPostRequest({ name: 'x' });
+    await POST(req);
+
+    expect(valuesMock).toHaveBeenCalledWith(expect.objectContaining({ repo: null }));
+  });
+
   it('creates workspace with API key auth using API key team', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', type: 'service', teamId: 'team-api' });

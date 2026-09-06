@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workspaces, githubRepos } from '@buildd/core/db/schema';
-import { eq, ilike } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, getUserTeamIds } from '@/lib/team-access';
-import { enqueueFullIngestJob, extractGithubFullName } from '@/lib/knowledge-ingest';
+import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
+import { normalizeRepoFullName, normalizedRepoSql } from '@/lib/repo-scope';
 import { mergePolicySchema } from '@/lib/merge-policy';
 
 export async function GET(
@@ -112,12 +113,19 @@ export async function PATCH(
     // Accept both "repo" and "repoUrl" for convenience
     const repoValue = repo ?? repoUrl;
     if (repoValue !== undefined) {
-      updates.repo = repoValue;
-      // Auto-link GitHub repo: parse fullName from URL and look up in githubRepos table
-      const fullName = extractGithubFullName(repoValue);
+      // Store the canonical `owner/name` when we can parse one. Anything we
+      // cannot parse is kept verbatim — the column's remaining job is
+      // user-declared intent (a repo the App is not installed on, a non-GitHub
+      // host), and destroying that would be worse than storing it unnormalized.
+      updates.repo = normalizeRepoFullName(repoValue) ?? repoValue;
+      // Auto-link GitHub repo: resolve owner/name and look it up in githubRepos.
+      const fullName = normalizeRepoFullName(repoValue);
       if (fullName) {
         const ghRepo = await db.query.githubRepos.findFirst({
-          where: ilike(githubRepos.fullName, fullName),
+          // Normalized equality, not `ilike`: repo names may contain `_`,
+          // which LIKE treats as a single-character wildcard, so `owner/my_app`
+          // would also match `owner/myXapp`.
+          where: sql`${normalizedRepoSql(githubRepos.fullName)} = ${fullName.toLowerCase()}`,
         });
         if (ghRepo) {
           updates.githubRepoId = ghRepo.id;
@@ -201,7 +209,7 @@ export async function PATCH(
 
     // Auto-ingest on repo link: enqueue a full job when repoUrl changes (spec §1.1).
     if (repoValue !== undefined && repoValue !== null && repoValue !== previousRepo) {
-      const fullName = extractGithubFullName(repoValue);
+      const fullName = normalizeRepoFullName(repoValue);
       if (fullName) {
         enqueueFullIngestJob({ workspaceId: id, repo: fullName, trigger: 'repo_link' }).catch(err =>
           console.error(`[knowledge-ingest] repo-link enqueue failed for workspace ${id}:`, err)

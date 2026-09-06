@@ -2,6 +2,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
 import { deriveDisplayStatus, deriveTaskPhase, isSubjectDead, isGateSatisfied } from '@/lib/task-presentation';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { BYPASS_MISSION_BUDGET_KEY, hasBypassFlag } from '@/lib/bypass-flags';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -307,7 +308,7 @@ export default async function TaskDetailPage({
     missionTitle: task.mission?.title ?? null,
     parentTaskTitle: task.parentTask?.title ?? null,
     repoFullName: task.workspace?.repo
-      ? task.workspace.repo.replace(/^https?:\/\/github\.com\//, '').replace(/\.git$/, '')
+      ? normalizeRepoFullName(task.workspace.repo)
       : null,
     shippedRelease: shippedRelease
       ? { releaseId: shippedRelease.releaseId, label: shippedReleaseLabel }

@@ -23,16 +23,53 @@
  */
 
 import { sql } from 'drizzle-orm';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 
-/** Drizzle `with` clause that loads both installation paths in one query. */
+/**
+ * Drizzle `with` clause that loads both installation paths plus the linked
+ * repo's canonical identity, in one query.
+ *
+ * The `githubRepo` columns are what let `pickWorkspaceRepoIdentity` prefer the
+ * FK over `workspaces.repo`. Drop them and the picker silently degrades to the
+ * text fallback for every workspace.
+ */
 export const WORKSPACE_INSTALLATION_WITH = {
-  githubRepo: { with: { installation: { columns: { installationId: true } } } },
+  githubRepo: {
+    columns: { fullName: true, defaultBranch: true, repoId: true },
+    with: { installation: { columns: { installationId: true } } },
+  },
   githubInstallation: { columns: { installationId: true } },
 } as const;
 
 export interface WorkspaceInstallationRow {
   githubRepo?: { installation?: { installationId: number | null } | null } | null;
   githubInstallation?: { installationId: number | null } | null;
+}
+
+/** A workspace row carrying enough to resolve which repo it is about. */
+export interface WorkspaceRepoRow extends WorkspaceInstallationRow {
+  repo?: string | null;
+  githubRepo?: {
+    fullName?: string | null;
+    defaultBranch?: string | null;
+    repoId?: number | null;
+    installation?: { installationId: number | null } | null;
+  } | null;
+}
+
+export interface WorkspaceRepoIdentity {
+  /** Canonical `owner/name`, safe to interpolate into a GitHub API path. */
+  fullName: string | null;
+  installationId: number | null;
+  defaultBranch: string | null;
+  /** GitHub's immutable numeric repo id. Only set via the linked row. */
+  repoId: number | null;
+  /**
+   * Which source answered. Logged by the reconcile sweep on a failed GitHub
+   * call: a 404 on an FK-derived repo and a 404 on a stale free-text one are
+   * different bugs, and this is the only place that distinction survives.
+   */
+  source: 'github_repo' | 'workspace_text' | 'none';
 }
 
 /**
@@ -77,4 +114,55 @@ export async function installationIdForRepo(
   // rather than burning a GitHub call per run forever.
   if (row?.installation?.suspendedAt) return null;
   return row?.installation?.installationId ?? null;
+}
+
+/**
+ * The repo a workspace is about, preferring the linked `github_repos` row over
+ * the free-text `workspaces.repo` column.
+ *
+ * Why the FK wins, and why this does NOT simply normalize the column:
+ * `github_repos` is keyed on GitHub's immutable numeric `repoId` and refreshed
+ * on every installation sync, so it follows a repo rename. Free text never
+ * does. A normalized-but-stale slug is worse than a malformed one — it is
+ * well-formed enough to pass every check a caller might write, and still 404s.
+ *
+ * Measured against production: every workspace with a repo also has a
+ * `githubRepoId`, and the normalized text agrees with the linked row in every
+ * case, so the column currently carries no information the FK lacks. It
+ * survives as a fallback for the one case the FK cannot express — a repo the
+ * user declared that is not linked yet (App not installed, or a host the App
+ * cannot reach).
+ *
+ * `fullName` is always either a valid `owner/name` or null; never a raw URL.
+ */
+export function pickWorkspaceRepoIdentity(
+  ws: WorkspaceRepoRow | null | undefined,
+): WorkspaceRepoIdentity {
+  const installationId = pickWorkspaceInstallationId(ws);
+
+  // The linked row is authoritative, but still validated: a `full_name` that
+  // is not `owner/name` is no more usable for an API path than a URL is.
+  const linked = normalizeRepoFullName(ws?.githubRepo?.fullName);
+  if (linked) {
+    return {
+      fullName: linked,
+      installationId,
+      defaultBranch: ws?.githubRepo?.defaultBranch ?? null,
+      repoId: ws?.githubRepo?.repoId ?? null,
+      source: 'github_repo',
+    };
+  }
+
+  const declared = normalizeRepoFullName(ws?.repo);
+  if (declared) {
+    return {
+      fullName: declared,
+      installationId,
+      defaultBranch: null,
+      repoId: null,
+      source: 'workspace_text',
+    };
+  }
+
+  return { fullName: null, installationId, defaultBranch: null, repoId: null, source: 'none' };
 }
