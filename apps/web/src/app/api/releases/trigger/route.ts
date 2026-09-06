@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { isGitHubAppConfigured } from '@/lib/github';
+import { isGitHubAppConfigured, githubApi } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
 import { dispatchWorkflowRelease, releasePreflight } from '@/lib/release/dispatch';
@@ -155,8 +155,35 @@ export async function POST(req: NextRequest) {
       // Preflight failure is non-fatal — proceed without T1 data.
     }
 
+    // A compare with zero commits ahead leaves `refHeadSha` undefined (it's
+    // derived from the commit range, not the ref itself), and a thrown
+    // preflight leaves it undefined too. Resolve the ref's head directly
+    // before dispatching: a release row with no head sha has no commit range
+    // for `attributeRelease` to walk, and letting one through here is how a
+    // release used to reach `healthy` carrying no head sha at all (see the
+    // matching guards in release-executor.ts / release-verification.ts on the
+    // other end of this row's lifecycle).
+    if (!headSha) {
+      try {
+        const ref = await githubApi(target.installationId, `/repos/${target.owner}/${target.name}/git/ref/heads/${sourceRef}`);
+        headSha = ref?.object?.sha as string | undefined;
+      } catch {
+        // leave headSha undefined — refused below
+      }
+    }
+
+    if (!headSha) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: `Could not resolve the head commit of ${sourceRef} — refusing to dispatch a release with no head sha.`,
+        },
+        { status: 422 },
+      );
+    }
+
     // Idempotency: if a row for this headSha already exists in an in-flight state, return it.
-    if (headSha) {
+    {
       const existing = await db.query.releases.findFirst({
         where: and(
           eq(releases.workspaceId, target.workspaceId),

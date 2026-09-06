@@ -83,7 +83,7 @@ describe('verifyReleaseDeployment', () => {
 
   it('advances to healthy when first probe returns 2xx', async () => {
     selectResults = [
-      [{ id: 'rel-3', state: 'deploying', verificationStrategy: 'http', workspaceId: 'ws-1' }],
+      [{ id: 'rel-3', state: 'deploying', verificationStrategy: 'http', workspaceId: 'ws-1', headSha: 'sha-abc123' }],
       [{ releaseConfig: { verificationUrl: 'https://example.com/health' } }],
     ];
     globalThis.fetch = mock(() =>
@@ -101,6 +101,20 @@ describe('verifyReleaseDeployment', () => {
     expect(pusherCall).toBeDefined();
     expect(pusherCall![0]).toBe('workspace-ws-1');
     expect(pusherCall![2].releaseId).toBe('rel-3');
+  });
+
+  it('refuses to promote to healthy when the release has no head sha, even on a passing probe', async () => {
+    selectResults = [
+      [{ id: 'rel-5', state: 'deploying', verificationStrategy: 'http', workspaceId: 'ws-1', headSha: null }],
+      [{ releaseConfig: { verificationUrl: 'https://example.com/health' } }],
+    ];
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: true, status: 200 } as Response)
+    ) as any;
+    await verifyReleaseDeployment('rel-5', makeMockDb());
+
+    expect(updateCalls).toHaveLength(0);
+    expect(mockTriggerEvent.mock.calls).toHaveLength(0);
   });
 
   it('advances to failed when all probes exhaust without 2xx', async () => {

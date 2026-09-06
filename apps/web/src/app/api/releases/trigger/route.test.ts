@@ -53,6 +53,8 @@ const mockReleasePreflight = mock(async () => ({
   ciState: 'passing',
 }));
 const mockDetectArchetype = mock(() => 'gated' as any);
+// Fallback ref lookup used only when releasePreflight leaves headSha unresolved.
+const mockGithubApi = mock(async () => ({ object: { sha: 'fallback-ref-sha' } }) as any);
 const mockAttributeRelease = mock(async () => ({ attributed: 1, skipped: 0 }));
 
 // DB mock: chainable insert().values().returning(), update().set().where(), query.releases.findFirst()
@@ -67,7 +69,7 @@ const mockReleaseFindFirst = mock(async () => null);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKey }));
-mock.module('@/lib/github', () => ({ isGitHubAppConfigured: mockIsGitHubAppConfigured }));
+mock.module('@/lib/github', () => ({ isGitHubAppConfigured: mockIsGitHubAppConfigured, githubApi: mockGithubApi }));
 mock.module('@/lib/release/target', () => ({ resolveReleaseTarget: mockResolveReleaseTarget }));
 mock.module('@buildd/core/release-strategy', () => ({
   // Mirrors the real module: the trigger default lives in ONE place.
@@ -173,6 +175,8 @@ describe('POST /api/releases/trigger', () => {
     mockReturning.mockImplementation(async () => [{ id: 'release-uuid-1' }]);
     mockInsertWhere.mockReset();
     mockInsertWhere.mockImplementation(async () => []);
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async () => ({ object: { sha: 'fallback-ref-sha' } }));
   });
 
   it('returns 401 when no token and no session', async () => {
@@ -362,5 +366,22 @@ describe('POST /api/releases/trigger', () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.releaseId).toBe('release-uuid-1');
+    // Falls back to a direct ref lookup rather than dispatching headSha-less.
+    expect(mockGithubApi).toHaveBeenCalled();
+  });
+
+  it('refuses to dispatch when no head sha can be resolved at all', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockReleasePreflight.mockImplementation(async () => { throw new Error('network failure'); });
+    mockGithubApi.mockImplementation(async () => { throw new Error('ref not found'); });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.ok).toBe(false);
+    expect(body.error).toMatch(/head sha/i);
+    // No releases row should have been inserted for an unresolvable head.
+    expect(mockReturning).not.toHaveBeenCalled();
   });
 });
