@@ -446,9 +446,16 @@ describe('taxonomy: sandbox_mount_gap', () => {
 
   test('normal in-repo ENOENT (unrelated to sandbox) is NOT a sandbox_mount_gap', () => {
     // e.g. a missing source file referenced in code — should NOT fire sandbox_mount_gap
+    // `isError` because `enoent` is one of the broad patterns and now only
+    // fires on a result the SDK marked an error — a bare ENOENT string matches
+    // ordinary source code. In production this arrives from a failed tool call,
+    // so `true` is the faithful shape; the assertion here is about pattern
+    // taxonomy, not about the gate.
     const traces = scanToolResult(
       'probe-worker-normal-enoent',
       "ENOENT: no such file or directory, open 'src/missing-component.tsx'",
+      'Bash',
+      { isError: true },
     );
     expect(traces.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
     // But enoent generic pattern may still fire
@@ -492,7 +499,7 @@ describe('taxonomy: sandbox_mount_gap', () => {
     // The error output matches patterns that scanToolResult would pick up
     // (In production, this goes through the agent SDK tool_result → scanToolResult)
     const output = `ENOENT: no such file or directory, open '${join(worktreeDir, 'README.md')}'`;
-    const traces = scanToolResult('probe-gap-forced', output);
+    const traces = scanToolResult('probe-gap-forced', output, 'Bash', { isError: true });
     // Generic enoent fires (the specific sandbox_mount_gap pattern requires known-bad prefixes)
     expect(traces.some(t => t.pattern === 'enoent')).toBe(true);
     void exitCode;
