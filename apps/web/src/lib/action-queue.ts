@@ -2,7 +2,7 @@ import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'APPROVE'
+  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'APPROVE' | 'DECIDE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING';
 
@@ -53,7 +53,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -69,6 +69,8 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
+  /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
+  criteriaRearmFingerprint?: string;
   /** kind === 'merge' — opts this row into the freshness invariant. See EscalationRawItem. */
   prOpenedAt?: Date | null;
   /** `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state. */
@@ -178,13 +180,14 @@ export interface ActionQueueItem {
 
 // Chip display order: lower index = shown first.
 // BLOCKED: retries exhausted, human must decide — actionable, placed after MERGE.
+// DECIDE: mission criteria escalated, owner decision needed — actionable.
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
 // RECONNECT sits high: a connector that can no longer re-authorise itself
 // silently starves every task that needs it, and the fix is a single tap.
 // STALE sits below every live decision and above the agent-handled chips: it
 // still needs a human, but a 90-day-old PR must never outrank today's work.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE',
+  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE', 'DECIDE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'CI_RUNNING',
 ];
@@ -374,6 +377,16 @@ export function buildActionQueue(
           chip: 'APPROVE',
           taskId: item.taskId,
           taskTitle: item.taskTitle,
+          missionId: item.missionId,
+          missionTitle: item.missionTitle,
+        });
+      }
+    } else if (item.kind === 'decide') {
+      const key = `mission:${item.missionId}:${item.criteriaRearmFingerprint}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'DECIDE',
           missionId: item.missionId,
           missionTitle: item.missionTitle,
         });

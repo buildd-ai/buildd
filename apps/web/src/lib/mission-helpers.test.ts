@@ -238,8 +238,59 @@ describe('tab count reconciliation', () => {
 // The dispatch UI consumes deriveMissionHealth via /api/buildd/objectives.
 // These exports must remain stable.
 
+describe('deriveMissionHealth — criteriaEscalatedAt', () => {
+  it('returns waiting-decision when criteriaEscalatedAt is set and no agents are active', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('waiting-decision');
+  });
+
+  it('returns active (not waiting-decision) when criteriaEscalatedAt is set but agents are running', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 2,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('active');
+  });
+
+  it('ignores criteriaEscalatedAt when status is completed', () => {
+    const h = deriveMissionHealth({
+      status: 'completed',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('shipped');
+  });
+
+  it('ignores criteriaEscalatedAt when isHeld is true', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      isHeld: true,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('held');
+  });
+});
+
 describe('objectives contract — deriveMissionHealth export unchanged', () => {
-  const EXPECTED_HEALTH_VALUES: MissionHealth[] = ['active', 'on-schedule', 'stalled', 'shipped', 'paused', 'idle'];
+  const EXPECTED_HEALTH_VALUES: MissionHealth[] = ['active', 'on-schedule', 'stalled', 'shipped', 'paused', 'idle', 'held', 'budget-exhausted', 'waiting-decision'];
 
   it('all original MissionHealth values still produce valid HEALTH_DISPLAY entries', () => {
     for (const v of EXPECTED_HEALTH_VALUES) {

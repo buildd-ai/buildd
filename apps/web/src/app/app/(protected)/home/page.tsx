@@ -654,7 +654,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true },
             with: {
               tasks: {
                 columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
@@ -764,6 +764,7 @@ export default async function HomePage({
               nextRunAt,
               orchestrationMode,
               pendingUserScheduledAt,
+              criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
             });
 
             const effectiveNextRunAt = nextRunAt
@@ -1611,6 +1612,35 @@ export default async function HomePage({
                 connectorName,
               });
             }
+          }
+        }
+
+        // 5. Mission criteria escalations: open question notes on missions with criteriaEscalatedAt set
+        const escalatedMissions = await db.query.missions.findMany({
+          where: and(
+            inArray(missions.workspaceId, wsIds),
+            isNotNull(missions.criteriaEscalatedAt),
+          ),
+          columns: { id: true, title: true, criteriaRearmFingerprint: true },
+          with: {
+            notes: {
+              where: and(
+                eq(missionNotes.type, 'question'),
+                eq(missionNotes.status, 'open'),
+              ),
+              columns: { id: true },
+            },
+          },
+        });
+        for (const m of escalatedMissions) {
+          // Only add if there's an open question note (the escalation marker)
+          if ((m.notes as any)?.length > 0) {
+            waitingOnYou.push({
+              kind: 'decide',
+              missionId: m.id,
+              missionTitle: m.title,
+              criteriaRearmFingerprint: m.criteriaRearmFingerprint ?? undefined,
+            });
           }
         }
 

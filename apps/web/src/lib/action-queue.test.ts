@@ -692,6 +692,77 @@ describe('summariseActionQueueAge', () => {
   });
 });
 
+describe('buildActionQueue — decide cards', () => {
+  it('builds a DECIDE card from an escalated mission item', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      {
+        kind: 'decide',
+        missionId: 'mission-escalated',
+        missionTitle: 'Escalated Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].chip).toBe('DECIDE');
+    expect(result[0].missionId).toBe('mission-escalated');
+    expect(result[0].missionTitle).toBe('Escalated Mission');
+  });
+
+  it('deduplicates decide cards by mission id and fingerprint', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result).toHaveLength(1);
+  });
+
+  it('creates separate decide cards for different fingerprints on same mission', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp2',
+      },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result).toHaveLength(2);
+  });
+
+  it('orders DECIDE after APPROVE', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      { kind: 'approve', taskId: 'plan-1', taskTitle: 'Plan A' },
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+      { kind: 'answer', workerId: 'w-1', taskId: 'task-q', taskTitle: 'Q Task', question: 'Is X ready?' },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result.map(r => r.chip)).toEqual(['QUESTION', 'APPROVE', 'DECIDE']);
+  });
+});
+
 describe('buildActionQueue — recommendations', () => {
   it('carries a reviewer recommendation onto the escalation card', () => {
     const result = buildActionQueue([], [escalationItem({
