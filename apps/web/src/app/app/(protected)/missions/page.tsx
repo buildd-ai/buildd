@@ -114,7 +114,7 @@ export default async function MissionsPage({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
     limit: 50,
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
       initiative: { columns: { id: true, title: true } },
@@ -231,6 +231,7 @@ export default async function MissionsPage({
       orchestrationMode: obj.orchestrationMode,
       isHeld: obj.isHeld ?? false,
       pendingUserScheduledAt,
+      criteriaEscalatedAt: (obj as any)?.criteriaEscalatedAt,
     });
 
     const rawLatestId: string | undefined = (obj.tasks as any)[0]?.id;

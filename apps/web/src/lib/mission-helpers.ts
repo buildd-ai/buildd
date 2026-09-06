@@ -210,6 +210,7 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
   switch (health) {
     case 'active': return 'running';
     case 'stalled': return 'attention';
+    case 'waiting-decision': return 'attention';
     case 'on-schedule': return 'scheduled';
     case 'paused': return 'paused';
     case 'budget-exhausted': return 'paused';
@@ -278,6 +279,12 @@ export function deriveMissionHealth(opts: {
   if (opts.status === 'paused') return 'paused';
   if (opts.isHeld) return 'held';
   if (opts.status === 'budget_exhausted') return 'budget-exhausted';
+
+  // Mission is awaiting an owner decision on escalated criteria. No agents are
+  // working, and the mission cannot progress until the owner acts (edit the
+  // criterion or file work against the verdict).
+  if (opts.criteriaEscalatedAt && opts.activeAgents === 0) return 'waiting-decision';
+
   if (opts.activeAgents > 0) return 'active';
   if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'escalated';
 
