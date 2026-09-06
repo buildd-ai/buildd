@@ -67,6 +67,32 @@ export function formatVerdictLines(state: GoalCriteriaState | null | undefined):
     .join('\n');
 }
 
+/** Which remedy an identical-fingerprint failure supports. */
+export type CriteriaFailureReading = 'criterion_unmeasurable' | 'work_unowned' | 'mixed';
+
+/**
+ * Names which of the escalation's two remedies the failure pattern actually
+ * supports, from the *type* of the non-passing criteria alone.
+ *
+ * A `description` (prose) criterion is graded by an LLM: an identical
+ * fingerprint across the full retry budget means re-grading never resolved
+ * it, which is exactly what "unmeasurable as written" looks like. A mechanical
+ * criterion (`command`, `no_open_tasks`, `artifact_exists`, `all_prs_merged`)
+ * has no such ambiguity — its verdict is a fact about the repo or the task
+ * table, so a fingerprint-stable mechanical failure means the underlying
+ * condition genuinely never changed, i.e. the work has no owner. A mix of
+ * both gets no steer — the owner has to look either way.
+ */
+export function inferCriteriaFailureReading(
+  state: GoalCriteriaState | null | undefined,
+): CriteriaFailureReading | null {
+  const nonPassing = (state?.criteria ?? []).filter(c => c.verdict !== 'pass');
+  if (nonPassing.length === 0) return null;
+  if (nonPassing.every(c => c.type === 'description')) return 'criterion_unmeasurable';
+  if (nonPassing.every(c => c.type !== 'description')) return 'work_unowned';
+  return 'mixed';
+}
+
 /**
  * Pure re-arm decision. No DB, no clock — the caller supplies the history.
  *
@@ -216,6 +242,13 @@ export async function applyCriteriaRearm(input: {
       updatedAt: now,
     }).where(eq(missions.id, input.missionId));
 
+    const reading = inferCriteriaFailureReading(state);
+    const readingLine = reading === 'criterion_unmeasurable'
+      ? 'Every blocking criterion is prose-graded and has failed identically across the retry budget — most likely the criterion is unmeasurable as written.\n\n'
+      : reading === 'work_unowned'
+        ? 'Every blocking criterion is machine-checked and has failed identically across the retry budget — most likely the underlying work has no owner.\n\n'
+        : '';
+
     await db.insert(missionNotes).values({
       missionId: input.missionId,
       authorType: 'system',
@@ -225,6 +258,7 @@ export async function applyCriteriaRearm(input: {
         `${decision.reason}.\n\n` +
         `Completion refusal: ${input.blockReason}\n\n` +
         `Blocking criteria:\n${verdictLines || '- (no per-criterion detail recorded)'}\n\n` +
+        readingLine +
         `The heartbeat has been stood down so this stops re-evaluating on a cadence. ` +
         `Either the criterion is wrong or unmeasurable as written (fix it via ` +
         `\`manage_missions action=update goalCriteria=...\`), or the work it names has no owner ` +

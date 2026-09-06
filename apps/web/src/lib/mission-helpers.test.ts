@@ -203,6 +203,55 @@ describe('deriveMissionHealth — pendingUserScheduledAt (Defect 3)', () => {
   });
 });
 
+describe('deriveMissionHealth — escalated (owner decision needed)', () => {
+  const base = {
+    status: 'active',
+    activeAgents: 0,
+    cronExpression: null as string | null,
+    lastRunAt: null as string | null,
+    nextRunAt: null as string | null,
+  };
+
+  it('returns escalated when criteriaEscalatedAt is set and no deliverable work is pending', () => {
+    const h = deriveMissionHealth({
+      ...base,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
+    });
+    expect(h).toBe('escalated');
+    expect(healthToGroup(h, 50)).toBe('attention');
+  });
+
+  it('is not reachable while deliverable work is still moving', () => {
+    const h = deriveMissionHealth({
+      ...base,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: true,
+    });
+    expect(h).not.toBe('escalated');
+  });
+
+  it('is not reachable when hasPendingDeliverableWork is omitted', () => {
+    const h = deriveMissionHealth({ ...base, criteriaEscalatedAt: new Date() });
+    expect(h).not.toBe('escalated');
+  });
+
+  it('active agents outrank an escalation flag', () => {
+    const h = deriveMissionHealth({
+      ...base,
+      activeAgents: 1,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
+    });
+    expect(h).toBe('active');
+  });
+
+  it('HEALTH_DISPLAY has a non-empty entry for escalated', () => {
+    expect(HEALTH_DISPLAY.escalated.label).toBeTruthy();
+    expect(HEALTH_DISPLAY.escalated.colorClass).toBeTruthy();
+  });
+});
+
 describe('tab count reconciliation', () => {
   it('paused missions are counted in "all" but not in "completed" group', () => {
     // Simulate a bucket of missions: 1 paused, 1 shipped, 1 active

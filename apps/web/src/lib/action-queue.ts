@@ -2,7 +2,7 @@ import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'APPROVE'
+  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING';
 
@@ -53,7 +53,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -73,6 +73,17 @@ export interface WaitingOnYouRawItem {
   prOpenedAt?: Date | null;
   /** `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state. */
   prLifecycleVerifiedAt?: Date | null;
+  /** kind === 'decide' — the open `missionNotes` row this card links back to. */
+  noteId?: string;
+  /** kind === 'decide' — the note's title, e.g. "Goal criteria blocked — owner decision needed". */
+  noteTitle?: string;
+  /**
+   * kind === 'decide' — `missions.criteriaRearmFingerprint` at escalation time.
+   * Dedupe key component, deliberately NOT the note body: an LLM re-grading
+   * the same failure phrases it differently every run, so keying on evidence
+   * text would spawn a fresh card every cycle for one unresolved decision.
+   */
+  criteriaFingerprint?: string;
 }
 
 export interface EscalationRawItem {
@@ -165,6 +176,9 @@ export interface ActionQueueItem {
   /** Set when chip === 'RECONNECT' — the connector needing re-auth. */
   connectorId?: string;
   connectorName?: string;
+  /** Set when chip === 'DECIDE' — the escalation note this card links back to. */
+  noteId?: string;
+  noteTitle?: string;
   /**
    * Set when chip === 'STALE' — why this stopped being a merge CTA, and how
    * old the PR is. `kind: 'unverified'` means we do not know the PR's current
@@ -181,10 +195,15 @@ export interface ActionQueueItem {
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
 // RECONNECT sits high: a connector that can no longer re-authorise itself
 // silently starves every task that needs it, and the fix is a single tap.
+// DECIDE sits with QUESTION: both are "the platform stopped and needs a human
+// call", just at different scopes (task vs. mission). Placed after QUESTION,
+// not above it — a live worker blocked on an answer is still more urgent than
+// a mission whose heartbeat has already been stood down and is going nowhere
+// regardless of when the owner looks.
 // STALE sits below every live decision and above the agent-handled chips: it
 // still needs a human, but a 90-day-old PR must never outrank today's work.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'APPROVE',
+  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'CI_RUNNING',
 ];
@@ -200,6 +219,45 @@ const MERGE_CTA_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>(['MERGE', '
 export interface BuildActionQueueOptions {
   /** Injected for deterministic tests. Defaults to now. */
   now?: Date;
+}
+
+/** A mission that may or may not be waiting on an owner decision. */
+export interface EscalatedMissionCandidate {
+  missionId: string;
+  missionTitle: string | null;
+  /** `missions.criteriaEscalatedAt` — null means the gate never escalated it. */
+  criteriaEscalatedAt: Date | string | null;
+  criteriaRearmFingerprint: string | null;
+  /** The mission's open `missionNotes` row of type 'question', if any. */
+  openNote: { id: string; title: string; body: string | null } | null;
+}
+
+/**
+ * Filters escalated missions down to the ones that actually belong on the
+ * action queue, and shapes them into `decide` raw items.
+ *
+ * Both conditions are required, independently of each other: `criteria-rearm`
+ * always escalates alongside an open note in the same transaction, but this
+ * function does not assume that invariant holds — a mission whose note was
+ * answered (status flips off 'open') or whose verdict changed (clearing
+ * criteriaEscalatedAt) must drop out on either signal alone, not just both.
+ */
+export function buildDecideItems(candidates: EscalatedMissionCandidate[]): WaitingOnYouRawItem[] {
+  const items: WaitingOnYouRawItem[] = [];
+  for (const c of candidates) {
+    if (!c.criteriaEscalatedAt) continue;
+    if (!c.openNote) continue;
+    items.push({
+      kind: 'decide',
+      missionId: c.missionId,
+      missionTitle: c.missionTitle,
+      noteId: c.openNote.id,
+      noteTitle: c.openNote.title,
+      question: c.openNote.body ?? undefined,
+      criteriaFingerprint: c.criteriaRearmFingerprint ?? 'none',
+    });
+  }
+  return items;
 }
 
 /**
@@ -376,6 +434,24 @@ export function buildActionQueue(
           taskTitle: item.taskTitle,
           missionId: item.missionId,
           missionTitle: item.missionTitle,
+        });
+      }
+    } else if (item.kind === 'decide') {
+      // Keyed on mission + fingerprint, not note id: the escalation note is a
+      // single row that stays open until the owner acts or a verdict changes,
+      // so this is really just the standard subject-key dedupe — but keying on
+      // the fingerprint rather than the note id future-proofs against a caller
+      // that (incorrectly) re-creates the note across cycles.
+      const key = `decide:${item.missionId}:${item.criteriaFingerprint ?? 'none'}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'DECIDE',
+          missionId: item.missionId,
+          missionTitle: item.missionTitle,
+          noteId: item.noteId,
+          noteTitle: item.noteTitle,
+          question: item.question,
         });
       }
     }
