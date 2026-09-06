@@ -35,22 +35,6 @@ type IngestJob = typeof knowledgeIngestJobs.$inferSelect;
 export const MAX_DIFF_FILES = 100;
 export const MAX_DIFF_TOTAL_BYTES = 2 * 1024 * 1024;
 
-/**
- * Parse a GitHub repo URL or "owner/name" shorthand into "owner/name" form.
- * Returns null when the input cannot be parsed (empty, malformed, etc.).
- */
-export function extractGithubFullName(repoUrl: string): string | null {
-  const cleaned = repoUrl
-    .replace(/\.git$/, '')
-    .replace(/^https?:\/\/[^/]+\//, '')
-    .replace(/^git@[^:]+:/, '');
-  const parts = cleaned.split('/');
-  if (parts.length >= 2 && parts[parts.length - 2] && parts[parts.length - 1]) {
-    return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
-  }
-  return null;
-}
-
 export interface BlockingIngestJob {
   id: string;
   status: string;

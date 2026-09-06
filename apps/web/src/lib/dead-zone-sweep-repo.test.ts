@@ -188,6 +188,23 @@ describe('sweepDeadZonePrs repo resolution', () => {
     expect(mockGithubApi).toHaveBeenCalledWith(789, '/repos/owner/repo/pulls/42');
   });
 
+  it('takes the fallback repo from the linked row, not the stale text column', async () => {
+    mockWorkersFindMany.mockResolvedValue([deadZoneWorker({ prUrl: COMPARE_URL })]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws1',
+      repo: 'https://github.com/owner/old-name',
+      gitConfig: {},
+      githubRepo: { fullName: 'owner/new-name', repoId: 12345, installation: { installationId: 123 } },
+    });
+
+    await sweepDeadZonePrs();
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/new-name/pulls/42');
+    expect(mockBuildConflictRetryTask).toHaveBeenCalledWith(
+      expect.objectContaining({ repoFullName: 'owner/new-name' }),
+    );
+  });
+
   it('skips, without a GitHub call, when no repo resolves from either source', async () => {
     mockWorkersFindMany.mockResolvedValue([
       deadZoneWorker({ workspaceId: 'ws-coord', prUrl: COMPARE_URL }),

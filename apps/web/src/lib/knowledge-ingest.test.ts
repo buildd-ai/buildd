@@ -153,7 +153,7 @@ mock.module('@buildd/core/knowledge-store', () => ({
 }));
 
 // Import AFTER mocks
-import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, enqueueFullIngestJobDetailed, extractGithubFullName } from './knowledge-ingest';
+import { enqueueMergedPrIngestJobs, runDiffIngestJob, MAX_DIFF_FILES, enqueueFullIngestJob, enqueueFullIngestJobDetailed } from './knowledge-ingest';
 import { QUEUED_FULL_STALL_MS, FULL_LEASE_MS, MAX_INGEST_ATTEMPTS } from './knowledge-ingest-lease';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -750,23 +750,3 @@ describe('enqueueFullIngestJob', () => {
   });
 });
 
-// ── extractGithubFullName ────────────────────────────────────────────────────
-describe('extractGithubFullName', () => {
-  it('parses HTTPS URLs', () => {
-    expect(extractGithubFullName('https://github.com/owner/repo')).toBe('owner/repo');
-    expect(extractGithubFullName('https://github.com/owner/repo.git')).toBe('owner/repo');
-  });
-
-  it('parses SSH URLs', () => {
-    expect(extractGithubFullName('git@github.com:owner/repo.git')).toBe('owner/repo');
-  });
-
-  it('passes through owner/name shorthand', () => {
-    expect(extractGithubFullName('owner/repo')).toBe('owner/repo');
-  });
-
-  it('returns null for unrecognisable input', () => {
-    expect(extractGithubFullName('')).toBeNull();
-    expect(extractGithubFullName('repo-only')).toBeNull();
-  });
-});

@@ -43,10 +43,10 @@ import { and, isNull, isNotNull, eq, gt, or, notInArray, sql } from 'drizzle-orm
 import { githubApi } from '@/lib/github';
 import {
   WORKSPACE_INSTALLATION_WITH,
-  pickWorkspaceInstallationId,
+  pickWorkspaceRepoIdentity,
   installationIdForRepo,
 } from '@/lib/workspace-installation';
-import { normalizeRepoFullName, resolvePrRepo } from '@/lib/repo-scope';
+import { resolvePrRepo } from '@/lib/repo-scope';
 import {
   TIER_SLA_MS,
   HOT_MAX_AGE_MS,
@@ -299,8 +299,12 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    const workspaceRepo = normalizeRepoFullName(workspace?.repo);
-    const workspaceInstallationId = pickWorkspaceInstallationId(workspace);
+    // Workspace repo identity comes from the linked `github_repos` row, not the
+    // free-text column — see pickWorkspaceRepoIdentity. The text follows no
+    // rename, so a fallback built from it can be confidently wrong.
+    const wsIdentity = pickWorkspaceRepoIdentity(workspace);
+    const workspaceRepo = wsIdentity.fullName;
+    const workspaceInstallationId = wsIdentity.installationId;
 
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
@@ -310,7 +314,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       // was wrong three ways at once: the column holds a URL rather than a
       // slug, the PR often lives in a different repo, and coordination
       // workspaces have no repo while still owning real PRs.
-      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: workspace?.repo });
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
       if (!repo) {
         result.skipped++;
         await recordFailure(worker, 'No GitHub repo resolvable from the PR url or the workspace');

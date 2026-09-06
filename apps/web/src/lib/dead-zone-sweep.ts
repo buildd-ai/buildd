@@ -34,10 +34,10 @@ import {
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import {
   WORKSPACE_INSTALLATION_WITH,
-  pickWorkspaceInstallationId,
+  pickWorkspaceRepoIdentity,
   installationIdForRepo,
 } from '@/lib/workspace-installation';
-import { normalizeRepoFullName, resolvePrRepo } from '@/lib/repo-scope';
+import { resolvePrRepo } from '@/lib/repo-scope';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
 
@@ -208,8 +208,10 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
       continue;
     }
 
-    const workspaceInstallationId = pickWorkspaceInstallationId(workspace);
-    const workspaceRepo = normalizeRepoFullName(workspace.repo);
+    // Repo identity from the linked github_repos row, not the free-text column.
+    const wsIdentity = pickWorkspaceRepoIdentity(workspace);
+    const workspaceInstallationId = wsIdentity.installationId;
+    const workspaceRepo = wsIdentity.fullName;
 
     if (!isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
       result.skipped += wsWorkers.length;
@@ -224,7 +226,7 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
       // than a slug, so interpolating it built a path that 404'd on every
       // call: no conflict was ever detected here, and no BLOCKED card ever
       // came from this sweep.
-      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: workspace.repo });
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
       if (!repo) { result.skipped++; continue; }
 
       const installationId =

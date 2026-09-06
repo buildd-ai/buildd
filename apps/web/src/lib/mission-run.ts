@@ -3,6 +3,7 @@ import { missions, tasks, workspaces, missionNotes, workers } from '@buildd/core
 import { eq, and, not, isNotNull, inArray, sql, isNull } from 'drizzle-orm';
 import { findBlockingPr, pathsOverlap, REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { buildMissionContext as _buildMissionContext } from '@/lib/mission-context';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
@@ -541,9 +542,9 @@ export async function runMission(
   const template = (mission.schedule as any)?.taskTemplate;
   const subjectObservation = await prepareSubject({
     workspaceId,
-    workspaceRepo: workspace?.repo
-      ?.replace(/^https?:\/\/github\.com\//, '')
-      .replace(/\.git$/, ''),
+    // One normalizer, not a partial inline copy: this one missed `git@`,
+    // `www.` and trailing slashes. See lib/repo-scope.ts.
+    workspaceRepo: normalizeRepoFullName(workspace?.repo) ?? undefined,
     gitConfig: workspace?.gitConfig,
     title: taskTitle,
     description: taskDescription ?? undefined,
