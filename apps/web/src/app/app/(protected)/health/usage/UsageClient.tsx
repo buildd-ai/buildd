@@ -158,15 +158,13 @@ export function UsageClient({ view, teamWorkspaces, wsFilter }: Props) {
           {/* 4. Index adoption — the one session-keyed line on the page. */}
           <IndexAdoptionView view={view} />
 
-          {/* Why there is no per-action breakdown of the buildd tool row. Stated,
-              not substituted: every buildd MCP action multiplexes through one SDK
-              tool name, so nothing recorded which action ran and an aggregate
-              stand-in would answer a question nobody asked. */}
-          <p data-testid="usage-no-action-decomposition" className="text-[11px] text-text-muted">
-            No runtime/work breakdown of the <span className="font-mono">buildd</span> tool is shown:
-            every one of its actions is recorded under a single tool name, so which action ran was
-            never captured. There is nothing to approximate it with.
-          </p>
+          {/* 5. Which buildd action ran. Every buildd MCP call multiplexes
+              through one SDK tool name, so the tool histogram above cannot
+              decompose it — but worker_action_events records the bare action
+              name, which this reads. The RUNTIME/WORK classification is
+              deliberately absent, not missing: it is task-conditional and its
+              contract lives in health-analytics-spec §4.3 item 1 / WU-4. */}
+          <ActionBreakdownView view={view} />
         </>
       )}
     </div>
@@ -411,6 +409,100 @@ function DrilldownWindowPicker({ window: current }: { window: DrilldownWindow })
           {value}
         </button>
       ))}
+    </div>
+  );
+}
+
+// ── buildd action breakdown ──────────────────────────────────────────────────
+
+/**
+ * Per-action counts for the buildd MCP tool.
+ *
+ * This replaced a paragraph asserting the opposite — that which action ran
+ * "was never captured" and there was "nothing to approximate it with". True
+ * when written, false once the runner began writing `worker_action_events`. A
+ * page that tells readers its own data is impossible is worse than one that
+ * simply omits it, because it stops anyone from looking again.
+ *
+ * The coverage line is not decoration. This capture has NO backfill, so a
+ * window opening before `capturedSince` cannot distinguish "quiet" from "not
+ * yet recorded" — and a 30d window still does. That caveat renders whenever the
+ * window predates capture, regardless of whether any events came back, because
+ * it is a property of the window rather than of the result.
+ */
+function ActionBreakdownView({ view }: { view: UsageDrilldownView }) {
+  const p = view.actions;
+  // Absence renders nothing, never a zero — see derived-metric-availability.
+  if (!p) return null;
+
+  const TOP = 8;
+  const shown = p.actions.slice(0, TOP);
+  const rest = p.actions.length - shown.length;
+
+  return (
+    <div data-testid="usage-section-actions" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h2 className="section-label">buildd actions</h2>
+        <span className="text-[11px] text-text-muted tabular-nums">
+          {p.workersWithEvents}/{p.workers} workers recorded
+        </span>
+      </div>
+
+      <div className="card p-4 space-y-4">
+        {shown.length === 0 ? (
+          <p className="text-[11px] text-text-muted">
+            No actions recorded in this window.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {shown.map(a => (
+              <div key={a.action} className="flex items-center gap-3">
+                <span className="font-mono text-[11px] text-text-secondary w-44 shrink-0 truncate">
+                  {a.action}
+                </span>
+                {/* One hue at a fixed step, never a categorical ramp: identity
+                    lives in the label and every row is direct-labelled. */}
+                <span className="h-1.5 flex-1 bg-surface-3 rounded-sm overflow-hidden">
+                  <span
+                    className="block h-full bg-primary"
+                    style={{ width: `${Math.max(a.share, 1)}%` }}
+                  />
+                </span>
+                <span className="text-[11px] text-text-muted tabular-nums w-20 text-right">
+                  {a.calls.toLocaleString()}
+                </span>
+              </div>
+            ))}
+            {rest > 0 && (
+              <p className="text-[11px] text-text-muted">+{rest} more</p>
+            )}
+          </div>
+        )}
+
+        <div className="pt-3 border-t border-border-default space-y-1">
+          <p className="text-[11px] text-text-muted">
+            Actions recorded since {p.capturedSince}. There is no backfill.
+            {p.windowPredatesCapture && (
+              <>
+                {' '}
+                <span className="text-status-warning">
+                  This window opens before that date, so a low count here means
+                  &ldquo;not yet recorded&rdquo; rather than &ldquo;quiet&rdquo;.
+                </span>
+              </>
+            )}
+          </p>
+          {p.truncated && (
+            <p className="text-[11px] text-text-muted">
+              Row cap reached — counts are floors.
+            </p>
+          )}
+          <p className="text-[11px] text-text-muted">
+            No runtime/work split: that classification is task-conditional and
+            its contract is not yet settled here.
+          </p>
+        </div>
+      </div>
     </div>
   );
 }
