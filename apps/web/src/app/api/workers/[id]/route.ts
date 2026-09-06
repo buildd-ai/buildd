@@ -817,10 +817,9 @@ export async function PATCH(
   }
   // Enforce output requirement based on task.outputRequirement
   // (Must run BEFORE task status update to prevent marking task completed on validation failure)
-  // Note: only pr_required and artifact_required are hard blockers (400).
-  // auto mode logs a warning but allows completion — agents may create PRs via
-  // gh pr create without using the buildd create_pr action.
-  let outputWarning: string | undefined;
+  // Note: pr_required, artifact_required, and auto-with-commits are all hard
+  // blockers (400) — the only silent-pass case left is a task that legitimately
+  // produced neither commits nor an artifact (research/recon with a prose summary).
   // When artifact_required is satisfied by an artifact alone (no PR), the task
   // produced no code changes and there is nothing to merge/release. Skip the
   // release gate so a branch-merge workspace config does not flip the task to
@@ -955,10 +954,20 @@ export async function PATCH(
         skipRelease = true;
       }
 
-      // auto (default): warn but allow completion — agent may have created PR via git CLI
+      // auto (default): commits with neither a PR nor an artifact must not
+      // complete silently. That combination — code committed, nothing to
+      // review or merge, completion reported as done — leaves the commit
+      // stranded on the branch while the summary asserts the change landed.
+      // The GitHub auto-detect above already covers a branch whose PR was
+      // opened by a different worker row (retries/CI-fix continuations push
+      // to the same branch as an earlier attempt), so this only fires when
+      // no PR exists anywhere for the branch.
       if (outputReq === 'auto' && effectiveCommits > 0 && !hasPR) {
         if (!(await hasDeliverableArtifact())) {
-          outputWarning = `Task has ${effectiveCommits} commit(s) but no tracked PR or artifact. Use create_pr next time for better tracking.`;
+          return NextResponse.json({
+            error: `Task has ${effectiveCommits} commit(s) on branch but no pull request or artifact. Use create_pr to open one for the branch, or call complete_task with an \`error\` explaining why these commits are being intentionally discarded.`,
+            hint: 'create_pr',
+          }, { status: 400 });
         }
       }
     }
@@ -2928,7 +2937,6 @@ export async function PATCH(
     // the text is in the agent session, which is what clears the queue.
     ...(instructionsAck ? { instructionsAck } : {}),
     ...(retainedWorkerMessages.length > 0 ? { pendingMessages: retainedWorkerMessages } : {}),
-    ...(outputWarning ? { outputWarning } : {}),
   }, undefined, { route: req.nextUrl.pathname });
 }
 
