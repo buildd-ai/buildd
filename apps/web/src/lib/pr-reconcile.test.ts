@@ -45,6 +45,7 @@ mock.module('@buildd/core/db/schema', () => ({
     prUrl: 'prUrl',
     updatedAt: 'updatedAt',
     prLastCheckedAt: 'prLastCheckedAt',
+    prLastVerifiedAt: 'prLastVerifiedAt',
     prLifecycleStatus: 'prLifecycleStatus',
     prCheckFailureCount: 'prCheckFailureCount',
     completedAt: 'completedAt',
@@ -204,6 +205,11 @@ describe('refreshWorkerMergeStateIfStale', () => {
     const [setArgs] = setMock.mock.calls;
     expect(setArgs[0]).toHaveProperty('prLastCheckedAt');
     expect(setArgs[0].prLastCheckedAt).toBeInstanceOf(Date);
+    // AC-4: this path only ever writes on a confirmed merge, so it must stamp
+    // the verification clock too — the admin backfill route relies on this to
+    // clear rows into a state resolveStaleGate will actually treat as fresh.
+    expect(setArgs[0]).toHaveProperty('prLastVerifiedAt');
+    expect(setArgs[0].prLastVerifiedAt).toBeInstanceOf(Date);
   });
 
   it('returns false on GitHub API error without throwing', async () => {
@@ -301,6 +307,23 @@ describe('reconcileStalePrWorkers', () => {
     );
   });
 
+  it('AC-4: advances prLastVerifiedAt alongside prLastCheckedAt when GitHub confirms merged', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    await reconcileStalePrWorkers();
+
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLastCheckedAt).toBeInstanceOf(Date);
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
+  });
+
   it('marks closed when GitHub reports PR closed-unmerged', async () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 99, workspaceId: 'ws1' },
@@ -318,6 +341,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ prLifecycleStatus: 'closed' }),
     );
+    // AC-4: closed is a confirmed GitHub answer too — both clocks advance.
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
   });
 
   it('leaves an open PR open, recording only that it was checked', async () => {
@@ -339,6 +365,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prLifecycleStatus).toBeUndefined();
     expect(written.mergedAt).toBeUndefined();
+    // AC-2/AC-4: a confirmed-still-open answer is a real GitHub answer, so the
+    // verification clock advances too — this row is NOT the failure case.
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
   });
 
   it('skips workspace with no GitHub installation, counting it as a failure not a clean check', async () => {
@@ -361,6 +390,9 @@ describe('reconcileStalePrWorkers', () => {
     // which made an unreconcilable row look healthy and hid it forever — the
     // precise mechanism behind the four stale MERGE cards on Home.
     expect(written.prCheckFailureCount).toBe(1);
+    // AC-2: a failure must never advance the verification clock — that is the
+    // exact conflation that made resolveStaleGate's unverified branch dead.
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   // ── Installation resolution ────────────────────────────────────────────────
@@ -431,6 +463,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLifecycleStatus).toBe('unresolvable');
     expect(written.prUnresolvableReason).toContain('Not Found');
     expect(written.prCheckFailureCount).toBe(UNRESOLVABLE_FAILURE_THRESHOLD);
+    // AC-2/AC-5: going terminal is buildd giving up, not GitHub confirming
+    // anything — the verification clock must stay untouched even here.
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   it('does not retire a young row, however many times it has failed', async () => {
@@ -571,6 +606,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(result.stamped).toBe(0);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
+    // AC-2: the attempt clock advances on this GitHub error; the verification
+    // clock must not, or this row reads as freshly verified while it is not.
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   it('unblocks dependents when it heals a missed merge', async () => {
@@ -1070,6 +1108,7 @@ describe('reconcileStalePrWorkers repo resolution', () => {
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prCheckFailureCount).toBe(1);
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   it('does not fabricate a PR number from a pull/new compare url', async () => {

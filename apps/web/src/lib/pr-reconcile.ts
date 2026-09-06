@@ -88,7 +88,14 @@ export async function refreshWorkerMergeStateIfStale(
     if (pr.merged && pr.merged_at) {
       const now = new Date();
       await db.update(workers)
-        .set({ mergedAt: new Date(pr.merged_at), prLifecycleStatus: 'merged', prLastCheckedAt: now, prCheckFailureCount: 0, updatedAt: now })
+        .set({
+          mergedAt: new Date(pr.merged_at),
+          prLifecycleStatus: 'merged',
+          prLastCheckedAt: now,
+          prLastVerifiedAt: now,
+          prCheckFailureCount: 0,
+          updatedAt: now,
+        })
         .where(eq(workers.id, worker.id));
       return true;
     }
@@ -218,12 +225,29 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
   };
   if (candidates.length === 0) return result;
 
-  /** Advance the check clock so the row rotates to the back of the queue. */
-  const recordCheck = async (id: string, extra: Record<string, unknown> = {}) => {
+  /**
+   * Advance the ATTEMPT clock so the row rotates to the back of the queue.
+   * Pass `verified: true` only when GitHub actually returned a PR state
+   * (merged / closed / confirmed-open) — that also advances the VERIFICATION
+   * clock (`prLastVerifiedAt`), the one lib/pr-freshness.ts reads to decide
+   * whether a row's lifecycle state is fresh. A failed check must NEVER pass
+   * `verified: true`: prLastCheckedAt saying "we looked" must not be mistaken
+   * for prLastVerifiedAt saying "we know" — that conflation is the exact bug
+   * this two-clock split exists to fix.
+   */
+  const recordCheck = async (
+    id: string,
+    extra: Record<string, unknown> = {},
+    opts: { verified?: boolean } = {},
+  ) => {
     const now = new Date();
     await db
       .update(workers)
-      .set({ prLastCheckedAt: now, ...extra })
+      .set({
+        prLastCheckedAt: now,
+        ...(opts.verified ? { prLastVerifiedAt: now } : {}),
+        ...extra,
+      })
       .where(eq(workers.id, id));
   };
 
@@ -349,7 +373,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             prLifecycleStatus: 'merged',
             prCheckFailureCount: 0,
             updatedAt: new Date(),
-          });
+          }, { verified: true });
           result.stamped++;
           // Option A': the webhook was the only trigger for the mission PR, and
           // `workers.mergedAt` is documented as lossy. Healing the row without
@@ -403,12 +427,13 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             prLifecycleStatus: 'closed',
             prCheckFailureCount: 0,
             updatedAt: new Date(),
-          });
+          }, { verified: true });
           result.closed++;
         } else {
           // Still open — record the check and clear the failure streak. The PR
-          // resolved fine; it simply has not landed yet.
-          await recordCheck(worker.id, { prCheckFailureCount: 0 });
+          // resolved fine; it simply has not landed yet. GitHub gave a real
+          // answer, so this advances the verification clock too.
+          await recordCheck(worker.id, { prCheckFailureCount: 0 }, { verified: true });
           result.skipped++;
         }
       } catch (err) {

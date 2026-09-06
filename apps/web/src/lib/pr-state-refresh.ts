@@ -192,8 +192,13 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
 
         const now = new Date();
         // The PR resolved, so whatever failure streak this row had is over.
+        // Reaching this line means the GitHub call above returned successfully
+        // (a throw would have skipped straight to the catch), so this is
+        // always a CONFIRMED state — prLastVerifiedAt advances alongside
+        // prLastCheckedAt, unlike the catch branch below.
         const update: Record<string, unknown> = {
           prLastCheckedAt: now,
+          prLastVerifiedAt: now,
           prCheckFailureCount: 0,
           updatedAt: now,
         };

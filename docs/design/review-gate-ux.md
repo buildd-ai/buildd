@@ -375,6 +375,17 @@ therefore subject to the freshness invariant in
 - A row retired to terminal `prLifecycleStatus = 'unresolvable'` leaves this
   surface entirely and appears under Problems → Orphaned PRs on `/app/health`.
 
+"Verified inside that SLA" means `workers.prLastVerifiedAt`, not
+`workers.prLastCheckedAt`. The two are different facts: `prLastCheckedAt`
+records that a check was *attempted* (advanced on a failed call too, so the
+sweep's oldest-first queue keeps rotating); `prLastVerifiedAt` records that
+GitHub *confirmed* a state (merged / closed / still open) and a failed check
+never touches it. A gate surface that read the attempt clock as if it were the
+verification clock is exactly how a prior fix to this section (2026-09-03)
+shipped with its own `unverified` branch effectively unreachable — every row
+the sweep had ever touched, including ones stuck in a failure loop, read as
+freshly verified. See mobile-decision-flow.md §1.5.1.
+
 The gate *predicate* (`resolveReviewerGate`, §5.2.1) is unchanged by this and
 should not be adjusted to compensate. It answers **who owns the next move**; the
 freshness invariant answers **whether we still know enough to ask**. When they

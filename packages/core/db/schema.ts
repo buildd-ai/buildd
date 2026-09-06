@@ -1155,10 +1155,22 @@ export const workers = pgTable('workers', {
   // Set the first time prLifecycleStatus transitions to 'conflict'. Used to measure
   // conflictDeadDays. Never cleared (even if PR later becomes mergeable).
   conflictDetectedAt: timestamp('conflict_detected_at', { withTimezone: true }),
-  // Last time we proactively fetched this PR's state from GitHub.
-  // Null = never checked (or pre-migration). Used by the read-through refresh to
-  // skip workers that were polled within the last 5 minutes.
+  // Last time we ATTEMPTED to check this PR's state against GitHub — advanced
+  // on every outcome, including a failed call. Null = never attempted. Drives
+  // ORDER BY queue rotation (reconcileStalePrWorkers, refreshStaleWorkersFor-
+  // Workspaces, dead-zone-sweep) so a row that keeps failing still rotates to
+  // the back of the batch instead of pinning the head forever.
+  //
+  // This is deliberately NOT what "is this row's state fresh?" reads — that a
+  // check was ATTEMPTED says nothing about whether it SUCCEEDED. See
+  // prLastVerifiedAt below and lib/pr-freshness.ts.
   prLastCheckedAt: timestamp('pr_last_checked_at', { withTimezone: true }),
+  // Last time GitHub actually CONFIRMED this row's PR state (merged / closed /
+  // still open) — never touched by a failed check. Null = never confirmed.
+  // This is the column lib/pr-freshness.ts reads to decide whether a row's
+  // lifecycle state is fresh enough to render as a merge CTA; prLastCheckedAt
+  // cannot answer that question because recordFailure() advances it too.
+  prLastVerifiedAt: timestamp('pr_last_verified_at', { withTimezone: true }),
   // Consecutive failed attempts to resolve this PR against GitHub (404, dead
   // installation, no repo). Reset to 0 on any successful resolution. Drives the
   // transition to prLifecycleStatus='unresolvable'.
