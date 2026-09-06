@@ -9,6 +9,7 @@ import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exh
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { triggerEvent as _triggerEvent, channels, events } from '@/lib/pusher';
 import {
   prepareSubjectFiling,
@@ -352,13 +353,7 @@ export async function runMission(
   // push commits to this branch so a single PR tracks the entire mission.
   let workingBranch = mission.workingBranch;
   if (!workingBranch && workspace?.repo) {
-    const slug = mission.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 40) || 'mission';
-    const shortId = mission.id.slice(0, 8);
-    const candidate = `mission/${slug}-${shortId}`;
+    const candidate = generateMissionBranchName({ missionId: mission.id, title: mission.title });
     const [updated] = await db
       .update(missions)
       .set({ workingBranch: candidate, updatedAt: new Date() })

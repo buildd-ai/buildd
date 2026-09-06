@@ -16,6 +16,8 @@
  * branch, which is the stacked-branch mechanism quietly not working.
  */
 
+import { MISSION_BRANCH_PREFIX } from './mission-integration';
+
 /** The subset of `workspaces.gitConfig` that decides a branch name. */
 export interface BranchNameGitConfig {
   branchingStrategy?: 'none' | 'trunk' | 'gitflow' | 'feature' | 'custom' | string;
@@ -70,4 +72,36 @@ export function generateTaskBranchName(input: TaskBranchNameInput): string {
   if (gitConfig?.useBuildBranch) return `buildd/${taskIdShort}-${slug}`;
   if (gitConfig?.branchPrefix) return `${gitConfig.branchPrefix}${taskIdShort}-${slug}`;
   return `buildd/${taskIdShort}-${slug}`;
+}
+
+export interface MissionBranchNameInput {
+  /** The mission's UUID — the first 8 chars go into the branch name. */
+  missionId: string;
+  /** The mission title, slugified into the branch name. */
+  title: string;
+}
+
+/**
+ * The working branch name for an Option A′ mission's integration branch.
+ *
+ * Title → lowercase, non-alphanumeric runs collapsed to `-`, leading/trailing
+ * `-` stripped, truncated to 40 characters, falling back to `mission` when
+ * empty — then `MISSION_BRANCH_PREFIX` + the first 8 characters of the
+ * mission id.
+ *
+ * The single definition: `runMission` (apps/web/src/lib/mission-run.ts) and
+ * mission creation (apps/web/src/app/api/missions/route.ts) both call this
+ * rather than re-deriving the rule — see the docstring on
+ * `@buildd/core/mission-integration` for why duplicating exactly this logic
+ * once already caused a two-generators bug.
+ */
+export function generateMissionBranchName(input: MissionBranchNameInput): string {
+  const { missionId, title } = input;
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40) || 'mission';
+  const shortId = missionId.slice(0, 8);
+  return `${MISSION_BRANCH_PREFIX}${slug}-${shortId}`;
 }

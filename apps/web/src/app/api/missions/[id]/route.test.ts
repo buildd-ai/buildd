@@ -45,6 +45,13 @@ let insertedNotes: any[] = [];
 let recentCollapseNote: any = null;
 const mockMissionNotesFindFirst = mock(() => Promise.resolve(recentCollapseNote));
 
+const mockEnsureMissionIntegrationBranch = mock(() =>
+  Promise.resolve({ ok: true as const, branch: 'mission/existing-mission-obj-1', created: true })
+);
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+}));
+
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
 }));
@@ -150,6 +157,8 @@ describe('PATCH /api/missions/[id]', () => {
     recentCollapseNote = null;
     mockMissionNotesFindFirst.mockReset();
     mockMissionNotesFindFirst.mockImplementation(() => Promise.resolve(recentCollapseNote));
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -752,6 +761,67 @@ describe('PATCH /api/missions/[id]', () => {
     expect(res.status).toBe(200);
     expect(updatedSetData.initiativeId).toBeNull();
   });
+
+  describe('branchStrategy', () => {
+    it('rejects an invalid branchStrategy value', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'trunk' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('branchStrategy');
+      expect(mockMissionsUpdate).not.toHaveBeenCalled();
+    });
+
+    it('branchStrategy=mission-branch sets integrationBranchEnabled and ensures the branch (opt-in transition)', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'mission-branch' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(true);
+      expect(mockEnsureMissionIntegrationBranch).toHaveBeenCalledWith('obj-1');
+    });
+
+    it('branchStrategy=direct sets integrationBranchEnabled to false and never calls ensure', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'direct' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(false);
+      expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    });
+
+    it('branchStrategy takes precedence over a raw integrationBranchEnabled in the same request', async () => {
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'direct', integrationBranchEnabled: true }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(false);
+      expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    });
+
+    it('posts a feed note (never a silent success) when the remote ref cannot be created', async () => {
+      mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: false, reason: 'api_error', detail: 'boom' } as any);
+      const req = new NextRequest('http://localhost/api/missions/obj-1', {
+        method: 'PATCH',
+        body: JSON.stringify({ branchStrategy: 'mission-branch' }),
+      });
+      const res = await PATCH(req, { params: makeParams('obj-1') });
+      expect(res.status).toBe(200);
+      expect(updatedSetData.integrationBranchEnabled).toBe(true);
+      const branchNote = insertedNotes.find(n => n.title === 'Integration branch could not be created');
+      expect(branchNote).toBeDefined();
+      expect(branchNote.body).toContain('api_error');
+    });
+  });
 });
 
 describe('PATCH /api/missions/[id] — mission feed', () => {
@@ -766,6 +836,8 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     recentCollapseNote = null;
     mockMissionNotesFindFirst.mockReset();
     mockMissionNotesFindFirst.mockImplementation(() => Promise.resolve(recentCollapseNote));
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);

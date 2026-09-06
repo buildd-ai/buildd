@@ -240,6 +240,69 @@ describe('manage_missions — workspace resolution', () => {
   });
 });
 
+describe('manage_missions — branchStrategy', () => {
+  let mockApi: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockApi = mock();
+  });
+
+  it('passes branchStrategy through on create', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active', priority: 5 });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_missions',
+      { action: 'create', title: 'Ship v2', branchStrategy: 'mission-branch' },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.branchStrategy).toBe('mission-branch');
+  });
+
+  it('omits branchStrategy from the create body when not provided (workspace default applies)', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active', priority: 5 });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_missions',
+      { action: 'create', title: 'Ship v2' },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.branchStrategy).toBeUndefined();
+  });
+
+  it('passes branchStrategy through on update', async () => {
+    mockApi.mockResolvedValueOnce({ id: 'mission-1', title: 'Ship v2', status: 'active' });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'manage_missions',
+      { action: 'update', missionId: 'mission-1', branchStrategy: 'direct' },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.branchStrategy).toBe('direct');
+  });
+
+  it('propagates a rejected (not coerced) invalid branchStrategy from the API', async () => {
+    mockApi.mockRejectedValueOnce(new Error('API error: 400 - {"error":"Invalid branchStrategy: must be one of mission-branch, direct"}'));
+
+    await expect(
+      handleBuilddAction(
+        mockApi as unknown as ApiFn,
+        'manage_missions',
+        { action: 'create', title: 'Bad strategy mission', branchStrategy: 'trunk' },
+        createMockContext(),
+      ),
+    ).rejects.toThrow(/Invalid branchStrategy/);
+  });
+});
+
 describe('manage_missions — goalCriteria / evaluate / autoVerify', () => {
   let mockApi: ReturnType<typeof mock>;
 
