@@ -61,13 +61,24 @@ uses. Two corpora within the workspace:
 
 | Corpus | Namespace | What it holds |
 |--------|-----------|--------------|
-| `code` | `{workspaceId}:code` | Source files ingested by the knowledge-ingest GH Actions workflow |
-| `spec` | `{workspaceId}:spec` | Spec/docs chunks (SPEC.md, buildd-docs, buildd-site, knowledge-base) |
+| `code` | `{workspaceId}:code` | Source files |
+| `docs` | `{workspaceId}:docs` | Prose: `docs/SPEC.md`, `docs/**`, and any `.md`/`.mdx` in a bound repo |
 
-Ingestion is handled by the **GH Actions knowledge-ingest workflow** — not the ephemeral
-Neon branch this skill previously maintained. Re-run that workflow to refresh the corpus.
+**There is no `:spec` namespace.** `classifyIngestCorpus` returns only
+`code | docs`, and every ingest path goes through it, so nothing has ever written
+`spec`. `spec_compare` used to read it and therefore returned an empty prose side.
 
-For local or ad-hoc ingestion, use:
+**Ingestion is in-app and event-driven, not CI.** A merged PR on any repo bound to a
+workspace enqueues a diff ingest job per workspace (`enqueueMergedPrIngestJobs` in the
+GitHub webhook), executed via `after()` with a lease so a lost run is reclaimed by the
+next trigger. Beyond the attempt ceiling the row parks in `error` and a full ingest
+recovers it. Full-repo ingests are claimed by runners at
+`/api/knowledge/ingest-jobs/claim`. So **the corpus is current as of the last merged
+PR** — there is no workflow to re-run, and a stale corpus means the job queue is stuck,
+not that a cron was missed. Check the workspace config's Knowledge Health section.
+
+For local or ad-hoc ingestion of the sibling doc repos (which are only covered by the
+in-app path if they are bound to a workspace), use:
 
 ```bash
 SPEC_WORKSPACE_ID=<workspace-uuid> \
