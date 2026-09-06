@@ -26,7 +26,9 @@ import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import {
   WORKSPACE_INSTALLATION_WITH,
   pickWorkspaceInstallationId,
+  installationIdForRepo,
 } from '@/lib/workspace-installation';
+import { normalizeRepoFullName, resolvePrRepo } from '@/lib/repo-scope';
 
 const BATCH_CAP = 10;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
@@ -37,6 +39,12 @@ const TERMINAL_STATUSES = ['merged', 'closed', 'unresolvable'] as ('pr_open' | '
 export interface StalePrCandidate {
   id: string;
   prNumber: number | null;
+  /**
+   * The PR's own url — the authoritative source for which repo to query, since
+   * a worker's PR is often not in its workspace's repo. Optional so existing
+   * callers compile; omitting it falls back to the workspace repo.
+   */
+  prUrl?: string | null;
   workspaceId: string;
   taskId: string | null;
   prLifecycleStatus: string | null;
@@ -65,7 +73,7 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
         lt(workers.prLastCheckedAt, staleCutoff),
       ),
     ),
-    columns: { id: true, prNumber: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
+    columns: { id: true, prNumber: true, prUrl: true, workspaceId: true, taskId: true, prLifecycleStatus: true },
     // Least-recently-checked first. Without an ordering the cap made this an
     // arbitrary sample of the backlog, so a row could be passed over on every
     // single render — indefinitely.
@@ -77,6 +85,7 @@ export async function refreshStaleWorkersForWorkspaces(workspaceIds: string[]): 
     candidates.map(c => ({
       id: c.id,
       prNumber: c.prNumber!,
+      prUrl: c.prUrl,
       workspaceId: c.workspaceId,
       taskId: c.taskId,
       prLifecycleStatus: c.prLifecycleStatus,
@@ -106,6 +115,7 @@ export async function refreshStaleWorkers(candidates: StalePrCandidate[]): Promi
     stale.map(w => ({
       id: w.id,
       prNumber: w.prNumber!,
+      prUrl: w.prUrl,
       workspaceId: w.workspaceId,
       taskId: w.taskId,
       prLifecycleStatus: w.prLifecycleStatus,
@@ -120,6 +130,7 @@ const CI_STATUSES = new Set(['ci_running', 'ci_failed', 'ci_green']);
 interface _Candidate {
   id: string;
   prNumber: number;
+  prUrl?: string | null;
   workspaceId: string;
   taskId: string | null;
   prLifecycleStatus: string | null;
@@ -127,6 +138,15 @@ interface _Candidate {
 
 async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
   if (candidates.length === 0) return;
+
+  /** Repo → installation, memoized for the batch. See pr-reconcile.ts. */
+  const installationByRepo = new Map<string, number | null>();
+  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
+    if (!installationByRepo.has(repo)) {
+      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
+    }
+    return installationByRepo.get(repo) ?? null;
+  };
 
   // Group by workspace to share one installation token per workspace.
   const byWorkspace = new Map<string, _Candidate[]>();
@@ -142,13 +162,23 @@ async function _processWorkerBatch(candidates: _Candidate[]): Promise<void> {
       with: WORKSPACE_INSTALLATION_WITH,
     });
 
-    const installationId = pickWorkspaceInstallationId(ws);
-    if (!ws?.repo || !installationId) continue;
-
-    const { repo } = ws;
+    const workspaceRepo = normalizeRepoFullName(ws?.repo);
+    const workspaceInstallationId = pickWorkspaceInstallationId(ws);
 
     for (let i = 0; i < wsWorkers.length; i++) {
       const worker = wsWorkers[i];
+
+      // The PR's own repo first, the workspace only as a fallback — see
+      // lib/repo-scope.ts. `workspaces.repo` holds a URL rather than a slug,
+      // and the PR is often in a different repo than the workspace anyway.
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo: ws?.repo });
+      if (!repo) continue;
+
+      const installationId =
+        (repo === workspaceRepo ? workspaceInstallationId : null)
+        ?? await resolveInstallationCached(repo)
+        ?? workspaceInstallationId;
+      if (!installationId) continue;
 
       if (i > 0) {
         await new Promise<void>(r => setTimeout(r, RATE_LIMIT_MS));

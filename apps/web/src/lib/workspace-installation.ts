@@ -22,6 +22,8 @@
  * as a fallback for workspaces that have no `githubRepoId` yet.
  */
 
+import { sql } from 'drizzle-orm';
+
 /** Drizzle `with` clause that loads both installation paths in one query. */
 export const WORKSPACE_INSTALLATION_WITH = {
   githubRepo: { with: { installation: { columns: { installationId: true } } } },
@@ -43,4 +45,36 @@ export function pickWorkspaceInstallationId(
   return ws?.githubRepo?.installation?.installationId
     ?? ws?.githubInstallation?.installationId
     ?? null;
+}
+
+/**
+ * Installation that covers a specific repo, resolved through `github_repos`.
+ *
+ * A workspace's installation pointer only answers for the workspace's OWN
+ * repo. Workers routinely open PRs in a different repo (a sibling mobile repo,
+ * an umbrella repo), and coordination workspaces have no repo at all — so
+ * anything that resolves a token from the workspace alone either queries the
+ * wrong repo or gives up on rows that are perfectly reconcilable.
+ *
+ * Matches on the normalized full name so a `github_repos` row survives the
+ * same URL-vs-slug inconsistency that `workspaces.repo` has.
+ */
+export async function installationIdForRepo(
+  repoFullName: string,
+): Promise<number | null> {
+  const { db } = await import('@buildd/core/db');
+  const { githubRepos } = await import('@buildd/core/db/schema');
+  const { normalizedRepoSql } = await import('@/lib/repo-scope');
+
+  const row = await db.query.githubRepos.findFirst({
+    where: sql`${normalizedRepoSql(githubRepos.fullName)} = ${repoFullName.toLowerCase()}`,
+    columns: { id: true },
+    with: { installation: { columns: { installationId: true, suspendedAt: true } } },
+  });
+
+  // A suspended installation mints a token whose every call fails. Treat it as
+  // no installation so the row records a failure and eventually retires,
+  // rather than burning a GitHub call per run forever.
+  if (row?.installation?.suspendedAt) return null;
+  return row?.installation?.installationId ?? null;
 }

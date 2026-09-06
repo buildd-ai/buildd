@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockGithubReposFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
 }));
@@ -13,6 +14,7 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findMany: mockWorkersFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -27,6 +29,10 @@ mock.module('drizzle-orm', () => ({
   isNotNull: (a: any) => ({ a, op: 'isNotNull' }),
   inArray: (a: any, b: any) => ({ a, b, op: 'inArray' }),
   notInArray: (a: any, b: any) => ({ a, b, op: 'notInArray' }),
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...values: any[]) => ({ op: 'sql', strings: [...strings], values }),
+    { raw: (v: string) => ({ op: 'sql.raw', v }) },
+  ),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -40,7 +46,8 @@ mock.module('@buildd/core/db/schema', () => ({
     workspaceId: 'workspaceId',
     id: 'id',
   },
-  workspaces: { id: 'id' },
+  workspaces: { id: 'id', repo: 'repo' },
+  githubRepos: { id: 'id', fullName: 'fullName' },
 }));
 
 // ─── GitHub API mock ──────────────────────────────────────────────────────────
@@ -534,5 +541,114 @@ describe('refreshStaleWorkers', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.not.objectContaining({ prLifecycleStatus: expect.anything() }),
     );
+  });
+});
+
+// ── Repo resolution ─────────────────────────────────────────────────────────
+//
+// Tier 1 had the identical defect as the tier-2 sweep (see pr-reconcile.test.ts
+// for the full account): it built `/repos/${workspaces.repo}/pulls/N`, and that
+// column holds a URL for nearly every workspace. With both tiers 404ing, the
+// only thing that ever wrote a PR lifecycle status in production was the
+// `pull_request` webhook — which is known-lossy, and is exactly what these two
+// tiers exist to heal.
+//
+// The `ws` fixture above uses a bare `owner/repo`, which is why the existing
+// suite passed throughout. These use the shape the database actually holds.
+
+describe('pr-state-refresh repo resolution', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockGithubApi.mockReset();
+    mockFetchCiLifecycleStatus.mockReset();
+    mockTriggerEvent.mockReset();
+    mockCheckDependsOnResolved.mockClear();
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null, head: { sha: 'abc' } });
+  });
+
+  it('builds a slug API path from a URL-shaped workspaces.repo', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', taskId: 't1', prUrl: null, prLifecycleStatus: 'pr_open' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+    makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/repo/pulls/42');
+  });
+
+  it('queries the repo the PR actually lives in, not the workspace repo', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 13,
+        workspaceId: 'ws1',
+        taskId: 't1',
+        prUrl: 'https://github.com/owner/sibling-ios/pull/13',
+        prLifecycleStatus: 'pr_open',
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 456 } });
+    makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(456, '/repos/owner/sibling-ios/pulls/13');
+  });
+
+  it('refreshes a worker whose workspace has no repo, using its prUrl', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 58,
+        workspaceId: 'ws-coord',
+        taskId: 't1',
+        prUrl: 'https://github.com/owner/repo/pull/58',
+        prLifecycleStatus: null,
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-06-05T22:43:47Z', head: { sha: 'abc' } });
+    const setMock = makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws-coord']);
+
+    expect(mockGithubApi).toHaveBeenCalledWith(789, '/repos/owner/repo/pulls/58');
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'merged' }),
+    );
+  });
+
+  it('asks for prUrl in the candidate column set', async () => {
+    // Without the column the resolver only ever sees the workspace repo, which
+    // silently reinstates both bugs.
+    mockWorkersFindMany.mockResolvedValue([]);
+    await refreshStaleWorkersForWorkspaces(['ws1']);
+    const columns = (mockWorkersFindMany.mock.calls[0][0] as any).columns;
+    expect(columns.prUrl).toBe(true);
+  });
+
+  it('skips the GitHub call when no repo resolves from either source', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 1, workspaceId: 'ws-coord', taskId: 't1', prUrl: null, prLifecycleStatus: null },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+    makeSetMock();
+
+    await refreshStaleWorkersForWorkspaces(['ws-coord']);
+
+    expect(mockGithubApi).not.toHaveBeenCalled();
   });
 });

@@ -67,3 +67,54 @@ export function workerOwnsPr(repoFullName: string, prNumber: number) {
 export function workerOwnsPrUrl(prUrl: string, prNumber: number) {
   return and(eq(workers.prNumber, prNumber), eq(workers.prUrl, prUrl));
 }
+
+/**
+ * JS-side counterpart to `normalizedRepoSql`, for building GitHub API paths.
+ *
+ * Separate from the SQL version on purpose, with two differences that matter:
+ *
+ *  - It preserves case. The SQL predicate lowercases because it only ever
+ *    compares; an API path is fine either way, but the value also ends up in
+ *    log lines and prUrls, where the owner's real casing is worth keeping.
+ *  - It returns `null` rather than a mangled string for anything that is not
+ *    exactly `owner/name`. `/repos/${repo}/pulls/N` with a bad `repo` does not
+ *    error — it silently becomes a different, plausible-looking endpoint that
+ *    404s. Refusing to build the path at all is the only safe failure.
+ */
+export function normalizeRepoFullName(repo: string | null | undefined): string | null {
+  const stripped = (repo ?? '')
+    .trim()
+    .replace(new RegExp(GITHUB_HOST_PREFIX_RE), '')
+    .replace(new RegExp(GIT_SUFFIX_RE), '');
+  // Exactly two non-empty segments, no path characters that could escape the
+  // API path. GitHub's own charset for owners/repos is a subset of this.
+  return /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(stripped) ? stripped : null;
+}
+
+/**
+ * The repo a PR actually lives in, read off the worker's own `prUrl`.
+ *
+ * This is the authoritative source, and `workspaces.repo` is not: a worker
+ * routinely opens its PR in a repo other than the one its workspace points at
+ * (a sibling mobile repo, an umbrella repo), and coordination workspaces have
+ * no repo at all while still owning workers with real PRs.
+ *
+ * Requires a numeric PR segment, so a `pull/new/<branch>` compare URL — what a
+ * worker stores when it prepared a PR but never opened one — is rejected
+ * rather than mistaken for a PR.
+ */
+export function repoFullNameFromPrUrl(prUrl: string | null | undefined): string | null {
+  const match = (prUrl ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)(?:[/?#]|$)/);
+  return match ? normalizeRepoFullName(match[1]) : null;
+}
+
+/**
+ * The repo to query for a worker's PR: its own prUrl first, the workspace's
+ * repo only as a fallback. `null` means no GitHub call is possible.
+ */
+export function resolvePrRepo(worker: {
+  prUrl: string | null | undefined;
+  workspaceRepo: string | null | undefined;
+}): string | null {
+  return repoFullNameFromPrUrl(worker.prUrl) ?? normalizeRepoFullName(worker.workspaceRepo);
+}
