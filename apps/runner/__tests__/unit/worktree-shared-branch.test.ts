@@ -161,11 +161,29 @@ describe('setupWorktree — shared/default branch guard', () => {
     expect(syncCalls.some(c => c.cmd.includes(`git branch -D "${DEFAULT_BRANCH}"`))).toBe(false);
   });
 
-  test('reports the guard so the caller can surface it (candidate + reason)', async () => {
+  // `baseBranch: <default>` with no `resumeBranch` never actually attempted a
+  // direct checkout of the default branch — declared-base semantics only ever
+  // wanted it as a base to cut FROM (see git-operations.ts's resumeCandidate,
+  // which now reads `resumeBranch` only). So there is nothing to warn about
+  // here: the task lands on its own branch on the first try, not via a
+  // rejected candidate. A genuine resume onto the default branch (context.
+  // resumeBranch === defaultBranch — pathological, but possible) still hits
+  // the guard; see the next test.
+  test('baseBranch=<default> alone never attempts the default branch as a checkout target — no guard needed', async () => {
     const result = await setupWorktree(
       MAIN_WORKTREE, 'buildd/task-a', DEFAULT_BRANCH, 'worker-a', { baseBranch: DEFAULT_BRANCH },
     );
 
+    expect(result.branch).toBe('buildd/task-a');
+    expect(result.sharedBranch).toBeUndefined();
+  });
+
+  test('resumeBranch=<default> (genuine resume attempt) still trips the guard', async () => {
+    const result = await setupWorktree(
+      MAIN_WORKTREE, 'buildd/task-a', DEFAULT_BRANCH, 'worker-a', { resumeBranch: DEFAULT_BRANCH },
+    );
+
+    expect(result.branch).toBe('buildd/task-a');
     expect(result.sharedBranch).toBeTruthy();
     expect(result.sharedBranch.candidate).toBe(DEFAULT_BRANCH);
     expect(result.sharedBranch.reason).toBe('default_branch');

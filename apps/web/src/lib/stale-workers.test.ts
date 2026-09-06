@@ -212,6 +212,43 @@ describe('cleanupStuckWaitingInput', () => {
     expect(capturedValues.workspaceId).toBe('ws-1');
   });
 
+  it('sets resumeBranch alongside baseBranch on the retry task, so the runner resumes the stalled branch rather than treating it as a declared base', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'Need clarification' }, branch: 'buildd/task-1-slug' },
+    ]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'Fix the bug',
+      description: 'Fix the login bug',
+      priority: 0,
+      category: 'bug',
+      project: 'web',
+      context: {},
+      requiredCapabilities: [],
+      missionId: null,
+      runnerPreference: 'any',
+      mode: 'execution',
+      outputRequirement: 'auto',
+      outputSchema: null,
+    });
+
+    let capturedValues: any = null;
+    mockTasksInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return { returning: mock(() => [{ id: 'new-task-id' }]) };
+      }),
+    });
+
+    await cleanupStuckWaitingInput('account-1');
+
+    expect(capturedValues.context?.baseBranch).toBe('buildd/task-1-slug');
+    expect(capturedValues.context?.resumeBranch).toBe('buildd/task-1-slug');
+  });
+
   it('fails the original task when creating retry', async () => {
     const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
     mockWorkersFindMany.mockResolvedValue([
@@ -1071,6 +1108,42 @@ describe('cleanupStaleWorkers — retry cap', () => {
     expect(startAtMs).toBeLessThanOrEqual(Date.now() + 6 * 60_000);
     // infraRetryCount incremented to 1
     expect(taskUpdateSet.context?.infraRetryCount).toBe(1);
+  });
+
+  it('sets resumeBranch alongside baseBranch on infra-failure reset, so the runner resumes the branch rather than treating it as a declared base', async () => {
+    // Same as the first-infra-failure case above, but the stale worker has a
+    // real branch — the retry must resume that exact branch, not cut a fresh
+    // one from it. `baseBranch` alone is ambiguous with a mission-branch
+    // task's declared base (see apps/runner/src/git-operations.ts's
+    // resumeCandidate); `resumeBranch` is what disambiguates true resume.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'stale-w2', taskId: 'task-2', prUrl: null, prNumber: null, commitCount: null, branch: 'buildd/task-2-slug', error: 'session ID in use' },
+      ])
+      .mockResolvedValueOnce([]) // no other active workers
+      .mockResolvedValueOnce([
+        { id: 'f1', exitCause: 'infra_failure' }, // 0 chargeable failures → infra path
+      ])
+      .mockResolvedValueOnce([]); // heartbeat check
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-2', workspaceId: 'ws-1' }]);
+    mockTasksFindFirst.mockResolvedValueOnce({
+      id: 'task-2', workspaceId: 'ws-1', status: 'assigned',
+      category: 'feature', context: {}, loopState: null, loopConfig: null, updatedAt: new Date(),
+    }).mockResolvedValueOnce({ parentTaskId: null });
+
+    let taskUpdateSet: any = null;
+    mockTasksUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        taskUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(taskUpdateSet.context?.baseBranch).toBe('buildd/task-2-slug');
+    expect(taskUpdateSet.context?.resumeBranch).toBe('buildd/task-2-slug');
   });
 
   it('uses 15-minute backoff on second infra failure (infraRetryCount=1)', async () => {

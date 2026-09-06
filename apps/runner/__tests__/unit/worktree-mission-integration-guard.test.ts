@@ -229,4 +229,43 @@ describe('setupWorktree — mission integration branch guard', () => {
 
     expect(result.branch).not.toBe(MISSION_BRANCH);
   });
+
+  // Regression: the guard above only fires when the ORIGINAL `branch` parameter
+  // equals the base ref. It missed a second, real path to the same outcome —
+  // seen live on task a0f00ee9 and again on the task that files this test.
+  //
+  // `branch` here is a perfectly normal, unique per-task branch name (never
+  // equal to the mission branch). But `context.baseBranch` is ALSO the field
+  // git-operations.ts's local `resumeCandidate` falls back to when
+  // `context.resumeBranch` is absent (its "legacy CI retry" meaning). Under
+  // the mission-branch strategy, `baseBranch` means "cut a fresh branch from
+  // this ref" — a task never sets `resumeBranch` for it. So `resumeCandidate`
+  // becomes the mission branch, `base` resolves to `origin/<mission branch>`
+  // (declared-base semantics honour it), and `base === origin/${resumeCandidate}`
+  // holds — making `requestedBranch` (not `branch`) equal the mission branch.
+  // The old guard only ever tested `branch === base`, so this candidate sailed
+  // through unrejected and the worktree landed directly on the mission branch.
+  test('distinct per-task branch + baseBranch-only mission context: requestedBranch must not drift onto the base', async () => {
+    const TASK_BRANCH = 'buildd/task123-some-slug';
+
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      TASK_BRANCH, // branch parameter is NOT the mission branch — no bug in task creation
+      DEFAULT_BRANCH,
+      'worker-drift',
+      { baseBranch: MISSION_BRANCH }, // only baseBranch set — no resumeBranch, matching every real mission-branch task
+    );
+
+    expect(result).not.toBeNull();
+    // The worktree must check out the task's own branch...
+    expect(result.branch).toBe(TASK_BRANCH);
+    // ...cut from the mission branch as its base.
+    expect(result.base).toBe(`origin/${MISSION_BRANCH}`);
+    expect(result.branch).not.toBe(MISSION_BRANCH);
+
+    const adds = syncCalls.filter(c => c.cmd.includes('git worktree add'));
+    expect(adds.length).toBe(1);
+    expect(adds[0].cmd).toContain(`-b "${TASK_BRANCH}"`);
+    expect(adds[0].cmd).toContain(`origin/${MISSION_BRANCH}`);
+  });
 });
