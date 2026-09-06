@@ -8,7 +8,13 @@ import { getUserTeamIds, resolveActiveTeamId } from '@/lib/team-access';
 import { computeUsageStats, describeScan, parseWindowMs } from '@/lib/usage-stats';
 import { fetchUsageRows, USAGE_ROW_LIMIT } from '@/lib/usage-stats-query';
 import { fetchCbmSummary } from '@/lib/cbm-insight-query';
-import { buildUsageDrilldownView, resolveDrilldownWindow } from '@/lib/usage-drilldown';
+import { buildActionBreakdownPanel, buildUsageDrilldownView, resolveDrilldownWindow } from '@/lib/usage-drilldown';
+import {
+  ACTION_EVENTS_CAPTURED_SINCE,
+  ACTION_EVENTS_ROW_LIMIT,
+  countWorkersInWindow,
+  fetchActionEvents,
+} from '@/lib/action-events';
 import { UsageClient } from './UsageClient';
 import Link from 'next/link';
 
@@ -80,12 +86,16 @@ export default async function UsageDrilldownPage({
   // every delta into an artefact of the cap.
   const previousStart = new Date(now - 2 * windowMs);
 
-  const [rows, previousRows, cbm] = await Promise.all([
+  const [rows, previousRows, cbm, actionRows, actionWorkers] = await Promise.all([
     fetchUsageRows({ workspaceIds: scopedWsIds, windowStart }).catch(() => []),
     fetchUsageRows({ workspaceIds: scopedWsIds, windowStart: previousStart, windowEnd: windowStart })
       .catch(() => []),
     fetchCbmSummary({ workspaceIds: scopedWsIds, window: resolution.window, windowStart })
       .catch(() => null),
+    // Guarded like every sibling: a failure here costs this one panel, not the
+    // page. `null` from the pair below renders nothing rather than a zero.
+    fetchActionEvents({ workspaceIds: scopedWsIds, windowStart }).catch(() => null),
+    countWorkersInWindow({ workspaceIds: scopedWsIds, windowStart }).catch(() => null),
   ]);
 
   const previousScan = describeScan(previousRows, previousStart, USAGE_ROW_LIMIT);
@@ -98,6 +108,15 @@ export default async function UsageDrilldownPage({
     previous: { stats: computeUsageStats(previousRows, 'none'), truncated: previousScan.truncated },
     scan: describeScan(rows, windowStart, USAGE_ROW_LIMIT),
     cbm,
+    actions: actionRows && actionWorkers !== null
+      ? buildActionBreakdownPanel({
+          rows: actionRows,
+          workers: actionWorkers,
+          windowStart,
+          capturedSince: ACTION_EVENTS_CAPTURED_SINCE,
+          rowLimit: ACTION_EVENTS_ROW_LIMIT,
+        })
+      : null,
   });
 
   return (
