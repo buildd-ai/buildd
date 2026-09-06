@@ -4351,7 +4351,7 @@ If something is missing or incomplete, describe what and fix it now.`;
 
             if (this.config.inputAsRetry !== false) {
               // inputAsRetry mode: snapshot state, sync notification, then abort.
-              // The ralph-loop retry system will create a follow-up task with the user's answer.
+              // The retry/loop system will create a follow-up task with the user's answer.
               console.log(`[Worker ${worker.id}] inputAsRetry: aborting session — question="${questionText.slice(0, 60)}"`);
               worker.error = `needs_input: ${questionText}`;
               // Persist waitingFor on the worker so the post-loop cleanup

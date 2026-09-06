@@ -2377,7 +2377,7 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(400);
       const data = await response.json();
       expect(data.error).toContain('dependsOn');
-      expect(data.error).toContain('gated on');
+      expect(data.error).toContain('Gated on');
     });
 
     it('rejects task ca0b692e description with empty dependsOn (verbatim incident)', async () => {

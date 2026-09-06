@@ -125,6 +125,12 @@ mock.module('./pr-reconcile', () => ({
   refreshWorkerMergeStateIfStale: mockRefreshWorkerMergeState,
 }));
 
+const mockPostMissionFeedEvent = mock(() => Promise.resolve());
+mock.module('@/lib/mission-feed', () => ({
+  postMissionFeedEvent: mockPostMissionFeedEvent,
+  systemActor: (label: string) => ({ kind: 'system', id: null, label }),
+}));
+
 import {
   resolveCompletedTask,
   checkDependsOnResolved,
@@ -145,6 +151,8 @@ function resetMocks() {
   mockUpdateSet.mockReset();
   mockUpdateWhere.mockReset();
   mockDispatchUnblockedTask.mockClear(); // mockReset() would kill the Promise impl
+  mockPostMissionFeedEvent.mockReset();
+  mockPostMissionFeedEvent.mockResolvedValue(undefined);
   mockWorkspacesFindMany.mockReset();
   mockWorkspacesFindMany.mockResolvedValue([]);
   mockWorkspacesFindFirst.mockReset();
@@ -951,5 +959,96 @@ describe('resolveCompletedTask — plan approval gate', () => {
     await resolveCompletedTask('plan-task-1', 'ws-1');
 
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+// ── Stringified plan shape (organizer heartbeat emits plan as a JSON string) ──
+// Some organizer heartbeat cycles report structuredOutput.plan as a JSON
+// string whose content is the array, rather than the array itself. Before the
+// fix, `Array.isArray(plan)` failed silently: hasPlan was false, approvePlan
+// was never called, no children were created, and nothing surfaced — the
+// mission just sat idle. The fix parses a string plan before judging it, and
+// posts a mission feed note when the shape is genuinely unusable so the drop
+// is observable instead of silent.
+
+describe('resolveCompletedTask — stringified plan shape', () => {
+  beforeEach(resetMocks);
+
+  const PLAN = [{ ref: 'step-1', title: 'Do the work', description: 'work' }];
+
+  function seedCompletedPlanningTask(rawPlan: unknown) {
+    findFirstResults[0] = { parentTaskId: null };
+    findFirstResults[1] = { mode: 'planning', missionId: 'mission-1', status: 'completed', context: {} };
+    findFirstResults[2] = { result: { structuredOutput: { plan: rawPlan } } };
+    // approvePlan's own lookup of the planning task (only consulted when a valid plan is approved)
+    findFirstResults[3] = { id: 'plan-task-1', workspaceId: 'ws-1', missionId: 'mission-1' };
+    mockFindMany.mockResolvedValue([]); // no existing children
+  }
+
+  it('creates the same children as the array form when plan is a stringified array', async () => {
+    seedCompletedPlanningTask(JSON.stringify(PLAN));
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Do the work', mode: 'execution' })
+    );
+    expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
+  });
+
+  it('creates no children and posts a feed note when plan is a non-parsing string', async () => {
+    seedCompletedPlanningTask('not valid json{');
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledTimes(1);
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        missionId: 'mission-1',
+        taskId: 'plan-task-1',
+        type: 'warning',
+        collapseKey: 'plan-shape-rejected:plan-task-1',
+      })
+    );
+  });
+
+  it('creates no children and posts a feed note when plan parses to a non-array', async () => {
+    seedCompletedPlanningTask(JSON.stringify({ foo: 'bar' }));
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledTimes(1);
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ missionId: 'mission-1', taskId: 'plan-task-1', type: 'warning' })
+    );
+  });
+
+  it('creates no children and posts a feed note when plan is a raw non-array value', async () => {
+    seedCompletedPlanningTask(42);
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates no children and posts a feed note when the array items are not valid plan steps', async () => {
+    seedCompletedPlanningTask(JSON.stringify([{ notAStep: true }]));
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a legitimate empty plan as a clean no-op, not a shape violation', async () => {
+    seedCompletedPlanningTask([]);
+
+    await resolveCompletedTask('plan-task-1', 'ws-1');
+
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
   });
 });

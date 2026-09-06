@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.199.1",
+  "version": "0.200.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -41,6 +41,7 @@
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
     "./external-links": "./external-links.ts",
     "./release-strategy": "./release-strategy.ts",
+    "./branch-strategy": "./branch-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts",
     "./knowledge-store/edge-builder": "./knowledge-store/edge-builder.ts",
     "./knowledge-store/entity-resolver": "./knowledge-store/entity-resolver.ts",
@@ -65,6 +66,7 @@
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
     "./subject-anchor-observe": "./subject-anchor-observe.ts",
+    "./retrieval-clusters": "./retrieval-clusters.ts",
     "./prose-gate": "./prose-gate.ts",
     "./release-archetype": "./release-archetype.ts",
     "./release-attribution": "./release-attribution.ts",

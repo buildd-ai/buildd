@@ -80,23 +80,31 @@ export function prStateSlaMs(ageMs: number): number {
 export interface PrFreshnessInput {
   /** When the PR opened (worker completedAt, falling back to createdAt). */
   prOpenedAt: Date | null;
-  /** `workers.prLastCheckedAt` — null means never verified. */
-  checkedAt: Date | null;
+  /**
+   * `workers.prLastVerifiedAt` — null means GitHub has never CONFIRMED this
+   * row's state. Deliberately not `prLastCheckedAt`: that column advances on a
+   * failed check too (recordFailure calls recordCheck), so "checked" and
+   * "known" are different facts and this reads only the latter.
+   */
+  verifiedAt: Date | null;
   now: Date;
 }
 
 /**
  * True when this row's lifecycle state is within its tier's SLA.
  *
- * A row that was never checked is NOT fresh — "we have never asked GitHub" is
- * the exact state the stale MERGE cards were in.
+ * A row that was never verified is NOT fresh — "GitHub has never confirmed
+ * this" is the exact state the stale MERGE cards were in. Critically, that is
+ * also the state of a row whose every check attempt has FAILED: a failure
+ * must never satisfy this predicate, or the fail-closed gate below has
+ * nothing left to catch.
  */
 export function isPrStateFresh(input: PrFreshnessInput): boolean {
-  if (!input.checkedAt) return false;
+  if (!input.verifiedAt) return false;
   const ageMs = input.prOpenedAt
     ? input.now.getTime() - input.prOpenedAt.getTime()
     : Number.POSITIVE_INFINITY;
-  const sinceCheck = input.now.getTime() - input.checkedAt.getTime();
+  const sinceCheck = input.now.getTime() - input.verifiedAt.getTime();
   return sinceCheck <= prStateSlaMs(ageMs);
 }
 
@@ -134,13 +142,18 @@ export type StaleGate =
 
 export interface StaleGateInput {
   /**
-   * When the PR opened. REQUIRED to evaluate the gate: without an age there is
-   * no tier, so there is no SLA to be outside of. Callers that do not supply it
-   * opt out of the freshness invariant entirely.
+   * When the PR opened. REQUIRED — a caller with genuinely no known age must
+   * still pass `null` explicitly and take the fail-closed answer that follows
+   * (no age is treated as maximally cold, never as "unverified" simply
+   * disappearing). This field used to be optional, and omitting it opted the
+   * caller out of the invariant entirely — the exact structural hole
+   * docs/design/derived-state-accessors.md's `no-stale-pr-read` rule exists to
+   * close for every other seam. Making it required moves that closure to the
+   * type checker: omitting the key is now a compile error, not a silent skip.
    */
-  prOpenedAt?: Date | null;
-  /** `workers.prLastCheckedAt`. Null means never verified. */
-  prLifecycleCheckedAt?: Date | null;
+  prOpenedAt: Date | null;
+  /** `workers.prLastVerifiedAt`. Null means GitHub has never confirmed this row's state. */
+  prLifecycleVerifiedAt?: Date | null;
   now: Date;
 }
 
@@ -154,22 +167,19 @@ export interface StaleGateInput {
  * "we do not know" surface, never forward to a button that merges something.
  */
 export function resolveStaleGate(input: StaleGateInput): StaleGate | null {
-  // No age supplied — this caller does not participate in the invariant.
-  if (input.prOpenedAt === undefined) return null;
-
   const now = input.now.getTime();
   const openedAt = input.prOpenedAt?.getTime() ?? null;
   const ageMs = openedAt === null ? Number.POSITIVE_INFINITY : now - openedAt;
   const ageHours = Number.isFinite(ageMs) ? Math.floor(ageMs / HOUR_MS) : 0;
 
-  const checkedAt = input.prLifecycleCheckedAt ?? null;
-  if (!isPrStateFresh({ prOpenedAt: input.prOpenedAt ?? null, checkedAt, now: input.now })) {
+  const verifiedAt = input.prLifecycleVerifiedAt ?? null;
+  if (!isPrStateFresh({ prOpenedAt: input.prOpenedAt, verifiedAt, now: input.now })) {
     const sla = prStateSlaMs(ageMs);
     return {
       kind: 'unverified',
       ageHours,
-      reason: checkedAt
-        ? `PR state last verified ${describeAge(now - checkedAt.getTime())} ago — past the ${describeAge(sla)} check window`
+      reason: verifiedAt
+        ? `PR state last verified ${describeAge(now - verifiedAt.getTime())} ago — past the ${describeAge(sla)} check window`
         : 'PR state has never been verified against GitHub',
     };
   }

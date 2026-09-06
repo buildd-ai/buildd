@@ -250,11 +250,25 @@ Some workflows exist as GitHub Actions only and must NOT be registered as routab
 
 ## Skills
 
+Every **git-tracked** skill under `.claude/skills/` is listed here, and nothing
+that is not tracked is listed — `scripts/skills-listed.test.ts` enforces both
+directions against `git ls-files`, not the filesystem, so a skill you keep
+locally does not fail the suite for everyone else.
+
+**`.claude/` is gitignored** (`.gitignore:14`). Two consequences:
+
+- A new skill needs `git add -f .claude/skills/<slug>/SKILL.md`. A plain
+  `git add -A` skips it silently and you get a commit that lists a skill it does
+  not ship.
+- A checkout can hold extra skills that are not in the repo. They work, they are
+  simply not shared — so they do not belong in this list. Register one on the
+  platform (`buildd` action=register_skill) if other workers should get it.
+
 - **Agent workflow**: `.claude/skills/buildd-workflow/` — Task lifecycle guide (claim → work → ship). Use `/buildd-workflow` when starting a task.
+- **Schema change**: `.claude/skills/schema-change/` — Ship a Drizzle migration without losing a column or a release. Migration index collisions happen several times a day with concurrent sessions and git does **not** conflict on the `.sql` files; read this before pushing anything that touches `packages/core/drizzle/`.
+- **Spec sync**: `.claude/skills/spec-sync/` — Keep `docs/SPEC.md` the source of truth and reconcile the doc/site repos against it.
 - **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
-- **UI audit**: `.claude/skills/ui-audit/` — UX evaluation framework
-- **Competitive landscape**: `.claude/skills/competitive-landscape/` — Market analysis
-- **SDK changelog monitor**: `.claude/skills/sdk-changelog-monitor/` — Track SDK releases
+- **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
 
 ## Specs & Docs Layout
 

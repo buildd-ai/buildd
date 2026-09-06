@@ -7,7 +7,8 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { invalidateOpenWorkspacesCache } from '@/lib/redis';
 import { getUserWorkspaceIds, getUserDefaultTeamId, getUserTeamIds } from '@/lib/team-access';
-import { enqueueFullIngestJob, extractGithubFullName } from '@/lib/knowledge-ingest';
+import { enqueueFullIngestJob } from '@/lib/knowledge-ingest';
+import { normalizeRepoFullName } from '@/lib/repo-scope';
 
 export async function GET(req: NextRequest) {
   // Dev mode returns empty
@@ -230,7 +231,9 @@ export async function POST(req: NextRequest) {
       .insert(workspaces)
       .values({
         name: workspaceName,
-        repo: repoUrl || null,
+        // Canonical `owner/name` when parseable, else the caller's input
+        // verbatim — see the PATCH handler for why unparseable input survives.
+        repo: repoUrl ? (normalizeRepoFullName(repoUrl) ?? repoUrl) : null,
         localPath: defaultBranch || null,
         githubRepoId: githubRepoDbId,
         githubInstallationId: githubInstallationId || null,
@@ -246,7 +249,7 @@ export async function POST(req: NextRequest) {
 
     // Auto-ingest on repo link: enqueue a full ingest job when a repo URL was provided.
     if (repoUrl) {
-      const fullName = extractGithubFullName(repoUrl);
+      const fullName = normalizeRepoFullName(repoUrl);
       if (fullName) {
         enqueueFullIngestJob({ workspaceId: workspace.id, repo: fullName, trigger: 'repo_link' }).catch(err =>
           console.error(`[knowledge-ingest] repo-link enqueue failed for new workspace ${workspace.id}:`, err)

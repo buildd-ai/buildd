@@ -68,7 +68,7 @@ For anything beyond a trivial fix, create a plan listing:
 For tasks with `planRequired: true`, submit formally:
 ```
 buildd action=update_progress params={
-  "plan": "## Changes\n1. `packages/core/db/schema.ts` — add column X\n2. `apps/web/src/app/api/tasks/route.ts` — handle new field\n\n## Tests\n- Test 1: verify column migration\n- Test 2: API returns new field\n\n## Verification\n- `bun run build` passes\n- `bun test` passes"
+  "plan": "## Changes\n1. `packages/core/db/schema.ts` — add column X\n2. `apps/web/src/app/api/tasks/route.ts` — handle new field\n\n## Tests\n- Test 1: verify column migration\n- Test 2: API returns new field\n\n## Verification\n- `bun run build` passes\n- `bun run test` passes (NOT `bun test` — see CLAUDE.md)"
 }
 ```
 
@@ -133,6 +133,36 @@ buildd action=update_progress params={ "progress": 75, "message": "All tests pas
 ```
 
 Do NOT skip verification to save time. Run the commands. Read the output. Report what you found.
+
+### If You Are a Retry Attempt
+
+A retry lands with the previous attempt's work already in your worktree. Read
+these context fields before you touch anything:
+
+| Field | Meaning |
+|-------|---------|
+| `failureContext` | What failed last time. Read this first — it usually names the fix. |
+| `baseBranch` / `resumeBranch` | Your worktree is cut from the previous attempt's branch, not from trunk. |
+| `iteration` / `maxIterations` | Which attempt this is, and when to stop. |
+| `verificationCommand` | Run this locally before completing. |
+| `prNumber` | A PR already exists — push to the same branch, it auto-updates. |
+
+Three ways to waste the attempt:
+
+- **Starting from scratch.** Your branch already has the prior work. A rewrite
+  throws away the part that was right and usually reintroduces the bug.
+- **Opening a second PR.** If `prNumber` is set, push to the existing branch.
+- **Fixing broadly instead of narrowly.** `failureContext` points at one thing.
+  A targeted fix is reviewable; a rewrite is not.
+
+Past `maxIterations` — or roughly three attempts at the same failure — stop and
+say the approach looks wrong. That is a more useful report than a fourth patch.
+
+**"It passes locally but fails in CI" is usually not an environment difference.**
+Check first whether your working tree contains something the repo does not: an
+untracked file (note `.claude/` is gitignored), a generated artifact you never
+committed, or a stale `node_modules`. `git status --short` and
+`git show --stat HEAD` answer it faster than reading CI logs.
 
 ## Step 6: Push and Create PR
 

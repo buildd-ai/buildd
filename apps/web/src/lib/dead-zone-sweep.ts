@@ -34,8 +34,10 @@ import {
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import {
   WORKSPACE_INSTALLATION_WITH,
-  pickWorkspaceInstallationId,
+  pickWorkspaceRepoIdentity,
+  installationIdForRepo,
 } from '@/lib/workspace-installation';
+import { resolvePrRepo } from '@/lib/repo-scope';
 
 // ── Pure predicates ───────────────────────────────────────────────────────────
 
@@ -173,6 +175,15 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
   };
   if (deadZone.length === 0) return result;
 
+  /** Repo → installation, memoized for the sweep. See pr-reconcile.ts. */
+  const installationByRepo = new Map<string, number | null>();
+  const resolveInstallationCached = async (repo: string): Promise<number | null> => {
+    if (!installationByRepo.has(repo)) {
+      installationByRepo.set(repo, await installationIdForRepo(repo).catch(() => null));
+    }
+    return installationByRepo.get(repo) ?? null;
+  };
+
   // Group by workspace to share a single GitHub installation token
   const byWorkspace = new Map<string, typeof deadZone>();
   for (const w of deadZone) {
@@ -190,22 +201,39 @@ export async function sweepDeadZonePrs(workspaceId?: string): Promise<DeadZoneSw
     // Repo-mediated pointer first. The legacy workspaces.githubInstallationId FK
     // survives an App reinstall pointing at a dead installation whose token
     // 404s on every call — see lib/workspace-installation.ts.
-    const installationId = pickWorkspaceInstallationId(workspace);
-
-    if (!workspace?.repo || !installationId) {
+    // No workspace row means there is nothing to dispatch a retry against,
+    // regardless of what the PR looks like.
+    if (!workspace) {
       result.skipped += wsWorkers.length;
       continue;
     }
+
+    // Repo identity from the linked github_repos row, not the free-text column.
+    const wsIdentity = pickWorkspaceRepoIdentity(workspace);
+    const workspaceInstallationId = wsIdentity.installationId;
+    const workspaceRepo = wsIdentity.fullName;
 
     if (!isAutoResolveMergeConflictsEnabled(workspace.gitConfig)) {
       result.skipped += wsWorkers.length;
       continue;
     }
 
-    const { repo } = workspace;
-
     for (const worker of wsWorkers) {
       if (!worker.prNumber) { result.skipped++; continue; }
+
+      // The PR's own repo, from its prUrl, with the workspace only as a
+      // fallback — see lib/repo-scope.ts. `workspaces.repo` holds a URL rather
+      // than a slug, so interpolating it built a path that 404'd on every
+      // call: no conflict was ever detected here, and no BLOCKED card ever
+      // came from this sweep.
+      const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
+      if (!repo) { result.skipped++; continue; }
+
+      const installationId =
+        (repo === workspaceRepo ? workspaceInstallationId : null)
+        ?? await resolveInstallationCached(repo)
+        ?? workspaceInstallationId;
+      if (!installationId) { result.skipped++; continue; }
 
       const task = (worker as any).task as {
         id: string;

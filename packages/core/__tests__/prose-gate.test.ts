@@ -77,6 +77,43 @@ describe('detectProseGate', () => {
     });
   });
 
+  describe('code spans → excluded from matching', () => {
+    it('ignores gate language quoted inside backticks describing code', () => {
+      const result = detectProseGate(
+        'Fix the matcher so `if (gated on)` style predicates in code are not treated as prose.',
+      );
+      expect(result.phrase).toBeNull();
+    });
+
+    it('ignores candidate trigger phrases listed in backticks', () => {
+      const result = detectProseGate(
+        'Better triggers to consider: `blocked on`, `wait for`, `depends on`.',
+      );
+      expect(result.phrase).toBeNull();
+    });
+
+    it('ignores a fenced code block containing gate language', () => {
+      const result = detectProseGate(
+        'See the snippet below.\n```\n// blocked on the mutex\n```\nNo real gate here.',
+      );
+      expect(result.phrase).toBeNull();
+    });
+
+    it('still matches gate language outside of backticks in the same description', () => {
+      const result = detectProseGate(
+        'Uses `if (ready)` internally. Blocked on the deployment finishing.',
+      );
+      expect(result.phrase).not.toBeNull();
+    });
+  });
+
+  describe('phrase field', () => {
+    it('returns the literal matched text, not the regex pattern', () => {
+      const result = detectProseGate('Start this after the spec PR merges.');
+      expect(result.phrase).toBe('after the spec PR merges');
+    });
+  });
+
   describe('task ID extraction', () => {
     it('extracts multiple 8-char hex IDs', () => {
       const result = detectProseGate('Gated on deadbeef and cafebabe completing.');

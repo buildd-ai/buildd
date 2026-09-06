@@ -23,6 +23,7 @@ export async function verifyReleaseDeployment(releaseId: string, db: DB): Promis
       state: releases.state,
       verificationStrategy: releases.verificationStrategy,
       workspaceId: releases.workspaceId,
+      headSha: releases.headSha,
     })
     .from(releases)
     .where(eq(releases.id, releaseId))
@@ -56,6 +57,16 @@ export async function verifyReleaseDeployment(releaseId: string, db: DB): Promis
     } catch {
       // Network error or timeout — retry
     }
+  }
+
+  if (success && !release.headSha) {
+    // A release with no head sha has no commit range for attribution to walk —
+    // promoting it to `healthy` anyway is precisely how the ledger ends up with
+    // terminal rows nothing ever shipped from. Refuse the write; the row stays
+    // in `deploying` and the stale-deploying cron sweep hard-fails it if the
+    // head sha never resolves.
+    console.error(`[release-verification] release ${releaseId} probed healthy but has no head sha — refusing to promote`);
+    return;
   }
 
   if (success) {

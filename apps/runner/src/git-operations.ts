@@ -413,6 +413,18 @@ export async function setupWorktree(
     // counted as a holder.
     const branchOwners = listBranchOwners(execOpts);
 
+    // Mission-integration guard: a task must NEVER work directly on the mission
+    // integration branch. When context.baseBranch is a mission integration branch
+    // and the task's branch parameter is also that same branch (a bug in task
+    // creation), the branch should have been cut FROM the base, not BE the base.
+    //
+    // Detect: the ORIGINAL branch parameter equals the base ref (stripped of "origin/" prefix).
+    // This is different from the resume case: when resuming, requestedBranch is set to
+    // resumeCandidate (a prior branch to update), not the original branch parameter.
+    // We only guard when branch (the parameter) itself equals the base (integration branch).
+    const baseWithoutPrefix = base.replace(/^origin\//, '');
+    const branchEqualsBase = branch === baseWithoutPrefix;
+
     // Shared-branch guard.  A worktree cannot be checked out onto the repo
     // default branch (the main clone holds it) nor onto a branch another
     // worktree already holds — git fails with "a branch named 'X' already
@@ -421,13 +433,18 @@ export async function setupWorktree(
     // concurrent worker but one failed setup and was silently degraded into the
     // shared role-clone root (no fs isolation, no CBM).  Fall back to the task's
     // own branch, which is unique per task, and report it.
+    //
+    // This also covers the mission-integration case: when the branch parameter
+    // equals the base branch (not just requestedBranch), it's a bug and the guard fires.
     /** Why a branch cannot be the checkout target of a new worktree, if it cannot. */
     const unusable = (candidate: string): 'default_branch' | 'checked_out' | null =>
       candidate === defaultBranch
         ? 'default_branch'
         : branchOwners.has(candidate)
           ? 'checked_out'
-          : null;
+          : branchEqualsBase && candidate === baseWithoutPrefix
+            ? 'default_branch' // Use 'default_branch' reason for the base branch too — shared namespace
+            : null;
 
     // Candidates in preference order. The task branch is NOT automatically a
     // safe fallback: it can itself be held (a mission carries a stable

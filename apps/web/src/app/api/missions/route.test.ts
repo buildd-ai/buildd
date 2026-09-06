@@ -28,12 +28,31 @@ const mockSchedulesInsert = mock(() => ({
     };
   }),
 }));
+let updatedMissionValues: any = null;
 const mockMissionsUpdate = mock(() => ({
-  set: mock(() => ({
-    where: mock(() => ({
-      returning: mock(() => []),
-    })),
-  })),
+  set: mock((vals: any) => {
+    updatedMissionValues = vals;
+    return {
+      where: mock(() => ({
+        returning: mock(() => []),
+      })),
+    };
+  }),
+}));
+
+const mockEnsureMissionIntegrationBranch = mock(() =>
+  Promise.resolve({ ok: true as const, branch: 'mission/x-00000000', created: true })
+);
+const mockResolveFeedActor = mock(() => Promise.resolve({ kind: 'system', id: null, label: 'system' } as any));
+const mockPostMissionFeedEvent = mock(() => Promise.resolve());
+
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureMissionIntegrationBranch: mockEnsureMissionIntegrationBranch,
+}));
+
+mock.module('@/lib/mission-feed', () => ({
+  resolveFeedActor: mockResolveFeedActor,
+  postMissionFeedEvent: mockPostMissionFeedEvent,
 }));
 
 mock.module('@/lib/auth-helpers', () => ({
@@ -109,14 +128,21 @@ describe('POST /api/missions', () => {
     mockInitiativesFindFirst.mockReset();
     mockInitiativesFindFirst.mockResolvedValue(null);
     mockRunMission.mockReset();
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockResolveFeedActor.mockReset();
+    mockPostMissionFeedEvent.mockReset();
     insertedMissionValues = null;
     insertedScheduleValues = null;
+    updatedMissionValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
     mockGetUserTeamIds.mockResolvedValue(['team-1']);
     mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', teamId: 'team-1' });
     mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/x-00000000', created: true } as any);
+    mockResolveFeedActor.mockResolvedValue({ kind: 'system', id: null, label: 'system' } as any);
+    mockPostMissionFeedEvent.mockResolvedValue(undefined as any);
 
     mockMissionsInsert.mockImplementation(() => ({
       values: mock((vals: any) => {
@@ -571,6 +597,157 @@ describe('POST /api/missions', () => {
     expect(insertedMissionValues.initiativeId).toBeNull();
   });
 
+  it('defaults integrationBranchEnabled to true when workspace has no branchStrategy set (opt-out default)', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', teamId: 'team-1', gitConfig: null });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Default strategy mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
+  it('sets integrationBranchEnabled to true when workspace explicitly resolves to mission-branch', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+      gitConfig: { branchStrategy: 'mission-branch' },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Explicit mission-branch mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
+  it('sets integrationBranchEnabled to false when workspace resolves to direct', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+      gitConfig: { branchStrategy: 'direct' },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Direct strategy mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(false);
+  });
+
+  it('defaults integrationBranchEnabled to true for a workspace-less mission', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'No workspace mission' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
+  it('rejects an invalid branchStrategy value', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Bad strategy mission', branchStrategy: 'trunk' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('branchStrategy');
+    expect(mockMissionsInsert).not.toHaveBeenCalled();
+  });
+
+  it('an explicit branchStrategy overrides the workspace default', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+      gitConfig: { branchStrategy: 'direct' },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Override mission', workspaceId: 'ws-1', branchStrategy: 'mission-branch' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+  });
+
+  it('mission-branch strategy generates the working branch and ensures it on the remote in the same request', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Ship the onboarding flow', workspaceId: 'ws-1', branchStrategy: 'mission-branch' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+    // The branch name is written back onto the mission row — never left flag-on-but-inert.
+    expect(updatedMissionValues).not.toBeNull();
+    // Mock mission id is 'obj-1' (returned by the insert mock's .returning()) — shorter than
+    // 8 chars, so the id-slice is the whole string.
+    expect(updatedMissionValues.workingBranch).toBe('mission/ship-the-onboarding-flow-obj-1');
+    expect(mockEnsureMissionIntegrationBranch).toHaveBeenCalledWith('obj-1');
+
+    const body = await res.json();
+    expect(body.workingBranch).toBe(updatedMissionValues.workingBranch);
+    // No inert-flag failure note when the ref was created successfully.
+    expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
+  });
+
+  it('direct strategy generates no working branch and never calls ensure', async () => {
+    mockWorkspacesFindFirst.mockReturnValue({
+      id: 'ws-1',
+      teamId: 'team-1',
+      gitConfig: { branchStrategy: 'direct' },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Direct mission', workspaceId: 'ws-1' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(false);
+    expect(updatedMissionValues).toBeNull();
+    expect(mockEnsureMissionIntegrationBranch).not.toHaveBeenCalled();
+    expect(mockPostMissionFeedEvent).not.toHaveBeenCalled();
+  });
+
+  it('a remote-ref failure still creates the mission with the flag and branch name, and posts a feed note — never a silent success', async () => {
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: false, reason: 'api_error', detail: 'GitHub API error: 500' } as any);
+
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Flaky remote mission', workspaceId: 'ws-1', branchStrategy: 'mission-branch' }),
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+
+    expect(insertedMissionValues.integrationBranchEnabled).toBe(true);
+    expect(updatedMissionValues).not.toBeNull();
+    expect(updatedMissionValues.workingBranch).toMatch(/^mission\//);
+    expect(mockPostMissionFeedEvent).toHaveBeenCalledTimes(1);
+    const feedCall = mockPostMissionFeedEvent.mock.calls[0][0] as any;
+    expect(feedCall.missionId).toBe('obj-1');
+    expect(feedCall.body).toContain('api_error');
+  });
+
   it('still succeeds when auto-start organizer fails', async () => {
     mockRunMission.mockRejectedValue(new Error('dispatch failed'));
 
@@ -699,7 +876,11 @@ describe('POST /api/missions — goalCriteria validation', () => {
     mockWorkspacesFindFirst.mockReset();
     mockInitiativesFindFirst.mockReset();
     mockRunMission.mockReset();
+    mockEnsureMissionIntegrationBranch.mockReset();
+    mockResolveFeedActor.mockReset();
+    mockPostMissionFeedEvent.mockReset();
     insertedMissionValues = null;
+    updatedMissionValues = null;
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
     mockAuthenticateApiKey.mockReturnValue(null);
@@ -707,6 +888,9 @@ describe('POST /api/missions — goalCriteria validation', () => {
     mockWorkspacesFindFirst.mockReturnValue({ id: 'ws-1', teamId: 'team-1' });
     mockInitiativesFindFirst.mockResolvedValue(null);
     mockRunMission.mockResolvedValue({ task: { id: 'organizer-task-1' } });
+    mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/x-00000000', created: true } as any);
+    mockResolveFeedActor.mockResolvedValue({ kind: 'system', id: null, label: 'system' } as any);
+    mockPostMissionFeedEvent.mockResolvedValue(undefined as any);
     mockMissionsInsert.mockImplementation(() => ({
       values: mock((vals: any) => {
         insertedMissionValues = vals;

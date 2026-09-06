@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 const mockWorkersFindMany = mock(() => [] as any[]);
 const mockMissionsFindMany = mock(() => [] as any[]);
 const mockWorkspacesFindFirst = mock(() => null as any);
+const mockGithubReposFindFirst = mock(() => null as any);
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({ where: mock(() => Promise.resolve()) })),
 }));
@@ -15,6 +16,7 @@ mock.module('@buildd/core/db', () => ({
       workers: { findMany: mockWorkersFindMany },
       missions: { findMany: mockMissionsFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst },
+      githubRepos: { findFirst: mockGithubReposFindFirst },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -43,12 +45,14 @@ mock.module('@buildd/core/db/schema', () => ({
     prUrl: 'prUrl',
     updatedAt: 'updatedAt',
     prLastCheckedAt: 'prLastCheckedAt',
+    prLastVerifiedAt: 'prLastVerifiedAt',
     prLifecycleStatus: 'prLifecycleStatus',
     prCheckFailureCount: 'prCheckFailureCount',
     completedAt: 'completedAt',
     createdAt: 'createdAt',
   },
-  workspaces: { id: 'id' },
+  workspaces: { id: 'id', repo: 'repo' },
+  githubRepos: { id: 'id', fullName: 'fullName' },
   missions: {
     id: 'id',
     status: 'status',
@@ -201,6 +205,11 @@ describe('refreshWorkerMergeStateIfStale', () => {
     const [setArgs] = setMock.mock.calls;
     expect(setArgs[0]).toHaveProperty('prLastCheckedAt');
     expect(setArgs[0].prLastCheckedAt).toBeInstanceOf(Date);
+    // AC-4: this path only ever writes on a confirmed merge, so it must stamp
+    // the verification clock too — the admin backfill route relies on this to
+    // clear rows into a state resolveStaleGate will actually treat as fresh.
+    expect(setArgs[0]).toHaveProperty('prLastVerifiedAt');
+    expect(setArgs[0].prLastVerifiedAt).toBeInstanceOf(Date);
   });
 
   it('returns false on GitHub API error without throwing', async () => {
@@ -298,6 +307,23 @@ describe('reconcileStalePrWorkers', () => {
     );
   });
 
+  it('AC-4: advances prLastVerifiedAt alongside prLastCheckedAt when GitHub confirms merged', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1' },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    await reconcileStalePrWorkers();
+
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLastCheckedAt).toBeInstanceOf(Date);
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
+  });
+
   it('marks closed when GitHub reports PR closed-unmerged', async () => {
     mockWorkersFindMany.mockResolvedValue([
       { id: 'w1', prNumber: 99, workspaceId: 'ws1' },
@@ -315,6 +341,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(setMock).toHaveBeenCalledWith(
       expect.objectContaining({ prLifecycleStatus: 'closed' }),
     );
+    // AC-4: closed is a confirmed GitHub answer too — both clocks advance.
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
   });
 
   it('leaves an open PR open, recording only that it was checked', async () => {
@@ -336,6 +365,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
     expect(written.prLifecycleStatus).toBeUndefined();
     expect(written.mergedAt).toBeUndefined();
+    // AC-2/AC-4: a confirmed-still-open answer is a real GitHub answer, so the
+    // verification clock advances too — this row is NOT the failure case.
+    expect(written.prLastVerifiedAt).toBeInstanceOf(Date);
   });
 
   it('skips workspace with no GitHub installation, counting it as a failure not a clean check', async () => {
@@ -358,6 +390,9 @@ describe('reconcileStalePrWorkers', () => {
     // which made an unreconcilable row look healthy and hid it forever — the
     // precise mechanism behind the four stale MERGE cards on Home.
     expect(written.prCheckFailureCount).toBe(1);
+    // AC-2: a failure must never advance the verification clock — that is the
+    // exact conflation that made resolveStaleGate's unverified branch dead.
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   // ── Installation resolution ────────────────────────────────────────────────
@@ -428,6 +463,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(written.prLifecycleStatus).toBe('unresolvable');
     expect(written.prUnresolvableReason).toContain('Not Found');
     expect(written.prCheckFailureCount).toBe(UNRESOLVABLE_FAILURE_THRESHOLD);
+    // AC-2/AC-5: going terminal is buildd giving up, not GitHub confirming
+    // anything — the verification clock must stay untouched even here.
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   it('does not retire a young row, however many times it has failed', async () => {
@@ -568,6 +606,9 @@ describe('reconcileStalePrWorkers', () => {
     expect(result.stamped).toBe(0);
     const written = setMock.mock.calls[0][0] as Record<string, unknown>;
     expect(written.prLastCheckedAt).toBeInstanceOf(Date);
+    // AC-2: the attempt clock advances on this GitHub error; the verification
+    // clock must not, or this row reads as freshly verified while it is not.
+    expect(written.prLastVerifiedAt).toBeUndefined();
   });
 
   it('unblocks dependents when it heals a missed merge', async () => {
@@ -939,5 +980,182 @@ describe('sweepMissionIntegrationPrs', () => {
 
     expect(result.prClosed).toBe(1);
     expect(result.errors).toBe(0);
+  });
+});
+
+// ── Repo resolution ─────────────────────────────────────────────────────────
+//
+// Measured against production, September 2026: every card in the "waiting on
+// you" queue was a PR that had already merged or closed, some of them months
+// earlier. Three independent defects, all in the one line that built the API
+// path from `workspaces.repo`:
+//
+//   1. That column stores a URL (`https://github.com/owner/name`) for nearly
+//      every workspace, not a slug. The request went to
+//      `/repos/https://github.com/owner/name/pulls/N`, which is a 404, on every
+//      run. The fixtures in this file all used a bare `owner/repo`, so nothing
+//      here ever exercised the shape the database actually holds — that is why
+//      the whole tier-2 sweep could be dead in production with a green suite.
+//   2. A worker's PR is frequently NOT in its workspace's repo (a sibling
+//      mobile repo, an umbrella repo). Even with (1) fixed, the sweep asked the
+//      wrong repo for the PR number and got someone else's PR or a 404.
+//   3. Coordination workspaces have no repo at all, so their PRs were
+//      unreconcilable forever — while every one of those rows carried a `prUrl`
+//      naming a real, installed repo.
+//
+// `workers.prUrl` is the authoritative source for a PR's repo. The workspace is
+// a fallback, never the primary.
+
+describe('reconcileStalePrWorkers repo resolution', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockGithubApi.mockReset();
+    mockCheckDependsOnResolved.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+  });
+
+  it('builds a slug API path from a URL-shaped workspaces.repo', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', prUrl: null, prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/repo/pulls/42');
+  });
+
+  it('queries the repo the PR actually lives in, not the workspace repo', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 25,
+        workspaceId: 'ws1',
+        prUrl: 'https://github.com/owner/sibling-ios/pull/25',
+        prCheckFailureCount: 0,
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 456 } });
+
+    await reconcileStalePrWorkers();
+
+    // The PR's own repo, with the installation that actually covers it.
+    expect(mockGithubApi).toHaveBeenCalledWith(456, '/repos/owner/sibling-ios/pulls/25');
+  });
+
+  it('reconciles a worker whose workspace has no repo, using its prUrl', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 58,
+        workspaceId: 'ws-coord',
+        prUrl: 'https://github.com/owner/repo/pull/58',
+        prCheckFailureCount: 0,
+        completedAt: ancientOpenedAt,
+      },
+    ]);
+    // A coordination workspace: no repo, no installation pointer of its own.
+    mockWorkspacesFindFirst.mockResolvedValue({ repo: '', githubInstallation: null });
+    mockGithubReposFindFirst.mockResolvedValue({ installation: { installationId: 789 } });
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-06-05T22:43:47Z' });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(mockGithubApi).toHaveBeenCalledWith(789, '/repos/owner/repo/pulls/58');
+    expect(result.stamped).toBe(1);
+    expect(setMock).toHaveBeenCalledWith(
+      expect.objectContaining({ prLifecycleStatus: 'merged' }),
+    );
+  });
+
+  it('records a failure, not a clean check, when no repo resolves from either source', async () => {
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 1,
+        workspaceId: 'ws-coord',
+        prUrl: null,
+        prCheckFailureCount: 0,
+        completedAt: ancientOpenedAt,
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({ repo: null, githubInstallation: null });
+
+    const setMock = mock(() => ({ where: mock(() => Promise.resolve()) }));
+    mockWorkersUpdate.mockReturnValue({ set: setMock });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(mockGithubApi).not.toHaveBeenCalled();
+    expect(result.skipped).toBe(1);
+    const written = setMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(written.prLastCheckedAt).toBeInstanceOf(Date);
+    expect(written.prCheckFailureCount).toBe(1);
+    expect(written.prLastVerifiedAt).toBeUndefined();
+  });
+
+  it('takes the fallback repo from the linked row, not the stale text column', async () => {
+    // The rename case, and the reason identity comes from `github_repos`:
+    // that table is keyed on GitHub's immutable repoId and refreshed on every
+    // installation sync, so it follows a rename. `workspaces.repo` never does.
+    // Normalizing the text column would have produced a well-formed slug for
+    // a repo that no longer exists — a 404 that passes every validation.
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', prNumber: 42, workspaceId: 'ws1', prUrl: null, prCheckFailureCount: 0 },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/old-name',
+      githubRepo: {
+        fullName: 'owner/new-name',
+        repoId: 12345,
+        installation: { installationId: 123 },
+      },
+    });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/new-name/pulls/42');
+  });
+
+  it('does not fabricate a PR number from a pull/new compare url', async () => {
+    // A worker that prepared a branch but never opened a PR stores
+    // `.../pull/new/<branch>` with prNumber NULL. If such a row ever reaches
+    // the sweep with a number attached, the repo must still come out clean and
+    // the branch name must never land in the API path.
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w1',
+        prNumber: 9,
+        workspaceId: 'ws1',
+        prUrl: 'https://github.com/owner/other/pull/new/feat/branch',
+        prCheckFailureCount: 0,
+      },
+    ]);
+    mockWorkspacesFindFirst.mockResolvedValue({
+      repo: 'https://github.com/owner/repo',
+      githubRepo: { installation: { installationId: 123 } },
+    });
+
+    await reconcileStalePrWorkers();
+
+    // Falls back to the workspace repo rather than trusting the compare url.
+    expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/repo/pulls/9');
   });
 });
