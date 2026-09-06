@@ -1909,8 +1909,10 @@ describe('PUT /api/github/pr', () => {
       // whether the PR is based on an integration branch.
       //
       // The buggy route selects only mergePolicy and requiresReview, missing the
-      // two fields that isMissionIntegrationBase needs. This test mimics what
-      // the database returns for those exact columns: only those two fields present.
+      // two fields that isMissionIntegrationBase needs. This test must catch that
+      // bug by making the mock honor the columns argument: if the route requests
+      // only mergePolicy/requiresReview, the mock returns only those fields, and
+      // isMissionIntegrationBase cannot identify the integration branch.
       workerOk();
       const missionId = 'mission-123';
       const integrationBranch = 'mission/integration-0a1b2c3d';
@@ -1925,14 +1927,36 @@ describe('PUT /api/github/pr', () => {
         requiresReview: false,
         missionId,
       });
-      // The mission has integrationBranchEnabled: true with the matching workingBranch.
-      // With the fix, the route query now selects these fields, so isMissionIntegrationBase
-      // can properly recognize that the PR base matches the mission's integration branch.
-      mockMissionsFindFirst.mockResolvedValue({
-        mergePolicy: null,
-        requiresReview: false,
-        workingBranch: integrationBranch,
-        integrationBranchEnabled: true,
+      // The mission mock must honor the columns argument passed to it. The full
+      // mission has integrationBranchEnabled: true with the matching workingBranch.
+      // If the route requests RESOLVE_POLICY_MISSION_COLUMNS (the fix), it gets
+      // all four fields and isMissionIntegrationBase can work. If it requests only
+      // mergePolicy/requiresReview (the buggy column list), the mock returns only
+      // those two fields and isMissionIntegrationBase gets undefined for
+      // workingBranch/integrationBranchEnabled, causing it to return null and the
+      // PR is incorrectly gated as though it were going to trunk.
+      mockMissionsFindFirst.mockImplementation((query: any) => {
+        // Build the full mission object
+        const fullMission = {
+          mergePolicy: null,
+          requiresReview: false,
+          workingBranch: integrationBranch,
+          integrationBranchEnabled: true,
+        };
+
+        // Return only the fields requested in columns, so the test can
+        // distinguish between a route that fetches the full required set vs one
+        // that fetches an incomplete set.
+        if (query.columns) {
+          const result: any = {};
+          if (query.columns.mergePolicy) result.mergePolicy = fullMission.mergePolicy;
+          if (query.columns.requiresReview) result.requiresReview = fullMission.requiresReview;
+          if (query.columns.workingBranch) result.workingBranch = fullMission.workingBranch;
+          if (query.columns.integrationBranchEnabled) result.integrationBranchEnabled = fullMission.integrationBranchEnabled;
+          return Promise.resolve(result);
+        }
+        // Fallback: return the full object if columns not specified
+        return Promise.resolve(fullMission);
       });
       mockGithubApi.mockImplementation((_inst: number, path: string) => {
         if (/\/check-runs$/.test(path)) {
@@ -1959,15 +1983,17 @@ describe('PUT /api/github/pr', () => {
 
       const res = await put();
 
-      // With the bug, this FAILS with 403 agent-review because resolvePolicy cannot
-      // tell that the PR is based on the mission's integration branch (the needed fields
-      // are missing from the mission object). The PR is incorrectly gated as if it were
-      // going to trunk. This test SHOULD PASS after the fix is applied.
+      // This test now catches the bug. With the fix (RESOLVE_POLICY_MISSION_COLUMNS),
+      // the route requests all four fields and the mock returns them all. The PR
+      // merges successfully (status 200) because resolvePolicy can correctly identify
+      // that the base is the integration branch and drop the tier to auto-threshold.
       //
-      // After the fix, this will merge successfully (status 200) because the mission
-      // query will include workingBranch and integrationBranchEnabled, so resolvePolicy
-      // can correctly identify that the base is the integration branch and drop the tier
-      // to auto-threshold for task PRs.
+      // If the route were reverted to use only mergePolicy/requiresReview (the buggy
+      // column list), this test would FAIL: the mock would return only those two
+      // fields, isMissionIntegrationBase would get undefined for workingBranch/
+      // integrationBranchEnabled and return null, resolvePolicy would apply the
+      // workspace tier (agent-review), and the merge attempt would be refused with
+      // status 403.
       expect(res.status).toBe(200);
       expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
     });
