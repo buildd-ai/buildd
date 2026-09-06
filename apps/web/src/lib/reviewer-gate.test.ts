@@ -220,7 +220,7 @@ function queueItem(overrides?: Partial<EscalationRawItem>): EscalationRawItem {
     escalationReason: 'Human Gate — manual merge required',
     waitingMinutes: 15,
     prOpenedAt: new Date(NOW.getTime() - 3 * HOUR_MS),
-    prLifecycleCheckedAt: new Date(NOW.getTime() - 5 * MINUTE_MS),
+    prLifecycleVerifiedAt: new Date(NOW.getTime() - 5 * MINUTE_MS),
     ...overrides,
   };
 }
@@ -261,7 +261,7 @@ describe('all three directions hold simultaneously', () => {
 
     const queue = buildActionQueue([], [queueItem({
       prOpenedAt: new Date(NOW.getTime() - 90 * DAY_MS),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
       waitingMinutes: 90 * 24 * 60,
     })], { now: NOW });
 
@@ -277,7 +277,7 @@ describe('all three directions hold simultaneously', () => {
     const queue = buildActionQueue([], [queueItem({
       prLifecycleStatus: 'unresolvable',
       prOpenedAt: new Date(NOW.getTime() - 90 * DAY_MS),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
     })], { now: NOW });
 
     expect(queue).toHaveLength(0);
@@ -295,7 +295,7 @@ describe('all three directions hold simultaneously', () => {
     const queue = buildActionQueue([], [queueItem({
       conflictRetryTaskId: 'retry-1',
       prOpenedAt: new Date(NOW.getTime() - 90 * DAY_MS),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
     })], { now: NOW });
 
     expect(queue[0].chip).toBe('RESOLVING');

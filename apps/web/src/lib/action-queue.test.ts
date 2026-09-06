@@ -5,6 +5,12 @@ import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem } f
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
 const PR_URL_B = 'https://github.com/org/repo/pull/1481';
 
+// Defaults represent a fresh, just-opened, just-verified PR — the shape Home
+// always supplies in production. The dedicated "freshness invariant" describe
+// block below overrides these explicitly to exercise staleness; every other
+// test should be unaffected by the freshness gate, same as before AC-6 closed
+// the opt-out hole (omitting these fields used to opt a row out entirely —
+// now that reads as "no age, no verification", which fails closed).
 function mergeItem(overrides?: Partial<WaitingOnYouRawItem>): WaitingOnYouRawItem {
   return {
     kind: 'merge',
@@ -15,6 +21,8 @@ function mergeItem(overrides?: Partial<WaitingOnYouRawItem>): WaitingOnYouRawIte
     unblockCount: 3,
     missionId: 'mission-1',
     missionTitle: 'Mission Alpha',
+    prOpenedAt: new Date(),
+    prLifecycleVerifiedAt: new Date(),
     ...overrides,
   };
 }
@@ -31,6 +39,8 @@ function escalationItem(overrides?: Partial<EscalationRawItem>): EscalationRawIt
     policyTier: 'human',
     escalationReason: 'Human Gate — manual merge required',
     waitingMinutes: 15,
+    prOpenedAt: new Date(),
+    prLifecycleVerifiedAt: new Date(),
     ...overrides,
   };
 }
@@ -228,7 +238,7 @@ describe('buildActionQueue — reconnect items', () => {
       [
         { kind: 'answer', workerId: 'w-1', taskId: 't-1', taskTitle: 'q', question: 'why?' },
         reconnect(),
-        { kind: 'merge', prUrl: 'https://github.com/x/y/pull/1', prNumber: 1 },
+        { kind: 'merge', prUrl: 'https://github.com/x/y/pull/1', prNumber: 1, prOpenedAt: new Date(), prLifecycleVerifiedAt: new Date() },
       ],
       [],
     );
@@ -532,7 +542,7 @@ describe('buildActionQueue — freshness invariant', () => {
   it('refuses a MERGE card when the row has never been verified', () => {
     const result = buildActionQueue([], [escalationItem({
       prOpenedAt: before(3 * HOUR),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
     })], { now: AT });
 
     expect(result[0].chip).toBe('STALE');
@@ -542,7 +552,7 @@ describe('buildActionQueue — freshness invariant', () => {
   it('refuses a MERGE card when the last check is past the row tier SLA', () => {
     const result = buildActionQueue([], [escalationItem({
       prOpenedAt: before(90 * DAY),
-      prLifecycleCheckedAt: before(4 * DAY),
+      prLifecycleVerifiedAt: before(4 * DAY),
     })], { now: AT });
 
     expect(result[0].chip).toBe('STALE');
@@ -552,7 +562,7 @@ describe('buildActionQueue — freshness invariant', () => {
   it('refuses a MERGE card for a verified-open PR that is simply ancient', () => {
     const result = buildActionQueue([], [escalationItem({
       prOpenedAt: before(90 * DAY),
-      prLifecycleCheckedAt: before(HOUR),
+      prLifecycleVerifiedAt: before(HOUR),
     })], { now: AT });
 
     expect(result[0].chip).toBe('STALE');
@@ -564,7 +574,7 @@ describe('buildActionQueue — freshness invariant', () => {
     const result = buildActionQueue([], [escalationItem({
       policyTier: 'agent-review',
       prOpenedAt: before(90 * DAY),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
     })], { now: AT });
 
     expect(result[0].chip).toBe('STALE');
@@ -573,24 +583,31 @@ describe('buildActionQueue — freshness invariant', () => {
   it('allows a MERGE card for a recent PR verified inside its SLA', () => {
     const result = buildActionQueue([], [escalationItem({
       prOpenedAt: before(3 * HOUR),
-      prLifecycleCheckedAt: before(60_000),
+      prLifecycleVerifiedAt: before(60_000),
     })], { now: AT });
 
     expect(result[0].chip).toBe('MERGE');
     expect(result[0].staleGate).toBeNull();
   });
 
-  it('leaves callers that supply no PR age entirely alone', () => {
-    // Not a loophole for production — Home always supplies both fields — but a
-    // caller with no age has no tier, and therefore no SLA to be outside of.
-    expect(buildActionQueue([], [escalationItem()], { now: AT })[0].chip).toBe('MERGE');
+  it('AC-6: fails closed, rather than opting out, for a caller that supplies no PR age', () => {
+    // Home always supplies both fields, but a caller that omits prOpenedAt no
+    // longer gets a free pass — it fails closed to STALE/unverified, same as a
+    // row with a known age and no verification. There is no more "no tier,
+    // therefore no SLA to be outside of" escape hatch.
+    const result = buildActionQueue([], [escalationItem({
+      prOpenedAt: undefined,
+      prLifecycleVerifiedAt: undefined,
+    })], { now: AT });
+    expect(result[0].chip).toBe('STALE');
+    expect(result[0].staleGate?.kind).toBe('unverified');
   });
 
   it('drops a terminal unresolvable row out of the queue', () => {
     const result = buildActionQueue([], [escalationItem({
       prLifecycleStatus: 'unresolvable',
       prOpenedAt: before(90 * DAY),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
     })], { now: AT });
 
     expect(result).toHaveLength(0);
@@ -599,7 +616,7 @@ describe('buildActionQueue — freshness invariant', () => {
   it('gates a blocker-derived merge card too, not just escalation cards', () => {
     const result = buildActionQueue([mergeItem({
       prOpenedAt: before(90 * DAY),
-      prLifecycleCheckedAt: null,
+      prLifecycleVerifiedAt: null,
     })], [], { now: AT });
 
     expect(result[0].chip).toBe('STALE');
@@ -609,10 +626,10 @@ describe('buildActionQueue — freshness invariant', () => {
     const result = buildActionQueue([], [
       escalationItem({
         prUrl: PR_URL_B, prNumber: 1481, taskId: 'task-2',
-        prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: null,
+        prOpenedAt: before(90 * DAY), prLifecycleVerifiedAt: null,
       }),
       escalationItem({
-        prOpenedAt: before(2 * HOUR), prLifecycleCheckedAt: before(60_000),
+        prOpenedAt: before(2 * HOUR), prLifecycleVerifiedAt: before(60_000),
       }),
     ], { now: AT });
 
@@ -623,10 +640,10 @@ describe('buildActionQueue — freshness invariant', () => {
     const result = buildActionQueue([], [
       escalationItem({
         prUrl: PR_URL_B, prNumber: 1481, taskId: 'task-2',
-        prOpenedAt: before(20 * DAY), prLifecycleCheckedAt: null,
+        prOpenedAt: before(20 * DAY), prLifecycleVerifiedAt: null,
       }),
       escalationItem({
-        prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: null,
+        prOpenedAt: before(90 * DAY), prLifecycleVerifiedAt: null,
       }),
     ], { now: AT });
 
@@ -648,10 +665,10 @@ describe('summariseActionQueueAge', () => {
   it('counts the cards that should not exist, split by why', () => {
     // The exact shape observed on Home: one recent card and three ancient ones.
     const queue = buildActionQueue([], [
-      escalationItem({ taskId: 't0', prUrl: 'https://github.com/org/repo/pull/2040', prNumber: 2040, prOpenedAt: before(36 * HOUR), prLifecycleCheckedAt: null }),
-      escalationItem({ taskId: 't1', prUrl: 'https://github.com/org/repo/pull/25', prNumber: 25, prOpenedAt: before(73 * DAY), prLifecycleCheckedAt: null }),
-      escalationItem({ taskId: 't2', prUrl: 'https://github.com/org/repo/pull/77', prNumber: 77, prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: before(2 * HOUR) }),
-      escalationItem({ taskId: 't3', prUrl: 'https://github.com/org/repo/pull/59', prNumber: 59, prOpenedAt: before(90 * DAY), prLifecycleCheckedAt: null }),
+      escalationItem({ taskId: 't0', prUrl: 'https://github.com/org/repo/pull/2040', prNumber: 2040, prOpenedAt: before(36 * HOUR), prLifecycleVerifiedAt: null }),
+      escalationItem({ taskId: 't1', prUrl: 'https://github.com/org/repo/pull/25', prNumber: 25, prOpenedAt: before(73 * DAY), prLifecycleVerifiedAt: null }),
+      escalationItem({ taskId: 't2', prUrl: 'https://github.com/org/repo/pull/77', prNumber: 77, prOpenedAt: before(90 * DAY), prLifecycleVerifiedAt: before(2 * HOUR) }),
+      escalationItem({ taskId: 't3', prUrl: 'https://github.com/org/repo/pull/59', prNumber: 59, prOpenedAt: before(90 * DAY), prLifecycleVerifiedAt: null }),
     ], { now: AT });
 
     const metrics = summariseActionQueueAge(queue);

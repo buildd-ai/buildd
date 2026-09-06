@@ -71,7 +71,8 @@ export interface WaitingOnYouRawItem {
   connectorName?: string;
   /** kind === 'merge' — opts this row into the freshness invariant. See EscalationRawItem. */
   prOpenedAt?: Date | null;
-  prLifecycleCheckedAt?: Date | null;
+  /** `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state. */
+  prLifecycleVerifiedAt?: Date | null;
 }
 
 export interface EscalationRawItem {
@@ -111,8 +112,12 @@ export interface EscalationRawItem {
    * therefore no SLA. Callers that omit it are exempt.
    */
   prOpenedAt?: Date | null;
-  /** `workers.prLastCheckedAt` — when this row's lifecycle was last verified. */
-  prLifecycleCheckedAt?: Date | null;
+  /**
+   * `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state.
+   * Deliberately not `prLastCheckedAt`: that column also advances on a FAILED
+   * check, so it cannot answer "do we actually know this PR's state".
+   */
+  prLifecycleVerifiedAt?: Date | null;
 }
 
 export interface ActionQueueItem {
@@ -257,8 +262,8 @@ export function buildActionQueue(
     // what it says.
     const staleGate = MERGE_CTA_CHIPS.has(baseChip)
       ? resolveStaleGate({
-          prOpenedAt: item.prOpenedAt,
-          prLifecycleCheckedAt: item.prLifecycleCheckedAt,
+          prOpenedAt: item.prOpenedAt ?? null,
+          prLifecycleVerifiedAt: item.prLifecycleVerifiedAt,
           now,
         })
       : null;
@@ -319,8 +324,8 @@ export function buildActionQueue(
         // Same fail-closed rule as the escalation branch: a blocker-derived
         // merge card is still a claim that this PR is open right now.
         const staleGate = resolveStaleGate({
-          prOpenedAt: item.prOpenedAt,
-          prLifecycleCheckedAt: item.prLifecycleCheckedAt,
+          prOpenedAt: item.prOpenedAt ?? null,
+          prLifecycleVerifiedAt: item.prLifecycleVerifiedAt,
           now,
         });
         map.set(key, {

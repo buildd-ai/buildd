@@ -33,7 +33,8 @@ Subject liveness is defined in `docs/design/task-subject-anchors.md §6`. The au
 
 - `workers.prLifecycleStatus` — `open | merged | closed | unresolvable` (see §1.5)
 - `workers.mergedAt` — non-null = PR merged
-- `workers.prLastCheckedAt` — when that lifecycle value was last verified (see §1.5)
+- `workers.prLastCheckedAt` — when a check was last *attempted* against GitHub, success or failure (see §1.5)
+- `workers.prLastVerifiedAt` — when GitHub last *confirmed* this row's state; this is the freshness clock (see §1.5)
 - `SubjectCompletionProposal.proposedAction` — `cancel | supersede | keep`
 - `blockingGate.prUrl` + lifecycle state (derived via `blockingGate` field from review-gate-ux §2.1 / BT-2)
 
@@ -116,6 +117,31 @@ lifecycle renders as `open` so a card never false-collapses, and
 task-subject-anchors AC-6 says an unresolvable row is never silently dropped.
 Together, any row buildd could not resolve was pinned to the action queue
 forever.
+
+A second report (Home, mobile, 2026-09-06) found this fix's own read path dead
+on arrival: `resolveStaleGate` was reading `prLastCheckedAt`, but the sweep
+advances that column on *every* outcome, including a failed check — "we
+attempted a check" and "we know the PR's state" were one column pretending to
+be two facts. Every row that failed to resolve read as freshly verified
+forever, and the gate's `unverified` branch was reachable only for rows never
+checked at all. See §1.5.1.
+
+#### 1.5.1 The attempt clock and the verification clock are different columns
+
+`workers.prLastCheckedAt` answers "did we look" — advanced by `recordCheck()`
+on merged, closed, still-open, **and failure**, because the sweep's candidate
+query is `ORDER BY pr_last_checked_at ASC NULLS FIRST` and a row that never
+recorded a check would pin the head of that queue forever. `workers.
+prLastVerifiedAt` answers "do we know" — advanced **only** when GitHub actually
+returned a PR state (merged / closed / confirmed-open); a failed check
+(network error, 404, dead installation) never touches it.
+
+`lib/pr-freshness.ts`'s `isPrStateFresh` / `resolveStaleGate` read
+`prLastVerifiedAt` exclusively. The sweep's own candidate-selection SQL
+(`tieredStalenessCondition`) keeps reading `prLastCheckedAt`, so a row stuck in
+a failure loop is still retried on its tier cadence rather than every run —
+splitting the clock does not reopen the queue-starvation problem the shared
+column existed to prevent.
 
 #### Convergence is on a timer, not on render
 
