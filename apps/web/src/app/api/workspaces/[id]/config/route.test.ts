@@ -50,6 +50,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 const originalNodeEnv = process.env.NODE_ENV;
 
+import { resolveBranchStrategy } from '@buildd/core/branch-strategy';
 import { GET, POST, PATCH } from './route';
 
 const mockParams = Promise.resolve({ id: 'ws-1' });
@@ -140,6 +141,23 @@ describe('GET /api/workspaces/[id]/config', () => {
     const data = await res.json();
     expect(data.maxConcurrentTasks).toBe(3);
     expect(data.maxConcurrentTasksSource).toBe('default');
+  });
+
+  it('reading a workspace with no branchStrategy resolves to mission-branch (opt-out default)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({
+      id: 'ws-1',
+      gitConfig: { defaultBranch: 'main' },
+      configStatus: 'admin_confirmed',
+    });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config');
+    const res = await GET(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.branchStrategy).toBeUndefined();
+    expect(resolveBranchStrategy(data.gitConfig)).toBe('mission-branch');
   });
 
   it('returns explicit maxConcurrentTasks with source=explicit when set', async () => {
@@ -323,6 +341,37 @@ describe('POST /api/workspaces/[id]/config', () => {
     expect(errData.error).toMatch(/unknown field/i);
   });
 
+  it('persists branchStrategy=direct and round-trips it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ branchStrategy: 'direct' }),
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.branchStrategy).toBe('direct');
+    expect(resolveBranchStrategy(data.gitConfig)).toBe('direct');
+  });
+
+  it('rejects an invalid branchStrategy with 400 rather than silently storing it', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'POST',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ branchStrategy: 'squash-merge' }),
+    });
+    const res = await POST(req, { params: mockParams });
+    expect(res.status).toBe(400);
+    const data = await res.json();
+    expect(data.error).toMatch(/Invalid branchStrategy/);
+  });
+
   it('allows an OAuth JWT token (owner) to update config', async () => {
     // authenticateApiKey() resolves OAuth JWTs to an account with level='admin'
     mockAuthenticateApiKey.mockImplementation((key: string) => {
@@ -447,7 +496,7 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     expect(res.status).toBe(404);
   });
 
-  it('returns 400 when body missing releaseConfig', async () => {
+  it('returns 400 when body missing releaseConfig and branchStrategy', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
 
     const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
@@ -457,6 +506,49 @@ describe('PATCH /api/workspaces/[id]/config', () => {
     });
     const res = await PATCH(req, { params: mockParams });
     expect(res.status).toBe(400);
+  });
+
+  it('persists branchStrategy=direct via PATCH, preserving other gitConfig fields', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', branchingStrategy: 'feature' } });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ branchStrategy: 'direct' }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.branchStrategy).toBe('direct');
+    expect(data.gitConfig.defaultBranch).toBe('dev');
+  });
+
+  it('rejects an invalid branchStrategy via PATCH with 400', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ branchStrategy: 'squash-merge' }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(400);
+  });
+
+  it('null branchStrategy via PATCH clears the override', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockWorkspacesFindFirst.mockResolvedValue({ gitConfig: { defaultBranch: 'dev', branchStrategy: 'direct' } });
+
+    const req = new NextRequest('http://localhost:3000/api/workspaces/ws-1/config', {
+      method: 'PATCH',
+      headers: new Headers({ 'content-type': 'application/json' }),
+      body: JSON.stringify({ branchStrategy: null }),
+    });
+    const res = await PATCH(req, { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.gitConfig.branchStrategy).toBeUndefined();
   });
 
   it('saves branch_merge releaseConfig with trigger', async () => {

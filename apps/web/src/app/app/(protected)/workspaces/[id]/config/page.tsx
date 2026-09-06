@@ -1,6 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workspaces, type WorkspaceGitConfig, type WorkspaceReleaseConfig, type WorkspaceWorkTrackerConfig } from '@buildd/core/db/schema';
 import { resolveReleaseTrigger } from '@buildd/core/release-strategy';
+import { resolveBranchStrategy } from '@buildd/core/branch-strategy';
 import { eq } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
@@ -9,6 +10,7 @@ import { GitConfigForm } from './GitConfigForm';
 import { TeamTransferSection } from './TeamTransferSection';
 import ConnectClaudeSection from './ConnectClaudeSection';
 import ReleaseSection from './ReleaseSection';
+import BranchStrategySection from './BranchStrategySection';
 import WorkTrackerSection from './WorkTrackerSection';
 import KnowledgeHealthSection from './KnowledgeHealthSection';
 import SubjectPolicySection from './SubjectPolicySection';
@@ -99,6 +101,12 @@ export default async function WorkspaceConfigPage({
                     initialReleaseConfig={workspace.releaseConfig as WorkspaceReleaseConfig | null}
                     effectiveTrigger={resolveReleaseTrigger(workspace.releaseConfig as WorkspaceReleaseConfig | null)}
                     hasRepo={Boolean(workspace.repo)}
+                />
+
+                <BranchStrategySection
+                    workspaceId={workspace.id}
+                    effectiveBranchStrategy={resolveBranchStrategy(workspace.gitConfig as WorkspaceGitConfig | null)}
+                    defaultBranch={(workspace.gitConfig as WorkspaceGitConfig | null)?.defaultBranch || 'main'}
                 />
 
                 <WorkTrackerSection
