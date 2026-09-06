@@ -23,7 +23,7 @@
 // `@buildd/core/release-queue-scope`, not a fifth private variant here.
 import { db } from '@buildd/core/db';
 import { tasks, workers, releases, releaseTasks } from '@buildd/core/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { eq, sql, and, inArray } from 'drizzle-orm';
 import { detectArchetype, type ReleaseArchetype } from '@buildd/core/release-archetype';
 import type { WorkspaceReleaseConfig, WorkspaceGitConfig } from '@buildd/core/db/schema';
 import { shouldQueryRelease } from '@/lib/release-state';
@@ -196,4 +196,30 @@ export async function loadMissionShipState(
         }
       : null,
   });
+}
+
+/**
+ * Batched "which of these missions have at least one task in a `healthy`
+ * release" — one query for a whole page of missions, not `loadMissionShipState`
+ * called in a loop. Used for rollup signals (initiative pulse's
+ * `shippedThisWeek`) that only need the boolean, not the full five-state
+ * machine, and cannot afford an N+1 per mission on a list page.
+ *
+ * Deliberately skips the archetype gate `shouldQueryMissionShipState` guards:
+ * a workspace whose archetype cannot release never gets a `releases` row in the
+ * first place (B11), so the join below already returns nothing for it without
+ * a second lookup to establish that.
+ */
+export async function loadShippedMissionIds(missionIds: string[]): Promise<Set<string>> {
+  if (missionIds.length === 0) return new Set();
+
+  const rows = await db
+    .select({ missionId: tasks.missionId })
+    .from(tasks)
+    .innerJoin(releaseTasks, eq(releaseTasks.taskId, tasks.id))
+    .innerJoin(releases, eq(releases.id, releaseTasks.releaseId))
+    .where(and(inArray(tasks.missionId, missionIds), eq(releases.state, 'healthy')))
+    .groupBy(tasks.missionId);
+
+  return new Set(rows.map((r) => r.missionId).filter((id): id is string => !!id));
 }

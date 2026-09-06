@@ -1,3 +1,18 @@
+/**
+ * `deriveMissionHealth`'s answer to "is work moving" — a lifecycle read, not a
+ * delivery one.
+ *
+ * `'shipped'` here means `mission.status === 'completed'`: the mission's ROW
+ * closed. It says nothing about whether the mission's code reached production —
+ * that is a different question with its own answer, never this field:
+ * `mission-ship-state.ts`'s `MissionShipState` (`'shipped'` = a healthy release
+ * contains the mission's merged work) and `mission-production-status.ts`'s
+ * `DerivedMetric<MissionProductionStatus>` (`'in_production'` = the mission's
+ * own PR merge commit is contained in a healthy release, or `unavailable` when
+ * that cannot be determined at all). Do not read this value as a delivery
+ * signal, and do not derive `shippedThisWeek` or any other "is it out" count
+ * from it — see `initiative-pulse.ts`'s `PulseMission.shipped`.
+ */
 export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted' | 'held' | 'escalated';
 
 // ─── Drive state ──────────────────────────────────────────────────────────────
@@ -274,6 +289,8 @@ export function deriveMissionHealth(opts: {
    */
   hasPendingDeliverableWork?: boolean;
 }): MissionHealth {
+  // 'shipped' is a row transition (the mission closed), not a production
+  // signal — see the disambiguating comment on `MissionHealth` above.
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
   if (opts.isHeld) return 'held';

@@ -13,6 +13,7 @@ import { SegmentStrip } from '@/components/SegmentStrip';
 import { SparklineBar } from '@/components/SparklineBar';
 import { deriveTaskHealthSignal, formatNextRun } from '@/lib/mission-helpers';
 import { buildMissionWithInitiativeUrl } from '@/lib/initiative-breadcrumb';
+import { loadShippedMissionIds } from '@/lib/mission-ship-state';
 import {
   loadInitiativeEffort,
   loadInitiativeVerdictInputs,
@@ -155,13 +156,15 @@ export default async function InitiativeDetailPage({
     for (const t of m.tasks ?? []) taskIndex.set(t.id, t);
   }
 
-  // A mission reads as shipped exactly when its status is 'completed' — the
-  // first rule of `deriveMissionHealth` — matching how the list builds this.
+  // Ship state, not the mission.status row transition (docs/design/mission-delivery-arc.md,
+  // "The missing dimension: ship state") — matching how the list builds this.
+  const missionIds = ((initiative.missions || []) as any[]).map((m) => m.id as string);
+  const shippedMissionIds = await loadShippedMissionIds(missionIds);
   const pulseMissions = ((initiative.missions || []) as any[]).map((m) => ({
     id: m.id as string,
     initiativeId: id,
     isHeld: Boolean(m.isHeld),
-    health: m.status === 'completed' ? 'shipped' : m.status,
+    shipped: shippedMissionIds.has(m.id as string),
     lastActivityAt: m.updatedAt ? new Date(m.updatedAt).toISOString() : null,
     blockedPRCount: countBlockedByPR(m.tasks ?? [], taskIndex),
     tasks: m.tasks ?? [],
