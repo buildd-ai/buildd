@@ -6,7 +6,8 @@ import { githubApi, mergePullRequest } from '@/lib/github';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
-import { claimMissionPrimaryPr, trunkBranches } from '@/lib/mission-pr';
+import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX } from '@/lib/mission-pr';
+import { isMissionIntegrationBase, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -394,6 +395,28 @@ export async function POST(req: NextRequest) {
       ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — retry task \`${worker.taskId}\`. Resume branch was unavailable; new PR opened._`
       : '';
     const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
+
+    // Mission integration guard: a task worker must NEVER open a PR with the
+    // mission integration branch as its HEAD. Only the mission PR owner may do that.
+    // When context.baseBranch is a mission integration branch and the runner created
+    // a worktree directly on that branch (a bug), this guard catches the bad PR before
+    // it bypasses mission-PR coordination.
+    if (worker.task?.missionId) {
+      const mission = await db.query.missions.findFirst({
+        where: eq(missions.id, worker.task.missionId),
+        columns: { workingBranch: true, integrationBranchEnabled: true },
+      });
+      const integrationBase = missionIntegrationBase(mission);
+      if (integrationBase && head === integrationBase && !worker.task?.title?.startsWith(MISSION_PR_TASK_PREFIX)) {
+        // Task worker opened PR with head = mission integration branch (wrong).
+        // Only the mission PR owner may do that.
+        const recoveryPath = `1. Cut a new task branch from the mission integration branch: git checkout -b buildd/<taskid>-<slug> origin/${integrationBase}\n2. Cherry-pick or re-apply the changes there\n3. Open the PR against the mission branch as base`;
+        return NextResponse.json({
+          error: `Task PR cannot target the mission integration branch (${integrationBase}) as its HEAD. The mission PR is the coordination unit between trunk and the integration branch. Task PRs must be based on the integration branch, not be the integration branch itself.`,
+          hint: `Cut a task branch FROM the mission integration branch and open the PR from there. Recovery: ${recoveryPath}`,
+        }, { status: 400 });
+      }
+    }
 
     // Create the PR via GitHub API
     const prData = await githubApi(
