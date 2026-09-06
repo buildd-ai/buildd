@@ -46,7 +46,7 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback } from '@/lib/pr-review-request';
+import { deliverPrReviewCallback, readPrReviewStatus } from '@/lib/pr-review-request';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -490,8 +490,39 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
         }
 
         if (policy.tier === 'agent-review') {
-          // Reviewer was dispatched when the PR was opened; it will trigger merge on approve.
-          console.log(`PR #${pr.number} on ${repository.full_name} awaiting agent review — deferring merge`);
+          // Reviewer was dispatched when the PR was opened; it normally merges
+          // on approve. But that merge is bounded to quarantined branches (see
+          // evaluateModelApproveBound) — an ordinary PR based on trunk never
+          // auto-merges from that path even once approved, so an approval can
+          // sit unconsumed indefinitely with nothing retrying it. Re-check the
+          // stored verdict on every CI-green event: a terminal approve above
+          // the workspace's confidence threshold makes this PR self-mergeable
+          // (the same authorization merge_pr's self-merge escape hatch uses),
+          // so retry the merge here instead of leaving it to a poller that
+          // does not exist.
+          const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber: pr.number });
+          const threshold = policy.agentReview?.maxConfidenceThreshold ?? 0.6;
+          const hasUnconsumedApprove =
+            reviewStatus.state === 'approved' &&
+            reviewStatus.verdict === 'approve' &&
+            !reviewStatus.merged &&
+            typeof reviewStatus.confidence === 'number' &&
+            reviewStatus.confidence >= threshold;
+
+          if (!hasUnconsumedApprove) {
+            console.log(`PR #${pr.number} on ${repository.full_name} awaiting agent review — deferring merge`);
+            continue;
+          }
+
+          console.log(`PR #${pr.number} on ${repository.full_name}: unconsumed approve found on CI-green — retrying merge`);
+          await tryAutoMergeWorkerPr({
+            installationId: installation.id,
+            repoFullName: repository.full_name,
+            prNumber: pr.number,
+            headSha,
+            worker,
+            policy,
+          });
           continue;
         }
 

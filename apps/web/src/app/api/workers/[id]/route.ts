@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
-import { githubApi } from '@/lib/github';
+import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { authenticateApiKey } from '@/lib/api-auth';
@@ -3125,6 +3125,28 @@ async function handleReviewerOutcomeIfNeeded(
             ? `${RECOMMENDATION_MARKER}${output.recommendation}`
             : ''),
       status: 'open',
+    });
+  }
+
+  // Post the verdict to GitHub as a real review — mission-scoped or not. Without
+  // this, buildd's own store is the only place the verdict ever existed: GitHub
+  // branch protection requiring an approving review can never be satisfied by an
+  // agent verdict, and the PR page shows no trace a review happened at all.
+  // postPrReview is idempotent per (PR, head SHA, resulting state), so a forced
+  // re-review that reaches the same verdict on the same commit does not stack a
+  // second approval.
+  if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
+    await postPrReview({
+      installationId,
+      repoFullName,
+      prNumber,
+      headSha,
+      event: effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES',
+      body: effectiveVerdict === 'approve'
+        ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
+        : `Changes requested by buildd reviewer: ${output.feedback ?? output.summary}`,
+    }).catch((err) => {
+      console.warn(`[reviewer] could not post GitHub review for PR #${prNumber}:`, err);
     });
   }
 

@@ -20,6 +20,7 @@ import {
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
+import { readPrReviewStatus } from '@/lib/pr-review-request';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -789,11 +790,30 @@ export async function PUT(req: NextRequest) {
       }
 
       if (policy.tier === 'agent-review') {
-        return NextResponse.json({
-          error: `merge policy tier is 'agent-review' — a reviewer decides this PR, so it cannot be self-merged`,
-          tier: policy.tier,
-          hint: 'Use request_pr_review to dispatch the reviewer, then get_pr_review for the verdict. An approve merges the PR for you when policy permits.',
-        }, { status: 403 });
+        // The reviewer's verdict is the gate — but `tryAutoMergeWorkerPr`'s own
+        // merge-on-approve is bounded to quarantined branches (see
+        // evaluateModelApproveBound), so an ordinary PR based on trunk never
+        // auto-merges from that path even once approved. This is the intended
+        // recourse: consult the stored verdict rather than refusing on tier
+        // alone. A terminal approve whose confidence clears the workspace
+        // threshold makes the PR self-mergeable, subject to the SAME safety
+        // rails auto-threshold uses below (CI, escalateToPaths as deny paths,
+        // the migration operation-class inspector).
+        const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber });
+        const threshold = policy.agentReview?.maxConfidenceThreshold ?? 0.6;
+        const selfMergeable =
+          reviewStatus.state === 'approved' &&
+          reviewStatus.verdict === 'approve' &&
+          typeof reviewStatus.confidence === 'number' &&
+          reviewStatus.confidence >= threshold;
+
+        if (!selfMergeable) {
+          return NextResponse.json({
+            error: `merge policy tier is 'agent-review' — a reviewer decides this PR, so it cannot be self-merged`,
+            tier: policy.tier,
+            hint: 'Use request_pr_review to dispatch the reviewer, then get_pr_review for the verdict. An approve merges the PR for you when policy permits.',
+          }, { status: 403 });
+        }
       }
 
       const safety = await evaluateAutoMergeSafety(
