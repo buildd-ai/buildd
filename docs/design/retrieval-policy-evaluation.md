@@ -272,6 +272,156 @@ field is cheap to write now and unrecoverable later. So `selection: { policyId,
 propensity }` goes on the assembly record in the same change that introduces
 randomized selection — not in the change that first wants to learn from it.
 
+## The decision record — what to log now
+
+The four stages above are worthless if the decision-time record is missing a
+field, because **the missing field is never recoverable**. Everything in this
+section is cheap; the point of listing it is that each item costs nothing today
+and cannot be added retroactively at any price.
+
+**One guard first, because it cuts against the instinct this whole document
+encourages.** Booking.com measured a Pearson correlation of roughly **-0.1**
+between offline metric gains and business-value gains across a couple of dozen
+model comparisons. So: log the fields, they are genuinely unrecoverable — but do
+**not** build the estimator layer to match. With an action space of about five
+recipes, a sequence of small online experiments may beat an offline
+policy-evaluation programme outright. Build the log; be sceptical of the
+machinery.
+
+### What the record already has
+
+`assemblyId`, `at`, `recipe`, `source`, `workspaceId`, `teamId`, `trigger`,
+`derivedKeys`, `items[]`, `weakEscalationFired`, `fallbackFired`, and
+`chain{taskId, workerId, missionId}`.
+
+That covers the decision key, the tenancy scope, the decision timestamp, and —
+via `(taskId, at)` ordering — the position of a decision within its task. The
+last one is load-bearing and easy to mistake for redundant: **`at` is what makes
+the ordered decision path reconstructable**, and every credit-allocation method
+beyond last-touch takes that ordered path as its input.
+
+### What is missing, ordered by regret
+
+**1. The candidate set.** `candidates[]`, each with `eligible` and, when not,
+`ineligibleReason`. We log which recipe ran and never which recipes were
+*offerable*. Corpus availability, flags and rollouts all shift, so "not chosen"
+becomes indistinguishable from "not offerable", and a forced move reads as a
+preference. This is the field most likely to be skipped and most regretted:
+Yahoo's news-recommendation logs omitted exactly this, leaving unlogged
+business-rule constraints across every serving bucket that had to be corrected
+for after the fact.
+
+**2. `selected` versus `executed`, plus `overrideSource`.** Two columns wherever
+anything can change the action after selection. **We have this hazard live
+today**: `selectExecCluster` picks a recipe, and if it yields nothing renderable
+the default fan-out serves the request instead. The record encodes that only as
+`fallbackFired: true` — an analyst has to know that flag means "executed was
+actually the fan-out". Make it explicit. Microsoft's Decision Service measured a
+**3.0x** train/test discrepancy from precisely this bug, where logged
+probabilities corresponded to the chosen action while the *overridden* action was
+the one recorded.
+
+**3. `actionExecuted`.** Was the assembled context ever actually put in front of
+an agent? We log at claim time; the worker can die, the task can be cancelled,
+the output can be discarded. Without this field every such row becomes a
+**fabricated zero reward**, which is worse than a missing row. Azure Personalizer
+built a whole Activate API for this: content never shown must not be assumed to
+have earned the default reward.
+
+**4. `contextSnapshot` — the literal values the selector consumed.** Task kind,
+error signature, path count, corpus availability, as inline literals rather than
+references or a recompute recipe. Rows mutate between decision and analysis, and
+any feature the rule used but we did not log becomes unobserved confounding —
+which biases the estimators with no diagnostic able to detect it.
+
+  **Sub-requirement, non-obvious and worth its own line: log `pathCount` raw,
+  never pre-bucketed.** Under a deterministic logging policy the one consistent
+  estimator available is a regression-discontinuity argument around a threshold,
+  and it only works on a continuous variable. Bucketing at write time destroys
+  the sole viable estimator for the data we are actually collecting.
+
+**5. `propensity`, and `propensityVector` over the candidate set. Log `1.0`
+today.** Selection is deterministic, so the value carries no information yet —
+but propensity is a property of the sampling *event*, not of the state, and the
+rule table is versioned and will change. Logging it now means the day a
+randomization floor is added there is no migration and no discontinuity in the
+table.
+
+**6. `policyVersion` and `recipeDescriptor`.** Which rule table decided, and a
+config fingerprint of the recipe *as it then was* — its `topK`, corpora,
+thresholds, template version, not just its name. We will tune
+`MIN_STRONG_BY_SIGNAL`, and `tool-infra-error-v1` under two different threshold
+sets is two different actions silently pooled under one id, with no way to unpool
+them later.
+
+**7. `decisionIndexWithinTask`.** Derivable from `(taskId, at)` today, so this is
+belt-and-braces — but it makes the episode position explicit rather than an
+artefact of a sort order someone could reasonably "clean up".
+
+**8. `sampleProb` — one uniform draw, stored at decision time.** A stable
+train/eval partition key. Drawn later, the split shifts on every re-join and
+silently invalidates cross-run comparisons.
+
+**9. `schemaVersion`.** No jsonb payload in this repo carries one. For a record
+intended to feed analysis, changing a field's meaning midway corrupts every prior
+row with nothing marking the boundary.
+
+### The outcome side, and one rule about it
+
+Outcomes stay **out** of the decision record and are joined. Three requirements:
+
+**Never scalarize.** Log `taskSucceeded`, `criterionAdvanced` (and which),
+`refused` (and kind), `correctiveFollowUp` (and which), plus latency and cost, as
+**separate raw indicators, each with its own event time**. Two independent
+reasons. First, a scalar cannot be re-scored under a revised definition and the
+definition will be revised. Second, and sharper:
+`criteriaRearmCycles`-style progress signals are *shaping* rewards, and shaping
+rewards change the optimal policy when they are not potential-based — so
+collapsing one into a scalar alongside task success at write time bakes in a
+distortion. Weighting is an offline decision precisely so it can be changed. (A
+technical corollary: the IPS estimator is not equivariant, so even translating a
+reward by a constant changes the finite-sample estimate.)
+
+**Three timestamps, not one.** Decision time, outcome event time, and outcome
+*ingest* time. Without ingest time we cannot reconstruct what was knowable at a
+past moment, so every backfilled or corrected outcome leaks into any later
+analysis; without both we cannot distinguish "no outcome" from "outcome has not
+arrived yet".
+
+**The attribution link is written by the outcome producer.** When a PR merges or
+a criterion flips, that event records the ordered list of decision ids in the
+episode — it is not inferred afterwards. Recording only "the decision before the
+merge" hard-codes last-touch attribution into the data, and no later method can
+undo it. Keep the credit rule as an offline function over the stored path.
+
+Also: make the outcome column **accumulate-and-retract**, not last-write-wins. A
+PR that merges and is then reverted *is* a retraction, and last-write-wins
+destroys the fact that it changed.
+
+### What needs nothing logged
+
+Worth stating so it does not become a schema discussion later. Direct-method and
+doubly-robust estimators fit their reward model offline from the fields above, so
+"adopt DR" is never a schema item. Learned action embeddings are unnecessary at
+this action-space size — the config fingerprint is the cheap structural
+substitute. Slot and position fields do not apply: one recipe is chosen, not a
+ranked slate.
+
+### The one thing determinism costs us
+
+Worth being explicit because it bounds what stage 3 can ever deliver. Under a
+fully deterministic logging policy the failure is **directional, not just
+noisy**: importance-weighted estimators systematically *underestimate* a target
+policy's value, because every disagreement between target and logging policy
+contributes zero and improvement is never credited. Standard tooling refuses the
+data outright rather than returning a biased number.
+
+The honest mitigation is an **epsilon floor over the eligible set** — a few
+percent exploration, which at this action-space size costs very little and is
+what makes the propensity fields above mean anything. "We will estimate the
+propensities later" does not work: the method that would do so assumes the policy
+actually *varied*, and a frozen rule table closes that door.
+
 ## Safety
 
 - **Replay is read-only by default.** Stage 1 issues queries and writes no
@@ -302,6 +452,12 @@ randomized selection — not in the change that first wants to learn from it.
 The load-bearing piece is the as-of cutoff, because every number in stage 1 is
 uninterpretable without it.
 
+0. **The decision-record fields above**, in the regret order given. Independent
+   of every stage below, cheap, and the only item here that is *unrecoverable*
+   if deferred — a stage-1 replay can be re-run next month, a decision not
+   logged today cannot. Candidate set, selected-vs-executed, and
+   `actionExecuted` first; those three are the ones with published failure
+   costs attached.
 1. **`sourceTsBefore` on `QueryParams`**, applied inside the ranking. Plus
    self-exclusion by task, worker, and PR, failing closed when attribution is
    unavailable.
@@ -323,6 +479,11 @@ uninterpretable without it.
 
 ## Open questions
 
+- **Whether to run an offline policy-evaluation programme at all.** The
+  Booking.com calibration above (~-0.1 correlation between offline metric gain
+  and business value) argues for logging the fields and then reaching for small
+  online experiments rather than estimators. At roughly five recipes I lean that
+  way: build the log, skip the machinery, revisit if the action space grows.
 - **Sample size and selection for stage 1.** A uniform sample of history is
   simplest and over-weights whatever the system did most of. Stratifying by
   `subjectKind` and cause gets a more useful spread but makes the aggregate rate
