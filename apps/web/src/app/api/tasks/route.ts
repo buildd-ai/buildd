@@ -317,6 +317,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  // Declared outside the try block so the catch below can reference it in the
+  // file_anyway_not_allowed error — it's assigned partway through the try body.
+  let subjectOriginForError: SubjectFilingOrigin | undefined;
+
   try {
     const body = await req.json();
     const {
@@ -646,6 +650,7 @@ export async function POST(req: NextRequest) {
       : knownSubjectOrigins.has(creationSource as SubjectFilingOrigin)
         ? creationSource as SubjectFilingOrigin
         : 'api';
+    subjectOriginForError = subjectOrigin;
     const workspaceRepo = targetWorkspace.repo
       ?.replace(/^https?:\/\/github\.com\//, '')
       .replace(/\.git$/, '')
@@ -993,7 +998,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'fileAnywayReason must be nonblank' }, { status: 400 });
     }
     if (error instanceof Error && error.message === 'file_anyway_not_allowed') {
-      return NextResponse.json({ error: 'fileAnywayReason is only available to explicit human or agent filings' }, { status: 400 });
+      return NextResponse.json(
+        { error: `fileAnywayReason is not allowed for origin "${subjectOriginForError}" filings (only dashboard, api, mcp, and friction filings may bypass).` },
+        { status: 400 },
+      );
     }
     console.error('Create task error:', error);
     const detail = error instanceof Error ? error.message : String(error);
