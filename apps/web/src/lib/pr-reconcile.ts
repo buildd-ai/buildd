@@ -46,7 +46,7 @@ import {
   pickWorkspaceRepoIdentity,
   installationIdForRepo,
 } from '@/lib/workspace-installation';
-import { resolvePrRepo } from '@/lib/repo-scope';
+import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
 import {
   TIER_SLA_MS,
   HOT_MAX_AGE_MS,
@@ -315,6 +315,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
       // slug, the PR often lives in a different repo, and coordination
       // workspaces have no repo while still owning real PRs.
       const repo = resolvePrRepo({ prUrl: worker.prUrl, workspaceRepo });
+      const repoSource = repoFullNameFromPrUrl(worker.prUrl) ? 'pr_url' : wsIdentity.source;
       if (!repo) {
         result.skipped++;
         await recordFailure(worker, 'No GitHub repo resolvable from the PR url or the workspace');
@@ -419,7 +420,14 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
         // Network error, 404 (PR deleted / repo moved), rate-limit. Recorded as
         // a failure so a permanently unresolvable row costs one call per run
         // and then retires, instead of being retried until the end of time.
-        console.warn(`[pr-reconcile] worker ${worker.id} PR #${worker.prNumber}:`, err);
+        // Log where the repo came from. When a resolved repo still 404s, "the
+        // FK said this" and "a stale free-text column said this" are different
+        // bugs with different fixes, and the reason string is the only place
+        // that distinction survives.
+        console.warn(
+          `[pr-reconcile] worker ${worker.id} PR #${worker.prNumber} repo ${repo} (via ${repoSource}):`,
+          err,
+        );
         result.errors++;
         await recordFailure(worker, err instanceof Error ? err.message : String(err));
       }

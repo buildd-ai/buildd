@@ -64,7 +64,11 @@ export interface WorkspaceRepoIdentity {
   defaultBranch: string | null;
   /** GitHub's immutable numeric repo id. Only set via the linked row. */
   repoId: number | null;
-  /** Which source answered — useful in logs when a repo looks wrong. */
+  /**
+   * Which source answered. Logged by the reconcile sweep on a failed GitHub
+   * call: a 404 on an FK-derived repo and a 404 on a stale free-text one are
+   * different bugs, and this is the only place that distinction survives.
+   */
   source: 'github_repo' | 'workspace_text' | 'none';
 }
 
