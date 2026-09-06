@@ -64,8 +64,16 @@ A repo + config boundary. Holds tasks, workers, missions, roles/skills, schedule
 Key config (all JSONB, migration-free to evolve):
 - **`gitConfig`** (`WorkspaceGitConfig`) — branching strategy, commit style, PR/merge
   behavior, agent instructions, sandbox, model/thinking/effort defaults,
-  **`defaultBackend`** (`claude | codex`), CI auto-retry (`maxCiRetries`), auto-merge
-  rules (`autoMergeOnGreenCI`, `autoMergeDenyPaths`, `autoMergeMaxLines`).
+  **`defaultBackend`** (`claude | codex`), CI auto-retry (`maxCiRetries`), and
+  **`mergePolicy`** — the merge-policy tier (§4a). The legacy flags
+  `autoMergeOnGreenCI` / `autoMergeDenyPaths` / `autoMergeMaxLines` are still read
+  as a fallback when no `mergePolicy` is set; `resolvePolicy` maps them onto a tier.
+- **`policyConfig`** (`WorkspacePolicyConfig`) — risk classes (`destructive_schema_change`,
+  `ci_deploy_config`, `auth_and_secrets`, `dependency_bump`, `public_api_contract`) and a
+  preset (`cautious | balanced | autonomous`) that assigns each class an action
+  (`auto | agent-review | human`). Supersedes `agentReview.escalateToPaths` when present.
+  Also carries `reviewerPatchEvidence` (opt-in: pre-inject the PR patch into the
+  reviewer task, §4a).
 - **`releaseConfig`** (`WorkspaceReleaseConfig`) — release strategy
   (`workflow_dispatch | branch_merge | script`), deploy target, post-deploy hooks,
   verification URL.
@@ -136,8 +144,8 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
   **`roleSlug`** — claim-time routing constraints. `roleSlug` is nullable: when
   set, only runners that advertise this skill in `availableSkills` can claim the
   task; when null, any runner with workspace access can claim it. **Null is the
-  normal case for dashboard-created tasks** — approximately 54% of tasks in
-  production have `roleSlug = null`. The dashboard's `/skill` typeahead stores
+  normal case for dashboard-created tasks** — most carry no `roleSlug` at all.
+  The dashboard's `/skill` typeahead stores
   the chosen skill in `context.skillSlugs` (advisory JSON field on the task)
   rather than in `roleSlug`. `context.skillSlugs` tells the executing agent
   which skill prompt to load but does NOT restrict which runner can claim the
@@ -153,6 +161,8 @@ pending → claimed/assigned → in_progress → review → completed/failed). K
   | analysis | observation`), `complexity` (`simple | normal | complex`),
   `predictedModel`, `classifiedBy` (`organizer | classifier | user | default`).
 - **Release:** `release` (`true | false | inherit`) + `releaseResult`.
+- **`requiresReview`** — a per-task human gate. Set on the task (or inherited from its
+  mission) it forces tier `human` for that PR regardless of the workspace tier (§4a).
 - `creationSource`: `dashboard | api | mcp | github | local_ui | schedule | webhook | orchestrator`.
 
 ### Worker
@@ -170,7 +180,12 @@ A skill is a `SKILL.md` registered to a workspace. A **role** is a skill with
 `isRole: true` — an agent persona. Fields: `model` (`sonnet | opus | haiku | inherit`),
 `defaultBackend` (`claude | codex`), `allowedTools`, `canDelegateTo`, `mcpServers`,
 `requiredEnvVars`, `maxTurns`, `background`, `color`, `configStorageKey` (R2 tarball
-of CLAUDE.md + .mcp.json). Default roles seeded per workspace: **Organizer, Builder,
+of CLAUDE.md + .mcp.json).
+**`allowedTools` scope:** it governs the tools of a **skill subagent** spawned from this
+row, and does **not** narrow the primary agent on a task — that agent's allowlist is
+built from skill scoping (`Skill(<slug>)`) alone, so a role with no skills attached runs
+on SDK defaults. The UI labels the field accordingly ("Subagent Tools"); enforcing it on
+the primary agent is a runner change that has not shipped. Default roles seeded per workspace: **Organizer, Builder,
 Researcher** (+ `ops` used by watchers). Tasks route to runners via `roleSlug` ∩
 runner `availableSkills`.
 
@@ -283,11 +298,56 @@ when `artifactId` + `artifactTitle` are present. This contract is tested in
 
 ---
 
+## 4a. Merge policy — who is allowed to end a PR
+
+The single primitive governing every route to a merge. Resolved by `resolvePolicy`
+from, in precedence order: `task.requiresReview` → `mission.mergePolicy` →
+`workspace.gitConfig.mergePolicy` → legacy `gitConfig` auto-merge flags.
+
+| Tier | Who ends the PR |
+|------|-----------------|
+| `auto-threshold` | The platform, unattended, once `evaluateAutoMergeSafety` passes: CI green (fail-closed if unverifiable), no `denyPaths` hit, diff under the source-line cap, migration operation-class inspector satisfied, no conflicts. |
+| `agent-review` | A **reviewer agent**. A `reviewer`-role task is spawned on PR open and returns `{verdict, confidence, summary, feedback?, escalationReason?, recommendation?}` as structured output. `approve` may merge; `request-changes` sends the PR back to the authoring agent for up to `maxIterations` (default 3); `escalate` goes to a human. |
+| `human` | A person, from the escalation inbox. No automated merge. |
+
+**Every route to a merge runs the same gate.** There are three: auto-merge on green
+CI, the reviewer `approve` path, and the MCP `merge_pr` action. `merge_pr` is
+policy-gated — under `agent-review` a self-merge is refused (the reviewer's verdict is
+the gate and a self-merge routes around it), under `human` it is refused, and under
+`auto-threshold` it is permitted only if the same safety check auto-merge applies
+passes. An `admin`-level token may pass `force: true`.
+
+**The escalate triggers are enforced server-side from the PR's file list**, never from
+the model's `escalationReason` — that text is downstream of an untrusted contributor
+diff. `enforceServerSideEscalation` re-derives them at verdict time, because
+`preflightEscalationCheck` runs only on the webhook's `opened` action and therefore
+misses a file added during a request-changes iteration.
+
+**What a model `approve` may merge into is bounded by the PR's base ref.** Under the
+mission integration branch model (per-mission `integrationBranchEnabled`), a task PR
+based on the mission's `workingBranch` may be merged unattended, because that branch is
+itself reviewed at the single mission → trunk PR. A PR based on trunk (`dev`, the
+workspace target/default branch, `main`) escalates to a human regardless of verdict.
+The bound additionally requires that the build/test workflow **reported success** for
+the head SHA — an absent check run is not a passing one.
+
+**Reviewer evidence.** The reviewer task's description is assembled by
+`buildReviewerContext`: the task, its path manifest, the policy's intent sentences, the
+changed-file list, and — when `policyConfig.reviewerPatchEvidence` is set — the PR patch
+itself, rendered in a hunk format where **only added lines carry a line number**, so a
+cited `path:line` is provably a line the PR introduced. PR-authored text (task
+description, title) is stripped of injection carriers and fenced as data before it
+enters the prompt.
+
+---
+
 ## 5. MCP
 
 Four tools exposed (HTTP MCP at `/api/mcp`): **`buildd`** (task + admin actions —
-claim/update/create_pr/create_artifact/complete/get_task/send_agent_message/
-memory_delete/consolidate_knowledge/…), **`recall`** (read knowledge), **`learn`**
+claim/update/create_pr/merge_pr/create_artifact/complete/get_task/
+send_agent_message/memory_delete/consolidate_knowledge/…; the action set available
+is gated by token level `trigger | worker | admin`, and `merge_pr` is additionally
+gated by the merge policy tier — see §4a), **`recall`** (read knowledge), **`learn`**
 (write knowledge), and **`buildd_memory`** (deprecated — superseded by
 recall/learn in #1944, still routed for compatibility). claude.ai and other MCP
 clients connect via workspace-scoped OAuth (`mcp-oauth/[workspace]`).
@@ -363,6 +423,8 @@ brutalist UI.
 | `credentials-architecture.md` | Unified `secrets` scoping + refresh | Implemented |
 | `knowledge-store.md` | Hybrid retrieval design | Implemented |
 | `design/workspace-knowledge-management.md` | Per-PR ingestion, code graph, consolidation | Draft |
+| `design/reviewer-evidence-and-verification.md` | Reviewer patch evidence, filters, verification | Partly shipped |
+| `design/mission-delivery-arc.md` | Mission integration branch (Option A′) | Implemented |
 | `testing.md`, `testing-strategy.md` | TDD, test layers, fixtures | Implemented |
 | `plans/archive/remove-objectives.md` | Objectives→Mission port | Shipped/historical |
 | `plans/ios-app-mvp.md` | iOS MVP | Planned (separate repo) |
