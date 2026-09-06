@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { missions, workspaces, taskSchedules, initiatives, type WorkspaceGitConfig } from '@buildd/core/db/schema';
-import { resolveBranchStrategy } from '@buildd/core/branch-strategy';
+import { resolveBranchStrategy, isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
+import { generateMissionBranchName } from '@buildd/core/branch-names';
 import { eq, and, inArray, desc } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getUserTeamIds, resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { runMission } from '@/lib/mission-run';
+import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import { resolveFeedActor, postMissionFeedEvent } from '@/lib/mission-feed';
 import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
 import { parseMergePolicy } from '@buildd/shared';
 import {
@@ -138,8 +141,15 @@ export async function POST(req: NextRequest) {
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode } = body;
+
+    if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
+      return NextResponse.json(
+        { error: `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}` },
+        { status: 400 },
+      );
+    }
 
     let deferredStart;
     try {
@@ -255,10 +265,13 @@ export async function POST(req: NextRequest) {
       workspaceGitConfig = (ws.gitConfig as WorkspaceGitConfig | null) ?? null;
     }
 
-    // Workspace-level default for a NEW mission's git workflow. Resolved once,
-    // here, at create time only — an existing mission's own integrationBranchEnabled
-    // stays the runtime truth from then on (see missionIntegrationBase()).
-    const integrationBranchEnabled = resolveBranchStrategy(workspaceGitConfig) === 'mission-branch';
+    // Workspace-level default for a NEW mission's git workflow, or an explicit
+    // per-mission override (MCP/API `branchStrategy`, validated above). Resolved
+    // once, here, at create time only — an existing mission's own
+    // integrationBranchEnabled stays the runtime truth from then on (see
+    // missionIntegrationBase()).
+    const effectiveBranchStrategy = branchStrategy ?? resolveBranchStrategy(workspaceGitConfig);
+    const integrationBranchEnabled = effectiveBranchStrategy === 'mission-branch';
 
     // Cycle guard for dependency chain
     if (dependsOnMission) {
@@ -317,6 +330,36 @@ export async function POST(req: NextRequest) {
         } : {}),
       })
       .returning();
+
+    // A mission-branch mission must never exist in the enabled-but-inert state: generate the
+    // working branch name and ensure the ref on the remote in this same operation, rather than
+    // waiting for the organizer's first pass (see the two-manual-PATCH workaround this replaces).
+    if (integrationBranchEnabled) {
+      const workingBranch = generateMissionBranchName({ missionId: mission.id, title });
+      await db
+        .update(missions)
+        .set({ workingBranch, updatedAt: new Date() })
+        .where(eq(missions.id, mission.id));
+      mission.workingBranch = workingBranch;
+
+      const ensured = await ensureMissionIntegrationBranch(mission.id).catch(err => ({
+        ok: false as const,
+        reason: 'api_error' as const,
+        detail: err instanceof Error ? err.message : String(err),
+      }));
+      if (!ensured.ok) {
+        // Do not fail the create — the mission, flag, and branch name are all correct.
+        // Say so where an operator will see it, exactly like the PATCH opt-in path does.
+        const actor = await resolveFeedActor({ user, apiAccount });
+        await postMissionFeedEvent({
+          missionId: mission.id,
+          type: 'update',
+          title: 'Integration branch could not be created',
+          body: `Option A′ is enabled for this mission, but its integration branch (\`${workingBranch}\`) could not be created on the remote (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}). Task PRs will fail to open until this is resolved.`,
+          actor,
+        }).catch(e => console.error('[missions/post] Failed to emit integration-branch note:', e));
+      }
+    }
 
     // UI-created missions (session auth, no explicit cron/heartbeat) run once — no auto-heartbeat.
     // API-created missions keep existing default (heartbeat ON) for backward compat.

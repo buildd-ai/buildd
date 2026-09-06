@@ -12,6 +12,7 @@ import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
+import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { resolveTimezone } from '@buildd/core/timezone';
 import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabel } from '@/lib/mission-feed';
@@ -203,7 +204,7 @@ export async function PATCH(
     const { title, description, status, priority, cronExpression, workspaceId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
-      integrationBranchEnabled,
+      integrationBranchEnabled, branchStrategy,
       pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm, actorWorkerId } = body;
@@ -211,6 +212,13 @@ export async function PATCH(
     // Resolved once for the whole request so every feed entry this PATCH
     // produces (status, criteria, config) attributes to the same caller.
     const actor = await resolveFeedActor({ user, apiAccount, actorWorkerId });
+
+    if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
+      return NextResponse.json(
+        { error: `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}` },
+        { status: 400 },
+      );
+    }
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1 || maxConcurrentTasks > 20)) {
       return NextResponse.json({ error: 'maxConcurrentTasks must be an integer between 1 and 20' }, { status: 400 });
@@ -381,14 +389,19 @@ export async function PATCH(
     // Option A′ opt-in. Off is the default and the only state that leaves this
     // mission's behaviour identical to before the feature existed, so the flag
     // is strictly boolean — no "null means inherit" third state to reason about.
-    if (integrationBranchEnabled !== undefined) {
-      if (typeof integrationBranchEnabled !== 'boolean') {
-        return NextResponse.json(
-          { error: 'integrationBranchEnabled must be a boolean' },
-          { status: 400 },
-        );
-      }
-      updateData.integrationBranchEnabled = integrationBranchEnabled;
+    // `branchStrategy` is the same control under the MCP/UI vocabulary — when
+    // given, it wins over a raw `integrationBranchEnabled` in the same request.
+    if (integrationBranchEnabled !== undefined && typeof integrationBranchEnabled !== 'boolean') {
+      return NextResponse.json(
+        { error: 'integrationBranchEnabled must be a boolean' },
+        { status: 400 },
+      );
+    }
+    const effectiveIntegrationBranchEnabled: boolean | undefined = branchStrategy !== undefined
+      ? branchStrategy === 'mission-branch'
+      : integrationBranchEnabled;
+    if (effectiveIntegrationBranchEnabled !== undefined) {
+      updateData.integrationBranchEnabled = effectiveIntegrationBranchEnabled;
     }
     if (costBudgetUsd !== undefined) {
       updateData.costBudgetUsd = costBudgetUsd != null ? String(costBudgetUsd) : null;
@@ -571,7 +584,7 @@ export async function PATCH(
     // any task PR can target it, because GitHub rejects a PR whose base ref is
     // absent. A mission with no `workingBranch` yet is fine — `runMission`
     // generates one and ensures the ref on its next pass.
-    if (integrationBranchEnabled === true && existing.integrationBranchEnabled !== true) {
+    if (effectiveIntegrationBranchEnabled === true && existing.integrationBranchEnabled !== true) {
       const ensured = await ensureMissionIntegrationBranch(id).catch(err => ({
         ok: false as const,
         reason: 'api_error' as const,
