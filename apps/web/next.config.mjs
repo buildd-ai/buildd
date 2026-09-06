@@ -8,6 +8,14 @@ const nextConfig = {
   // is absent at runtime, symbol-extractor's try/catch degrades gracefully
   // to the line-window chunker.
   serverExternalPackages: ['@ast-grep/napi'],
+  // The MCP route reads .claude/skills/buildd-mcp-consumer/SKILL.md (repo
+  // root, outside apps/web) via readFileSync at request time — a path
+  // output-file-tracing's static analysis won't discover on its own since
+  // it never appears in an import/require. Force it into the serverless
+  // bundle explicitly instead of relying on tracing to infer it.
+  outputFileTracingIncludes: {
+    '/api/mcp': ['../../.claude/skills/buildd-mcp-consumer/**'],
+  },
   async redirects() {
     return [
       {
