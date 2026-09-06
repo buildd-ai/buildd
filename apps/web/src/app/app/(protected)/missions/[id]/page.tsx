@@ -341,6 +341,7 @@ export default async function MissionDetailPage({
     cronExpression: scheduleCron,
     lastRunAt: (mission.schedule as any)?.lastRunAt || null,
     nextRunAt: (mission.schedule as any)?.nextRunAt || null,
+    criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
   });
   const healthState = deriveTaskHealthSignal(mission, mission.tasks || []);
 
