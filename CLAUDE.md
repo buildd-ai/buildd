@@ -268,6 +268,7 @@ locally does not fail the suite for everyone else.
 - **Schema change**: `.claude/skills/schema-change/` — Ship a Drizzle migration without losing a column or a release. Migration index collisions happen several times a day with concurrent sessions and git does **not** conflict on the `.sql` files; read this before pushing anything that touches `packages/core/drizzle/`.
 - **Spec sync**: `.claude/skills/spec-sync/` — Keep `docs/SPEC.md` the source of truth and reconcile the doc/site repos against it.
 - **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
+- **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
 
 ## Specs & Docs Layout
 

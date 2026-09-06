@@ -12,6 +12,8 @@
  * - Internal API calls use caller's Bearer token — no privilege escalation
  * - register_skill with filePath/repo: not supported (no filesystem access)
  */
+import { readFileSync } from "fs";
+import { join } from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import {
@@ -43,6 +45,33 @@ import { listMcpTools } from "./tools";
 import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from "@buildd/core/knowledge-store";
 import { getMemoryStoreForTeam as getMemoryClientForTeam } from "@/lib/memory-helper";
 import { normalizeProject, workspaceProjectKey } from "@buildd/core/project-scope";
+
+// ── Consumer Skill ───────────────────────────────────────────────────────────
+//
+// Single canonical source: .claude/skills/buildd-mcp-consumer/SKILL.md (repo
+// root, two levels up from apps/web). The `buildd://workspace/skills`
+// resource mirrors that file's content directly rather than hand-maintaining
+// a second copy — see docs/design/buildd-mcp-consumer-skill.md Q3. Force-added
+// despite .claude/ being gitignored (same convention as buildd-workflow), so
+// it ships to Vercel like any other tracked file; `outputFileTracingIncludes`
+// in next.config.mjs keeps it in the serverless bundle for this route.
+const CONSUMER_SKILL_PATH = join(
+  process.cwd(),
+  "..",
+  "..",
+  ".claude",
+  "skills",
+  "buildd-mcp-consumer",
+  "SKILL.md"
+);
+
+function readConsumerSkillBody(): string {
+  try {
+    return readFileSync(CONSUMER_SKILL_PATH, "utf8");
+  } catch {
+    return "buildd-mcp-consumer skill content unavailable on this deployment — see .claude/skills/buildd-mcp-consumer/SKILL.md in the repo for the task lifecycle, blocked-vs-question rule, friction reporting, and branch strategy.";
+  }
+}
 
 // ── Auth Helper ──────────────────────────────────────────────────────────────
 
@@ -267,27 +296,11 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         tools: {},
         resources: {},
       },
-      instructions: `Buildd is a task coordination system for AI coding agents. Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated — use \`recall\`/\`learn\` instead; it remains callable for compatibility.
+      instructions: `Buildd is a task coordination system for AI coding agents. Tools: \`buildd\` (task actions), \`recall\` (read knowledge), \`learn\` (write knowledge). \`buildd_memory\` is deprecated.
 
-**Token level:** ${accountLevel} — this determines which \`buildd\` actions are available. Actions not listed in the \`buildd\` tool schema require a higher-privilege token; calling them returns \`{"error":"forbidden",...}\` (a privilege failure, NOT an expired/invalid token).
+**Token level:** ${accountLevel} — gates which \`buildd\` actions you can call (trigger ⊂ worker ⊂ admin). A call outside your level returns \`{"error":"forbidden",...}\`, not an expired-token error.
 
-**Worker workflow:**
-1. \`recall\` (query: task title) BEFORE starting — check for prior gotchas and patterns.
-2. \`buildd\` action=claim_task → checkout the returned branch → do the work.
-3. Report progress at milestones (25%, 50%, 75%) via action=update_progress.
-4. When done: push commits → action=create_pr → optionally action=get_pr to check CI/review state → action=merge_pr to merge once green.
-5. Before completing: write a summary artifact (\`buildd\` action=create_artifact, type=summary) and save relevant lessons (\`learn\`).
-6. \`buildd\` action=complete_task (with summary).
-
-**Note:** This is a remote MCP server. register_skill with filePath/repo is not supported — use content param instead.
-
-**Blocked?** Two different tools for two different situations — do not conflate them:
-- Hard block, no correct path forward (a required tool/credential is genuinely unavailable, the instruction is impossible as written): use the \`AskUserQuestion\` tool. This parks the task waiting for input — it is NOT recorded as a failure, is never auto-retried, and the owner is notified; answering resumes your work. Reserve it for cases where no amount of additional thinking produces a path forward — not for uncertainty, permission-seeking, or a design choice you are capable of making yourself.
-- Softer question where you can proceed under a sensible default: \`buildd\` action=post_note with type=question and defaultChoice set to what you chose. Non-blocking — work continues immediately: state your assumption and move on.
-
-**Knowledge:** Use \`recall\` to query prior lessons before starting work. Use \`learn\` to record gotchas, patterns, and decisions for future agents. Admin-level tokens can also use \`buildd\` action=consolidate_knowledge and action=memory_delete.
-
-**Artifacts:** Use \`buildd\` action=create_artifact to attach deliverables (summaries, reports, data) to your task.`,
+**Before your first task action**, load the buildd-mcp-consumer skill for the full workflow (claim → progress → PR → artifact → learn → complete), the blocked-vs-question rule, friction reporting, and branch strategy. No skill installed? Read the \`buildd://workspace/skills\` resource for the same content, or ask a human to install it.`,
     }
   );
 
@@ -839,7 +852,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           contents: [{
             uri,
             mimeType: "text/plain",
-            text: "Provide workspaceId in tool params to access workspace-scoped resources.",
+            text: readConsumerSkillBody(),
           }],
         };
 
