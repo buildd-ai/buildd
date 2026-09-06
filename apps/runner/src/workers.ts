@@ -4488,7 +4488,11 @@ If something is missing or incomplete, describe what and fix it now.`;
             if (prResult.url) worker.prUrl = prResult.url;
           }
 
-          const traces = scanToolResult(worker.id, text, source);
+          // `is_error` gates the broad patterns — see error-trace-scanner.ts.
+          // Without it, five in six firings landed on successful output.
+          const traces = scanToolResult(worker.id, text, source, {
+            isError: block.is_error === true,
+          });
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
             const redact = this.secretRedactors.get(worker.id);

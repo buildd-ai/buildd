@@ -21,7 +21,10 @@ describe('error-trace-scanner', () => {
   });
 
   it('detects permission denied', () => {
-    const out = scanToolResult('w1', 'bash: /usr/local/bin/foo: Permission denied');
+    // `permission_denied` is one of the broad patterns and now requires the
+    // result to be marked an error — the bare string matches ordinary source
+    // code, including this scanner's own pattern table.
+    const out = scanToolResult('w1', 'bash: /usr/local/bin/foo: Permission denied', 'Bash', { isError: true });
     expect(out.some((t) => t.pattern === 'permission_denied')).toBe(true);
   });
 
@@ -146,5 +149,60 @@ describe('error-trace-scanner', () => {
       const second = scanToolResult('wg', "Error: ENOENT: /home/coder/.gitconfig", 'bash');
       expect(second.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
     });
+  });
+});
+
+describe('precision gates', () => {
+  const ERR = { isError: true };
+
+  it('skips read-only tool results entirely', () => {
+    // The pattern table itself contains the strings `Permission denied` and
+    // `ECONNREFUSED`, so an agent reading error-trace-scanner.ts used to match
+    // its own source. File contents are not execution output.
+    const source = "  { slug: 'permission_denied', re: /Permission denied/ },";
+    for (const tool of ['Read', 'Grep', 'Glob', 'NotebookRead', 'WebFetch', 'WebSearch']) {
+      expect(scanToolResult('w-ro', source, tool, ERR)).toEqual([]);
+    }
+    // Same text from a shell is a real match.
+    expect(scanToolResult('w-ro2', 'bash: /x: Permission denied', 'Bash', ERR).length).toBe(1);
+  });
+
+  it('holds the broad patterns unless the result was marked an error', () => {
+    // `^error: ` matched hundreds of bun test assertions; `rate.?limit` matched
+    // grepped TypeScript unions and never a real 429.
+    const cases = [
+      'error: expect(received).toBe(expected)',
+      "| 'budget_paused'  // reset to pending by budget/rate-limit exhaustion",
+      "throw new Error('ECONNREFUSED')",
+    ];
+    for (const text of cases) {
+      expect(scanToolResult(`w-np-${text.length}`, text, 'Bash')).toEqual([]);
+      expect(scanToolResult(`w-nf-${text.length}`, text, 'Bash', { isError: false })).toEqual([]);
+    }
+  });
+
+  it('still fires the broad patterns on a genuine error result', () => {
+    expect(scanToolResult('w-ge', 'error: cannot lock ref', 'Bash', ERR).some(t => t.pattern === 'git_error')).toBe(true);
+    expect(scanToolResult('w-rl', '429 Too Many Requests', 'Bash', ERR).some(t => t.pattern === 'rate_limit')).toBe(true);
+  });
+
+  it('keeps narrow patterns unconditional, since is_error is only a lower bound', () => {
+    // A Bash command can print a real failure and still exit 0.
+    expect(scanToolResult('w-narrow', 'fatal: not a git repository', 'Bash').some(t => t.pattern === 'git_fatal')).toBe(true);
+    expect(scanToolResult('w-narrow2', 'bwrap: No permissions to create a new namespace', 'Bash').length).toBe(1);
+  });
+});
+
+describe('recall fixes', () => {
+  it('catches zsh cd failure, which is what the agent shell actually emits', () => {
+    // The slug this file was written for had never fired in production: the
+    // regex is anchored on bash wording, the shell is zsh.
+    const out = scanToolResult('w-zsh', '(eval):cd:1: no such file or directory: apps/web', 'Bash');
+    expect(out.some(t => t.pattern === 'cd_no_such_file')).toBe(true);
+  });
+
+  it('catches the sh/dash wording for a missing command', () => {
+    const out = scanToolResult('w-sh', 'sh: 1: tsx: not found', 'Bash');
+    expect(out.some(t => t.pattern === 'command_not_found')).toBe(true);
   });
 });
