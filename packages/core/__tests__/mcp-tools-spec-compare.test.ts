@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import { handleBuilddAction, handleMemoryAction, type ApiFn, type ActionContext } from '../mcp-tools';
 import { MemoryStore } from '../memory-store';
 import type { KnowledgeStore, QueryResult, QueryParams } from '../knowledge-store/types';
+import { classifyIngestCorpus } from '../knowledge-store/ingest-filter';
 
 const WS_ID = 'ws-1';
 const noopApi = (async () => ({})) as unknown as ApiFn;
@@ -13,10 +14,14 @@ function mockStore(): KnowledgeStore {
   return {
     async query(namespace: string): Promise<QueryResult[]> {
       const isCode = namespace.endsWith(':code');
-      const base = { namespace, corpus: (isCode ? 'code' : 'spec') as any, sourceUrl: null, metadata: {} };
+      // Strict: only the corpus the ingest pipeline actually writes returns
+      // prose. A read of any other namespace yields nothing, which is what the
+      // real store did for ':spec'.
+      if (!isCode && !namespace.endsWith(':docs')) return [];
+      const base = { namespace, corpus: (isCode ? 'code' : 'docs') as any, sourceUrl: null, metadata: {} };
       return isCode
         ? [{ ...base, id: 'c1', sourceType: 'code', sourcePath: 'core/db/schema.ts', content: "export const missions = pgTable('missions', { ... })", score: 0.445 }]
-        : [{ ...base, id: 's1', sourceType: 'spec', sourcePath: 'content/docs/features/objectives.mdx', content: 'Objectives track goals and link tasks...', score: 0.75 }];
+        : [{ ...base, id: 's1', sourceType: 'docs', sourcePath: 'content/docs/features/objectives.mdx', content: 'Objectives track goals and link tasks...', score: 0.75 }];
     },
     async upsert() {}, async delete() {}, async deleteBySource() {}, async listNamespaces() { return []; },
   } as unknown as KnowledgeStore;
@@ -28,12 +33,16 @@ function vocabularyGapStore(): KnowledgeStore {
   return {
     async query(namespace: string, params: QueryParams): Promise<QueryResult[]> {
       const isCode = namespace.endsWith(':code');
-      const base = { namespace, corpus: (isCode ? 'code' : 'spec') as any, sourceUrl: null, metadata: {} };
+      // Strict: only the corpus the ingest pipeline actually writes returns
+      // prose. A read of any other namespace yields nothing, which is what the
+      // real store did for ':spec'.
+      if (!isCode && !namespace.endsWith(':docs')) return [];
+      const base = { namespace, corpus: (isCode ? 'code' : 'docs') as any, sourceUrl: null, metadata: {} };
 
       if (!isCode) {
         // Spec always returns content with implementation anchors
         return [{
-          ...base, id: 's1', sourceType: 'spec',
+          ...base, id: 's1', sourceType: 'docs',
           sourcePath: 'docs/design/merge-policy.md',
           content: [
             'BT-5: createReviewerTask + tryAutoMergeWorkerPr in',
@@ -75,7 +84,7 @@ function adminCtx(overrides: Partial<ActionContext> = {}): ActionContext {
 
 describe('spec_compare', () => {
   // spec_compare moved from adminActions to workerActions: it is read-only
-  // retrieval over {ws}:spec and {ws}:code, both of which a worker already reaches
+  // retrieval over {ws}:docs and {ws}:code, both of which a worker already reaches
   // via query_knowledge/recall, so admin-gating granted no protection and left the
   // spec-validator role unable to run the workflow default-roles.ts tells it to run.
   it('allows worker tokens (read-only retrieval, no new data access)', async () => {
@@ -117,7 +126,7 @@ describe('spec_compare', () => {
     expect((err as Error).message).toMatch(/workspaceId/i);
   });
 
-  it('queries unified workspace store using {workspaceId}:code and {workspaceId}:spec', async () => {
+  it('queries unified workspace store using {workspaceId}:code and {workspaceId}:docs', async () => {
     const queried: string[] = [];
     const trackingStore: KnowledgeStore = {
       async query(namespace: string): Promise<QueryResult[]> {
@@ -129,7 +138,42 @@ describe('spec_compare', () => {
 
     await handleBuilddAction(noopApi, 'spec_compare', { feature: 'objectives' }, adminCtx({ knowledgeStore: trackingStore }));
     expect(queried).toContain(`${WS_ID}:code`);
-    expect(queried).toContain(`${WS_ID}:spec`);
+    // `docs`, not `spec`. Nothing in the codebase writes a `spec` namespace:
+    // `classifyIngestCorpus` returns only 'code' | 'docs', and both the
+    // per-merged-PR diff ingest and the full-repo ingest go through it. Reading
+    // `spec` meant the prose half of this comparison was always empty.
+    expect(queried).toContain(`${WS_ID}:docs`);
+    expect(queried).not.toContain(`${WS_ID}:spec`);
+  });
+
+  it('only reads namespaces that some ingest path can actually write', async () => {
+    // The invariant that would have caught this. A retrieval tool pointed at a
+    // corpus with no writer does not fail — it returns half an answer and looks
+    // like a working comparison, which is worse than an error.
+    const queried: string[] = [];
+    const trackingStore: KnowledgeStore = {
+      async query(namespace: string): Promise<QueryResult[]> {
+        queried.push(namespace);
+        return mockStore().query(namespace, { text: 'objectives', mode: 'hybrid' });
+      },
+      async upsert() {}, async delete() {}, async deleteBySource() {}, async listNamespaces() { return []; },
+    } as unknown as KnowledgeStore;
+
+    await handleBuilddAction(noopApi, 'spec_compare', { feature: 'objectives' }, adminCtx({ knowledgeStore: trackingStore }));
+
+    // Every corpus the ingest filter can emit, for a representative path.
+    const writable = new Set(
+      ['src/a.ts', 'docs/SPEC.md', 'content/docs/x.mdx', 'a.png']
+        .map((f) => classifyIngestCorpus(f))
+        .filter((c): c is 'code' | 'docs' => c !== null),
+    );
+    expect(writable).toEqual(new Set(['code', 'docs']));
+
+    const readCorpora = [...new Set(queried.map((n) => n.split(':').pop()!))];
+    expect(readCorpora.length).toBeGreaterThan(0);
+    for (const corpus of readCorpora) {
+      expect(writable.has(corpus as 'code' | 'docs')).toBe(true);
+    }
   });
 
   it('returns both code and spec evidence with judge framing (scores surface, judge decides)', async () => {
@@ -217,7 +261,7 @@ describe('spec_compare — two-hop vocabulary bridge', () => {
         const base = { namespace: ns, corpus: (isCode ? 'code' : 'spec') as any, sourceUrl: null, metadata: {} };
         if (!isCode) {
           // Spec with an anchor
-          return [{ ...base, id: 's1', sourceType: 'spec', sourcePath: 'docs/design/foo.md',
+          return [{ ...base, id: 's1', sourceType: 'docs', sourcePath: 'docs/design/foo.md',
             content: 'See createReviewerTask in apps/web/src/lib/reviewer.ts', score: 0.8 }];
         }
         // Both direct and anchor queries return the same chunk id
@@ -248,7 +292,7 @@ describe('spec_compare — two-hop vocabulary bridge', () => {
         if (isCode) return [];
         // Spec returns content with NO file paths, symbols, or identifiers
         return [{
-          namespace: ns, corpus: 'spec' as any, id: 's1', sourceType: 'spec',
+          namespace: ns, corpus: 'spec' as any, id: 's1', sourceType: 'docs',
           sourcePath: 'docs/design/foo.md', sourceUrl: null, metadata: {},
           content: 'This feature allows users to configure settings via the user interface.',
           score: 0.72,
@@ -320,7 +364,7 @@ describe('query_knowledge — worker token access', () => {
         const base = { namespace, corpus: (isCode ? 'code' : 'spec') as any, sourceUrl: null, metadata: {} };
         if (!isCode) {
           return [{
-            ...base, id: 's1', sourceType: 'spec', sourcePath: 'docs/design/x.md',
+            ...base, id: 's1', sourceType: 'docs', sourcePath: 'docs/design/x.md',
             content: `${routes} ${paths} ${symbols}`, score: 0.8,
           }];
         }

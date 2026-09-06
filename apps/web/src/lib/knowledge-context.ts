@@ -91,8 +91,12 @@ async function buildCorporaHint(
       const codeCount = await ks.countNamespace(buildNamespace(workspaceId, 'code')).catch(() => 0);
       parts.push(codeCount > 0 ? `code indexed (${codeCount.toLocaleString()} chunks)` : 'code not indexed');
 
-      const specCount = await ks.countNamespace(buildNamespace(workspaceId, 'spec')).catch(() => 0);
-      parts.push(specCount > 0 ? `spec ${specCount}` : 'spec not indexed');
+      // `docs`, not `spec`: nothing writes a `spec` namespace, so this line
+      // read "spec not indexed" for every workspace forever while the docs
+      // corpus — which holds SPEC.md and every `.md`/`.mdx` — was populated on
+      // every merged PR.
+      const docsCount = await ks.countNamespace(buildNamespace(workspaceId, 'docs')).catch(() => 0);
+      parts.push(docsCount > 0 ? `docs ${docsCount}` : 'docs not indexed');
     }
 
     if (parts.length === 0) return '';

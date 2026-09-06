@@ -155,7 +155,7 @@ export const triggerActions = [
 ] as const;
 
 export const workerActions = [
-  // spec_compare is read-only retrieval over {ws}:spec and {ws}:code. It grants no
+  // spec_compare is read-only retrieval over {ws}:docs and {ws}:code. It grants no
   // data access a worker lacks — query_knowledge/recall already reach both corpora —
   // so gating it to admin only meant the spec-validator role could never run its own
   // documented workflow (default-roles.ts instructs it to call spec_compare).
@@ -386,7 +386,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     detect_projects: '{ rootDir? } — detect monorepo projects from package.json workspaces field',
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
-    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs SPEC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:spec) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
+    spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -4313,9 +4313,18 @@ export async function handleBuilddAction(
       const ks =
         ctx.knowledgeStore ?? new PgVectorStore(ctx.embedder ?? null, getVoyageReranker());
 
-      // Step 1: query :spec and direct :code in parallel (prose vocabulary works for spec)
+      // Step 1: query the doc corpus and direct :code in parallel (prose
+      // vocabulary works for prose).
+      //
+      // This reads `docs`, NOT `spec`. `spec` had no writer anywhere: the
+      // per-merged-PR ingest classifies every file as `code` or `docs` and
+      // never emits `spec`, and neither does the full-repo ingest. So the
+      // spec side of this comparison was permanently empty, and the tool's
+      // whole purpose — spotting documented-not-built and
+      // shipped-not-documented — could only ever return the code half.
+      // `docs` is where `docs/SPEC.md` and every `.md`/`.mdx` land.
       const [specHits, directCodeHits] = await Promise.all([
-        ks.query(buildNamespace(wsId, 'spec'), { text: feature, mode: 'hybrid', topK }),
+        ks.query(buildNamespace(wsId, 'docs'), { text: feature, mode: 'hybrid', topK }),
         ks.query(buildNamespace(wsId, 'code'), { text: feature, mode: 'hybrid', topK }),
       ]);
 

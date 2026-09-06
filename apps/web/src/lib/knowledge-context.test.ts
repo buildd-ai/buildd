@@ -217,14 +217,14 @@ describe('buildKnowledgeContext corpora hint', () => {
     const store = mockStore({}, {
       'team-1:memory': 208,
       'ws-1:code': 12431,
-      'ws-1:spec': 340,
+      'ws-1:docs': 340,
     });
     const lines = await buildKnowledgeContext('fix auth bug', 'ws-1', 'team-1', store);
     const text = lines.join('\n');
     expect(text).toContain('knowledge:');
     expect(text).toContain('memory 208');
     expect(text).toContain('code indexed');
-    expect(text).toContain('spec 340');
+    expect(text).toContain('docs 340');
     expect(text).toContain('query_knowledge');
   });
 
@@ -232,11 +232,27 @@ describe('buildKnowledgeContext corpora hint', () => {
     const store = mockStore({}, {
       'team-1:memory': 50,
       'ws-1:code': 0,
-      'ws-1:spec': 0,
+      'ws-1:docs': 0,
     });
     const text = (await buildKnowledgeContext('task', 'ws-1', 'team-1', store)).join('\n');
     expect(text).toContain('code not indexed');
-    expect(text).toContain('spec not indexed');
+    expect(text).toContain('docs not indexed');
+  });
+
+  it('reports the doc corpus that ingestion actually writes', async () => {
+    // The hint read `ws:spec`, which no ingest path writes, so every agent in
+    // every workspace was told "spec not indexed" while the docs corpus was
+    // being refreshed on every merged PR. A count over a namespace with no
+    // writer is not a measurement.
+    const store = mockStore({}, {
+      'team-1:memory': 10,
+      'ws-1:code': 1200,
+      'ws-1:docs': 340,
+    });
+    const text = (await buildKnowledgeContext('task', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).toContain('docs 340');
+    expect(text).not.toContain('not indexed');
+    expect(text).not.toContain('spec');
   });
 
   it('omits hint when countNamespace is not available', async () => {
