@@ -23,6 +23,10 @@ const mockDbUpdateWhere = mock((_pred?: unknown) => ({ returning: mockDbUpdateRe
 const mockDbUpdateSet = mock((_values?: unknown) => ({ where: mockDbUpdateWhere }));
 const mockDbUpdate = mock((_table?: unknown) => ({ set: mockDbUpdateSet }));
 
+// recordDirectProdMerge's repo/workspace lookups: select().from(table).where()
+const mockDbSelectGithubRepos = mock(() => Promise.resolve([] as any[]));
+const mockDbSelectWorkspaces = mock(() => Promise.resolve([] as any[]));
+
 /**
  * The QUERY ARGUMENTS, captured.
  *
@@ -38,6 +42,10 @@ const mockDbUpdate = mock((_table?: unknown) => ({ set: mockDbUpdateSet }));
  */
 let taskFindArgs: any[] = [];
 let workerFindArgs: any[] = [];
+
+// Real (unmocked) schema — used for select().from(<table>) identity so the
+// stub can tell the githubRepos lookup apart from the workspaces lookup.
+import { githubRepos as githubReposTable, workspaces as workspacesTable } from '@buildd/core/db/schema';
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -59,6 +67,12 @@ mock.module('@buildd/core/db', () => ({
     },
     insert: mockDbInsert,
     update: mockDbUpdate,
+    select: (_cols?: any) => ({
+      from: (table: any) => ({
+        where: (_cond?: any) =>
+          table === githubReposTable ? mockDbSelectGithubRepos() : mockDbSelectWorkspaces(),
+      }),
+    }),
   },
 }));
 
@@ -104,7 +118,7 @@ import { classifyCheckRuns } from '@/lib/release/dispatch';
 mock.module('@/lib/release/dispatch', () => ({ classifyCheckRuns }));
 
 // ── Now import the module under test ─────────────────────────────────────────
-import { findReleasePr, executeRelease, _setSleeper } from './release-executor';
+import { findReleasePr, executeRelease, recordDirectProdMerge, _setSleeper } from './release-executor';
 
 // The executor sleeps 8s before polling Vercel and 10s between polls. Real
 // sleeps would blow the test timeout, so swap in a no-op (same injection
@@ -1177,6 +1191,26 @@ describe('executeRelease — healthy promotion on deploy success', () => {
     expect(where).toContain('"releases"."state" = ');
   });
 
+  it('also guards the promotion UPDATE on head_sha IS NOT NULL — a release with no head sha can never become healthy', async () => {
+    process.env.VERCEL_TOKEN = 'illustrative-token';
+    (globalThis as any).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ deployments: [{ uid: 'dpl_1', state: 'READY', url: 'example.invalid' }] }),
+      } as any),
+    );
+    setupTask();
+    setupWorker();
+    setupContinuousWorkspace();
+    setupRepo();
+    setupMerge();
+
+    await executeRelease({ taskId: 't', workerId: 'w', workspaceId: 'ws-1' });
+
+    const where = renderPromotionWhere();
+    expect(where).toContain('"releases"."head_sha" is not null');
+  });
+
   it('emits RELEASE_UPDATED with state healthy so live surfaces do not stay on `deploying`', async () => {
     process.env.VERCEL_TOKEN = 'illustrative-token';
     (globalThis as any).fetch = mock(() =>
@@ -1252,5 +1286,139 @@ describe('executeRelease — healthy promotion on deploy success', () => {
 
     expect(result.status).toBe('completed');
     expect(mockDbUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// The release PR (dev → prod) and hotfix PR (feature → prod) that ship this
+// repo are opened via `scripts/release.sh` + the `gh` CLI and merged by CI or
+// a human — no buildd worker ever owns either PR, so `executeRelease` (driven
+// by a worker completing a task) never runs for them. `recordDirectProdMerge`
+// is the webhook-driven path that records these merges independently of any
+// worker, so a `branch_merge` workspace's release ledger reflects what
+// actually shipped instead of only the fraction that happened to route
+// through a worker's own PR.
+describe('recordDirectProdMerge', () => {
+  beforeEach(() => {
+    mockDbSelectGithubRepos.mockReset();
+    mockDbSelectWorkspaces.mockReset();
+    mockDbInsert.mockReset();
+    mockDbInsertValues.mockReset();
+    mockDbInsertOnConflict.mockReset();
+    mockDbInsertReturning.mockReset();
+    mockDbInsert.mockReturnValue({ values: mockDbInsertValues });
+    mockDbInsertValues.mockReturnValue({ onConflictDoNothing: mockDbInsertOnConflict });
+    mockDbInsertOnConflict.mockReturnValue({ returning: mockDbInsertReturning });
+    mockDbInsertReturning.mockResolvedValue([{ id: 'release-direct-1' }]);
+    mockAttributeRelease.mockReset();
+    mockAttributeRelease.mockResolvedValue({ attributed: 1, skipped: 0 });
+    mockDetectArchetype.mockReset();
+    mockDetectArchetype.mockReturnValue('gated');
+  });
+
+  function setupBoundBranchMergeWorkspace(overrides: Record<string, unknown> = {}) {
+    mockDbSelectGithubRepos.mockResolvedValue([{ id: 'repo-1' }]);
+    mockDbSelectWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-1',
+        name: 'buildd',
+        releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main', releaseBranch: 'dev', ...overrides },
+        gitConfig: {},
+      },
+    ]);
+  }
+
+  it('records a release for a merge with no owning worker (release PR / hotfix path)', async () => {
+    setupBoundBranchMergeWorkspace();
+
+    await recordDirectProdMerge({
+      repoFullName: 'org/repo',
+      installationId: 42,
+      baseRef: 'main',
+      headSha: 'merge-sha-1',
+      previousSha: 'prev-sha-1',
+    });
+
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1);
+    const values = mockDbInsertValues.mock.calls[0]?.[0] as any;
+    expect(values).toMatchObject({ workspaceId: 'ws-1', headSha: 'merge-sha-1', previousSha: 'prev-sha-1' });
+    expect(mockAttributeRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing when no head sha is known', async () => {
+    setupBoundBranchMergeWorkspace();
+
+    await recordDirectProdMerge({
+      repoFullName: 'org/repo',
+      installationId: 42,
+      baseRef: 'main',
+      headSha: undefined,
+      previousSha: 'prev-sha-1',
+    });
+
+    expect(mockDbSelectGithubRepos).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('skips a merge base that is not the configured prod branch (an ordinary feature merge into dev)', async () => {
+    setupBoundBranchMergeWorkspace();
+
+    await recordDirectProdMerge({
+      repoFullName: 'org/repo',
+      installationId: 42,
+      baseRef: 'dev',
+      headSha: 'merge-sha-1',
+      previousSha: 'prev-sha-1',
+    });
+
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('skips workspaces not on the branch_merge strategy — those record rows via the trigger route instead', async () => {
+    mockDbSelectGithubRepos.mockResolvedValue([{ id: 'repo-1' }]);
+    mockDbSelectWorkspaces.mockResolvedValue([
+      { id: 'ws-1', name: 'buildd', releaseConfig: { enabled: true, strategy: 'workflow_dispatch' }, gitConfig: {} },
+    ]);
+
+    await recordDirectProdMerge({
+      repoFullName: 'org/repo',
+      installationId: 42,
+      baseRef: 'main',
+      headSha: 'merge-sha-1',
+      previousSha: 'prev-sha-1',
+    });
+
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op (via the unique index) when a worker-owned merge already recorded the same head sha', async () => {
+    setupBoundBranchMergeWorkspace();
+    // Simulates the ON CONFLICT DO NOTHING path: insert returns no row.
+    mockDbInsertReturning.mockResolvedValue([]);
+
+    await recordDirectProdMerge({
+      repoFullName: 'org/repo',
+      installationId: 42,
+      baseRef: 'main',
+      headSha: 'merge-sha-1',
+      previousSha: 'prev-sha-1',
+    });
+
+    expect(mockDbInsertValues).toHaveBeenCalledTimes(1);
+    expect(mockAttributeRelease).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the repo is not bound to any workspace', async () => {
+    mockDbSelectGithubRepos.mockResolvedValue([]);
+
+    await recordDirectProdMerge({
+      repoFullName: 'unbound/repo',
+      installationId: 42,
+      baseRef: 'main',
+      headSha: 'merge-sha-1',
+      previousSha: 'prev-sha-1',
+    });
+
+    expect(mockDbSelectWorkspaces).not.toHaveBeenCalled();
+    expect(mockDbInsertValues).not.toHaveBeenCalled();
   });
 });

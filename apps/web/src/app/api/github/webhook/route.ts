@@ -41,6 +41,7 @@ import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
+import { recordDirectProdMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -522,7 +523,7 @@ async function handlePullRequestEvent(event: {
     draft?: boolean;
     merge_commit_sha?: string | null;
     head: { ref: string; sha: string };
-    base?: { ref: string };
+    base?: { ref: string; sha?: string };
     html_url: string;
     mergeable?: boolean | null;
   };
@@ -719,6 +720,25 @@ async function handlePullRequestEvent(event: {
       pr.base.ref,
     ).catch(e =>
       console.error(`[webhook] dark-check detection failed for ${repository.full_name}:`, e),
+    );
+  }
+
+  // Record a `releases` row for a merge into a workspace's configured prod
+  // branch, regardless of whether a buildd worker owns this PR. The release
+  // PR (dev → prod) and hotfix PR (feature → prod) that ship this repo are
+  // opened by `scripts/release.sh` via the `gh` CLI and merged by CI/a human —
+  // no worker ever owns either PR, so the worker-scoped release recording
+  // below never runs for them. Idempotent on (workspaceId, headSha), so this
+  // is a no-op when a worker-owned merge already recorded the same headSha.
+  if (pr.merged && event.installation && pr.base?.ref) {
+    recordDirectProdMerge({
+      repoFullName: repository.full_name,
+      installationId: event.installation.id,
+      baseRef: pr.base.ref,
+      headSha: pr.merge_commit_sha ?? undefined,
+      previousSha: pr.base.sha,
+    }).catch(e =>
+      console.error(`[webhook] recordDirectProdMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
     );
   }
 
