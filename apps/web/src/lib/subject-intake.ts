@@ -87,7 +87,10 @@ export interface SubjectIntakeInput<TTask extends SubjectTask> {
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const TRUSTED_RETRY_ORIGINS = new Set<SubjectFilingOrigin>(['webhook', 'watcher']);
-const FILE_ANYWAY_ORIGINS = new Set<SubjectFilingOrigin>(['dashboard', 'api', 'mcp']);
+// 'friction' filings are just as deliberate as 'api'/'mcp' ones — the origin is
+// forced to 'friction' for tracking (see subjectOrigin in tasks/route.ts), not
+// because the caller is any less explicit than a normal API/MCP task filing.
+const FILE_ANYWAY_ORIGINS = new Set<SubjectFilingOrigin>(['dashboard', 'api', 'mcp', 'friction']);
 const RESERVATION_MS = 15_000;
 /**
  * Bound on the re-read-and-start-over loop below. Every retry is triggered by

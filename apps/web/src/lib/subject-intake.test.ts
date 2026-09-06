@@ -219,6 +219,20 @@ describe('subject intake', () => {
     })).rejects.toThrow('file_anyway_not_allowed');
   });
 
+  it('allows a friction-report filing to use the human escape hatch', async () => {
+    const repository = new FakeRepository();
+    const first = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'api', repository });
+    const result = await intakeSubject({
+      workspaceId: 'ws',
+      policy: propose,
+      anchor,
+      origin: 'friction',
+      repository,
+      fileAnywayReason: 'reported anyway',
+    });
+    expect(result.outcome).toMatchObject({ action: 'filed_anyway', relatedTaskId: first.task.id });
+  });
+
   it('lets a trusted retry supersede the newest live chain member', async () => {
     const repository = new FakeRepository();
     const first = await intakeSubject({ workspaceId: 'ws', policy: propose, anchor, origin: 'webhook', repository });
