@@ -7,11 +7,27 @@ import {
   fetchEntityCatalog,
   renderEntityCatalog,
 } from '@buildd/core/knowledge-store';
-import type { QueryResult, CatalogEntity } from '@buildd/core/knowledge-store';
+import type { QueryResult, CatalogEntity, QueryMode } from '@buildd/core/knowledge-store';
+import {
+  isStepWeak,
+  ASSEMBLY_LOG_PREFIX,
+  type ClusterRecipe,
+  type ClusterStep,
+  type ContextAssembly,
+  type AssemblyItem,
+  type AssemblyChain,
+  type DerivedBy,
+} from '@buildd/core/retrieval-clusters';
 
 /** Minimal store shape used by buildKnowledgeContext (injectable for tests). */
 export type KnowledgeQuerier = {
-  query: (ns: string, params: { text: string; topK?: number }) => Promise<QueryResult[]>;
+  /**
+   * `mode` is part of the contract because cluster steps deliberately differ on
+   * it — a step keyed on literal repo-relative paths queries lexically, since
+   * sending paths through a dense embedder is the prose-against-code mismatch
+   * clusters exist to stop.
+   */
+  query: (ns: string, params: { text: string; topK?: number; mode?: QueryMode }) => Promise<QueryResult[]>;
   /** Optional — used to build the corpora availability hint in claim payloads. */
   countNamespace?: (ns: string) => Promise<number>;
 };
@@ -137,15 +153,7 @@ export async function buildKnowledgeContext(
             const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
             if (results.length === 0) return [];
             const lines = [`\n### ${s.label}`];
-            for (const r of results) {
-              lines.push(renderHit(r));
-              if (isStaleBaseline(r)) {
-                lines.push(
-                  '  ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.' +
-                  ' Merged code may not be released, so the UI is not evidence.',
-                );
-              }
-            }
+            for (const r of results) lines.push(...renderHitLines(r));
             return lines;
           }),
         )
@@ -170,21 +178,276 @@ export async function buildKnowledgeContext(
         .catch(() => [] as QueryResult[]);
       if (pathResults.length > 0) {
         output.push('\n## Recent work on relevant paths');
-        for (const r of pathResults) {
-          output.push(renderHit(r));
-          if (isStaleBaseline(r)) {
-            output.push(
-              '  ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.' +
-              ' Merged code may not be released, so the UI is not evidence.',
-            );
-          }
-        }
+        for (const r of pathResults) output.push(...renderHitLines(r));
       }
     }
 
     return output.length > 0 ? output : [];
   } catch {
     return []; // non-fatal: knowledge retrieval must never block planning
+  }
+}
+
+// ── Clustered retrieval ───────────────────────────────────────────────────────
+
+/**
+ * Render a hit and, where it applies, the stale-baseline warning underneath it.
+ * Shared by the default fan-out and the clustered path so a cluster section can
+ * never silently lose the warning the fan-out shows.
+ */
+function renderHitLines(r: QueryResult): string[] {
+  const lines = [renderHit(r)];
+  if (isStaleBaseline(r)) {
+    lines.push(
+      '  \u26a0 MAY ALREADY BE SHIPPED \u2014 read the merged diff before specing.' +
+      ' Merged code may not be released, so the UI is not evidence.',
+    );
+  }
+  return lines;
+}
+
+/** Search keys a recipe step can be fed. Deterministically derived; see DerivedBy. */
+export type ClusterKeys = {
+  signature?: string | null;
+  paths?: string[];
+  /**
+   * Provenance of `paths`, overriding the step's declared `derivedBy`.
+   *
+   * A step declares the source it expects, but the truthful record is where the
+   * key actually came from on this assembly: `path_manifest` when the paths were
+   * read off tasks.path_manifest, `regex_path_extract` when they were pulled out
+   * of the error excerpt because the column was empty. Recording the step's
+   * expectation instead would put a claim in the log that the code did not make.
+   */
+  pathsDerivedBy?: DerivedBy;
+  prose?: string;
+};
+
+export type ClusterRetrievalInput = {
+  recipe: ClusterRecipe;
+  keys: ClusterKeys;
+  workspaceId?: string | null;
+  teamId?: string | null;
+  trigger: ContextAssembly['trigger'];
+  chain: AssemblyChain;
+  opts?: { sensitive?: boolean; source?: 'live' | 'eval' };
+  store?: KnowledgeQuerier;
+};
+
+/** Cap on paths joined into one query key — mirrors the existing path lookup. */
+const MAX_KEY_PATHS = 20;
+
+function derivedByForStep(step: ClusterStep, keys: ClusterKeys): DerivedBy {
+  if (step.keyKind === 'paths' && keys.pathsDerivedBy) return keys.pathsDerivedBy;
+  return step.derivedBy;
+}
+
+function keyForStep(step: ClusterStep, keys: ClusterKeys): string | null {
+  if (step.keyKind === 'signature') return keys.signature?.trim() || null;
+  if (step.keyKind === 'paths') {
+    const paths = (keys.paths ?? []).filter(p => p && p !== '**');
+    return paths.length > 0 ? paths.slice(0, MAX_KEY_PATHS).join('\n') : null;
+  }
+  return keys.prose?.trim() || null;
+}
+
+function namespaceForStep(
+  step: ClusterStep,
+  workspaceId: string | null | undefined,
+  teamId: string | null | undefined,
+): string | null {
+  if (step.scope === 'team') return teamId ? buildNamespace(teamId, step.corpus) : null;
+  return workspaceId ? buildNamespace(workspaceId, step.corpus) : null;
+}
+
+/**
+ * Apply the recipe's char budget to a rendered block.
+ *
+ * Truncation drops whole trailing lines rather than cutting mid-line, so a
+ * clipped block never ends in half a file path that reads as a real one.
+ */
+function applyBudget(lines: string[], budgetChars: number): string[] {
+  let total = 0;
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (total + line.length + 1 > budgetChars) {
+      kept.push(`  \u2026 truncated at the ${budgetChars}-char section budget.`);
+      break;
+    }
+    kept.push(line);
+    total += line.length + 1;
+  }
+  return kept;
+}
+
+/**
+ * Run a cluster recipe and return both the rendered block and the record of how
+ * it was assembled.
+ *
+ * Two things this deliberately does NOT do:
+ *
+ * 1. It never throws. Retrieval is best-effort on both call paths, so a broken
+ *    recipe degrades to the caller's default fan-out rather than failing a
+ *    claim or a planning pass.
+ * 2. It never stores retrieved content in the assembly record — only chunk id,
+ *    corpus, sourcePath, and provenance. Join back to knowledge_chunks for the
+ *    text.
+ *
+ * Steps are PRIORITIES, NOT EXCLUSIONS. An `onlyWhenWeak` step fires when every
+ * preceding step came back weak, and the escalation is recorded. When the whole
+ * recipe yields nothing renderable the caller falls back to the prose fan-out —
+ * that is what keeps this an ordering rather than a filter.
+ */
+export async function buildClusteredKnowledgeContext(
+  input: ClusterRetrievalInput,
+): Promise<{ parts: string[]; assembly: ContextAssembly }> {
+  const { recipe, keys, workspaceId, teamId, trigger, chain } = input;
+  const sensitive = input.opts?.sensitive ?? false;
+
+  const assembly: ContextAssembly = {
+    assemblyId: crypto.randomUUID(),
+    recipe: recipe.name,
+    source: input.opts?.source ?? 'live',
+    trigger,
+    derivedKeys: {
+      signature: keys.signature ?? null,
+      paths: (keys.paths ?? []).slice(0, MAX_KEY_PATHS),
+    },
+    items: [],
+    weakEscalationFired: false,
+    fallbackFired: false,
+    chain,
+  };
+
+  try {
+    const ks: KnowledgeQuerier = input.store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    const sections: string[][] = [];
+    // Weakness is judged over the unconditional steps only; an escalation step
+    // that fires must not then gate a later one on its own result.
+    const priorWeak: boolean[] = [];
+
+    for (const step of recipe.steps) {
+      // Sensitivity is a recipe change, not a filter: tool-infra-error-v1 loses
+      // its own first step in a sensitive workspace. Logged, because otherwise
+      // cohorts silently mix two populations.
+      if (step.scope === 'team' && sensitive) {
+        assembly.items.push({ step: step.step, corpus: step.corpus, reason: 'memory_skipped_sensitive' });
+        // A step that could not run is not evidence of strength. Same treatment
+        // as a step with no key below, so escalation depends on what retrieval
+        // actually found rather than on which reason stopped a step.
+        priorWeak.push(true);
+        continue;
+      }
+
+      if (step.onlyWhenWeak) {
+        const everyPriorWeak = priorWeak.length > 0 && priorWeak.every(Boolean);
+        if (!everyPriorWeak) continue;
+      }
+
+      const ns = namespaceForStep(step, workspaceId, teamId);
+      const text = keyForStep(step, keys);
+      if (!ns || !text) {
+        assembly.items.push({
+          step: step.step,
+          corpus: step.corpus,
+          reason: 'step_skipped_no_keys',
+          derivedBy: derivedByForStep(step, keys),
+        });
+        if (!step.onlyWhenWeak) priorWeak.push(true);
+        continue;
+      }
+
+      const results = await ks
+        .query(ns, { text, topK: step.topK, mode: step.mode })
+        .catch(() => [] as QueryResult[]);
+
+      if (step.onlyWhenWeak) assembly.weakEscalationFired = true;
+      if (!step.onlyWhenWeak) priorWeak.push(isStepWeak(results, step));
+
+      if (results.length === 0) {
+        // The step ran and returned nothing. Recorded as its own reason rather
+        // than as a `_query_hit` at rank 0, which would be a hit that did not
+        // happen — the exact relevance claim the vocabulary forbids.
+        assembly.items.push({
+          step: step.step,
+          corpus: step.corpus,
+          reason: 'step_query_empty',
+          derivedBy: derivedByForStep(step, keys),
+          mode: step.mode,
+        });
+        continue;
+      }
+
+      const lines = [`\n### ${step.label}`];
+      results.forEach((r, i) => {
+        lines.push(...renderHitLines(r));
+        assembly.items.push({
+          step: step.step,
+          corpus: r.corpus ?? step.corpus,
+          chunkId: r.id,
+          sourcePath: r.sourcePath ?? null,
+          reason: step.reasonOnHit,
+          derivedBy: derivedByForStep(step, keys),
+          mode: step.mode,
+          // Read off the breakdown rather than assumed from configuration: the
+          // same corpus and mode score differently with a reranker in the
+          // pipeline, so this is what makes rows comparable.
+          reranked: r.scoreBreakdown?.rerank !== undefined,
+          rank: i + 1,
+          score: r.score,
+          scoreBreakdown: r.scoreBreakdown,
+        });
+      });
+      sections.push(lines);
+    }
+
+    const body = sections.flat();
+    if (body.length === 0) return { parts: [], assembly };
+
+    const parts = [
+      `\n## Related prior work \u2014 ${recipe.name}`,
+      ...applyBudget(body, recipe.budgetChars),
+      `\n_${recipe.uncertaintyNote}_`,
+    ];
+    return { parts, assembly };
+  } catch {
+    // Non-fatal by contract. The assembly record survives so a failed recipe is
+    // visible as an empty one rather than as an absence.
+    return { parts: [], assembly };
+  }
+}
+
+/**
+ * Emit the assembly record.
+ *
+ * A single structured line with a stable prefix, greppable in production —
+ * the same shadow-first shape the worker-lease rollout used before its own
+ * table landed. Persisting these rows (and the criterion transitions that
+ * follow them) is the next step; the record is complete here so that step is a
+ * writer, not a redesign.
+ *
+ * Never called for `source: 'eval'` cohorts by callers that run offline scoring.
+ */
+export function logContextAssembly(assembly: ContextAssembly): void {
+  try {
+    // Field order is load-bearing, not cosmetic. Log lines get truncated at a
+    // platform-defined length, and a truncated line is unparseable JSON — so
+    // whatever sits at the end is what a long assembly silently loses. The
+    // aggregate fields the day-one metrics are computed from go FIRST and the
+    // unbounded `items` array goes LAST, so truncation costs per-item detail
+    // rather than quietly biasing the fallback rate downward.
+    const { assemblyId, recipe, source, weakEscalationFired, fallbackFired, trigger, derivedKeys, chain, items } =
+      assembly;
+    const ordered = {
+      assemblyId, recipe, source,
+      weakEscalationFired, fallbackFired,
+      itemCount: items.length,
+      trigger, derivedKeys, chain,
+      items,
+    };
+    console.log(`${ASSEMBLY_LOG_PREFIX} ${JSON.stringify(ordered)}`);
+  } catch {
+    // Logging must never affect the request.
   }
 }
 

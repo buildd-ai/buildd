@@ -65,6 +65,7 @@
     "./loop-config": "./loop-config.ts",
     "./subject-anchor-extractor": "./subject-anchor-extractor.ts",
     "./subject-anchor-observe": "./subject-anchor-observe.ts",
+    "./retrieval-clusters": "./retrieval-clusters.ts",
     "./prose-gate": "./prose-gate.ts",
     "./release-archetype": "./release-archetype.ts",
     "./release-attribution": "./release-attribution.ts",

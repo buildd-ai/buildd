@@ -9,12 +9,57 @@
  * claim still succeeds.
  */
 import type { ClaimTasksResponse } from '@buildd/shared';
-import { buildEntityCatalogContext, buildKnowledgeContext } from '@/lib/knowledge-context';
+import {
+  buildEntityCatalogContext,
+  buildClusteredKnowledgeContext,
+  buildKnowledgeContext,
+  logContextAssembly,
+  type ClusterKeys,
+} from '@/lib/knowledge-context';
+import { selectExecCluster } from '@buildd/core/retrieval-clusters';
+import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { buildSubjectPriorWork } from './subject-prior-work';
 
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; title: string; workspaceId: string };
+
+/**
+ * Derive the search keys for an error-subject cluster, deterministically.
+ *
+ * Paths come from `tasks.path_manifest` when it holds anything concrete. When it
+ * does not, they are extracted from the error excerpt by `inferFrictionManifest`
+ * — the same extractor POST /api/tasks already runs to populate the column, so
+ * the two paths agree by construction instead of by coincidence. The `'**'`
+ * sentinel is not a path: it records that the filer never declared scope, and
+ * keying a query on it would retrieve the whole repo.
+ *
+ * The two sources are reported separately in the assembly record, because
+ * "read off the column" and "regexed out of an error line" are different claims
+ * about where the query came from.
+ */
+function deriveErrorClusterKeys(task: {
+  subjectErrorSignature?: string | null;
+  pathManifest?: string[] | null;
+  context?: Record<string, unknown> | null;
+  description?: string | null;
+}): ClusterKeys {
+  const signature = task.subjectErrorSignature ?? null;
+  const declared = (task.pathManifest ?? []).filter(p => p && p !== '**');
+  if (declared.length > 0) {
+    return { signature, paths: declared, pathsDerivedBy: 'path_manifest' };
+  }
+
+  const excerpt = typeof task.context?.frictionExcerpt === 'string'
+    ? task.context.frictionExcerpt
+    : task.description ?? '';
+  const inferred = signature && excerpt ? inferFrictionManifest(signature, excerpt) : [];
+  return {
+    signature,
+    paths: inferred,
+    pathsDerivedBy: inferred.length > 0 ? 'regex_path_extract' : undefined,
+  };
+}
 
 /**
  * Append one context block to both rails the runner reads: the response field
@@ -96,7 +141,37 @@ export async function attachKnowledgeContext(
     const goal = [task.title, (task as any).description].filter(Boolean).join('\n');
     const teamId = (task as any).workspace?.teamId;
     const sensitive = (task as any).workspace?.dataClass === 'sensitive';
-    const parts = await buildKnowledgeContext(goal, task.workspaceId, teamId, undefined, { sensitive });
+
+    // Cluster selection. Returns null for every trigger with no registered
+    // recipe, which is the default and is a no-op — the fan-out below is
+    // reached unchanged. Steps are priorities, not exclusions: a recipe that
+    // yields nothing renderable also falls through to the fan-out, and that
+    // escalation is recorded as fallbackFired rather than left invisible.
+    const recipe = selectExecCluster(task as any);
+    let parts: string[] = [];
+    if (recipe) {
+      const keys = deriveErrorClusterKeys(task as any);
+      const { parts: clustered, assembly } = await buildClusteredKnowledgeContext({
+        recipe,
+        keys,
+        workspaceId: task.workspaceId,
+        teamId,
+        trigger: { layer: 'exec', subjectKind: (task as any).subjectKind, signature: keys.signature },
+        chain: {
+          taskId: task.id,
+          workerId: cw.id,
+          missionId: (task as any).missionId ?? null,
+        },
+        opts: { sensitive },
+      });
+      parts = clustered;
+      if (clustered.length === 0) assembly.fallbackFired = true;
+      logContextAssembly(assembly);
+    }
+
+    if (parts.length === 0) {
+      parts = await buildKnowledgeContext(goal, task.workspaceId, teamId, undefined, { sensitive });
+    }
     // Known-entities catalog (§8.4): canonical entity names for the task's
     // likely files so agents don't invent loose refs. Best-effort — returns ''
     // on any failure; the extra .catch is belt-and-braces (claim must not 500).
