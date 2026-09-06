@@ -47,6 +47,7 @@ const mockWorkersFindMany = mock(() => Promise.resolve([] as any[]));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
 const mockGithubReposFindFirst = mock(() => Promise.resolve(null));
 const mockGithubApi = mock(() => Promise.resolve([]));
+const mockPostPrReview = mock(() => Promise.resolve({ posted: true, reviewId: 1 }));
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
@@ -263,6 +264,7 @@ mock.module('@buildd/core/db/schema', () => ({
 
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
+  postPrReview: mockPostPrReview,
 }));
 
 // The verdict-time escalation gate re-inspects migrations. The real inspector
@@ -4438,6 +4440,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockDispatchNewTask.mockResolvedValue(undefined);
       mockMissionsFindFirst.mockReset();
       mockMissionsFindFirst.mockResolvedValue(null); // default: no mission override
+      mockPostPrReview.mockReset();
+      mockPostPrReview.mockResolvedValue({ posted: true, reviewId: 1 });
     }
 
     function makeReviewerPatchRequest(verdict: 'approve' | 'request-changes' | 'escalate', extra: Record<string, unknown> = {}) {
@@ -4537,6 +4541,61 @@ describe('PATCH /api/workers/[id]', () => {
       });
       // No retry task
       expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('approve: posts exactly one GitHub APPROVE review for the verdict', async () => {
+      setupReviewerTaskCompletion('approve');
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({
+        prNumber: 42,
+        headSha: 'abc123',
+        repoFullName: 'org/repo',
+        event: 'APPROVE',
+      });
+    });
+
+    it('request-changes: posts exactly one GitHub REQUEST_CHANGES review for the verdict', async () => {
+      setupReviewerTaskCompletion('request-changes');
+
+      await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({
+        event: 'REQUEST_CHANGES',
+      });
+    });
+
+    it('escalate: does not post a GitHub review — there is no matching review event', async () => {
+      setupReviewerTaskCompletion('escalate');
+
+      await PATCH(makeReviewerPatchRequest('escalate'), { params: mockParams });
+
+      expect(mockPostPrReview).not.toHaveBeenCalled();
+    });
+
+    it('approve: a re-review producing the same verdict does not fail the outcome even when the review was already posted (idempotent)', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockPostPrReview.mockResolvedValue({ posted: false, reason: 'a matching review already exists for this commit' });
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      // Idempotent skip must not block the rest of the approve path.
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    it('approve: a GitHub review-posting failure does not block auto-merge', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockPostPrReview.mockRejectedValue(new Error('502 Bad Gateway'));
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
     });
 
     it('approve: bounds the merge to the PR base ref, passing the workspace trunk branches', async () => {

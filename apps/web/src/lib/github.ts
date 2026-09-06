@@ -267,6 +267,59 @@ export async function mergePullRequest(
   }
 }
 
+/**
+ * Post a reviewer verdict as a real GitHub review.
+ *
+ * Without this, an agent verdict lives only in buildd's own store: GitHub
+ * branch protection requiring an approving review can never be satisfied, and
+ * the PR page shows no trace that a review happened at all.
+ *
+ * Idempotent per (PR, head SHA, resulting review state): GitHub has no upsert
+ * for reviews, so a re-review that reaches the same verdict on the same
+ * commit must not stack a second approval. Keyed on `commit_id` because that
+ * is what changes between genuinely distinct reviews — a fresh push earns a
+ * fresh review, a repeated verdict on the same commit does not.
+ */
+export async function postPrReview(params: {
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+  event: 'APPROVE' | 'REQUEST_CHANGES';
+  body: string;
+}): Promise<{ posted: boolean; reviewId?: number; reason?: string }> {
+  const { installationId, repoFullName, prNumber, headSha, event, body } = params;
+  const state = event === 'APPROVE' ? 'APPROVED' : 'CHANGES_REQUESTED';
+
+  try {
+    const existing = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/reviews`);
+    if (Array.isArray(existing)) {
+      const duplicate = existing.find(
+        (r: { commit_id?: string; state?: string }) => r.commit_id === headSha && r.state === state,
+      );
+      if (duplicate) {
+        return { posted: false, reason: 'a matching review already exists for this commit' };
+      }
+    }
+  } catch (err) {
+    // Fail open on the dedup check — an unreadable review list must not block
+    // posting the verdict, only risk (rather than prevent) a duplicate.
+    console.warn(`[github] could not list reviews on ${repoFullName}#${prNumber} before posting:`, err);
+  }
+
+  try {
+    const result = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify({ commit_id: headSha, event, body }),
+    });
+    return { posted: true, reviewId: result?.id };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'unknown error';
+    console.warn(`[github] failed to post review on ${repoFullName}#${prNumber}:`, reason);
+    return { posted: false, reason };
+  }
+}
+
 // Check if all check suites on a commit have passed
 export async function allCheckSuitesPassed(
   installationId: number,
