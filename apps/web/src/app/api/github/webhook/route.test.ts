@@ -350,8 +350,27 @@ mock.module('@/lib/release-executor', () => ({
 
 // On-demand review callbacks — asserted below, stubbed here.
 const mockDeliverPrReviewCallback = mock(() => Promise.resolve('fired' as const));
+// Stored reviewer verdict — default "no review on file" so the existing
+// agent-review deferral behaviour holds unless a test says otherwise.
+const mockReadPrReviewStatus = mock(() => Promise.resolve({
+  state: 'not_requested' as const,
+  terminal: true,
+  reviewTaskId: null,
+  adoptedTaskId: null,
+  verdict: null,
+  confidence: null,
+  summary: null,
+  feedback: null,
+  escalationReason: null,
+  iteration: null,
+  maxIterations: null,
+  prState: 'open' as const,
+  merged: false,
+  mergeBlocked: null,
+}));
 mock.module('@/lib/pr-review-request', () => ({
   deliverPrReviewCallback: mockDeliverPrReviewCallback,
+  readPrReviewStatus: mockReadPrReviewStatus,
 }));
 
 // Import handler AFTER mocks
@@ -464,6 +483,12 @@ function resetAll() {
   mockCheckAndUnblockDependentMissions.mockReset();
   mockCheckAndUnblockDependentMissions.mockReturnValue(Promise.resolve([]));
   mockResolvePolicy.mockReset();
+  mockReadPrReviewStatus.mockReset();
+  mockReadPrReviewStatus.mockReturnValue(Promise.resolve({
+    state: 'not_requested', terminal: true, reviewTaskId: null, adoptedTaskId: null,
+    verdict: null, confidence: null, summary: null, feedback: null, escalationReason: null,
+    iteration: null, maxIterations: null, prState: 'open', merged: false, mergeBlocked: null,
+  }));
   mockCreateReviewerTask.mockReset();
   mockPreflightEscalationCheck.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
@@ -1241,6 +1266,72 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
       expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+    });
+
+    it('retries the merge on CI-green when an unconsumed approve is on file for tier=agent-review', async () => {
+      // The reviewer's own merge-on-approve is bounded to quarantined branches,
+      // so an approved PR based on trunk can sit unconsumed forever with
+      // nothing retrying it. The CI-green webhook is that retry.
+      withSuccessWorkerPr();
+      mockResolvePolicy.mockReturnValue({
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 },
+      });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't-review', adoptedTaskId: 't1',
+        verdict: 'approve', confidence: 0.96, summary: 'clean', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      const callArgs = (mockTryAutoMergeWorkerPr.mock.calls[0] as any[])[0];
+      expect(callArgs.prNumber).toBe(42);
+      expect(callArgs).not.toHaveProperty('bound');
+    });
+
+    it('does not re-attempt the merge on CI-green when the unconsumed approve is below threshold', async () => {
+      withSuccessWorkerPr();
+      mockResolvePolicy.mockReturnValue({
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.8 },
+      });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't-review', adoptedTaskId: 't1',
+        verdict: 'approve', confidence: 0.5, summary: 'clean', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('is a no-op on CI-green when the approve was already consumed (PR already merged)', async () => {
+      withSuccessWorkerPr();
+      mockResolvePolicy.mockReturnValue({
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 },
+      });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't-review', adoptedTaskId: 't1',
+        verdict: 'approve', confidence: 0.96, summary: 'clean', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'merged', merged: true, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(
+        createWebhookRequest('check_suite', makeCheckSuitePayload({ check_suite: { conclusion: 'success' } }))
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
     it('calls tryAutoMergeWorkerPr with policy when resolvePolicy returns tier=auto-threshold', async () => {

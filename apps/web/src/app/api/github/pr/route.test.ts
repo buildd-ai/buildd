@@ -23,6 +23,24 @@ const mockWorkersUpdate = mock(() => ({
     where: mock(() => Promise.resolve()),
   })),
 }));
+// Stored reviewer verdict for the agent-review self-merge gate. Default: no
+// review on file, so tier=agent-review refuses unless a test says otherwise.
+const mockReadPrReviewStatus = mock(() => Promise.resolve({
+  state: 'not_requested' as const,
+  terminal: true,
+  reviewTaskId: null,
+  adoptedTaskId: null,
+  verdict: null,
+  confidence: null,
+  summary: null,
+  feedback: null,
+  escalationReason: null,
+  iteration: null,
+  maxIterations: null,
+  prState: 'open' as const,
+  merged: false,
+  mergeBlocked: null,
+}));
 
 // Mock api-auth
 mock.module('@/lib/api-auth', () => ({
@@ -76,6 +94,12 @@ mock.module('@buildd/core/db/schema', () => ({
   githubRepos: { id: 'id', fullName: 'fullName', defaultBranch: 'defaultBranch' },
   missions: { id: 'id', primaryPrNumber: 'primaryPrNumber', primaryPrUrl: 'primaryPrUrl', updatedAt: 'updatedAt' },
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
+}));
+
+// Mock pr-review-request — the stored-verdict lookup the agent-review
+// self-merge gate consults.
+mock.module('@/lib/pr-review-request', () => ({
+  readPrReviewStatus: mockReadPrReviewStatus,
 }));
 
 // Import handler AFTER mocks
@@ -1597,6 +1621,12 @@ describe('PUT /api/github/pr', () => {
     mockTasksFindFirst.mockReset();
     mockTasksFindFirst.mockResolvedValue(null);
     mockMissionsFindFirst.mockResolvedValue(null);
+    mockReadPrReviewStatus.mockReset();
+    mockReadPrReviewStatus.mockResolvedValue({
+      state: 'not_requested', terminal: true, reviewTaskId: null, adoptedTaskId: null,
+      verdict: null, confidence: null, summary: null, feedback: null, escalationReason: null,
+      iteration: null, maxIterations: null, prState: 'open', merged: false, mergeBlocked: null,
+    } as any);
     // The merge-policy gate reads the PR, its check runs and its files. Model a
     // green, clean, small PR by default so each test states its own refusal
     // rather than inheriting one from a missing fixture.
@@ -1753,6 +1783,125 @@ describe('PUT /api/github/pr', () => {
       expect(data.error).toContain('cannot be self-merged');
       expect(data.hint).toContain('request_pr_review');
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    function agentReviewWorker(agentReview: Record<string, unknown> = { reviewerRole: 'reviewer' }) {
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'agent-review', agentReview } } },
+      });
+    }
+
+    it("refuses under 'agent-review' when the reviewer requested changes", async () => {
+      workerOk();
+      agentReviewWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 't1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'fix it', escalationReason: null,
+        iteration: 1, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.tier).toBe('agent-review');
+      expect(data.error).toContain('cannot be self-merged');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses under 'agent-review' when the terminal approve is below the confidence threshold", async () => {
+      workerOk();
+      agentReviewWorker({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.8 });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't1', adoptedTaskId: 'task-1',
+        verdict: 'approve', confidence: 0.5, summary: 'looks ok', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('cannot be self-merged');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("refuses under 'agent-review' when an escalate path is touched, even with a terminal approve above threshold", async () => {
+      workerOk();
+      agentReviewWorker({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6, escalateToPaths: ['packages/core/db/'] });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't1', adoptedTaskId: 'task-1',
+        verdict: 'approve', confidence: 0.95, summary: 'looks ok', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+        }
+        if (/\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'packages/core/db/schema.ts', additions: 4, deletions: 0, status: 'modified' }]);
+        }
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("succeeds under 'agent-review' on a terminal approve above the confidence threshold — the self-merge escape hatch", async () => {
+      workerOk();
+      agentReviewWorker({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't1', adoptedTaskId: 'task-1',
+        verdict: 'approve', confidence: 0.96, summary: 'looks ok', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.merged).toBe(true);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('regression: a terminal approve with green CI and a mergeable PR reaches merged, not open', async () => {
+      // Replays the deadlock this fix closes: a PR held a terminal approve well
+      // above threshold, CI was fully green, and GitHub reported it mergeable —
+      // yet under the old tier-only refusal it stayed open forever.
+      workerOk();
+      agentReviewWorker({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 't1', adoptedTaskId: 'task-1',
+        verdict: 'approve', confidence: 0.96, summary: 'clean diff', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({
+            check_runs: [
+              { name: 'typecheck', status: 'completed', conclusion: 'success' },
+              { name: 'build', status: 'completed', conclusion: 'success' },
+              { name: 'test', status: 'completed', conclusion: 'success' },
+            ],
+          });
+        }
+        if (/\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'apps/web/src/lib/foo.ts', additions: 10, deletions: 2, status: 'modified' }]);
+        }
+        return Promise.resolve({ number: 42, head: { sha: 'sha-42' }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.merged).toBe(true);
+      expect(data.ok).toBe(true);
     });
 
     it("refuses under 'human'", async () => {
