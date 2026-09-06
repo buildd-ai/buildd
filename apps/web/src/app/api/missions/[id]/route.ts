@@ -285,7 +285,16 @@ export async function PATCH(
       // person may always override. But this endpoint is also reachable with an
       // admin API key (MCP `manage_missions`), so an override must never be
       // invisible: record who closed a mission whose criteria had not passed.
-      if (status === 'completed') {
+      //
+      // 'archived' closes a mission just as finally as 'completed' does — a
+      // direct active/paused → archived write skips 'completed' entirely, and
+      // without this check that path closed a failing mission with nothing
+      // but the generic "Mission status changed" note to show for it. Skipped
+      // when the mission was already completed/archived: that transition (e.g.
+      // completed → archived) passed or was audited at the time it first
+      // closed, and re-checking here would just replay the same stale verdict.
+      const wasAlreadyClosed = existing.status === 'completed' || existing.status === 'archived';
+      if ((status === 'completed' || status === 'archived') && !wasAlreadyClosed) {
         const storedCriteria = Array.isArray(existing.goalCriteria) ? existing.goalCriteria : [];
         const storedVerdict = (existing.goalCriteriaState as { overall?: string } | null)?.overall ?? null;
         if (storedCriteria.length > 0 && storedVerdict !== 'pass') {
@@ -294,7 +303,7 @@ export async function PATCH(
             type: 'warning',
             title: 'Goal criteria gate overridden',
             body:
-              `Mission was set to completed while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
+              `Mission was set to ${status} while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
               `${storedCriteria.length} criteria were not satisfied at the time of the override.`,
             actor,
           }).catch(e => console.error('[missions] override note failed:', e));
