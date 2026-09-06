@@ -3,10 +3,78 @@ import { tasks, missions, missionNotes, workspaces, workers } from '@buildd/core
 import { eq, and, sql, inArray, like, lt, isNotNull, desc } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { maybeRetriggerMission, retriggerMissionOnFailure } from '@/lib/mission-loop';
+import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
 import { approvePlan, type PlanStep } from '@/lib/approve-plan';
 import { dispatchUnblockedTask } from '@/lib/task-dispatch';
 import { refreshWorkerMergeStateIfStale } from './pr-reconcile';
 import { isBookkeeping } from '@buildd/core/mission-helpers';
+
+/**
+ * Result of interpreting `structuredOutput.plan`. Organizer heartbeats
+ * sometimes emit this field as a JSON string containing the array rather
+ * than the array itself — `absent` and `invalid` are kept distinct because
+ * only the latter is a shape violation worth surfacing on the mission feed;
+ * a plan key that was never set is the legitimate "nothing to do" case.
+ */
+type PlanExtraction =
+  | { kind: 'array'; plan: PlanStep[] }
+  | { kind: 'absent' }
+  | { kind: 'invalid'; received: string };
+
+function isPlanStepShape(step: unknown): step is PlanStep {
+  return (
+    typeof step === 'object' &&
+    step !== null &&
+    typeof (step as Record<string, unknown>).ref === 'string' &&
+    typeof (step as Record<string, unknown>).title === 'string' &&
+    typeof (step as Record<string, unknown>).description === 'string'
+  );
+}
+
+/**
+ * Accept `plan` as a real array, or as a JSON string that parses to one —
+ * the shape a stringified structured-output field takes. Anything else
+ * (a non-parsing string, a parsed non-array, or an array of malformed
+ * steps) is `invalid` rather than silently coerced, so a bad step still
+ * fails on its own merits instead of crashing approvePlan downstream.
+ */
+function extractPlan(rawPlan: unknown): PlanExtraction {
+  if (rawPlan === undefined || rawPlan === null) {
+    return { kind: 'absent' };
+  }
+
+  let candidate: unknown = rawPlan;
+  if (typeof candidate === 'string') {
+    try {
+      candidate = JSON.parse(candidate);
+    } catch {
+      return { kind: 'invalid', received: 'a string that failed to parse as JSON' };
+    }
+  }
+
+  if (!Array.isArray(candidate)) {
+    const shape = typeof candidate;
+    return {
+      kind: 'invalid',
+      received:
+        typeof rawPlan === 'string'
+          ? `a string that parsed to a ${shape}, not an array`
+          : `a ${shape}, not an array`,
+    };
+  }
+
+  if (candidate.length > 0 && !candidate.every(isPlanStepShape)) {
+    return {
+      kind: 'invalid',
+      received: 'an array whose items are missing required plan-step fields (ref/title/description)',
+    };
+  }
+
+  return { kind: 'array', plan: candidate as PlanStep[] };
+}
+
+/** Collapse window for the plan-shape-rejected feed note — effectively "once per task", regardless of retry timing. */
+const PLAN_SHAPE_FEED_COLLAPSE_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
  * Human plan-approval gate.
@@ -86,7 +154,8 @@ export async function resolveCompletedTask(
       });
       const result = taskWithResult?.result as Record<string, unknown> | null;
       const structuredOutput = result?.structuredOutput as Record<string, unknown> | undefined;
-      const plan = structuredOutput?.plan as PlanStep[] | undefined;
+      const planExtraction = extractPlan(structuredOutput?.plan);
+      const plan = planExtraction.kind === 'array' ? planExtraction.plan : undefined;
 
       // Extract questions from planning output and post as mission notes
       const questions = structuredOutput?.questions as Array<{ ref?: string; question: string; context?: string; defaultChoice?: string }> | undefined;
@@ -151,6 +220,35 @@ export async function resolveCompletedTask(
             `Child tasks cannot be created from free-form text. Check that the runner requests ` +
             `outputFormat for planning tasks (see @buildd/shared resolveOutputFormat).`
           );
+        } else if (planExtraction.kind === 'invalid') {
+          // (c) Contract violation of a different kind — the agent DID produce
+          // something under `plan`, but not a shape this code can use (e.g. a
+          // stringified array that failed to parse, or a non-array). Unlike
+          // (a) and (b) this must not look like a normal cycle: nothing else
+          // in the system would ever notice a rejected plan, so the mission
+          // would sit at zero deliverables indefinitely with every retry
+          // reporting success. Surface it on the mission feed, not just logs.
+          console.error(
+            `[plan-shape-rejected] task ${completedTaskId} (mission ${completedTaskFull.missionId}) ` +
+            `returned structuredOutput.plan as ${planExtraction.received} — rejected, no child tasks created.`
+          );
+          try {
+            await postMissionFeedEvent({
+              missionId: completedTaskFull.missionId,
+              type: 'warning',
+              title: 'Plan rejected — unusable shape',
+              body: `Task ${completedTaskId} returned structuredOutput.plan as ${planExtraction.received}. No child tasks were created.`,
+              actor: systemActor('plan shape rejected'),
+              taskId: completedTaskId,
+              collapseKey: `plan-shape-rejected:${completedTaskId}`,
+              collapseWindowMs: PLAN_SHAPE_FEED_COLLAPSE_WINDOW_MS,
+            });
+          } catch (err) {
+            console.error(
+              `[plan-shape-rejected] failed to post mission feed event for task ${completedTaskId}:`,
+              err
+            );
+          }
         }
         // Retrigger mission loop (its depth/stall guards decide whether to re-plan,
         // complete, or stall based on the missionComplete / triageOutcome signals).
