@@ -19,7 +19,7 @@ import {
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -772,7 +772,7 @@ export async function PUT(req: NextRequest) {
       const mission = task?.missionId
         ? await db.query.missions.findFirst({
             where: eq(missions.id, task.missionId),
-            columns: { mergePolicy: true, requiresReview: true },
+            columns: RESOLVE_POLICY_MISSION_COLUMNS,
           })
         : null;
 

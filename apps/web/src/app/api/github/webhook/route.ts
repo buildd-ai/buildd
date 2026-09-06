@@ -23,7 +23,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { postWorkTrackerCompletionUpdate } from '@/lib/work-tracker';
 import { enqueueMergedPrIngestJobs, runDiffIngestJob } from '@/lib/knowledge-ingest';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { createReviewerTask, preflightEscalationCheck } from '@/lib/reviewer';
 import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
@@ -1524,6 +1524,7 @@ async function maybeDispatchReviewer(
     // Load mission separately to resolve merge policy
     type PolicyMission = {
       mergePolicy?: import('@buildd/shared').MergePolicy | null;
+      requiresReview?: boolean;
       workingBranch?: string | null;
       integrationBranchEnabled?: boolean;
     };
@@ -1531,7 +1532,7 @@ async function maybeDispatchReviewer(
     if (task.missionId) {
       const row = await db.query.missions.findFirst({
         where: eq(missions.id, task.missionId),
-        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
+        columns: RESOLVE_POLICY_MISSION_COLUMNS,
       });
       if (row) mission = row as PolicyMission;
     }
