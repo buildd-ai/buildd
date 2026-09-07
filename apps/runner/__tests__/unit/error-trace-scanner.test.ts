@@ -16,7 +16,10 @@ describe('error-trace-scanner', () => {
   });
 
   it('detects git fatal errors', () => {
-    const out = scanToolResult('w1', 'fatal: not a git repository (or any of the parent directories): .git');
+    // `git_fatal` is now one of the broad patterns and requires the result to
+    // be marked an error — the bare string appears in mocked git-error test
+    // fixtures across the repo.
+    const out = scanToolResult('w1', 'fatal: not a git repository (or any of the parent directories): .git', undefined, { isError: true });
     expect(out.some((t) => t.pattern === 'git_fatal')).toBe(true);
   });
 
@@ -55,7 +58,7 @@ describe('error-trace-scanner', () => {
 
   it('does NOT throttle different patterns from the same worker', () => {
     const a = scanToolResult('w1', 'cd: /tmp/a: No such file or directory');
-    const b = scanToolResult('w1', 'fatal: bad revision HEAD~50');
+    const b = scanToolResult('w1', 'fatal: bad revision HEAD~50', undefined, { isError: true });
     expect(a).toHaveLength(1);
     expect(b).toHaveLength(1);
     expect(a[0].pattern).not.toBe(b[0].pattern);
@@ -63,7 +66,7 @@ describe('error-trace-scanner', () => {
 
   it('truncates long excerpts to 500 chars', () => {
     const huge = 'fatal: ' + 'x'.repeat(2000);
-    const out = scanToolResult('w1', huge);
+    const out = scanToolResult('w1', huge, undefined, { isError: true });
     expect(out[0].excerpt.length).toBeLessThanOrEqual(500);
   });
 
@@ -74,7 +77,7 @@ describe('error-trace-scanner', () => {
       'fatal: remote authentication failed',
       'Done.',
     ].join('\n');
-    const out = scanToolResult('w1', multi);
+    const out = scanToolResult('w1', multi, undefined, { isError: true });
     expect(out.some((t) => t.pattern === 'git_fatal')).toBe(true);
   });
 
@@ -181,15 +184,42 @@ describe('precision gates', () => {
     }
   });
 
+  it('holds git_fatal, no_such_file, and command_not_found unless marked an error', () => {
+    // Each of these is stock POSIX/git wording that shows up verbatim in this
+    // repo's own mocked-error test fixtures and fallback shell messaging
+    // (`which x || echo "x not found"`), so a bare match on a successful
+    // result is not evidence of anything.
+    const cases: Array<[string, string]> = [
+      ["fatal: a branch named 'foo' already exists", 'git_fatal'],
+      ['Some tool printed: No such file or directory', 'no_such_file'],
+      ['bash: foo: command not found', 'command_not_found'],
+      ['sh: 1: tsx: not found', 'command_not_found'],
+    ];
+    cases.forEach(([text, slug], i) => {
+      // Each case needs its own worker id — two cases share the
+      // `command_not_found` slug and would otherwise throttle each other.
+      expect(scanToolResult(`w-nf2-${i}`, text, 'Bash')).toEqual([]);
+      expect(scanToolResult(`w-nf3-${i}`, text, 'Bash', { isError: false })).toEqual([]);
+      expect(
+        scanToolResult(`w-yf-${i}`, text, 'Bash', { isError: true }).some(t => t.pattern === slug),
+      ).toBe(true);
+    });
+  });
+
   it('still fires the broad patterns on a genuine error result', () => {
     expect(scanToolResult('w-ge', 'error: cannot lock ref', 'Bash', ERR).some(t => t.pattern === 'git_error')).toBe(true);
     expect(scanToolResult('w-rl', '429 Too Many Requests', 'Bash', ERR).some(t => t.pattern === 'rate_limit')).toBe(true);
   });
 
   it('keeps narrow patterns unconditional, since is_error is only a lower bound', () => {
-    // A Bash command can print a real failure and still exit 0.
-    expect(scanToolResult('w-narrow', 'fatal: not a git repository', 'Bash').some(t => t.pattern === 'git_fatal')).toBe(true);
+    // A Bash command can print a real failure and still exit 0. These stay
+    // ungated because each needs a compound, format-locked signal (a specific
+    // shell prefix, or an error token plus a specific non-allowlisted path)
+    // rather than a generic English phrase — unlike git_fatal/no_such_file/
+    // command_not_found above, which are gated.
+    expect(scanToolResult('w-narrow1', 'cd: /tmp/missing: No such file or directory', 'Bash').some(t => t.pattern === 'cd_no_such_file')).toBe(true);
     expect(scanToolResult('w-narrow2', 'bwrap: No permissions to create a new namespace', 'Bash').length).toBe(1);
+    expect(scanToolResult('w-narrow3', 'Killed: 9', 'Bash').some(t => t.pattern === 'oom_killed')).toBe(true);
   });
 });
 
@@ -202,7 +232,9 @@ describe('recall fixes', () => {
   });
 
   it('catches the sh/dash wording for a missing command', () => {
-    const out = scanToolResult('w-sh', 'sh: 1: tsx: not found', 'Bash');
+    // `command_not_found` is one of the broad patterns and requires the
+    // result to be marked an error.
+    const out = scanToolResult('w-sh', 'sh: 1: tsx: not found', 'Bash', { isError: true });
     expect(out.some(t => t.pattern === 'command_not_found')).toBe(true);
   });
 });
