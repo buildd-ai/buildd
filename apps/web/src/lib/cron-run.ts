@@ -19,8 +19,12 @@
  *     who can reach the URL can flood the table the health check reads and bury
  *     a real signal under noise.
  *
- * Auth behaviour is byte-identical to the per-route checks this replaces:
- * missing CRON_SECRET → 500, mismatched bearer token → 401.
+ * Auth: a bearer token matching CRON_SECRET, and nothing else. Missing
+ * CRON_SECRET → 500, mismatched token → 401. Platform-native cron headers are
+ * deliberately NOT honoured: `vercel.json` declares no crons and
+ * `cron-manifest.json` states the platform mechanism does not fire in this
+ * project, so such a header can only ever come from a caller that is not the
+ * scheduler. Two routes used to accept one; see the fix that removed it.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -53,16 +57,6 @@ export interface CronOutcome {
 
 export type CronReport = (outcome: CronOutcome) => void;
 
-export interface CronRunOptions {
-  /**
-   * Also accept Vercel's native `x-vercel-cron: 1` instead of a bearer token.
-   * Only for routes Vercel itself schedules — the header is set by the platform
-   * and cannot be forged by an external caller, but an external scheduler
-   * cannot send it either, hence the two mechanisms.
-   */
-  allowVercelCron?: boolean;
-}
-
 /**
  * Wrap a cron route handler.
  *
@@ -79,18 +73,14 @@ export async function withCronRun(
   job: string,
   req: NextRequest,
   handler: (report: CronReport) => Promise<NextResponse>,
-  options: CronRunOptions = {},
 ): Promise<NextResponse> {
-  const isVercelCron = options.allowVercelCron && req.headers.get('x-vercel-cron') === '1';
-  if (!isVercelCron) {
-    const cronSecret = process.env.CRON_SECRET;
-    if (!cronSecret) {
-      return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-    }
-    const token = req.headers.get('authorization')?.replace('Bearer ', '');
-    if (token !== cronSecret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
+  }
+  const token = req.headers.get('authorization')?.replace('Bearer ', '');
+  if (token !== cronSecret) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const startedAt = new Date();

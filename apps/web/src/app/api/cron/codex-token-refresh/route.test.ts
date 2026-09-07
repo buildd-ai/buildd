@@ -10,6 +10,13 @@ const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 let tasksInsertValues: any[] = [];
 let tasksInsertError: Error | null = null;
 
+/**
+ * The cron_runs table stub, shared between the schema mock and the db mock so
+ * inserts can be attributed. withCronRun writes a run row through the same
+ * `db.insert`, and an untargeted capture counts it as the route's own write.
+ */
+const CRON_RUNS_TABLE = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -17,17 +24,24 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockTasksFindFirst },
       workspaces: { findFirst: mockWorkspacesFindFirst },
     },
-    insert: mock((_table: any) => ({
+    insert: mock((table: any) => ({
       values: mock((vals: any) => {
+        if (table === CRON_RUNS_TABLE) return { returning: mock(() => [{ id: 'run-1' }]) };
         tasksInsertValues.push(vals);
         if (tasksInsertError) throw tasksInsertError;
         return { returning: mock(() => [{ id: 'task-1', ...vals }]) };
       }),
     })),
+    update: mock(() => ({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) })),
+    delete: mock(() => ({ where: mock(() => Promise.resolve()) })),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
+  // Operators withCronRun imports. mock.module is process-global, so a
+  // partial stub removes them for every other importer too.
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   and: (...args: any[]) => args,
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   ne: (f: any, v: any) => ({ f, v, type: 'ne' }),
@@ -43,6 +57,9 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  // withCronRun imports this; mock.module replaces the whole module, so a
+  // partial stub deletes the export for every other importer in the process.
+  cronRuns: CRON_RUNS_TABLE,
   secrets: 'secrets',
   tasks: 'tasks',
   workspaces: 'workspaces',
@@ -136,9 +153,14 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(res.status).toBe(500);
   });
 
-  it('accepts Vercel cron header without CRON_SECRET check', async () => {
+  it('rejects a platform cron header used in place of the secret', async () => {
+    // Platform-native cron does not fire in this project (cron-manifest.json is
+    // explicit; vercel.json declares no crons), so this header can only come
+    // from a caller that is not the scheduler. This route refreshes
+    // credentials, which is precisely what must not be reachable without the
+    // secret. CRON_SECRET is the single accepted credential.
     const res = await GET(makeRequest(undefined, true));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
 
   // ── Nudge mode (default) ──────────────────────────────────────────────────

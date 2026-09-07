@@ -18,6 +18,7 @@ import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { runStaleWorkerCleanup } from './maintenance/stale-workers';
 import { runOverdueHeartbeatAlerts } from './maintenance/overdue-heartbeats';
 import { runMissionArchive } from './maintenance/archive-missions';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 const MAX_SCHEDULES_PER_RUN = 50;
 const TRIGGER_FETCH_TIMEOUT = 10_000;
@@ -116,18 +117,10 @@ async function evaluateTrigger(
 }
 
 export async function GET(req: NextRequest) {
-  // Verify CRON_SECRET
-  const authHeader = req.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
+  return withCronRun('schedules', req, report => runCronJob(req, report));
+}
 
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-
-  const token = authHeader?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const now = new Date();
   let processed = 0;

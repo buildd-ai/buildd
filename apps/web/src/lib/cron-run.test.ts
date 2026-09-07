@@ -113,28 +113,19 @@ describe('withCronRun', () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
-  it('accepts x-vercel-cron only when the route opts in', async () => {
-    const vercelReq = () => {
-      const h = new Headers({ 'x-vercel-cron': '1' });
-      return new NextRequest('http://localhost:3000/api/cron/example', { headers: h });
-    };
+  it('does not honour a platform cron header in place of the secret', async () => {
+    // Platform-native cron does not fire in this project (vercel.json declares
+    // no crons; cron-manifest.json says so outright), so this header can only
+    // come from a caller that is not the scheduler. Two routes used to accept
+    // it as an alternative to the secret; nothing does now, and the wrapper
+    // must not offer a way back to that.
+    const headers = new Headers({ 'x-vercel-cron': '1' });
+    const req = new NextRequest('http://localhost:3000/api/cron/example', { headers });
 
-    // Opted in: the platform header stands in for the bearer token.
-    const allowed = await withCronRun('example', vercelReq(), async () => NextResponse.json({ ok: true }), {
-      allowVercelCron: true,
-    });
-    expect(allowed.status).toBe(200);
+    const res = await withCronRun('example', req, async () => NextResponse.json({ ok: true }));
 
-    // Not opted in: the header means nothing, so this is still unauthorized.
-    const denied = await withCronRun('example', vercelReq(), async () => NextResponse.json({ ok: true }));
-    expect(denied.status).toBe(401);
-  });
-
-  it('still authorizes a bearer token on a vercel-cron route', async () => {
-    const res = await withCronRun('example', reqWith(SECRET), async () => NextResponse.json({ ok: true }), {
-      allowVercelCron: true,
-    });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
+    expect(inserted).toHaveLength(0);
   });
 
   // ── Recording ──────────────────────────────────────────────────────────────

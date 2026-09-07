@@ -24,6 +24,13 @@ let escalatedNoteRows: any[] = [];
 let recentStallNote: any = null;
 const insertedNotes: any[] = [];
 
+/**
+ * The cron_runs table stub, shared between the schema mock and the db mock so
+ * inserts can be attributed. withCronRun writes a run row through the same
+ * `db.insert`, and an untargeted capture counts it as a mission note.
+ */
+const CRON_RUNS_TABLE = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+
 const mockWorkersFindMany = mock((_args?: any) => Promise.resolve(workerRows));
 const mockWorkspacesFindMany = mock((_args?: any) => Promise.resolve(workspaceRows));
 const mockMissionsFindMany = mock((_args?: any) => Promise.resolve(missionRows));
@@ -38,16 +45,25 @@ mock.module('@buildd/core/db', () => ({
       missions: { findMany: mockMissionsFindMany },
       missionNotes: { findMany: mockNotesFindMany, findFirst: mockNotesFindFirst },
     },
-    insert: () => ({
+    // Table-aware: withCronRun writes a cron_runs row through this same mock,
+    // so an untargeted capture would count it as a mission note.
+    insert: (table: any) => ({
       values: (v: any) => {
-        insertedNotes.push(v);
-        return Promise.resolve([]);
+        if (table !== CRON_RUNS_TABLE) insertedNotes.push(v);
+        return { returning: () => Promise.resolve([{ id: 'row-1' }]) };
       },
     }),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+    delete: () => ({ where: () => Promise.resolve() }),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
+  // Operators withCronRun imports. mock.module is process-global, so a
+  // partial stub removes them for every other importer too.
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
+  lt: (a: any, b: any) => ({ a, b, op: 'lt' }),
   eq: (f: any, v: any) => ({ type: 'eq', f, v }),
   and: (...c: any[]) => ({ type: 'and', c }),
   inArray: (f: any, v: any) => ({ type: 'inArray', f, v }),
@@ -58,6 +74,9 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  // withCronRun imports this; mock.module replaces the whole module, so a
+  // partial stub deletes the export for every other importer in the process.
+  cronRuns: CRON_RUNS_TABLE,
   workers: { id: 'id', prUrl: 'prUrl', mergedAt: 'mergedAt', taskId: 'taskId' },
   tasks: { id: 'id' },
   workspaces: { id: 'id' },

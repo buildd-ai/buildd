@@ -18,18 +18,9 @@ import { readFileSync } from 'fs';
  * entries.
  */
 const NOT_YET_INSTRUMENTED: Array<[route: string, why: string]> = [
-  ['codex-token-refresh', 'pending migration; also needs allowVercelCron'],
-  ['connector-block-notify', 'pending migration'],
-  ['feedback-digest', 'pending migration'],
-  ['jwks-rotation', 'pending migration'],
-  ['lease-expiry-guard', 'pending migration; also needs allowVercelCron'],
-  ['queue-stall', 'pending migration'],
-  ['release-health-check', 'pending migration'],
-  ['routing-calibration', 'pending migration'],
-  ['schedules', 'pending migration'],
-  ['stall-notify', 'pending migration'],
-  ['task-archive', 'pending migration'],
-  ['waiting-input-sweep', 'pending migration'],
+  // Empty, and meant to stay that way: every cron route records its run.
+  // An entry here is a claim that some route deliberately does not, with a
+  // reason. Adding one should feel like a decision, not a shortcut.
 ];
 
 function cronRouteFiles(): string[] {
