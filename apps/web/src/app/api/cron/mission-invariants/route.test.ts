@@ -19,6 +19,24 @@ const mockLoad = mock(async () => ({ snapshot: scanSnapshot, coverage: scanCover
 mock.module('@/lib/mission-invariant-scan', () => ({ loadInvariantSnapshot: mockLoad }));
 
 // ── DB mocks ────────────────────────────────────────────────────────────────
+//
+// The route now runs through `withCronRun` (lib/cron-run.ts), which does its
+// own best-effort `db.insert(cronRuns)` / `db.update(cronRuns)` /
+// `db.query.cronRuns.findMany` after the handler resolves. Those calls must be
+// routed to a separate no-op stub rather than the generic `tasks` mock below —
+// otherwise the cron-run bookkeeping write lands in the same `inserted` /
+// `updated` arrays the friction-task assertions check, and a passing test
+// starts failing on an unrelated write it never asked about.
+
+const cronRunsTable = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+const tasksTable = {
+  id: 'id',
+  title: 'title',
+  status: 'status',
+  context: 'context',
+  description: 'description',
+  workspaceId: 'workspaceId',
+};
 
 let existingFrictionTask: { id: string } | null = null;
 const findFirstCalls: any[] = [];
@@ -32,35 +50,55 @@ const mockFindFirst = mock(async (args: any) => {
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { tasks: { findFirst: mockFindFirst } },
-    insert: mock(() => ({
-      values: mock((values: any) => ({
-        returning: mock(async () => {
-          inserted.push(values);
-          return [{ id: `task-${inserted.length}` }];
-        }),
-      })),
-    })),
-    update: mock(() => ({
-      set: mock((values: any) => ({
-        where: mock(async () => {
-          updated.push(values);
-        }),
-      })),
-    })),
+    query: {
+      tasks: { findFirst: mockFindFirst },
+      cronRuns: { findMany: mock(async () => []) },
+    },
+    insert: mock((table: any) => {
+      if (table === cronRunsTable) {
+        return { values: mock(() => ({ returning: mock(async () => [{ id: 'cron-run-1' }]) })) };
+      }
+      return {
+        values: mock((values: any) => ({
+          returning: mock(async () => {
+            inserted.push(values);
+            return [{ id: `task-${inserted.length}` }];
+          }),
+        })),
+      };
+    }),
+    update: mock((table: any) => {
+      if (table === cronRunsTable) {
+        return { set: mock(() => ({ where: mock(async () => {}) })) };
+      }
+      return {
+        set: mock((values: any) => ({
+          where: mock(async () => {
+            updated.push(values);
+          }),
+        })),
+      };
+    }),
+    delete: mock(() => ({ where: mock(() => Promise.resolve()) })),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
+  // desc/gt/lt: withCronRun (lib/cron-run.ts) imports these. mock.module is
+  // process-global, so a partial stub removes them for every other importer.
   sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   and: (...c: any[]) => ({ c, type: 'and' }),
   like: (f: any, v: any) => ({ f, v, type: 'like' }),
   notInArray: (f: any, v: any) => ({ f, v, type: 'notInArray' }),
+  desc: (f: any) => ({ f, type: 'desc' }),
+  gt: (f: any, v: any) => ({ f, v, type: 'gt' }),
+  lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', title: 'title', status: 'status', context: 'context', description: 'description', workspaceId: 'workspaceId' },
+  cronRuns: cronRunsTable,
+  tasks: tasksTable,
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
