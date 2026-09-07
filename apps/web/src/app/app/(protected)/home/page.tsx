@@ -1871,7 +1871,12 @@ export default async function HomePage({
                           <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
                             {item.missionTitle ?? 'Mission'}
                           </div>
-                          <p className="text-[12px] text-text-secondary line-clamp-2">{item.noteTitle}</p>
+                          {item.noteTitle && (
+                            <div className="text-[12px] font-medium text-text-primary mb-1 line-clamp-1">
+                              {item.noteTitle}
+                            </div>
+                          )}
+                          <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
                         </Link>
                       );
                     }
