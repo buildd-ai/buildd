@@ -10,7 +10,7 @@ import { WorkerManager } from './workers';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
-import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable } from './updater';
+import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -119,10 +119,6 @@ async function initCurrentCommit(): Promise<void> {
 function getCurrentCommit(): string | null { return _currentCommit; }
 
 // Compare two commit SHAs — an update is available when they differ
-function checkForUpdate(current: string | null, latest: string | null): boolean {
-  if (!current || !latest) return false;
-  return current !== latest;
-}
 
 // True when the local install is a shallow clone (`git clone --depth 1`).
 // A shallow history can make `git log fromCommit..toCommit` return an empty
@@ -163,6 +159,16 @@ function isWorkingTreeClean(): boolean {
 // Detect current branch
 async function getCurrentBranch(): Promise<string> {
   try { return await gitAsync(['rev-parse', '--abbrev-ref', 'HEAD']); } catch { return 'unknown'; }
+}
+
+/**
+ * Single writer for `updateState.updating`, so the "when did this start"
+ * timestamp can never drift out of sync with the flag it describes. The
+ * watchdog on the 60s tick reads both.
+ */
+function setUpdating(on: boolean): void {
+  updateState.updating = on;
+  updateState.updatingSince = on ? Date.now() : null;
 }
 
 // Parse project roots (supports ~/path, comma-separated, auto-discovery)
@@ -499,6 +505,12 @@ interface UpdateState {
   changelog: string[];
   lastIdleAt: number | null; // Timestamp when workers last became idle
   autoUpdateRetries: number; // Prevent infinite retry loops
+  /**
+   * When `updating` was last set true, so a hang can be distinguished from a
+   * slow update. See isUpdateStuck — `updating` gates both the auto-updater
+   * and the drift check, so a flag stuck true silences both.
+   */
+  updatingSince: number | null;
 }
 
 const updateState: UpdateState = {
@@ -509,6 +521,7 @@ const updateState: UpdateState = {
   changelog: [],
   lastIdleAt: Date.now(),
   autoUpdateRetries: 0,
+  updatingSince: null,
 };
 
 // Kick off async commit resolution (non-blocking)
@@ -706,7 +719,7 @@ let pendingTreeSyncRestart = false;
 // happy path never reaches its own process.exit call.
 function scheduleGracefulRestart(reason: string) {
   console.log(`[restart] scheduling graceful restart (${reason})`);
-  updateState.updating = true;
+  setUpdating(true);
   const failsafe = setTimeout(() => {
     console.error(`[restart] graceful restart did not complete within 20s (${reason}) — forcing exit`);
     process.exit(75);
@@ -733,7 +746,7 @@ function scheduleGracefulRestart(reason: string) {
   } catch (err: any) {
     clearTimeout(failsafe);
     console.error(`[restart] failed to schedule restart (${reason}): ${err.message}`);
-    updateState.updating = false;
+    setUpdating(false);
   }
 }
 
@@ -949,7 +962,7 @@ const server = DEBUG_MODE ? Bun.serve({
       // Ensure we're on main branch (switch if needed)
       const branch = await getCurrentBranch();
 
-      updateState.updating = true;
+      setUpdating(true);
       const prevCommit = updateState.currentCommit;
       broadcast({ type: 'update_started' });
 
@@ -998,10 +1011,12 @@ const server = DEBUG_MODE ? Bun.serve({
           if (prevCommit) {
             await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
             const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+            const rollbackTimeout = setTimeout(() => { try { rollbackInstall.kill(); } catch { /* ignore */ } }, 120_000);
             await rollbackInstall.exited;
+            clearTimeout(rollbackTimeout);
             await initCurrentCommit();
           }
-          updateState.updating = false;
+          setUpdating(false);
           broadcast({ type: 'update_failed', error: 'New version failed health check — rolled back' });
           return Response.json({
             error: 'Update rolled back — new version failed health check',
@@ -1021,14 +1036,16 @@ const server = DEBUG_MODE ? Bun.serve({
           try {
             await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
             const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+            const rollbackTimeout = setTimeout(() => { try { rollbackInstall.kill(); } catch { /* ignore */ } }, 120_000);
             await rollbackInstall.exited;
+            clearTimeout(rollbackTimeout);
             await initCurrentCommit();
             console.error(`Update failed, rolled back to ${prevCommit.slice(0, 7)}: ${err.message}`);
           } catch (rollbackErr: any) {
             console.error(`Update failed AND rollback failed: ${rollbackErr.message}`);
           }
         }
-        updateState.updating = false;
+        setUpdating(false);
         broadcast({ type: 'update_failed', error: err.message });
         return Response.json({ error: 'Update failed (rolled back)', detail: err.message }, { status: 500, headers: corsHeaders });
       }
@@ -2162,7 +2179,7 @@ const server = DEBUG_MODE ? Bun.serve({
         return Response.json({ error: 'Update already in progress' }, { status: 409, headers: corsHeaders });
       }
 
-      updateState.updating = true;
+      setUpdating(true);
       broadcast({ type: 'update_progress', status: 'updating' });
 
       const result = applyUpdate();
@@ -2172,7 +2189,7 @@ const server = DEBUG_MODE ? Bun.serve({
         scheduleGracefulRestart('manual update via /api/update/apply');
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } else {
-        updateState.updating = false;
+        setUpdating(false);
         broadcast({ type: 'update_progress', status: 'error', error: result.error });
         return Response.json({ success: false, error: result.error }, { status: 500, headers: corsHeaders });
       }
@@ -2533,6 +2550,19 @@ setInterval(async () => {
     updateState.lastIdleAt = Date.now(); // Just became idle
   }
 
+  // Watchdog: `updating` gates both the auto-updater below and the drift check
+  // that follows, so a flag stuck true silences both and reproduces the
+  // original failure — tree moves on, process keeps its old modules, nothing
+  // logs. Every path that sets it either exits or clears it in a catch, but
+  // only for failures that THROW; an await that hangs leaves it set forever.
+  // Clear it rather than exiting: the drift check immediately below is the
+  // tested recovery path and it waits for idle, so unwedging is enough.
+  if (isUpdateStuck(updateState.updating, updateState.updatingSince, Date.now())) {
+    const heldMin = Math.round((Date.now() - updateState.updatingSince!) / 60_000);
+    console.error(`[update-watchdog] 'updating' has been set for ${heldMin}min — the update path is wedged, not slow. Clearing it so drift detection can recover.`);
+    setUpdating(false);
+  }
+
   // Drift check: the on-disk HEAD no longer matches the commit this process
   // loaded. This is a fresh disk read each tick, so it catches drift from
   // ANY external cause — self-heal's fixGitBranch, a host-level force-reset —
@@ -2562,7 +2592,7 @@ setInterval(async () => {
     updateState.autoUpdateRetries < 3
   ) {
     console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/3)`);
-    updateState.updating = true;
+    setUpdating(true);
     updateState.autoUpdateRetries++;
     const prevCommit = updateState.currentCommit;
     const prevBranch = await getCurrentBranch();
@@ -2606,9 +2636,11 @@ setInterval(async () => {
       if (!healthOk && prevCommit) {
         await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
         const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+        const rbTimeout = setTimeout(() => { try { rb.kill(); } catch { /* ignore */ } }, 120_000);
         await rb.exited;
+        clearTimeout(rbTimeout);
         await initCurrentCommit();
-        updateState.updating = false;
+        setUpdating(false);
         broadcast({ type: 'update_failed', error: 'Auto-update health check failed — rolled back' });
         return;
       }
@@ -2623,11 +2655,13 @@ setInterval(async () => {
         try {
           await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
           const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+          const rbTimeout = setTimeout(() => { try { rb.kill(); } catch { /* ignore */ } }, 120_000);
           await rb.exited;
+          clearTimeout(rbTimeout);
           await initCurrentCommit();
         } catch { /* best effort */ }
       }
-      updateState.updating = false;
+      setUpdating(false);
       console.error('Auto-update failed:', err.message);
       if (updateState.autoUpdateRetries >= 3) {
         console.error('Auto-update retries exhausted — will not retry until a new version is available');
