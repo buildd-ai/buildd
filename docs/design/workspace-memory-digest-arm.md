@@ -37,7 +37,9 @@ Introduce two arms of the memory block, selected per task:
 | `full` (default) | yes, blind-sliced at the cap | yes | yes |
 | `task_scoped` | **no** | yes | yes |
 
-Enrolment is a fraction in `[0, 1]`, default `0`. At `0` every prompt is
+Enrolment is a fraction in `[0, 1]`, default `0`, set per runner by
+`BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` or by
+`memoryDigestTaskScopedFraction` in the runner's `config.json`. At `0` every prompt is
 byte-identical to the behaviour that preceded this doc — including the blind
 slice, which is deliberately *not* fixed here. Straightening the truncation is a
 genuine improvement, but doing it in the same change would move the control while
@@ -62,6 +64,15 @@ worker would split a single outcome across both arms.
 
 Assignment is a deterministic hash of the task id, so it is stable across runner
 restarts and reproducible at analysis time without storing an assignment table.
+The hash is **salted with `MEMORY_DIGEST_POLICY_VERSION`**, so bumping the
+version re-randomises: without the salt every task would keep the arm it drew
+under `v1`, and a `v2` comparison would silently inherit both `v1`'s assignment
+and any carry-over effect from it.
+
+The hash is FNV-1a, which is measurably less uniform for ids differing only in a
+short suffix. Task ids are v4 UUIDs (`tasks.id` is `uuid().defaultRandom()`), so
+this does not bite — but it is why the distribution test uses UUID-shaped
+fixtures rather than `task-1`, `task-2`.
 
 ### One axis, deliberately
 
@@ -84,6 +95,34 @@ joined first.
 
 Sizes are UTF-8 byte lengths. The cap slices by code unit, as it always has, but
 the prompt-budget question is about bytes and workspace memory carries non-ASCII.
+
+The record is built at the **last** line that mutates the prompt, not at the end
+of prompt assembly: the Codex branch prepends an AGENTS.md pointer much later, so
+a record built earlier understates `promptBytes` and inflates `memoryShare`. It
+also carries `backend`, because the Codex path delivers the role persona, inlined
+skills and project instructions through a file on disk rather than through the
+prompt — `memoryShare` therefore means a different thing per backend and rows
+must be segmented, never pooled.
+
+## Turning it on
+
+```bash
+# 10% of tasks lose the workspace-wide digest.
+BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION=0.1
+```
+
+Env var wins over `config.json`; a set-but-empty env var falls through to the
+saved value rather than shadowing it with `''`. A value outside `[0, 1]` runs the
+control — `15` meant as 15% does not become 15× or clamp to full enrolment, it
+becomes 0. The knob is per runner, so a fleet with several runners needs it set
+on each; the *assignment* is per task and identical on every runner, so a task
+does not change arm depending on who claims it.
+
+Check what is actually happening by grepping runner stdout for
+`[prompt-composition]`. Every prompt build emits one line, in both arms.
+
+Before changing anything about the block itself, confirm nobody is enrolled —
+the `full` arm is the control and moving it mid-flight invalidates the result.
 
 ## Non-goals
 

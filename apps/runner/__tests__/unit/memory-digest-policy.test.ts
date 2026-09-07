@@ -5,6 +5,7 @@ import {
   assignMemoryDigestArm,
   buildMemoryBlock,
   buildPromptCompositionRecord,
+  hashUnitInterval,
   resolveTaskScopedFraction,
 } from '../../src/memory-digest-policy';
 
@@ -13,6 +14,32 @@ const obs = (n: number) => Array.from({ length: n }, (_, i) => ({
   title: `lesson ${i}`,
   content: `content ${i}`,
 }));
+
+/** The recall/learn pointer, copied literally so a source edit is visible. */
+const RECALL_POINTER_LITERAL =
+  '\n\nUse `recall scope=["memory","task"]` for full context (prior lessons + recent outcomes in one call). Use `learn` to record gotchas/patterns/decisions — NOT summaries.';
+
+/**
+ * Deterministic v4-UUID-shaped ids, which is the shape production uses
+ * (`tasks.id` is `uuid().defaultRandom()`).
+ *
+ * Deterministic rather than `crypto.randomUUID()` so a distribution assertion
+ * cannot flake, and UUID-shaped rather than `task-${i}` because FNV-1a is
+ * measurably less uniform on ids that differ only in a short suffix — the old
+ * sequential fixture read 0.086 at a configured 0.1, which is the sort of
+ * skew that makes a rate assertion look broken when the code is fine.
+ */
+function uuidLikeIds(n: number): string[] {
+  let s = 0x9e3779b9 >>> 0;
+  const hex = () => {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5; s >>>= 0;
+    return s.toString(16).padStart(8, '0');
+  };
+  return Array.from({ length: n }, () =>
+    `${hex()}-${hex().slice(0, 4)}-4${hex().slice(0, 3)}-a${hex().slice(0, 3)}-${hex()}${hex().slice(0, 4)}`);
+}
 
 describe('resolveTaskScopedFraction', () => {
   test('honours a fraction already inside range', () => {
@@ -73,35 +100,66 @@ describe('assignMemoryDigestArm', () => {
     }
   });
 
-  // Randomising per worker would split a retried task's outcome across both
-  // arms — the rework columns this is judged on span attempts.
-  test('the randomisation unit is the task, so retries stay in one arm', () => {
-    const a = assignMemoryDigestArm('task-4711', 0.5);
-    const b = assignMemoryDigestArm('task-4711', 0.5);
-    expect(b.arm).toBe(a.arm);
-    expect(b.propensity).toBe(a.propensity);
-  });
-
   test('an absent task id runs the control rather than an unstable draw', () => {
     expect(assignMemoryDigestArm(undefined, 1).arm).toBe('full');
     expect(assignMemoryDigestArm('', 1).arm).toBe('full');
   });
 
   test('propensity is the probability of the arm actually drawn', () => {
-    const ids = Array.from({ length: 400 }, (_, i) => `task-${i}`);
-    for (const id of ids) {
+    for (const id of uuidLikeIds(400)) {
       const a = assignMemoryDigestArm(id, 0.3);
       expect(a.propensity).toBeCloseTo(a.arm === 'task_scoped' ? 0.3 : 0.7, 10);
     }
   });
 
-  test('the hash spreads task ids roughly evenly', () => {
-    const ids = Array.from({ length: 2000 }, (_, i) => `task-${i}-${i * 7}`);
-    const treated = ids.filter(id => assignMemoryDigestArm(id, 0.5).arm === 'task_scoped').length;
-    // A uniform hash puts this near 1000; the band is wide enough not to be
-    // flaky but narrow enough to catch a hash that buckets everything one way.
-    expect(treated).toBeGreaterThan(850);
-    expect(treated).toBeLessThan(1150);
+  // THE test in this file. Everything else here would stay green if the
+  // comparison were inverted (`draw < fraction` -> `draw > fraction`), because
+  // 0.5 is symmetric under inversion and every other assertion reads the arm
+  // out of the result and merely checks the returned fields agree with each
+  // other. Inversion at fraction 0.1 enrols ~90% of the fleet — exactly the
+  // runaway this module claims to prevent — so the realised RATE has to be
+  // asserted, at an asymmetric fraction, on production-shaped ids.
+  test('the realised enrolment rate matches the configured fraction', () => {
+    const ids = uuidLikeIds(5000);
+    for (const fraction of [0.1, 0.3, 0.5, 0.9]) {
+      const rate = ids.filter(id => assignMemoryDigestArm(id, fraction).arm === 'task_scoped').length / ids.length;
+      expect(rate).toBeGreaterThan(fraction - 0.02);
+      expect(rate).toBeLessThan(fraction + 0.02);
+    }
+  });
+
+  test('the hash spreads production-shaped ids across all ten deciles', () => {
+    const buckets = new Array(10).fill(0);
+    for (const id of uuidLikeIds(5000)) {
+      buckets[Math.min(9, Math.floor(hashUnitInterval(id) * 10))]++;
+    }
+    // Uniform puts 500 in each. A hash that clumps — or one whose >>> 0 was
+    // dropped, folding the negative half onto a narrow range — fails here.
+    for (const count of buckets) {
+      expect(count).toBeGreaterThan(380);
+      expect(count).toBeLessThan(620);
+    }
+  });
+
+  test('the draw stays inside [0, 1) for adversarial keys', () => {
+    for (const key of ['', 'a', '\u0000', 'x'.repeat(10_000), '→→→', ...uuidLikeIds(200)]) {
+      const h = hashUnitInterval(key);
+      expect(h).toBeGreaterThanOrEqual(0);
+      expect(h).toBeLessThan(1);
+    }
+  });
+
+  // Without the salt, bumping to v2 leaves every task on the arm it drew under
+  // v1, so a v2 comparison inherits v1's assignment and any carry-over effect.
+  test('the draw is salted with the policy version, not the bare task id', () => {
+    const ids = uuidLikeIds(300);
+    const differs = ids.filter(id => {
+      const salted = assignMemoryDigestArm(id, 0.5).arm === 'task_scoped';
+      const bare = hashUnitInterval(id) < 0.5;
+      return salted !== bare;
+    });
+    // An unsalted implementation makes these agree for every single id.
+    expect(differs.length).toBeGreaterThan(50);
   });
 
   test('every assignment carries the policy version', () => {
@@ -124,20 +182,54 @@ describe('buildMemoryBlock — control arm', () => {
     expect(block.indexOf('Use `recall')).toBeGreaterThan(block.indexOf('### Relevant to This Task'));
   });
 
+  // The cap is part of the control's definition, so it is pinned as a LITERAL.
+  // Expressing the fixture and the expectation in terms of the constant makes
+  // the test invariant to the constant's value — 4096 could become 1024 and
+  // every control prompt would silently lose 3KB of digest with CI green.
+  test('the digest cap is 4096 code units', () => {
+    expect(FULL_DIGEST_MAX_BYTES).toBe(4096);
+  });
+
   // The blind slice is preserved deliberately: fixing it to fall on a line
   // boundary is an improvement, but doing it here would move the control while
   // the experiment is running.
-  test('slices an oversized digest at the byte cap and says so', () => {
+  test('slices an oversized digest at the cap and appends the exact note', () => {
     const r = buildMemoryBlock({
       arm: 'full',
-      compactResult: { count: 9, markdown: 'x'.repeat(FULL_DIGEST_MAX_BYTES + 500) },
+      compactResult: { count: 9, markdown: 'x'.repeat(4096 + 500) },
       taskSearchResults: [],
       fullObservations: [],
     });
     expect(r.digestTruncated).toBe(true);
-    expect(r.block).toContain('*(truncated — use `recall` for more)*');
-    expect(r.block).toContain('x'.repeat(FULL_DIGEST_MAX_BYTES));
-    expect(r.block).not.toContain('x'.repeat(FULL_DIGEST_MAX_BYTES + 1));
+    // Literal, including the two leading newlines — the block's shape depends
+    // on them and nothing else in the suite pins the truncated rendering.
+    expect(r.block).toBe(
+      '## Workspace Memory\n'
+      + 'x'.repeat(4096)
+      + '\n\n*(truncated — use `recall` for more)*'
+      + RECALL_POINTER_LITERAL,
+    );
+  });
+
+  test('a digest of exactly the cap is not truncated', () => {
+    const r = buildMemoryBlock({
+      arm: 'full',
+      compactResult: { count: 9, markdown: 'x'.repeat(4096) },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestTruncated).toBe(false);
+    expect(r.block).not.toContain('truncated');
+  });
+
+  test('one code unit over the cap does truncate', () => {
+    const r = buildMemoryBlock({
+      arm: 'full',
+      compactResult: { count: 9, markdown: 'x'.repeat(4097) },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestTruncated).toBe(true);
   });
 
   test('truncates each task match at the per-observation cap', () => {
@@ -229,10 +321,27 @@ describe('buildMemoryBlock — task_scoped arm', () => {
     };
     const control = buildMemoryBlock({ arm: 'full', ...args });
     const treated = buildMemoryBlock({ arm: 'task_scoped', ...args });
-    expect(treated.digestBytesAvailable).toBe(control.digestBytesAvailable);
-    expect(treated.digestBytesAvailable).toBeGreaterThan(0);
-    expect(control.digestBytes).toBe(control.digestBytesAvailable);
+    // Asserted against the rendered block, not against the sibling field —
+    // digestBytes and digestBytesAvailable are the same assignment in source,
+    // so comparing them to each other cannot fail.
+    expect(control.digestBytesAvailable).toBe(Buffer.byteLength('DIGEST BODY', 'utf8'));
+    expect(treated.digestBytesAvailable).toBe(Buffer.byteLength('DIGEST BODY', 'utf8'));
     expect(treated.digestBytes).toBe(0);
+  });
+
+  // The counterfactual must include the truncation note, or the reported saving
+  // understates the real one by the note's length.
+  test('the counterfactual size covers the truncated rendering too', () => {
+    const args = {
+      compactResult: { count: 9, markdown: 'x'.repeat(4096 + 500) },
+      taskSearchResults: [{ id: '1' }],
+      fullObservations: obs(1),
+    };
+    const control = buildMemoryBlock({ arm: 'full', ...args });
+    const treated = buildMemoryBlock({ arm: 'task_scoped', ...args });
+    const expected = 4096 + Buffer.byteLength('\n\n*(truncated — use `recall` for more)*', 'utf8');
+    expect(control.digestBytesAvailable).toBe(expected);
+    expect(treated.digestBytesAvailable).toBe(expected);
   });
 
   test('the two arms differ on exactly one axis', () => {
@@ -244,7 +353,23 @@ describe('buildMemoryBlock — task_scoped arm', () => {
     const control = buildMemoryBlock({ arm: 'full', ...args })!.block!;
     const treated = buildMemoryBlock({ arm: 'task_scoped', ...args })!.block!;
     // Removing the digest lines from the control yields the treatment exactly.
+    // The removed span includes the joining newline, so a treatment that also
+    // dropped a separator, or dropped one byte more, fails rather than passes.
     expect(control.replace('\nDIGEST BODY\nsecond line', '')).toBe(treated);
+  });
+
+  // The one-axis claim was previously only proven for a digest short enough
+  // never to truncate — which is the exact case where a second axis could hide.
+  test('still one axis when the digest truncates', () => {
+    const args = {
+      compactResult: { count: 3, markdown: 'x'.repeat(4096 + 500) },
+      taskSearchResults: [{ id: '1' }],
+      fullObservations: obs(1),
+    };
+    const control = buildMemoryBlock({ arm: 'full', ...args })!.block!;
+    const treated = buildMemoryBlock({ arm: 'task_scoped', ...args })!.block!;
+    const digestSpan = '\n' + 'x'.repeat(4096) + '\n\n*(truncated — use `recall` for more)*';
+    expect(control.replace(digestSpan, '')).toBe(treated);
   });
 });
 

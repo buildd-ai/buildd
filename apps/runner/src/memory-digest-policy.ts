@@ -90,8 +90,16 @@ export function resolveTaskScopedFraction(raw: unknown): number {
  *
  * Not a security hash — it only needs to spread UUIDs evenly and give the same
  * answer on every runner, every restart, and every replay of the analysis.
+ *
+ * FNV-1a degrades badly for keys that differ only in their last character or
+ * two, so callers must pass high-entropy keys. Task ids are v4 UUIDs
+ * (`tasks.id` is `uuid().defaultRandom()`), which is fine; a sequential
+ * `task-1`, `task-2` scheme would not be.
+ *
+ * Exported for tests only — assignment goes through assignMemoryDigestArm,
+ * which salts the key. A caller that hashes a bare id is not in the experiment.
  */
-function hashUnitInterval(key: string): number {
+export function hashUnitInterval(key: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) {
     h ^= key.charCodeAt(i);
@@ -123,7 +131,12 @@ export function assignMemoryDigestArm(
   if (fraction <= 0) return { ...base, arm: 'full', propensity: 1 };
   if (fraction >= 1) return { ...base, arm: 'task_scoped', propensity: 1 };
 
-  const draw = hashUnitInterval(taskId);
+  // Salted with the policy version, so bumping the version RE-RANDOMISES.
+  // Without the salt every task keeps the arm it drew under v1, and a v2
+  // comparison silently inherits v1's assignment along with any carry-over
+  // effect from it. The salt also decorrelates this experiment from any future
+  // one that hashes the same task ids.
+  const draw = hashUnitInterval(`${MEMORY_DIGEST_POLICY_VERSION}:${taskId}`);
   return draw < fraction
     ? { ...base, arm: 'task_scoped', propensity: fraction }
     : { ...base, arm: 'full', propensity: 1 - fraction };
@@ -230,6 +243,15 @@ export interface PromptCompositionRecord {
   arm: MemoryDigestArm;
   propensity: number;
   fraction: number;
+  /**
+   * Agent backend this prompt was built for.
+   *
+   * Load-bearing for analysis, not decoration: the Codex path also delivers the
+   * role persona, inlined skills and project instructions through an AGENTS.md
+   * file on disk, none of which is part of `promptText`. So `memoryShare` means
+   * a different thing per backend and rows must be segmented, never pooled.
+   */
+  backend: string;
   digestBytes: number;
   digestBytesAvailable: number;
   digestTruncated: boolean;
@@ -244,7 +266,14 @@ export interface PromptCompositionRecord {
 export function buildPromptCompositionRecord(args: {
   assignment: MemoryDigestAssignment;
   memory: MemoryBlockResult;
+  /**
+   * The FINAL prompt, after every append. Build this record at the last
+   * mutation site, not at the end of `buildPromptWithComposition` — the Codex
+   * branch prepends an AGENTS.md pointer much later, and a record built early
+   * understates `promptBytes` and overstates `memoryShare`.
+   */
   promptText: string;
+  backend?: string | null;
 }): PromptCompositionRecord {
   const { assignment, memory, promptText } = args;
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
@@ -254,6 +283,7 @@ export function buildPromptCompositionRecord(args: {
     arm: assignment.arm,
     propensity: assignment.propensity,
     fraction: assignment.fraction,
+    backend: args.backend || 'claude',
     digestBytes: memory.digestBytes,
     digestBytesAvailable: memory.digestBytesAvailable,
     digestTruncated: memory.digestTruncated,

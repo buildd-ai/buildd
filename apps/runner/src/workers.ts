@@ -1903,19 +1903,6 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + tenantLines.join('\n');
       }
 
-      // One composition record per prompt build, in BOTH arms. The control row
-      // is the denominator: without it, "no task_scoped prompts" and "no
-      // prompts at all" look identical. Emitted after every append so
-      // promptBytes is the real figure the memory share is a share of.
-      const composition = buildPromptCompositionRecord({
-        assignment: built.assignment,
-        memory: built.memory,
-        promptText,
-      });
-      sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
-      // Also on stdout: the per-worker session log is pruned after 48h, which
-      // is shorter than the rework chains this experiment is measured on.
-      console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
 
       // Build the agent subprocess environment from an allowlist rather than
       // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
@@ -3058,6 +3045,25 @@ export class WorkerManager {
           console.error(`[Worker ${worker.id}] Failed to write Codex AGENTS.md:`, err);
         }
       }
+
+      // One composition record per prompt build, in BOTH arms. The control row
+      // is the denominator: without it, "no task_scoped prompts" and "no
+      // prompts at all" look identical.
+      //
+      // Deliberately emitted HERE — below the Codex AGENTS.md prepend above and
+      // below the tenant-context append — because this is the last line that
+      // mutates promptText. Built any earlier, promptBytes is short by whatever
+      // a later branch adds and memoryShare is correspondingly inflated.
+      const composition = buildPromptCompositionRecord({
+        assignment: built.assignment,
+        memory: built.memory,
+        promptText,
+        backend: task.backend,
+      });
+      sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
+      // Also on stdout: the per-worker session log is pruned after 48h, which
+      // is shorter than the rework chains this experiment is measured on.
+      console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
