@@ -12,6 +12,9 @@
  * is backgroundAgentMs / that total.
  */
 
+import type { DerivedMetric } from '@buildd/core/derived-metric';
+import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
+
 const SUBAGENT_TIME_CAPTURED_SINCE_DEFAULT = '2026-08-15';
 
 export interface SubagentTimeRow {
@@ -28,8 +31,7 @@ export interface SubagentTimeRow {
   spansLength: number;
 }
 
-export interface SubagentDelegationPanel {
-  available: boolean;
+export interface SubagentMetrics {
   /** Sessions with a computable wall clock, on/after capture began — the denominator. */
   sessions: number;
   /**
@@ -58,8 +60,6 @@ export interface SubagentDelegationPanel {
   windowPredatesCapture: boolean;
   /** Row-cap hit — the sample is a floor of the true window population. */
   truncated: boolean;
-  /** Present only when `available` is false. */
-  unavailableReason: string | null;
 }
 
 export function buildSubagentDelegationPanel(input: {
@@ -67,7 +67,7 @@ export function buildSubagentDelegationPanel(input: {
   windowStart: Date;
   rowLimit: number;
   capturedSince?: string;
-}): SubagentDelegationPanel {
+}): DerivedMetric<SubagentMetrics> {
   const capturedSince = input.capturedSince ?? SUBAGENT_TIME_CAPTURED_SINCE_DEFAULT;
   const windowPredatesCapture = input.windowStart < new Date(`${capturedSince}T00:00:00Z`);
   const truncated = input.rows.length >= input.rowLimit;
@@ -87,27 +87,18 @@ export function buildSubagentDelegationPanel(input: {
   }
 
   if (shares.length === 0) {
-    return {
-      available: false,
-      sessions: 0,
-      sessionsWithDelegation: 0,
-      medianSharePct: null,
-      isFloor: false,
-      capturedSince,
-      windowPredatesCapture,
-      truncated,
-      unavailableReason: windowPredatesCapture
-        ? `No session in this window has a computable wall clock on or after ${capturedSince}, when background-agent tracking began.`
-        : 'No terminal session in this window has both a start and a completion time to compute wall clock from.',
-    };
+    const reason = windowPredatesCapture ? 'no_baseline' : 'no_scope';
+    const detail = windowPredatesCapture
+      ? `No session in this window has a computable wall clock on or after ${capturedSince}, when background-agent tracking began.`
+      : 'No terminal session in this window has both a start and a completion time to compute wall clock from.';
+    return derivedUnavailable<SubagentMetrics>(reason, detail);
   }
 
   shares.sort((a, b) => a - b);
   const mid = Math.floor(shares.length / 2);
   const median = shares.length % 2 === 0 ? (shares[mid - 1] + shares[mid]) / 2 : shares[mid];
 
-  return {
-    available: true,
+  return derivedValue<SubagentMetrics>({
     sessions: shares.length,
     sessionsWithDelegation,
     medianSharePct: Math.round(median * 100),
@@ -115,6 +106,5 @@ export function buildSubagentDelegationPanel(input: {
     capturedSince,
     windowPredatesCapture,
     truncated,
-    unavailableReason: null,
-  };
+  });
 }
