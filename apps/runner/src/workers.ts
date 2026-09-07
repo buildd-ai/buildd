@@ -56,6 +56,7 @@ import {
   extractFilesFromToolCalls,
 } from './prompt-builder';
 import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
+import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -1836,11 +1837,28 @@ export class WorkerManager {
       }
 
       // Fetch workspace memory context in parallel: full digest + task-specific matches + feedback memories
-      const [compactResult, taskSearchResults, feedbackMemories] = await Promise.all([
+      const [compactResult, taskMemory, feedbackMemories] = await Promise.all([
         this.buildd.getCompactObservations(task.workspaceId),
-        this.buildd.searchObservations(task.workspaceId, task.title, 5),
+        // Declared paths first, task title as fallback — see
+        // task-memory-retrieval.ts for why these are ordered steps rather than
+        // one blended query, and why the provenance is recorded.
+        retrieveTaskMemory(this.buildd, {
+          workspaceId: task.workspaceId,
+          title: task.title,
+          pathManifest: task.pathManifest,
+        }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
+      const taskSearchResults = taskMemory.results;
+      // Which step produced the match, emitted by the code that did the work
+      // rather than inferred later. A bare count cannot distinguish five hits
+      // from a declared path overlap from five hits sharing a stopword.
+      sessionLog(worker.id, 'info', 'task-memory-retrieval', JSON.stringify({
+        derivedBy: taskMemory.derivedBy,
+        results: taskMemory.results.length,
+        scopePaths: taskMemory.scopePaths.length,
+        pathScopeMissed: taskMemory.pathScopeMissed,
+      }), task.id);
 
       // Fetch full content for task-specific memory matches
       const fullObservations = taskSearchResults.length > 0

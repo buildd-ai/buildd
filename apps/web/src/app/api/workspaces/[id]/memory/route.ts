@@ -85,9 +85,21 @@ export async function GET(
   const type = searchParams.get('type') || undefined;
   const limit = parseInt(searchParams.get('limit') || '50', 10);
   const offset = parseInt(searchParams.get('offset') || '0', 10);
+  // File scope: repeated `?files=` params, and comma-separated values inside
+  // each, so both `?files=a&files=b` and `?files=a,b` work. The store does the
+  // normalising (sentinel, trailing separators, dedupe, cap) — this only has to
+  // decide between "a scope was supplied" and "none was".
+  const files = searchParams
+    .getAll('files')
+    .flatMap(v => v.split(','))
+    .map(v => v.trim())
+    .filter(Boolean);
 
   try {
-    const searchData = await memClient.search({ query, type, project, limit, offset });
+    const searchData = await memClient.search({
+      query, type, project, limit, offset,
+      files: files.length > 0 ? files : undefined,
+    });
 
     if (searchData.results.length === 0) {
       return NextResponse.json({ memories: [], total: 0 });
