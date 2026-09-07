@@ -192,16 +192,10 @@ async function resolveDependencyBranch(
   });
   if (worker?.branch) return worker.branch;
 
-  const depContext = (await db.query.tasks.findFirst({
-    where: eq(tasks.id, depTaskId),
-    columns: { context: true },
-  }))?.context as Record<string, unknown> | null | undefined;
-
   return generateTaskBranchName({
     taskId: depTaskId,
     title: depTitle,
     gitConfig,
-    sharedHeadBranch: depContext?.headBranch,
   });
 }
 

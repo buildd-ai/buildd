@@ -178,14 +178,17 @@ describe('approvePlan — baseBranch resolution', () => {
   });
 
   it('reads the shared mission branch off the dependency context (headBranch)', async () => {
-    // A mission task whose context carries headBranch (seeded from
-    // missions.workingBranch) is claimed onto THAT branch verbatim — the
-    // generator is not consulted at all.
+    // When resolving a dependency for baseBranch stacking, generate the
+    // task's branch name, not use headBranch. The headBranch is for execution
+    // (the claim route uses it to determine what branch to work on), while
+    // baseBranch is for lineage tracking (what output this task depends on).
+    // Even if the dependency has headBranch set, baseBranch preserves the
+    // generated name to maintain dependency metadata.
     planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
     taskRows[PLANNING_TASK_ID] = planningTaskRow;
     contextSeeds[0] = { headBranch: 'mission/delivery-arc-1a2b3c4d' };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
-    expect(writtenBaseBranch()).toBe('mission/delivery-arc-1a2b3c4d');
+    expect(writtenBaseBranch()).toBe(`buildd/${DEP_ID8}-add-schema-migration`);
   });
 });
 
