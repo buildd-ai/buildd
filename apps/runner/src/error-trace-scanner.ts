@@ -28,10 +28,19 @@
  *      comments. `git_error` (`^error: `) matched 1,105 lines, mostly bun test
  *      assertions (`error: expect(received).toBe(expected)`). Those patterns
  *      now carry `requiresError`, so they only fire when the SDK marked the
- *      result `is_error`.
+ *      result `is_error`. A follow-up audit found the same problem in
+ *      `no_such_file`, `command_not_found`, and `git_fatal` — stock POSIX/git
+ *      wording that shows up verbatim in this repo's own mocked-error test
+ *      fixtures and fallback shell messaging (`which x || echo "not found"`),
+ *      so they now carry `requiresError` too.
  *   3. Narrow, unambiguous patterns still scan unconditionally, because
  *      `is_error` is only a lower bound on failure — a Bash command can print
- *      a real error and still exit 0.
+ *      a real error and still exit 0. `cd_no_such_file`, `oom_killed`,
+ *      `bwrap_namespace_denied`, and `sandbox_mount_gap` stay ungated: each
+ *      requires a compound, format-locked signal (a specific shell prefix, or
+ *      an error token plus a specific non-allowlisted path) rather than a
+ *      generic English phrase, so the false-positive rate is low enough to
+ *      keep paying for the mid-chain-failure recall.
  *
  * Recall matters too, and the header incident above is the proof: the agent's
  * shell is zsh, which writes `(eval):cd:1: no such file or directory: apps/web`.
@@ -83,15 +92,21 @@ const PATTERNS: PatternDef[] = [
   // and not line-terminal, so none of the patterns below could reach it.
   { slug: 'cd_no_such_file', re: /^\(eval\):cd:\d+: no such file or directory/i },
   // Generic "No such file or directory" — but only when NOT preceded by `cd:`,
-  // since cd_no_such_file already catches that more specific case.
-  { slug: 'no_such_file', re: /^(?!cd: ).*No such file or directory$/ },
+  // since cd_no_such_file already catches that more specific case. "No such
+  // file or directory" is stock Node/POSIX error wording that shows up
+  // verbatim in test fixtures and error-message assertions, hence requiresError.
+  { slug: 'no_such_file', re: /^(?!cd: ).*No such file or directory$/, requiresError: true },
   { slug: 'permission_denied', re: /Permission denied/, requiresError: true },
-  { slug: 'command_not_found', re: /command not found$/ },
+  // "command not found" / "not found" are common phrasing in setup scripts and
+  // fallback messaging (`which x || echo "x not found"`) that exits 0.
+  { slug: 'command_not_found', re: /command not found$/, requiresError: true },
   // dash and sh word it differently: `sh: 1: tsx: not found`.
-  { slug: 'command_not_found', re: /^(?:sh|dash): \d+: .+: not found$/ },
+  { slug: 'command_not_found', re: /^(?:sh|dash): \d+: .+: not found$/, requiresError: true },
   { slug: 'enoent', re: /\bENOENT\b/, requiresError: true },
   { slug: 'oom_killed', re: /^Killed(:\s*9)?$/ },
-  { slug: 'git_fatal', re: /^fatal: / },
+  // "fatal: " is git's idiom, but appears verbatim in mocked git-error fixtures
+  // and custom fail() messages across the test suite — not exclusively real failures.
+  { slug: 'git_fatal', re: /^fatal: /, requiresError: true },
   // git's non-fatal errors — and also every bun test assertion failure and
   // every `error: script "x" exited with code 1`, hence requiresError.
   { slug: 'git_error', re: /^error: /, requiresError: true },
