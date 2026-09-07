@@ -388,6 +388,8 @@ describe('taxonomy: sandbox_mount_gap', () => {
     const traces = scanToolResult(
       'probe-worker-npmrc',
       "ENOENT: no such file or directory, open '/home/runner/.npmrc'",
+      undefined,
+      { isError: true },
     );
     const gap = traces.find(t => t.pattern === 'sandbox_mount_gap');
     expect(gap).toBeDefined();
@@ -400,6 +402,7 @@ describe('taxonomy: sandbox_mount_gap', () => {
       'probe-worker-taxonomy-lifecycle',
       `ENOENT: no such file or directory, open '${gapPath}'`,
       'bash',
+      { isError: true },
     );
     const gap = traces.find(trace => trace.pattern === 'sandbox_mount_gap');
 
@@ -416,6 +419,8 @@ describe('taxonomy: sandbox_mount_gap', () => {
     const traces = scanToolResult(
       'probe-worker-gitconfig',
       "ENOENT: no such file or directory, open '/home/runner/.gitconfig'",
+      undefined,
+      { isError: true },
     );
     expect(traces.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
   });
@@ -424,6 +429,8 @@ describe('taxonomy: sandbox_mount_gap', () => {
     const traces = scanToolResult(
       'probe-worker-opt',
       "ENOENT: no such file or directory, open '/opt/custom-toolchain/bin/cc'",
+      undefined,
+      { isError: true },
     );
     expect(traces.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
   });
@@ -432,6 +439,8 @@ describe('taxonomy: sandbox_mount_gap', () => {
     const traces = scanToolResult(
       'probe-worker-opt-acces',
       "EACCES: permission denied, open '/opt/vendor/license.key'",
+      undefined,
+      { isError: true },
     );
     expect(traces.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
   });
@@ -440,6 +449,8 @@ describe('taxonomy: sandbox_mount_gap', () => {
     const traces = scanToolResult(
       'probe-worker-snap',
       "ENOENT: no such file or directory '/snap/bin/node'",
+      undefined,
+      { isError: true },
     );
     expect(traces.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
   });

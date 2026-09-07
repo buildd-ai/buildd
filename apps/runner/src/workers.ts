@@ -4554,23 +4554,31 @@ If something is missing or incomplete, describe what and fix it now.`;
 
             // sandbox_mount_gap: a path needed by npm postinstall, a config read, or a tool
             // binary is not mounted in the bwrap sandbox. Unlike bwrap_namespace_denied, the
-            // sandbox itself is functional — only the allowlist config is missing. Do NOT flip
-            // _bwrapSupported (that would disable sandbox globally for unrelated tasks).
-            // Fast-fail so the operator can add the path via BUILDD_MOUNT_ALLOWLIST_EXTRA and
-            // retry cleanly. The server exempts this worker from the code-retry cap.
-            if (traces.some(t => t.pattern === 'sandbox_mount_gap') && !worker.sandboxMountGap) {
-              worker.sandboxMountGap = true;
+            // sandbox itself is functional — only the allowlist config is missing.
+            //
+            // This used to fast-fail the session (abort + worker.sandboxMountGap = true, which
+            // the server reads as a requeue exempt from the retry cap). That made the detector's
+            // precision the blast radius of a whole task: the scanner's own regexes turned out to
+            // match file CONTENT (a test title, a grepped source line) as readily as a real
+            // denial, and a false positive killed 58 turns of legitimate work with no way back.
+            // Until precision is demonstrated in production, annotate only — log it and record a
+            // milestone for triage — and let the session keep running. A missed real gap still
+            // surfaces: the agent's own subsequent commands will keep failing and that failure
+            // reaches the normal path. Re-enable the abort once the tightened scanner (see
+            // error-trace-scanner.ts's validate/requiresError gates) has a track record.
+            if (traces.some(t => t.pattern === 'sandbox_mount_gap')) {
               const gapTrace = traces.find(t => t.pattern === 'sandbox_mount_gap')!;
               const pathMatch = gapTrace.excerpt.match(/(?:\bENOENT\b|\bEACCES\b)[^'":]*['"]?([/~][\w./-]+)/i);
               const gapPath = pathMatch?.[1] ?? gapTrace.excerpt.slice(0, 120);
               console.warn(
-                `[runner] Sandbox mount gap for worker ${worker.id}: "${gapPath}" is not in bwrap allowlist. ` +
-                'Session aborted for clean retry. Set BUILDD_MOUNT_ALLOWLIST_EXTRA to expose the path.',
+                `[runner] Suspected sandbox mount gap for worker ${worker.id}: "${gapPath}" may not be ` +
+                'in the bwrap allowlist. Not aborting — annotating only until precision is demonstrated.',
               );
-              worker.error = `Sandbox mount gap: "${gapPath}" is not mounted in the bwrap sandbox. ` +
-                `Add BUILDD_MOUNT_ALLOWLIST_EXTRA=${gapPath}:ro to the runner environment to expose it.`;
-              const session = this.sessions.get(worker.id);
-              if (session) session.abortController.abort();
+              this.addMilestone(worker, {
+                type: 'status',
+                label: `sandbox_mount_gap_suspected: ${gapPath}`,
+                ts: Date.now(),
+              });
             }
           }
 

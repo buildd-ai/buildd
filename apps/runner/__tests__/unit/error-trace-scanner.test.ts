@@ -97,60 +97,114 @@ describe('error-trace-scanner', () => {
 
   describe('sandbox_mount_gap patterns', () => {
     beforeEach(() => clearWorkerThrottle('wg'));
+    const ERR = { isError: true };
 
     it('detects ENOENT on .npmrc (npm config outside allowlist)', () => {
-      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash');
+      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
     });
 
     it('detects ENOENT on .gitconfig (git config outside allowlist)', () => {
-      const out = scanToolResult('wg', "ENOENT: no such file or directory '/home/runner/.gitconfig'", 'bash');
+      const out = scanToolResult('wg', "ENOENT: no such file or directory '/home/runner/.gitconfig'", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
     });
 
     it('detects ENOENT on /snap/ path (snap-installed tool binary)', () => {
-      const out = scanToolResult('wg', "ENOENT: /snap/bin/go: No such file or directory", 'bash');
+      const out = scanToolResult('wg', "ENOENT: /snap/bin/go: No such file or directory", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
     });
 
     it('detects EACCES on /snap/ path', () => {
-      const out = scanToolResult('wg', 'EACCES: permission denied, access \'/snap/bin/node\'', 'bash');
+      const out = scanToolResult('wg', 'EACCES: permission denied, access \'/snap/bin/node\'', 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
     });
 
     it('detects ENOENT on /opt/ path', () => {
-      const out = scanToolResult('wg', "ENOENT: no such file or directory, open '/opt/homebrew/bin/node'", 'bash');
+      const out = scanToolResult('wg', "ENOENT: no such file or directory, open '/opt/homebrew/bin/node'", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
     });
 
     it('near-miss: generic ENOENT on in-repo file does NOT match sandbox_mount_gap', () => {
-      const out = scanToolResult('wg', "ENOENT: no such file or directory, open 'src/config.ts'", 'bash');
+      const out = scanToolResult('wg', "ENOENT: no such file or directory, open 'src/config.ts'", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
     });
 
     it('near-miss: ENOENT inside ~/.bun (allowlisted) does NOT match', () => {
-      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.bun/install/foo.json'", 'bash');
+      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.bun/install/foo.json'", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
     });
 
     it('near-miss: ENOENT inside ~/.npm (allowlisted) does NOT match', () => {
-      const out = scanToolResult('wg', "ENOENT: /home/coder/.npm/some-package: No such file or directory", 'bash');
+      const out = scanToolResult('wg', "ENOENT: /home/coder/.npm/some-package: No such file or directory", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
     });
 
     it('near-miss: permission denied on /usr/ (allowlisted as ro) does NOT match sandbox_mount_gap', () => {
       // /usr is mounted ro — a write-EACCES to /usr is NOT a mount gap; it's expected.
       // The sandbox_mount_gap pattern does not fire for /usr/.
-      const out = scanToolResult('wg', "EACCES: permission denied, open '/usr/local/bin/something'", 'bash');
+      const out = scanToolResult('wg', "EACCES: permission denied, open '/usr/local/bin/something'", 'bash', ERR);
       expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
     });
 
     it('only reports sandbox_mount_gap once per 60s window per worker (throttle)', () => {
-      const first = scanToolResult('wg', "ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash');
+      const first = scanToolResult('wg', "ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash', ERR);
       expect(first.some(t => t.pattern === 'sandbox_mount_gap')).toBe(true);
       // Same worker, same pattern — throttled
-      const second = scanToolResult('wg', "Error: ENOENT: /home/coder/.gitconfig", 'bash');
+      const second = scanToolResult('wg', "Error: ENOENT: /home/coder/.gitconfig", 'bash', ERR);
       expect(second.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+
+    it('does NOT fire without isError, even on a well-formed gap path', () => {
+      // `sandbox_mount_gap` is gated by requiresError now — a bare match on a
+      // successful tool result (a Read, or a Bash command that merely quotes
+      // this text) is not evidence of a real denial.
+      const out = scanToolResult('wg', "Error: ENOENT: no such file or directory, open '/home/coder/.npmrc'", 'bash');
+      expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+    });
+
+    describe('real production false positives (worker was killed on these)', () => {
+      // These three signatures are the actual `worker.error` values captured in
+      // the 24h window that motivated this fix. All three were produced by an
+      // agent reading/grepping the error-trace-scanner's own source and test
+      // fixtures — never a real bwrap denial — yet the old regexes ("contains
+      // ENOENT somewhere, then .npmrc somewhere later") matched all of them and
+      // the worker was aborted every time.
+
+      it('rejects a test case title mentioning ENOENT and .npmrc', () => {
+        const line = "52:    it('detects ENOENT on .npmrc (npm config outside allowlist)', () => {";
+        // Adversarial: even forcing isError:true and a non-read-only source,
+        // the text has no path-shaped token — extraction alone rejects it.
+        const out = scanToolResult('wg', line, 'Bash', ERR);
+        expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+      });
+
+      it('rejects a grepped source line quoting a real-shaped gap path, via the requiresError gate', () => {
+        // This line's quoted content IS shaped like a real denial (that's the
+        // point of the fixture it's quoting) — extraction alone cannot tell it
+        // apart from genuine output. What defeats it in production is that a
+        // successful grep/cat exits 0, so is_error is false.
+        const line = "apps/runner/__tests__/unit/error-trace-scanner.test.ts:102:      "
+          + "const out = scanToolResult('wg', \"Error: ENOENT: no such file or directory, open '/home/coder/.npmrc'\", 'bash');";
+        const out = scanToolResult('wg', line, 'Bash');
+        expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+      });
+
+      it('rejects the same line via READ_ONLY_TOOLS when read with Read/Grep', () => {
+        const line = "apps/runner/__tests__/unit/error-trace-scanner.test.ts:102:      "
+          + "const out = scanToolResult('wg', \"Error: ENOENT: no such file or directory, open '/home/coder/.npmrc'\", 'bash');";
+        for (const tool of ['Read', 'Grep']) {
+          expect(scanToolResult('wg', line, tool, ERR)).toEqual([]);
+        }
+      });
+
+      it('rejects a fixture string literal inside a test array', () => {
+        const line = '5:  "ENOENT: no such file or directory, open \'/home/coder/.npmrc\'",';
+        // Same reasoning as the grepped-source case: shape alone can't reject
+        // this (it's a byte-for-byte real denial shape), so a successful,
+        // non-error read is what keeps it from firing.
+        const out = scanToolResult('wg', line, 'Bash');
+        expect(out.some(t => t.pattern === 'sandbox_mount_gap')).toBe(false);
+      });
     });
   });
 });
