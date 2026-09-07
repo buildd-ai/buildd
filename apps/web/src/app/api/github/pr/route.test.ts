@@ -3069,3 +3069,149 @@ describe('GET /api/github/pr', () => {
     expect(mockWorkersFindMany).not.toHaveBeenCalled();
   });
 });
+
+describe('Retry PR body generation', () => {
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    mockAuthenticateApiKey.mockReset();
+    mockGithubApi.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => Promise.resolve()),
+      })),
+    });
+  });
+
+  it('generated retry PR body must not contain UUIDs', async () => {
+    const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+    const taskId = 'aaaabbbb-cccc-dddd-eeee-ffff00001111'; // UUID-shaped taskId
+
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId,
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: null, context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+    mockGithubApi.mockResolvedValueOnce([]); // no existing PR for this head
+
+    let capturedCreateBody = '';
+    const originalGithubApi = mockGithubApi.getMockImplementation?.();
+    let callCount = 0;
+    mockGithubApi.mockImplementation(async (installationId: any, path: string, opts?: any) => {
+      callCount++;
+      if (path.includes('/pulls') && opts?.method === 'POST') {
+        const body = JSON.parse(opts.body);
+        capturedCreateBody = body.body;
+      }
+      // Return a mock PR response
+      return {
+        number: 99,
+        html_url: 'https://github.com/owner/repo/pull/99',
+        state: 'open',
+        title: 'Retry PR',
+        head: { sha: 'sha123' },
+        base: { sha: 'basesha123', ref: 'main' },
+      };
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'Retry PR',
+        head: 'retry-branch',
+        body: 'Initial PR description',
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+
+    // The PR body was generated with retry context
+    expect(capturedCreateBody).toContain('Attempt 1/3');
+    // Must NOT contain the raw taskId UUID
+    expect(uuidPattern.test(capturedCreateBody)).toBe(false);
+  });
+
+  it('retry attempt line is replaceable without UUIDs appearing', async () => {
+    const taskId = 'bbbbcccc-dddd-eeee-ffff-000011112222';
+
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId,
+      prUrl: null,
+      prNumber: null,
+      name: 'test-worker',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: null, context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    // Simulate an existing PR with a retry footer (from a previous attempt)
+    mockGithubApi.mockResolvedValueOnce([
+      {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: 'Original body\n\n---\n_Attempt 1/3 — resume failed; new branch._',
+        additions: 5,
+        deletions: 2,
+        changed_files: 1,
+      },
+    ]);
+
+    let patchedBody = '';
+    const uuidPattern = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
+    mockGithubApi.mockImplementation(async (installationId: any, path: string, opts?: any) => {
+      if (path.includes('/pulls') && opts?.method === 'PATCH') {
+        const body = JSON.parse(opts.body);
+        patchedBody = body.body;
+        // Fail if UUID detected
+        if (uuidPattern.test(patchedBody)) {
+          throw new Error(`UUID detected in patched PR body: ${patchedBody}`);
+        }
+      }
+      return {
+        number: 88,
+        html_url: 'https://github.com/owner/repo/pull/88',
+        state: 'open',
+        title: 'Fix: retry',
+        body: patchedBody || 'Original body\n\n---\n_Attempt 1/3 — resume failed; new branch._',
+        base: { sha: 'basesha', ref: 'main' },
+      };
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'Fix: retry',
+        head: 'retry-branch',
+      },
+    });
+
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+    // If PATCH was called, it should not have UUIDs
+    if (patchedBody) {
+      expect(uuidPattern.test(patchedBody)).toBe(false);
+    }
+  });
+});
