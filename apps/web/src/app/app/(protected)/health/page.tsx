@@ -26,14 +26,16 @@ import {
 import { getBackendStrandSummary } from '@/lib/backend-strand';
 import type { CbmHealthSummary } from '@/lib/cbm-insight';
 import { fetchCbmSummary } from '@/lib/cbm-insight-query';
-import { buildSubagentDelegationPanel, type SubagentDelegationPanel } from '@/lib/subagent-time';
+import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
+import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
 import { HealthClient } from './HealthClient';
 import Link from 'next/link';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { CbmHealthSummary };
-export type { SubagentDelegationPanel };
+export type { SubagentMetrics };
+export type SubagentDelegationPanel = DerivedMetric<SubagentMetrics>;
 
 export const dynamic = 'force-dynamic';
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { buildSubagentDelegationPanel, type SubagentTimeRow } from './subagent-time';
+import type { DerivedMetric } from '@buildd/core/derived-metric';
 
 const CAPTURED_SINCE = '2026-08-15';
 
@@ -20,11 +21,9 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.available).toBe(false);
-    expect(panel.sessions).toBe(0);
-    expect(panel.medianSharePct).toBeNull();
-    expect(panel.windowPredatesCapture).toBe(false);
-    expect(panel.unavailableReason).not.toBeNull();
+    expect(panel.kind).toBe('unavailable');
+    expect(panel.reason).toBe('no_scope');
+    expect(panel.detail).not.toBeNull();
   });
 
   it('flags windowPredatesCapture independent of whether rows were found', () => {
@@ -34,8 +33,10 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.available).toBe(true); // a row was still supplied
-    expect(panel.windowPredatesCapture).toBe(true);
+    expect(panel.kind).toBe('value'); // a row was still supplied
+    if (panel.kind === 'value') {
+      expect(panel.value.windowPredatesCapture).toBe(true);
+    }
   });
 
   it('excludes rows with no computable wall clock rather than treating them as zero', () => {
@@ -45,8 +46,7 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.available).toBe(false);
-    expect(panel.sessions).toBe(0);
+    expect(panel.kind).toBe('unavailable');
   });
 
   it('computes the median share of total effort spent in background subagents', () => {
@@ -62,10 +62,12 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.available).toBe(true);
-    expect(panel.sessions).toBe(2);
-    expect(panel.sessionsWithDelegation).toBe(1);
-    expect(panel.medianSharePct).toBe(25); // median of [0, 0.5] = 0.25
+    expect(panel.kind).toBe('value');
+    if (panel.kind === 'value') {
+      expect(panel.value.sessions).toBe(2);
+      expect(panel.value.sessionsWithDelegation).toBe(1);
+      expect(panel.value.medianSharePct).toBe(25); // median of [0, 0.5] = 0.25
+    }
   });
 
   it('marks the result a floor when a session hit the runner span cap', () => {
@@ -75,7 +77,10 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.isFloor).toBe(true);
+    expect(panel.kind).toBe('value');
+    if (panel.kind === 'value') {
+      expect(panel.value.isFloor).toBe(true);
+    }
   });
 
   it('does not mark a floor when observed count matches the persisted span length', () => {
@@ -85,7 +90,10 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.isFloor).toBe(false);
+    expect(panel.kind).toBe('value');
+    if (panel.kind === 'value') {
+      expect(panel.value.isFloor).toBe(false);
+    }
   });
 
   it('flags truncated when the row cap was hit', () => {
@@ -95,7 +103,10 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 2,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.truncated).toBe(true);
+    expect(panel.kind).toBe('value');
+    if (panel.kind === 'value') {
+      expect(panel.value.truncated).toBe(true);
+    }
   });
 
   it('a real zero (no delegation anywhere) is measured, not unavailable', () => {
@@ -105,8 +116,10 @@ describe('buildSubagentDelegationPanel', () => {
       rowLimit: 5000,
       capturedSince: CAPTURED_SINCE,
     });
-    expect(panel.available).toBe(true);
-    expect(panel.medianSharePct).toBe(0);
-    expect(panel.sessionsWithDelegation).toBe(0);
+    expect(panel.kind).toBe('value');
+    if (panel.kind === 'value') {
+      expect(panel.value.medianSharePct).toBe(0);
+      expect(panel.value.sessionsWithDelegation).toBe(0);
+    }
   });
 });
