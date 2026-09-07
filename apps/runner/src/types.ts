@@ -1,5 +1,6 @@
 import type { RoleConfig } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
+import type { PromptCompositionEvent } from './memory-digest-policy.js';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -201,6 +202,14 @@ export interface LocalWorker {
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
   pendingActionEvents?: Array<{ action: string; ts: number }>;  // Buffered buildd MCP action calls awaiting sync (see action-events.ts)
+  // Buffered prompt-composition records awaiting sync — one per prompt build,
+  // in both memory-digest arms (see memory-digest-policy.ts).
+  pendingPromptCompositionEvents?: PromptCompositionEvent[];
+  // Counts calls to buildPromptCompositionRecord for this worker. A worker can
+  // build more than one prompt (e.g. the bwrap-retry restart in startSession
+  // rebuilds from scratch), so this is the ordering key for those rows —
+  // never reset mid-worker, or two builds would collide on buildIndex.
+  promptBuildIndex?: number;
   // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
   // on the next successful claim call. Also included in update_progress PATCH body so
   // the server can register them retroactively if the hook never recovers.

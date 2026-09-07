@@ -55,7 +55,7 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -1903,6 +1903,29 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + tenantLines.join('\n');
       }
 
+      // One composition record per prompt build, in BOTH arms. The control row
+      // is the denominator: without it, "no task_scoped prompts" and "no
+      // prompts at all" look identical. Emitted after every append so
+      // promptBytes is the real figure the memory share is a share of.
+      const composition = buildPromptCompositionRecord({
+        assignment: built.assignment,
+        memory: built.memory,
+        promptText,
+      });
+      sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
+      // Also on stdout: the per-worker session log is pruned after 48h, which
+      // is shorter than the rework chains this experiment is measured on.
+      console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
+      // Durable, queryable rail: neither of the above survives long enough or
+      // is queryable enough to analyse the arm across a task's retry chain.
+      const { buffer: promptCompositionBuffer, nextBuildIndex } = appendPromptCompositionEvent(
+        worker.pendingPromptCompositionEvents,
+        worker.promptBuildIndex,
+        composition,
+        Date.now(),
+      );
+      worker.pendingPromptCompositionEvents = promptCompositionBuffer;
+      worker.promptBuildIndex = nextBuildIndex;
 
       // Build the agent subprocess environment from an allowlist rather than
       // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
