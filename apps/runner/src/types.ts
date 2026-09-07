@@ -212,7 +212,12 @@ export interface LocalWorker {
    * carry usage, whereas the SDK result's per-model map is empty on seat auth.
    */
   tokenTally?: { inputTokens: number; outputTokens: number };
-  sandboxMountGap?: boolean;  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap
+  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
+  // Currently never set — the abort was disabled after it fired on file content
+  // (test titles, fixture strings) rather than real denials. Detection now only
+  // annotates via addMilestone (see workers.ts). Left in place for the exitCause
+  // taxonomy to re-enable once the tightened scanner has a production track record.
+  sandboxMountGap?: boolean;
   bwrapRetryPending?: boolean;  // Set when bwrap namespace denial fires mid-run; startSession will restart without sandbox
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
