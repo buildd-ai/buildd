@@ -220,6 +220,24 @@ describe('approvePlan — Option A′ integration branch as the default base', (
     expect(insertedContext(1).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
   });
 
+  it('sets headBranch on every child to the mission working branch when opted in', async () => {
+    // For mission-branch missions, all task workers push to the same integration
+    // branch. Each worker gets its own worktree branch (falling back to
+    // <branch>-w<id> if the mission branch is already checked out), but all
+    // pushes target the shared integration branch. This is enabled by setting
+    // headBranch on the child task context so the claim route's branch-name
+    // generator returns the mission branch verbatim.
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: 'mission/delivery-arc-1a2b3c4d', integrationBranchEnabled: true };
+    await approvePlan(
+      PLANNING_TASK_ID,
+      [{ ref: 'a', title: 'First' }, { ref: 'b', title: 'Second' }] as any,
+    );
+    expect(insertedContext(0).headBranch).toBe('mission/delivery-arc-1a2b3c4d');
+    expect(insertedContext(1).headBranch).toBe('mission/delivery-arc-1a2b3c4d');
+  });
+
   it('lets an explicit stacked baseBranch still win over the integration branch', async () => {
     // A step naming a predecessor is stacking deliberately. A′ only fills in the
     // base for steps that named none — it must not flatten a declared chain.
