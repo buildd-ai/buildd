@@ -34,6 +34,31 @@ export function checkForUpdate(current: string | null, latest: string | null): b
 }
 
 /**
+ * True when the on-disk HEAD no longer matches the commit the running
+ * process loaded at startup (or after its last successful self-update).
+ * This is the exact signature of an external process — self-heal's
+ * `fixGitBranch`, a host-level `git reset --hard` — rewriting the install's
+ * tree without restarting the long-lived runner process, so its in-memory
+ * modules keep serving stale code indefinitely.
+ */
+export function hasCommitDrift(diskCommit: string | null, processCommit: string | null): boolean {
+  return !!diskCommit && !!processCommit && diskCommit !== processCommit;
+}
+
+/**
+ * Decide whether an update should be surfaced/applied given a runner-relevant
+ * changelog. An empty changelog normally means "no runner-code changes in
+ * this release" — but on a shallow clone (`git clone --depth 1`), a truncated
+ * commit range can look empty for a reason that has nothing to do with the
+ * release content. When the changelog can't be trusted (`reliable: false`),
+ * default to treating the update as available rather than silently skipping
+ * it — a redundant sync is cheap; a missed one leaves the runner stale.
+ */
+export function shouldShowUpdateAvailable(changelogEntries: string[], changelogReliable: boolean): boolean {
+  return changelogEntries.length > 0 || !changelogReliable;
+}
+
+/**
  * Returns true when the working tree has modified or staged **tracked** files.
  * Untracked files are intentionally excluded (`--untracked-files=no`): runtime
  * artifacts (config.json, history.db, workers/, roles/, repos-cache.json, etc.)
