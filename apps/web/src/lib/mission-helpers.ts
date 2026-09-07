@@ -210,7 +210,7 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
   switch (health) {
     case 'active': return 'running';
     case 'stalled': return 'attention';
-    case 'waiting-decision': return 'attention';
+    case 'escalated': return 'attention';
     case 'on-schedule': return 'scheduled';
     case 'paused': return 'paused';
     case 'budget-exhausted': return 'paused';
@@ -220,9 +220,6 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     // them after 24h of quiet (lib/mission-archive.ts). Anything short of
     // 100% with no agents running is genuinely stuck → attention.
     case 'idle': return progress === 100 ? 'review' : 'attention';
-    // The organizer gave up and stood its own heartbeat down — this is the
-    // one health value that is never a quiet background state.
-    case 'escalated': return 'attention';
   }
 }
 
@@ -283,7 +280,7 @@ export function deriveMissionHealth(opts: {
   // Mission is awaiting an owner decision on escalated criteria. No agents are
   // working, and the mission cannot progress until the owner acts (edit the
   // criterion or file work against the verdict).
-  if (opts.criteriaEscalatedAt && opts.activeAgents === 0) return 'waiting-decision';
+  if (opts.criteriaEscalatedAt && opts.activeAgents === 0 && opts.hasPendingDeliverableWork === false) return 'escalated';
 
   if (opts.activeAgents > 0) return 'active';
   if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'escalated';

@@ -800,32 +800,38 @@ describe('buildActionQueue — decide cards', () => {
         kind: 'decide',
         missionId: 'mission-1',
         missionTitle: 'Mission',
-        criteriaRearmFingerprint: 'fp1',
+        criteriaFingerprint: 'fp1',
+        noteId: 'note-1',
+        noteTitle: 'Note 1',
       },
       {
         kind: 'decide',
         missionId: 'mission-1',
         missionTitle: 'Mission',
-        criteriaRearmFingerprint: 'fp2',
+        criteriaFingerprint: 'fp2',
+        noteId: 'note-2',
+        noteTitle: 'Note 2',
       },
     ];
     const result = buildActionQueue(woy, []);
     expect(result).toHaveLength(2);
   });
 
-  it('orders DECIDE after APPROVE', () => {
+  it('orders DECIDE before APPROVE', () => {
     const woy: WaitingOnYouRawItem[] = [
       { kind: 'approve', taskId: 'plan-1', taskTitle: 'Plan A' },
       {
         kind: 'decide',
         missionId: 'mission-1',
         missionTitle: 'Mission',
-        criteriaRearmFingerprint: 'fp1',
+        criteriaFingerprint: 'fp1',
+        noteId: 'note-1',
+        noteTitle: 'Note 1',
       },
       { kind: 'answer', workerId: 'w-1', taskId: 'task-q', taskTitle: 'Q Task', question: 'Is X ready?' },
     ];
     const result = buildActionQueue(woy, []);
-    expect(result.map(r => r.chip)).toEqual(['QUESTION', 'APPROVE', 'DECIDE']);
+    expect(result.map(r => r.chip)).toEqual(['QUESTION', 'DECIDE', 'APPROVE']);
   });
 });
 

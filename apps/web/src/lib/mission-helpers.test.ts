@@ -288,7 +288,7 @@ describe('tab count reconciliation', () => {
 // These exports must remain stable.
 
 describe('deriveMissionHealth — criteriaEscalatedAt', () => {
-  it('returns waiting-decision when criteriaEscalatedAt is set and no agents are active', () => {
+  it('returns escalated when criteriaEscalatedAt is set and no agents are active and no pending deliverable work', () => {
     const h = deriveMissionHealth({
       status: 'active',
       activeAgents: 0,
@@ -296,11 +296,12 @@ describe('deriveMissionHealth — criteriaEscalatedAt', () => {
       lastRunAt: null,
       nextRunAt: null,
       criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
     });
-    expect(h).toBe('waiting-decision');
+    expect(h).toBe('escalated');
   });
 
-  it('returns active (not waiting-decision) when criteriaEscalatedAt is set but agents are running', () => {
+  it('returns active (not escalated) when criteriaEscalatedAt is set but agents are running', () => {
     const h = deriveMissionHealth({
       status: 'active',
       activeAgents: 2,
@@ -339,7 +340,7 @@ describe('deriveMissionHealth — criteriaEscalatedAt', () => {
 });
 
 describe('objectives contract — deriveMissionHealth export unchanged', () => {
-  const EXPECTED_HEALTH_VALUES: MissionHealth[] = ['active', 'on-schedule', 'stalled', 'shipped', 'paused', 'idle', 'held', 'budget-exhausted', 'waiting-decision'];
+  const EXPECTED_HEALTH_VALUES: MissionHealth[] = ['active', 'on-schedule', 'stalled', 'shipped', 'paused', 'idle', 'held', 'budget-exhausted', 'escalated'];
 
   it('all original MissionHealth values still produce valid HEALTH_DISPLAY entries', () => {
     for (const v of EXPECTED_HEALTH_VALUES) {
