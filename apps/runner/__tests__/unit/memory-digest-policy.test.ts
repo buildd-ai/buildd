@@ -125,10 +125,9 @@ describe('buildMemoryBlock — control arm', () => {
     expect(block.indexOf('Use `recall')).toBeGreaterThan(block.indexOf('### Relevant to This Task'));
   });
 
-  // The blind slice is preserved deliberately: fixing it to fall on a line
-  // boundary is an improvement, but doing it here would move the control while
-  // the experiment is running.
-  test('slices an oversized digest at the byte cap and says so', () => {
+  // With no newline anywhere in the digest there is no earlier line boundary
+  // to back up to, so the hard slice at the cap is the only option.
+  test('slices an oversized digest at the byte cap and says so, when it has no line to back up to', () => {
     const r = buildMemoryBlock({
       arm: 'full',
       compactResult: { count: 9, markdown: 'x'.repeat(FULL_DIGEST_MAX_BYTES + 500) },
@@ -139,6 +138,43 @@ describe('buildMemoryBlock — control arm', () => {
     expect(r.block).toContain('*(truncated — use `recall` for more)*');
     expect(r.block).toContain('x'.repeat(FULL_DIGEST_MAX_BYTES));
     expect(r.block).not.toContain('x'.repeat(FULL_DIGEST_MAX_BYTES + 1));
+  });
+
+  // The cap must not land mid-line: back up to the last complete line at or
+  // below the cap, so which lines survive is a property of the cap, not of
+  // where inside a line it happened to fall.
+  test('backs up to the last complete line when the digest has one to back up to', () => {
+    const line = 'y'.repeat(100);
+    const lineWithNewline = line + '\n';
+    const lineCount = Math.ceil((FULL_DIGEST_MAX_BYTES + 500) / lineWithNewline.length);
+    const markdown = Array.from({ length: lineCount }, () => line).join('\n');
+    const r = buildMemoryBlock({
+      arm: 'full',
+      compactResult: { count: 9, markdown },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestTruncated).toBe(true);
+    const truncationNoteIndex = r.block!.indexOf('*(truncated — use `recall` for more)*');
+    const digestPortion = r.block!.slice('## Workspace Memory (9 memories)\n'.length, truncationNoteIndex);
+    // Every surviving line is a complete, untouched line — nothing cut mid-word.
+    for (const survivingLine of digestPortion.split('\n').filter(Boolean)) {
+      expect(survivingLine).toBe(line);
+    }
+    expect(digestPortion.length).toBeLessThanOrEqual(FULL_DIGEST_MAX_BYTES);
+  });
+
+  test('falls back to a hard slice when the first line alone exceeds the cap', () => {
+    const markdown = 'x'.repeat(FULL_DIGEST_MAX_BYTES + 500) + '\nsecond line';
+    const r = buildMemoryBlock({
+      arm: 'full',
+      compactResult: { count: 9, markdown },
+      taskSearchResults: [],
+      fullObservations: [],
+    });
+    expect(r.digestTruncated).toBe(true);
+    expect(r.block).toContain('x'.repeat(FULL_DIGEST_MAX_BYTES));
+    expect(r.block).not.toContain('second line');
   });
 
   test('truncates each task match at the per-observation cap', () => {

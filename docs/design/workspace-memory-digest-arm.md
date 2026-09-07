@@ -40,18 +40,23 @@ Introduce two arms of the memory block, selected per task:
 Enrolment is a fraction in `[0, 1]`, default `0`, set per runner by
 `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` or by
 `memoryDigestTaskScopedFraction` in the runner's `config.json`. At `0` every
-prompt renders the control, which keeps the blind slice — straightening the
-truncation is a genuine improvement and belongs in its own change, because once
-enrolment starts, moving the control silently rebases the comparison.
+prompt renders the control.
 
-The control does differ from the pre-experiment rendering in one respect. The
-digest used to arrive from `getCompactObservations` carrying its own
-`## Workspace Memory (N memories)` heading, which landed *underneath* this
-block's header — so every prompt in the fleet showed the heading twice. The
-digest is now pure content and the block header owns the count, in **both** arms,
-which keeps the arms one axis apart. This was corrected before any enrolment,
-when there were no collected rows to invalidate; the same edit made later would
-require a policy-version bump.
+The control has been corrected twice relative to the pre-experiment rendering,
+both times before any enrolment so there were no collected rows to invalidate:
+
+1. The digest used to arrive from `getCompactObservations` carrying its own
+   `## Workspace Memory (N memories)` heading, which landed *underneath* this
+   block's header — so every prompt in the fleet showed the heading twice. The
+   digest is now pure content and the block header owns the count, in **both**
+   arms, which keeps the arms one axis apart.
+2. The cap used to be a blind `slice()`, so an oversized digest routinely ended
+   mid-sentence or mid-word and which entries survived was an artifact of
+   digest ordering. It now backs up to the last complete line at or below the
+   cap (`policyVersion` bumped to `memory-digest-v2` for this change).
+
+Either edit made *after* enrolment starts would require a policy-version bump
+of its own — moving the control mid-flight silently rebases the comparison.
 
 **The crux: the digest is not being used for navigation, and losing it costs
 nothing that the `recall` tool cannot recover on demand.**
@@ -134,8 +139,6 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
 
 ## Non-goals
 
-- **Fixing the blind truncation.** Line-boundary truncation is right and is
-  deliberately deferred so the control stays fixed.
 - **Changing the task-conditional half.** Match count and per-observation cap are
   untouched in both arms.
 - **Retrieval-side changes.** Nothing here alters what `getCompactObservations`
