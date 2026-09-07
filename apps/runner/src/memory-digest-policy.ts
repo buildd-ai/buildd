@@ -270,3 +270,32 @@ export function buildPromptCompositionRecord(args: {
 function byteLength(s: string): number {
   return Buffer.byteLength(s, 'utf8');
 }
+
+/** A PromptCompositionRecord tagged with its position in the runner's durable event rail. */
+export type PromptCompositionEvent = PromptCompositionRecord & { buildIndex: number; ts: number };
+
+/**
+ * Append a composition record to a worker's pending event buffer, assigning
+ * it the next buildIndex.
+ *
+ * A pure function rather than inline mutation in startSession (workers.ts) so
+ * the increment-and-append logic — the part a duplicated or skipped buildIndex
+ * would silently corrupt the (workerId, buildIndex) unique constraint over —
+ * is unit-testable without exercising the rest of session startup.
+ *
+ * currentBuildIndex must be threaded through explicitly rather than reset:
+ * a worker that rebuilds its prompt more than once (the bwrap-retry restart in
+ * startSession rebuilds from scratch on the same worker) must not reuse index 0.
+ */
+export function appendPromptCompositionEvent(
+  buffer: readonly PromptCompositionEvent[] | undefined,
+  currentBuildIndex: number | undefined,
+  record: PromptCompositionRecord,
+  ts: number,
+): { buffer: PromptCompositionEvent[]; nextBuildIndex: number } {
+  const buildIndex = currentBuildIndex ?? 0;
+  return {
+    buffer: [...(buffer ?? []), { ...record, buildIndex, ts }],
+    nextBuildIndex: buildIndex + 1,
+  };
+}

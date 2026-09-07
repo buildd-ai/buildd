@@ -288,9 +288,11 @@ export class WorkerSync {
       const drainedMcpCalls = worker.pendingMcpCalls?.length ? worker.pendingMcpCalls : null;
       const drainedErrorTraces = worker.pendingErrorTraces?.length ? worker.pendingErrorTraces : null;
       const drainedActionEvents = worker.pendingActionEvents?.length ? worker.pendingActionEvents : null;
+      const drainedPromptCompositionEvents = worker.pendingPromptCompositionEvents?.length ? worker.pendingPromptCompositionEvents : null;
       if (drainedMcpCalls) worker.pendingMcpCalls = [];
       if (drainedErrorTraces) worker.pendingErrorTraces = [];
       if (drainedActionEvents) worker.pendingActionEvents = [];
+      if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [];
 
       // Passive observed-touches: compute files touched on the branch for §6d.
       // ~5ms shell call; fail-open (returns [] on error). Only computed when a worktree exists.
@@ -307,6 +309,7 @@ export class WorkerSync {
         ...(drainedMcpCalls ? { appendMcpCalls: drainedMcpCalls } : {}),
         ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
         ...(drainedActionEvents ? { appendActionEvents: drainedActionEvents } : {}),
+        ...(drainedPromptCompositionEvents ? { appendPromptCompositionEvents: drainedPromptCompositionEvents } : {}),
         // Paths written while path-claim endpoint was unreachable; server registers retroactively.
         // Included on every sync while the queue is non-empty — the hook clears it on the next
         // successful claim call, so this is a safety net, not the primary flush path.
@@ -335,6 +338,7 @@ export class WorkerSync {
         if (drainedMcpCalls) worker.pendingMcpCalls = [...drainedMcpCalls, ...(worker.pendingMcpCalls ?? [])];
         if (drainedErrorTraces) worker.pendingErrorTraces = [...drainedErrorTraces, ...(worker.pendingErrorTraces ?? [])];
         if (drainedActionEvents) worker.pendingActionEvents = [...drainedActionEvents, ...(worker.pendingActionEvents ?? [])];
+        if (drainedPromptCompositionEvents) worker.pendingPromptCompositionEvents = [...drainedPromptCompositionEvents, ...(worker.pendingPromptCompositionEvents ?? [])];
         throw err;
       }
 

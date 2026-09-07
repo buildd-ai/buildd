@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -573,6 +573,7 @@ export async function PATCH(
     appendMcpCalls,
     appendErrorTraces,
     appendActionEvents,
+    appendPromptCompositionEvents,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -736,6 +737,58 @@ export async function PATCH(
         await db.insert(workerActionEvents).values(rows);
       } catch (err) {
         console.error('[workers PATCH] failed to insert action events', err);
+      }
+    }
+  }
+  // appendPromptCompositionEvents: insert one row per prompt build into
+  // worker_prompt_composition_events (the durable rail the memory-digest
+  // experiment reads back — see PromptCompositionRecord in
+  // apps/runner/src/memory-digest-policy.ts). Cap at 50 rather than
+  // appendActionEvents' 200: a session builds a handful of prompts, not one
+  // row per MCP call. onConflictDoNothing guards the (worker_id, build_index)
+  // unique index — the runner restores a drained buffer and retries on a
+  // failed PATCH, so the same buildIndex can legitimately be shipped twice.
+  if (appendPromptCompositionEvents && Array.isArray(appendPromptCompositionEvents) && appendPromptCompositionEvents.length > 0) {
+    const rows = appendPromptCompositionEvents
+      .filter((e: any) => e
+        && typeof e.buildIndex === 'number' && Number.isFinite(e.buildIndex)
+        && typeof e.ts === 'number'
+        && typeof e.policyVersion === 'string' && e.policyVersion.length > 0
+        && (e.arm === 'full' || e.arm === 'task_scoped')
+        && typeof e.propensity === 'number'
+        && typeof e.fraction === 'number'
+        && typeof e.digestBytes === 'number'
+        && typeof e.digestBytesAvailable === 'number'
+        && typeof e.digestTruncated === 'boolean'
+        && typeof e.taskMatchBytes === 'number'
+        && typeof e.taskMatchCount === 'number'
+        && typeof e.memoryBlockBytes === 'number'
+        && typeof e.promptBytes === 'number'
+        && typeof e.memoryShare === 'number')
+      .slice(0, 50)
+      .map((e: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        buildIndex: e.buildIndex,
+        ts: new Date(e.ts),
+        policyVersion: String(e.policyVersion).slice(0, 100),
+        arm: e.arm,
+        propensity: String(e.propensity),
+        fraction: String(e.fraction),
+        digestBytes: e.digestBytes,
+        digestBytesAvailable: e.digestBytesAvailable,
+        digestTruncated: e.digestTruncated,
+        taskMatchBytes: e.taskMatchBytes,
+        taskMatchCount: e.taskMatchCount,
+        memoryBlockBytes: e.memoryBlockBytes,
+        promptBytes: e.promptBytes,
+        memoryShare: String(e.memoryShare),
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing();
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert prompt composition events', err);
       }
     }
   }

@@ -55,7 +55,7 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -1916,6 +1916,16 @@ export class WorkerManager {
       // Also on stdout: the per-worker session log is pruned after 48h, which
       // is shorter than the rework chains this experiment is measured on.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
+      // Durable, queryable rail: neither of the above survives long enough or
+      // is queryable enough to analyse the arm across a task's retry chain.
+      const { buffer: promptCompositionBuffer, nextBuildIndex } = appendPromptCompositionEvent(
+        worker.pendingPromptCompositionEvents,
+        worker.promptBuildIndex,
+        composition,
+        Date.now(),
+      );
+      worker.pendingPromptCompositionEvents = promptCompositionBuffer;
+      worker.promptBuildIndex = nextBuildIndex;
 
       // Build the agent subprocess environment from an allowlist rather than
       // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
