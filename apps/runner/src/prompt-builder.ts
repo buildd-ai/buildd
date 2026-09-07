@@ -273,17 +273,15 @@ export interface PromptBuildResult {
 }
 
 /**
- * Build the full prompt text from workspace context, task description,
- * memory, and communication policy.
+ * Build the full prompt text from workspace context, task description, memory,
+ * and communication policy — plus the experiment arm and block sizes the caller
+ * needs in order to log what it just built.
  *
- * Prefer `buildPromptWithComposition` at the call site that logs — it returns
- * the experiment arm and the block sizes alongside the text. This wrapper
- * exists for the callers and tests that only want the prompt.
+ * There is deliberately no text-only wrapper. One existed briefly and had no
+ * production caller: every call site that builds a prompt is also the site that
+ * must record its composition, so handing back the text alone invites a caller
+ * that silently drops the denominator.
  */
-export function buildPrompt(ctx: PromptContext): string {
-  return buildPromptWithComposition(ctx).promptText;
-}
-
 export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResult {
   const { task, worker, gitConfig, isConfigured, compactResult, taskSearchResults, fullObservations, inputPolicy, hasApiKey, inputAsRetry } = ctx;
   const promptParts: string[] = [];

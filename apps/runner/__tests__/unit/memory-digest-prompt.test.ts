@@ -1,31 +1,31 @@
 import { describe, expect, test } from 'bun:test';
-import { buildPrompt, buildPromptWithComposition } from '../../src/prompt-builder';
+import { buildPromptWithComposition } from '../../src/prompt-builder';
 
 /**
- * The control arm must be byte-identical to the behaviour that shipped before
- * memory-digest-policy.ts existed. These tests pin the rendered
- * `## Workspace Memory` section against a literal copy of the legacy output,
- * so a refactor of the block builder cannot quietly move the baseline the
- * experiment is measured against.
+ * The control arm is the experiment's baseline, so it is pinned here as a
+ * literal — a refactor of the block builder must not quietly rebase the thing
+ * the treatment is compared against.
+ *
+ * It differs from the pre-experiment rendering in exactly one way: the digest no
+ * longer arrives with its own `## Workspace Memory (N memories)` heading, which
+ * used to land under this block's header as a duplicate. That was corrected
+ * before any enrolment, when there was nothing to invalidate. From the first
+ * enrolled task onwards, any change here must bump the policy version.
  */
 
 const LEGACY_RECALL_LINE =
   '\nUse `recall scope=["memory","task"]` for full context (prior lessons + recent outcomes in one call). Use `learn` to record gotchas/patterns/decisions — NOT summaries.';
 
 /**
- * A digest shaped like the real one. `getCompactObservations` renders
- * `## Workspace Memory (N memories)` as the digest's own first line and then
- * `### <Type>s` subsections — so the assembled block contains a SECOND
- * `## Workspace Memory` heading, and memory bodies are user-authored markdown
- * that can contain blank lines and headings of their own.
+ * A digest shaped like the real one: `### <Type>s` subsections joined by blank
+ * lines, whose bodies are user-authored markdown and can therefore contain
+ * blank lines and headings of their own.
  *
  * An earlier version of this file located the block by scanning for the next
  * `\n\n## `, which this fixture breaks. Tests now read the block the production
  * code actually returns, so there is nothing left to mis-parse.
  */
 const REALISTIC_DIGEST = [
-  '## Workspace Memory (2 memories)',
-  '',
   '### Gotchas',
   '- **the gotcha**: watch out',
   '',
@@ -49,11 +49,11 @@ function ctx(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
-describe('workspace memory block — control arm is unchanged', () => {
-  test('default config renders the legacy block verbatim', () => {
+describe('workspace memory block — control arm', () => {
+  test('default config renders the control block verbatim', () => {
     const built = buildPromptWithComposition(ctx());
     const expected = [
-      '## Workspace Memory',
+      '## Workspace Memory (2 memories)',
       '- prior lesson A\n- prior lesson B',
       '### Relevant to This Task\n- **[gotcha] the gotcha**: watch out',
       LEGACY_RECALL_LINE,
@@ -70,7 +70,7 @@ describe('workspace memory block — control arm is unchanged', () => {
       compactResult: { count: 2, markdown: REALISTIC_DIGEST },
     }));
     expect(built.memory.block).toBe([
-      '## Workspace Memory',
+      '## Workspace Memory (2 memories)',
       REALISTIC_DIGEST,
       '### Relevant to This Task\n- **[gotcha] the gotcha**: watch out',
       LEGACY_RECALL_LINE,
@@ -101,8 +101,21 @@ describe('workspace memory block — control arm is unchanged', () => {
     expect(built.promptText).not.toContain('## Workspace Memory');
   });
 
-  test('the buildPrompt wrapper returns the same text as the full result', () => {
-    expect(buildPrompt(ctx())).toBe(buildPromptWithComposition(ctx()).promptText);
+  // getCompactObservations used to prefix its markdown with its own
+  // `## Workspace Memory (N memories)` line, which rendered underneath this
+  // block's header. Every prompt in the fleet carried the heading twice.
+  test('the header appears exactly once', () => {
+    const built = buildPromptWithComposition(ctx({
+      compactResult: { count: 2, markdown: REALISTIC_DIGEST },
+    }));
+    expect(built.promptText.match(/^## Workspace Memory/gm)).toHaveLength(1);
+  });
+
+  test('the header carries the count, and agrees with itself on plurals', () => {
+    expect(buildPromptWithComposition(ctx({ compactResult: { count: 1, markdown: 'x' } })).memory.block)
+      .toContain('## Workspace Memory (1 memory)');
+    expect(buildPromptWithComposition(ctx({ compactResult: { count: 40, markdown: 'x' } })).memory.block)
+      .toContain('## Workspace Memory (40 memories)');
   });
 });
 

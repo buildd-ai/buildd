@@ -204,7 +204,7 @@ describe('buildMemoryBlock — control arm', () => {
     // Literal, including the two leading newlines — the block's shape depends
     // on them and nothing else in the suite pins the truncated rendering.
     expect(r.block).toBe(
-      '## Workspace Memory\n'
+      '## Workspace Memory (9 memories)\n'
       + 'x'.repeat(4096)
       + '\n\n*(truncated — use `recall` for more)*'
       + RECALL_POINTER_LITERAL,
@@ -342,6 +342,19 @@ describe('buildMemoryBlock — task_scoped arm', () => {
     const expected = 4096 + Buffer.byteLength('\n\n*(truncated — use `recall` for more)*', 'utf8');
     expect(control.digestBytesAvailable).toBe(expected);
     expect(treated.digestBytesAvailable).toBe(expected);
+  });
+
+  test('the header, including its count, is identical in both arms', () => {
+    const args = {
+      compactResult: { count: 7, markdown: 'DIGEST BODY' },
+      taskSearchResults: [{ id: '1' }],
+      fullObservations: obs(1),
+    };
+    const header = (b: string | null) => b!.split('\n')[0];
+    expect(header(buildMemoryBlock({ arm: 'task_scoped', ...args }).block))
+      .toBe(header(buildMemoryBlock({ arm: 'full', ...args }).block));
+    expect(header(buildMemoryBlock({ arm: 'task_scoped', ...args }).block))
+      .toBe('## Workspace Memory (7 memories)');
   });
 
   test('the two arms differ on exactly one axis', () => {

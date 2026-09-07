@@ -6,10 +6,18 @@
  *
  * - `full` is what every worker got before this file existed: the entire
  *   workspace digest, blind-sliced at `FULL_DIGEST_MAX_BYTES`, followed by the
- *   task-specific matches. It is the control and it is byte-identical to the
- *   previous behaviour, deliberately including the blind slice. Fixing the
- *   slice to fall on a line boundary is a real improvement, but doing it here
- *   would move the control while the experiment runs.
+ *   task-specific matches. It is the control, and it deliberately keeps the
+ *   blind slice — fixing that to fall on a line boundary is a real improvement
+ *   and belongs in its own change.
+ *
+ * The control differs from the pre-experiment rendering in exactly one way: the
+ * digest no longer arrives with its own `## Workspace Memory (N memories)`
+ * heading, which used to land underneath this block's header as a duplicate.
+ * That was fixed here rather than later because **the control is only frozen
+ * once enrolment starts.** This module has never run outside tests, so there
+ * are no collected rows to invalidate; from the first enrolled task onwards,
+ * changing the control silently rebases the comparison and any change to it
+ * must bump `MEMORY_DIGEST_POLICY_VERSION`.
  *
  * - `task_scoped` drops the workspace-wide digest and keeps everything else,
  *   leaning on the `recall` tool the block already advertises to pull the rest
@@ -199,7 +207,17 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
     };
   }
 
-  const parts: string[] = ['## Workspace Memory'];
+  // The count rides on the header, in BOTH arms, so the arms still differ on
+  // exactly one axis. It is true regardless of whether the digest is shown, and
+  // under task_scoped it is the more useful half: "there are N memories, and
+  // here is how to fetch them" is an actionable pairing with the recall pointer
+  // below. `getCompactObservations` used to emit its own `## Workspace Memory
+  // (N memories)` line, which landed under this header as a duplicate.
+  const parts: string[] = [
+    compactResult.count > 0
+      ? `## Workspace Memory (${compactResult.count} ${compactResult.count === 1 ? 'memory' : 'memories'})`
+      : '## Workspace Memory',
+  ];
 
   let digestBytes = 0;
   if (arm === 'full' && renderedFullDigest) {

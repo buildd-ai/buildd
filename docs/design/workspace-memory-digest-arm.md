@@ -39,11 +39,19 @@ Introduce two arms of the memory block, selected per task:
 
 Enrolment is a fraction in `[0, 1]`, default `0`, set per runner by
 `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` or by
-`memoryDigestTaskScopedFraction` in the runner's `config.json`. At `0` every prompt is
-byte-identical to the behaviour that preceded this doc — including the blind
-slice, which is deliberately *not* fixed here. Straightening the truncation is a
-genuine improvement, but doing it in the same change would move the control while
-the experiment runs, and then neither result means anything.
+`memoryDigestTaskScopedFraction` in the runner's `config.json`. At `0` every
+prompt renders the control, which keeps the blind slice — straightening the
+truncation is a genuine improvement and belongs in its own change, because once
+enrolment starts, moving the control silently rebases the comparison.
+
+The control does differ from the pre-experiment rendering in one respect. The
+digest used to arrive from `getCompactObservations` carrying its own
+`## Workspace Memory (N memories)` heading, which landed *underneath* this
+block's header — so every prompt in the fleet showed the heading twice. The
+digest is now pure content and the block header owns the count, in **both** arms,
+which keeps the arms one axis apart. This was corrected before any enrolment,
+when there were no collected rows to invalidate; the same edit made later would
+require a policy-version bump.
 
 **The crux: the digest is not being used for navigation, and losing it costs
 nothing that the `recall` tool cannot recover on demand.**
