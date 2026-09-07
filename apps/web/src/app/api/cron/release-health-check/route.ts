@@ -61,7 +61,6 @@ export async function GET(req: NextRequest) {
       workspaceId: releases.workspaceId,
       verificationStrategy: releases.verificationStrategy,
       deployUrl: releases.deployUrl,
-      headSha: releases.headSha,
       healthyAt: releases.healthyAt,
       verificationUrl: sql<string | null>`${workspaces.releaseConfig}->>'verificationUrl'`,
     })
@@ -89,7 +88,6 @@ export async function GET(req: NextRequest) {
         workspaceId: row.workspaceId,
         verificationStrategy: row.verificationStrategy,
         deployUrl: row.deployUrl,
-        headSha: row.headSha,
         healthyAt: row.healthyAt,
       },
       row.verificationUrl,

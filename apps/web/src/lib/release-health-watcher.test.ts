@@ -45,7 +45,6 @@ function makeRelease(overrides: Partial<{
   id: string;
   workspaceId: string;
   deployUrl: string | null;
-  headSha: string | null;
   healthyAt: Date | null;
 }> = {}) {
   return {
@@ -53,20 +52,9 @@ function makeRelease(overrides: Partial<{
     workspaceId: 'ws-1111',
     verificationStrategy: 'http',
     deployUrl: null,
-    headSha: 'sha-current',
     healthyAt: new Date(),
     ...overrides,
   };
-}
-
-// Queues one Response-shaped value per call to globalThis.fetch, in order.
-function mockFetchSequence(responses: Array<{ ok: boolean; status?: number; json?: () => Promise<any> } | Error>) {
-  let call = 0;
-  globalThis.fetch = mock(() => {
-    const next = responses[call++];
-    if (next instanceof Error) return Promise.reject(next);
-    return Promise.resolve(next as Response);
-  }) as any;
 }
 
 interface UpdateCall { setValues: any }
@@ -182,19 +170,16 @@ describe('autoFileDegradationTask', () => {
 describe('probeAndDegrade', () => {
   beforeEach(resetAll);
 
-  it('returns ok when probe returns 2xx and the deployed sha matches the release head sha', async () => {
+  it('returns ok and does not degrade when probe returns 2xx', async () => {
     const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
-    mockFetchSequence([
-      { ok: true, status: 200 },
-      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-current' }) },
-    ]);
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true, status: 200 } as Response)) as any;
 
-    const result = await probeAndDegrade(makeRelease({ headSha: 'sha-current' }), 'https://example.com/health', db);
+    const result = await probeAndDegrade(makeRelease(), 'https://example.com/health', db);
     expect(result).toBe('ok');
     expect(db._updateCalls).toHaveLength(0);
   });
 
-  it('calls degradeRelease when probe returns non-2xx (sha never checked)', async () => {
+  it('calls degradeRelease when probe returns non-2xx', async () => {
     const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
     globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 500 } as Response)) as any;
 
@@ -213,59 +198,5 @@ describe('probeAndDegrade', () => {
     expect(result).toBe('degraded');
     expect(db._updateCalls).toHaveLength(1);
     expect(db._updateCalls[0].setValues.failureReason).toContain('ECONNREFUSED');
-  });
-
-  it('degrades with both shas in the reason when the deployed sha does not match, past the grace window', async () => {
-    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
-    mockFetchSequence([
-      { ok: true, status: 200 },
-      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-old' }) },
-    ]);
-    const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date(Date.now() - 10 * 60_000) });
-
-    const result = await probeAndDegrade(release, 'https://example.com/health', db);
-    expect(result).toBe('degraded');
-    expect(db._updateCalls).toHaveLength(1);
-    expect(db._updateCalls[0].setValues.state).toBe('degraded');
-    expect(db._updateCalls[0].setValues.failureReason).toContain('sha-old');
-    expect(db._updateCalls[0].setValues.failureReason).toContain('sha-new');
-  });
-
-  it('does not fail a mismatch that falls inside the post-deploy grace window', async () => {
-    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
-    mockFetchSequence([
-      { ok: true, status: 200 },
-      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-old' }) },
-    ]);
-    // healthyAt just now: deployment may still be propagating globally.
-    const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date() });
-
-    const result = await probeAndDegrade(release, 'https://example.com/health', db);
-    expect(result).toBe('unverified');
-    expect(db._updateCalls).toHaveLength(0);
-  });
-
-  it('returns unverified without failing when the release has no recorded head sha (older row)', async () => {
-    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
-    globalThis.fetch = mock(() => Promise.resolve({ ok: true, status: 200 } as Response)) as any;
-
-    const result = await probeAndDegrade(makeRelease({ headSha: null }), 'https://example.com/health', db);
-    expect(result).toBe('unverified');
-    expect(db._updateCalls).toHaveLength(0);
-  });
-
-  it('fetches the deploy identity endpoint at the verification URL origin', async () => {
-    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
-    let secondUrl: string | undefined;
-    let call = 0;
-    globalThis.fetch = mock((url: string) => {
-      call++;
-      if (call === 2) secondUrl = String(url);
-      if (call === 1) return Promise.resolve({ ok: true, status: 200 } as Response);
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-current' }) } as any);
-    }) as any;
-
-    await probeAndDegrade(makeRelease({ headSha: 'sha-current' }), 'https://example.com/api/version', db);
-    expect(secondUrl).toBe('https://example.com/api/deploy-identity');
   });
 });

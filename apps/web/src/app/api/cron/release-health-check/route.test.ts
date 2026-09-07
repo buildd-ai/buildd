@@ -32,7 +32,6 @@ mock.module('@buildd/core/db/schema', () => ({
     state: 'state',
     verificationStrategy: 'verificationStrategy',
     deployUrl: 'deployUrl',
-    headSha: 'headSha',
     healthyAt: 'healthyAt',
     deployedAt: 'deployedAt',
     workspaceId: 'workspaceId',
