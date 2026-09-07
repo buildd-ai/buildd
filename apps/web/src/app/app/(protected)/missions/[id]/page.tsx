@@ -388,6 +388,8 @@ export default async function MissionDetailPage({
     health: healthState,
     progress,
     criteriaUnverified,
+    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
+    hasPendingDeliverableWork,
   });
   const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
@@ -925,6 +927,20 @@ export default async function MissionDetailPage({
                   #{missionIntegrationPr.prNumber} →
                 </a>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* Criteria escalation banner — mission awaiting owner decision */}
+        {displayState === 'waiting_decision' && (
+          <div className="card p-4 mb-4 border-status-warning/40 border-l-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[12px] font-semibold text-status-warning uppercase tracking-wider">Waiting on decision</span>
+              </div>
+              <p className="text-[13px] text-text-secondary">
+                Goal criteria have failed or are unmeasurable. The mission is paused and awaiting your decision: edit the criterion to clarify its intent, or file work against the failing verdict.
+              </p>
             </div>
           </div>
         )}
