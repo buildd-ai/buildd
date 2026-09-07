@@ -439,8 +439,11 @@ export class BuilddClient {
           return `### ${t.charAt(0).toUpperCase() + t.slice(1)}s\n${items}`;
         });
 
-      const markdown = `## Workspace Memory (${data.total || memories.length} memories)\n\n${sections.join('\n\n')}`;
-      return { markdown, count: data.total || memories.length };
+      // No heading here. This markdown is pasted UNDER the prompt's own
+      // `## Workspace Memory` header (apps/runner/src/memory-digest-policy.ts),
+      // and carrying a second one produced a duplicated heading in every
+      // prompt. The block header owns the count now.
+      return { markdown: sections.join('\n\n'), count: data.total || memories.length };
     } catch {
       return { markdown: '', count: 0 };
     }
