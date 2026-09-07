@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.203.0",
+  "version": "0.203.1",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -34,6 +34,7 @@
     "./cbm-health": "./cbm-health.ts",
     "./secrets": "./secrets/index.ts",
     "./memory-store": "./memory-store.ts",
+    "./memory-file-scope": "./memory-file-scope.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
     "./mission-integration": "./mission-integration.ts",

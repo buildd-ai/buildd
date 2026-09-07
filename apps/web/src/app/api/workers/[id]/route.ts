@@ -780,6 +780,15 @@ export async function PATCH(
         digestTruncated: e.digestTruncated,
         taskMatchBytes: e.taskMatchBytes,
         taskMatchCount: e.taskMatchCount,
+        // Both deliberately absent from the validation filter above: a runner
+        // that predates these fields must still be able to write a row, and
+        // NULL there is the honest record of "this runner did not report it".
+        // Coercing them to a default would pool an unknown backend into the
+        // Claude cohort and an unknown provenance into a real one.
+        taskMatchDerivedBy: typeof e.taskMatchDerivedBy === 'string' && e.taskMatchDerivedBy
+          ? e.taskMatchDerivedBy.slice(0, 40)
+          : null,
+        backend: typeof e.backend === 'string' && e.backend ? e.backend.slice(0, 40) : null,
         memoryBlockBytes: e.memoryBlockBytes,
         promptBytes: e.promptBytes,
         memoryShare: String(e.memoryShare),

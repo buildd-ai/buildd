@@ -153,3 +153,38 @@ export function applyUpdate(
     return { success: false, error: err.message || 'Update failed' };
   }
 }
+
+/**
+ * How long `updateState.updating` may stay set before we treat the update path
+ * as wedged rather than slow. A real update — fetch, reset, `bun install`,
+ * restart — completes in well under a minute; ten is generous enough that a
+ * slow install is never mistaken for a hang.
+ */
+export const UPDATE_STUCK_LIMIT_MS = 10 * 60_000;
+
+/**
+ * Has the `updating` flag been set so long that the update path must be stuck?
+ *
+ * This matters because `updating` gates BOTH the auto-updater and the drift
+ * check (`hasCommitDrift`). Every code path that sets it either exits the
+ * process or clears it in a catch — but only for failures that *throw*. An
+ * `await` that hangs without throwing leaves the flag set forever and silences
+ * both mechanisms at once, which reproduces the original failure exactly: the
+ * working tree moves on, the process keeps its old modules, and nothing logs.
+ *
+ * Production evidence for that shape: 41 `Auto-updating` attempts against 22
+ * successes and **zero** logged failures. The rollback path's `bun install` had
+ * no kill timeout, so a stalled install could hang indefinitely.
+ *
+ * Returns false when `updatingSince` is null so an un-instrumented caller can
+ * never trigger a spurious unwedge.
+ */
+export function isUpdateStuck(
+  updating: boolean,
+  updatingSince: number | null,
+  now: number,
+  limitMs: number = UPDATE_STUCK_LIMIT_MS,
+): boolean {
+  if (!updating || updatingSince === null) return false;
+  return now - updatingSince >= limitMs;
+}
