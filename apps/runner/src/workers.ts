@@ -3061,8 +3061,12 @@ export class WorkerManager {
         backend: task.backend,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
-      // Also on stdout: the per-worker session log is pruned after 48h, which
-      // is shorter than the rework chains this experiment is measured on.
+      // Also on stdout, as a live "is the arm firing at all" signal. Whether
+      // that outlives the process is a property of the deployment's launcher,
+      // not of this code: the reference one appends to a container-local file
+      // inside a restart loop, so it accumulates history but is unrotated and
+      // dies with the container. Neither sink is a queryable rail — see the
+      // open question in the design doc.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
