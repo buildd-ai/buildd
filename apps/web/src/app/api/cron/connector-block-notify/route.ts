@@ -21,18 +21,15 @@ import { tasks, secrets, connectors } from '@buildd/core/db/schema';
 import { eq, and, sql, inArray } from 'drizzle-orm';
 import { notifyConnectorBlockReminder, notifyConnectorExpiry } from '../../workers/claim/connector-block-notify';
 import { shouldNotifyExpiry } from '@/lib/connector-status';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
 export async function POST(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  return withCronRun('connector-block-notify', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   // Find pending tasks that have a connector block notification but no reminder yet.
   const blockedTasks = await db.query.tasks.findMany({

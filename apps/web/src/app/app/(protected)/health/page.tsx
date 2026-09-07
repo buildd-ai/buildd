@@ -26,11 +26,14 @@ import {
 import { getBackendStrandSummary } from '@/lib/backend-strand';
 import type { CbmHealthSummary } from '@/lib/cbm-insight';
 import { fetchCbmSummary } from '@/lib/cbm-insight-query';
+import { buildSubagentDelegationPanel, type SubagentDelegationPanel } from '@/lib/subagent-time';
+import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
 import { HealthClient } from './HealthClient';
 import Link from 'next/link';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
 export type { CbmHealthSummary };
+export type { SubagentDelegationPanel };
 
 export const dynamic = 'force-dynamic';
 
@@ -231,6 +234,7 @@ export default async function HealthPage({
     failureAnalytics,
     strandSummary,
     cbmSummary,
+    subagentDelegation,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
@@ -414,6 +418,22 @@ export default async function HealthPage({
       window,
       windowStart: new Date(Date.now() - parseWindowMs(window)),
     }).catch(() => null),
+
+    // Delegated-work TREND: what share of a session's total agent-effort
+    // (wall clock + background subagent time) was handed to background
+    // subagents. Computed, stored on every terminal worker, and read by
+    // nobody until now — see subagent-time.ts for why background time is
+    // additional effort rather than a slice of wall clock.
+    (async (): Promise<SubagentDelegationPanel | null> => {
+      const windowStart = new Date(Date.now() - parseWindowMs(window));
+      const rows = await fetchSubagentTimeRows({ workspaceIds: scopedWsIds, windowStart });
+      return buildSubagentDelegationPanel({
+        rows,
+        windowStart,
+        rowLimit: SUBAGENT_TIME_ROW_LIMIT,
+        capturedSince: SUBAGENT_TIME_CAPTURED_SINCE,
+      });
+    })().catch(() => null as SubagentDelegationPanel | null),
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -500,6 +520,7 @@ export default async function HealthPage({
       failureAnalytics={failureAnalytics ?? null}
       window={window}
       cbm={cbmSummary ?? null}
+      subagentDelegation={subagentDelegation ?? null}
       now={now}
     />
   );

@@ -1,4 +1,4 @@
-export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted' | 'held';
+export type MissionHealth = 'active' | 'on-schedule' | 'stalled' | 'shipped' | 'paused' | 'idle' | 'budget-exhausted' | 'held' | 'escalated';
 
 // ─── Drive state ──────────────────────────────────────────────────────────────
 
@@ -219,6 +219,9 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     // them after 24h of quiet (lib/mission-archive.ts). Anything short of
     // 100% with no agents running is genuinely stuck → attention.
     case 'idle': return progress === 100 ? 'review' : 'attention';
+    // The organizer gave up and stood its own heartbeat down — this is the
+    // one health value that is never a quiet background state.
+    case 'escalated': return 'attention';
   }
 }
 
@@ -260,12 +263,23 @@ export function deriveMissionHealth(opts: {
   isHeld?: boolean;
   /** Earliest future startAt of pending tasks created by the user (loopIteration=0). */
   pendingUserScheduledAt?: Date | null;
+  /** `missions.criteriaEscalatedAt` — set once the goal-criteria gate has handed the mission to its owner. */
+  criteriaEscalatedAt?: Date | string | null;
+  /**
+   * True when a deliverable task is still open. Required (not just present)
+   * to reach 'escalated': the caller must affirmatively know there is no work
+   * left, so an omitted value never silently produces the state. Work still
+   * moving means the mission is not actually stuck, whatever the escalation
+   * flag says — a changed verdict clears the flag on its own once it matters.
+   */
+  hasPendingDeliverableWork?: boolean;
 }): MissionHealth {
   if (opts.status === 'completed') return 'shipped';
   if (opts.status === 'paused') return 'paused';
   if (opts.isHeld) return 'held';
   if (opts.status === 'budget_exhausted') return 'budget-exhausted';
   if (opts.activeAgents > 0) return 'active';
+  if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'escalated';
 
   if (opts.cronExpression) {
     // Manual mode: schedule exists but orchestrator is disarmed — not "on schedule"
@@ -327,6 +341,7 @@ export const HEALTH_DISPLAY: Record<MissionHealth, { label: string; colorClass: 
   held: { label: 'Held', colorClass: 'health-pill-paused' },
   idle: { label: 'Idle', colorClass: 'health-pill-idle' },
   'budget-exhausted': { label: 'Budget exhausted', colorClass: 'health-pill-budget-exhausted' },
+  escalated: { label: 'Needs decision', colorClass: 'health-pill-escalated' },
 };
 
 export function timeAgo(date: Date | string): string {

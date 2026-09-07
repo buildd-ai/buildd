@@ -11,22 +11,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runFeedbackDigest, getFeedbackStats } from '@/lib/feedback-digest';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60; // Allow up to 60s for processing
 
 export async function POST(req: NextRequest) {
-  // ── Auth ───────────────────────────────────────────────────────────────
-  const authHeader = req.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
+  return withCronRun('feedback-digest', req, report => runCronJob(req, report));
+}
 
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-
-  const token = authHeader?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   // ── Parameters ─────────────────────────────────────────────────────────
   const url = new URL(req.url);

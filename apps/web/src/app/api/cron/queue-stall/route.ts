@@ -80,6 +80,7 @@ import {
   DEP_UNBLOCKING_PR_LIFECYCLE,
 } from '@/lib/dep-gate-contract';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
@@ -412,14 +413,10 @@ async function resolveStallGate(
 }
 
 export async function POST(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  return withCronRun('queue-stall', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const now = new Date();
   const threshold = new Date(now.getTime() - STALL_THRESHOLD_HOURS * 3_600_000);
@@ -683,7 +680,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  return NextResponse.json({
+  const result = {
     ok: true,
     thresholdHours: STALL_THRESHOLD_HOURS,
     candidates: candidates.length,
@@ -692,5 +689,7 @@ export async function POST(req: NextRequest) {
     deduped,
     notified,
     stalled,
-  });
+  };
+  report({ processed: examinedSet.length, changed: notified, errors: 0, result });
+  return NextResponse.json(result);
 }

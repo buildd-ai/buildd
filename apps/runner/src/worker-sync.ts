@@ -53,6 +53,31 @@ function computeTouchedPaths(worktreePath: string): string[] {
 }
 
 /**
+ * Worktree paths are keyed on the requested branch (see setupWorktree), not on
+ * worker id — a retry on the same task computes the identical path. That means
+ * a failed worker's record can outlive it in memory (pending eviction retention)
+ * while a newer worker on the same task is actively checked out at that same
+ * path. Eviction cleanup must not tear down a path another live worker owns,
+ * or a still-running session loses its worktree (and any uncommitted work)
+ * out from under it. "Live" here means anything short of the two terminal
+ * statuses — 'stale' and 'waiting' workers can still resume into the same
+ * session and worktree.
+ */
+function isWorktreeOwnedByOtherActiveWorker(
+  workers: Map<string, LocalWorker>,
+  worktreePath: string,
+  excludeWorkerId: string,
+): boolean {
+  for (const [id, other] of workers) {
+    if (id === excludeWorkerId) continue;
+    if (other.worktreePath === worktreePath && other.status !== 'done' && other.status !== 'error') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Check if a branch name indicates an ephemeral e2e test worktree.
  * These are created by e2e/integration tests and should be cleaned up
  * immediately (0 retention) to prevent worktree accumulation.
@@ -488,11 +513,15 @@ export class WorkerSync {
           worker.worktreePath &&
           existsSync(worker.worktreePath)
         ) {
-          const repoPath = repoPathFromWorktree(worker.worktreePath);
-          cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
-            console.error(`[Worker ${id}] Waiting worktree TTL cleanup failed:`, err);
-          });
-          sessionLog(id, 'info', 'waiting_worktree_reclaimed', `Reclaimed worktree of abandoned waiting worker after ${Math.round(WAITING_WORKTREE_TTL_MS / 3600000)}h TTL`);
+          if (isWorktreeOwnedByOtherActiveWorker(this.ctx.workers, worker.worktreePath, id)) {
+            sessionLog(id, 'info', 'waiting_worktree_reclaim_skipped', 'Skipped TTL reclaim: worktree path is now owned by another active worker');
+          } else {
+            const repoPath = repoPathFromWorktree(worker.worktreePath);
+            cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+              console.error(`[Worker ${id}] Waiting worktree TTL cleanup failed:`, err);
+            });
+            sessionLog(id, 'info', 'waiting_worktree_reclaimed', `Reclaimed worktree of abandoned waiting worker after ${Math.round(WAITING_WORKTREE_TTL_MS / 3600000)}h TTL`);
+          }
           worker.worktreePath = undefined;
         }
         continue; // never evict waiting workers from memory
@@ -506,12 +535,20 @@ export class WorkerSync {
         (worker.status === 'done' || worker.status === 'error') &&
         now - worker.lastActivity >= retention
       ) {
-        // Clean up worktree if it still exists (completed workers keep worktree for resume)
+        // Clean up worktree if it still exists (completed workers keep worktree for resume).
+        // Worktree paths are branch-keyed, so a retry on the same task can already be
+        // checked out at this exact path by the time this (older, failed) worker's
+        // retention window elapses — skip cleanup rather than deleting a live worktree
+        // out from under an active worker.
         if (worker.worktreePath && existsSync(worker.worktreePath)) {
-          const repoPath = repoPathFromWorktree(worker.worktreePath);
-          cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
-            console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
-          });
+          if (isWorktreeOwnedByOtherActiveWorker(this.ctx.workers, worker.worktreePath, id)) {
+            sessionLog(id, 'info', 'eviction_worktree_cleanup_skipped', 'Skipped worktree cleanup on eviction: path is now owned by another active worker');
+          } else {
+            const repoPath = repoPathFromWorktree(worker.worktreePath);
+            cleanupWorktree(repoPath, worker.worktreePath, id).catch(err => {
+              console.error(`[Worker ${id}] Eviction worktree cleanup failed:`, err);
+            });
+          }
         }
         sessionLog(id, 'info', 'worker_evicted', `Evicted from memory after retention period (status: ${worker.status})`);
         this.ctx.workers.delete(id);
