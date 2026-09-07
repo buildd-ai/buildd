@@ -10,7 +10,7 @@ import { WorkerManager } from './workers';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
-import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from './updater';
+import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -124,14 +124,33 @@ function checkForUpdate(current: string | null, latest: string | null): boolean 
   return current !== latest;
 }
 
-// Get changelog between two commits (for release notes)
-async function getChangelog(fromCommit: string, toCommit: string): Promise<string[]> {
+// True when the local install is a shallow clone (`git clone --depth 1`).
+// A shallow history can make `git log fromCommit..toCommit` return an empty
+// range for reasons that have nothing to do with the release content, so an
+// empty changelog is only trustworthy on a non-shallow repo.
+async function isShallowRepo(): Promise<boolean> {
+  try {
+    return (await gitAsync(['rev-parse', '--is-shallow-repository'], BUILDD_DIR, 5000)) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+// Get changelog between two commits (for release notes). `reliable` is false
+// when an empty result can't be trusted to mean "no runner changes" — see
+// isShallowRepo above; callers must not gate update-availability on an
+// unreliable empty changelog (that's the mechanism behind a runner silently
+// never picking up new releases).
+async function getChangelog(fromCommit: string, toCommit: string): Promise<{ entries: string[]; reliable: boolean }> {
   try {
     // Fetch first so the target commit exists locally
     await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000).catch(() => {});
     const log = await gitAsync(['log', '--oneline', '--no-merges', `${fromCommit}..${toCommit}`], BUILDD_DIR, 5000);
-    return log.split('\n').filter(Boolean).slice(0, 15); // Cap at 15 entries
-  } catch { return []; }
+    const entries = log.split('\n').filter(Boolean).slice(0, 15); // Cap at 15 entries
+    if (entries.length > 0) return { entries, reliable: true };
+    const shallow = await isShallowRepo();
+    return { entries: [], reliable: !shallow };
+  } catch { return { entries: [], reliable: false }; }
 }
 
 // Check if the working tree has uncommitted tracked-file changes.
@@ -180,6 +199,8 @@ interface SavedConfig {
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
   maxTurns?: number; // Max turns per worker session (default: no limit)
+  // Share of tasks (0-1) enrolled in the task_scoped workspace-memory arm.
+  memoryDigestTaskScopedFraction?: number;
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -203,6 +224,7 @@ function loadSavedConfig(): SavedConfig {
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
         maxTurns: data.maxTurns,
+        memoryDigestTaskScopedFraction: data.memoryDigestTaskScopedFraction,
       };
     }
   } catch (err) {
@@ -447,8 +469,12 @@ const config: LocalUIConfig = {
   workspaceIsolationRoot: process.env.BUILDD_WORKSPACE_ISOLATION_ROOT || undefined,
   // Workspace-memory experiment enrolment. 0 (the default) means every prompt
   // keeps the workspace-wide digest exactly as before.
+  // `||`, not `??`, matching every neighbouring env-over-saved field: a
+  // set-but-empty env var (the normal shape in a .env file or a compose
+  // `environment:` list) must fall through to the saved value rather than
+  // shadow it with ''.
   memoryDigestTaskScopedFraction: resolveTaskScopedFraction(
-    process.env.BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION ?? savedConfig.memoryDigestTaskScopedFraction,
+    process.env.BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION || savedConfig.memoryDigestTaskScopedFraction,
   ),
 };
 
@@ -547,11 +573,16 @@ async function setLatestCommit(sha: string) {
   const wasAvailable = updateState.updateAvailable;
   if (checkForUpdate(updateState.currentCommit, sha)) {
     // Fetch changelog for release notes
+    let changelogReliable = true;
     if (updateState.currentCommit) {
-      updateState.changelog = await getChangelog(updateState.currentCommit, sha);
+      const changelog = await getChangelog(updateState.currentCommit, sha);
+      updateState.changelog = changelog.entries;
+      changelogReliable = changelog.reliable;
     }
-    // Only show update if there are actual code changes (skip empty releases)
-    updateState.updateAvailable = updateState.changelog.length > 0;
+    // Only skip empty releases when we can trust the changelog was actually
+    // empty — see shouldShowUpdateAvailable for why an unreliable (shallow
+    // clone) empty result must not be read as "no changes".
+    updateState.updateAvailable = shouldShowUpdateAvailable(updateState.changelog, changelogReliable);
     if (updateState.updateAvailable && !wasAvailable) {
       updateState.autoUpdateRetries = 0; // Reset retries for new version
       console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
@@ -657,6 +688,52 @@ function broadcast(event: any) {
     } catch {
       sseClients.delete(controller);
     }
+  }
+}
+
+// Dedup flag for the drift warning below: true once we've logged "restart
+// deferred" for the drift currently in progress, so a long-running worker
+// doesn't produce a fresh warning line every 60s tick while we wait for it
+// to go idle.
+let pendingTreeSyncRestart = false;
+
+// Gracefully restart the process so it picks up on-disk code changes:
+// drain SSE connections, then exit 75 for the launcher's restart loop.
+// Every step is defensive — a failure anywhere in the drain sequence still
+// falls through to process.exit(75) rather than leaving `updateState.updating`
+// stuck true with no restart ever happening (the exact "19 wedged attempts"
+// failure mode this replaces). A 20s failsafe forces the exit even if the
+// happy path never reaches its own process.exit call.
+function scheduleGracefulRestart(reason: string) {
+  console.log(`[restart] scheduling graceful restart (${reason})`);
+  updateState.updating = true;
+  const failsafe = setTimeout(() => {
+    console.error(`[restart] graceful restart did not complete within 20s (${reason}) — forcing exit`);
+    process.exit(75);
+  }, 20_000);
+  try {
+    setTimeout(() => {
+      try {
+        console.log('Graceful restart: draining connections...');
+        for (const controller of sseClients) {
+          try { controller.close(); } catch { /* ignore */ }
+        }
+        sseClients.clear();
+        setTimeout(() => {
+          clearTimeout(failsafe);
+          console.log('Restarting...');
+          process.exit(75);
+        }, 500);
+      } catch (err: any) {
+        clearTimeout(failsafe);
+        console.error(`[restart] failed while draining connections (${reason}): ${err.message} — forcing exit anyway`);
+        process.exit(75);
+      }
+    }, 1000);
+  } catch (err: any) {
+    clearTimeout(failsafe);
+    console.error(`[restart] failed to schedule restart (${reason}): ${err.message}`);
+    updateState.updating = false;
   }
 }
 
@@ -817,6 +894,7 @@ const server = DEBUG_MODE ? Bun.serve({
 
     // Version endpoint
     if (path === '/api/version' && req.method === 'GET') {
+      const diskCommit = getDiskCommit();
       return Response.json({
         version: PKG_VERSION,
         currentCommit: updateState.currentCommit?.slice(0, 7) || null,
@@ -824,6 +902,12 @@ const server = DEBUG_MODE ? Bun.serve({
         latestCommit: updateState.latestCommit?.slice(0, 7) || null,
         updating: updateState.updating,
         changelog: updateState.changelog,
+        // Fresh disk read vs the process's cached commit — a mismatch here
+        // means an external process rewrote ~/.buildd without restarting
+        // this runner (see hasCommitDrift). Should self-correct within 60s;
+        // a value that's stuck true across repeated polls is a real bug.
+        diskCommit: diskCommit?.slice(0, 7) || null,
+        commitDrift: hasCommitDrift(diskCommit, updateState.currentCommit),
       }, { headers: corsHeaders });
     }
 
@@ -928,20 +1012,7 @@ const server = DEBUG_MODE ? Bun.serve({
         console.log(`Updated ${prevCommit?.slice(0, 7)} → ${newCommit?.slice(0, 7)} (health check passed)`);
         broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
 
-        // Graceful restart: drain SSE connections, then exit
-        setTimeout(() => {
-          console.log('Graceful restart: draining connections...');
-          // Close all SSE connections cleanly
-          for (const controller of sseClients) {
-            try { controller.close(); } catch { /* ignore */ }
-          }
-          sseClients.clear();
-          // Give connections a moment to close, then exit with 75 for launcher restart
-          setTimeout(() => {
-            console.log('Restarting...');
-            process.exit(75);
-          }, 500);
-        }, 1000);
+        scheduleGracefulRestart('manual update via /api/update');
 
         return Response.json({ ok: true, newCommit: newCommit?.slice(0, 7), prevCommit: prevCommit?.slice(0, 7) }, { headers: corsHeaders });
       } catch (err: any) {
@@ -2098,8 +2169,7 @@ const server = DEBUG_MODE ? Bun.serve({
 
       if (result.success) {
         broadcast({ type: 'update_progress', status: 'restarting' });
-        // Give SSE time to flush, then exit with code 75 for launcher restart
-        setTimeout(() => process.exit(75), 500);
+        scheduleGracefulRestart('manual update via /api/update/apply');
         return Response.json({ success: true, ...result }, { headers: corsHeaders });
       } else {
         updateState.updating = false;
@@ -2463,6 +2533,26 @@ setInterval(async () => {
     updateState.lastIdleAt = Date.now(); // Just became idle
   }
 
+  // Drift check: the on-disk HEAD no longer matches the commit this process
+  // loaded. This is a fresh disk read each tick, so it catches drift from
+  // ANY external cause — self-heal's fixGitBranch, a host-level force-reset —
+  // not just this runner's own update paths, and it's cheap enough to run
+  // every 60s. See hasCommitDrift's doc comment for why this matters.
+  const diskCommit = getDiskCommit();
+  const drifted = hasCommitDrift(diskCommit, updateState.currentCommit);
+  if (drifted && !updateState.updating) {
+    if (activeCount === 0) {
+      console.error(`[drift] on-disk HEAD ${diskCommit!.slice(0, 7)} no longer matches running commit ${updateState.currentCommit!.slice(0, 7)} — restarting now (idle)`);
+      pendingTreeSyncRestart = false;
+      scheduleGracefulRestart(`tree drift: disk ${diskCommit!.slice(0, 7)} vs running ${updateState.currentCommit!.slice(0, 7)}`);
+    } else if (!pendingTreeSyncRestart) {
+      pendingTreeSyncRestart = true;
+      console.error(`[drift] on-disk HEAD ${diskCommit!.slice(0, 7)} no longer matches running commit ${updateState.currentCommit!.slice(0, 7)} — ${activeCount} active worker(s), restart deferred until idle`);
+    }
+  } else if (!drifted) {
+    pendingTreeSyncRestart = false;
+  }
+
   // Auto-update when: update available, not already updating, idle long enough, retries not exhausted
   if (
     updateState.updateAvailable &&
@@ -2527,12 +2617,7 @@ setInterval(async () => {
       console.log(`Auto-updated to ${newCommit?.slice(0, 7)}`);
       broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
 
-      // Graceful restart (exit 75 for launcher restart loop)
-      setTimeout(() => {
-        for (const c of sseClients) { try { c.close(); } catch {} }
-        sseClients.clear();
-        setTimeout(() => process.exit(75), 500);
-      }, 1000);
+      scheduleGracefulRestart('idle auto-update');
     } catch (err: any) {
       if (prevCommit) {
         try {

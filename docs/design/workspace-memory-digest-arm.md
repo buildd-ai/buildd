@@ -37,11 +37,21 @@ Introduce two arms of the memory block, selected per task:
 | `full` (default) | yes, blind-sliced at the cap | yes | yes |
 | `task_scoped` | **no** | yes | yes |
 
-Enrolment is a fraction in `[0, 1]`, default `0`. At `0` every prompt is
-byte-identical to the behaviour that preceded this doc — including the blind
-slice, which is deliberately *not* fixed here. Straightening the truncation is a
-genuine improvement, but doing it in the same change would move the control while
-the experiment runs, and then neither result means anything.
+Enrolment is a fraction in `[0, 1]`, default `0`, set per runner by
+`BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` or by
+`memoryDigestTaskScopedFraction` in the runner's `config.json`. At `0` every
+prompt renders the control, which keeps the blind slice — straightening the
+truncation is a genuine improvement and belongs in its own change, because once
+enrolment starts, moving the control silently rebases the comparison.
+
+The control does differ from the pre-experiment rendering in one respect. The
+digest used to arrive from `getCompactObservations` carrying its own
+`## Workspace Memory (N memories)` heading, which landed *underneath* this
+block's header — so every prompt in the fleet showed the heading twice. The
+digest is now pure content and the block header owns the count, in **both** arms,
+which keeps the arms one axis apart. This was corrected before any enrolment,
+when there were no collected rows to invalidate; the same edit made later would
+require a policy-version bump.
 
 **The crux: the digest is not being used for navigation, and losing it costs
 nothing that the `recall` tool cannot recover on demand.**
@@ -62,6 +72,15 @@ worker would split a single outcome across both arms.
 
 Assignment is a deterministic hash of the task id, so it is stable across runner
 restarts and reproducible at analysis time without storing an assignment table.
+The hash is **salted with `MEMORY_DIGEST_POLICY_VERSION`**, so bumping the
+version re-randomises: without the salt every task would keep the arm it drew
+under `v1`, and a `v2` comparison would silently inherit both `v1`'s assignment
+and any carry-over effect from it.
+
+The hash is FNV-1a, which is measurably less uniform for ids differing only in a
+short suffix. Task ids are v4 UUIDs (`tasks.id` is `uuid().defaultRandom()`), so
+this does not bite — but it is why the distribution test uses UUID-shaped
+fixtures rather than `task-1`, `task-2`.
 
 ### One axis, deliberately
 
@@ -85,6 +104,34 @@ joined first.
 Sizes are UTF-8 byte lengths. The cap slices by code unit, as it always has, but
 the prompt-budget question is about bytes and workspace memory carries non-ASCII.
 
+The record is built at the **last** line that mutates the prompt, not at the end
+of prompt assembly: the Codex branch prepends an AGENTS.md pointer much later, so
+a record built earlier understates `promptBytes` and inflates `memoryShare`. It
+also carries `backend`, because the Codex path delivers the role persona, inlined
+skills and project instructions through a file on disk rather than through the
+prompt — `memoryShare` therefore means a different thing per backend and rows
+must be segmented, never pooled.
+
+## Turning it on
+
+```bash
+# 10% of tasks lose the workspace-wide digest.
+BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION=0.1
+```
+
+Env var wins over `config.json`; a set-but-empty env var falls through to the
+saved value rather than shadowing it with `''`. A value outside `[0, 1]` runs the
+control — `15` meant as 15% does not become 15× or clamp to full enrolment, it
+becomes 0. The knob is per runner, so a fleet with several runners needs it set
+on each; the *assignment* is per task and identical on every runner, so a task
+does not change arm depending on who claims it.
+
+Check what is actually happening by grepping runner stdout for
+`[prompt-composition]`. Every prompt build emits one line, in both arms.
+
+Before changing anything about the block itself, confirm nobody is enrolled —
+the `full` arm is the control and moving it mid-flight invalidates the result.
+
 ## Non-goals
 
 - **Fixing the blind truncation.** Line-boundary truncation is right and is
@@ -97,13 +144,25 @@ the prompt-budget question is about bytes and workspace memory carries non-ASCII
 
 ## Open questions
 
-**Where the record durably lands.** Today it goes to the per-worker session log
-and to runner stdout. The session log is pruned after 48 hours, which is shorter
-than the rework chains the experiment is measured on, so stdout is currently the
-only rail that outlives the window. That is enough to *run* the arm and not
-enough to *analyse* it. I lean towards a small server-side event rather than a
-column on `workers`: the record is per prompt build, and a looped task builds
-several, so a column would silently keep only the last one.
+**Where the record durably lands.** Today it goes to the per-worker session log,
+pruned after 48 hours, and to runner stdout.
+
+Stdout is the longer-lived of the two but not by design. The reference
+deployment's launcher redirects the runner into an append-mode file under the
+container's `/tmp`, wrapped in a restart loop, so the file does survive the
+`exit 75` update restart and does accumulate days of history. It is still not a
+rail: it is unrotated and grows without bound, it is container-local so it dies
+with the container rather than with the process, and it is a text log with no
+query path — you grep it by hand over SSH.
+
+So the arm can be *run*, and a recent window can be *read by hand*. Neither is
+enough to attribute a multi-day rework chain to an arm. A durable rail is a
+precondition for trusting any result, and it should be a small server-side event
+rather than a column on `workers`: the record is per prompt build, and a looped
+task builds several, so a column would silently keep only the last one.
+
+Treat both existing sinks as debugging aids — good for confirming the arm fires
+at all, not for analysis.
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
 out negative would leave open whether a *smaller but non-empty* digest is better

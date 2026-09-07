@@ -271,16 +271,25 @@ describe('setupWorktree', () => {
     expect(result?.fallback).toEqual({ candidate: 'buildd/diverged-branch', reason: 'diverged' });
   });
 
-  test('baseBranch (legacy CI retry field): honored when resumeBranch absent', async () => {
+  // `baseBranch` alone (no `resumeBranch`) is declared-base semantics, not a
+  // resume candidate — it is also how a mission-branch task's integration
+  // branch arrives, and cutting a fresh branch FROM it is exactly what that
+  // task wants. Treating bare `baseBranch` as "check out this branch
+  // directly" used to make a mission-branch task land straight on its own
+  // base ref (confirmed live). Every genuine resume caller now sets
+  // `resumeBranch` explicitly alongside `baseBranch` — see the resumeBranch
+  // tests above for that path.
+  test('baseBranch alone (no resumeBranch): cuts the task branch FROM it, never checks it out directly', async () => {
     // revListBehavior = 'ok' (default)
-    const context = { baseBranch: 'buildd/legacy-prior-branch' };
+    const context = { baseBranch: 'buildd/declared-base-branch' };
 
     const result = await setupWorktree('/repo', 'buildd/retry-task-branch', 'main', 'worker-5', context);
 
-    expect(result?.branch).toBe('buildd/legacy-prior-branch');
+    expect(result?.branch).toBe('buildd/retry-task-branch');
+    expect(result?.base).toBe('origin/buildd/declared-base-branch');
     const addCmd = syncCalls.find(c => c.cmd.includes('git worktree add'));
-    expect(addCmd?.cmd).toContain('buildd/legacy-prior-branch');
-    expect(addCmd?.cmd).toContain('origin/buildd/legacy-prior-branch');
+    expect(addCmd?.cmd).toContain('-b "buildd/retry-task-branch"');
+    expect(addCmd?.cmd).toContain('origin/buildd/declared-base-branch');
   });
 
 

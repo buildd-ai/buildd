@@ -288,6 +288,10 @@ select {
     color: var(--status-error);
     border-color: var(--status-error);
   }
+  .health-pill-escalated {
+    color: var(--status-warning);
+    border-color: var(--status-warning);
+  }
 }
 
 @layer components {

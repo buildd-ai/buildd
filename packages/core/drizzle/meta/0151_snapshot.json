@@ -1,5 +1,5 @@
 {
-  "id": "b39c80f8-67db-4581-9616-1b6e4eb3e687",
+  "id": "0d039400-a8d4-4640-bbb6-d6484473356f",
   "prevId": "e0b5da87-c3da-4792-8116-e42ea3957b54",
   "version": "7",
   "dialect": "postgresql",
@@ -1397,6 +1397,115 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.cron_runs": {
+      "name": "cron_runs",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "job": {
+          "name": "job",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ok": {
+          "name": "ok",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "processed": {
+          "name": "processed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "changed": {
+          "name": "changed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "errors": {
+          "name": "errors",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "alerted_at": {
+          "name": "alerted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "cron_runs_job_started_idx": {
+          "name": "cron_runs_job_started_idx",
+          "columns": [
+            {
+              "expression": "job",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -9229,213 +9338,6 @@
           "tableTo": "accounts",
           "columnsFrom": [
             "account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.worker_prompt_composition_events": {
-      "name": "worker_prompt_composition_events",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "worker_id": {
-          "name": "worker_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "build_index": {
-          "name": "build_index",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ts": {
-          "name": "ts",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "policy_version": {
-          "name": "policy_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "arm": {
-          "name": "arm",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "propensity": {
-          "name": "propensity",
-          "type": "numeric(5, 4)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fraction": {
-          "name": "fraction",
-          "type": "numeric(5, 4)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "digest_bytes": {
-          "name": "digest_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "digest_bytes_available": {
-          "name": "digest_bytes_available",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "digest_truncated": {
-          "name": "digest_truncated",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_match_bytes": {
-          "name": "task_match_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_match_count": {
-          "name": "task_match_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "memory_block_bytes": {
-          "name": "memory_block_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prompt_bytes": {
-          "name": "prompt_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "memory_share": {
-          "name": "memory_share",
-          "type": "numeric(5, 4)",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {
-        "worker_prompt_composition_events_worker_build_idx": {
-          "name": "worker_prompt_composition_events_worker_build_idx",
-          "columns": [
-            {
-              "expression": "worker_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "build_index",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "worker_prompt_composition_events_task_ts_idx": {
-          "name": "worker_prompt_composition_events_task_ts_idx",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "ts",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "worker_prompt_composition_events_policy_arm_idx": {
-          "name": "worker_prompt_composition_events_policy_arm_idx",
-          "columns": [
-            {
-              "expression": "policy_version",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "arm",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "worker_prompt_composition_events_worker_id_workers_id_fk": {
-          "name": "worker_prompt_composition_events_worker_id_workers_id_fk",
-          "tableFrom": "worker_prompt_composition_events",
-          "tableTo": "workers",
-          "columnsFrom": [
-            "worker_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "worker_prompt_composition_events_task_id_tasks_id_fk": {
-          "name": "worker_prompt_composition_events_task_id_tasks_id_fk",
-          "tableFrom": "worker_prompt_composition_events",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
           ],
           "columnsTo": [
             "id"

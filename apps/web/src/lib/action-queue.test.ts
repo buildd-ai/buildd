@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, partitionEscalations, isActionableChip, summariseActionQueueAge } from './action-queue';
-import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem } from './action-queue';
+import { buildActionQueue, buildDecideItems, partitionEscalations, isActionableChip, summariseActionQueueAge } from './action-queue';
+import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
 const PR_URL_B = 'https://github.com/org/repo/pull/1481';
@@ -272,6 +272,72 @@ describe('buildActionQueue — reconnect items', () => {
       },
     ]);
     expect(queue).toHaveLength(2);
+  });
+});
+
+describe('buildDecideItems + buildActionQueue — decide items', () => {
+  const candidate = (overrides?: Partial<EscalatedMissionCandidate>): EscalatedMissionCandidate => ({
+    missionId: 'mission-99',
+    missionTitle: 'Mission Gamma',
+    criteriaEscalatedAt: new Date(),
+    criteriaRearmFingerprint: 'fail|description:abc123',
+    openNote: {
+      id: 'note-1',
+      title: 'Goal criteria blocked — owner decision needed',
+      body: 'Blocking criteria:\n- [fail] Design doc exists',
+    },
+    ...overrides,
+  });
+
+  it('an escalated mission with an open question note produces exactly one decide card', () => {
+    const items = buildDecideItems([candidate()]);
+    const queue = buildActionQueue(items, []);
+    expect(queue).toHaveLength(1);
+    expect(queue[0].chip).toBe('DECIDE');
+    expect(queue[0].missionId).toBe('mission-99');
+    expect(queue[0].noteId).toBe('note-1');
+  });
+
+  it('a re-worded verdict with the same fingerprint does not produce a second card', () => {
+    const items = [
+      ...buildDecideItems([candidate()]),
+      ...buildDecideItems([candidate({
+        openNote: {
+          id: 'note-1',
+          title: 'Goal criteria blocked — owner decision needed',
+          body: 'Blocking criteria:\n- [fail] the design document must exist', // reworded evidence
+        },
+      })]),
+    ];
+    const queue = buildActionQueue(items, []);
+    expect(queue).toHaveLength(1);
+  });
+
+  it('clearing criteriaEscalatedAt removes it', () => {
+    const items = buildDecideItems([candidate({ criteriaEscalatedAt: null })]);
+    expect(items).toHaveLength(0);
+    expect(buildActionQueue(items, [])).toHaveLength(0);
+  });
+
+  it('a mission with an open question note but no escalation produces none', () => {
+    const items = buildDecideItems([candidate({ criteriaEscalatedAt: null, openNote: {
+      id: 'note-2', title: 'Some other question', body: 'unrelated',
+    } })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('an escalation with no open note produces none — the note may have been answered', () => {
+    const items = buildDecideItems([candidate({ openNote: null })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('ranks DECIDE below QUESTION but above APPROVE', () => {
+    const queue = buildActionQueue([
+      { kind: 'approve', taskId: 'plan-1', taskTitle: 'Plan A' },
+      ...buildDecideItems([candidate()]),
+      { kind: 'answer', workerId: 'w-1', taskId: 'task-q', taskTitle: 'Q Task', question: 'Is X ready?' },
+    ], []);
+    expect(queue.map(i => i.chip)).toEqual(['QUESTION', 'DECIDE', 'APPROVE']);
   });
 });
 
@@ -689,6 +755,83 @@ describe('summariseActionQueueAge', () => {
     const metrics = summariseActionQueueAge(queue);
     expect(queue).toHaveLength(0);
     expect(metrics.olderThan7dCount).toBe(0);
+  });
+});
+
+describe('buildActionQueue — decide cards', () => {
+  it('builds a DECIDE card from an escalated mission item', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      {
+        kind: 'decide',
+        missionId: 'mission-escalated',
+        missionTitle: 'Escalated Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result).toHaveLength(1);
+    expect(result[0].chip).toBe('DECIDE');
+    expect(result[0].missionId).toBe('mission-escalated');
+    expect(result[0].missionTitle).toBe('Escalated Mission');
+  });
+
+  it('deduplicates decide cards by mission id and fingerprint', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaRearmFingerprint: 'fp1',
+      },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result).toHaveLength(1);
+  });
+
+  it('creates separate decide cards for different fingerprints on same mission', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaFingerprint: 'fp1',
+        noteId: 'note-1',
+        noteTitle: 'Note 1',
+      },
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaFingerprint: 'fp2',
+        noteId: 'note-2',
+        noteTitle: 'Note 2',
+      },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result).toHaveLength(2);
+  });
+
+  it('orders DECIDE before APPROVE', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      { kind: 'approve', taskId: 'plan-1', taskTitle: 'Plan A' },
+      {
+        kind: 'decide',
+        missionId: 'mission-1',
+        missionTitle: 'Mission',
+        criteriaFingerprint: 'fp1',
+        noteId: 'note-1',
+        noteTitle: 'Note 1',
+      },
+      { kind: 'answer', workerId: 'w-1', taskId: 'task-q', taskTitle: 'Q Task', question: 'Is X ready?' },
+    ];
+    const result = buildActionQueue(woy, []);
+    expect(result.map(r => r.chip)).toEqual(['QUESTION', 'DECIDE', 'APPROVE']);
   });
 });
 

@@ -3,6 +3,7 @@ import {
   criteriaFingerprint,
   decideCriteriaRearm,
   formatVerdictLines,
+  inferCriteriaFailureReading,
   MAX_REARM_CYCLES,
 } from './criteria-rearm';
 import type { GoalCriteriaState } from '@buildd/shared';
@@ -170,5 +171,44 @@ describe('formatVerdictLines', () => {
 
   it('returns an empty string when there is no verdict to relay', () => {
     expect(formatVerdictLines(null)).toBe('');
+  });
+});
+
+describe('inferCriteriaFailureReading', () => {
+  it('reads all-prose failures as an unmeasurable criterion', () => {
+    const s = state('fail', [
+      { type: 'description', verdict: 'fail' },
+      { type: 'description', verdict: 'NOT_EVALUATED' },
+    ]);
+    expect(inferCriteriaFailureReading(s)).toBe('criterion_unmeasurable');
+  });
+
+  it('reads all-mechanical failures as unowned work', () => {
+    const s = state('fail', [
+      { type: 'no_open_tasks', verdict: 'fail' },
+      { type: 'all_prs_merged', verdict: 'fail' },
+    ]);
+    expect(inferCriteriaFailureReading(s)).toBe('work_unowned');
+  });
+
+  it('gives no steer on a mix of prose and mechanical failures', () => {
+    const s = state('fail', [
+      { type: 'description', verdict: 'fail' },
+      { type: 'command', verdict: 'fail' },
+    ]);
+    expect(inferCriteriaFailureReading(s)).toBe('mixed');
+  });
+
+  it('ignores passing criteria when reading the failure pattern', () => {
+    const s = state('fail', [
+      { type: 'description', verdict: 'fail' },
+      { type: 'command', verdict: 'pass' },
+    ]);
+    expect(inferCriteriaFailureReading(s)).toBe('criterion_unmeasurable');
+  });
+
+  it('returns null when there is no non-passing criterion', () => {
+    expect(inferCriteriaFailureReading(state('pass', [{ verdict: 'pass' }]))).toBeNull();
+    expect(inferCriteriaFailureReading(null)).toBeNull();
   });
 });

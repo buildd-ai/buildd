@@ -3069,6 +3069,29 @@ export class WorkerManager {
         }
       }
 
+      // One composition record per prompt build, in BOTH arms. The control row
+      // is the denominator: without it, "no task_scoped prompts" and "no
+      // prompts at all" look identical.
+      //
+      // Deliberately emitted HERE — below the Codex AGENTS.md prepend above and
+      // below the tenant-context append — because this is the last line that
+      // mutates promptText. Built any earlier, promptBytes is short by whatever
+      // a later branch adds and memoryShare is correspondingly inflated.
+      const composition = buildPromptCompositionRecord({
+        assignment: built.assignment,
+        memory: built.memory,
+        promptText,
+        backend: task.backend,
+      });
+      sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
+      // Also on stdout, as a live "is the arm firing at all" signal. Whether
+      // that outlives the process is a property of the deployment's launcher,
+      // not of this code: the reference one appends to a container-local file
+      // inside a restart loop, so it accumulates history but is unrotated and
+      // dies with the container. Neither sink is a queryable rail — see the
+      // open question in the design doc.
+      console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
+
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
       const promptArg: string | AsyncIterable<SDKUserMessage> = imageBlocks.length > 0
@@ -4554,23 +4577,31 @@ If something is missing or incomplete, describe what and fix it now.`;
 
             // sandbox_mount_gap: a path needed by npm postinstall, a config read, or a tool
             // binary is not mounted in the bwrap sandbox. Unlike bwrap_namespace_denied, the
-            // sandbox itself is functional — only the allowlist config is missing. Do NOT flip
-            // _bwrapSupported (that would disable sandbox globally for unrelated tasks).
-            // Fast-fail so the operator can add the path via BUILDD_MOUNT_ALLOWLIST_EXTRA and
-            // retry cleanly. The server exempts this worker from the code-retry cap.
-            if (traces.some(t => t.pattern === 'sandbox_mount_gap') && !worker.sandboxMountGap) {
-              worker.sandboxMountGap = true;
+            // sandbox itself is functional — only the allowlist config is missing.
+            //
+            // This used to fast-fail the session (abort + worker.sandboxMountGap = true, which
+            // the server reads as a requeue exempt from the retry cap). That made the detector's
+            // precision the blast radius of a whole task: the scanner's own regexes turned out to
+            // match file CONTENT (a test title, a grepped source line) as readily as a real
+            // denial, and a false positive killed 58 turns of legitimate work with no way back.
+            // Until precision is demonstrated in production, annotate only — log it and record a
+            // milestone for triage — and let the session keep running. A missed real gap still
+            // surfaces: the agent's own subsequent commands will keep failing and that failure
+            // reaches the normal path. Re-enable the abort once the tightened scanner (see
+            // error-trace-scanner.ts's validate/requiresError gates) has a track record.
+            if (traces.some(t => t.pattern === 'sandbox_mount_gap')) {
               const gapTrace = traces.find(t => t.pattern === 'sandbox_mount_gap')!;
               const pathMatch = gapTrace.excerpt.match(/(?:\bENOENT\b|\bEACCES\b)[^'":]*['"]?([/~][\w./-]+)/i);
               const gapPath = pathMatch?.[1] ?? gapTrace.excerpt.slice(0, 120);
               console.warn(
-                `[runner] Sandbox mount gap for worker ${worker.id}: "${gapPath}" is not in bwrap allowlist. ` +
-                'Session aborted for clean retry. Set BUILDD_MOUNT_ALLOWLIST_EXTRA to expose the path.',
+                `[runner] Suspected sandbox mount gap for worker ${worker.id}: "${gapPath}" may not be ` +
+                'in the bwrap allowlist. Not aborting — annotating only until precision is demonstrated.',
               );
-              worker.error = `Sandbox mount gap: "${gapPath}" is not mounted in the bwrap sandbox. ` +
-                `Add BUILDD_MOUNT_ALLOWLIST_EXTRA=${gapPath}:ro to the runner environment to expose it.`;
-              const session = this.sessions.get(worker.id);
-              if (session) session.abortController.abort();
+              this.addMilestone(worker, {
+                type: 'status',
+                label: `sandbox_mount_gap_suspected: ${gapPath}`,
+                ts: Date.now(),
+              });
             }
           }
 
