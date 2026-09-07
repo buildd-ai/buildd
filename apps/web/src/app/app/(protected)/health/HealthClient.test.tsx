@@ -143,6 +143,7 @@ const render = (over: Record<string, any> = {}) =>
       failureAnalytics={null}
       window="7d"
       cbm={null}
+      subagentDelegation={null}
       now={NOW}
       {...(over as any)}
     />,
@@ -437,6 +438,83 @@ describe('HealthClient — Trend', () => {
     // The adoption percentage moves to the usage drill-down; publishing it in two
     // places under two different windows is what the restructure removes.
     expect(html).not.toContain('0% of 10');
+  });
+
+  it('renders no subagent-delegation section when the panel is null', () => {
+    const html = render({ subagentDelegation: null });
+    expect(html).not.toContain('data-testid="health-section-subagent-delegation"');
+  });
+
+  it('renders the delegated-work share and denominator when available', () => {
+    const html = render({
+      subagentDelegation: {
+        available: true,
+        sessions: 8,
+        sessionsWithDelegation: 3,
+        medianSharePct: 22,
+        isFloor: false,
+        capturedSince: '2026-08-15',
+        windowPredatesCapture: false,
+        truncated: false,
+        unavailableReason: null,
+      },
+    });
+    expect(html).toContain('data-testid="health-section-subagent-delegation"');
+    expect(html).toContain('over 8 sessions');
+    expect(html).toContain('22%');
+    expect(html).toContain('3 sessions of 8');
+  });
+
+  it('marks a floor share with ≥ and never renders a bare number as exact', () => {
+    const html = render({
+      subagentDelegation: {
+        available: true,
+        sessions: 4,
+        sessionsWithDelegation: 4,
+        medianSharePct: 40,
+        isFloor: true,
+        capturedSince: '2026-08-15',
+        windowPredatesCapture: false,
+        truncated: false,
+        unavailableReason: null,
+      },
+    });
+    expect(html).toContain('≥40%');
+  });
+
+  it('shows the unavailable reason instead of a fabricated zero when there is nothing to compute', () => {
+    const html = render({
+      subagentDelegation: {
+        available: false,
+        sessions: 0,
+        sessionsWithDelegation: 0,
+        medianSharePct: null,
+        isFloor: false,
+        capturedSince: '2026-08-15',
+        windowPredatesCapture: false,
+        truncated: false,
+        unavailableReason: 'No terminal session in this window has both a start and a completion time to compute wall clock from.',
+      },
+    });
+    expect(html).toContain('data-testid="subagent-delegation-unavailable"');
+    expect(html).not.toContain('data-testid="subagent-delegation-share"');
+  });
+
+  it('warns when the window opens before background-agent tracking began', () => {
+    const html = render({
+      subagentDelegation: {
+        available: true,
+        sessions: 2,
+        sessionsWithDelegation: 0,
+        medianSharePct: 0,
+        isFloor: false,
+        capturedSince: '2026-08-15',
+        windowPredatesCapture: true,
+        truncated: false,
+        unavailableReason: null,
+      },
+    });
+    expect(html).toContain('tracked only since 2026-08-15');
   });
 });
 

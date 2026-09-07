@@ -17,6 +17,7 @@ import type {
   FailureWindow,
   CbmHealthSummary,
   OrphanedPrRow,
+  SubagentDelegationPanel,
 } from './page';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
@@ -192,6 +193,7 @@ interface Props {
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
   cbm: CbmHealthSummary | null;
+  subagentDelegation: SubagentDelegationPanel | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -236,6 +238,7 @@ export function HealthClient({
   failureAnalytics,
   window: activeWindow,
   cbm,
+  subagentDelegation,
   now,
 }: Props) {
   const router = useRouter();
@@ -1051,6 +1054,10 @@ export function HealthClient({
         )}
 
         {cbm && <CodebaseGraphSection cbm={cbm} window={activeWindow} />}
+
+        {subagentDelegation && (
+          <SubagentDelegationSection panel={subagentDelegation} window={activeWindow} />
+        )}
       </section>
 
       {/* Delete schedule confirm modal */}
@@ -1544,6 +1551,72 @@ function CodebaseGraphSection({ cbm, window }: { cbm: CbmHealthSummary; window: 
               </div>
             ))}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Delegated work: what share of a session's total agent-effort (wall clock +
+ * background subagent time) was handed to background subagents. See
+ * `subagent-time.ts` for why background time is additional effort rather than
+ * a slice taken out of wall clock, and why pre-capture sessions are excluded
+ * rather than counted as zero delegation.
+ */
+function SubagentDelegationSection({
+  panel,
+  window,
+}: {
+  panel: SubagentDelegationPanel;
+  window: FailureWindow;
+}) {
+  return (
+    <div data-testid="health-section-subagent-delegation" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Delegated work</h3>
+        {/* Sessions, not tasks: subagent spans are flushed per worker attempt,
+            with no dedup by task. */}
+        <span className="text-[11px] text-text-muted">
+          {sectionDenominator(panel.sessions, panel.sessions === 1 ? 'session' : 'sessions')} ({window})
+        </span>
+      </div>
+      <div className="card p-4 space-y-2">
+        {panel.available ? (
+          <>
+            <div className="flex items-baseline justify-between gap-3">
+              <span
+                className="text-xs text-text-secondary"
+                title="Background subagents run alongside the parent session rather than inside its wall clock, so this is a share of total agent effort (wall clock + background time), not a slice taken out of wall clock."
+              >
+                Median share of session effort in background subagents
+              </span>
+              <span className="text-sm tabular-nums text-text-primary" data-testid="subagent-delegation-share">
+                {panel.isFloor ? '≥' : ''}{panel.medianSharePct}%
+              </span>
+            </div>
+            <div className="flex items-baseline justify-between gap-3">
+              <span className="text-xs text-text-muted">Sessions that delegated any work</span>
+              <span className="text-xs text-text-muted tabular-nums">
+                {countOf(panel.sessionsWithDelegation, 'session')} of {panel.sessions}
+              </span>
+            </div>
+          </>
+        ) : (
+          <p data-testid="subagent-delegation-unavailable" className="text-xs text-text-muted">
+            {panel.unavailableReason}
+          </p>
+        )}
+        {panel.windowPredatesCapture && (
+          <p className="text-[11px] text-text-muted pt-2 border-t border-border-default">
+            Background-agent time has been tracked only since {panel.capturedSince}; sessions before
+            that date are excluded rather than counted as zero delegation.
+          </p>
+        )}
+        {panel.truncated && (
+          <p className="text-[11px] text-text-muted">
+            Reads the newest sessions in the window up to a cap — figures above are a floor.
+          </p>
         )}
       </div>
     </div>
