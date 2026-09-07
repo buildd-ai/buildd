@@ -33,10 +33,12 @@ const mockFindFirst = mock(async (args: any) => {
 mock.module('@buildd/core/db', () => ({
   db: {
     query: { tasks: { findFirst: mockFindFirst } },
-    insert: mock(() => ({
+    insert: mock((table: any) => ({
       values: mock((values: any) => ({
         returning: mock(async () => {
-          inserted.push(values);
+          if ('title' in values) {
+            inserted.push(values);
+          }
           return [{ id: `task-${inserted.length}` }];
         }),
       })),
@@ -57,10 +59,14 @@ mock.module('drizzle-orm', () => ({
   and: (...c: any[]) => ({ c, type: 'and' }),
   like: (f: any, v: any) => ({ f, v, type: 'like' }),
   notInArray: (f: any, v: any) => ({ f, v, type: 'notInArray' }),
+  desc: (f: any) => ({ f, type: 'desc' }),
+  gt: (f: any, v: any) => ({ f, v, type: 'gt' }),
+  lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', title: 'title', status: 'status', context: 'context', description: 'description', workspaceId: 'workspaceId' },
+  cronRuns: {},
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
