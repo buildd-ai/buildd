@@ -1412,6 +1412,19 @@ export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_
   digestTruncated: boolean('digest_truncated').notNull(),
   taskMatchBytes: integer('task_match_bytes').notNull(),
   taskMatchCount: integer('task_match_count').notNull(),
+  // Which retrieval step produced the matches (declared paths, title fallback,
+  // a miss, or not attempted). NULLABLE on purpose: a row written by a runner
+  // that predates the field is genuinely UNKNOWN, and defaulting it to any
+  // value would encode an inference as data. taskMatchCount alone cannot
+  // distinguish five path-overlap hits from five stopword hits, so without
+  // this column retrieval quality is unrecoverable from stored rows.
+  taskMatchDerivedBy: text('task_match_derived_by'),
+  // Agent backend. Also NULLABLE, and for the same reason — the Codex path
+  // delivers persona/skills/instructions through a file on disk rather than the
+  // prompt, so promptBytes and memoryShare mean a different thing per backend
+  // and rows must be segmented, never pooled. Defaulting absent rows to
+  // 'claude' would silently pool a Codex row into the Claude cohort.
+  backend: text('backend'),
   memoryBlockBytes: integer('memory_block_bytes').notNull(),
   promptBytes: integer('prompt_bytes').notNull(),
   memoryShare: decimal('memory_share', { precision: 5, scale: 4 }).notNull(),
