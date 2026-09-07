@@ -1364,6 +1364,63 @@ export const workerActionEvents = pgTable('worker_action_events', {
   actionTsIdx: index('worker_action_events_action_ts_idx').on(t.action, t.ts),
 }));
 
+/**
+ * One row per prompt build, in both memory-digest arms (see
+ * apps/runner/src/memory-digest-policy.ts PromptCompositionRecord). Replaces
+ * the two places this record used to land — the per-worker session log
+ * (pruned after 48h, shorter than the ciRetry/conflictRetry/reviewerRetry/
+ * criteriaRearm chains the experiment is measured across) and runner stdout
+ * (outlives the log but isn't queryable).
+ *
+ * `buildIndex` rather than a column on `workers`: a single worker can build
+ * more than one prompt (e.g. the bwrap-retry restart in startSession rebuilds
+ * from scratch on the same worker/task), and a column would silently keep
+ * only the last build. This table keeps all of them, ordered by buildIndex
+ * within (workerId, taskId).
+ *
+ * `propensity` and `fraction` are recorded as assigned, not recomputed later
+ * from the currently configured fraction — the fraction can be reconfigured
+ * between assignment and analysis, and an off-policy estimate divides by the
+ * propensity that was actually in effect. `policyVersion` must never be
+ * pooled across values: a version bump changes what the arms mean.
+ *
+ * Low volume relative to worker_action_events (one row per prompt build, not
+ * per MCP call), so — unlike that table — this one is not pruned by the
+ * task-archive cron; the experiment needs the full history across a task's
+ * retry chain.
+ */
+export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // 0-based, ordered per (workerId, taskId) — see rationale above.
+  buildIndex: integer('build_index').notNull(),
+  // Runner-reported build time, not insert time — same ordering rationale as
+  // worker_action_events.ts.
+  ts: timestamp('ts', { withTimezone: true }).notNull(),
+  policyVersion: text('policy_version').notNull(),
+  arm: text('arm').notNull().$type<'full' | 'task_scoped'>(),
+  // Probability this unit would have been assigned the arm it actually got,
+  // as recorded at assignment time — see table comment.
+  propensity: decimal('propensity', { precision: 5, scale: 4 }).notNull(),
+  // The configured task_scoped share this assignment was drawn against.
+  fraction: decimal('fraction', { precision: 5, scale: 4 }).notNull(),
+  digestBytes: integer('digest_bytes').notNull(),
+  // Bytes the workspace-wide digest WOULD have occupied under `full`, recorded
+  // in both arms so the saving is computable from a control row alone.
+  digestBytesAvailable: integer('digest_bytes_available').notNull(),
+  digestTruncated: boolean('digest_truncated').notNull(),
+  taskMatchBytes: integer('task_match_bytes').notNull(),
+  taskMatchCount: integer('task_match_count').notNull(),
+  memoryBlockBytes: integer('memory_block_bytes').notNull(),
+  promptBytes: integer('prompt_bytes').notNull(),
+  memoryShare: decimal('memory_share', { precision: 5, scale: 4 }).notNull(),
+}, (t) => ({
+  workerBuildIdx: uniqueIndex('worker_prompt_composition_events_worker_build_idx').on(t.workerId, t.buildIndex),
+  taskTsIdx: index('worker_prompt_composition_events_task_ts_idx').on(t.taskId, t.ts),
+  policyArmIdx: index('worker_prompt_composition_events_policy_arm_idx').on(t.policyVersion, t.arm),
+}));
+
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
@@ -2357,6 +2414,46 @@ export const oauthBudgetEpisodesRelations = relations(oauthBudgetEpisodes, ({ on
 // See docs/credentials-architecture.md. The legacy per-workspace codex_credentials
 // table was dropped in migration 0047 (no rows existed).
 
+// ── Cron run history ─────────────────────────────────────────────────────────
+//
+// Every scheduled sweep already computes a verdict on its own work — how many
+// rows it looked at, how many it changed, how many calls failed — and every one
+// of them threw that verdict away at the route boundary. Three PR sweeps ran
+// hourly for months returning "errors on every row, nothing changed", which is
+// a complete description of an outage that nothing was in a position to read
+// (PR #2125). This table is where the verdict lands so a trend can be checked.
+//
+// `changed` is the load-bearing column. A sweep with nothing to do and a sweep
+// that cannot do anything both report processed=0; only `errors` and `changed`
+// together separate healthy idle from total failure.
+export const cronRuns = pgTable('cron_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // Route slug, optionally with a scope suffix ('pr-reconcile:merge-state'),
+  // because two cadences of one route are two different health signals.
+  job: text('job').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  // Did the handler return without throwing. A false here is a harder failure
+  // than a non-zero `errors`: the sweep did not finish at all.
+  ok: boolean('ok').notNull(),
+  // Normalized verdict. Null means the route reported nothing — still a useful
+  // heartbeat, but it cannot participate in the health check.
+  processed: integer('processed'),
+  changed: integer('changed'),
+  errors: integer('errors'),
+  // The route's own result object, verbatim, for when the normalized numbers
+  // say something is wrong but not what.
+  result: jsonb('result').$type<Record<string, unknown>>(),
+  error: text('error'),
+  // Set on the run that fired an alert, so the next few runs stay quiet
+  // instead of paging hourly forever.
+  alertedAt: timestamp('alerted_at', { withTimezone: true }),
+}, (t) => ({
+  // Serves the health window query and the per-job retention delete.
+  jobStartedIdx: index('cron_runs_job_started_idx').on(t.job, t.startedAt),
+}));
+
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
 // Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
 // JWT carries the workspaceId the user picked during /authorize, and the
@@ -2788,3 +2885,6 @@ export type Memory = typeof memories.$inferSelect;
 export type NewMemory = typeof memories.$inferInsert;
 
 // smoke-test-3-ci-retry-1 20260725
+
+export type CronRun = typeof cronRuns.$inferSelect;
+export type NewCronRun = typeof cronRuns.$inferInsert;

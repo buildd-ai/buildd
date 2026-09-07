@@ -30,6 +30,12 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
+  // Operators withCronRun imports. mock.module is process-global, so a
+  // partial stub removes them for every other importer too.
+  eq: (a: any, b: any) => ({ a, b, op: 'eq' }),
+  and: (...args: any[]) => ({ args, op: 'and' }),
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   sql: Object.assign(
     (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
     { raw: (s: string) => ({ raw: s, type: 'sql' }) },

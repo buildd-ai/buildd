@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { taskOutcomes } from '@buildd/core/db/schema';
 import { gte, and, sql } from 'drizzle-orm';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 /**
  * Routing-calibration cron.
@@ -17,15 +18,10 @@ import { gte, and, sql } from 'drizzle-orm';
  * See plans/buildd/smart-model-routing.md Phase 5.
  */
 export async function GET(req: NextRequest) {
-  const authHeader = req.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
+  return withCronRun('routing-calibration', req, report => runCronJob(req, report));
+}
 
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-  if (authHeader?.replace('Bearer ', '') !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const windowStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 

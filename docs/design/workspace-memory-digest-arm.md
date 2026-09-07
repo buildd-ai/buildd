@@ -40,18 +40,23 @@ Introduce two arms of the memory block, selected per task:
 Enrolment is a fraction in `[0, 1]`, default `0`, set per runner by
 `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` or by
 `memoryDigestTaskScopedFraction` in the runner's `config.json`. At `0` every
-prompt renders the control, which keeps the blind slice — straightening the
-truncation is a genuine improvement and belongs in its own change, because once
-enrolment starts, moving the control silently rebases the comparison.
+prompt renders the control.
 
-The control does differ from the pre-experiment rendering in one respect. The
-digest used to arrive from `getCompactObservations` carrying its own
-`## Workspace Memory (N memories)` heading, which landed *underneath* this
-block's header — so every prompt in the fleet showed the heading twice. The
-digest is now pure content and the block header owns the count, in **both** arms,
-which keeps the arms one axis apart. This was corrected before any enrolment,
-when there were no collected rows to invalidate; the same edit made later would
-require a policy-version bump.
+The control has been corrected twice relative to the pre-experiment rendering,
+both times before any enrolment so there were no collected rows to invalidate:
+
+1. The digest used to arrive from `getCompactObservations` carrying its own
+   `## Workspace Memory (N memories)` heading, which landed *underneath* this
+   block's header — so every prompt in the fleet showed the heading twice. The
+   digest is now pure content and the block header owns the count, in **both**
+   arms, which keeps the arms one axis apart.
+2. The cap used to be a blind `slice()`, so an oversized digest routinely ended
+   mid-sentence or mid-word and which entries survived was an artifact of
+   digest ordering. It now backs up to the last complete line at or below the
+   cap (`policyVersion` bumped to `memory-digest-v2` for this change).
+
+Either edit made *after* enrolment starts would require a policy-version bump
+of its own — moving the control mid-flight silently rebases the comparison.
 
 **The crux: the digest is not being used for navigation, and losing it costs
 nothing that the `recall` tool cannot recover on demand.**
@@ -134,8 +139,6 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
 
 ## Non-goals
 
-- **Fixing the blind truncation.** Line-boundary truncation is right and is
-  deliberately deferred so the control stays fixed.
 - **Changing the task-conditional half.** Match count and per-observation cap are
   untouched in both arms.
 - **Retrieval-side changes.** Nothing here alters what `getCompactObservations`
@@ -144,13 +147,25 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
 
 ## Open questions
 
-**Where the record durably lands.** Today it goes to the per-worker session log
-and to runner stdout. The session log is pruned after 48 hours, which is shorter
-than the rework chains the experiment is measured on, so stdout is currently the
-only rail that outlives the window. That is enough to *run* the arm and not
-enough to *analyse* it. I lean towards a small server-side event rather than a
-column on `workers`: the record is per prompt build, and a looped task builds
-several, so a column would silently keep only the last one.
+**Where the record durably lands.** Today it goes to the per-worker session log,
+pruned after 48 hours, and to runner stdout.
+
+Stdout is the longer-lived of the two but not by design. The reference
+deployment's launcher redirects the runner into an append-mode file under the
+container's `/tmp`, wrapped in a restart loop, so the file does survive the
+`exit 75` update restart and does accumulate days of history. It is still not a
+rail: it is unrotated and grows without bound, it is container-local so it dies
+with the container rather than with the process, and it is a text log with no
+query path — you grep it by hand over SSH.
+
+So the arm can be *run*, and a recent window can be *read by hand*. Neither is
+enough to attribute a multi-day rework chain to an arm. A durable rail is a
+precondition for trusting any result, and it should be a small server-side event
+rather than a column on `workers`: the record is per prompt build, and a looped
+task builds several, so a column would silently keep only the last one.
+
+Treat both existing sinks as debugging aids — good for confirming the arm fires
+at all, not for analysis.
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
 out negative would leave open whether a *smaller but non-empty* digest is better

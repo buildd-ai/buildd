@@ -59,6 +59,13 @@
       "method": "POST"
     },
     {
+      "$comment": "Mission-state invariant sweep. Eleven named invariants over mission/task/worker/release state; ten report-only, one (orphaned_integration_base) files a deduped friction task. Hourly, because every threshold in the route is hours-to-days and the target is 'caught the same working day' — finer would cost Neon wake time for no detection gain. Daytime only (EST) like the other DB-touching jobs; the tightest threshold is 15m, so an overnight breach is reported at 07:00. A healthy fleet costs one set of queries and spawns nothing.",
+      "title": "Buildd: Mission Invariant Sweep",
+      "path": "/api/cron/mission-invariants",
+      "schedule": "0 7-23 * * *",
+      "method": "POST"
+    },
+    {
       "$comment": "Releases expired credential leases and alerts the owning team. Moved off the Vercel-native cron (never fired); enabled after review \u2014 its first run acts on a full accumulated backlog, once. Cadence */10 * * * * -> hourly: a sub-hourly DB-touching job never lets Neon's compute autosuspend, so it bills idle time all day. Daytime only (EST): a stale lease overnight costs nothing but a delayed release. (was 0 * * * *)",
       "title": "Buildd: Lease Expiry Guard",
       "path": "/api/cron/lease-expiry-guard",

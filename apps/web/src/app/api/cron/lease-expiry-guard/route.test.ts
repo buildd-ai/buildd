@@ -21,6 +21,11 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
+  // Operators withCronRun imports. mock.module is process-global, so a
+  // partial stub removes them for every other importer too.
+  and: (...args: any[]) => ({ args, op: 'and' }),
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   sql: Object.assign(
@@ -30,6 +35,9 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  // withCronRun imports this; mock.module replaces the whole module, so a
+  // partial stub deletes the export for every other importer in the process.
+  cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
   credentialLeases: {
     id: 'id',
     expiresAt: 'expires_at',
@@ -118,10 +126,14 @@ describe('GET /api/cron/lease-expiry-guard — auth', () => {
     expect(res.status).toBe(401);
   });
 
-  it('accepts x-vercel-cron: 1 without Bearer token', async () => {
+  it('rejects a platform cron header used in place of the secret', async () => {
+    // Platform-native cron does not fire in this project (cron-manifest.json is
+    // explicit; vercel.json declares no crons), so this header can only come
+    // from a caller that is not the scheduler. CRON_SECRET is the single
+    // accepted credential.
     mockLeaseFindMany.mockImplementation(() => []);
     const res = await GET(makeRequest(undefined, true));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
   });
 
   it('accepts valid CRON_SECRET', async () => {

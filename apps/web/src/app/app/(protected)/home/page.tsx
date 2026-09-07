@@ -15,7 +15,7 @@ import { Greeting } from './greeting';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
-import { buildActionQueue, summariseActionQueueAge } from '@/lib/action-queue';
+import { buildActionQueue, buildDecideItems, summariseActionQueueAge } from '@/lib/action-queue';
 import { resolveActionCardContext } from '@/lib/action-card-context';
 import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
@@ -654,7 +654,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true },
             with: {
               tasks: {
                 columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
@@ -764,6 +764,7 @@ export default async function HomePage({
               nextRunAt,
               orchestrationMode,
               pendingUserScheduledAt,
+              criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
             });
 
             const effectiveNextRunAt = nextRunAt
@@ -1614,6 +1615,47 @@ export default async function HomePage({
           }
         }
 
+        // 5. Missions whose goal-criteria gate escalated to the owner. Visible
+        // here is the whole point — the mission itself renders as though it
+        // were running normally (deriveMissionHealth reads its own escalated
+        // state, but nothing surfaces that on a page nobody has a reason to
+        // open once the heartbeat has gone quiet).
+        if (wsIds.length > 0) {
+          const escalatedMissions = await db.query.missions.findMany({
+            where: and(
+              inArray(missionsTable.workspaceId, wsIds),
+              isNotNull(missionsTable.criteriaEscalatedAt),
+            ),
+            columns: { id: true, title: true, criteriaEscalatedAt: true, criteriaRearmFingerprint: true },
+          });
+          if (escalatedMissions.length > 0) {
+            const escalatedIds = escalatedMissions.map(m => m.id);
+            const openNotes = await db.query.missionNotes.findMany({
+              where: and(
+                inArray(missionNotes.missionId, escalatedIds),
+                eq(missionNotes.type, 'question'),
+                eq(missionNotes.status, 'open'),
+              ),
+              orderBy: desc(missionNotes.createdAt),
+              columns: { id: true, missionId: true, title: true, body: true },
+            });
+            const noteByMission = new Map<string, typeof openNotes[number]>();
+            for (const n of openNotes) {
+              if (n.missionId && !noteByMission.has(n.missionId)) noteByMission.set(n.missionId, n);
+            }
+            waitingOnYou.push(...buildDecideItems(escalatedMissions.map(m => {
+              const note = noteByMission.get(m.id);
+              return {
+                missionId: m.id,
+                missionTitle: m.title,
+                criteriaEscalatedAt: m.criteriaEscalatedAt,
+                criteriaRearmFingerprint: m.criteriaRearmFingerprint,
+                openNote: note ? { id: note.id, title: note.title, body: note.body } : null,
+              };
+            })));
+          }
+        }
+
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
         actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
 
@@ -1811,6 +1853,25 @@ export default async function HomePage({
                             {item.taskTitle}
                           </div>
                           <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
+                        </Link>
+                      );
+                    }
+                    if (item.chip === 'DECIDE') {
+                      return (
+                        <Link
+                          key={item.subjectKey}
+                          href={`/app/missions/${item.missionId}`}
+                          className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
+                        >
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
+                              Decide
+                            </span>
+                          </div>
+                          <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
+                            {item.missionTitle ?? 'Mission'}
+                          </div>
+                          <p className="text-[12px] text-text-secondary line-clamp-2">{item.noteTitle}</p>
                         </Link>
                       );
                     }

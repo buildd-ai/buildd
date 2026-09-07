@@ -1,4 +1,5 @@
 import type { BuilddTask, LocalUIConfig } from './types';
+import type { PromptCompositionEvent } from './memory-digest-policy';
 import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
@@ -154,6 +155,7 @@ export class BuilddClient {
     appendMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;
     appendErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;
     appendActionEvents?: Array<{ action: string; ts: number }>;
+    appendPromptCompositionEvents?: PromptCompositionEvent[];
     // Transient subagent progress (forwarded over Pusher, never persisted).
     // agentId/parentAgentId (SDK v0.3.202+) carry the agent-tree hierarchy.
     taskProgress?: Array<{

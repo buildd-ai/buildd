@@ -251,7 +251,9 @@ async function resolveStaleTask(
             startAt,
             context: {
               ...existingCtx,
-              ...(staleWorker?.branch ? { baseBranch: staleWorker.branch } : {}),
+              ...(staleWorker?.branch
+                ? { baseBranch: staleWorker.branch, resumeBranch: staleWorker.branch }
+                : {}),
               failureContext: staleWorker?.error || 'Previous worker expired (infra failure)',
               infraRetryCount: infraRetryCount + 1,
             },
@@ -787,7 +789,7 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
     const existingCtx = (originalTask.context || {}) as Record<string, unknown>;
     const retryContext = {
       ...existingCtx,
-      ...(worker.branch ? { baseBranch: worker.branch } : {}),
+      ...(worker.branch ? { baseBranch: worker.branch, resumeBranch: worker.branch } : {}),
       failureContext: worker.error || 'Worker stalled in waiting_input',
       iteration: ((existingCtx.iteration as number) || 0) + 1,
     };
