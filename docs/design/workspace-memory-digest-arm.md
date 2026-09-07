@@ -54,9 +54,24 @@ both times before any enrolment so there were no collected rows to invalidate:
    mid-sentence or mid-word and which entries survived was an artifact of
    digest ordering. It now backs up to the last complete line at or below the
    cap (`policyVersion` bumped to `memory-digest-v2` for this change).
+3. `### Relevant to This Task` was retrieved by matching the whole task title
+   as one `ILIKE '%…%'`. Measured in production that returned **nothing** for
+   every prompt build in the sample — a whole title only appears verbatim in a
+   memory written by a prior run of the *same recurring task*, so it worked for
+   repeating scheduled work and failed for all novel work. Retrieval is now
+   declared paths first (`tasks.path_manifest` against `memories.files`) with
+   the title as fallback (`policyVersion` bumped to `memory-digest-v3`).
 
-Either edit made *after* enrolment starts would require a policy-version bump
-of its own — moving the control mid-flight silently rebases the comparison.
+That third change matters more than it looks for this experiment. Under v1/v2
+the treatment was effectively *"no memory at all, use `recall`"*, because the
+task-conditional half was empty in both arms. Under v3 the arms are what was
+originally intended: **task-scoped memory versus workspace-wide memory.** The
+version bump re-randomises (the draw is salted with it), so no task carries an
+arm it drew against a different definition of what that arm means.
+
+Any of these made *after* enrolment starts would still require a policy-version
+bump — moving the control mid-flight silently rebases the comparison. All three
+landed before anyone was enrolled, which is the only time it is free.
 
 **The crux: the digest is not being used for navigation, and losing it costs
 nothing that the `recall` tool cannot recover on demand.**
