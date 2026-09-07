@@ -145,12 +145,20 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
 ## Open questions
 
 **Where the record durably lands.** Today it goes to the per-worker session log
-and to runner stdout. The session log is pruned after 48 hours, which is shorter
-than the rework chains the experiment is measured on, so stdout is currently the
-only rail that outlives the window. That is enough to *run* the arm and not
-enough to *analyse* it. I lean towards a small server-side event rather than a
-column on `workers`: the record is per prompt build, and a looped task builds
-several, so a column would silently keep only the last one.
+and to runner stdout. Neither is good enough, and the stdout half is worse than
+it looks: the reference deployment runs the runner inside a detached `screen`
+session with no stdout log file, so those lines land in a fixed-size scrollback
+ring and do not survive a restart. **The real ceiling is therefore the session
+log's 48-hour prune** — shorter than the rework chains this is measured on.
+
+So the arm can be *run* and a 48-hour window can be *read*; a rework chain
+spanning days cannot. A durable rail is required before any result is
+trustworthy, and it should be a small server-side event rather than a column on
+`workers`: the record is per prompt build, and a looped task builds several, so
+a column would silently keep only the last one.
+
+Do not read the stdout line as an archive. It is a live debugging aid — useful
+for confirming the arm is firing at all, useless for analysis.
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
 out negative would leave open whether a *smaller but non-empty* digest is better

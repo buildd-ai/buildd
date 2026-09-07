@@ -3061,8 +3061,12 @@ export class WorkerManager {
         backend: task.backend,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
-      // Also on stdout: the per-worker session log is pruned after 48h, which
-      // is shorter than the rework chains this experiment is measured on.
+      // Also on stdout, as a live "is the arm firing at all" signal. NOT an
+      // archive: the reference deployment runs the runner in a detached screen
+      // session with no stdout log file, so this lands in a scrollback ring and
+      // dies with the process. The session log above is the durable-er of the
+      // two at 48h, which is still shorter than the rework chains this is
+      // measured on — hence the open question in the design doc.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
