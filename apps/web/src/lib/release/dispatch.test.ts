@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'bun:test';
-import { classifyCheckRuns, type CheckRun } from './dispatch';
+import { describe, it, expect, mock } from 'bun:test';
+import type { CheckRun } from './dispatch';
+
+const mockGithubApi = mock(async (_installationId: number, _path: string, _options?: RequestInit) => ({}) as any);
+mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
+
+const { classifyCheckRuns, dispatchWorkflowRelease } = await import('./dispatch');
 
 const run = (over: Partial<CheckRun> = {}): CheckRun => ({
   name: 'build',
@@ -31,5 +36,69 @@ describe('classifyCheckRuns', () => {
     const r = classifyCheckRuns([run(), run({ name: 'test', conclusion: 'failure' }), run({ name: 'e2e', conclusion: 'timed_out' })]);
     expect(r.ciState).toBe('failing');
     expect(r.failingChecks).toEqual(['test', 'e2e']);
+  });
+});
+
+describe('dispatchWorkflowRelease', () => {
+  const staleRun = (createdAgoMs: number) => ({
+    id: 1,
+    status: 'completed',
+    conclusion: 'success',
+    html_url: 'https://github.com/o/r/actions/runs/1',
+    created_at: new Date(Date.now() - createdAgoMs).toISOString(),
+  });
+
+  it('ignores a stale run from before dispatch and returns the fresh one', async () => {
+    mockGithubApi.mockReset();
+    let call = 0;
+    mockGithubApi.mockImplementation(async (_id: number, path: string) => {
+      call++;
+      if (path.includes('/dispatches')) return {};
+      // First poll only sees the old run; second poll sees the new one appear too.
+      if (call === 2) return { workflow_runs: [staleRun(14 * 24 * 60 * 60 * 1000)] };
+      return {
+        workflow_runs: [
+          {
+            id: 2,
+            status: 'queued',
+            conclusion: null,
+            html_url: 'https://github.com/o/r/actions/runs/2',
+            created_at: new Date().toISOString(),
+          },
+          staleRun(14 * 24 * 60 * 60 * 1000),
+        ],
+      };
+    });
+
+    const result = await dispatchWorkflowRelease(
+      1,
+      'o',
+      'r',
+      { workflowFile: 'release.yml', ref: 'dev', inputs: {} },
+      { attempts: 2, intervalMs: 1 },
+    );
+
+    expect(result.runId).toBe(2);
+    expect(result.runUrl).toBe('https://github.com/o/r/actions/runs/2');
+  });
+
+  it('returns no run (not a stale one) when nothing created since dispatch ever surfaces', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async (_id: number, path: string) => {
+      if (path.includes('/dispatches')) return {};
+      return { workflow_runs: [staleRun(14 * 24 * 60 * 60 * 1000)] };
+    });
+
+    const result = await dispatchWorkflowRelease(
+      1,
+      'o',
+      'r',
+      { workflowFile: 'release.yml', ref: 'dev', inputs: {} },
+      { attempts: 2, intervalMs: 1 },
+    );
+
+    expect(result.runId).toBeUndefined();
+    expect(result.runUrl).toBeUndefined();
+    expect(result.runsUrl).toContain('release.yml');
   });
 });

@@ -34,6 +34,14 @@ export async function dispatchWorkflowRelease(
   const { workflowFile, ref, inputs } = opts;
   const runsUrl = `https://github.com/${owner}/${name}/actions/workflows/${workflowFile}`;
 
+  // Recorded before dispatch: the runs list below is the newest run on this
+  // workflow+branch+event overall, which can be a run from weeks ago if ours
+  // hasn't surfaced in the API yet. Only a run created at/after this point is
+  // actually the one we just triggered.
+  const dispatchedAt = Date.now();
+  // Tolerance for clock skew between buildd and GitHub's own timestamps.
+  const clockSkewToleranceMs = 15_000;
+
   await githubApi(installationId, `/repos/${owner}/${name}/actions/workflows/${workflowFile}/dispatches`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -50,10 +58,10 @@ export async function dispatchWorkflowRelease(
         installationId,
         `/repos/${owner}/${name}/actions/workflows/${encodeURIComponent(workflowFile)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(ref)}&per_page=5`,
       );
-      const runs: Array<{ id: number; status: string; conclusion: string | null; html_url: string }> =
+      const runs: Array<{ id: number; status: string; conclusion: string | null; html_url: string; created_at: string }> =
         data?.workflow_runs ?? [];
-      if (runs.length > 0) {
-        const run = runs[0];
+      const run = runs.find((r) => new Date(r.created_at).getTime() >= dispatchedAt - clockSkewToleranceMs);
+      if (run) {
         return {
           dispatched: true,
           workflowFile,
@@ -71,6 +79,9 @@ export async function dispatchWorkflowRelease(
     }
   }
 
+  // No run created since our dispatch ever surfaced — report the runs list
+  // link rather than a stale run, so the caller doesn't mistake an old
+  // completed run for the one it just triggered.
   return { dispatched: true, workflowFile, ref, inputs, runsUrl };
 }
 
