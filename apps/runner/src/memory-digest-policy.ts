@@ -5,10 +5,9 @@
  * Two arms:
  *
  * - `full` is what every worker got before this file existed: the entire
- *   workspace digest, blind-sliced at `FULL_DIGEST_MAX_BYTES`, followed by the
- *   task-specific matches. It is the control, and it deliberately keeps the
- *   blind slice — fixing that to fall on a line boundary is a real improvement
- *   and belongs in its own change.
+ *   workspace digest, sliced at `FULL_DIGEST_MAX_BYTES` and backed up to the
+ *   last complete line, followed by the task-specific matches. It is the
+ *   control arm of the experiment.
  *
  * The control differs from the pre-experiment rendering in exactly one way: the
  * digest no longer arrives with its own `## Workspace Memory (N memories)`
@@ -43,8 +42,27 @@ export type MemoryDigestArm = 'full' | 'task_scoped';
 /**
  * Bump whenever the meaning of an arm changes. Outcome rows carrying a stale
  * version are not comparable with newer ones and must not be pooled.
+ *
+ * v2: the `full` arm's cap now backs up to the last complete line instead of
+ * slicing blind. That changes what the control arm actually renders, so rows
+ * collected under v1 cannot be pooled with rows collected under v2.
+ *
+ * v3: task-memory retrieval changed from a title-phrase match to declared
+ * paths first with the title as fallback (see task-memory-retrieval.ts). That
+ * changes the CONTROL arm, not just the treatment: `### Relevant to This Task`
+ * was empty for essentially every task under v1/v2, because a whole title only
+ * appears verbatim in a memory written by a prior run of the same recurring
+ * task. Under v3 it carries path-matched lessons.
+ *
+ * The bump therefore does two necessary things. It stops v1/v2 rows being
+ * pooled with v3 rows, and — because the draw is salted with this constant — it
+ * RE-RANDOMISES, so no task carries an arm it drew against a different
+ * definition of what that arm means.
+ *
+ * This lands before anyone is enrolled, which is the only time the control can
+ * move for free.
  */
-export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v1';
+export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v3';
 
 /** Byte cap on the workspace-wide digest under the `full` arm. */
 export const FULL_DIGEST_MAX_BYTES = 4096;
@@ -190,7 +208,7 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
   const rawDigest = compactResult.markdown ?? '';
   const digestTruncated = rawDigest.length > FULL_DIGEST_MAX_BYTES;
   const renderedFullDigest = digestTruncated
-    ? rawDigest.slice(0, FULL_DIGEST_MAX_BYTES) + DIGEST_TRUNCATION_NOTE
+    ? truncateAtLineBoundary(rawDigest, FULL_DIGEST_MAX_BYTES) + DIGEST_TRUNCATION_NOTE
     : rawDigest;
   const digestBytesAvailable = byteLength(renderedFullDigest);
 
@@ -275,6 +293,16 @@ export interface PromptCompositionRecord {
   digestTruncated: boolean;
   taskMatchBytes: number;
   taskMatchCount: number;
+  /**
+   * Which retrieval step produced the task matches — see
+   * apps/runner/src/task-memory-retrieval.ts.
+   *
+   * Load-bearing, not decoration: `taskMatchCount: 5` reads identically whether
+   * those five came from a declared path overlap or from five recent memories
+   * that happened to share a stopword with the title. Without the provenance,
+   * retrieval quality is not recoverable from the stored data.
+   */
+  taskMatchDerivedBy: string;
   memoryBlockBytes: number;
   promptBytes: number;
   /** Memory block as a share of the whole prompt, 0–1, rounded to 3dp. */
@@ -292,6 +320,8 @@ export function buildPromptCompositionRecord(args: {
    */
   promptText: string;
   backend?: string | null;
+  /** Which retrieval step produced the task matches; 'unknown' when unreported. */
+  taskMatchDerivedBy?: string | null;
 }): PromptCompositionRecord {
   const { assignment, memory, promptText } = args;
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
@@ -307,6 +337,7 @@ export function buildPromptCompositionRecord(args: {
     digestTruncated: memory.digestTruncated,
     taskMatchBytes: memory.taskMatchBytes,
     taskMatchCount: memory.taskMatchCount,
+    taskMatchDerivedBy: args.taskMatchDerivedBy || 'unknown',
     memoryBlockBytes,
     promptBytes,
     memoryShare: promptBytes > 0
@@ -317,4 +348,49 @@ export function buildPromptCompositionRecord(args: {
 
 function byteLength(s: string): number {
   return Buffer.byteLength(s, 'utf8');
+}
+
+/**
+ * Slice to at most `maxLen` code units, then back up to the last complete
+ * line so the cut never lands mid-sentence or mid-word — which entries
+ * survive should be an artifact of the cap, not of where inside a line it
+ * happened to fall.
+ *
+ * Falls back to the hard slice when there is no earlier newline to back up
+ * to (a single line longer than the cap on its own): a boundary that drops
+ * the entire digest is worse than a mid-line cut.
+ */
+function truncateAtLineBoundary(text: string, maxLen: number): string {
+  const sliced = text.slice(0, maxLen);
+  const lastNewline = sliced.lastIndexOf('\n');
+  return lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced;
+}
+
+/** A PromptCompositionRecord tagged with its position in the runner's durable event rail. */
+export type PromptCompositionEvent = PromptCompositionRecord & { buildIndex: number; ts: number };
+
+/**
+ * Append a composition record to a worker's pending event buffer, assigning
+ * it the next buildIndex.
+ *
+ * A pure function rather than inline mutation in startSession (workers.ts) so
+ * the increment-and-append logic — the part a duplicated or skipped buildIndex
+ * would silently corrupt the (workerId, buildIndex) unique constraint over —
+ * is unit-testable without exercising the rest of session startup.
+ *
+ * currentBuildIndex must be threaded through explicitly rather than reset:
+ * a worker that rebuilds its prompt more than once (the bwrap-retry restart in
+ * startSession rebuilds from scratch on the same worker) must not reuse index 0.
+ */
+export function appendPromptCompositionEvent(
+  buffer: readonly PromptCompositionEvent[] | undefined,
+  currentBuildIndex: number | undefined,
+  record: PromptCompositionRecord,
+  ts: number,
+): { buffer: PromptCompositionEvent[]; nextBuildIndex: number } {
+  const buildIndex = currentBuildIndex ?? 0;
+  return {
+    buffer: [...(buffer ?? []), { ...record, buildIndex, ts }],
+    nextBuildIndex: buildIndex + 1,
+  };
 }

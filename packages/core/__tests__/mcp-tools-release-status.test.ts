@@ -163,3 +163,49 @@ describe('trigger_release — workspace name resolution', () => {
     expect(body.workspaceId).toBe(WORKSPACE_UUID);
   });
 });
+
+/**
+ * Regression: a deduped response (same headSha already in flight) or a
+ * response missing workflowFile/ref must never be reported as "Release
+ * dispatched" — that read as success on a call that dispatched nothing and
+ * put literal "undefined" in the confirmation string.
+ */
+describe('trigger_release — deduped / incomplete response formatting', () => {
+  it('reports "not dispatched" for a deduped response instead of claiming success', async () => {
+    const api = makeApi((url) => {
+      if (url === '/api/releases/trigger') {
+        return { ok: true, strategy: 'workflow_dispatch', repo: 'buildd-ai/buildd', releaseId: 'existing-release-id', deduped: true };
+      }
+      throw new Error(`Unexpected: ${url}`);
+    });
+
+    const result = await handleBuilddAction(api, 'trigger_release', {
+      workspaceId: WORKSPACE_UUID,
+      force: true,
+    }, adminContext());
+
+    const text = result?.content?.[0]?.text ?? '';
+    expect(text).not.toContain('dispatched on');
+    expect(text).not.toContain('undefined');
+    expect(text.toLowerCase()).toContain('not dispatched');
+    expect(text).toContain('existing-release-id');
+  });
+
+  it('treats a response missing workflowFile/ref as failed, not a silent success', async () => {
+    const api = makeApi((url) => {
+      if (url === '/api/releases/trigger') {
+        return { ok: true, strategy: 'workflow_dispatch', repo: 'buildd-ai/buildd' };
+      }
+      throw new Error(`Unexpected: ${url}`);
+    });
+
+    const result = await handleBuilddAction(api, 'trigger_release', {
+      workspaceId: WORKSPACE_UUID,
+    }, adminContext());
+
+    expect(result?.isError).toBe(true);
+    const text = result?.content?.[0]?.text ?? '';
+    expect(text).not.toContain('Release dispatched');
+    expect(text).not.toContain('undefined');
+  });
+});

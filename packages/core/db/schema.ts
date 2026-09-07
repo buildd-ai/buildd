@@ -1364,6 +1364,76 @@ export const workerActionEvents = pgTable('worker_action_events', {
   actionTsIdx: index('worker_action_events_action_ts_idx').on(t.action, t.ts),
 }));
 
+/**
+ * One row per prompt build, in both memory-digest arms (see
+ * apps/runner/src/memory-digest-policy.ts PromptCompositionRecord). Replaces
+ * the two places this record used to land — the per-worker session log
+ * (pruned after 48h, shorter than the ciRetry/conflictRetry/reviewerRetry/
+ * criteriaRearm chains the experiment is measured across) and runner stdout
+ * (outlives the log but isn't queryable).
+ *
+ * `buildIndex` rather than a column on `workers`: a single worker can build
+ * more than one prompt (e.g. the bwrap-retry restart in startSession rebuilds
+ * from scratch on the same worker/task), and a column would silently keep
+ * only the last build. This table keeps all of them, ordered by buildIndex
+ * within (workerId, taskId).
+ *
+ * `propensity` and `fraction` are recorded as assigned, not recomputed later
+ * from the currently configured fraction — the fraction can be reconfigured
+ * between assignment and analysis, and an off-policy estimate divides by the
+ * propensity that was actually in effect. `policyVersion` must never be
+ * pooled across values: a version bump changes what the arms mean.
+ *
+ * Low volume relative to worker_action_events (one row per prompt build, not
+ * per MCP call), so — unlike that table — this one is not pruned by the
+ * task-archive cron; the experiment needs the full history across a task's
+ * retry chain.
+ */
+export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // 0-based, ordered per (workerId, taskId) — see rationale above.
+  buildIndex: integer('build_index').notNull(),
+  // Runner-reported build time, not insert time — same ordering rationale as
+  // worker_action_events.ts.
+  ts: timestamp('ts', { withTimezone: true }).notNull(),
+  policyVersion: text('policy_version').notNull(),
+  arm: text('arm').notNull().$type<'full' | 'task_scoped'>(),
+  // Probability this unit would have been assigned the arm it actually got,
+  // as recorded at assignment time — see table comment.
+  propensity: decimal('propensity', { precision: 5, scale: 4 }).notNull(),
+  // The configured task_scoped share this assignment was drawn against.
+  fraction: decimal('fraction', { precision: 5, scale: 4 }).notNull(),
+  digestBytes: integer('digest_bytes').notNull(),
+  // Bytes the workspace-wide digest WOULD have occupied under `full`, recorded
+  // in both arms so the saving is computable from a control row alone.
+  digestBytesAvailable: integer('digest_bytes_available').notNull(),
+  digestTruncated: boolean('digest_truncated').notNull(),
+  taskMatchBytes: integer('task_match_bytes').notNull(),
+  taskMatchCount: integer('task_match_count').notNull(),
+  // Which retrieval step produced the matches (declared paths, title fallback,
+  // a miss, or not attempted). NULLABLE on purpose: a row written by a runner
+  // that predates the field is genuinely UNKNOWN, and defaulting it to any
+  // value would encode an inference as data. taskMatchCount alone cannot
+  // distinguish five path-overlap hits from five stopword hits, so without
+  // this column retrieval quality is unrecoverable from stored rows.
+  taskMatchDerivedBy: text('task_match_derived_by'),
+  // Agent backend. Also NULLABLE, and for the same reason — the Codex path
+  // delivers persona/skills/instructions through a file on disk rather than the
+  // prompt, so promptBytes and memoryShare mean a different thing per backend
+  // and rows must be segmented, never pooled. Defaulting absent rows to
+  // 'claude' would silently pool a Codex row into the Claude cohort.
+  backend: text('backend'),
+  memoryBlockBytes: integer('memory_block_bytes').notNull(),
+  promptBytes: integer('prompt_bytes').notNull(),
+  memoryShare: decimal('memory_share', { precision: 5, scale: 4 }).notNull(),
+}, (t) => ({
+  workerBuildIdx: uniqueIndex('worker_prompt_composition_events_worker_build_idx').on(t.workerId, t.buildIndex),
+  taskTsIdx: index('worker_prompt_composition_events_task_ts_idx').on(t.taskId, t.ts),
+  policyArmIdx: index('worker_prompt_composition_events_policy_arm_idx').on(t.policyVersion, t.arm),
+}));
+
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -40,7 +40,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
@@ -573,6 +573,7 @@ export async function PATCH(
     appendMcpCalls,
     appendErrorTraces,
     appendActionEvents,
+    appendPromptCompositionEvents,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -736,6 +737,67 @@ export async function PATCH(
         await db.insert(workerActionEvents).values(rows);
       } catch (err) {
         console.error('[workers PATCH] failed to insert action events', err);
+      }
+    }
+  }
+  // appendPromptCompositionEvents: insert one row per prompt build into
+  // worker_prompt_composition_events (the durable rail the memory-digest
+  // experiment reads back — see PromptCompositionRecord in
+  // apps/runner/src/memory-digest-policy.ts). Cap at 50 rather than
+  // appendActionEvents' 200: a session builds a handful of prompts, not one
+  // row per MCP call. onConflictDoNothing guards the (worker_id, build_index)
+  // unique index — the runner restores a drained buffer and retries on a
+  // failed PATCH, so the same buildIndex can legitimately be shipped twice.
+  if (appendPromptCompositionEvents && Array.isArray(appendPromptCompositionEvents) && appendPromptCompositionEvents.length > 0) {
+    const rows = appendPromptCompositionEvents
+      .filter((e: any) => e
+        && typeof e.buildIndex === 'number' && Number.isFinite(e.buildIndex)
+        && typeof e.ts === 'number'
+        && typeof e.policyVersion === 'string' && e.policyVersion.length > 0
+        && (e.arm === 'full' || e.arm === 'task_scoped')
+        && typeof e.propensity === 'number'
+        && typeof e.fraction === 'number'
+        && typeof e.digestBytes === 'number'
+        && typeof e.digestBytesAvailable === 'number'
+        && typeof e.digestTruncated === 'boolean'
+        && typeof e.taskMatchBytes === 'number'
+        && typeof e.taskMatchCount === 'number'
+        && typeof e.memoryBlockBytes === 'number'
+        && typeof e.promptBytes === 'number'
+        && typeof e.memoryShare === 'number')
+      .slice(0, 50)
+      .map((e: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        buildIndex: e.buildIndex,
+        ts: new Date(e.ts),
+        policyVersion: String(e.policyVersion).slice(0, 100),
+        arm: e.arm,
+        propensity: String(e.propensity),
+        fraction: String(e.fraction),
+        digestBytes: e.digestBytes,
+        digestBytesAvailable: e.digestBytesAvailable,
+        digestTruncated: e.digestTruncated,
+        taskMatchBytes: e.taskMatchBytes,
+        taskMatchCount: e.taskMatchCount,
+        // Both deliberately absent from the validation filter above: a runner
+        // that predates these fields must still be able to write a row, and
+        // NULL there is the honest record of "this runner did not report it".
+        // Coercing them to a default would pool an unknown backend into the
+        // Claude cohort and an unknown provenance into a real one.
+        taskMatchDerivedBy: typeof e.taskMatchDerivedBy === 'string' && e.taskMatchDerivedBy
+          ? e.taskMatchDerivedBy.slice(0, 40)
+          : null,
+        backend: typeof e.backend === 'string' && e.backend ? e.backend.slice(0, 40) : null,
+        memoryBlockBytes: e.memoryBlockBytes,
+        promptBytes: e.promptBytes,
+        memoryShare: String(e.memoryShare),
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing();
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert prompt composition events', err);
       }
     }
   }
@@ -3028,10 +3090,7 @@ async function handleReviewerOutcomeIfNeeded(
   const missionForPolicy = missionId
     ? await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        // Deliberately not `requiresReview`: this path has never resolved
-        // mission-level requiresReview, and Option A′ is not the change that
-        // should start. Only the two fields the base-ref rule needs.
-        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
+        columns: WORKERS_POLICY_MISSION_COLUMNS,
       })
     : null;
 

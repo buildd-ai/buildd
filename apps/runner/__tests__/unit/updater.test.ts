@@ -24,7 +24,7 @@ mock.module('child_process', () => ({
 }));
 
 // Import after mocking
-const { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } = await import('../../src/updater');
+const { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable } = await import('../../src/updater');
 
 const NODE_MODULES = join(TMP_HOME, 'node_modules');
 
@@ -195,5 +195,45 @@ describe('hasTrackedChanges', () => {
   test('returns false when git command fails (update attempt will fail at git step)', () => {
     mockExecSync.mockImplementation(() => { throw new Error('not a git repository'); });
     expect(hasTrackedChanges('/some/install-dir')).toBe(false);
+  });
+});
+
+describe('hasCommitDrift', () => {
+  test('returns true when disk and process commits differ', () => {
+    expect(hasCommitDrift('abc1234', 'def5678')).toBe(true);
+  });
+
+  test('returns false when disk and process commits match', () => {
+    expect(hasCommitDrift('abc1234', 'abc1234')).toBe(false);
+  });
+
+  test('returns false when disk commit is unknown (git read failed)', () => {
+    expect(hasCommitDrift(null, 'abc1234')).toBe(false);
+  });
+
+  test('returns false when process commit is unknown (not yet resolved at startup)', () => {
+    expect(hasCommitDrift('abc1234', null)).toBe(false);
+  });
+
+  test('returns false when both are unknown', () => {
+    expect(hasCommitDrift(null, null)).toBe(false);
+  });
+});
+
+describe('shouldShowUpdateAvailable', () => {
+  test('true when the changelog has entries', () => {
+    expect(shouldShowUpdateAvailable(['abc1234 fix: something'], true)).toBe(true);
+  });
+
+  test('false when the changelog is empty and reliable (genuinely no runner changes)', () => {
+    expect(shouldShowUpdateAvailable([], true)).toBe(false);
+  });
+
+  test('true when the changelog is empty but unreliable (shallow-clone artifact)', () => {
+    expect(shouldShowUpdateAvailable([], false)).toBe(true);
+  });
+
+  test('true when entries are present even if flagged unreliable', () => {
+    expect(shouldShowUpdateAvailable(['abc1234 fix: something'], false)).toBe(true);
   });
 });

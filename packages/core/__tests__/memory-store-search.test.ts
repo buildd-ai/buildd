@@ -67,7 +67,6 @@ mock.module('../db/schema', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
-  sql: (strings: TemplateStringsArray, ...values: unknown[]) => ['sql', strings, values],
   eq: (a: unknown, b: unknown) => ['eq', a, b],
   and: (...a: unknown[]) => ['and', ...a],
   or: (...a: unknown[]) => ['or', ...a],
@@ -75,6 +74,14 @@ mock.module('drizzle-orm', () => ({
   desc: (a: unknown) => ['desc', a],
   inArray: (a: unknown, b: unknown) => ['inArray', a, b],
   count: () => ['count'],
+  // memory-file-scope-sql.ts imports `sql` from this module too — it isn't
+  // mocked separately, so the named export has to exist here or that file's
+  // top-level import throws before any test body runs. None of the searches
+  // below pass `files`, so the tagged template is never actually invoked.
+  sql: Object.assign(
+    (strings: TemplateStringsArray, ...exprs: unknown[]) => ['sql', strings, exprs],
+    { param: (v: unknown) => ['param', v] },
+  ),
 }));
 
 const { MemoryStore } = await import('../memory-store');

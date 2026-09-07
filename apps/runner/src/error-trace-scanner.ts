@@ -35,12 +35,20 @@
  *      so they now carry `requiresError` too.
  *   3. Narrow, unambiguous patterns still scan unconditionally, because
  *      `is_error` is only a lower bound on failure — a Bash command can print
- *      a real error and still exit 0. `cd_no_such_file`, `oom_killed`,
- *      `bwrap_namespace_denied`, and `sandbox_mount_gap` stay ungated: each
- *      requires a compound, format-locked signal (a specific shell prefix, or
- *      an error token plus a specific non-allowlisted path) rather than a
- *      generic English phrase, so the false-positive rate is low enough to
- *      keep paying for the mid-chain-failure recall.
+ *      a real error and still exit 0. `cd_no_such_file`, `oom_killed`, and
+ *      `bwrap_namespace_denied` stay ungated: each requires a compound,
+ *      format-locked signal (a specific shell prefix) rather than a generic
+ *      English phrase, so the false-positive rate is low enough to keep
+ *      paying for the mid-chain-failure recall. `sandbox_mount_gap` looked
+ *      like it belonged in this group too — an error token plus a specific
+ *      non-allowlisted path — but a month of production traces showed it
+ *      firing on file CONTENT (a test title, a grepped source line, a fixture
+ *      string) that merely mentions the same words, because the old regexes
+ *      matched "ENOENT ... somewhere ... .npmrc ... somewhere" instead of an
+ *      actual path. It now carries both `requiresError` and a `validate` hook
+ *      that requires the matched text to contain a path in one of the two
+ *      shapes a real bwrap/Node fs denial produces — see the pattern's own
+ *      comment below.
  *
  * Recall matters too, and the header incident above is the proof: the agent's
  * shell is zsh, which writes `(eval):cd:1: no such file or directory: apps/web`.
@@ -70,6 +78,47 @@ interface PatternDef {
   requiresError?: boolean;
   // First-match behavior on multi-line output: scan each line individually
   // so a long Bash result with a single error mid-stream is still caught.
+
+  /**
+   * Extra structural check run only after `re` already matched. For patterns
+   * whose regex alone can't tell a real signal from prose that merely
+   * mentions the same words (see sandbox_mount_gap below).
+   */
+  validate?: (line: string) => boolean;
+}
+
+/**
+ * A real bwrap/Node fs denial reports the offending path in one of two
+ * syntactically constrained shapes:
+ *   ENOENT: no such file or directory, open '/path'   (Node fs, quoted)
+ *   ENOENT: /path: No such file or directory           (POSIX-style, bare)
+ * A test title, a grep match, or a fixture string that merely CONTAINS the
+ * words ENOENT and .npmrc does not have a path in either shape — e.g.
+ * `it('detects ENOENT on .npmrc ...', () => {` has no quoted or bare token
+ * that is itself a path, so extraction fails rather than needing a denylist
+ * of known-prose shapes.
+ */
+function extractMountGapPath(line: string): string | null {
+  const quoted = /(?:ENOENT|EACCES)\b.*?(['"])([^'"\s]+)\1/.exec(line);
+  if (quoted) return quoted[2];
+  const bare = /(?:ENOENT|EACCES):\s*([^\s'"]+):\s*(?:No such file or directory|[Pp]ermission denied)/.exec(line);
+  if (bare) return bare[1];
+  return null;
+}
+
+/**
+ * Reject anything that isn't a plausible absolute filesystem path (no
+ * whitespace, quotes, or JS syntax a source line would carry), then require
+ * it to fall under one of the known non-allowlisted prefixes — same
+ * conservative set as before, minus the directories that ARE mounted.
+ */
+function isMountGapCandidate(candidate: string): boolean {
+  if (/[\s'"`]/.test(candidate) || candidate.includes('=>')) return false;
+  if (!/^[/~]/.test(candidate)) return false;
+  // Allowlisted / already-mounted — a hit here is not a gap.
+  if (/\/\.bun\//.test(candidate) || /\/\.npm\//.test(candidate) || /^\/usr\//.test(candidate)) return false;
+  return /\.npmrc$/.test(candidate) || /\.gitconfig$/.test(candidate)
+    || /^\/snap\//.test(candidate) || /^\/opt\//.test(candidate);
 }
 
 /**
@@ -116,13 +165,30 @@ const PATTERNS: PatternDef[] = [
   // bwrap sandbox fails in kernels with unprivileged_userns_clone=0 — all Bash commands fail
   { slug: 'bwrap_namespace_denied', re: /bwrap: No permissions to create a new namespace/ },
   // sandbox_mount_gap: ENOENT/EACCES on paths outside the bwrap mount allowlist.
-  // Conservative: only matches well-known non-allowlisted prefixes (home config files,
-  // /snap/, /opt/) to avoid false-positives on in-repo code errors that also produce ENOENT.
-  // False-positive on real code ENOENT is worse than a miss — keep these narrow.
-  { slug: 'sandbox_mount_gap', re: /\bENOENT\b.*\.npmrc\b/ },
-  { slug: 'sandbox_mount_gap', re: /\bENOENT\b.*\.gitconfig\b/ },
-  { slug: 'sandbox_mount_gap', re: /(?:\bENOENT\b|\bEACCES\b).*\/snap\// },
-  { slug: 'sandbox_mount_gap', re: /(?:\bENOENT\b|\bEACCES\b).*\/opt\// },
+  //
+  // This used to be four loose `.*` regexes ("contains ENOENT somewhere, then
+  // .npmrc somewhere later") and fired on file CONTENT rather than execution
+  // output: a test case title (`it('detects ENOENT on .npmrc ...', () => {`),
+  // a grep match on this file's own pattern table, a fixture string inside a
+  // test array. `validate` (see extractMountGapPath/isMountGapCandidate above)
+  // requires the matched text to have a path in one of the two shapes a real
+  // denial actually produces, which rejects prose that merely mentions the
+  // same words. `requiresError` closes the rest: a successful Read/Grep/cat of
+  // a file that legitimately contains this text (the scanner's own tests, the
+  // taxonomy fixtures) is not marked `is_error`, whether or not its content
+  // happens to be shaped like a real path — a fixture string can be
+  // byte-for-byte identical to a genuine denial, so that gate — plus
+  // READ_ONLY_TOOLS for the Read/Grep/Glob case — is load-bearing, not just
+  // belt-and-suspenders.
+  {
+    slug: 'sandbox_mount_gap',
+    re: /\b(?:ENOENT|EACCES)\b/,
+    requiresError: true,
+    validate: (line) => {
+      const path = extractMountGapPath(line);
+      return path !== null && isMountGapCandidate(path);
+    },
+  },
 ];
 
 const WINDOW_MS = 60_000;
@@ -165,6 +231,7 @@ export function scanToolResult(
       // call via seenThisCall below.
       if (p.requiresError && !isError) continue;
       if (!p.re.test(line)) continue;
+      if (p.validate && !p.validate(line)) continue;
       seenThisCall.add(p.slug);
 
       // Throttle: skip if same pattern emitted recently for this worker

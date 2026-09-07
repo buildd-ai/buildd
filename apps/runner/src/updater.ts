@@ -34,6 +34,31 @@ export function checkForUpdate(current: string | null, latest: string | null): b
 }
 
 /**
+ * True when the on-disk HEAD no longer matches the commit the running
+ * process loaded at startup (or after its last successful self-update).
+ * This is the exact signature of an external process — self-heal's
+ * `fixGitBranch`, a host-level `git reset --hard` — rewriting the install's
+ * tree without restarting the long-lived runner process, so its in-memory
+ * modules keep serving stale code indefinitely.
+ */
+export function hasCommitDrift(diskCommit: string | null, processCommit: string | null): boolean {
+  return !!diskCommit && !!processCommit && diskCommit !== processCommit;
+}
+
+/**
+ * Decide whether an update should be surfaced/applied given a runner-relevant
+ * changelog. An empty changelog normally means "no runner-code changes in
+ * this release" — but on a shallow clone (`git clone --depth 1`), a truncated
+ * commit range can look empty for a reason that has nothing to do with the
+ * release content. When the changelog can't be trusted (`reliable: false`),
+ * default to treating the update as available rather than silently skipping
+ * it — a redundant sync is cheap; a missed one leaves the runner stale.
+ */
+export function shouldShowUpdateAvailable(changelogEntries: string[], changelogReliable: boolean): boolean {
+  return changelogEntries.length > 0 || !changelogReliable;
+}
+
+/**
  * Returns true when the working tree has modified or staged **tracked** files.
  * Untracked files are intentionally excluded (`--untracked-files=no`): runtime
  * artifacts (config.json, history.db, workers/, roles/, repos-cache.json, etc.)
@@ -127,4 +152,39 @@ export function applyUpdate(
   } catch (err: any) {
     return { success: false, error: err.message || 'Update failed' };
   }
+}
+
+/**
+ * How long `updateState.updating` may stay set before we treat the update path
+ * as wedged rather than slow. A real update — fetch, reset, `bun install`,
+ * restart — completes in well under a minute; ten is generous enough that a
+ * slow install is never mistaken for a hang.
+ */
+export const UPDATE_STUCK_LIMIT_MS = 10 * 60_000;
+
+/**
+ * Has the `updating` flag been set so long that the update path must be stuck?
+ *
+ * This matters because `updating` gates BOTH the auto-updater and the drift
+ * check (`hasCommitDrift`). Every code path that sets it either exits the
+ * process or clears it in a catch — but only for failures that *throw*. An
+ * `await` that hangs without throwing leaves the flag set forever and silences
+ * both mechanisms at once, which reproduces the original failure exactly: the
+ * working tree moves on, the process keeps its old modules, and nothing logs.
+ *
+ * Production evidence for that shape: 41 `Auto-updating` attempts against 22
+ * successes and **zero** logged failures. The rollback path's `bun install` had
+ * no kill timeout, so a stalled install could hang indefinitely.
+ *
+ * Returns false when `updatingSince` is null so an un-instrumented caller can
+ * never trigger a spurious unwedge.
+ */
+export function isUpdateStuck(
+  updating: boolean,
+  updatingSince: number | null,
+  now: number,
+  limitMs: number = UPDATE_STUCK_LIMIT_MS,
+): boolean {
+  if (!updating || updatingSince === null) return false;
+  return now - updatingSince >= limitMs;
 }

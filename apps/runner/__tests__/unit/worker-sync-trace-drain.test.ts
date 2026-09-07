@@ -79,6 +79,22 @@ function makeSync(worker: any) {
 
 const TRACE = { pattern: 'cli_stderr', excerpt: 'bwrap: No permitted namespaces', source: 'stderr' };
 const ACTION_EVENT = { action: 'create_pr', ts: 1 };
+const PROMPT_COMPOSITION_EVENT = {
+  buildIndex: 0,
+  ts: 1,
+  policyVersion: 'memory-digest-v1',
+  arm: 'task_scoped' as const,
+  propensity: 0.2,
+  fraction: 0.2,
+  digestBytes: 0,
+  digestBytesAvailable: 4096,
+  digestTruncated: false,
+  taskMatchBytes: 300,
+  taskMatchCount: 1,
+  memoryBlockBytes: 300,
+  promptBytes: 5000,
+  memoryShare: 0.06,
+};
 
 describe('WorkerSync append-buffer drain', () => {
   beforeEach(() => {
@@ -144,6 +160,7 @@ describe('WorkerSync append-buffer drain', () => {
     expect(seenPayloads[0].appendErrorTraces).toBeUndefined();
     expect(seenPayloads[0].appendMcpCalls).toBeUndefined();
     expect(seenPayloads[0].appendActionEvents).toBeUndefined();
+    expect(seenPayloads[0].appendPromptCompositionEvents).toBeUndefined();
   });
 
   test('drains buildd action events once and clears the buffer', async () => {
@@ -176,5 +193,37 @@ describe('WorkerSync append-buffer drain', () => {
     await makeSync(worker).syncWorkerToServer(worker).catch(() => {});
     expect(worker.pendingActionEvents).toHaveLength(1);
     expect(worker.pendingActionEvents[0].action).toBe(ACTION_EVENT.action);
+  });
+
+  test('drains prompt composition events once and clears the buffer', async () => {
+    const worker = makeWorker({ pendingPromptCompositionEvents: [{ ...PROMPT_COMPOSITION_EVENT }] });
+    await makeSync(worker).syncWorkerToServer(worker);
+
+    expect(seenPayloads).toHaveLength(1);
+    expect(seenPayloads[0].appendPromptCompositionEvents).toHaveLength(1);
+    expect(worker.pendingPromptCompositionEvents).toHaveLength(0);
+  });
+
+  test('two overlapping syncs do not file the same prompt composition event twice', async () => {
+    const worker = makeWorker({ pendingPromptCompositionEvents: [{ ...PROMPT_COMPOSITION_EVENT }] });
+    const sync = makeSync(worker);
+
+    updateBehaviour = 'gate';
+    const first = sync.syncWorkerToServer(worker);
+    updateBehaviour = 'ok';
+    await sync.syncWorkerToServer(worker);
+    resolveUpdate?.({});
+    await first;
+
+    const shipped = seenPayloads.flatMap(p => p.appendPromptCompositionEvents ?? []);
+    expect(shipped).toHaveLength(1);
+  });
+
+  test('restores drained prompt composition events when the sync PATCH throws', async () => {
+    const worker = makeWorker({ pendingPromptCompositionEvents: [{ ...PROMPT_COMPOSITION_EVENT }] });
+    updateBehaviour = 'throw';
+    await makeSync(worker).syncWorkerToServer(worker).catch(() => {});
+    expect(worker.pendingPromptCompositionEvents).toHaveLength(1);
+    expect(worker.pendingPromptCompositionEvents[0].buildIndex).toBe(PROMPT_COMPOSITION_EVENT.buildIndex);
   });
 });
