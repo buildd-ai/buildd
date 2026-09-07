@@ -1,0 +1,1 @@
+ALTER TABLE "worker_prompt_composition_events" ADD COLUMN "backend" text DEFAULT 'claude' NOT NULL;

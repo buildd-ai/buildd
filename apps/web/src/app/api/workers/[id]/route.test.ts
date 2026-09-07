@@ -2905,11 +2905,17 @@ describe('PATCH /api/workers/[id]', () => {
   });
 
   describe('appendPromptCompositionEvents', () => {
+    // Mirrors PromptCompositionEvent (PromptCompositionRecord + buildIndex/ts)
+    // from apps/runner/src/memory-digest-policy.ts. Every key here must land
+    // in the insert row — see the field-parity test below, which is the
+    // regression guard for a field (e.g. `backend`) silently getting dropped
+    // between the runner's record shape and the server's insert mapping.
     const VALID_EVENT = {
       buildIndex: 0,
       ts: 1000,
       policyVersion: 'memory-digest-v1',
       arm: 'task_scoped',
+      backend: 'claude',
       propensity: 0.2,
       fraction: 0.2,
       digestBytes: 0,
@@ -2968,6 +2974,42 @@ describe('PATCH /api/workers/[id]', () => {
       });
       expect(lastInsertValues[0].ts).toBeInstanceOf(Date);
       expect(lastInsertValues[1]).toMatchObject({ buildIndex: 1, arm: 'full' });
+    });
+
+    it('maps every field of the record shape into the insert row (no silent drops)', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendPromptCompositionEvents: [{ ...VALID_EVENT, backend: 'codex' }],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const row = lastInsertValues[0];
+      for (const key of Object.keys(VALID_EVENT)) {
+        expect(row).toHaveProperty(key);
+        expect(row[key]).not.toBeUndefined();
+      }
+      expect(row.backend).toBe('codex');
+    });
+
+    it('defaults backend to claude when a runner omits it (pre-field rows)', async () => {
+      const { backend, ...eventWithoutBackend } = VALID_EVENT;
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendPromptCompositionEvents: [eventWithoutBackend],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues[0].backend).toBe('claude');
     });
 
     it('drops malformed events (missing/invalid required fields)', async () => {

@@ -1400,6 +1400,12 @@ export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_
   ts: timestamp('ts', { withTimezone: true }).notNull(),
   policyVersion: text('policy_version').notNull(),
   arm: text('arm').notNull().$type<'full' | 'task_scoped'>(),
+  // Agent backend this prompt was built for. Defaults to 'claude': every row
+  // written before this column existed came from the Claude backend, so
+  // backfilling to 'claude' is accurate rather than a guess. See
+  // PromptCompositionRecord.backend in apps/runner/src/memory-digest-policy.ts
+  // for why rows must be segmented by this field, never pooled.
+  backend: text('backend').notNull().default('claude'),
   // Probability this unit would have been assigned the arm it actually got,
   // as recorded at assignment time — see table comment.
   propensity: decimal('propensity', { precision: 5, scale: 4 }).notNull(),

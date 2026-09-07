@@ -773,6 +773,10 @@ export async function PATCH(
         ts: new Date(e.ts),
         policyVersion: String(e.policyVersion).slice(0, 100),
         arm: e.arm,
+        // Optional for backward compat with runners that predate this field —
+        // the column default covers the gap, and every row shipped before it
+        // existed genuinely came from the Claude backend.
+        backend: typeof e.backend === 'string' && e.backend.length > 0 ? e.backend.slice(0, 50) : 'claude',
         propensity: String(e.propensity),
         fraction: String(e.fraction),
         digestBytes: e.digestBytes,
