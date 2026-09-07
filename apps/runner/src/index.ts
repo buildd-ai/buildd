@@ -14,6 +14,7 @@ import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
+import { resolveTaskScopedFraction } from './memory-digest-policy';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -179,6 +180,8 @@ interface SavedConfig {
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
   maxTurns?: number; // Max turns per worker session (default: no limit)
+  // Share of tasks (0-1) enrolled in the task_scoped workspace-memory arm.
+  memoryDigestTaskScopedFraction?: number;
 }
 
 function loadSavedConfig(): SavedConfig {
@@ -202,6 +205,7 @@ function loadSavedConfig(): SavedConfig {
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
         maxTurns: data.maxTurns,
+        memoryDigestTaskScopedFraction: data.memoryDigestTaskScopedFraction,
       };
     }
   } catch (err) {
@@ -444,6 +448,15 @@ const config: LocalUIConfig = {
   maxTurns: savedConfig.maxTurns,
   // Tier 3 structural isolation root (opt-in via env var)
   workspaceIsolationRoot: process.env.BUILDD_WORKSPACE_ISOLATION_ROOT || undefined,
+  // Workspace-memory experiment enrolment. 0 (the default) means every prompt
+  // keeps the workspace-wide digest exactly as before.
+  // `||`, not `??`, matching every neighbouring env-over-saved field: a
+  // set-but-empty env var (the normal shape in a .env file or a compose
+  // `environment:` list) must fall through to the saved value rather than
+  // shadow it with ''.
+  memoryDigestTaskScopedFraction: resolveTaskScopedFraction(
+    process.env.BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION || savedConfig.memoryDigestTaskScopedFraction,
+  ),
 };
 
 const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolationRoot);
