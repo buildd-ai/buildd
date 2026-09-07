@@ -19,6 +19,24 @@ const mockLoad = mock(async () => ({ snapshot: scanSnapshot, coverage: scanCover
 mock.module('@/lib/mission-invariant-scan', () => ({ loadInvariantSnapshot: mockLoad }));
 
 // ── DB mocks ────────────────────────────────────────────────────────────────
+//
+// The route now runs through `withCronRun` (lib/cron-run.ts), which does its
+// own best-effort `db.insert(cronRuns)` / `db.update(cronRuns)` /
+// `db.query.cronRuns.findMany` after the handler resolves. Those calls must be
+// routed to a separate no-op stub rather than the generic `tasks` mock below —
+// otherwise the cron-run bookkeeping write lands in the same `inserted` /
+// `updated` arrays the friction-task assertions check, and a passing test
+// starts failing on an unrelated write it never asked about.
+
+const cronRunsTable = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+const tasksTable = {
+  id: 'id',
+  title: 'title',
+  status: 'status',
+  context: 'context',
+  description: 'description',
+  workspaceId: 'workspaceId',
+};
 
 let existingFrictionTask: { id: string } | null = null;
 const findFirstCalls: any[] = [];
@@ -36,41 +54,51 @@ mock.module('@buildd/core/db', () => ({
       tasks: { findFirst: mockFindFirst },
       cronRuns: { findMany: mock(async () => []) },
     },
-    insert: mock(() => ({
-      values: mock((values: any) => ({
-        returning: mock(async () => {
-          inserted.push(values);
-          return [{ id: `task-${inserted.length}` }];
-        }),
-      })),
-    })),
-    update: mock(() => ({
-      set: mock((values: any) => ({
-        where: mock(async () => {
-          updated.push(values);
-        }),
-      })),
-    })),
-    delete: mock(() => ({
-      where: mock(async () => undefined),
-    })),
+    insert: mock((table: any) => {
+      if (table === cronRunsTable) {
+        return { values: mock(() => ({ returning: mock(async () => [{ id: 'cron-run-1' }]) })) };
+      }
+      return {
+        values: mock((values: any) => ({
+          returning: mock(async () => {
+            inserted.push(values);
+            return [{ id: `task-${inserted.length}` }];
+          }),
+        })),
+      };
+    }),
+    update: mock((table: any) => {
+      if (table === cronRunsTable) {
+        return { set: mock(() => ({ where: mock(async () => {}) })) };
+      }
+      return {
+        set: mock((values: any) => ({
+          where: mock(async () => {
+            updated.push(values);
+          }),
+        })),
+      };
+    }),
+    delete: mock(() => ({ where: mock(() => Promise.resolve()) })),
   },
 }));
 
 mock.module('drizzle-orm', () => ({
+  // desc/gt/lt: withCronRun (lib/cron-run.ts) imports these. mock.module is
+  // process-global, so a partial stub removes them for every other importer.
   sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   and: (...c: any[]) => ({ c, type: 'and' }),
   like: (f: any, v: any) => ({ f, v, type: 'like' }),
   notInArray: (f: any, v: any) => ({ f, v, type: 'notInArray' }),
-  desc: (a: any) => ({ a, op: 'desc' }),
-  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
+  desc: (f: any) => ({ f, type: 'desc' }),
+  gt: (f: any, v: any) => ({ f, v, type: 'gt' }),
   lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
-  tasks: { id: 'id', title: 'title', status: 'status', context: 'context', description: 'description', workspaceId: 'workspaceId' },
+  cronRuns: cronRunsTable,
+  tasks: tasksTable,
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
@@ -88,10 +116,6 @@ function makeRequest(token: string | null = CRON_SECRET): NextRequest {
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 }
-
-// Filter inserted items to separate cronRuns from tasks
-const insertedTasks = () => inserted.filter((i: any) => 'context' in i);
-const insertedCronRuns = () => inserted.filter((i: any) => 'job' in i);
 
 const HOUR = 3_600_000;
 
@@ -174,7 +198,7 @@ describe('healthy fleet', () => {
     expect(res.status).toBe(200);
     expect(body.violations).toBe(0);
     expect(body.filed).toBe(0);
-    expect(insertedTasks()).toEqual([]);
+    expect(inserted).toEqual([]);
     expect(updated).toEqual([]);
     expect(mockNotify).not.toHaveBeenCalled();
   });
@@ -207,7 +231,7 @@ describe('staging', () => {
     expect(stranded.count).toBe(1);
     expect(stranded.files).toBe(false);
     expect(body.filed).toBe(0);
-    expect(insertedTasks()).toEqual([]);
+    expect(inserted).toEqual([]);
     expect(mockNotify).not.toHaveBeenCalled();
   });
 
@@ -218,13 +242,13 @@ describe('staging', () => {
     const body = await (await POST(makeRequest())).json();
 
     expect(body.filed).toBe(1);
-    expect(insertedTasks()).toHaveLength(1);
-    expect(insertedTasks()[0].title).toStartWith('[friction] orphaned_integration_base');
-    expect(insertedTasks()[0].workspaceId).toBe('ws-1');
-    expect(insertedTasks()[0].context.frictionSignature).toBe(
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].title).toStartWith('[friction] orphaned_integration_base');
+    expect(inserted[0].workspaceId).toBe('ws-1');
+    expect(inserted[0].context.frictionSignature).toBe(
       invariantFrictionSignature('orphaned_integration_base', '4242'),
     );
-    expect(insertedTasks()[0].description).toContain('mission/example-1234');
+    expect(inserted[0].description).toContain('mission/example-1234');
     expect(mockNotify).toHaveBeenCalled();
   });
 });
@@ -239,7 +263,7 @@ describe('dedupe', () => {
 
     const body = await (await POST(makeRequest())).json();
 
-    expect(insertedTasks()).toEqual([]);
+    expect(inserted).toEqual([]);
     expect(updated).toHaveLength(1);
     expect(body.filed).toBe(0);
     expect(body.appended).toBe(1);

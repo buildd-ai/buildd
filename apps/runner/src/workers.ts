@@ -55,7 +55,7 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -1903,7 +1903,6 @@ export class WorkerManager {
         promptText = promptText + '\n\n' + tenantLines.join('\n');
       }
 
-
       // Build the agent subprocess environment from an allowlist rather than
       // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
       // DISPATCH_API_KEY, TENANT_MASTER_KEY, etc.) must never appear in the env
@@ -3068,6 +3067,16 @@ export class WorkerManager {
       // dies with the container. Neither sink is a queryable rail — see the
       // open question in the design doc.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
+      // Durable, queryable rail: neither of the above survives long enough or
+      // is queryable enough to analyse the arm across a task's retry chain.
+      const { buffer: promptCompositionBuffer, nextBuildIndex } = appendPromptCompositionEvent(
+        worker.pendingPromptCompositionEvents,
+        worker.promptBuildIndex,
+        composition,
+        Date.now(),
+      );
+      worker.pendingPromptCompositionEvents = promptCompositionBuffer;
+      worker.promptBuildIndex = nextBuildIndex;
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.

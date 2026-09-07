@@ -49,8 +49,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, like, notInArray, sql } from 'drizzle-orm';
 import { notify } from '@/lib/pushover';
-import { withCronRun } from '@/lib/cron-run';
-import type { CronReport } from '@/lib/cron-run';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { loadInvariantSnapshot } from '@/lib/mission-invariant-scan';
 import {
   evaluateInvariants,
@@ -165,14 +164,14 @@ async function fileViolation(
 }
 
 export async function POST(req: NextRequest) {
-  return withCronRun('mission-invariants', req, report => runCronJob(req, report));
+  return withCronRun('mission-invariants', req, cronReport => runCronJob(cronReport));
 }
 
-async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
+async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
   const now = new Date();
   const { snapshot, coverage } = await loadInvariantSnapshot(now);
   const results = evaluateInvariants(snapshot, now);
-  const reportText = formatInvariantReport(results, { scanned: coverage });
+  const report = formatInvariantReport(results, { scanned: coverage });
 
   // ── File, for the invariants staged to file ───────────────────────────────
   const filings: Filing[] = [];
@@ -228,16 +227,26 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   }));
   const violations = results.reduce((n, r) => n + r.violations.length, 0);
 
+  const appendedCount = filings.filter(f => f.outcome === 'appended').length;
+  const skippedCount = filings.filter(f => f.outcome === 'skipped').length;
+
   console.log(
     JSON.stringify({
       event: 'mission_invariant_sweep',
       violations,
       scanned: coverage,
       filed: created.length,
-      appended: filings.filter(f => f.outcome === 'appended').length,
+      appended: appendedCount,
       byInvariant: totals.filter(t => t.count > 0),
     }),
   );
+
+  cronReport({
+    processed: results.length,
+    changed: created.length + appendedCount,
+    errors: skippedCount,
+    result: { violations, filed: created.length, appended: appendedCount, dropped: filingsDropped },
+  });
 
   return NextResponse.json({
     ok: true,
@@ -245,10 +254,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     violations,
     invariants: totals,
     filed: created.length,
-    appended: filings.filter(f => f.outcome === 'appended').length,
+    appended: appendedCount,
     dropped: filingsDropped,
     filings,
-    report: reportText,
+    report,
     // The offending ids per invariant, so an agent consuming this response does
     // not have to parse the human-readable report to act on it.
     detail: results
