@@ -206,21 +206,43 @@ export async function POST(req: NextRequest) {
     }
 
     // Insert the releases row before dispatch so we have a record even if dispatch fails.
-    const [releaseRow] = await db
-      .insert(releases)
-      .values({
-        workspaceId: target.workspaceId,
-        archetype,
-        headSha,
-        previousSha,
-        state: 'dispatched',
-        verificationStrategy: archetype === 'gated' ? 'http' : 'none',
-        triggeredBy,
-        dispatchedAt: new Date(),
-        ciStateAtDispatch,
-        commitsAheadAtDispatch,
-      })
-      .returning({ id: releases.id });
+    const releaseValues = {
+      workspaceId: target.workspaceId,
+      archetype,
+      headSha,
+      previousSha,
+      state: 'dispatched' as const,
+      verificationStrategy: (archetype === 'gated' ? 'http' : 'none') as 'http' | 'none',
+      triggeredBy,
+      dispatchedAt: new Date(),
+      ciStateAtDispatch,
+      commitsAheadAtDispatch,
+    };
+
+    // `force` re-dispatches a commit that may already have a row under the
+    // (workspace_id, head_sha) unique index — across EVERY state, not just
+    // the in-flight ones the dedup check above looks at. A plain insert would
+    // throw a raw Postgres unique-violation there and surface as an opaque
+    // 500, defeating the whole point of `force`. Upsert instead, clearing the
+    // prior lifecycle fields so a stale healthy/failed run doesn't bleed into
+    // the fresh dispatch.
+    const [releaseRow] = body.force
+      ? await db
+          .insert(releases)
+          .values(releaseValues)
+          .onConflictDoUpdate({
+            target: [releases.workspaceId, releases.headSha],
+            set: {
+              ...releaseValues,
+              runUrl: null,
+              deployUrl: null,
+              deployedAt: null,
+              healthyAt: null,
+              failureReason: null,
+            },
+          })
+          .returning({ id: releases.id })
+      : await db.insert(releases).values(releaseValues).returning({ id: releases.id });
 
     const releaseId = releaseRow.id;
 
