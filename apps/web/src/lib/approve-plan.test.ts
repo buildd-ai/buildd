@@ -178,14 +178,17 @@ describe('approvePlan — baseBranch resolution', () => {
   });
 
   it('reads the shared mission branch off the dependency context (headBranch)', async () => {
-    // A mission task whose context carries headBranch (seeded from
-    // missions.workingBranch) is claimed onto THAT branch verbatim — the
-    // generator is not consulted at all.
+    // When resolving a dependency for baseBranch stacking, generate the
+    // task's branch name, not use headBranch. The headBranch is for execution
+    // (the claim route uses it to determine what branch to work on), while
+    // baseBranch is for lineage tracking (what output this task depends on).
+    // Even if the dependency has headBranch set, baseBranch preserves the
+    // generated name to maintain dependency metadata.
     planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
     taskRows[PLANNING_TASK_ID] = planningTaskRow;
     contextSeeds[0] = { headBranch: 'mission/delivery-arc-1a2b3c4d' };
     await approvePlan(PLANNING_TASK_ID, PLAN as any);
-    expect(writtenBaseBranch()).toBe('mission/delivery-arc-1a2b3c4d');
+    expect(writtenBaseBranch()).toBe(`buildd/${DEP_ID8}-add-schema-migration`);
   });
 });
 
@@ -218,6 +221,24 @@ describe('approvePlan — Option A′ integration branch as the default base', (
     );
     expect(insertedContext(0).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
     expect(insertedContext(1).baseBranch).toBe('mission/delivery-arc-1a2b3c4d');
+  });
+
+  it('sets headBranch on every child to the mission working branch when opted in', async () => {
+    // For mission-branch missions, all task workers push to the same integration
+    // branch. Each worker gets its own worktree branch (falling back to
+    // <branch>-w<id> if the mission branch is already checked out), but all
+    // pushes target the shared integration branch. This is enabled by setting
+    // headBranch on the child task context so the claim route's branch-name
+    // generator returns the mission branch verbatim.
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: 'mission/delivery-arc-1a2b3c4d', integrationBranchEnabled: true };
+    await approvePlan(
+      PLANNING_TASK_ID,
+      [{ ref: 'a', title: 'First' }, { ref: 'b', title: 'Second' }] as any,
+    );
+    expect(insertedContext(0).headBranch).toBe('mission/delivery-arc-1a2b3c4d');
+    expect(insertedContext(1).headBranch).toBe('mission/delivery-arc-1a2b3c4d');
   });
 
   it('lets an explicit stacked baseBranch still win over the integration branch', async () => {
