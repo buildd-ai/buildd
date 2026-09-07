@@ -254,6 +254,26 @@ describe('POST /api/releases/trigger', () => {
     expect(mockDispatchWorkflowRelease.mock.calls.length).toBe(dispatchCallsBefore);
   });
 
+  it('force=true bypasses dedup and dispatches even with an existing in-flight row for the same headSha', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockReleaseFindFirst.mockImplementation(async () => ({
+      id: 'existing-release-id',
+      workspaceId: 'ws-1',
+      headSha: 'abc123sha',
+      state: 'dispatched',
+    }));
+    const dispatchCallsBefore = mockDispatchWorkflowRelease.mock.calls.length;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1', force: true }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.deduped).toBeUndefined();
+    expect(body.runId).toBe(42);
+    // A real dispatch happened despite the existing in-flight row.
+    expect(mockDispatchWorkflowRelease.mock.calls.length).toBe(dispatchCallsBefore + 1);
+  });
+
   it('attribution job called once on happy path', async () => {
     mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
     mockAttributeRelease.mockReset();

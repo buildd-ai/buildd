@@ -182,8 +182,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Idempotency: if a row for this headSha already exists in an in-flight state, return it.
-    {
+    // Idempotency: if a row for this headSha already exists in an in-flight state, return it —
+    // unless the caller passed `force`, which explicitly asks to re-dispatch this commit
+    // anyway (e.g. a no-diff release). Without this exception, `force` silently hit this
+    // guard and returned the old row's (fieldless) response as if it had just dispatched.
+    if (!body.force) {
       const existing = await db.query.releases.findFirst({
         where: and(
           eq(releases.workspaceId, target.workspaceId),
