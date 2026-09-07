@@ -76,6 +76,7 @@ import {
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
 import { buildCbmActivation, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
 
@@ -2907,6 +2908,16 @@ export class WorkerManager {
       // appears in queryOptions.mcpServers — gating on that left the destructive
       // tools exposed on exactly that path. Disallowing an unmounted tool is inert.
       (queryOptions as any).disallowedTools = applyCbmToolBlocklist((queryOptions as any).disallowedTools);
+
+      // Defence in depth, not the gate (see pr-mutation-enforcement.ts): deny the
+      // shell `gh pr` mutation subcommands and known connector PR-write tool names
+      // for roles that have no legitimate reason to reach for them. Placed after all
+      // mcpServers mounting above so mountedServerNames reflects the final set.
+      (queryOptions as any).disallowedTools = applyPrMutationDeny((queryOptions as any).disallowedTools, {
+        roleSlug: task.roleSlug,
+        hasApiKey: !!this.config.apiKey,
+        mountedServerNames: Object.keys(queryOptions.mcpServers ?? {}),
+      });
 
       // MCP pre-flight: verify all connector-required servers are mounted and
       // reachable BEFORE the agent loop starts. Connectors are servers the role

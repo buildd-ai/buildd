@@ -1,6 +1,7 @@
 import type { query } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
+import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 
 // ── Config resolution ──────────────────────────────────────────────
 
@@ -292,6 +293,12 @@ export function buildPrompt(ctx: PromptContext): string {
       // If buildd MCP is available, prefer create_pr action over gh pr create to avoid duplicates
       if (hasApiKey) {
         gitContext.push(`- Use \`buildd\` action=create_pr to create PRs (do NOT use \`gh pr create\` — create_pr handles dedup and targets \`${prTarget}\` automatically)`);
+        // Meet the reason before the wall: for a role whose shell/connector PR-write
+        // access is actually denied (pr-mutation-enforcement.ts), say so here rather
+        // than let the agent discover it as an unexplained tool failure mid-task.
+        if (shouldDenyPrMutation(task.roleSlug, hasApiKey)) {
+          gitContext.push(`- \`gh pr create/edit/merge/close/reopen/ready/review\` are blocked for this role — use \`create_pr\`/\`merge_pr\`/\`close_pr\`/\`request_pr_review\` instead. Read-only \`gh pr view/list/checks\` and \`gh api <GET>\` still work.`);
+        }
       } else {
         gitContext.push(`- IMPORTANT: Always use \`gh pr create --base ${prTarget}\` to ensure the PR targets the correct branch`);
       }

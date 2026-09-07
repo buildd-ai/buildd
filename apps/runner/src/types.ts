@@ -423,6 +423,9 @@ export interface BuilddTask {
   priority: number;
   mode?: string;
   dependsOn?: string[];
+  // Role slug this task is routed to (e.g. "builder", "researcher") — drives
+  // role-scoped runner behaviour such as pr-mutation-enforcement.ts.
+  roleSlug?: string;
   context?: Record<string, unknown>;  // May contain attachments
   attachments?: Array<{ id: string; filename: string; url: string }>;
   // Task taxonomy
