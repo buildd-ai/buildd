@@ -257,6 +257,7 @@ mock.module('@buildd/core/db/schema', () => ({
   secrets: 'secrets',
   workerErrorTraces: { workerId: 'workerId' },
   workerActionEvents: { workerId: 'workerId' },
+  workerPromptCompositionEvents: { workerId: 'workerId' },
   missions: 'missions',
   taskSchedules: 'taskSchedules',
   backendPauses: 'backendPauses',
@@ -2891,6 +2892,120 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('does not insert when appendActionEvents is absent', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeNull();
+    });
+  });
+
+  describe('appendPromptCompositionEvents', () => {
+    const VALID_EVENT = {
+      buildIndex: 0,
+      ts: 1000,
+      policyVersion: 'memory-digest-v1',
+      arm: 'task_scoped',
+      propensity: 0.2,
+      fraction: 0.2,
+      digestBytes: 0,
+      digestBytesAvailable: 4096,
+      digestTruncated: false,
+      taskMatchBytes: 300,
+      taskMatchCount: 1,
+      memoryBlockBytes: 300,
+      promptBytes: 5000,
+      memoryShare: 0.06,
+    };
+
+    beforeEach(() => {
+      lastInsertTable = null;
+      lastInsertValues = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+    });
+
+    it('inserts prompt composition events into worker_prompt_composition_events', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendPromptCompositionEvents: [
+            VALID_EVENT,
+            { ...VALID_EVENT, buildIndex: 1, arm: 'full', propensity: 0.8 },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(2);
+      expect(lastInsertValues[0]).toMatchObject({
+        workerId: 'worker-1',
+        taskId: 'task-1',
+        buildIndex: 0,
+        policyVersion: 'memory-digest-v1',
+        arm: 'task_scoped',
+      });
+      expect(lastInsertValues[0].ts).toBeInstanceOf(Date);
+      expect(lastInsertValues[1]).toMatchObject({ buildIndex: 1, arm: 'full' });
+    });
+
+    it('drops malformed events (missing/invalid required fields)', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendPromptCompositionEvents: [
+            VALID_EVENT,
+            { ...VALID_EVENT, buildIndex: undefined },
+            { ...VALID_EVENT, arm: 'bogus' },
+            { ...VALID_EVENT, ts: 'not-a-number' },
+            { ...VALID_EVENT, policyVersion: undefined },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(1);
+      expect(lastInsertValues[0].buildIndex).toBe(0);
+    });
+
+    it('caps prompt composition events at 50 per request', async () => {
+      const events = Array.from({ length: 80 }, (_, i) => ({ ...VALID_EVENT, buildIndex: i }));
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', appendPromptCompositionEvents: events },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(50);
+    });
+
+    it('does not insert when appendPromptCompositionEvents is absent', async () => {
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },

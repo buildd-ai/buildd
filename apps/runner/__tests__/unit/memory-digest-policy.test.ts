@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   FULL_DIGEST_MAX_BYTES,
   MEMORY_DIGEST_POLICY_VERSION,
+  appendPromptCompositionEvent,
   assignMemoryDigestArm,
   buildMemoryBlock,
   buildPromptCompositionRecord,
@@ -309,5 +310,51 @@ describe('buildPromptCompositionRecord', () => {
     });
     expect(rec.memoryShare).toBe(0);
     expect(Number.isNaN(rec.memoryShare)).toBe(false);
+  });
+});
+
+describe('appendPromptCompositionEvent', () => {
+  const record = () => buildPromptCompositionRecord({
+    assignment: assignMemoryDigestArm('task-4711', 0),
+    memory: buildMemoryBlock({
+      arm: 'full',
+      compactResult: { count: 1, markdown: 'D' },
+      taskSearchResults: [],
+      fullObservations: [],
+    }),
+    promptText: 'prompt',
+  });
+
+  test('starts at buildIndex 0 for an undefined counter and buffer', () => {
+    const { buffer, nextBuildIndex } = appendPromptCompositionEvent(undefined, undefined, record(), 1000);
+    expect(buffer).toHaveLength(1);
+    expect(buffer[0].buildIndex).toBe(0);
+    expect(buffer[0].ts).toBe(1000);
+    expect(nextBuildIndex).toBe(1);
+  });
+
+  test('appends without mutating the input buffer, and advances the counter', () => {
+    const first = appendPromptCompositionEvent(undefined, undefined, record(), 1000);
+    const second = appendPromptCompositionEvent(first.buffer, first.nextBuildIndex, record(), 2000);
+
+    expect(first.buffer).toHaveLength(1);
+    expect(second.buffer).toHaveLength(2);
+    expect(second.buffer.map(e => e.buildIndex)).toEqual([0, 1]);
+    expect(second.nextBuildIndex).toBe(2);
+  });
+
+  test('a rebuilt session (e.g. bwrap-retry restart) does not reuse buildIndex 0', () => {
+    // currentBuildIndex threaded through explicitly, as workers.ts does via
+    // worker.promptBuildIndex — simulates a second startSession call on the
+    // same worker after the first already emitted buildIndex 0.
+    const { buffer, nextBuildIndex } = appendPromptCompositionEvent([], 1, record(), 3000);
+    expect(buffer[0].buildIndex).toBe(1);
+    expect(nextBuildIndex).toBe(2);
+  });
+
+  test('carries every PromptCompositionRecord field through onto the event', () => {
+    const rec = record();
+    const { buffer } = appendPromptCompositionEvent(undefined, undefined, rec, 1000);
+    expect(buffer[0]).toMatchObject(rec);
   });
 });
