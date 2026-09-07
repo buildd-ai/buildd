@@ -32,7 +32,10 @@ const mockFindFirst = mock(async (args: any) => {
 
 mock.module('@buildd/core/db', () => ({
   db: {
-    query: { tasks: { findFirst: mockFindFirst } },
+    query: {
+      tasks: { findFirst: mockFindFirst },
+      cronRuns: { findMany: mock(async () => []) },
+    },
     insert: mock(() => ({
       values: mock((values: any) => ({
         returning: mock(async () => {
@@ -48,6 +51,9 @@ mock.module('@buildd/core/db', () => ({
         }),
       })),
     })),
+    delete: mock(() => ({
+      where: mock(async () => undefined),
+    })),
   },
 }));
 
@@ -57,9 +63,13 @@ mock.module('drizzle-orm', () => ({
   and: (...c: any[]) => ({ c, type: 'and' }),
   like: (f: any, v: any) => ({ f, v, type: 'like' }),
   notInArray: (f: any, v: any) => ({ f, v, type: 'notInArray' }),
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
+  lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
   tasks: { id: 'id', title: 'title', status: 'status', context: 'context', description: 'description', workspaceId: 'workspaceId' },
 }));
 
@@ -78,6 +88,10 @@ function makeRequest(token: string | null = CRON_SECRET): NextRequest {
     headers: token ? { authorization: `Bearer ${token}` } : {},
   });
 }
+
+// Filter inserted items to separate cronRuns from tasks
+const insertedTasks = () => inserted.filter((i: any) => 'context' in i);
+const insertedCronRuns = () => inserted.filter((i: any) => 'job' in i);
 
 const HOUR = 3_600_000;
 
@@ -160,7 +174,7 @@ describe('healthy fleet', () => {
     expect(res.status).toBe(200);
     expect(body.violations).toBe(0);
     expect(body.filed).toBe(0);
-    expect(inserted).toEqual([]);
+    expect(insertedTasks()).toEqual([]);
     expect(updated).toEqual([]);
     expect(mockNotify).not.toHaveBeenCalled();
   });
@@ -193,7 +207,7 @@ describe('staging', () => {
     expect(stranded.count).toBe(1);
     expect(stranded.files).toBe(false);
     expect(body.filed).toBe(0);
-    expect(inserted).toEqual([]);
+    expect(insertedTasks()).toEqual([]);
     expect(mockNotify).not.toHaveBeenCalled();
   });
 
@@ -204,13 +218,13 @@ describe('staging', () => {
     const body = await (await POST(makeRequest())).json();
 
     expect(body.filed).toBe(1);
-    expect(inserted).toHaveLength(1);
-    expect(inserted[0].title).toStartWith('[friction] orphaned_integration_base');
-    expect(inserted[0].workspaceId).toBe('ws-1');
-    expect(inserted[0].context.frictionSignature).toBe(
+    expect(insertedTasks()).toHaveLength(1);
+    expect(insertedTasks()[0].title).toStartWith('[friction] orphaned_integration_base');
+    expect(insertedTasks()[0].workspaceId).toBe('ws-1');
+    expect(insertedTasks()[0].context.frictionSignature).toBe(
       invariantFrictionSignature('orphaned_integration_base', '4242'),
     );
-    expect(inserted[0].description).toContain('mission/example-1234');
+    expect(insertedTasks()[0].description).toContain('mission/example-1234');
     expect(mockNotify).toHaveBeenCalled();
   });
 });
@@ -225,7 +239,7 @@ describe('dedupe', () => {
 
     const body = await (await POST(makeRequest())).json();
 
-    expect(inserted).toEqual([]);
+    expect(insertedTasks()).toEqual([]);
     expect(updated).toHaveLength(1);
     expect(body.filed).toBe(0);
     expect(body.appended).toBe(1);
