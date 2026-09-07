@@ -42,6 +42,13 @@ export const RESOLVE_POLICY_MISSION_COLUMNS = {
   integrationBranchEnabled: true,
 } as const;
 
+// Workers path: never resolves requiresReview (that decision belongs to the reviewer)
+export const WORKERS_POLICY_MISSION_COLUMNS = {
+  mergePolicy: true,
+  workingBranch: true,
+  integrationBranchEnabled: true,
+} as const;
+
 /**
  * Parse a stored MergePolicy value on the read path — fail soft.
  * Malformed policy logs a warning and returns the default; never throws.
