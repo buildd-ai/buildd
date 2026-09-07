@@ -61,6 +61,7 @@ import {
 } from '@/lib/initiative-pulse';
 import type { PulseLineItem } from '@/lib/initiative-pulse-line';
 import { InitiativePulseLine } from './InitiativePulseLine';
+import { loadShippedMissionIds } from '@/lib/mission-ship-state';
 
 export const dynamic = 'force-dynamic';
 import {
@@ -415,18 +416,21 @@ export default async function HomePage({
           }
         }
 
+        // Ship state, not the mission.status row transition (docs/design/mission-delivery-arc.md,
+        // "The missing dimension: ship state") — one batched query for every
+        // mission on the page, not one per mission.
+        const allMissionIds = sortedInitiatives.flatMap((ini) => ini.missions.map((m) => m.id));
+        const shippedMissionIds = await loadShippedMissionIds(allMissionIds);
+
         pulseItems = sortedInitiatives.map((ini) => {
           const rollup = rollupByInitiative.get(ini.id) ?? emptyVerdictRollup(ini.status);
           const effortDays = effortByInitiative.get(ini.id) ?? zeroEffortWindow();
-          // A mission reads as shipped exactly when its status is 'completed' —
-          // the first rule of `deriveMissionHealth` — so these counts agree with
-          // the Missions tab without re-deriving full health here.
           const counts =
             derivePendingCounts(
               ini.missions.map((mission) => ({
                 initiativeId: ini.id,
                 isHeld: mission.isHeld,
-                health: mission.status === 'completed' ? 'shipped' : mission.status,
+                shipped: shippedMissionIds.has(mission.id),
                 lastActivityAt: mission.updatedAt,
                 blockedPRCount: countBlockedByPR(mission.tasks ?? [], blockingIndex),
                 tasks: mission.tasks ?? [],
