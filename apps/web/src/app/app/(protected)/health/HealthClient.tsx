@@ -1578,11 +1578,13 @@ function SubagentDelegationSection({
         {/* Sessions, not tasks: subagent spans are flushed per worker attempt,
             with no dedup by task. */}
         <span className="text-[11px] text-text-muted">
-          {sectionDenominator(panel.sessions, panel.sessions === 1 ? 'session' : 'sessions')} ({window})
+          {panel.kind === 'value'
+            ? sectionDenominator(panel.value.sessions, panel.value.sessions === 1 ? 'session' : 'sessions')
+            : sectionDenominator(0, 'sessions')} ({window})
         </span>
       </div>
       <div className="card p-4 space-y-2">
-        {panel.available ? (
+        {panel.kind === 'value' ? (
           <>
             <div className="flex items-baseline justify-between gap-3">
               <span
@@ -1592,28 +1594,28 @@ function SubagentDelegationSection({
                 Median share of session effort in background subagents
               </span>
               <span className="text-sm tabular-nums text-text-primary" data-testid="subagent-delegation-share">
-                {panel.isFloor ? '≥' : ''}{panel.medianSharePct}%
+                {panel.value.isFloor ? '≥' : ''}{panel.value.medianSharePct}%
               </span>
             </div>
             <div className="flex items-baseline justify-between gap-3">
               <span className="text-xs text-text-muted">Sessions that delegated any work</span>
               <span className="text-xs text-text-muted tabular-nums">
-                {countOf(panel.sessionsWithDelegation, 'session')} of {panel.sessions}
+                {countOf(panel.value.sessionsWithDelegation, 'session')} of {panel.value.sessions}
               </span>
             </div>
           </>
         ) : (
           <p data-testid="subagent-delegation-unavailable" className="text-xs text-text-muted">
-            {panel.unavailableReason}
+            {panel.detail}
           </p>
         )}
-        {panel.windowPredatesCapture && (
+        {panel.kind === 'value' && panel.value.windowPredatesCapture && (
           <p className="text-[11px] text-text-muted pt-2 border-t border-border-default">
-            Background-agent time has been tracked only since {panel.capturedSince}; sessions before
+            Background-agent time has been tracked only since {panel.value.capturedSince}; sessions before
             that date are excluded rather than counted as zero delegation.
           </p>
         )}
-        {panel.truncated && (
+        {panel.kind === 'value' && panel.value.truncated && (
           <p className="text-[11px] text-text-muted">
             Reads the newest sessions in the window up to a cap — figures above are a floor.
           </p>
