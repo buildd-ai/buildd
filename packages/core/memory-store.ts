@@ -14,6 +14,8 @@ import { db } from './db';
 import { memories } from './db/schema';
 import { eq, and, inArray, or, ilike, desc, count as dbCount } from 'drizzle-orm';
 import { normalizeProject } from './project-scope';
+import { normalizeMemoryFileScope } from './memory-file-scope';
+import { memoryFilesOverlapSql } from './memory-file-scope-sql';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
 
@@ -117,7 +119,13 @@ export class MemoryStore {
     return { markdown: lines.join('\n\n---\n\n'), count: rows.length };
   }
 
-  /** Search memories by query text, type, project, or files. */
+  /**
+   * Search memories by query text, type, project, and/or declared file scope.
+   *
+   * Every supplied filter is ANDed. `query` is a substring match on the whole
+   * string; `files` matches a memory whose own `files` overlap the given paths
+   * (exact, or either side being a directory prefix of the other).
+   */
   async search(params: {
     query?: string;
     type?: string;
@@ -140,9 +148,32 @@ export class MemoryStore {
     if (scope) {
       conditions.push(eq(memories.project, scope));
     }
-    if (params.query) {
-      const q = `%${params.query}%`;
-      conditions.push(or(ilike(memories.title, q), ilike(memories.content, q))!);
+    // Tokenized OR match: a phrase-only ILIKE against a multi-word query (a task
+    // title, say) almost never appears verbatim in a memory's title/content, so
+    // it returned zero rows for essentially every real caller. Matching if ANY
+    // token hits title-or-content trades precision for the recall this store
+    // needs -- there is no ranking here to reward the query that matches more
+    // tokens, so AND-only would still zero out on a single absent term.
+    const tokens = params.query?.split(/\s+/).filter(Boolean) ?? [];
+    if (tokens.length > 0) {
+      const tokenConditions = tokens.flatMap(token => {
+        const q = `%${token}%`;
+        return [ilike(memories.title, q), ilike(memories.content, q)];
+      });
+      conditions.push(or(...tokenConditions)!);
+    }
+    // File scope. `files` was accepted by this signature and documented in the
+    // JSDoc above for a long time while being silently ignored, so every caller
+    // that passed it got an unscoped search and no error. It is an AND filter,
+    // the same as `type` and `project` — a caller that wants "paths OR title"
+    // runs two searches and decides which result to prefer, which keeps the
+    // provenance of a hit ("matched on declared paths" vs "matched on title")
+    // legible instead of collapsing both into one ranked list this store has no
+    // ranking to produce.
+    const scopePaths = normalizeMemoryFileScope(params.files);
+    const filesCondition = memoryFilesOverlapSql(scopePaths);
+    if (filesCondition) {
+      conditions.push(filesCondition);
     }
 
     const where = and(...conditions);
