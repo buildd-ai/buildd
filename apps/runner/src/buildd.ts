@@ -451,10 +451,28 @@ export class BuilddClient {
     }
   }
 
-  async searchObservations(workspaceId: string, query: string, limit = 5): Promise<Array<{ id: string; title: string; type: string; files?: string[] }>> {
+  /**
+   * Search a workspace's memories.
+   *
+   * `files` scopes the search to memories whose own `files` overlap those paths
+   * — the task's declared path manifest, in practice. It is ANDed with `query`
+   * server-side, so callers wanting "paths OR title" run two searches; see
+   * task-memory-retrieval.ts, which does exactly that so the provenance of a
+   * hit stays legible.
+   *
+   * An empty `query` is omitted from the URL rather than sent as an empty
+   * string, because the store treats a present-but-empty query as no query and
+   * an absent one the same way — but sending `query=` makes the request log
+   * ambiguous about which search was actually attempted.
+   */
+  async searchObservations(workspaceId: string, query: string, limit = 5, files?: readonly string[]): Promise<Array<{ id: string; title: string; type: string; files?: string[] }>> {
     try {
+      const params = new URLSearchParams();
+      if (query) params.set('query', query);
+      params.set('limit', String(limit));
+      for (const f of files ?? []) params.append('files', f);
       const data = await this.fetch(
-        `/api/workspaces/${workspaceId}/memory?query=${encodeURIComponent(query)}&limit=${limit}`
+        `/api/workspaces/${workspaceId}/memory?${params.toString()}`
       );
       return (data.memories || []).map((m: any) => ({
         id: m.id,

@@ -441,6 +441,18 @@ export interface BuilddTask {
   attachments?: Array<{ id: string; filename: string; url: string }>;
   // Task taxonomy
   kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+  /**
+   * Files/globs the task declared it expects to touch (`tasks.path_manifest`).
+   *
+   * The claim response has always carried this — its task query has no column
+   * projection and passes the row wholesale — it simply was not declared here,
+   * so nothing on the runner could see it. It is the strongest key available
+   * for task-scoped memory retrieval; see task-memory-retrieval.ts.
+   *
+   * May contain the repo-wide sentinel `'**'`, which means "no scope declared"
+   * and must not be treated as a path.
+   */
+  pathManifest?: string[] | null;
   // Agent backend to use for execution
   backend?: 'claude' | 'codex';
   // Output requirement — what deliverables are enforced on completion
