@@ -14,6 +14,7 @@ import { getCurrentCommit, checkForUpdate, applyUpdate, hasTrackedChanges } from
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
+import { resolveTaskScopedFraction } from './memory-digest-policy';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -444,6 +445,11 @@ const config: LocalUIConfig = {
   maxTurns: savedConfig.maxTurns,
   // Tier 3 structural isolation root (opt-in via env var)
   workspaceIsolationRoot: process.env.BUILDD_WORKSPACE_ISOLATION_ROOT || undefined,
+  // Workspace-memory experiment enrolment. 0 (the default) means every prompt
+  // keeps the workspace-wide digest exactly as before.
+  memoryDigestTaskScopedFraction: resolveTaskScopedFraction(
+    process.env.BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION ?? savedConfig.memoryDigestTaskScopedFraction,
+  ),
 };
 
 const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolationRoot);

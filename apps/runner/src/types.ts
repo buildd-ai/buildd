@@ -607,4 +607,11 @@ export interface LocalUIConfig {
   // too — eliminating cross-workspace filesystem access.
   // Set via BUILDD_WORKSPACE_ISOLATION_ROOT env var.
   workspaceIsolationRoot?: string;
+  // Share of tasks (0–1) enrolled in the `task_scoped` workspace-memory arm,
+  // which drops the workspace-wide digest from the prompt and keeps only the
+  // task-specific matches. Default 0 — nobody is enrolled and every prompt is
+  // byte-identical to before the arm existed. Set via
+  // BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION. A value outside [0, 1] is
+  // treated as 0, not clamped: see resolveTaskScopedFraction.
+  memoryDigestTaskScopedFraction?: number;
 }

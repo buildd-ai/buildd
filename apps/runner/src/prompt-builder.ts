@@ -1,6 +1,12 @@
 import type { query } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
+import {
+  assignMemoryDigestArm,
+  buildMemoryBlock,
+  type MemoryBlockResult,
+  type MemoryDigestAssignment,
+} from './memory-digest-policy';
 
 // ── Config resolution ──────────────────────────────────────────────
 
@@ -250,13 +256,35 @@ export interface PromptContext {
   inputAsRetry?: boolean;
   resolvedContextProviders?: string[];
   feedbackMemories?: Array<{ id: string; title: string; content: string }>;
+  /**
+   * Share of tasks enrolled in the `task_scoped` workspace-memory arm.
+   * Absent or unparseable means everyone runs the control — see
+   * `resolveTaskScopedFraction`.
+   */
+  memoryDigestTaskScopedFraction?: number;
+}
+
+export interface PromptBuildResult {
+  promptText: string;
+  /** Which workspace-memory arm this task drew, and at what propensity. */
+  assignment: MemoryDigestAssignment;
+  /** What the memory block cost, in both arms. */
+  memory: MemoryBlockResult;
 }
 
 /**
  * Build the full prompt text from workspace context, task description,
  * memory, and communication policy.
+ *
+ * Prefer `buildPromptWithComposition` at the call site that logs — it returns
+ * the experiment arm and the block sizes alongside the text. This wrapper
+ * exists for the callers and tests that only want the prompt.
  */
 export function buildPrompt(ctx: PromptContext): string {
+  return buildPromptWithComposition(ctx).promptText;
+}
+
+export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResult {
   const { task, worker, gitConfig, isConfigured, compactResult, taskSearchResults, fullObservations, inputPolicy, hasApiKey, inputAsRetry } = ctx;
   const promptParts: string[] = [];
 
@@ -306,33 +334,21 @@ export function buildPrompt(ctx: PromptContext): string {
     promptParts.push(gitContext.join('\n'));
   }
 
-  // Add rich workspace memory context
-  const MAX_MEMORY_BYTES = 4096;
-  if (compactResult.count > 0 || taskSearchResults.length > 0) {
-    const memoryContext: string[] = ['## Workspace Memory'];
-
-    // Inject compact workspace digest (capped to prevent prompt bloat)
-    if (compactResult.markdown) {
-      let digest = compactResult.markdown;
-      if (digest.length > MAX_MEMORY_BYTES) {
-        digest = digest.slice(0, MAX_MEMORY_BYTES) + '\n\n*(truncated — use `recall` for more)*';
-      }
-      memoryContext.push(digest);
-    }
-
-    // Add task-specific matches as subsection
-    if (fullObservations.length > 0) {
-      memoryContext.push('### Relevant to This Task');
-      for (const obs of fullObservations) {
-        const truncContent = obs.content.length > 300
-          ? obs.content.slice(0, 300) + '...'
-          : obs.content;
-        memoryContext.push(`- **[${obs.type}] ${obs.title}**: ${truncContent}`);
-      }
-    }
-
-    memoryContext.push('\nUse `recall scope=["memory","task"]` for full context (prior lessons + recent outcomes in one call). Use `learn` to record gotchas/patterns/decisions — NOT summaries.');
-    promptParts.push(memoryContext.join('\n'));
+  // Add rich workspace memory context.
+  //
+  // The workspace-wide digest is the single largest block in a typical prompt
+  // and is built from the workspace id alone — it is identical for every task
+  // in the workspace. `task_scoped` is the arm that drops it; see
+  // memory-digest-policy.ts for why that is an arm and not a cutover.
+  const assignment = assignMemoryDigestArm(task.id, ctx.memoryDigestTaskScopedFraction);
+  const memory = buildMemoryBlock({
+    arm: assignment.arm,
+    compactResult,
+    taskSearchResults,
+    fullObservations,
+  });
+  if (memory.block) {
+    promptParts.push(memory.block);
   }
 
   // Add user preferences derived from feedback signals
@@ -438,7 +454,7 @@ export function buildPrompt(ctx: PromptContext): string {
   // Add task metadata
   promptParts.push(`---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
-  return promptParts.join('\n\n');
+  return { promptText: promptParts.join('\n\n'), assignment, memory };
 }
 
 // ── Post-session helpers ───────────────────────────────────────────
