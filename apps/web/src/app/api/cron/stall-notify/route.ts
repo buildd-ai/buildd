@@ -26,19 +26,16 @@ import {
 import { eq, and, inArray, isNotNull, isNull, gte, like } from 'drizzle-orm';
 import { resolvePolicy } from '@/lib/merge-policy';
 import { notify } from '@/lib/pushover';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 const DEFAULT_STALL_MINUTES = 30;
 
 export async function POST(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  return withCronRun('stall-notify', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   // Find all workers with open (unmerged) PRs
   const openPrWorkers = await db.query.workers.findMany({
@@ -193,9 +190,7 @@ export async function POST(req: NextRequest) {
     notified++;
   }
 
-  return NextResponse.json({
-    ok: true,
-    checked: openPrWorkers.length,
-    notified,
-  });
+  const result = { ok: true, checked: openPrWorkers.length, notified };
+  report({ processed: openPrWorkers.length, changed: notified, errors: 0, result });
+  return NextResponse.json(result);
 }

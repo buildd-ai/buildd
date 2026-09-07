@@ -7,7 +7,8 @@
 //   4. Claude credentials (oauth_token / anthropic_api_key) — cheap GET /v1/models ping
 //      to catch out-of-band revocations between spawns
 //
-// Auth: Bearer CRON_SECRET (external scheduler) or x-vercel-cron: 1 (Vercel native cron).
+// Auth: Bearer CRON_SECRET, via withCronRun. The only accepted credential —
+// platform-native cron does not fire in this project (cron-manifest.json).
 // Schedule: every 4 hours.
 //
 // Mode:
@@ -24,6 +25,7 @@ import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { recordCredentialAuthSuccess } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
 import { sweepLookaheadMinutes } from '@/lib/cron-cadence';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
@@ -82,18 +84,10 @@ async function nudgeCredentialRefresh(
 }
 
 export async function GET(req: NextRequest) {
-  // Accept either CRON_SECRET (external scheduler) or Vercel's native cron header
-  const isVercelCron = req.headers.get('x-vercel-cron') === '1';
-  if (!isVercelCron) {
-    const cronSecret = process.env.CRON_SECRET;
-    if (!cronSecret) {
-      return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-    }
-    const token = req.headers.get('authorization')?.replace('Bearer ', '');
-    if (token !== cronSecret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-  }
+  return withCronRun('codex-token-refresh', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const ALLOW_CONTROL_PLANE_REFRESH = process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH === 'true';
 

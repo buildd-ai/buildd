@@ -2357,6 +2357,46 @@ export const oauthBudgetEpisodesRelations = relations(oauthBudgetEpisodes, ({ on
 // See docs/credentials-architecture.md. The legacy per-workspace codex_credentials
 // table was dropped in migration 0047 (no rows existed).
 
+// ── Cron run history ─────────────────────────────────────────────────────────
+//
+// Every scheduled sweep already computes a verdict on its own work — how many
+// rows it looked at, how many it changed, how many calls failed — and every one
+// of them threw that verdict away at the route boundary. Three PR sweeps ran
+// hourly for months returning "errors on every row, nothing changed", which is
+// a complete description of an outage that nothing was in a position to read
+// (PR #2125). This table is where the verdict lands so a trend can be checked.
+//
+// `changed` is the load-bearing column. A sweep with nothing to do and a sweep
+// that cannot do anything both report processed=0; only `errors` and `changed`
+// together separate healthy idle from total failure.
+export const cronRuns = pgTable('cron_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // Route slug, optionally with a scope suffix ('pr-reconcile:merge-state'),
+  // because two cadences of one route are two different health signals.
+  job: text('job').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  // Did the handler return without throwing. A false here is a harder failure
+  // than a non-zero `errors`: the sweep did not finish at all.
+  ok: boolean('ok').notNull(),
+  // Normalized verdict. Null means the route reported nothing — still a useful
+  // heartbeat, but it cannot participate in the health check.
+  processed: integer('processed'),
+  changed: integer('changed'),
+  errors: integer('errors'),
+  // The route's own result object, verbatim, for when the normalized numbers
+  // say something is wrong but not what.
+  result: jsonb('result').$type<Record<string, unknown>>(),
+  error: text('error'),
+  // Set on the run that fired an alert, so the next few runs stay quiet
+  // instead of paging hourly forever.
+  alertedAt: timestamp('alerted_at', { withTimezone: true }),
+}, (t) => ({
+  // Serves the health window query and the per-job retention delete.
+  jobStartedIdx: index('cron_runs_job_started_idx').on(t.job, t.startedAt),
+}));
+
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
 // Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
 // JWT carries the workspaceId the user picked during /authorize, and the
@@ -2788,3 +2828,6 @@ export type Memory = typeof memories.$inferSelect;
 export type NewMemory = typeof memories.$inferInsert;
 
 // smoke-test-3-ci-retry-1 20260725
+
+export type CronRun = typeof cronRuns.$inferSelect;
+export type NewCronRun = typeof cronRuns.$inferInsert;

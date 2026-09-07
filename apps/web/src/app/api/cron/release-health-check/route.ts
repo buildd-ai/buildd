@@ -31,6 +31,7 @@ import { probeAndDegrade } from '@/lib/release-health-watcher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
@@ -43,15 +44,10 @@ const RETRY_STALE_MINUTES = 10;
 const HARD_FAIL_STALE_HOURS = 24;
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
+  return withCronRun('release-health-check', req, report => runCronJob(req, report));
+}
 
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const windowStart = new Date(Date.now() - WATCH_WINDOW_MINUTES * 60_000);
 

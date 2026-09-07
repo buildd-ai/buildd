@@ -65,12 +65,39 @@ describe('cron trigger coverage', () => {
 describe('cron route auth', () => {
   it('accepts Bearer CRON_SECRET on every externally-triggered route', () => {
     // The external scheduler can only send `Authorization: Bearer $CRON_SECRET`.
-    // A route that authenticates solely via `x-vercel-cron` would 401 forever.
+    // A route that authenticates solely via a platform cron header would 401
+    // forever — and, worse, would admit anyone able to set that header, since
+    // platform-native cron does not fire in this project at all.
+    //
+    // Two ways to satisfy this now: read the secret directly, or delegate to
+    // `withCronRun`, which does nothing else. The check moved with the code; the
+    // invariant did not change.
     for (const path of manifestPaths) {
       const name = path.replace('/api/cron/', '');
       const src = readFileSync(resolve(CRON_DIR, name, 'route.ts'), 'utf8');
-      expect(src, `${path} does not read CRON_SECRET`).toContain('CRON_SECRET');
+      const readsSecret = src.includes('CRON_SECRET');
+      const delegates = /from '@\/lib\/cron-run'/.test(src) && /\bwithCronRun\(/.test(src);
+      expect(
+        readsSecret || delegates,
+        `${path} neither reads CRON_SECRET nor delegates to withCronRun`,
+      ).toBe(true);
     }
+  });
+
+  it('no route trusts a platform cron header', () => {
+    // `vercel.json` declares no crons and cron-manifest.json states the
+    // platform mechanism does not fire here, so such a header can only come
+    // from a caller that is not the scheduler. Two routes used to accept one in
+    // place of the secret.
+    const offenders = [...manifestPaths].filter(path => {
+      const name = path.replace('/api/cron/', '');
+      const src = readFileSync(resolve(CRON_DIR, name, 'route.ts'), 'utf8');
+      // Only a real read of the header counts; the string appears in prose
+      // explaining why it is not used.
+      return /headers\.get\(\s*['"]x-vercel-cron['"]/.test(src);
+    });
+
+    expect(offenders).toEqual([]);
   });
 });
 
