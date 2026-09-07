@@ -69,6 +69,8 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
+  /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
+  criteriaRearmFingerprint?: string;
   /** kind === 'merge' — opts this row into the freshness invariant. See EscalationRawItem. */
   prOpenedAt?: Date | null;
   /** `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state. */
@@ -192,6 +194,7 @@ export interface ActionQueueItem {
 
 // Chip display order: lower index = shown first.
 // BLOCKED: retries exhausted, human must decide — actionable, placed after MERGE.
+// DECIDE: mission criteria escalated, owner decision needed — actionable.
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
 // RECONNECT sits high: a connector that can no longer re-authorise itself
 // silently starves every task that needs it, and the fix is a single tap.

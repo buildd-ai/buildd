@@ -654,7 +654,7 @@ export default async function HomePage({
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true },
             with: {
               tasks: {
                 columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
@@ -764,6 +764,7 @@ export default async function HomePage({
               nextRunAt,
               orchestrationMode,
               pendingUserScheduledAt,
+              criteriaEscalatedAt: (mission as any)?.criteriaEscalatedAt,
             });
 
             const effectiveNextRunAt = nextRunAt
