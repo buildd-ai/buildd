@@ -6,7 +6,8 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { inferCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -335,12 +336,20 @@ export default async function MissionDetailPage({
     .filter((w) => w.status === 'running').length || 0;
 
   const scheduleCron = (mission.schedule as any)?.cronExpression || null;
+  // "No pending deliverable work" for the escalated health state — same
+  // definition the `no_open_tasks` criterion uses, so the state agrees with
+  // the gate that produced the escalation in the first place.
+  const hasPendingDeliverableWork = (mission.tasks || [])
+    .filter(isDeliverableTask)
+    .some(t => !['completed', 'cancelled', 'failed'].includes(t.status));
   const health = deriveMissionHealth({
     status: mission.status,
     activeAgents,
     cronExpression: scheduleCron,
     lastRunAt: (mission.schedule as any)?.lastRunAt || null,
     nextRunAt: (mission.schedule as any)?.nextRunAt || null,
+    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
+    hasPendingDeliverableWork,
   });
   const healthState = deriveTaskHealthSignal(mission, mission.tasks || []);
 
@@ -1141,17 +1150,44 @@ export default async function MissionDetailPage({
         />
       </div>
 
+      {/* ── Waiting on: owner decision — one owner for mission state ──
+          Escalated outranks the generic criteria-gate banner below: it is
+          not "criteria are still failing", it is "the organizer already gave
+          up and stood its own heartbeat down". Naming which remedy the cycle
+          history supports (inferCriteriaFailureReading) is the difference
+          between an owner editing one line and an owner filing a phantom task. */}
+      {health === 'escalated' && (() => {
+        const reading = inferCriteriaFailureReading((mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null);
+        const readingCopy = reading === 'criterion_unmeasurable'
+          ? 'the same prose criterion has failed unchanged across every retry — it is likely unmeasurable as written.'
+          : reading === 'work_unowned'
+            ? 'the same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.'
+            : 'goal criteria failed unchanged across every retry the organizer had.';
+        return (
+          <div className="mb-4 flex items-start gap-2 rounded border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
+            <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
+              Waiting for human decision
+            </span>
+            <span className="text-[12px] text-text-secondary">
+              {readingCopy} See Goal Criteria below ↓
+            </span>
+          </div>
+        );
+      })()}
+
       {/* ── Criteria gate — visible above the fold on all tab views ──
           'unverified' (young/active mission, criteria simply haven't run yet)
           stays quiet — it is not a work-stopping state and must never read
           BLOCKED. Only a failed criterion or a refused completion attempt
-          gets alarm styling, and names the criterion + evidence when known. */}
-      {criteriaGate && criteriaGate.state === 'unverified' && (
+          gets alarm styling, and names the criterion + evidence when known.
+          Suppressed once escalated: the banner above already speaks for this
+          mission, and showing both would be two owners for one state. */}
+      {health !== 'escalated' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
           Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
         </p>
       )}
-      {criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
+      {health !== 'escalated' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
         <div className={`mb-4 flex items-start gap-2 rounded border px-3 py-2.5 ${criteriaGate.tone === 'error' ? 'border-status-error/30 bg-status-error/5' : 'border-status-warning/30 bg-status-warning/5'}`}>
           <span className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide ${CRITERIA_GATE_TONE_CLASS[criteriaGate.tone]}`}>
             {criteriaGate.label}

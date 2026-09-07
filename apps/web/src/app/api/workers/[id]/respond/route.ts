@@ -201,6 +201,11 @@ export async function POST(
           // claim this route's callers make does NOT hold in that case, and
           // nothing here can verify at request time which case applies.
           baseBranch: worker.branch,
+          // Explicit continuity marker (same value; this is what the runner's
+          // resumeCandidate logic actually keys resume-vs-cut-from-base on —
+          // baseBranch alone is ambiguous with a mission-branch task's declared
+          // base, which must never be checked out directly).
+          resumeBranch: worker.branch,
           userInput: message,
           previousAttempt: {
             question,
