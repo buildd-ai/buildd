@@ -21,7 +21,6 @@ const NOT_YET_INSTRUMENTED: Array<[route: string, why: string]> = [
   // Empty, and meant to stay that way: every cron route records its run.
   // An entry here is a claim that some route deliberately does not, with a
   // reason. Adding one should feel like a decision, not a shortcut.
-  ['mission-invariants', 'Complex test mocking requirements, pending instrumentation'],
 ];
 
 function cronRouteFiles(): string[] {
