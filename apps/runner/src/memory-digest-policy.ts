@@ -278,6 +278,16 @@ export interface PromptCompositionRecord {
   digestTruncated: boolean;
   taskMatchBytes: number;
   taskMatchCount: number;
+  /**
+   * Which retrieval step produced the task matches — see
+   * apps/runner/src/task-memory-retrieval.ts.
+   *
+   * Load-bearing, not decoration: `taskMatchCount: 5` reads identically whether
+   * those five came from a declared path overlap or from five recent memories
+   * that happened to share a stopword with the title. Without the provenance,
+   * retrieval quality is not recoverable from the stored data.
+   */
+  taskMatchDerivedBy: string;
   memoryBlockBytes: number;
   promptBytes: number;
   /** Memory block as a share of the whole prompt, 0–1, rounded to 3dp. */
@@ -295,6 +305,8 @@ export function buildPromptCompositionRecord(args: {
    */
   promptText: string;
   backend?: string | null;
+  /** Which retrieval step produced the task matches; 'unknown' when unreported. */
+  taskMatchDerivedBy?: string | null;
 }): PromptCompositionRecord {
   const { assignment, memory, promptText } = args;
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
@@ -310,6 +322,7 @@ export function buildPromptCompositionRecord(args: {
     digestTruncated: memory.digestTruncated,
     taskMatchBytes: memory.taskMatchBytes,
     taskMatchCount: memory.taskMatchCount,
+    taskMatchDerivedBy: args.taskMatchDerivedBy || 'unknown',
     memoryBlockBytes,
     promptBytes,
     memoryShare: promptBytes > 0

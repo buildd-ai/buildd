@@ -3076,6 +3076,7 @@ export class WorkerManager {
         memory: built.memory,
         promptText,
         backend: task.backend,
+        taskMatchDerivedBy: taskMemory.derivedBy,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
       // Also on stdout, as a live "is the arm firing at all" signal. Whether
