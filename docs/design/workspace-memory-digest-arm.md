@@ -144,21 +144,25 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
 
 ## Open questions
 
-**Where the record durably lands.** Today it goes to the per-worker session log
-and to runner stdout. Neither is good enough, and the stdout half is worse than
-it looks: the reference deployment runs the runner inside a detached `screen`
-session with no stdout log file, so those lines land in a fixed-size scrollback
-ring and do not survive a restart. **The real ceiling is therefore the session
-log's 48-hour prune** — shorter than the rework chains this is measured on.
+**Where the record durably lands.** Today it goes to the per-worker session log,
+pruned after 48 hours, and to runner stdout.
 
-So the arm can be *run* and a 48-hour window can be *read*; a rework chain
-spanning days cannot. A durable rail is required before any result is
-trustworthy, and it should be a small server-side event rather than a column on
-`workers`: the record is per prompt build, and a looped task builds several, so
-a column would silently keep only the last one.
+Stdout is the longer-lived of the two but not by design. The reference
+deployment's launcher redirects the runner into an append-mode file under the
+container's `/tmp`, wrapped in a restart loop, so the file does survive the
+`exit 75` update restart and does accumulate days of history. It is still not a
+rail: it is unrotated and grows without bound, it is container-local so it dies
+with the container rather than with the process, and it is a text log with no
+query path — you grep it by hand over SSH.
 
-Do not read the stdout line as an archive. It is a live debugging aid — useful
-for confirming the arm is firing at all, useless for analysis.
+So the arm can be *run*, and a recent window can be *read by hand*. Neither is
+enough to attribute a multi-day rework chain to an arm. A durable rail is a
+precondition for trusting any result, and it should be a small server-side event
+rather than a column on `workers`: the record is per prompt build, and a looped
+task builds several, so a column would silently keep only the last one.
+
+Treat both existing sinks as debugging aids — good for confirming the arm fires
+at all, not for analysis.
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
 out negative would leave open whether a *smaller but non-empty* digest is better
