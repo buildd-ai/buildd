@@ -6,10 +6,18 @@
  *
  * - `full` is what every worker got before this file existed: the entire
  *   workspace digest, blind-sliced at `FULL_DIGEST_MAX_BYTES`, followed by the
- *   task-specific matches. It is the control and it is byte-identical to the
- *   previous behaviour, deliberately including the blind slice. Fixing the
- *   slice to fall on a line boundary is a real improvement, but doing it here
- *   would move the control while the experiment runs.
+ *   task-specific matches. It is the control, and it deliberately keeps the
+ *   blind slice — fixing that to fall on a line boundary is a real improvement
+ *   and belongs in its own change.
+ *
+ * The control differs from the pre-experiment rendering in exactly one way: the
+ * digest no longer arrives with its own `## Workspace Memory (N memories)`
+ * heading, which used to land underneath this block's header as a duplicate.
+ * That was fixed here rather than later because **the control is only frozen
+ * once enrolment starts.** This module has never run outside tests, so there
+ * are no collected rows to invalidate; from the first enrolled task onwards,
+ * changing the control silently rebases the comparison and any change to it
+ * must bump `MEMORY_DIGEST_POLICY_VERSION`.
  *
  * - `task_scoped` drops the workspace-wide digest and keeps everything else,
  *   leaning on the `recall` tool the block already advertises to pull the rest
@@ -90,8 +98,16 @@ export function resolveTaskScopedFraction(raw: unknown): number {
  *
  * Not a security hash — it only needs to spread UUIDs evenly and give the same
  * answer on every runner, every restart, and every replay of the analysis.
+ *
+ * FNV-1a degrades badly for keys that differ only in their last character or
+ * two, so callers must pass high-entropy keys. Task ids are v4 UUIDs
+ * (`tasks.id` is `uuid().defaultRandom()`), which is fine; a sequential
+ * `task-1`, `task-2` scheme would not be.
+ *
+ * Exported for tests only — assignment goes through assignMemoryDigestArm,
+ * which salts the key. A caller that hashes a bare id is not in the experiment.
  */
-function hashUnitInterval(key: string): number {
+export function hashUnitInterval(key: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) {
     h ^= key.charCodeAt(i);
@@ -123,7 +139,12 @@ export function assignMemoryDigestArm(
   if (fraction <= 0) return { ...base, arm: 'full', propensity: 1 };
   if (fraction >= 1) return { ...base, arm: 'task_scoped', propensity: 1 };
 
-  const draw = hashUnitInterval(taskId);
+  // Salted with the policy version, so bumping the version RE-RANDOMISES.
+  // Without the salt every task keeps the arm it drew under v1, and a v2
+  // comparison silently inherits v1's assignment along with any carry-over
+  // effect from it. The salt also decorrelates this experiment from any future
+  // one that hashes the same task ids.
+  const draw = hashUnitInterval(`${MEMORY_DIGEST_POLICY_VERSION}:${taskId}`);
   return draw < fraction
     ? { ...base, arm: 'task_scoped', propensity: fraction }
     : { ...base, arm: 'full', propensity: 1 - fraction };
@@ -186,7 +207,17 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
     };
   }
 
-  const parts: string[] = ['## Workspace Memory'];
+  // The count rides on the header, in BOTH arms, so the arms still differ on
+  // exactly one axis. It is true regardless of whether the digest is shown, and
+  // under task_scoped it is the more useful half: "there are N memories, and
+  // here is how to fetch them" is an actionable pairing with the recall pointer
+  // below. `getCompactObservations` used to emit its own `## Workspace Memory
+  // (N memories)` line, which landed under this header as a duplicate.
+  const parts: string[] = [
+    compactResult.count > 0
+      ? `## Workspace Memory (${compactResult.count} ${compactResult.count === 1 ? 'memory' : 'memories'})`
+      : '## Workspace Memory',
+  ];
 
   let digestBytes = 0;
   if (arm === 'full' && renderedFullDigest) {
@@ -230,6 +261,15 @@ export interface PromptCompositionRecord {
   arm: MemoryDigestArm;
   propensity: number;
   fraction: number;
+  /**
+   * Agent backend this prompt was built for.
+   *
+   * Load-bearing for analysis, not decoration: the Codex path also delivers the
+   * role persona, inlined skills and project instructions through an AGENTS.md
+   * file on disk, none of which is part of `promptText`. So `memoryShare` means
+   * a different thing per backend and rows must be segmented, never pooled.
+   */
+  backend: string;
   digestBytes: number;
   digestBytesAvailable: number;
   digestTruncated: boolean;
@@ -244,7 +284,14 @@ export interface PromptCompositionRecord {
 export function buildPromptCompositionRecord(args: {
   assignment: MemoryDigestAssignment;
   memory: MemoryBlockResult;
+  /**
+   * The FINAL prompt, after every append. Build this record at the last
+   * mutation site, not at the end of `buildPromptWithComposition` — the Codex
+   * branch prepends an AGENTS.md pointer much later, and a record built early
+   * understates `promptBytes` and overstates `memoryShare`.
+   */
   promptText: string;
+  backend?: string | null;
 }): PromptCompositionRecord {
   const { assignment, memory, promptText } = args;
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
@@ -254,6 +301,7 @@ export function buildPromptCompositionRecord(args: {
     arm: assignment.arm,
     propensity: assignment.propensity,
     fraction: assignment.fraction,
+    backend: args.backend || 'claude',
     digestBytes: memory.digestBytes,
     digestBytesAvailable: memory.digestBytesAvailable,
     digestTruncated: memory.digestTruncated,
