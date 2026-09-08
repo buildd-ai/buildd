@@ -6,6 +6,9 @@ import {
   declaresNoScope,
   shouldSerializeByManifest,
   stripTrailingSep,
+  REGENERABLE_PATHS,
+  findRegenerable,
+  partitionRegenerableOverlaps,
 } from '../path-overlap';
 
 describe('stripTrailingSep', () => {
@@ -323,5 +326,89 @@ describe('shouldSerializeByManifest', () => {
           .toBe(`${a.join('|')} vs ${b.join('|')} => ${runtime}`);
       }
     }
+  });
+});
+
+
+// ── Regenerable paths ─────────────────────────────────────────────────────────
+
+describe('findRegenerable', () => {
+  it('recognises the generated spec index', () => {
+    const hit = findRegenerable('docs/specs/INDEX.md');
+    expect(hit).not.toBeNull();
+    expect(hit!.command).toBe('bun run specs:check');
+  });
+
+  it('recognises the drizzle journal', () => {
+    expect(findRegenerable('packages/core/drizzle/meta/_journal.json')).not.toBeNull();
+  });
+
+  it('tolerates a trailing separator, like every other path predicate here', () => {
+    expect(findRegenerable('docs/specs/INDEX.md/')).not.toBeNull();
+  });
+
+  it('does not match a hand-written neighbour of a generated file', () => {
+    // INDEX.md is generated FROM these. Editing one is real work.
+    expect(findRegenerable('docs/specs/SPEC-FORMAT.md')).toBeNull();
+    expect(findRegenerable('docs/specs/merge-policy.md')).toBeNull();
+  });
+
+  it('does not match the migration SQL beside the journal', () => {
+    // The journal is rewritten from the .sql files; the .sql files carry DDL
+    // that only their author can reproduce. Classifying these as regenerable
+    // would tell an agent to throw away a migration.
+    expect(findRegenerable('packages/core/drizzle/0153_noisy_captain.sql')).toBeNull();
+    expect(findRegenerable('packages/core/db/schema.ts')).toBeNull();
+  });
+
+  it('does not match package.json — a version bump is release-owned, not regenerable', () => {
+    expect(findRegenerable('packages/core/package.json')).toBeNull();
+  });
+
+  it('every registered entry names a command and a reason', () => {
+    for (const entry of REGENERABLE_PATHS) {
+      expect(entry.path.length).toBeGreaterThan(0);
+      expect(entry.command.length).toBeGreaterThan(0);
+      expect(entry.why.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('partitionRegenerableOverlaps', () => {
+  it('splits a mixed overlap into contended and regenerable', () => {
+    const { contended, regenerable } = partitionRegenerableOverlaps([
+      'apps/web/src/lib/foo.ts',
+      'docs/specs/INDEX.md',
+    ]);
+    expect(contended).toEqual(['apps/web/src/lib/foo.ts']);
+    expect(regenerable.map(r => r.path)).toEqual(['docs/specs/INDEX.md']);
+  });
+
+  it('reports an all-regenerable overlap as zero contention', () => {
+    const { contended, regenerable } = partitionRegenerableOverlaps([
+      'docs/specs/INDEX.md',
+      'packages/core/drizzle/meta/_journal.json',
+    ]);
+    expect(contended).toEqual([]);
+    expect(regenerable).toHaveLength(2);
+  });
+
+  it('leaves an all-contended overlap untouched', () => {
+    const paths = ['apps/web/src/lib/foo.ts', 'packages/core/db/schema.ts'];
+    const { contended, regenerable } = partitionRegenerableOverlaps(paths);
+    expect(contended).toEqual(paths);
+    expect(regenerable).toEqual([]);
+  });
+
+  it('dedupes a regenerable path reported twice', () => {
+    const { regenerable } = partitionRegenerableOverlaps([
+      'docs/specs/INDEX.md',
+      'docs/specs/INDEX.md/',
+    ]);
+    expect(regenerable).toHaveLength(1);
+  });
+
+  it('is empty in, empty out', () => {
+    expect(partitionRegenerableOverlaps([])).toEqual({ contended: [], regenerable: [] });
   });
 });

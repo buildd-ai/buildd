@@ -352,25 +352,30 @@ export async function POST(req: NextRequest) {
 
   if (!reviewerTask?.id) return bad('Could not create the reviewer task', 500);
 
-  await dispatchNewTask(
-    {
-      id: reviewerTask.id,
-      title: `Review PR #${prNumber}: ${originalTask.title}`,
-      description: null,
-      workspaceId: workspace.id,
-      missionId: originalTask.missionId,
-    },
-    workspace as never,
-  );
+  // A live reviewer task already owns this PR generation — return it rather than
+  // putting a second agent on the same commit. Dispatch and the PR activity
+  // entry both belong to the filing that won.
+  if (!reviewerTask.deduplicated) {
+    await dispatchNewTask(
+      {
+        id: reviewerTask.id,
+        title: `Review PR #${prNumber}: ${originalTask.title}`,
+        description: null,
+        workspaceId: workspace.id,
+        missionId: originalTask.missionId,
+      },
+      workspace as never,
+    );
 
-  // Say so on the PR itself, exactly as the webhook path does.
-  await appendPrActivity({
-    installationId: repo.installationId,
-    repoFullName: repo.fullName,
-    prNumber,
-    entry: { kind: 'reviewing', detail: `reviewer role \`${picked.role}\`` },
-    workspaceId: workspace.id,
-  });
+    // Say so on the PR itself, exactly as the webhook path does.
+    await appendPrActivity({
+      installationId: repo.installationId,
+      repoFullName: repo.fullName,
+      prNumber,
+      entry: { kind: 'reviewing', detail: `reviewer role \`${picked.role}\`` },
+      workspaceId: workspace.id,
+    });
+  }
 
   const autoMergeExpected = autoMergeExpectedFor(policy);
   return NextResponse.json(
@@ -383,6 +388,7 @@ export async function POST(req: NextRequest) {
       workspaceId: workspace.id,
       taskId: originalTask.id,
       reviewTaskId: reviewerTask.id,
+      deduplicated: reviewerTask.deduplicated ?? false,
       reviewerRole: picked.role,
       reviewerRoleSource: picked.source,
       autoMergeExpected,

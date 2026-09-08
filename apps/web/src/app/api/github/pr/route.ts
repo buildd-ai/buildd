@@ -357,9 +357,9 @@ export async function POST(req: NextRequest) {
         if (retryIteration > 0) {
           try {
             const currentBody: string = prDetail.body ?? existing.body ?? '';
-            const attemptLine = `_Attempt ${retryIteration + 1}/${maxIterations} — retry task \`${worker.taskId}\`._`;
+            const attemptLine = `_Attempt ${retryIteration + 1}/${maxIterations} — resume failed; new branch._`;
             // Replace an existing attempt line or append a new one.
-            const attemptPattern = /_Attempt \d+\/\d+ — retry task `[^`]+`\._/;
+            const attemptPattern = /_Attempt \d+\/\d+ — resume failed; new branch\._/;
             const updatedBody = attemptPattern.test(currentBody)
               ? currentBody.replace(attemptPattern, attemptLine)
               : `${currentBody}\n\n---\n${attemptLine}`;
@@ -393,7 +393,7 @@ export async function POST(req: NextRequest) {
     // updating the existing one).  Lets humans disambiguate duplicate-looking
     // PRs in the list without reading the diff.
     const lineageSuffix = retryIteration > 0
-      ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — retry task \`${worker.taskId}\`. Resume branch was unavailable; new PR opened._`
+      ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — resume failed; new branch._`
       : '';
     const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
 

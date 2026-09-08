@@ -101,8 +101,11 @@ export default function NewTaskPage() {
   // Mode state (planning vs execution)
   const [mode, setMode] = useState<TaskModeValue>('execution');
 
-  // Mission linking
-  const [missionId, setMissionId] = useState('');
+  // Mission linking — prefilled from ?missionId= when arriving scoped to a
+  // mission (e.g. the "File the work" exit on a blocked mission's decision
+  // sheet); not validated against `availableMissions` here since that list
+  // hasn't loaded yet on first render, and submission just sends the id.
+  const [missionId, setMissionId] = useState(() => searchParams.get('missionId') || '');
   const [availableMissions, setAvailableMissions] = useState<{ id: string; title: string; status: string }[]>([]);
 
   // Dependencies
@@ -111,8 +114,11 @@ export default function NewTaskPage() {
   // Runner preference
   const [runnerPreference, setRunnerPreference] = useState<RunnerPreferenceValue>('any');
 
-  // Advanced options toggle
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  // Advanced options toggle — pre-opened when arriving scoped to a mission
+  // (e.g. "File the work" from a blocked mission's decision sheet), so the
+  // owner sees why the mission field is already filled in rather than
+  // wondering where it came from.
+  const [showAdvanced, setShowAdvanced] = useState(() => !!searchParams.get('missionId'));
 
   // Structured output state
   const [useOutputSchema, setUseOutputSchema] = useState(false);

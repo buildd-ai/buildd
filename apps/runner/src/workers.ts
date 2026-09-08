@@ -35,6 +35,7 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
+import type { ClaimLogEntry } from './session-logger';
 import {
   SessionStderrCollector,
   flushStderrTrace,
@@ -42,7 +43,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import type { WorkerEnvironment } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -55,7 +56,8 @@ import {
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
-import { buildPromptCompositionRecord } from './memory-digest-policy';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
+import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -456,6 +458,32 @@ export function metricsOnlyPayload(
   // update type's own keys, so the narrowing lives here — at the one place that
   // owns the field list — instead of at every call site.
   return out as Parameters<BuilddClient['updateWorker']>[1];
+}
+
+/**
+ * Pick the diagnostic detail worth persisting from a claim response.
+ *
+ * Module-local on purpose. It belongs with ClaimLogEntry in session-logger, but
+ * 16 test files replace that module wholesale with `mock.module`, and a new
+ * runtime export there is `undefined` at every one of those call sites rather
+ * than falling back to the real module. A 12-line picker is not worth widening
+ * 16 mock surfaces.
+ *
+ * Omits each key the server did not send: an absent `deferrals` and an all-zero
+ * one are different claims about the world, and claims.log is read by grep — a
+ * spurious `"deferrals":{}` on every idle poll hides the entries that matter.
+ */
+function claimDiagnosticDetail(
+  diagnostics: ClaimDiagnostics | null | undefined,
+): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks'> {
+  if (!diagnostics) return {};
+  return {
+    ...(diagnostics.deferrals && Object.keys(diagnostics.deferrals).length > 0
+      ? { deferrals: diagnostics.deferrals }
+      : {}),
+    ...(typeof diagnostics.pendingTasks === 'number' ? { pendingTasks: diagnostics.pendingTasks } : {}),
+    ...(typeof diagnostics.matchedTasks === 'number' ? { matchedTasks: diagnostics.matchedTasks } : {}),
+  };
 }
 
 export class WorkerManager {
@@ -1019,7 +1047,13 @@ export class WorkerManager {
       if (claimed.length === 0) {
         // Skip logging no_pending_tasks during polling — that's the normal idle state
         if (diagnostics && diagnostics.reason !== 'no_pending_tasks' && diagnostics.reason !== 'budget_exhausted_partial') {
-          claimLog({ event: 'claim_empty', slotsRequested: slots, workersClaimed: 0, diagnosticReason: diagnostics.reason });
+          claimLog({
+            event: 'claim_empty',
+            slotsRequested: slots,
+            workersClaimed: 0,
+            diagnosticReason: diagnostics.reason,
+            ...claimDiagnosticDetail(diagnostics),
+          });
         }
         return [];
       }
@@ -1237,7 +1271,14 @@ export class WorkerManager {
     const { workers: claimed, diagnostics } = claimResult;
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
-      claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
+      claimLog({
+        event: 'claim_empty',
+        slotsRequested: 1,
+        workersClaimed: 0,
+        diagnosticReason: diagnostics?.reason,
+        taskId: task.id,
+        ...claimDiagnosticDetail(diagnostics),
+      });
       console.log(`No tasks claimed (reason: ${reason})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
@@ -1836,11 +1877,30 @@ export class WorkerManager {
       }
 
       // Fetch workspace memory context in parallel: full digest + task-specific matches + feedback memories
-      const [compactResult, taskSearchResults, feedbackMemories] = await Promise.all([
+      const [compactResult, taskMemory, feedbackMemories] = await Promise.all([
         this.buildd.getCompactObservations(task.workspaceId),
-        this.buildd.searchObservations(task.workspaceId, task.title, 5),
+        // Declared paths first, task title as fallback — see
+        // task-memory-retrieval.ts for why these are ordered steps rather than
+        // one blended query, and why the provenance is recorded.
+        retrieveTaskMemory(this.buildd, {
+          workspaceId: task.workspaceId,
+          title: task.title,
+          description: task.description,
+          pathManifest: task.pathManifest,
+        }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
+      const taskSearchResults = taskMemory.results;
+      // Which step produced the match, emitted by the code that did the work
+      // rather than inferred later. A bare count cannot distinguish five hits
+      // from a declared path overlap from five hits sharing a stopword.
+      sessionLog(worker.id, 'info', 'task-memory-retrieval', JSON.stringify({
+        derivedBy: taskMemory.derivedBy,
+        results: taskMemory.results.length,
+        scopePaths: taskMemory.scopePaths.length,
+        inferredPaths: taskMemory.inferredPaths.length,
+        pathScopeMissed: taskMemory.pathScopeMissed,
+      }), task.id);
 
       // Fetch full content for task-specific memory matches
       const fullObservations = taskSearchResults.length > 0
@@ -1902,7 +1962,6 @@ export class WorkerManager {
         }
         promptText = promptText + '\n\n' + tenantLines.join('\n');
       }
-
 
       // Build the agent subprocess environment from an allowlist rather than
       // forwarding all of process.env. Runner-level secrets (BUILDD_API_KEY,
@@ -3059,6 +3118,7 @@ export class WorkerManager {
         memory: built.memory,
         promptText,
         backend: task.backend,
+        taskMatchDerivedBy: taskMemory.derivedBy,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
       // Also on stdout, as a live "is the arm firing at all" signal. Whether
@@ -3068,6 +3128,16 @@ export class WorkerManager {
       // dies with the container. Neither sink is a queryable rail — see the
       // open question in the design doc.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
+      // Durable, queryable rail: neither of the above survives long enough or
+      // is queryable enough to analyse the arm across a task's retry chain.
+      const { buffer: promptCompositionBuffer, nextBuildIndex } = appendPromptCompositionEvent(
+        worker.pendingPromptCompositionEvents,
+        worker.promptBuildIndex,
+        composition,
+        Date.now(),
+      );
+      worker.pendingPromptCompositionEvents = promptCompositionBuffer;
+      worker.promptBuildIndex = nextBuildIndex;
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.

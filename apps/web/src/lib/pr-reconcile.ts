@@ -47,6 +47,7 @@ import {
   installationIdForRepo,
 } from '@/lib/workspace-installation';
 import { repoFullNameFromPrUrl, resolvePrRepo } from '@/lib/repo-scope';
+import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import {
   TIER_SLA_MS,
   HOT_MAX_AGE_MS,
@@ -156,12 +157,52 @@ export interface ReconcileResult {
   errors: number;
   /** Rows that exhausted the unknown TTL and went terminal this run. */
   unresolvable: number;
+  /**
+   * Subject-anchored tasks reconciled because this sweep — not the webhook —
+   * discovered the anchor PR had resolved. Counted separately so "the poller
+   * is catching real webhook misses" stays distinguishable from an idle run.
+   */
+  subjectsReconciled: number;
 }
 
 /**
  * Deferred so this module does not close an import cycle: task-dependencies
  * imports refreshWorkerMergeStateIfStale from here.
  */
+/**
+ * Reconcile tasks anchored to a PR this sweep just found resolved.
+ *
+ * The webhook does this at `webhook/route.ts` on every pull_request close, and
+ * `workers.mergedAt` is documented as lossy — so without a backstop here a lost
+ * delivery leaves a subject-anchored task pending with `subjectResolution =
+ * NULL` forever. It is never claimable (the subject gate skips it) and never
+ * resolved, so it is re-examined on every claim poll and inflates
+ * `all_candidates_deferred`, which is the signal used to diagnose real
+ * starvation. Two CI-retry tasks were found stranded that way, 7 days and 20
+ * hours old, on PRs that had merged.
+ *
+ * Deliberately swallowing: the merge stamp has already landed by the time this
+ * runs, and losing that to a sweep failure would trade a small gap for the
+ * large one this whole route exists to close.
+ */
+async function reconcileSubjectAnchors(
+  workspaceId: string | null | undefined,
+  prNumber: number | null | undefined,
+): Promise<number> {
+  if (!workspaceId || !prNumber) return 0;
+  try {
+    // `reconciled` is a count, not a list of ids.
+    const swept = await sweepSubjectAnchoredTasks(workspaceId, prNumber);
+    return swept?.reconciled ?? 0;
+  } catch (err) {
+    console.error(
+      `[pr-reconcile] subject sweep failed for PR #${prNumber} in workspace ${workspaceId}:`,
+      err,
+    );
+    return 0;
+  }
+}
+
 async function notifyDependents(taskId: string): Promise<void> {
   const { checkDependsOnResolved } = await import('@/lib/task-dependencies');
   await checkDependsOnResolved(taskId);
@@ -222,6 +263,7 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
     skipped: 0,
     errors: 0,
     unresolvable: 0,
+    subjectsReconciled: 0,
   };
   if (candidates.length === 0) return result;
 
@@ -427,6 +469,12 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
               console.error(`[pr-reconcile] checkDependsOnResolved failed for task ${worker.taskId}:`, err),
             );
           }
+          // The fifth consumer of a merge event, and the one this route was
+          // missing. The other four are above; see reconcileSubjectAnchors.
+          result.subjectsReconciled += await reconcileSubjectAnchors(
+            worker.workspaceId,
+            worker.prNumber,
+          );
         } else if (pr.state === 'closed') {
           await recordCheck(worker.id, {
             prLifecycleStatus: 'closed',
@@ -434,6 +482,12 @@ export async function reconcileStalePrWorkers(): Promise<ReconcileResult> {
             updatedAt: new Date(),
           }, { verified: true });
           result.closed++;
+          // Matches dead-pr-shutdown, which sweeps on the closed path in the
+          // event-driven flow: a PR closed unmerged strands its anchors too.
+          result.subjectsReconciled += await reconcileSubjectAnchors(
+            worker.workspaceId,
+            worker.prNumber,
+          );
         } else {
           // Still open — record the check and clear the failure streak. The PR
           // resolved fine; it simply has not landed yet. GitHub gave a real

@@ -2,10 +2,10 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-05
+last_verified: 2026-09-08
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/condensed-timeline.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/criteria-escalation.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
 keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber]
 supersedes: []
@@ -605,9 +605,22 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   failure nobody can move is a decision, not a retry.
 - While work filed against the current verdict is still open, the consumer waits
   rather than re-arming — otherwise it duplicates the work in flight.
-- Escalation MUST be self-clearing: any change in verdict shape re-arms the
-  organizer and clears `criteriaEscalatedAt`, so an owner fixing a criterion (or
-  a merge flipping `all_prs_merged`) resumes the mission without a manual restart.
+- Escalation MUST be self-clearing, but NOT via a re-arm tick alone: escalating
+  disables the mission's heartbeat schedule, so no tick can ever run again to
+  observe a later verdict change — the code that would clear
+  `criteriaEscalatedAt` on that path is structurally unreachable from the state
+  that sets it. Clearing is instead the job of `resolveCriteriaEscalation()`
+  (`apps/web/src/lib/criteria-escalation.ts`), the single writer for
+  un-escalating a mission. It nulls `criteriaEscalatedAt`, closes the open
+  `question` note as `answered` (the owner acted — never `dismissed`), and
+  re-enables the heartbeat schedule if one still exists, so a later tick CAN
+  run again. Every live exit routes through it: `applyCriteriaRearm`'s own
+  'rearm' branch (verdict genuinely changed, reason `verdict_changed` —
+  reachable again only once something else has re-enabled the schedule), a
+  mission closing to `completed`/`archived` (reason `mission_completed`), and a
+  `goalCriteria` edit on `PATCH /api/missions/[id]` (reason `criteria_edited` —
+  the exit the escalation note itself advertises). It is a no-op on a mission
+  that was never escalated and never files a task.
 - A re-arm cycle MUST NOT write `lastHeartbeatStateHash`. Mission state is
   unchanged by construction (every deliverable is terminal), so persisting it
   would make the next tick read "no change" and suppress the cycle just
@@ -617,6 +630,26 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   decomposition; they are not a reason to be unable to fix a criterion the mission
   is failing. The lift MUST NOT authorize re-decomposition of anything the
   blocking criteria do not name.
+- A mission holding `criteriaEscalatedAt` while terminal (`completed` or
+  `archived`), or while its verdict already passes, is inconsistent — every
+  write site above is supposed to clear it on its own exit, so this state
+  existing at all is evidence one of them didn't. The hourly
+  `mission-invariants` sweep (`stale_criteria_escalation`) is the backstop: it
+  resolves the row directly through `resolveCriteriaEscalation()` and counts
+  it, rather than filing a task or notifying — there is nothing for a human to
+  act on, only a stranded flag. A sweep doing steady-state work here means a
+  write site is still wrong, not that the backstop is doing its job.
+- The DECIDE chip on the Home action queue (`buildDecideItems()` in
+  `apps/web/src/lib/action-queue.ts`) MUST re-derive membership from the
+  mission's current `status` and `criteriaOverallVerdict` rather than trusting
+  `criteriaEscalatedAt` alone, for the same reason the sweep above exists: the
+  column records WHEN an escalation happened, never whether it still holds
+  now. This is one instance of a queue-wide rule — every actionable chip
+  asserts something about its subject's CURRENT state and may only render
+  while that state is known live (documented next to `ActionChip` in
+  `action-queue.ts`); MERGE/REVIEW already enforce it via the STALE gate, and
+  QUESTION/RECONNECT/APPROVE are exempt by construction because each is built
+  from a live re-check on every queue build rather than a persisted flag.
 
 **Acceptance criteria**:
 - AC-11j: GIVEN a heartbeat mission with every deliverable terminal and
@@ -628,18 +661,85 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   created, a `Goal criteria blocked — owner decision needed` note is posted, and
   the heartbeat schedule is disabled with
   `lastDeferralReason = 'criteria_escalated'`.
-- AC-11l: GIVEN an escalated mission WHEN a criterion's verdict changes THEN the
-  next tick re-arms the organizer and `criteriaEscalatedAt` is cleared.
+- AC-11l: GIVEN an escalated, still-`active`/`paused` mission WHEN its
+  `goalCriteria` is edited via `PATCH /api/missions/[id]` THEN
+  `resolveCriteriaEscalation()` clears `criteriaEscalatedAt`, closes the open
+  question note as `answered`, and re-enables the heartbeat schedule — making a
+  later tick reachable again, rather than a tick itself clearing the flag (no
+  tick can run while the schedule it would need is the very thing escalation
+  disabled).
 - AC-11m: GIVEN a completion refused for a non-criteria reason (e.g.
   `infra_stalled`) WHEN the tick runs THEN no re-arm is attempted.
 - AC-11n: GIVEN a re-arm cycle WHEN the schedule row is written THEN
   `lastHeartbeatStateHash` is not among the written columns.
+- AC-11o: GIVEN an escalated mission WHEN its status is set to `completed` or
+  `archived` via `PATCH /api/missions/[id]` THEN `resolveCriteriaEscalation()`
+  clears `criteriaEscalatedAt` and closes the open question note, even though
+  the schedule row itself is deleted (not re-enabled) by the same request — a
+  terminal mission has nothing left to re-arm.
+- AC-11p: GIVEN a mission with `criteriaEscalatedAt` set WHILE `status` is
+  `completed`/`archived`, or WHILE `goalCriteriaState.overall = 'pass'` WHEN
+  the hourly `mission-invariants` sweep runs THEN the row is resolved through
+  `resolveCriteriaEscalation()` and counted as `stale_criteria_escalation` —
+  not filed as a task, not notified — and a second run against the same
+  (now-fixed) row finds nothing.
+- AC-11q: GIVEN a mission with `criteriaEscalatedAt` set and an open question
+  note WHEN it is either terminal (`completed`/`archived`) or its
+  `goalCriteriaState.overall = 'pass'` THEN `buildDecideItems()` produces zero
+  DECIDE items for it, regardless of the stored flag or note state.
+- AC-11r: GIVEN a task created with `missionId` set (any origin — dashboard,
+  API, MCP) WHEN `POST /api/tasks` succeeds THEN
+  `resolveCriteriaEscalation(missionId, 'work_filed', actor)` is called —
+  "file the work", the escalation note's first advertised exit, is reachable
+  from ordinary task creation rather than requiring a bespoke endpoint. A
+  no-op on a mission that was never escalated, per the helper's own contract.
+- AC-11s: GIVEN an escalated mission WHEN `PATCH /api/missions/[id]` sets
+  `status` to `completed`/`archived` WHILE its stored `goalCriteria` is
+  non-empty and `goalCriteriaState.overall !== 'pass'` THEN
+  `resolveCriteriaEscalation()` is called with reason `'waived'`, not
+  `'mission_completed'` — reaching this close with the flag still set can only
+  happen via an override (a passing verdict would already have cleared it
+  through the `'verdict_changed'` exit), and the "Goal criteria gate
+  overridden" warning posted for the same condition is the audit trail that
+  makes waiving safe to offer as a one-click exit on the mission-detail
+  decision sheet.
+- AC-11t: GIVEN an open `missionNotes` question row whose title is the
+  escalation note's title (`CRITERIA_ESCALATION_NOTE_TITLE`) WHEN
+  `MissionFeed` renders it THEN no Reply/Skip affordance is shown. Both route
+  through `POST /api/missions/[id]/notes/[noteId]/reply`, which only flips
+  `status` to `'answered'` — it never touches `criteriaEscalatedAt` or
+  re-enables the schedule, so replying would mute the card while leaving the
+  mission stood down forever. The mission-detail decision sheet (file the
+  work / fix the criterion / waive), which routes every exit through
+  `resolveCriteriaEscalation()`, is the only surface that can clear it.
 
 **Code surface**:
 - Predicate + writer: `apps/web/src/lib/mission-completion.ts` —
   `canCompleteMission()`, `completeMissionIfVerified()`, `isCriteriaBlockCode()`
 - Blocked-verdict consumer: `apps/web/src/lib/criteria-rearm.ts` —
   `criteriaFingerprint()`, `decideCriteriaRearm()`, `applyCriteriaRearm()`
+- Single writer for un-escalating: `apps/web/src/lib/criteria-escalation.ts` —
+  `resolveCriteriaEscalation()`. Called from `applyCriteriaRearm()`'s 'rearm'
+  branch, from `PATCH /api/missions/[id]` (status → completed/archived; a
+  `goalCriteria` edit), and from the `stale_criteria_escalation` invariant.
+- Terminal-mission / passing-verdict backstop:
+  `apps/web/src/lib/mission-invariants.ts` (`stale_criteria_escalation`
+  invariant) + `apps/web/src/app/api/cron/mission-invariants/route.ts`
+  (reconciles, does not file)
+- DECIDE-card derivation: `apps/web/src/lib/action-queue.ts` —
+  `buildDecideItems()`, `EscalatedMissionCandidate`
+- Home DECIDE card (one CTA, recommendation only — never a pre-selected
+  exit): `apps/web/src/components/WaitingOnYouDecideCard.tsx`
+- Mission-detail decision sheet (the three real exits — file the work / fix
+  the criterion / waive): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
+  `apps/web/src/lib/criteria-decision-links.ts` (task-composer link),
+  `apps/web/src/lib/goal-criterion-label.ts` (client-safe criterion labeling)
+- "File the work" resolution: `apps/web/src/app/api/tasks/route.ts` (POST,
+  fire-and-forget block on `task.missionId`)
+- Reply exclusion for the escalation note: `apps/web/src/lib/criteria-escalation-note.ts`
+  (`CRITERIA_ESCALATION_NOTE_TITLE`), `apps/web/src/lib/mission-note-reply.ts`
+  (`isReplyableQuestion()`), consumed by
+  `apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx`
 - Re-arm prompt injection: `apps/web/src/lib/mission-context.ts` —
   `buildMissionContext()` (`criteriaRearm` block + coordinate-only lift)
 - Verdict producer: `apps/web/src/lib/mission-criteria-eval.ts` —

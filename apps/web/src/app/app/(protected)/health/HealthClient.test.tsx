@@ -448,15 +448,16 @@ describe('HealthClient — Trend', () => {
   it('renders the delegated-work share and denominator when available', () => {
     const html = render({
       subagentDelegation: {
-        available: true,
-        sessions: 8,
-        sessionsWithDelegation: 3,
-        medianSharePct: 22,
-        isFloor: false,
-        capturedSince: '2026-08-15',
-        windowPredatesCapture: false,
-        truncated: false,
-        unavailableReason: null,
+        kind: 'value',
+        value: {
+          sessions: 8,
+          sessionsWithDelegation: 3,
+          medianSharePct: 22,
+          isFloor: false,
+          capturedSince: '2026-08-15',
+          windowPredatesCapture: false,
+          truncated: false,
+        },
       },
     });
     expect(html).toContain('data-testid="health-section-subagent-delegation"');
@@ -468,15 +469,16 @@ describe('HealthClient — Trend', () => {
   it('marks a floor share with ≥ and never renders a bare number as exact', () => {
     const html = render({
       subagentDelegation: {
-        available: true,
-        sessions: 4,
-        sessionsWithDelegation: 4,
-        medianSharePct: 40,
-        isFloor: true,
-        capturedSince: '2026-08-15',
-        windowPredatesCapture: false,
-        truncated: false,
-        unavailableReason: null,
+        kind: 'value',
+        value: {
+          sessions: 4,
+          sessionsWithDelegation: 4,
+          medianSharePct: 40,
+          isFloor: true,
+          capturedSince: '2026-08-15',
+          windowPredatesCapture: false,
+          truncated: false,
+        },
       },
     });
     expect(html).toContain('≥40%');
@@ -485,15 +487,9 @@ describe('HealthClient — Trend', () => {
   it('shows the unavailable reason instead of a fabricated zero when there is nothing to compute', () => {
     const html = render({
       subagentDelegation: {
-        available: false,
-        sessions: 0,
-        sessionsWithDelegation: 0,
-        medianSharePct: null,
-        isFloor: false,
-        capturedSince: '2026-08-15',
-        windowPredatesCapture: false,
-        truncated: false,
-        unavailableReason: 'No terminal session in this window has both a start and a completion time to compute wall clock from.',
+        kind: 'unavailable',
+        reason: 'no_scope',
+        detail: 'No terminal session in this window has both a start and a completion time to compute wall clock from.',
       },
     });
     expect(html).toContain('data-testid="subagent-delegation-unavailable"');
@@ -503,15 +499,16 @@ describe('HealthClient — Trend', () => {
   it('warns when the window opens before background-agent tracking began', () => {
     const html = render({
       subagentDelegation: {
-        available: true,
-        sessions: 2,
-        sessionsWithDelegation: 0,
-        medianSharePct: 0,
-        isFloor: false,
-        capturedSince: '2026-08-15',
-        windowPredatesCapture: true,
-        truncated: false,
-        unavailableReason: null,
+        kind: 'value',
+        value: {
+          sessions: 2,
+          sessionsWithDelegation: 0,
+          medianSharePct: 0,
+          isFloor: false,
+          capturedSince: '2026-08-15',
+          windowPredatesCapture: true,
+          truncated: false,
+        },
       },
     });
     expect(html).toContain('tracked only since 2026-08-15');
