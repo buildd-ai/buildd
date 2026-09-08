@@ -1,10 +1,10 @@
 /**
  * Mission-state invariants — the pure half of the hourly sweep.
  *
- * Twelve named records, each of which is a defect shape that actually shipped
+ * Thirteen named records, each of which is a defect shape that actually shipped
  * and then sat unnoticed for hours or days because nothing in the system could
  * express it as a question. `deriveMissionHealth` answers "how is this mission
- * doing" from task counts; none of these twelve are visible in task counts.
+ * doing" from task counts; none of these thirteen are visible in task counts.
  *
  * ── The check is code, the fix is an agent ──────────────────────────────────
  * Every predicate here is plain JavaScript over rows the caller already read.
@@ -499,7 +499,7 @@ export function countPlanSteps(raw: unknown): number {
   return 0;
 }
 
-// ── The twelve ──────────────────────────────────────────────────────────────
+// ── The thirteen ────────────────────────────────────────────────────────────
 
 export const INVARIANTS: Invariant[] = [
   {

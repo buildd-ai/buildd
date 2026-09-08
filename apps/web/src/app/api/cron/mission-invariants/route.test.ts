@@ -256,7 +256,7 @@ describe('healthy fleet', () => {
   it('still names every invariant, so a clean run is not a dead query', async () => {
     scanCoverage = { missions: 12, tasks: 80, workers: 40, releases: 5, notes: 2, remoteRefs: 1, baseMerges: 30 };
     const body = await (await POST(makeRequest())).json();
-    expect(body.invariants).toHaveLength(12);
+    expect(body.invariants).toHaveLength(13);
     expect(body.report).toContain('orphaned_integration_base');
     expect(body.report).toContain('mission_unverifiable');
     expect(body.report).toContain('open_pr_outpaced_by_base');

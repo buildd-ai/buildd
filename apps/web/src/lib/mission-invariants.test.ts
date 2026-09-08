@@ -119,8 +119,8 @@ function reported(key: InvariantKey, s: InvariantSnapshot): string[] {
 // ── Registry ────────────────────────────────────────────────────────────────
 
 describe('invariant registry', () => {
-  it('ships the twelve observed defect shapes', () => {
-    expect(INVARIANTS).toHaveLength(12);
+  it('ships the thirteen observed defect shapes', () => {
+    expect(INVARIANTS).toHaveLength(13);
   });
 
   it('gives every invariant a stable, unique key', () => {
