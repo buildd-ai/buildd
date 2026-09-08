@@ -15,15 +15,17 @@
  *
  * ── Reporting is not gating ────────────────────────────────────────────────
  * Same discipline as `api/cron/queue-stall`: this module withholds nothing from
- * anything. It names conditions. Ten of the twelve are report-only; one
- * (`orphaned_integration_base`) files a task, because it is unambiguous, severe
- * and self-evidently actionable; one (`stale_criteria_escalation`) resolves
- * itself directly through `resolveCriteriaEscalation` — it is a backstop for a
- * write-side bug (the escalation clear not reaching every exit), not a
- * condition a human needs to see, so there is nothing to file. Promoting
- * another invariant to file or resolve is a later diff per invariant, and the
- * bar is that it has been observed to fire on a real breach AND stay quiet on
- * a healthy fleet.
+ * anything. It names conditions. Most are report-only. Two file a task —
+ * `orphaned_integration_base`, because it is unambiguous, severe and
+ * self-evidently actionable, and `open_pr_outpaced_by_base`, because a report
+ * is the wrong instrument for it: that condition exists BECAUSE nobody was
+ * looking, and its odds get worse every hour it is only written down. One
+ * (`stale_criteria_escalation`) resolves itself directly through
+ * `resolveCriteriaEscalation` — it is a backstop for a write-side bug (the
+ * escalation clear not reaching every exit), not a condition a human needs to
+ * see, so there is nothing to file. Promoting another invariant to file or
+ * resolve is a later diff per invariant, and the bar is that it has been
+ * observed to fire on a real breach AND stay quiet on a healthy fleet.
  *
  * ── Thresholds are the whole game ──────────────────────────────────────────
  * Most of these states are NORMAL for minutes and pathological for days. A
@@ -56,9 +58,9 @@ export const INERT_INTEGRATION_BRANCH_MS = 30 * MIN;
 /**
  * A deleted base is permanent and instantaneous — GitHub retargets the moment
  * the integration PR merges. The 30m grace is not for the condition to settle,
- * it is for OUR view of it: this is the one invariant that files a task, and a
- * PR opened seconds ago against a branch our webhook has not caught up on must
- * not page anyone.
+ * it is for OUR view of it: this invariant files a task, and a PR opened
+ * seconds ago against a branch our webhook has not caught up on must not page
+ * anyone.
  */
 export const ORPHANED_INTEGRATION_BASE_MS = 30 * MIN;
 
@@ -152,6 +154,39 @@ export const STALE_CRITERIA_ESCALATION_MS = 0;
  */
 export const MISSION_UNVERIFIABLE_MS = 4 * HOUR;
 
+/**
+ * The age past which an open PR has left the window its peers merged in.
+ *
+ * Measured, not guessed, against this repo's own trunk PRs over a full
+ * delivery week: the median MERGED PR is open for under half an hour, while the
+ * median PR that ended up CLOSED UNMERGED was open roughly an order of
+ * magnitude longer, and the ones still sitting open longer again. Four hours is
+ * past that closed-unmerged median — a PR still open here is not mid-flight, it
+ * is in the population that mostly did not land.
+ */
+export const PR_OUTPACED_MS = 4 * HOUR;
+
+/**
+ * Base drift — how many OTHER PRs merged into this PR's base while it was open
+ * — past which the PR counts as outpaced.
+ *
+ * From the same week: eventual-merge probability falls monotonically with base
+ * drift. At zero drift essentially every PR merges; by the mid-teens well over
+ * a third never do, and the drop between the buckets is smooth, so any cut is a
+ * choice rather than a discovered cliff. Fifteen is where the abandoned share
+ * stops being a rounding error, which makes it the cheapest place to act.
+ *
+ * This is stored NOWHERE — no column, no webhook, nothing derives it. It is
+ * counted here from merge timestamps (see {@link countBaseDrift}), which is why
+ * the loader has to supply {@link InvariantSnapshot.baseMerges} separately.
+ *
+ * ANDed with {@link PR_OUTPACED_MS} on purpose. Drift alone fires on a PR
+ * opened inside a merge burst that is about to land anyway; age alone fires on
+ * a quiet afternoon where nothing moved under the PR and it is simply waiting
+ * on a human. The breach is the conjunction: old AND outpaced.
+ */
+export const PR_OUTPACED_DRIFT = 15;
+
 // ── Shared vocabulary ───────────────────────────────────────────────────────
 
 /** Task statuses that mean "this task is still owed". */
@@ -244,6 +279,23 @@ export interface SnapshotReview {
   decidedAt: Date;
 }
 
+/**
+ * One merge into a base branch — the raw material for base drift.
+ *
+ * Deliberately a separate list rather than something read off
+ * `snapshot.workers`: that set EXCLUDES merged rows by construction (see
+ * mission-invariant-scan.ts, which loads open PRs and stranded workers).
+ * Counting drift from it would return zero for every PR forever — a query that
+ * is green because it matches nothing, which is the exact failure mode the
+ * `scanned` line in the report exists to expose.
+ */
+export interface SnapshotBaseMerge {
+  workspaceId: string;
+  /** The ref the merge landed on, as GitHub reported it. */
+  baseRef: string;
+  mergedAt: Date;
+}
+
 export interface InvariantSnapshot {
   missions: SnapshotMission[];
   tasks: SnapshotTask[];
@@ -251,6 +303,8 @@ export interface InvariantSnapshot {
   releases: SnapshotRelease[];
   notes: SnapshotNote[];
   reviews: SnapshotReview[];
+  /** Recent merges per base branch. Only {@link countBaseDrift} reads this. */
+  baseMerges: SnapshotBaseMerge[];
   /**
    * `remoteRefKey(workspaceId, ref)` → does the ref exist on the remote.
    *
@@ -275,6 +329,7 @@ export function emptySnapshot(): InvariantSnapshot {
     releases: [],
     notes: [],
     reviews: [],
+    baseMerges: [],
     remoteBranchExists: new Map(),
     trunkBranches: new Map(),
   };
@@ -294,7 +349,8 @@ export type InvariantKey =
   | 'release_without_head'
   | 'approved_pr_unmerged'
   | 'mission_unverifiable'
-  | 'stale_criteria_escalation';
+  | 'stale_criteria_escalation'
+  | 'open_pr_outpaced_by_base';
 
 export type EntityKind = 'mission' | 'task' | 'worker' | 'release' | 'pull_request';
 
@@ -317,7 +373,7 @@ export interface Invariant {
   thresholdMs: number;
   /** One line, written for whoever reads the report. */
   remedy: string;
-  /** Whether a breach files a task. Exactly one invariant ships with this true. */
+  /** Whether a breach files a task. Two invariants ship with this true. */
   files: boolean;
   /**
    * Whether a breach is resolved directly, by calling `resolveCriteriaEscalation`
@@ -374,6 +430,44 @@ function isTrunk(snapshot: InvariantSnapshot, workspaceId: string, ref: string |
   return set ? set.has(ref) : false;
 }
 
+/**
+ * When a worker's PR opened, for age and drift purposes.
+ *
+ * `completedAt ?? createdAt` — the same anchor lib/pr-freshness.ts uses. A
+ * worker still running has no completedAt and its PR is genuinely as old as the
+ * worker; falling back keeps a long-running worker's PR from reading as brand
+ * new forever.
+ */
+function prOpenedAt(w: SnapshotWorker): Date {
+  return w.completedAt ?? w.createdAt;
+}
+
+/**
+ * Base drift: how many OTHER PRs merged into this PR's base after it opened.
+ *
+ * Strictly after: a merge that landed before this PR opened is already in its
+ * base and is not drift. Counting those would report every PR in a busy
+ * workspace within its first hour.
+ *
+ * Undercounts rather than overcounts by design — the loader supplies a bounded,
+ * recent window of merges, so a PR older than that window is credited with less
+ * drift than it really has and the invariant stays quiet. A signal that files
+ * tasks must fail towards silence.
+ */
+export function countBaseDrift(snapshot: InvariantSnapshot, w: SnapshotWorker): number {
+  const base = w.prBaseRef;
+  if (!base) return 0;
+  const openedAt = prOpenedAt(w).getTime();
+  let drift = 0;
+  for (const m of snapshot.baseMerges) {
+    if (m.workspaceId !== w.workspaceId) continue;
+    if (m.baseRef !== base) continue;
+    if (m.mergedAt.getTime() <= openedAt) continue;
+    drift++;
+  }
+  return drift;
+}
+
 function indexBy<T, K>(rows: T[], key: (row: T) => K | null): Map<K, T> {
   const map = new Map<K, T>();
   for (const row of rows) {
@@ -405,7 +499,7 @@ export function countPlanSteps(raw: unknown): number {
   return 0;
 }
 
-// ── The eleven ──────────────────────────────────────────────────────────────
+// ── The twelve ──────────────────────────────────────────────────────────────
 
 export const INVARIANTS: Invariant[] = [
   {
@@ -840,6 +934,51 @@ export const INVARIANTS: Invariant[] = [
       return out;
     },
   },
+
+  {
+    key: 'open_pr_outpaced_by_base',
+    title: 'Open PR is old and its base has moved on without it',
+    thresholdMs: PR_OUTPACED_MS,
+    remedy:
+      'Rebase it and land it, or close it. Both are decisions; leaving it open is the one outcome ' +
+      'the merge history says usually ends in nothing.',
+    // The SECOND invariant staged to file, and the reason is that the report is
+    // useless here. The other report-only invariants describe a state someone
+    // can look at later and still fix; this one describes a PR whose odds are
+    // getting worse every hour precisely BECAUSE nobody looked. A line in an
+    // hourly log that nobody reads is how the condition arises.
+    files: true,
+    resolves: false,
+    query: (s, now) => {
+      const out: InvariantViolation[] = [];
+      for (const w of s.workers) {
+        if (!isOpenPrWorker(w)) continue;
+        // A null base is unknown, never trunk (schema.ts prBaseRef) — and drift
+        // against an unknown base is uncountable, not zero. A short-circuit,
+        // not the guarantee: countBaseDrift returns 0 for a null base anyway.
+        if (!w.prBaseRef) continue;
+        // Drift on a mission integration branch is the DESIGN: sibling task PRs
+        // land there continuously, and the mission's single PR into trunk is
+        // the gate that matters. Only ordinary bases decay.
+        if (isMissionBranch(w.prBaseRef)) continue;
+        const ageMs = olderThan(now, prOpenedAt(w), PR_OUTPACED_MS);
+        if (ageMs === null) continue;
+        const drift = countBaseDrift(s, w);
+        if (drift < PR_OUTPACED_DRIFT) continue;
+        out.push({
+          entityId: w.id,
+          entityKind: 'worker',
+          workspaceId: w.workspaceId,
+          detail:
+            `PR #${w.prNumber} open ${Math.round(ageMs / HOUR)}h; ` +
+            `${drift} merges into '${w.prBaseRef}' since it opened` +
+            (w.prUrl ? ` (${w.prUrl})` : ''),
+          ageMs,
+        });
+      }
+      return out;
+    },
+  },
 ];
 
 const BY_KEY = new Map<InvariantKey, Invariant>(INVARIANTS.map(i => [i.key, i]));
@@ -892,6 +1031,13 @@ export interface ScanCoverage {
   releases: number;
   notes: number;
   remoteRefs: number;
+  /**
+   * Merge rows loaded for base drift. Its own number because it is the only
+   * input `open_pr_outpaced_by_base` can be starved of: workers can be present
+   * and healthy-looking while this is zero, and the invariant is then clean by
+   * arithmetic rather than by observation.
+   */
+  baseMerges: number;
 }
 
 function humanThreshold(ms: number): string {
@@ -922,11 +1068,20 @@ export function formatInvariantReport(
   lines.push(`mission invariant sweep — ${total} violation(s) across ${results.length} invariants`);
   lines.push(
     `scanned: ${scanned.missions} missions, ${scanned.tasks} tasks, ${scanned.workers} workers, ` +
-      `${scanned.releases} releases, ${scanned.notes} notes, ${scanned.remoteRefs} remote refs`,
+      `${scanned.releases} releases, ${scanned.notes} notes, ${scanned.remoteRefs} remote refs, ` +
+      `${scanned.baseMerges} base merges`,
   );
   if (empty) {
     lines.push(
       'EMPTY SCAN — every query ran against no rows, so a clean result proves nothing about the fleet.',
+    );
+  } else if (scanned.baseMerges === 0 && scanned.workers > 0) {
+    // Narrower than EMPTY SCAN and worth saying separately: base drift is the
+    // one derived quantity here, and with no merges loaded its invariant is
+    // clean by arithmetic. Said out loud so a reader can tell that apart from
+    // a fleet whose PRs are keeping up.
+    lines.push(
+      'NO BASE MERGES LOADED — open_pr_outpaced_by_base cannot fire; treat its 0 as unmeasured.',
     );
   }
   lines.push('');

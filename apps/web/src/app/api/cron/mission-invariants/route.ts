@@ -2,11 +2,12 @@
  * POST /api/cron/mission-invariants
  *
  * Hourly mission-state invariant sweep — the watchdog for the class of defect
- * that is invisible in task counts. Twelve named invariants, each one a shape
+ * that is invisible in task counts. Thirteen named invariants, each one a shape
  * that actually shipped and then sat unnoticed because nothing in the system
  * could express it as a question: an integration-branch flag that reads on and
  * does nothing, a PR whose base branch was deleted out from under it, a plan
- * that produced no children, a mission nothing will ever verify.
+ * that produced no children, a mission nothing will ever verify, an open PR
+ * that the branch it targets has quietly left behind.
  *
  * ── The check is code, the fix is an agent ──────────────────────────────────
  * A healthy fleet costs ONE set of queries per hour and spawns NOTHING — no
@@ -16,11 +17,15 @@
  *
  * ── Reporting is not gating ─────────────────────────────────────────────────
  * Same discipline as `/api/cron/queue-stall`, and for the same reason: this
- * route withholds nothing from anything. It names conditions. Ten of the twelve
- * ship report-only — the response body and the structured log are their whole
- * consumer. One, `orphaned_integration_base`, files a task, because it
- * is unambiguous, severe and self-evidently actionable, so it proves the whole
- * path (detect → dedupe → file → fix) end to end at near-zero noise. One,
+ * route withholds nothing from anything. It names conditions. Most of the
+ * thirteen ship report-only — the response body and the structured log are
+ * their whole consumer. Two file a task. `orphaned_integration_base`, because
+ * it is unambiguous, severe and self-evidently actionable, so it proves the
+ * whole path (detect → dedupe → file → fix) end to end at near-zero noise. And
+ * `open_pr_outpaced_by_base`, where a report is the wrong instrument outright:
+ * that PR is decaying BECAUSE nobody looked at it, so one more line in an
+ * hourly log nobody reads is the condition, not the cure. Its remedy is a
+ * decision a claiming agent can carry out — rebase and land, or close. One,
  * `stale_criteria_escalation`, resolves itself directly through
  * `resolveCriteriaEscalation` — it names a write-side bug (an escalation clear
  * that should already have happened), not a human decision, so there is

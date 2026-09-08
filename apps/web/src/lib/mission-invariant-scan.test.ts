@@ -13,6 +13,9 @@ let planningRows: any[] = [];
 let reviewRows: any[] = [];
 let openPrRows: any[] = [];
 let strandedRows: any[] = [];
+let baseMergeRows: any[] = [];
+/** Args of the base-drift merge query, so its window and cap are assertable. */
+let baseMergeArgs: any = null;
 let missionWorkerRows: any[] = [];
 let releaseRows: any[] = [];
 let noteRows: any[] = [];
@@ -35,6 +38,13 @@ const mockWorkersFindMany = mock(async (args: any) => {
   if (w?.type === 'inArray') return missionWorkerRows;
   const fields = (w?.c ?? []).map((c: any) => c?.f);
   if (fields.includes('commitCount')) return strandedRows;
+  // The base-drift query is the only one that filters on prBaseRef, and unlike
+  // every other worker read it wants MERGED rows — dispatching it to
+  // `openPrRows` would make it look populated while testing nothing.
+  if (fields.includes('prBaseRef')) {
+    baseMergeArgs = args;
+    return baseMergeRows;
+  }
   return openPrRows;
 });
 
@@ -86,7 +96,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: {
     __t: 'workers', taskId: 'taskId', status: 'status', prNumber: 'prNumber',
     mergedAt: 'mergedAt', commitCount: 'commitCount', completedAt: 'completedAt',
-    createdAt: 'createdAt',
+    createdAt: 'createdAt', prBaseRef: 'prBaseRef',
   },
   workspaces: { __t: 'workspaces', id: 'id' },
   githubInstallations: { __t: 'githubInstallations', accountLogin: 'accountLogin', installationId: 'installationId' },
@@ -95,7 +105,13 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockGithubApi = mock(async (_id: number, _path: string) => ({ ok: true }));
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
-const { checkRemoteRef, loadInvariantSnapshot, MAX_REMOTE_REF_CHECKS } = await import('./mission-invariant-scan');
+const {
+  checkRemoteRef,
+  loadInvariantSnapshot,
+  MAX_REMOTE_REF_CHECKS,
+  MAX_BASE_MERGES,
+  BASE_MERGE_WINDOW_DAYS,
+} = await import('./mission-invariant-scan');
 const { remoteRefKey } = await import('./mission-invariants');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -131,6 +147,8 @@ beforeEach(() => {
   reviewRows = [];
   openPrRows = [];
   strandedRows = [];
+  baseMergeRows = [];
+  baseMergeArgs = null;
   missionWorkerRows = [];
   releaseRows = [];
   noteRows = [];
@@ -362,5 +380,69 @@ describe('loadInvariantSnapshot mapping', () => {
     const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
 
     expect(snapshot.tasks.find(t => t.id === 'p-1')?.childCount).toBe(4);
+  });
+});
+
+// ── Base drift ──────────────────────────────────────────────────────────────
+//
+// The one input `open_pr_outpaced_by_base` cannot derive from anything else.
+// Every other worker read in this loader deliberately excludes merged rows, so
+// if this query stops returning any, the invariant is clean by arithmetic and
+// nothing else in the sweep notices.
+
+describe('loadInvariantSnapshot base drift', () => {
+  const checkRef = async () => null;
+
+  function merge(over: Record<string, any> = {}) {
+    return {
+      workspaceId: 'ws-1',
+      prBaseRef: 'dev',
+      mergedAt: new Date(NOW.getTime() - HOUR),
+      ...over,
+    };
+  }
+
+  it('loads recent merges per base branch, which nothing else in the snapshot carries', async () => {
+    baseMergeRows = [merge(), merge({ prBaseRef: 'main' })];
+
+    const { snapshot, coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(snapshot.baseMerges).toEqual([
+      { workspaceId: 'ws-1', baseRef: 'dev', mergedAt: new Date(NOW.getTime() - HOUR) },
+      { workspaceId: 'ws-1', baseRef: 'main', mergedAt: new Date(NOW.getTime() - HOUR) },
+    ]);
+    expect(coverage.baseMerges).toBe(2);
+  });
+
+  it('reports zero base merges as zero, so a starved invariant is visible', async () => {
+    const { coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+    expect(coverage.baseMerges).toBe(0);
+  });
+
+  it('drops rows with no base ref or no merge timestamp', async () => {
+    // Both are nullable columns, and either one makes the row uncountable —
+    // a null baseRef would otherwise become drift against every other null.
+    baseMergeRows = [merge(), merge({ prBaseRef: null }), merge({ mergedAt: null })];
+
+    const { snapshot, coverage } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(snapshot.baseMerges).toHaveLength(1);
+    expect(coverage.baseMerges).toBe(1);
+  });
+
+  it('bounds the query by window and row cap, keeping the newest merges', async () => {
+    // Truncation direction matters: drift only counts merges AFTER a PR opened,
+    // so keeping the newest rows is what preserves the signal. The window makes
+    // the count an undercount for older PRs, which fails towards silence.
+    baseMergeRows = [merge()];
+
+    await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(baseMergeArgs?.limit).toBe(MAX_BASE_MERGES);
+    expect(baseMergeArgs?.orderBy).toMatchObject({ type: 'desc', f: 'mergedAt' });
+    const windowClause = (baseMergeArgs?.where?.c ?? []).find(
+      (c: any) => c?.type === 'gt' && c?.f === 'mergedAt',
+    );
+    expect(windowClause?.v).toEqual(new Date(NOW.getTime() - BASE_MERGE_WINDOW_DAYS * 86_400_000));
   });
 });

@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'bun:test';
 import {
   INVARIANTS,
+  PR_OUTPACED_DRIFT,
+  PR_OUTPACED_MS,
+  countBaseDrift,
   countPlanSteps,
   emptySnapshot,
   evaluateInvariants,
@@ -9,11 +12,13 @@ import {
   remoteRefKey,
   type InvariantKey,
   type InvariantSnapshot,
+  type SnapshotBaseMerge,
   type SnapshotMission,
   type SnapshotRelease,
   type SnapshotTask,
   type SnapshotWorker,
 } from './mission-invariants';
+import { MISSION_BRANCH_PREFIX } from '@buildd/core/mission-integration';
 
 // ── Fixture helpers ─────────────────────────────────────────────────────────
 //
@@ -132,9 +137,12 @@ describe('invariant registry', () => {
     }
   });
 
-  it('stages exactly one invariant to file a task', () => {
+  it('stages exactly the two invariants that file a task', () => {
+    // Deliberately an equality, not a `toContain`: promoting an invariant to
+    // `files: true` is a decision that has to be made in a diff someone reads,
+    // one invariant at a time, against the bar in the module docstring.
     const filing = INVARIANTS.filter(i => i.files).map(i => i.key);
-    expect(filing).toEqual(['orphaned_integration_base']);
+    expect(filing).toEqual(['orphaned_integration_base', 'open_pr_outpaced_by_base']);
   });
 
   it('stages exactly one invariant to resolve a criteria escalation directly', () => {
@@ -857,12 +865,198 @@ describe('stale_criteria_escalation', () => {
   });
 });
 
+// ── 13. open_pr_outpaced_by_base ────────────────────────────────────────────
+//
+// The only invariant here whose breach is a DERIVED quantity: base drift is
+// stored nowhere, so these tests are also the only proof that the derivation
+// counts the right merges. Each silent case below is a merge that must NOT be
+// counted; get any of them wrong and the invariant either never fires or fires
+// on every open PR in the fleet.
+
+describe('open_pr_outpaced_by_base', () => {
+  const key = 'open_pr_outpaced_by_base' as const;
+
+  /** `n` merges into `ref`, spaced an hour apart, ending one hour ago. */
+  function merges(n: number, over: Partial<SnapshotBaseMerge> = {}): SnapshotBaseMerge[] {
+    return Array.from({ length: n }, (_, i) => ({
+      workspaceId: 'ws-1',
+      baseRef: 'dev',
+      mergedAt: ago((i + 1) * HOUR),
+      ...over,
+    }));
+  }
+
+  /** An open PR on `dev`, opened `openedMsAgo` ago. */
+  function openPr(openedMsAgo: number, over: Partial<SnapshotWorker> = {}): SnapshotWorker {
+    return worker({
+      id: 'w-open',
+      status: 'completed',
+      prNumber: 4242,
+      prUrl: 'https://github.com/o/r/pull/4242',
+      prBaseRef: 'dev',
+      prLifecycleStatus: 'pr_open',
+      createdAt: ago(openedMsAgo),
+      completedAt: ago(openedMsAgo),
+      ...over,
+    });
+  }
+
+  it('reports an old open PR whose base moved past the drift threshold', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+    });
+    expect(reported(key, s)).toEqual(['w-open']);
+  });
+
+  it('stays silent one merge below the drift threshold', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT - 1),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('stays silent on a young PR, however much its base has moved', () => {
+    // Drift alone is not the breach: a PR opened inside a merge burst is
+    // outpaced on paper and about to land in practice.
+    const s = snapshot({
+      workers: [openPr(PR_OUTPACED_MS - MIN)],
+      baseMerges: merges(PR_OUTPACED_DRIFT * 2).map(m => ({ ...m, mergedAt: ago(MIN) })),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('stays silent on an old PR whose base has not moved', () => {
+    // Age alone is not the breach either — that is a PR waiting on a human.
+    const s = snapshot({ workers: [openPr(30 * HOUR)], baseMerges: [] });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not count merges that landed before the PR opened', () => {
+    // Those commits are already IN the PR's base. Counting them would report
+    // every PR in a busy workspace the moment it crossed the age threshold.
+    //
+    // The PR here is deliberately OLD (well past PR_OUTPACED_MS) and every
+    // merge older still: the age gate is satisfied, so the only thing keeping
+    // this silent is the merge-after-open comparison. An earlier version of
+    // this test used a young PR and passed with that comparison deleted.
+    const s = snapshot({
+      workers: [openPr(10 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT * 2).map((m, i) => ({ ...m, mergedAt: ago((i + 11) * HOUR) })),
+    });
+    expect(reported(key, s)).toEqual([]);
+    expect(countBaseDrift(s, s.workers[0])).toBe(0);
+  });
+
+  it('does not count merges into a different base ref', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT, { baseRef: 'main' }),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not count merges in another workspace', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT, { workspaceId: 'ws-other' }),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('ignores a PR based on a mission integration branch', () => {
+    // Sibling task PRs land on an integration branch continuously; drift there
+    // is the design, and the mission PR is the gate that matters.
+    const s = snapshot({
+      workers: [openPr(20 * HOUR, { prBaseRef: `${MISSION_BRANCH_PREFIX}m-1-ship-it` })],
+      baseMerges: merges(PR_OUTPACED_DRIFT, { baseRef: `${MISSION_BRANCH_PREFIX}m-1-ship-it` }),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('ignores a PR whose base ref is unknown', () => {
+    // Null base is unknown, never trunk (schema.ts) — drift against an unknown
+    // base is uncountable, not zero.
+    const s = snapshot({
+      workers: [openPr(20 * HOUR, { prBaseRef: null })],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('ignores a PR that has already settled', () => {
+    for (const settled of ['merged', 'closed'] as const) {
+      const s = snapshot({
+        workers: [openPr(20 * HOUR, { prLifecycleStatus: settled })],
+        baseMerges: merges(PR_OUTPACED_DRIFT),
+      });
+      expect(reported(key, s), settled).toEqual([]);
+    }
+  });
+
+  it('anchors a still-running worker on createdAt, since it has no completedAt', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR, { status: 'running', completedAt: null, createdAt: ago(20 * HOUR) })],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+    });
+    expect(reported(key, s)).toEqual(['w-open']);
+
+    // …and createdAt is a real anchor, not a stand-in for "very old": the same
+    // worker an hour into its run is young and must stay silent however much
+    // has merged under it.
+    const young = snapshot({
+      workers: [openPr(HOUR, { status: 'running', completedAt: null, createdAt: ago(HOUR) })],
+      baseMerges: merges(PR_OUTPACED_DRIFT).map(m => ({ ...m, mergedAt: ago(30 * MIN) })),
+    });
+    expect(countBaseDrift(young, young.workers[0])).toBe(PR_OUTPACED_DRIFT);
+    expect(reported(key, young)).toEqual([]);
+  });
+
+  it('anchors on completedAt when there is one — the PR opened then, not at claim', () => {
+    // A long-running worker that opened its PR minutes ago has a NEW PR. Using
+    // createdAt would charge it with every merge that landed while it was
+    // still writing the code, which is not drift under its PR at all.
+    const s = snapshot({
+      workers: [
+        openPr(0, { status: 'completed', createdAt: ago(20 * HOUR), completedAt: ago(HOUR) }),
+      ],
+      baseMerges: merges(PR_OUTPACED_DRIFT).map((m, i) => ({ ...m, mergedAt: ago((i + 2) * HOUR) })),
+    });
+    expect(reported(key, s)).toEqual([]);
+    expect(countBaseDrift(s, s.workers[0])).toBe(0);
+  });
+
+  it('states the PR number, its age and the drift count as evidence', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+    });
+    const [v] = evaluateInvariants(s, NOW).find(r => r.key === key)!.violations;
+    expect(v.detail).toContain('#4242');
+    expect(v.detail).toContain(String(PR_OUTPACED_DRIFT));
+    expect(v.detail).toContain('dev');
+    expect(v.entityKind).toBe('worker');
+    expect(v.workspaceId).toBe('ws-1');
+    expect(Math.round(v.ageMs / HOUR)).toBe(20);
+  });
+
+  it('counts drift with countBaseDrift, which is the only reader of baseMerges', () => {
+    // The snapshot's worker set deliberately EXCLUDES merged rows, so drift is
+    // not derivable from it — if the loader ever stops populating baseMerges
+    // this invariant goes permanently, silently clean.
+    const w = openPr(20 * HOUR);
+    expect(countBaseDrift(snapshot({ baseMerges: merges(7) }), w)).toBe(7);
+    expect(countBaseDrift(emptySnapshot(), w)).toBe(0);
+  });
+});
+
 // ── Report formatting ───────────────────────────────────────────────────────
 
 describe('formatInvariantReport', () => {
   it('names every invariant, so a clean run is distinguishable from a dead query', () => {
     const results = evaluateInvariants(emptySnapshot(), NOW);
-    const text = formatInvariantReport(results, { scanned: { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 } });
+    const text = formatInvariantReport(results, { scanned: { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 } });
     for (const inv of INVARIANTS) expect(text).toContain(inv.key);
     expect(text).toContain('scanned');
   });
@@ -873,7 +1067,7 @@ describe('formatInvariantReport', () => {
       tasks: [task({ id: 't-a', missionId: 'm-inert', createdAt: ago(4 * HOUR) })],
     });
     const text = formatInvariantReport(evaluateInvariants(s, NOW), {
-      scanned: { missions: 1, tasks: 1, workers: 0, releases: 0, notes: 0, remoteRefs: 0 },
+      scanned: { missions: 1, tasks: 1, workers: 0, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 },
     });
     expect(text).toContain('m-inert');
     expect(text).toContain(invariantByKey('inert_integration_branch').remedy);
@@ -881,7 +1075,7 @@ describe('formatInvariantReport', () => {
 
   it('says so out loud when the scan itself found nothing to look at', () => {
     const text = formatInvariantReport(evaluateInvariants(emptySnapshot(), NOW), {
-      scanned: { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 },
+      scanned: { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 },
     });
     expect(text).toContain('EMPTY SCAN');
   });

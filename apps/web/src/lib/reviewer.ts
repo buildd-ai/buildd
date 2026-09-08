@@ -10,8 +10,10 @@
  */
 
 import { db } from '@buildd/core/db';
-import { tasks, workers, missionNotes, artifacts } from '@buildd/core/db/schema';
+import { tasks, workers, missionNotes, artifacts, taskSubjectReports } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc } from 'drizzle-orm';
+import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
+import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
 import type { MergePolicy } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
@@ -241,15 +243,52 @@ export interface CreateReviewerTaskParams {
   reviewCallback?: { url: string; on: 'verdict' | 'merge' };
 }
 
+/** Task states in which a reviewer task still owns its subject. */
+const LIVE_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
+
+/**
+ * The live reviewer task that already owns (workspace, PR, head SHA), if any.
+ *
+ * This is the design's `PrGenerationKey` (docs/design/task-subject-anchors.md §3)
+ * restricted to review work. The `category` predicate is load-bearing: a
+ * conflict-retry or CI-retry task can legitimately carry the same PR generation
+ * anchor, and suppressing a *review* because some other kind of work is in
+ * flight on the same commit would be a different bug.
+ */
+export async function findLiveReviewerTaskForHead(
+  workspaceId: string,
+  prNumber: number,
+  headSha: string,
+): Promise<{ id: string } | null> {
+  const existing = await db.query.tasks.findFirst({
+    where: and(
+      eq(tasks.workspaceId, workspaceId),
+      eq(tasks.category, 'review'),
+      eq(tasks.subjectPrNumber, prNumber),
+      eq(tasks.subjectHeadSha, headSha),
+      inArray(tasks.status, [...LIVE_TASK_STATUSES]),
+    ),
+    columns: { id: true },
+    orderBy: [desc(tasks.createdAt)],
+  });
+  return existing ?? null;
+}
+
 /**
  * BT-5: Create a reviewer task for an agent-review policy PR.
  *
  * Fetches PR diff + task artifacts and builds a rich CLAUDE.md context
  * so the reviewer agent can make an informed judgment without extra tool calls.
+ *
+ * PRE-DISPATCH DEDUPE: returns `{ deduplicated: true }` with the id of the
+ * reviewer task that already owns this PR generation instead of creating a
+ * second one. Webhook redeliveries and the manual `POST /api/github/pr/review`
+ * path both land here, and before this guard each one dispatched another agent
+ * onto the same commit. Callers must skip dispatch on a deduplicated result.
  */
 export async function createReviewerTask(
   params: CreateReviewerTaskParams,
-): Promise<{ id: string } | null> {
+): Promise<{ id: string; deduplicated?: true } | null> {
   const {
     workspaceId,
     originalTaskId,
@@ -262,6 +301,40 @@ export async function createReviewerTask(
     installationId,
     repoFullName,
   } = params;
+
+  // The reviewer task's subject IS this PR at this commit, asserted by the
+  // machinery rather than scraped from prose — so `source: 'system'`, which is
+  // the class of anchor allowed to identify a task (see subject-gate-contract).
+  const subjectAnchor = extractSubjectAnchor({
+    systemContext: { origin: 'webhook', prNumber, headSha },
+  }).anchor;
+  const subjectValues = subjectAnchor ? projectSubjectAnchor(subjectAnchor) : {};
+
+  // Only a full, normalized commit id establishes PR-generation identity. With
+  // anything less, fail open and review: suppressing on a partial key would
+  // silently drop reviews of later commits.
+  if (subjectAnchor?.headSha && subjectAnchor.headSha.length >= 40) {
+    const live = await findLiveReviewerTaskForHead(workspaceId, prNumber, subjectAnchor.headSha);
+    if (live) {
+      console.log(
+        `[reviewer] PR #${prNumber} at ${subjectAnchor.headSha.slice(0, 7)} already has live reviewer task ${live.id} — not dispatching a second`,
+      );
+      // Audit trail for the suppressed filing. Best-effort: losing the report
+      // must never turn suppression back into a duplicate dispatch.
+      try {
+        await db.insert(taskSubjectReports).values({
+          taskId: live.id,
+          reportingTaskId: originalTaskId,
+          origin: 'webhook',
+          note: `duplicate_reviewer_dispatch_suppressed:pr#${prNumber}`,
+          anchorSnapshot: subjectAnchor,
+        });
+      } catch (err) {
+        console.error('[reviewer] failed to record suppressed duplicate dispatch:', err);
+      }
+      return { id: live.id, deduplicated: true };
+    }
+  }
 
   // Build reviewer context description
   const diffContext = await buildReviewerContext({
@@ -312,6 +385,7 @@ export async function createReviewerTask(
       priority: 8,      // reviewer tasks are high priority
       status: 'pending',
       creationSource: 'webhook',
+      ...subjectValues,
     })
     .returning({ id: tasks.id });
 

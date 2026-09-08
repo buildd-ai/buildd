@@ -1690,6 +1690,15 @@ async function maybeDispatchReviewer(
       prFiles,
     });
 
+    if (reviewerTask?.deduplicated) {
+      // A live reviewer task already owns this PR generation (webhook redelivery,
+      // or the manual review endpoint got there first). Dispatching again is the
+      // duplicate-work bug this guard exists to stop, and the PR already carries
+      // the "reviewing" activity entry from the first dispatch.
+      console.log(`[reviewer] PR #${pr.number} already under review by task ${reviewerTask.id} — skipping duplicate dispatch`);
+      return true; // handled — skip auto-merge
+    }
+
     if (reviewerTask) {
       // dispatchNewTask needs more than just the id — pass the reviewer task details
       // we know from the params rather than re-querying the DB.

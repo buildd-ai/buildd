@@ -2,9 +2,13 @@ import { describe, it, expect, mock } from 'bun:test';
 
 let insertedTask: Record<string, unknown> | undefined;
 let insertedMissionNote: Record<string, unknown> | undefined;
+let insertedSubjectReport: Record<string, unknown> | undefined;
 
 // Configurable per-test fixtures for supersedeReviewerTaskOnMerge.
 let reviewerTaskFindFirstResult: any = null;
+// Fixture + call log for the pre-dispatch duplicate probe in createReviewerTask.
+let liveReviewerTaskResult: any = null;
+let liveReviewerProbeArgs: any[] = [];
 let taskUpdateReturning: any[] = [];
 let workerUpdateCalls: Array<{ set: any }> = [];
 
@@ -24,6 +28,8 @@ mock.module('@buildd/core/db', () => ({
       values: mock((values: Record<string, unknown>) => {
         if (table === 'missionNotes') {
           insertedMissionNote = values;
+        } else if (table === 'taskSubjectReports') {
+          insertedSubjectReport = values;
         } else {
           insertedTask = values;
         }
@@ -38,16 +44,38 @@ mock.module('@buildd/core/db', () => ({
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
-      tasks: { findFirst: mock(() => Promise.resolve(reviewerTaskFindFirstResult)) },
+      // Two different callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
+      // passes a `with: { workers }` relation; the pre-dispatch duplicate probe in
+      // createReviewerTask does not — dispatch on that so one fixture cannot
+      // silently answer the other query.
+      tasks: {
+        findFirst: mock((args: any) => {
+          if (args && !('with' in args)) {
+            liveReviewerProbeArgs.push(args);
+            return Promise.resolve(liveReviewerTaskResult);
+          }
+          return Promise.resolve(reviewerTaskFindFirstResult);
+        }),
+      },
     },
   },
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: 'tasks',
+  tasks: {
+    workspaceId: 'workspaceId',
+    category: 'category',
+    status: 'status',
+    subjectPrNumber: 'subjectPrNumber',
+    subjectHeadSha: 'subjectHeadSha',
+    parentTaskId: 'parentTaskId',
+    id: 'id',
+    createdAt: 'createdAt',
+  },
   workers: 'workers',
   missionNotes: 'missionNotes',
   artifacts: 'artifacts',
+  taskSubjectReports: 'taskSubjectReports',
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -166,6 +194,115 @@ describe('createReviewerTask', () => {
     const description = insertedTask?.description as string;
     expect(description).not.toContain('- **');
     expect(description).toContain('declared no file scope');
+  });
+});
+
+// ── Pre-dispatch duplicate suppression ───────────────────────────────────────
+//
+// A reviewer task's subject is exactly (workspace, PR, head SHA). Two of them
+// alive at once means two agents were dispatched to review the same commit.
+
+describe('createReviewerTask subject anchor', () => {
+  const FULL_SHA = 'a'.repeat(40);
+
+  function params(overrides: Record<string, unknown> = {}) {
+    return {
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-9',
+      originalTask: {
+        title: 'Anchored change',
+        description: null,
+        backend: 'claude' as const,
+        missionId: null,
+      },
+      worker: { branch: 'buildd/anchored' },
+      prNumber: 77,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/77',
+      headSha: FULL_SHA,
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      ...overrides,
+    };
+  }
+
+  function reset() {
+    insertedTask = undefined;
+    insertedSubjectReport = undefined;
+    liveReviewerTaskResult = null;
+    liveReviewerProbeArgs = [];
+  }
+
+  it('stamps the PR generation key on the reviewer task it creates', async () => {
+    reset();
+
+    await createReviewerTask(params());
+
+    expect(insertedTask?.subjectPrNumber).toBe(77);
+    expect(insertedTask?.subjectHeadSha).toBe(FULL_SHA);
+    expect(insertedTask?.subjectKind).toBe('pull_request');
+    // Asserted, not scraped from prose — this is the class of anchor that is
+    // allowed to identify the task (see subject-gate-contract.ts).
+    expect(insertedTask?.subjectAnchor).toMatchObject({
+      kind: 'pull_request',
+      prNumber: 77,
+      headSha: FULL_SHA,
+      source: 'system',
+      confidence: 'exact',
+    });
+  });
+
+  it('does not create a second reviewer task while one is live on the same head', async () => {
+    reset();
+    liveReviewerTaskResult = { id: 'reviewer-live' };
+
+    const result = await createReviewerTask(params());
+
+    expect(result).toEqual({ id: 'reviewer-live', deduplicated: true });
+    // No task row was written — the whole point is that no second agent runs.
+    expect(insertedTask).toBeUndefined();
+    // The suppressed filing is recorded against the canonical reviewer task.
+    expect(insertedSubjectReport).toMatchObject({
+      taskId: 'reviewer-live',
+      reportingTaskId: 'original-9',
+    });
+  });
+
+  it('scopes the duplicate probe to this workspace, this PR, this head, live review tasks', async () => {
+    reset();
+    liveReviewerTaskResult = null;
+
+    await createReviewerTask(params());
+
+    expect(liveReviewerProbeArgs).toHaveLength(1);
+    // Render the predicate rather than trusting that findFirst was called: a
+    // mocked db makes every WHERE clause invisible, so an unscoped probe (one
+    // that would dedupe across workspaces or across head SHAs) passes a
+    // call-count assertion.
+    const flat = JSON.stringify(liveReviewerProbeArgs[0].where);
+    expect(flat).toContain('workspaceId');
+    expect(flat).toContain('ws-1');
+    expect(flat).toContain('subjectPrNumber');
+    expect(flat).toContain('subjectHeadSha');
+    expect(flat).toContain(FULL_SHA);
+    expect(flat).toContain('category');
+    expect(flat).toContain('review');
+    // Terminal reviewer tasks must not suppress a fresh review.
+    expect(flat).toContain('in_progress');
+    expect(flat).not.toContain('completed');
+  });
+
+  it('skips the probe entirely when the head SHA is not a full commit id', async () => {
+    reset();
+    liveReviewerTaskResult = { id: 'reviewer-live' };
+
+    // A short or malformed SHA cannot establish PR-generation identity. Fail
+    // open and create the review rather than suppressing on a partial key.
+    const result = await createReviewerTask(params({ headSha: 'abc123' }));
+
+    expect(liveReviewerProbeArgs).toHaveLength(0);
+    expect(result).not.toMatchObject({ deduplicated: true });
+    expect(insertedTask).toBeDefined();
   });
 });
 
