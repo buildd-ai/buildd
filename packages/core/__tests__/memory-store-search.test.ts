@@ -74,13 +74,20 @@ mock.module('drizzle-orm', () => ({
   desc: (a: unknown) => ['desc', a],
   inArray: (a: unknown, b: unknown) => ['inArray', a, b],
   count: () => ['count'],
-  // memory-file-scope-sql.ts imports `sql` from this module too — it isn't
-  // mocked separately, so the named export has to exist here or that file's
-  // top-level import throws before any test body runs. None of the searches
-  // below pass `files`, so the tagged template is never actually invoked.
+  // memory-file-scope-sql.ts imports `sql` from this module too, so the named
+  // export has to exist here or that file's top-level import throws before any
+  // test body runs.
+  //
+  // The tagged template IS invoked now: search() builds a token match-count
+  // expression for its `orderBy` on every query. `join` therefore has to exist
+  // as well. The mock's findMany ignores `orderBy` — it only evaluates `where`
+  // — so the shape these return is irrelevant; they just must not throw.
   sql: Object.assign(
     (strings: TemplateStringsArray, ...exprs: unknown[]) => ['sql', strings, exprs],
-    { param: (v: unknown) => ['param', v] },
+    {
+      param: (v: unknown) => ['param', v],
+      join: (parts: unknown[], sep: unknown) => ['join', parts, sep],
+    },
   ),
 }));
 

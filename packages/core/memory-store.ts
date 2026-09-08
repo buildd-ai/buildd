@@ -15,6 +15,8 @@ import { memories } from './db/schema';
 import { eq, and, inArray, or, ilike, desc, count as dbCount } from 'drizzle-orm';
 import { normalizeProject } from './project-scope';
 import { normalizeMemoryFileScope } from './memory-file-scope';
+import { tokenizeMemoryQuery } from './memory-query-tokens';
+import { tokenMatchScoreSql } from './memory-query-tokens-sql';
 import { memoryFilesOverlapSql } from './memory-file-scope-sql';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
@@ -154,7 +156,13 @@ export class MemoryStore {
     // token hits title-or-content trades precision for the recall this store
     // needs -- there is no ranking here to reward the query that matches more
     // tokens, so AND-only would still zero out on a single absent term.
-    const tokens = params.query?.split(/\s+/).filter(Boolean) ?? [];
+    // Tokens are filtered, not merely split — see memory-query-tokens.ts. An
+    // unfiltered split lets one stopword (`%the%`) match most of the corpus,
+    // and since results are ordered by recency the caller then receives "the N
+    // most recently updated memories" dressed up as a task match. A title made
+    // entirely of stopwords yields no tokens and so searches nothing, which is
+    // the honest answer rather than everything.
+    const tokens = tokenizeMemoryQuery(params.query);
     if (tokens.length > 0) {
       const tokenConditions = tokens.flatMap(token => {
         const q = `%${token}%`;
@@ -176,16 +184,31 @@ export class MemoryStore {
       conditions.push(filesCondition);
     }
 
+    // One point per token found in title-or-content. Built from the same token
+    // list as the WHERE clause so the ordering can never disagree with the
+    // filter about what counts as a match.
+    const tokenMatchScore = tokenMatchScoreSql(tokens);
+
     const where = and(...conditions);
 
     const [totalRes, rows] = await Promise.all([
       db.select({ total: dbCount() }).from(memories).where(where),
       db.query.memories.findMany({
         where,
+        // Best match first when there is a query, then recency. Without this a
+        // row matching one token outranks a row matching five, purely because
+        // it was touched more recently -- so the tokenisation would widen
+        // recall without improving what the caller actually receives inside
+        // its `limit`. Falls back to pure recency when there is no query.
+        //
         // id breaks ties: bulk-imported rows share an updatedAt, and without a
         // stable tiebreaker LIMIT/OFFSET pagination silently skips and repeats
         // rows -- which made backfill-knowledge-chunks miss ~30% of memories.
-        orderBy: [desc(memories.updatedAt), desc(memories.id)],
+        orderBy: [
+          ...(tokenMatchScore ? [desc(tokenMatchScore)] : []),
+          desc(memories.updatedAt),
+          desc(memories.id),
+        ],
         limit,
         offset,
       }),
