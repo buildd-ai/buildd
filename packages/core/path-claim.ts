@@ -8,7 +8,7 @@
  * Call sites:
  *   - POST /api/tasks/[id]/path-claim (REST)
  *   - check_path_claim MCP tool
- *   - PATCH /api/workers/[id] (terminal status → release)
+ *   - PATCH /api/workers/[id] (observed touches → lease; terminal status → release)
  *   - GitHub webhook (PR merged/closed → release)
  *   - stale-workers reaper (orphaned worker → release)
  *   - Workers claim route (path_claims backstop)
@@ -17,7 +17,12 @@
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes } from './db/schema';
 import { and, eq, isNull, lt, inArray } from 'drizzle-orm';
-import { pathsOverlap, stripTrailingSep } from './path-overlap';
+import {
+  pathsOverlap,
+  stripTrailingSep,
+  findRegenerable,
+  REPO_WIDE_SENTINEL,
+} from './path-overlap';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -167,6 +172,65 @@ export async function insertClaims(
     newPaths.map(path => ({ workspaceId, taskId, path })),
   );
   return newPaths;
+}
+
+/**
+ * Promote observed git-diff touches into held leases for a task.
+ *
+ * This is the join between the two halves of one mechanism that shipped as two.
+ * `path_claims` owns the **gate**: the layer-2 backstop in POST
+ * /api/workers/claim defers a pending task whose `pathManifest` overlaps a live
+ * lease, so the second agent never starts. But nothing wrote rows except an
+ * agent voluntarily calling `check_path_claim`, so the gate almost never had a
+ * lease to consult. §6d `observedTouches` owns the **signal**: the runner
+ * reports every touched path on every sync, no declaration required — but its
+ * only output is an advisory `path_blocked_on_you` message, delivered after the
+ * file has already been edited by both sides.
+ *
+ * Feeding the signal into the gate is what makes the gate load-bearing. It also
+ * covers the case neither half reaches today: §6d skips siblings whose task
+ * declared no scope (`isAdvisoryManifest`), and layer 1 skips them too, so a
+ * `'**'` task's edits are invisible to both. Its *touches* are concrete
+ * regardless of what its manifest said, and this leases them.
+ *
+ * Two things it deliberately does not lease:
+ *  - **Regenerable paths.** A lease on `docs/specs/INDEX.md` or the drizzle
+ *    journal would defer every task that regenerates them. A generated file is
+ *    not a mutex — the same rule `partitionRegenerableOverlaps` applies to the
+ *    §6d message, applied to the lease.
+ *  - **The repo-wide sentinel.** `'**'` means "scope undeclared", never "I hold
+ *    every file"; `checkPathClaimConflict` and the claim-route backstop both
+ *    reject it, and a stored sentinel row would be a lock on the whole repo.
+ *
+ * Release needs no new wiring: leases are keyed by `taskId`, and every terminal
+ * signal already releases a task's claims with the right reason — `merged`,
+ * `pending_merge` or `abandoned` — through `releaseAndNotify`.
+ *
+ * Returns the paths newly leased (empty when everything was filtered or already
+ * held). Idempotent per sync: `insertClaims` skips paths this task already
+ * holds, so a re-reported touch is not a second row.
+ */
+export async function claimObservedPaths(
+  workspaceId: string,
+  taskId: string,
+  observedPaths: string[],
+): Promise<string[]> {
+  if (observedPaths.length === 0) return [];
+
+  const lockable: string[] = [];
+  for (const raw of observedPaths) {
+    if (typeof raw !== 'string' || !isNonEmptyPath(raw)) continue;
+    if (raw.trim() === REPO_WIDE_SENTINEL) continue;
+    const path = normalizeTrailingSlash(raw.trim());
+    if (!isNonEmptyPath(path)) continue;
+    if (findRegenerable(path)) continue;
+    // Dedupe post-normalization: `lib/` and `lib` are one lease, and
+    // insertClaims dedupes against the DB, not within its own argument.
+    if (!lockable.includes(path)) lockable.push(path);
+  }
+  if (lockable.length === 0) return [];
+
+  return insertClaims(workspaceId, taskId, lockable);
 }
 
 // ── Release ──────────────────────────────────────────────────────────────────

@@ -52,6 +52,7 @@ import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worke
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { claimObservedPaths } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
@@ -898,6 +899,12 @@ export async function PATCH(
 
   // §6d Passive observed-touches accumulation.
   // On terminal status: clear. On update_progress with touchedPaths: dedup-append, cap at 500.
+  //
+  // Paths this sync actually added to the column. Feeds the auto-lease below,
+  // which must not re-offer the whole accumulated list every tick: that would
+  // put a SELECT plus an INSERT attempt for up to 500 paths on the hot sync
+  // path to discover, every time, that they are all already held.
+  let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
     updates.observedTouches = null;
   } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
@@ -912,6 +919,10 @@ export async function PATCH(
     } else {
       updates.observedTouches = merged;
     }
+    // Diffed against the *stored* column, i.e. after the cap: a path truncated
+    // away must not become a lease nobody can see it holding.
+    const existingSet = new Set(existing);
+    newlyObservedPaths = (updates.observedTouches as string[]).filter(p => !existingSet.has(p));
   }
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
@@ -2673,6 +2684,43 @@ export async function PATCH(
   const retainedWorkerMessages = deliveredMessageIds.length > 0
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
+
+  // §6d-derived lease: the observed touch is also a claim.
+  //
+  // This is the only place the three overlap mechanisms actually meet, and the
+  // reason it exists is that two of them were each missing the other's half:
+  //
+  //   - `tasks.pathManifest` is declared at authoring time and gates claims
+  //     (findBlockingPr, layer 1), but only describes what the author *thought*
+  //     the scope was — hence the `'**'` sentinel for the common case where
+  //     nobody declared one.
+  //   - `path_claims` sits ahead of the write and is the only mechanism that can
+  //     stop a second agent from starting (the layer-2 backstop in
+  //     POST /api/workers/claim), but nothing wrote a row unless an agent
+  //     volunteered a `check_path_claim` call — so the gate was rarely holding
+  //     a lease when a claim came past it.
+  //   - §6d below has the opposite problem: the touch signal is automatic and
+  //     complete, but its only output is an advisory message, and it can only
+  //     fire once both sides have already edited the file.
+  //
+  // Leasing the touch converts §6d's after-the-fact report into a lock the next
+  // claim is deferred on. `claimObservedPaths` drops regenerable paths (a
+  // generated file is not a mutex) and the sentinel; release is already keyed to
+  // taskId, so every terminal signal frees these with the correct reason —
+  // merged / pending_merge / abandoned — with no new plumbing.
+  //
+  // Fire-and-forget: a lease is a coordination nicety, the progress report is
+  // the contract, so a failure here must never reject the sync.
+  if (newlyObservedPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+    try {
+      const leased = await claimObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
+      if (leased.length > 0) {
+        console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
+      }
+    } catch (err) {
+      console.error(`[path-claim] auto-lease failed for worker ${id}:`, err);
+    }
+  }
 
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.

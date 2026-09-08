@@ -2756,7 +2756,11 @@ export const darkCheckAlerts = pgTable('dark_check_alerts', {
 export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
 
 // Path claims — held file-path locks for coordinating parallel workers.
-// A row per (task, path) written by check_path_claim on success.
+// A row per (task, path), from either of two writers: check_path_claim, when an
+// agent declares a path up front, and claimObservedPaths on worker sync, which
+// leases the paths §6d observed the worker actually touching (minus regenerable
+// files and the '**' sentinel). The second writer is what puts traffic through
+// the claim-route backstop; a declaration-only table sat idle.
 // released_at IS NULL → active hold; set to NOW() on terminal task status,
 // PR merged/closed, or worker reaper. No uniqueness constraint on
 // (workspace_id, path) because conflict detection uses prefix matching in
