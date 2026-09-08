@@ -111,6 +111,13 @@ export interface WaitingOnYouRawItem {
    * text would spawn a fresh card every cycle for one unresolved decision.
    */
   criteriaFingerprint?: string;
+  /**
+   * kind === 'decide' — which remedy `inferCriteriaFailureReading` says the
+   * failure pattern supports, already rendered to a sentence by the caller.
+   * A heuristic over LLM-graded prose, so it is shown, never acted on: the
+   * card must not preselect an exit from this alone.
+   */
+  recommendation?: string | null;
 }
 
 export interface EscalationRawItem {
@@ -272,6 +279,12 @@ export interface EscalatedMissionCandidate {
   status: string;
   /** `goalCriteriaState.overall` — a passing verdict means nothing is blocked, whatever the stale flag says. */
   criteriaOverallVerdict: string | null;
+  /**
+   * `describeCriteriaFailureReading(inferCriteriaFailureReading(...))` — which
+   * remedy the failure pattern supports, already rendered to a sentence.
+   * Passed through verbatim; this module never re-derives it from criteria.
+   */
+  recommendation?: string | null;
 }
 
 /**
@@ -304,6 +317,7 @@ export function buildDecideItems(candidates: EscalatedMissionCandidate[]): Waiti
       noteTitle: c.openNote.title,
       question: c.openNote.body ?? undefined,
       criteriaFingerprint: c.criteriaRearmFingerprint ?? 'none',
+      recommendation: c.recommendation ?? null,
     });
   }
   return items;
@@ -501,6 +515,7 @@ export function buildActionQueue(
           noteId: item.noteId,
           noteTitle: item.noteTitle,
           question: item.question,
+          recommendation: item.recommendation ?? null,
         });
       }
     }

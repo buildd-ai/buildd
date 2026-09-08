@@ -687,6 +687,31 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   note WHEN it is either terminal (`completed`/`archived`) or its
   `goalCriteriaState.overall = 'pass'` THEN `buildDecideItems()` produces zero
   DECIDE items for it, regardless of the stored flag or note state.
+- AC-11r: GIVEN a task created with `missionId` set (any origin — dashboard,
+  API, MCP) WHEN `POST /api/tasks` succeeds THEN
+  `resolveCriteriaEscalation(missionId, 'work_filed', actor)` is called —
+  "file the work", the escalation note's first advertised exit, is reachable
+  from ordinary task creation rather than requiring a bespoke endpoint. A
+  no-op on a mission that was never escalated, per the helper's own contract.
+- AC-11s: GIVEN an escalated mission WHEN `PATCH /api/missions/[id]` sets
+  `status` to `completed`/`archived` WHILE its stored `goalCriteria` is
+  non-empty and `goalCriteriaState.overall !== 'pass'` THEN
+  `resolveCriteriaEscalation()` is called with reason `'waived'`, not
+  `'mission_completed'` — reaching this close with the flag still set can only
+  happen via an override (a passing verdict would already have cleared it
+  through the `'verdict_changed'` exit), and the "Goal criteria gate
+  overridden" warning posted for the same condition is the audit trail that
+  makes waiving safe to offer as a one-click exit on the mission-detail
+  decision sheet.
+- AC-11t: GIVEN an open `missionNotes` question row whose title is the
+  escalation note's title (`CRITERIA_ESCALATION_NOTE_TITLE`) WHEN
+  `MissionFeed` renders it THEN no Reply/Skip affordance is shown. Both route
+  through `POST /api/missions/[id]/notes/[noteId]/reply`, which only flips
+  `status` to `'answered'` — it never touches `criteriaEscalatedAt` or
+  re-enables the schedule, so replying would mute the card while leaving the
+  mission stood down forever. The mission-detail decision sheet (file the
+  work / fix the criterion / waive), which routes every exit through
+  `resolveCriteriaEscalation()`, is the only surface that can clear it.
 
 **Code surface**:
 - Predicate + writer: `apps/web/src/lib/mission-completion.ts` —
@@ -703,6 +728,18 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   (reconciles, does not file)
 - DECIDE-card derivation: `apps/web/src/lib/action-queue.ts` —
   `buildDecideItems()`, `EscalatedMissionCandidate`
+- Home DECIDE card (one CTA, recommendation only — never a pre-selected
+  exit): `apps/web/src/components/WaitingOnYouDecideCard.tsx`
+- Mission-detail decision sheet (the three real exits — file the work / fix
+  the criterion / waive): `apps/web/src/app/app/(protected)/missions/[id]/MissionDecisionSheet.tsx`,
+  `apps/web/src/lib/criteria-decision-links.ts` (task-composer link),
+  `apps/web/src/lib/goal-criterion-label.ts` (client-safe criterion labeling)
+- "File the work" resolution: `apps/web/src/app/api/tasks/route.ts` (POST,
+  fire-and-forget block on `task.missionId`)
+- Reply exclusion for the escalation note: `apps/web/src/lib/criteria-escalation-note.ts`
+  (`CRITERIA_ESCALATION_NOTE_TITLE`), `apps/web/src/lib/mission-note-reply.ts`
+  (`isReplyableQuestion()`), consumed by
+  `apps/web/src/app/app/(protected)/missions/[id]/MissionFeed.tsx`
 - Re-arm prompt injection: `apps/web/src/lib/mission-context.ts` —
   `buildMissionContext()` (`criteriaRearm` block + coordinate-only lift)
 - Verdict producer: `apps/web/src/lib/mission-criteria-eval.ts` —

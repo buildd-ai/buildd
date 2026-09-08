@@ -32,6 +32,29 @@ const mockResolveCreatorContext = mock(() =>
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 const mockDispatchNewTask = mock(() => Promise.resolve());
+let resolveCriteriaEscalationCalls: Array<{ missionId: string; reason: string; actor: any }> = [];
+const mockResolveCriteriaEscalation = mock((missionId: string, reason: string, actor: any) => {
+  resolveCriteriaEscalationCalls.push({ missionId, reason, actor });
+  return Promise.resolve({ cleared: false });
+});
+mock.module('@/lib/criteria-escalation', () => ({
+  resolveCriteriaEscalation: mockResolveCriteriaEscalation,
+}));
+// mission-feed / mission-loop touch DB shapes (missionNotes, workers.update
+// chains) this test file's generic db mock doesn't model — mocked directly so
+// the fire-and-forget block in POST /api/tasks reaches the escalation resolve
+// below instead of throwing on an unrelated missing table.
+const mockResolveFeedActor = mock(() => Promise.resolve({ kind: 'mcp' as const, id: 'account-123', label: 'account "account-123"' }));
+const mockPostMissionFeedEvent = mock(() => Promise.resolve());
+mock.module('@/lib/mission-feed', () => ({
+  resolveFeedActor: mockResolveFeedActor,
+  postMissionFeedEvent: mockPostMissionFeedEvent,
+  systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
+}));
+const mockReopenCompletedMission = mock(() => Promise.resolve({ reopened: false }));
+mock.module('@/lib/mission-loop', () => ({
+  reopenCompletedMission: mockReopenCompletedMission,
+}));
 
 // Mock auth-helpers
 mock.module('@/lib/auth-helpers', () => ({
@@ -2701,5 +2724,83 @@ describe('POST /api/tasks', () => {
       expect(captured.values.kind).toBe('observation');
       expect(captured.values.complexity).toBeUndefined();
     });
+  });
+});
+
+// ── "File the work" resolves a criteria escalation ─────────────────────────
+// A task filed against a mission is one of the escalation note's two
+// advertised exits. Routed through the single writer (resolveCriteriaEscalation)
+// rather than reimplemented here — see criteria-escalation.ts. This exercises
+// the fire-and-forget block in POST, so it must flush pending microtasks
+// before asserting; the route itself never awaits this chain.
+async function flushMicrotasks() {
+  for (let i = 0; i < 10; i++) {
+    await Promise.resolve();
+  }
+}
+
+describe('POST /api/tasks — resolves criteria escalation on mission-scoped task creation', () => {
+  beforeEach(() => {
+    resolveCriteriaEscalationCalls = [];
+    mockResolveCriteriaEscalation.mockClear();
+  });
+
+  it('resolves the escalation with reason "work_filed" when a task is created against a mission', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{ id: 'task-1', workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1', status: 'pending' }]),
+      })),
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1' },
+    }));
+    expect(response.status).toBe(200);
+
+    await flushMicrotasks();
+
+    expect(resolveCriteriaEscalationCalls).toHaveLength(1);
+    expect(resolveCriteriaEscalationCalls[0].missionId).toBe('mission-1');
+    expect(resolveCriteriaEscalationCalls[0].reason).toBe('work_filed');
+  });
+
+  it('does not call the helper for a task with no mission', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockResolveCreatorContext.mockResolvedValue({
+      createdByAccountId: 'account-123',
+      createdByWorkerId: null,
+      creationSource: 'api',
+      parentTaskId: null,
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({
+        returning: mock(() => [{ id: 'task-2', workspaceId: 'ws-1', title: 'Task', missionId: null, status: 'pending' }]),
+      })),
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Task' },
+    }));
+    expect(response.status).toBe(200);
+
+    await flushMicrotasks();
+
+    expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 });

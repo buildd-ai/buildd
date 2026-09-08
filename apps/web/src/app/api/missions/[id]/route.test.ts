@@ -1017,6 +1017,30 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'mission_completed' });
   });
 
+  it('resolves the criteria escalation with reason "waived" when completed while criteria are failing', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(resolveCriteriaEscalationCalls).toHaveLength(1);
+    expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'waived' });
+  });
+
   it('does not resolve a criteria escalation on a status change that is not a close', async () => {
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',

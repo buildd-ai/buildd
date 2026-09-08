@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { subscribeToChannel, unsubscribeFromChannel, CHANNEL_PREFIX } from '@/lib/pusher-client';
 import AiFeedback from '@/components/AiFeedback';
 import type { MissionNote, MissionNoteType } from '@buildd/shared';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
+import { isReplyableQuestion } from '@/lib/mission-note-reply';
 
 const TYPE_STYLES: Record<MissionNoteType, { label: string; color: string; bg: string; icon: string }> = {
   decision: { label: 'DECISION', color: 'text-status-success', bg: 'bg-status-success/10', icon: 'M9 12.75L11.25 15 15 9.75' },
@@ -176,7 +178,8 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
         <div className="space-y-0">
           {notes.map((note) => {
             const style = TYPE_STYLES[note.type] || TYPE_STYLES.update;
-            const isOpenQuestion = note.type === 'question' && note.status === 'open';
+            const isCriteriaEscalationNote = note.title === CRITERIA_ESCALATION_NOTE_TITLE;
+            const isOpenQuestion = isReplyableQuestion(note);
 
             return (
               <div key={note.id} className={`flex gap-3 px-3 py-3 border-b border-border-default/50 ${isOpenQuestion ? 'bg-[#D97706]/[0.03]' : ''}`}>
@@ -229,6 +232,13 @@ export default function MissionFeed({ missionId }: { missionId: string }) {
                   {isOpenQuestion && note.defaultChoice && (
                     <p className="text-[11px] text-text-muted mt-1">
                       Default: {note.defaultChoice}
+                    </p>
+                  )}
+
+                  {/* No reply/skip here — see the decision panel above instead */}
+                  {isCriteriaEscalationNote && note.status === 'open' && (
+                    <p className="text-[11px] text-text-muted mt-1">
+                      Decide above ↑ — file the work, fix the criterion, or waive and complete.
                     </p>
                   )}
 

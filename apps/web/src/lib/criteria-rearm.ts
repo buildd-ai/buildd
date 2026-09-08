@@ -4,6 +4,7 @@ import { and, eq, gt, sql } from 'drizzle-orm';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
 import { systemActor } from '@/lib/mission-feed';
+import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
 
 /**
  * The consumer of a non-pass goal-criteria verdict.
@@ -93,6 +94,22 @@ export function inferCriteriaFailureReading(
   if (nonPassing.every(c => c.type === 'description')) return 'criterion_unmeasurable';
   if (nonPassing.every(c => c.type !== 'description')) return 'work_unowned';
   return 'mixed';
+}
+
+/**
+ * Renders `inferCriteriaFailureReading`'s output as a sentence a human can
+ * read directly — on the mission-detail banner and on the Home DECIDE card
+ * (`AgentRecommendation`), so both surfaces say the same thing about the same
+ * escalation instead of drifting into two hand-written copies.
+ */
+export function describeCriteriaFailureReading(reading: CriteriaFailureReading | null): string {
+  if (reading === 'criterion_unmeasurable') {
+    return 'The same prose criterion has failed unchanged across every retry — it is likely unmeasurable as written.';
+  }
+  if (reading === 'work_unowned') {
+    return 'The same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.';
+  }
+  return 'Goal criteria failed unchanged across every retry the organizer had.';
 }
 
 /**
@@ -258,7 +275,7 @@ export async function applyCriteriaRearm(input: {
       missionId: input.missionId,
       authorType: 'system',
       type: 'question',
-      title: 'Goal criteria blocked — owner decision needed',
+      title: CRITERIA_ESCALATION_NOTE_TITLE,
       body:
         `${decision.reason}.\n\n` +
         `Completion refusal: ${input.blockReason}\n\n` +

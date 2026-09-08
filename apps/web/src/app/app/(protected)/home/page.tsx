@@ -16,6 +16,8 @@ import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, buildDecideItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
 import { resolveActionCardContext } from '@/lib/action-card-context';
 import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
@@ -1654,6 +1656,7 @@ export default async function HomePage({
             }
             waitingOnYou.push(...buildDecideItems(escalatedMissions.map(m => {
               const note = noteByMission.get(m.id);
+              const state = m.goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
               return {
                 missionId: m.id,
                 missionTitle: m.title,
@@ -1661,7 +1664,8 @@ export default async function HomePage({
                 criteriaRearmFingerprint: m.criteriaRearmFingerprint,
                 openNote: note ? { id: note.id, title: note.title, body: note.body } : null,
                 status: m.status,
-                criteriaOverallVerdict: (m.goalCriteriaState as { overall?: string } | null)?.overall ?? null,
+                criteriaOverallVerdict: (state as { overall?: string } | null)?.overall ?? null,
+                recommendation: describeCriteriaFailureReading(inferCriteriaFailureReading(state)),
               };
             })));
           }
@@ -1868,28 +1872,7 @@ export default async function HomePage({
                       );
                     }
                     if (item.chip === 'DECIDE') {
-                      return (
-                        <Link
-                          key={item.subjectKey}
-                          href={`/app/missions/${item.missionId}`}
-                          className="block border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3 hover:bg-status-warning/10 transition-colors"
-                        >
-                          <div className="flex items-center gap-2 mb-0.5">
-                            <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
-                              Decide
-                            </span>
-                          </div>
-                          <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
-                            {item.missionTitle ?? 'Mission'}
-                          </div>
-                          {item.noteTitle && (
-                            <div className="text-[12px] font-medium text-text-primary mb-1 line-clamp-1">
-                              {item.noteTitle}
-                            </div>
-                          )}
-                          <p className="text-[12px] text-text-secondary line-clamp-2">{item.question}</p>
-                        </Link>
-                      );
+                      return <WaitingOnYouDecideCard key={item.subjectKey} item={item} />;
                     }
                     if (item.chip === 'RECONNECT') {
                       return (
