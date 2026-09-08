@@ -10,6 +10,10 @@
 # scripts/always-run-tests.test.ts guards this list in both directions. Add an
 # entry when you add a test that enumerates the repo; do not remove one to make
 # a red build green.
+# This file's own gate enumerates the repo too, so it belongs here by its own
+# rule — and it is the one entry that must never be dropped, since dropping it
+# is what would let the others rot unnoticed.
+scripts/always-run-tests.test.ts
 scripts/collector-coverage.test.ts
 scripts/cron-instrumentation.test.ts
 scripts/skills-listed.test.ts
