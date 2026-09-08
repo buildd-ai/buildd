@@ -168,13 +168,21 @@ export const UPDATE_STUCK_LIMIT_MS = 10 * 60_000;
  * This matters because `updating` gates BOTH the auto-updater and the drift
  * check (`hasCommitDrift`). Every code path that sets it either exits the
  * process or clears it in a catch — but only for failures that *throw*. An
- * `await` that hangs without throwing leaves the flag set forever and silences
- * both mechanisms at once, which reproduces the original failure exactly: the
- * working tree moves on, the process keeps its old modules, and nothing logs.
+ * `await` that hangs without throwing would leave the flag set forever and
+ * silence both mechanisms at once: the working tree moves on, the process keeps
+ * its old modules, and nothing logs.
  *
- * Production evidence for that shape: 41 `Auto-updating` attempts against 22
- * successes and **zero** logged failures. The rollback path's `bun install` had
- * no kill timeout, so a stalled install could hang indefinitely.
+ * **This guard was originally built on a misreading of that symptom.** The
+ * attempts-without-outcomes it was written to explain were not hangs at all —
+ * the health probe could never pass, so every attempt rolled the tree back and
+ * returned through a path that logged nothing (see buildHealthProbeSpawn). The
+ * giveaway was the timing: those attempts landed on *consecutive* 60s ticks,
+ * and a hung update holds `updating` and blocks the next tick entirely. One
+ * attempt per tick means each one was completing, quietly.
+ *
+ * Keep the watchdog regardless — it is cheap, and an unbounded `await` in the
+ * update path really would present this way — but do not read a stuck flag as
+ * the explanation for a stale runner without checking the tick spacing first.
  *
  * Returns false when `updatingSince` is null so an un-instrumented caller can
  * never trigger a spurious unwedge.
