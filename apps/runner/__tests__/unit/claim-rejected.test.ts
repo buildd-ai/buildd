@@ -1,5 +1,9 @@
 /**
- * Unit tests: non-2xx claimTask responses must be logged + emitted
+ * Unit tests: claim outcomes must be logged + emitted
+ *
+ * Two subjects, one harness (the mock preamble below is the expensive part):
+ *  - non-2xx claimTask responses (claim_rejected)
+ *  - empty claims, including the per-reason deferral breakdown
  *
  * Bug: when BuilddClient.claimTask() throws (422, 500, …) the runner was
  * completely silent — no claims.log entry, no UI event. Only the outer
@@ -223,5 +227,94 @@ describe('claim_rejected logging', () => {
     // No spurious claim_rejected entry on a 200 response
     const rejectedCall = calls.find((args: any[]) => args[0]?.event === 'claim_rejected');
     expect(rejectedCall).toBeUndefined();
+  });
+});
+
+
+// ─── Deferral breakdown ───────────────────────────────────────────────────────
+//
+// The server computes a per-reason `deferrals` breakdown alongside
+// `all_candidates_deferred` (packages/shared ClaimDiagnostics) precisely so a
+// stall is attributable. The runner was logging only the aggregate reason, so
+// claims.log said "all_candidates_deferred" over and over with no way to tell
+// a paced mission from a dead subject anchor — which is where a real
+// investigation into 13 never-claimed CI-retry tasks dead-ended.
+describe('claim_empty deferral breakdown', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(() => {
+    claimLogSpy.mockClear();
+    mockClaimTask.mockReset();
+    mockUpdateWorker.mockReset();
+    mockUpdateWorker.mockImplementation(async () => ({}));
+  });
+
+  afterEach(() => {
+    manager?.destroy();
+  });
+
+  function emptyClaimCall() {
+    const calls = claimLogSpy.mock.calls;
+    const call = calls.find((args: any[]) => args[0]?.event === 'claim_empty');
+    expect(call).toBeDefined();
+    return call![0];
+  }
+
+  test('records the per-reason breakdown, not just the aggregate reason', async () => {
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      diagnostics: {
+        reason: 'all_candidates_deferred',
+        pendingTasks: 9,
+        matchedTasks: 4,
+        deferrals: { subject_dead: 3, mission_paced: 1 },
+      },
+    }));
+
+    manager = new WorkerManager(makeConfig());
+    // An empty claim rejects by design; the log entry is written first.
+    await expect(manager.claimAndStart(makeTask())).rejects.toThrow('Server rejected claim');
+
+    const entry = emptyClaimCall();
+    expect(entry.diagnosticReason).toBe('all_candidates_deferred');
+    expect(entry.deferrals).toEqual({ subject_dead: 3, mission_paced: 1 });
+  });
+
+  test('records the candidate-window sizes that make a deferral count readable', async () => {
+    // 3 deferrals out of 4 matched is a different story from 3 out of 300.
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      diagnostics: {
+        reason: 'all_candidates_deferred',
+        pendingTasks: 9,
+        matchedTasks: 4,
+        deferrals: { subject_dead: 3 },
+      },
+    }));
+
+    manager = new WorkerManager(makeConfig());
+    // An empty claim rejects by design; the log entry is written first.
+    await expect(manager.claimAndStart(makeTask())).rejects.toThrow('Server rejected claim');
+
+    const entry = emptyClaimCall();
+    expect(entry.pendingTasks).toBe(9);
+    expect(entry.matchedTasks).toBe(4);
+  });
+
+  test('omits the breakdown when the server did not send one', async () => {
+    // No empty `deferrals: {}` in the log — an absent breakdown and an
+    // all-zero one mean different things.
+    mockClaimTask.mockImplementation(async () => ({
+      workers: [],
+      diagnostics: { reason: 'no_slots' },
+    }));
+
+    manager = new WorkerManager(makeConfig());
+    // An empty claim rejects by design; the log entry is written first.
+    await expect(manager.claimAndStart(makeTask())).rejects.toThrow('Server rejected claim');
+
+    const entry = emptyClaimCall();
+    expect(entry.diagnosticReason).toBe('no_slots');
+    expect(entry).not.toHaveProperty('deferrals');
   });
 });
