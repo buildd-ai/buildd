@@ -2885,11 +2885,27 @@ describe('POST /api/tasks', () => {
 // A task filed against a mission is one of the escalation note's two
 // advertised exits. Routed through the single writer (resolveCriteriaEscalation)
 // rather than reimplemented here — see criteria-escalation.ts. This exercises
-// the fire-and-forget block in POST, so it must flush pending microtasks
-// before asserting; the route itself never awaits this chain.
-async function flushMicrotasks() {
-  for (let i = 0; i < 10; i++) {
-    await Promise.resolve();
+// the fire-and-forget block in POST, which the route never awaits.
+
+/**
+ * Let the route's fire-and-forget mission-feed chain finish.
+ *
+ * NOT a microtask flush, despite what this replaced. The chain awaits three
+ * dynamic `import()` calls — mission-feed, then mission-loop, then
+ * criteria-escalation — and module resolution does not settle on the microtask
+ * queue. A `Promise.resolve()` spin therefore returned while the chain was
+ * still two imports away from `resolveCriteriaEscalation`, the assertion read
+ * 0 calls, and the test was red from the moment it was written.
+ *
+ * `predicate` lets the positive case stop as soon as the effect lands instead
+ * of paying the full drain, and — more importantly — keeps it from going flaky
+ * if a slow module load needs more turns than a fixed count allows. Omit it to
+ * drain fully, which is what a "this must NOT happen" assertion needs.
+ */
+async function settleFireAndForget(predicate?: () => boolean) {
+  for (let i = 0; i < 50; i++) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (predicate?.()) return;
   }
 }
 
@@ -2923,7 +2939,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
     }));
     expect(response.status).toBe(200);
 
-    await flushMicrotasks();
+    await settleFireAndForget(() => resolveCriteriaEscalationCalls.length > 0);
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
     expect(resolveCriteriaEscalationCalls[0].missionId).toBe('mission-1');
@@ -2953,7 +2969,9 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
     }));
     expect(response.status).toBe(200);
 
-    await flushMicrotasks();
+    // No predicate: a negative assertion has to drain the whole chain, or it
+    // passes merely by asserting before the call it is trying to rule out.
+    await settleFireAndForget();
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
