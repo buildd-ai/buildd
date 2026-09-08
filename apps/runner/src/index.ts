@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { TIER_DEFAULTS } from '@buildd/core/model-tier-defaults';
 import { fetchOpenRouterCatalog } from '@buildd/core/model-catalog';
 import { setCatalogPrices } from '@buildd/core/model-prices';
@@ -10,7 +10,8 @@ import { WorkerManager } from './workers';
 import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
-import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck } from './updater';
+import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
+  buildHealthProbeSpawn, hasAutoUpdateBudget, AUTO_UPDATE_RETRY_LIMIT } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -506,6 +507,12 @@ interface UpdateState {
   lastIdleAt: number | null; // Timestamp when workers last became idle
   autoUpdateRetries: number; // Prevent infinite retry loops
   /**
+   * Which commit `autoUpdateRetries` was spent against, so a newer release
+   * refills the budget. Keying it to a state transition instead is what made
+   * three failures disable auto-update permanently — see hasAutoUpdateBudget.
+   */
+  autoUpdateRetriesCommit: string | null;
+  /**
    * When `updating` was last set true, so a hang can be distinguished from a
    * slow update. See isUpdateStuck — `updating` gates both the auto-updater
    * and the drift check, so a flag stuck true silences both.
@@ -521,6 +528,7 @@ const updateState: UpdateState = {
   changelog: [],
   lastIdleAt: Date.now(),
   autoUpdateRetries: 0,
+  autoUpdateRetriesCommit: null,
   updatingSince: null,
 };
 
@@ -597,7 +605,6 @@ async function setLatestCommit(sha: string) {
     // clone) empty result must not be read as "no changes".
     updateState.updateAvailable = shouldShowUpdateAvailable(updateState.changelog, changelogReliable);
     if (updateState.updateAvailable && !wasAvailable) {
-      updateState.autoUpdateRetries = 0; // Reset retries for new version
       console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
       broadcast({
         type: 'update_available',
@@ -709,6 +716,75 @@ function broadcast(event: any) {
 // doesn't produce a fresh warning line every 60s tick while we wait for it
 // to go idle.
 let pendingTreeSyncRestart = false;
+
+/**
+ * How long the freshly-updated build gets to answer /health.
+ *
+ * A healthy boot binds in about a second, so this is headroom for a cold
+ * dependency cache rather than a real expectation. It costs nothing in the
+ * failure case either: a crashed child is detected by its exit code on the same
+ * poll and returns immediately instead of waiting out the deadline.
+ */
+const HEALTH_PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * Boot the code currently on disk on a spare port and see whether it serves
+ * /health — the gate that decides whether restarting into it is safe. The
+ * launcher restarts on ANY exit code, so shipping a build that dies on boot
+ * means a 5-second crash loop; that is what this prevents.
+ *
+ * Returns the child's own output on failure. It was previously piped and never
+ * read, which discarded the one thing that would have explained the failure —
+ * and risked wedging the child on a full 64KB pipe buffer. The pipes are now
+ * drained concurrently with the polling.
+ *
+ * See buildHealthProbeSpawn for why the cwd and the entry path have to match
+ * the launcher's, and why the probe is pointed away from the live server.
+ */
+async function runHealthProbe(): Promise<{ ok: boolean; detail: string }> {
+  const probePort = PORT + 1;
+  const probeHome = join(BUILDD_DIR, '.health-probe');
+  try { mkdirSync(probeHome, { recursive: true }); } catch { /* the probe tolerates a missing home */ }
+
+  const spec = buildHealthProbeSpawn({
+    installDir: BUILDD_DIR,
+    probePort,
+    probeHome,
+    configFile: CONFIG_FILE,
+    baseEnv: process.env as Record<string, string | undefined>,
+  });
+
+  const proc = Bun.spawn(spec.cmd, { cwd: spec.cwd, env: spec.env, stdout: 'pipe', stderr: 'pipe' });
+  const collected = Promise.all([
+    new Response(proc.stdout).text().catch(() => ''),
+    new Response(proc.stderr).text().catch(() => ''),
+  ]);
+
+  let ok = false;
+  let reason = `no response from /health within ${Math.round(HEALTH_PROBE_TIMEOUT_MS / 1000)}s`;
+  const deadline = Date.now() + HEALTH_PROBE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const res = await fetch(`http://localhost:${probePort}/health`, { signal: AbortSignal.timeout(3000) });
+      if (res.ok) { ok = true; break; }
+    } catch { /* not listening yet */ }
+    // A build that cannot even load its modules exits in about a second. Give
+    // up on it now rather than polling a dead process for the full deadline.
+    if (proc.exitCode !== null) {
+      reason = `the new build exited (code ${proc.exitCode}) before serving /health`;
+      break;
+    }
+  }
+
+  try { proc.kill(); } catch { /* already gone */ }
+  await proc.exited.catch(() => undefined);
+
+  if (ok) return { ok: true, detail: '' };
+  const [out, err] = await collected;
+  const tail = `${err}\n${out}`.split('\n').map(l => l.trim()).filter(Boolean).slice(-8).join(' | ');
+  return { ok: false, detail: tail ? `${reason} — child output: ${tail}` : reason };
+}
 
 // Gracefully restart the process so it picks up on-disk code changes:
 // drain SSE connections, then exit 75 for the launcher's restart loop.
@@ -985,29 +1061,15 @@ const server = DEBUG_MODE ? Bun.serve({
         await initCurrentCommit();
         const newCommit = getCurrentCommit();
 
-        // Health check: spawn new server on temp port, verify it boots
-        const healthPort = PORT + 1;
-        console.log(`Health check: booting new version on port ${healthPort}...`);
-        const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts'], {
-          cwd: join(import.meta.dir, '..'),
-          env: { ...process.env, PORT: String(healthPort) },
-          stdout: 'pipe',
-          stderr: 'pipe',
-        });
-
-        let healthOk = false;
-        for (let attempt = 0; attempt < 10; attempt++) {
-          await new Promise(r => setTimeout(r, 1000));
-          try {
-            const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
-            if (res.ok) { healthOk = true; break; }
-          } catch { /* retry */ }
-        }
-        healthProc.kill();
+        // Health check: boot the new code on a spare port and verify it serves
+        // /health before restarting into it.
+        console.log(`Health check: booting new version on port ${PORT + 1}...`);
+        const health = await runHealthProbe();
+        const healthOk = health.ok;
 
         if (!healthOk) {
           // Rollback: revert to previous commit
-          console.error('Health check failed — rolling back');
+          console.error(`Health check failed — rolling back: ${health.detail}`);
           if (prevCommit) {
             await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
             const rollbackInstall = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
@@ -1017,9 +1079,10 @@ const server = DEBUG_MODE ? Bun.serve({
             await initCurrentCommit();
           }
           setUpdating(false);
-          broadcast({ type: 'update_failed', error: 'New version failed health check — rolled back' });
+          broadcast({ type: 'update_failed', error: `New version failed health check — rolled back: ${health.detail}` });
           return Response.json({
             error: 'Update rolled back — new version failed health check',
+            detail: health.detail,
             rolledBackTo: prevCommit?.slice(0, 7),
           }, { status: 500, headers: corsHeaders });
         }
@@ -2583,15 +2646,28 @@ setInterval(async () => {
     pendingTreeSyncRestart = false;
   }
 
-  // Auto-update when: update available, not already updating, idle long enough, retries not exhausted
+  // Auto-update when: update available, not already updating, idle long enough,
+  // and this target commit still has attempts left.
   if (
     updateState.updateAvailable &&
     !updateState.updating &&
     updateState.lastIdleAt &&
     Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS &&
-    updateState.autoUpdateRetries < 3
+    hasAutoUpdateBudget(
+      updateState.autoUpdateRetries,
+      updateState.autoUpdateRetriesCommit,
+      updateState.latestCommit,
+    )
   ) {
-    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/3)`);
+    // A new target gets a fresh budget. Previously the counter was only reset
+    // on the updateAvailable false -> true edge, which a runner that is already
+    // stale never crosses — so three failures wedged auto-update until a manual
+    // restart.
+    if (updateState.autoUpdateRetriesCommit !== updateState.latestCommit) {
+      updateState.autoUpdateRetries = 0;
+      updateState.autoUpdateRetriesCommit = updateState.latestCommit;
+    }
+    console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/${AUTO_UPDATE_RETRY_LIMIT})`);
     setUpdating(true);
     updateState.autoUpdateRetries++;
     const prevCommit = updateState.currentCommit;
@@ -2613,27 +2689,17 @@ setInterval(async () => {
       }
       await initCurrentCommit();
 
-      // Health check on temp port (only meaningful in debug mode with HTTP server)
-      let healthOk = true; // Default to true for headless mode
-      if (DEBUG_MODE) {
-        const healthPort = PORT + 1;
-        const healthProc = Bun.spawn(['bun', 'run', 'src/index.ts', '--debug'], {
-          cwd: join(import.meta.dir, '..'),
-          env: { ...process.env, PORT: String(healthPort) },
-          stdout: 'pipe', stderr: 'pipe',
-        });
-        healthOk = false;
-        for (let i = 0; i < 10; i++) {
-          await new Promise(r => setTimeout(r, 1000));
-          try {
-            const res = await fetch(`http://localhost:${healthPort}/health`, { signal: AbortSignal.timeout(3000) });
-            if (res.ok) { healthOk = true; break; }
-          } catch { /* retry */ }
-        }
-        healthProc.kill();
-      }
+      // Gate the restart on the new build actually booting. The launcher
+      // restarts on any exit code, so a build that dies on boot would crash-loop
+      // every 5s.
+      const health = await runHealthProbe();
 
-      if (!healthOk && prevCommit) {
+      if (!health.ok && prevCommit) {
+        // This rollback used to be the one outcome that logged NOTHING — not a
+        // success, not a failure. It is why a permanently-failing health check
+        // went undiagnosed for days while the fleet silently reset itself to the
+        // same stale commit three times a release. Say so, and say why.
+        console.error(`Auto-update health check failed — rolling back to ${prevCommit.slice(0, 7)}: ${health.detail}`);
         await gitAsync(['reset', '--hard', prevCommit], BUILDD_DIR, 10_000);
         const rb = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
         const rbTimeout = setTimeout(() => { try { rb.kill(); } catch { /* ignore */ } }, 120_000);
@@ -2641,7 +2707,15 @@ setInterval(async () => {
         clearTimeout(rbTimeout);
         await initCurrentCommit();
         setUpdating(false);
-        broadcast({ type: 'update_failed', error: 'Auto-update health check failed — rolled back' });
+        broadcast({ type: 'update_failed', error: `Auto-update health check failed — rolled back: ${health.detail}` });
+        return;
+      }
+      if (!health.ok) {
+        // Nothing to roll back to, so the tree keeps the new code and the
+        // running process keeps its old modules. The drift check restarts us.
+        console.error(`Auto-update health check failed and no previous commit is known: ${health.detail}`);
+        setUpdating(false);
+        broadcast({ type: 'update_failed', error: health.detail });
         return;
       }
 
@@ -2663,8 +2737,8 @@ setInterval(async () => {
       }
       setUpdating(false);
       console.error('Auto-update failed:', err.message);
-      if (updateState.autoUpdateRetries >= 3) {
-        console.error('Auto-update retries exhausted — will not retry until a new version is available');
+      if (updateState.autoUpdateRetries >= AUTO_UPDATE_RETRY_LIMIT) {
+        console.error(`Auto-update retries exhausted for ${updateState.latestCommit?.slice(0, 7) ?? 'unknown'} — will not retry until a newer commit is published`);
       }
       broadcast({ type: 'update_failed', error: err.message });
     }

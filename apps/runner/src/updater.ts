@@ -188,3 +188,102 @@ export function isUpdateStuck(
   if (!updating || updatingSince === null) return false;
   return now - updatingSince >= limitMs;
 }
+
+/**
+ * The runner entry path, **exactly as the launcher invokes it** — relative to
+ * the install dir, which the launcher makes its cwd:
+ *
+ *     cd ~/.buildd && bun run apps/runner/src/index.ts
+ *
+ * The health probe has to reuse both halves of that, and the cwd is the
+ * load-bearing one. Bun reads `bunfig.toml` from the cwd only; it does not walk
+ * up to the repo root (see `packages/core/bunfig.toml`, which exists solely
+ * because of that). The root bunfig preloads `scripts/stub-server-only.ts`, and
+ * without it any transitive import of the DB layer hits `server-only`'s
+ * unconditional throw at module load.
+ *
+ * So a probe launched from `<install>/apps/runner` — which carries no bunfig —
+ * crashes before it can bind a port. It did exactly that in production: every
+ * attempt "failed" its health check in about a second, reset the tree back to
+ * the previous commit, and left the fleet pinned to stale code with nothing
+ * logged.
+ */
+export const RUNNER_ENTRY = 'apps/runner/src/index.ts';
+
+/**
+ * Where the probe is pointed instead of the real coordination server.
+ *
+ * The probe boots a complete runner holding the real credentials. Aimed at the
+ * live server it registers and starts claiming, then gets killed seconds later,
+ * orphaning whatever it claimed. Port 1 is reserved (tcpmux) and never
+ * listening, so registration fails fast and the probe still proves what it is
+ * there to prove: the module graph loads and the HTTP server binds.
+ */
+export const HEALTH_PROBE_SERVER = 'http://127.0.0.1:1';
+
+export interface HealthProbeSpawn {
+  cmd: string[];
+  cwd: string;
+  env: Record<string, string>;
+}
+
+/**
+ * How the freshly-updated code is booted to decide whether to restart into it.
+ *
+ * Split out as a pure function because the whole defect lived in these three
+ * values (cwd, entry, env) and nothing else — a probe asserted only through its
+ * boolean outcome is indistinguishable from one that can never pass.
+ */
+export function buildHealthProbeSpawn(opts: {
+  installDir: string;
+  probePort: number;
+  /** Isolated BUILDD_HOME: worker state, worktrees and the repos cache live here. */
+  probeHome: string;
+  /** The real config file — shared on purpose, so the real boot path is what gets validated. */
+  configFile: string;
+  baseEnv?: Record<string, string | undefined>;
+}): HealthProbeSpawn {
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(opts.baseEnv ?? {})) {
+    // Bun.spawn's env is Record<string, string>; an inherited undefined would
+    // otherwise reach the child as the literal string "undefined".
+    if (typeof v === 'string') env[k] = v;
+  }
+  env.PORT = String(opts.probePort);
+  env.BUILDD_HOME = opts.probeHome;
+  env.BUILDD_CONFIG = opts.configFile;
+  env.BUILDD_SERVER = HEALTH_PROBE_SERVER;
+
+  return {
+    // --debug is explicit: the HTTP server only exists in debug mode, and a
+    // probe with no server to answer would read as an unhealthy build.
+    cmd: ['bun', 'run', RUNNER_ENTRY, '--debug'],
+    cwd: opts.installDir,
+    env,
+  };
+}
+
+/** Attempts allowed against one target commit before auto-update gives up on it. */
+export const AUTO_UPDATE_RETRY_LIMIT = 3;
+
+/**
+ * Is there budget left to attempt an auto-update to `targetCommit`?
+ *
+ * The budget is keyed to the commit it was spent against, not to a state
+ * transition. It used to be reset in exactly one place — the `updateAvailable`
+ * false -> true edge — but a runner that is already stale has that flag set, so
+ * a *newer* release arriving never re-armed it. Three failures therefore
+ * disabled auto-update permanently until someone restarted the process by hand.
+ *
+ * A null `targetCommit` cannot refill anything: an unknown target on every tick
+ * would make the limit meaningless.
+ */
+export function hasAutoUpdateBudget(
+  retriesSpent: number,
+  spentAgainstCommit: string | null,
+  targetCommit: string | null,
+  limit: number = AUTO_UPDATE_RETRY_LIMIT,
+): boolean {
+  if (targetCommit !== null && spentAgainstCommit !== targetCommit) return true;
+  return retriesSpent < limit;
+}
