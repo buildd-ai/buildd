@@ -144,8 +144,11 @@ mock.module('@/lib/github', () => ({
 
 const {
   MISSION_PR_TASK_PREFIX,
+  describeMissionIntegrationTopology,
   evaluateMissionWorkState,
+  finalizeMissionPrMerge,
   findMissionPrOwner,
+  guardMissionPrMerge,
   isMissionPrTask,
   maybeOpenMissionIntegrationPr,
   openMissionIntegrationPr,
@@ -162,7 +165,7 @@ function workTask(id: string, status: string) {
 function ownerTask(id = 't-own') {
   return {
     id, title: `${MISSION_PR_TASK_PREFIX}Checkout arc`,
-    status: 'completed', mode: 'execution', taskClass: 'bookkeeping',
+    status: 'completed', mode: 'execution', taskClass: 'bookkeeping', missionId: MISSION_ID,
   };
 }
 function worker(over: Partial<Record<string, any>> = {}) {
@@ -301,6 +304,128 @@ describe('evaluateMissionWorkState', () => {
     expect(s.landedOnIntegrationCount).toBe(0);
   });
 });
+
+// ── P3: own the branch lifecycle ─────────────────────────────────────────────
+//
+// mission-pr.ts already refuses to OPEN the mission PR while a task PR is
+// still unmerged (evaluateMissionWorkState's `awaitingPr`). The production
+// incident this closes happened on the MERGE side, which had no equivalent:
+// a mission PR merged while sibling task PRs were still open on the
+// integration branch, and the branch-deletion that follows a merge stranded
+// them. guardMissionPrMerge is the merge-time counterpart; finalizeMissionPrMerge
+// is buildd taking over the deletion itself instead of trusting the repo's
+// delete-branch-on-merge setting to sequence it correctly.
+
+describe('guardMissionPrMerge', () => {
+  it('refuses while a task PR based on the integration branch is still open', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), ownerTask()];
+    // t-1's PR merged onto the integration branch already; t-2 is still open.
+    taskRowsForMission.push(workTask('t-2', 'completed'));
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    workerRowsByTask['t-2'] = [worker({ taskId: 't-2', id: 'w-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+
+    const gate = await guardMissionPrMerge(ownerTask());
+    expect(gate.blocks).toBe(true);
+    expect((gate as { reason: string }).reason).toContain('still open');
+  });
+
+  it('allows the merge once every task PR has landed', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), ownerTask()];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+
+    const gate = await guardMissionPrMerge(ownerTask());
+    expect(gate).toEqual({ blocks: false });
+  });
+
+  it('does not apply to an ordinary task PR — only the mission PR is gated', async () => {
+    // A task PR merging into the integration branch is exactly what
+    // evaluateMissionWorkState is watching for; it must never gate itself.
+    const gate = await guardMissionPrMerge(workTask('t-1', 'completed'));
+    expect(gate).toEqual({ blocks: false });
+  });
+
+  it('is a no-op for a task with no mission', async () => {
+    const gate = await guardMissionPrMerge({ title: 'Some task', taskClass: 'work', missionId: null });
+    expect(gate).toEqual({ blocks: false });
+  });
+
+  it('is a no-op for a null task', async () => {
+    expect(await guardMissionPrMerge(null)).toEqual({ blocks: false });
+    expect(await guardMissionPrMerge(undefined)).toEqual({ blocks: false });
+  });
+});
+
+describe('finalizeMissionPrMerge', () => {
+  it('deletes the integration branch after the mission PR merges', async () => {
+    await finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app');
+    expect(githubCalls).toEqual([
+      { path: `/repos/example/demo-app/git/refs/heads/${encodeURIComponent(BRANCH)}`, method: 'DELETE', body: undefined },
+    ]);
+  });
+
+  it('does nothing for an ordinary task PR', async () => {
+    await finalizeMissionPrMerge(workTask('t-1', 'completed'), 42, 'example/demo-app');
+    expect(githubCalls).toEqual([]);
+  });
+
+  it('does nothing when the mission has no integration base', async () => {
+    missionRow = { ...missionRow, integrationBranchEnabled: false };
+    await finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app');
+    expect(githubCalls).toEqual([]);
+  });
+
+  it('swallows a failed delete rather than throwing', async () => {
+    githubThrows['/git/refs/heads/'] = 'branch already gone';
+    await expect(finalizeMissionPrMerge(ownerTask(), 42, 'example/demo-app')).resolves.toBeUndefined();
+  });
+});
+
+// ── P4: the mission PR states its topology ───────────────────────────────────
+
+describe('describeMissionIntegrationTopology', () => {
+  it('reports each deliverable task’s branch, PR number and state', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'completed'), ownerTask()];
+    workerRowsByTask['t-1'] = [worker({ id: 'w-1', taskId: 't-1', branch: 'buildd/t-1-thing', prUrl: 'u1', prNumber: 5, mergedAt: T0 })];
+    workerRowsByTask['t-2'] = [worker({ id: 'w-2', taskId: 't-2', branch: 'buildd/t-2-other', prUrl: 'u2', prNumber: 6, prLifecycleStatus: 'pr_open' })];
+
+    const topology = await describeMissionIntegrationTopology(MISSION_ID);
+
+    expect(topology).toEqual(expect.arrayContaining([
+      expect.objectContaining({ taskId: 't-1', branch: 'buildd/t-1-thing', prNumber: 5, state: 'merged' }),
+      expect.objectContaining({ taskId: 't-2', branch: 'buildd/t-2-other', prNumber: 6, state: 'open' }),
+    ]));
+    // The mission-PR owner task is bookkeeping, not deliverable — it must not
+    // appear as a row that fed itself.
+    expect(topology.some(t => t.taskId === 't-own')).toBe(false);
+  });
+
+  it('reports a task with no PR yet as no_pr', async () => {
+    taskRowsForMission = [workTask('t-1', 'in_progress')];
+    const topology = await describeMissionIntegrationTopology(MISSION_ID);
+    expect(topology).toEqual([expect.objectContaining({ taskId: 't-1', prNumber: null, state: 'no_pr' })]);
+  });
+});
+
+describe('openMissionIntegrationPr — mission PR body topology', () => {
+  it('includes the task branches, the integration branch, and trunk', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ branch: 'buildd/t-1-thing', prUrl: 'u1', prNumber: 5, mergedAt: T0, prBaseRef: BRANCH })];
+    githubResponses['/compare/'] = { ahead_by: 2 };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls'] = { number: 9, html_url: 'pr-9', base: { ref: 'dev' } };
+
+    await openMissionIntegrationPr(MISSION_ID);
+
+    const created = githubCalls.find(c => c.method === 'POST' && c.path === '/repos/example/demo-app/pulls');
+    expect(created).toBeDefined();
+    const prBody = created!.body.body as string;
+    expect(prBody).toContain('buildd/t-1-thing');
+    expect(prBody).toContain('PR #5');
+    expect(prBody).toContain(BRANCH);
+    expect(prBody).toContain('dev');
+  });
+});
+
 
 // ── The opt-in guard, and the owner-state logic ──────────────────────────────
 
@@ -522,3 +647,4 @@ describe('trunkBranches', () => {
     expect(trunkBranches(null, null)).toEqual([]);
   });
 });
+

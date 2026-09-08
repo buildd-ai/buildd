@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, workspaces } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
@@ -21,6 +21,7 @@ import { triggerEvent, channels, events } from '@/lib/pusher';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
+import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 
 export async function POST(
   req: NextRequest,
@@ -108,7 +109,7 @@ export async function POST(
     },
     with: {
       task: {
-        columns: { id: true, missionId: true, status: true },
+        columns: { id: true, title: true, taskClass: true, missionId: true, status: true },
       },
     },
   });
@@ -169,6 +170,14 @@ export async function POST(
   console.log(
     `[pr-merge] merging PR #${prNumber} — worker=${worker.id} workspace=${worker.workspaceId} repo=${repoFullName} installation=${installationId}`,
   );
+
+  // Mission-PR branch-lifecycle gate (P3) — same rule the other merge paths
+  // enforce: refuse to merge the mission PR while a sibling task PR based on
+  // the integration branch is still open, since merging deletes that branch.
+  const mergeGate = await guardMissionPrMerge(worker.task ?? null);
+  if (mergeGate.blocks) {
+    return NextResponse.json({ error: `cannot merge the mission PR yet: ${mergeGate.reason}` }, { status: 409 });
+  }
 
   // Perform the merge
   const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
@@ -268,6 +277,8 @@ export async function POST(
     .update(workers)
     .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
     .where(eq(workers.id, worker.id));
+
+  await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
 
   // Trigger real-time update
   await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
