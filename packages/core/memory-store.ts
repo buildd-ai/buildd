@@ -163,6 +163,20 @@ export class MemoryStore {
     // entirely of stopwords yields no tokens and so searches nothing, which is
     // the honest answer rather than everything.
     const tokens = tokenizeMemoryQuery(params.query);
+    // A query was asked for but nothing in it is worth searching — a title made
+    // entirely of stopwords, or too short to tokenise. That must return NOTHING,
+    // not everything.
+    //
+    // Falling through with zero tokens adds no condition, which is
+    // indistinguishable from "no query supplied" and so lists the whole corpus
+    // ordered by recency. Caught in production: `query=the` returned every
+    // memory in the workspace. The caller then takes its `limit` off the top and
+    // reports a populated match count, which is precisely the
+    // looks-like-retrieval-working failure this module exists to prevent.
+    const askedForQuery = typeof params.query === 'string' && params.query.trim().length > 0;
+    if (askedForQuery && tokens.length === 0) {
+      return { results: [], total: 0, limit, offset };
+    }
     if (tokens.length > 0) {
       const tokenConditions = tokens.flatMap(token => {
         const q = `%${token}%`;

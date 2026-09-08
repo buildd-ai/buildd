@@ -164,4 +164,33 @@ describe('MemoryStore.search — tokenized query', () => {
     expect(where).not.toContain('ilike');
     expect(result.results.map(r => r.id)).toEqual(['m1']);
   });
+
+  // Caught in production: `query=the` returned EVERY memory in the workspace.
+  // Zero usable tokens adds no condition, which is indistinguishable from "no
+  // query supplied" — so the corpus came back ordered by recency and the caller
+  // took its limit off the top, reporting a populated match count. "Nothing
+  // worth searching for" must mean nothing found, not everything found.
+  it('a query whose tokens are all stopwords matches nothing, not everything', async () => {
+    allRows = [
+      row('m1', 'the runner', 'the thing'),
+      row('m2', 'another', 'body'),
+    ];
+
+    const store = new MemoryStore('team-1');
+    const result = await store.search({ query: 'the and for' });
+
+    expect(result.results).toEqual([]);
+    expect(result.total).toBe(0);
+    // The query must not even reach the database — there is nothing to ask.
+    expect(findManyArgs).toHaveLength(0);
+  });
+
+  it('still distinguishes that from an absent query, which lists the corpus', async () => {
+    allRows = [row('m1', 'the runner', 'the thing')];
+
+    const store = new MemoryStore('team-1');
+    const absent = await store.search({});
+
+    expect(absent.results.map(r => r.id)).toEqual(['m1']);
+  });
 });
