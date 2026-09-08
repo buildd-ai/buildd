@@ -2,7 +2,7 @@
  * Snapshot loader for the mission-invariant sweep.
  *
  * The impure half of `lib/mission-invariants.ts`: every DB read and the one
- * bounded set of GitHub calls live here, so the eleven predicates stay pure and
+ * bounded set of GitHub calls live here, so the twelve predicates stay pure and
  * unit-testable against a constructed snapshot.
  *
  * ── Cost shape ──────────────────────────────────────────────────────────────
@@ -130,7 +130,7 @@ export interface ScanResult {
 }
 
 /**
- * Read everything the eleven invariants need, in one bounded pass.
+ * Read everything the twelve invariants need, in one bounded pass.
  *
  * `now` is injected so the windows are deterministic in tests and identical to
  * the `now` the predicates are evaluated against.
@@ -164,7 +164,12 @@ export async function loadInvariantSnapshot(
   })) as Array<Record<string, any>>;
 
   snapshot.missions = missionRows
-    .filter(m => m.status !== 'archived')
+    // Archived missions are out of scope for every invariant EXCEPT
+    // `stale_criteria_escalation`, whose whole purpose is catching an
+    // escalation that outlived the mission — so it must not be excluded here
+    // the way it would be excluded everywhere else. No other predicate reads
+    // an archived mission's fields in a way this widening could false-fire.
+    .filter(m => m.status !== 'archived' || m.criteriaEscalatedAt != null)
     .map((m): SnapshotMission => ({
       id: m.id,
       workspaceId: m.workspaceId,
