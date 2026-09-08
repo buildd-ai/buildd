@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriterionType } from '@buildd/shared';
 import { validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { criterionLabel } from '@/lib/goal-criterion-label';
 
 interface Props {
   missionId: string;
@@ -43,35 +44,26 @@ function formatRelativeTime(isoString: string): string {
   return `${days}d ago`;
 }
 
-function criterionLabel(c: GoalCriterion): string {
-  if (c.label) return c.label;
-  // Agents sometimes store a human-readable description instead of label — use it as fallback
-  if ((c as any).description) return (c as any).description;
-  if (c.type === 'metric') return `${c.query} ${c.operator} ${c.threshold}${c.unit ? ' ' + c.unit : ''}`;
-  if (c.type === 'command') return c.command.length > 60 ? c.command.slice(0, 60) + '…' : c.command;
-  if (c.type === 'artifact_exists') return c.key ? `Artifact: ${c.key}` : `Artifact type: ${c.artifactType ?? 'any'}`;
-  if (c.type === 'description') return c.description.length > 80 ? c.description.slice(0, 80) + '…' : c.description;
-  return CRITERION_TYPE_LABELS[c.type] ?? c.type;
-}
+/* ── Add / Edit Criterion Form ── */
 
-/* ── Add Criterion Form ── */
-const DEFAULT_CRITERION: GoalCriterion = { type: 'all_prs_merged' };
-
-function AddCriterionForm({ onAdd, onCancel }: {
+export function AddCriterionForm({ initial, submitLabel = 'Add criterion', onAdd, onCancel }: {
+  /** Pre-fills the form for editing an existing criterion in place. */
+  initial?: GoalCriterion;
+  submitLabel?: string;
   onAdd: (c: GoalCriterion) => void;
   onCancel: () => void;
 }) {
-  const [type, setType] = useState<GoalCriterionType>('all_prs_merged');
-  const [label, setLabel] = useState('');
-  const [command, setCommand] = useState('');
-  const [artifactKey, setArtifactKey] = useState('');
-  const [artifactType, setArtifactType] = useState('');
-  const [metricQuery, setMetricQuery] = useState('');
-  const [metricOp, setMetricOp] = useState<'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'>('gte');
-  const [metricThreshold, setMetricThreshold] = useState('');
-  const [metricUnit, setMetricUnit] = useState('');
-  const [description, setDescription] = useState('');
-  const [notMechanizableReason, setNotMechanizableReason] = useState('');
+  const [type, setType] = useState<GoalCriterionType>(initial?.type ?? 'all_prs_merged');
+  const [label, setLabel] = useState(initial?.label ?? '');
+  const [command, setCommand] = useState(initial?.type === 'command' ? initial.command : '');
+  const [artifactKey, setArtifactKey] = useState(initial?.type === 'artifact_exists' ? initial.key ?? '' : '');
+  const [artifactType, setArtifactType] = useState(initial?.type === 'artifact_exists' ? initial.artifactType ?? '' : '');
+  const [metricQuery, setMetricQuery] = useState(initial?.type === 'metric' ? initial.query : '');
+  const [metricOp, setMetricOp] = useState<'gt' | 'gte' | 'lt' | 'lte' | 'eq' | 'neq'>(initial?.type === 'metric' ? initial.operator : 'gte');
+  const [metricThreshold, setMetricThreshold] = useState(initial?.type === 'metric' ? String(initial.threshold) : '');
+  const [metricUnit, setMetricUnit] = useState(initial?.type === 'metric' ? initial.unit ?? '' : '');
+  const [description, setDescription] = useState(initial?.type === 'description' ? initial.description : '');
+  const [notMechanizableReason, setNotMechanizableReason] = useState(initial?.type === 'description' ? initial.notMechanizableReason ?? '' : '');
   const [error, setError] = useState<string | null>(null);
 
   // Build the shape the API would receive; do NOT re-decide whether it is valid.
@@ -260,7 +252,7 @@ function AddCriterionForm({ onAdd, onCancel }: {
 
       <div className="flex items-center gap-2 pt-1">
         <button type="submit" className="px-3 py-1 text-[12px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors">
-          Add criterion
+          {submitLabel}
         </button>
         <button type="button" onClick={onCancel} className="px-3 py-1 text-[12px] text-text-muted hover:text-text-secondary transition-colors">
           Cancel

@@ -119,8 +119,8 @@ function reported(key: InvariantKey, s: InvariantSnapshot): string[] {
 // ── Registry ────────────────────────────────────────────────────────────────
 
 describe('invariant registry', () => {
-  it('ships the twelve observed defect shapes', () => {
-    expect(INVARIANTS).toHaveLength(12);
+  it('ships the thirteen observed defect shapes', () => {
+    expect(INVARIANTS).toHaveLength(13);
   });
 
   it('gives every invariant a stable, unique key', () => {
@@ -143,6 +143,17 @@ describe('invariant registry', () => {
     // one invariant at a time, against the bar in the module docstring.
     const filing = INVARIANTS.filter(i => i.files).map(i => i.key);
     expect(filing).toEqual(['orphaned_integration_base', 'open_pr_outpaced_by_base']);
+  });
+
+  it('stages exactly one invariant to resolve a criteria escalation directly', () => {
+    const resolving = INVARIANTS.filter(i => i.resolves).map(i => i.key);
+    expect(resolving).toEqual(['stale_criteria_escalation']);
+  });
+
+  it('never both files and resolves the same invariant', () => {
+    for (const inv of INVARIANTS) {
+      expect(inv.files && inv.resolves, inv.key).toBe(false);
+    }
   });
 
   it('reports every invariant on every run, including the clean ones', () => {
@@ -796,7 +807,65 @@ describe('mission_unverifiable', () => {
   });
 });
 
-// ── 12. open_pr_outpaced_by_base ────────────────────────────────────────────
+// ── 12. stale_criteria_escalation ───────────────────────────────────────────
+
+describe('stale_criteria_escalation', () => {
+  const key = 'stale_criteria_escalation' as const;
+
+  it('reports an escalated mission that is now completed', () => {
+    const s = snapshot({
+      missions: [mission({
+        id: 'm-done', status: 'completed', criteriaEscalatedAt: ago(2 * HOUR), criteriaOverallVerdict: 'fail',
+      })],
+    });
+    expect(reported(key, s)).toEqual(['m-done']);
+  });
+
+  it('reports an escalated mission that is now archived', () => {
+    const s = snapshot({
+      missions: [mission({
+        id: 'm-arch', status: 'archived', criteriaEscalatedAt: ago(2 * HOUR), criteriaOverallVerdict: 'fail',
+      })],
+    });
+    expect(reported(key, s)).toEqual(['m-arch']);
+  });
+
+  it('reports an escalated mission whose verdict now passes, even while active', () => {
+    const s = snapshot({
+      missions: [mission({
+        id: 'm-pass', status: 'active', criteriaEscalatedAt: ago(2 * HOUR), criteriaOverallVerdict: 'pass',
+      })],
+    });
+    expect(reported(key, s)).toEqual(['m-pass']);
+  });
+
+  it('does not report an active mission with a genuinely failing verdict — the live case', () => {
+    const s = snapshot({
+      missions: [mission({
+        id: 'm-live', status: 'active', criteriaEscalatedAt: ago(2 * HOUR), criteriaOverallVerdict: 'fail',
+      })],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a completed mission that was never escalated', () => {
+    const s = snapshot({
+      missions: [mission({ id: 'm-clean', status: 'completed', criteriaEscalatedAt: null })],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('has a zero threshold — the state is the breach, not a persisting condition', () => {
+    const s = snapshot({
+      missions: [mission({
+        id: 'm-fresh', status: 'completed', criteriaEscalatedAt: ago(1), criteriaOverallVerdict: 'fail',
+      })],
+    });
+    expect(reported(key, s)).toEqual(['m-fresh']);
+  });
+});
+
+// ── 13. open_pr_outpaced_by_base ────────────────────────────────────────────
 //
 // The only invariant here whose breach is a DERIVED quantity: base drift is
 // stored nowhere, so these tests are also the only proof that the derivation

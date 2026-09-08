@@ -293,6 +293,25 @@ describe('loadInvariantSnapshot mapping', () => {
     expect(snapshot.missions[0].criteriaOverallVerdict).toBe('PENDING');
   });
 
+  it('keeps an archived mission when it still carries a stale criteria escalation', async () => {
+    // Every other invariant has no use for an archived mission — but
+    // `stale_criteria_escalation` exists specifically to catch one that
+    // outlived the mission, so the general archived-drop above must not
+    // swallow it.
+    missionRows = [
+      {
+        id: 'm-3', workspaceId: 'ws-1', title: 'Archived but still escalated', status: 'archived',
+        integrationBranchEnabled: false, workingBranch: null, criteriaEscalatedAt: NOW,
+        goalCriteria: [{ type: 'all_prs_merged' }], goalCriteriaState: { overall: 'fail' },
+        updatedAt: NOW,
+      },
+    ];
+
+    const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+
+    expect(snapshot.missions.map(m => m.id)).toEqual(['m-3']);
+  });
+
   it('lifts context.baseBranch and structuredOutput.plan onto the snapshot task', async () => {
     backfillTaskRows = [
       {

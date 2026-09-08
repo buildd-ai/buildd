@@ -105,6 +105,23 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockNotify = mock((_opts: any) => undefined);
 mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
 
+// stale_criteria_escalation resolves through this single writer rather than
+// filing — stubbed here so the route test can assert the call shape without
+// re-exercising resolveCriteriaEscalation's own DB behavior (covered in
+// criteria-escalation.test.ts).
+let resolveCriteriaEscalationCalls: Array<{ missionId: string; reason: string }> = [];
+let resolveCriteriaEscalationResult: { cleared: boolean } = { cleared: true };
+const mockResolveCriteriaEscalation = mock((missionId: string, reason: string) => {
+  resolveCriteriaEscalationCalls.push({ missionId, reason });
+  return Promise.resolve(resolveCriteriaEscalationResult);
+});
+mock.module('@/lib/criteria-escalation', () => ({
+  resolveCriteriaEscalation: mockResolveCriteriaEscalation,
+}));
+mock.module('@/lib/mission-feed', () => ({
+  systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
+}));
+
 const { POST, invariantFrictionSignature } = await import('./route');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -201,6 +218,9 @@ beforeEach(() => {
   inserted.length = 0;
   updated.length = 0;
   mockNotify.mockClear();
+  resolveCriteriaEscalationCalls = [];
+  resolveCriteriaEscalationResult = { cleared: true };
+  mockResolveCriteriaEscalation.mockClear();
 });
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -236,7 +256,7 @@ describe('healthy fleet', () => {
   it('still names every invariant, so a clean run is not a dead query', async () => {
     scanCoverage = { missions: 12, tasks: 80, workers: 40, releases: 5, notes: 2, remoteRefs: 1, baseMerges: 30 };
     const body = await (await POST(makeRequest())).json();
-    expect(body.invariants).toHaveLength(12);
+    expect(body.invariants).toHaveLength(13);
     expect(body.report).toContain('orphaned_integration_base');
     expect(body.report).toContain('mission_unverifiable');
     expect(body.report).toContain('open_pr_outpaced_by_base');
@@ -328,6 +348,69 @@ describe('staging', () => {
     expect(inserted).toEqual([]);
     expect(body.appended).toBe(1);
     expect(mockNotify).not.toHaveBeenCalled();
+  });
+});
+
+// ── Resolving: stale_criteria_escalation clears itself, no filing ──────────
+
+function staleEscalationSnapshot(over: Record<string, any> = {}): InvariantSnapshot {
+  const s = emptySnapshot();
+  s.missions = [{
+    id: 'm-stale',
+    workspaceId: 'ws-1',
+    title: 'Escalated but done',
+    status: 'completed',
+    integrationBranchEnabled: false,
+    workingBranch: null,
+    criteriaEscalatedAt: new Date(Date.now() - 2 * HOUR),
+    hasGoalCriteria: true,
+    criteriaOverallVerdict: 'fail',
+    updatedAt: new Date(),
+    ...over,
+  }] as any;
+  return s;
+}
+
+describe('resolving', () => {
+  it('resolves a stranded criteria escalation directly — no friction task, no notification', async () => {
+    scanSnapshot = staleEscalationSnapshot();
+    scanCoverage = { missions: 1, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(resolveCriteriaEscalationCalls).toEqual([{ missionId: 'm-stale', reason: 'mission_completed' }]);
+    expect(body.resolved).toBe(1);
+    const staleResult = body.invariants.find((i: any) => i.key === 'stale_criteria_escalation');
+    expect(staleResult.count).toBe(1);
+    expect(inserted).toEqual([]);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('uses verdict_changed as the reason for a still-live mission whose verdict passed', async () => {
+    scanSnapshot = staleEscalationSnapshot({ status: 'active', criteriaOverallVerdict: 'pass' });
+    scanCoverage = { missions: 1, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+
+    await POST(makeRequest());
+
+    expect(resolveCriteriaEscalationCalls).toEqual([{ missionId: 'm-stale', reason: 'verdict_changed' }]);
+  });
+
+  it('finds nothing on the next run once the row is fixed', async () => {
+    // First run: the breach is live, the sweep resolves it once.
+    scanSnapshot = staleEscalationSnapshot();
+    scanCoverage = { missions: 1, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+    const first = await (await POST(makeRequest())).json();
+    expect(first.resolved).toBe(1);
+    expect(resolveCriteriaEscalationCalls).toHaveLength(1);
+
+    // Second run: the DB now reflects the resolution (criteriaEscalatedAt
+    // cleared) — the predicate itself must find nothing, not merely skip a
+    // dedupe check.
+    resolveCriteriaEscalationCalls = [];
+    scanSnapshot = staleEscalationSnapshot({ criteriaEscalatedAt: null });
+    const second = await (await POST(makeRequest())).json();
+    expect(second.resolved).toBe(0);
+    expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 });
 
