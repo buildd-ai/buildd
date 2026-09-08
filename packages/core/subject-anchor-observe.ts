@@ -90,6 +90,28 @@ export function subjectMatchPredicate(
   return null;
 }
 
+/**
+ * The key types precise enough that a live match may STOP a filing.
+ *
+ * `pr_generation` is (PR, full head SHA) and `error` is a scanner slug — both
+ * name the subject itself. Deliberately excluded:
+ *
+ *   - `pr_lineage` — same PR, unknown commit. A new failure on a new head is
+ *     legitimately new work, so lineage proposes and never collapses
+ *     (docs/design/task-subject-anchors.md §3).
+ *   - `mission` — a bare `subjectMissionId` identifies the MISSION, not the
+ *     work. EVERY task in a mission shares it, so acting on it would refuse
+ *     every task after the first. Mission-scoped dedupe requires the
+ *     planner-issued `normalizedIntentId` (the `mission_intent` key), which
+ *     nothing currently issues.
+ */
+export const IDENTIFYING_SUBJECT_KEY_TYPES = ['pr_generation', 'error'] as const;
+
+/** True when a live match on this key type is precise enough to stop a filing. */
+export function isIdentifyingSubjectKeyType(keyType: string): boolean {
+  return (IDENTIFYING_SUBJECT_KEY_TYPES as readonly string[]).includes(keyType);
+}
+
 export type SubjectFilingOrigin =
   | 'dashboard'
   | 'api'

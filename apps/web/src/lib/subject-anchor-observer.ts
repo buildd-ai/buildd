@@ -54,7 +54,12 @@ export async function prepareSubjectFiling(input: PrepareSubjectFilingInput) {
         )
       : eq(tasks.subjectMissionId, predicate.subjectMissionId);
 
-  let match: { id: string; creationSource: string | null } | undefined;
+  let match: {
+    id: string;
+    creationSource: string | null;
+    title: string;
+    description: string | null;
+  } | undefined;
   try {
     match = await db.query.tasks.findFirst({
       where: and(
@@ -62,7 +67,9 @@ export async function prepareSubjectFiling(input: PrepareSubjectFilingInput) {
         inArray(tasks.status, [...ACTIVE_TASK_STATUSES]),
         identity,
       ),
-      columns: { id: true, creationSource: true },
+      // title/description are selected so a caller that acts on the verdict can
+      // return the canonical task without a second round-trip.
+      columns: { id: true, creationSource: true, title: true, description: true },
       orderBy: (t, { desc }) => [desc(t.createdAt)],
     });
   } catch (error) {
@@ -76,6 +83,8 @@ export async function prepareSubjectFiling(input: PrepareSubjectFilingInput) {
     match: match
       ? {
           taskId: match.id,
+          title: match.title,
+          description: match.description,
           matchedOrigin: match.creationSource ?? 'api',
           outcome: predicate.kind === 'pr_lineage'
             ? 'suggest' as const
@@ -93,7 +102,24 @@ export async function recordSubjectMatchObserved(input: {
   reportingTaskId?: string | null;
   reporterId?: string | null;
   anchor: NonNullable<Awaited<ReturnType<typeof prepareSubjectFiling>>['anchor']>;
-  match: NonNullable<Awaited<ReturnType<typeof prepareSubjectFiling>>['match']>;
+  /**
+   * Only the fields this function records — deliberately narrower than
+   * `prepareSubjectFiling`'s `match`, so callers that synthesise a verdict
+   * (mission-run's organizer duplicate, the friction gate) don't have to
+   * fabricate a canonical task's title and description to satisfy a type.
+   */
+  match: {
+    taskId: string;
+    matchedOrigin: string;
+    outcome: 'suggest' | 'attach';
+    keyType: string;
+  };
+  /**
+   * Overrides the report note. Callers that ACT on the verdict should say so —
+   * `subject_match_observed:*` means "detected and allowed through", which is
+   * exactly the distinction this table is read for.
+   */
+  note?: string;
 }) {
   try {
     await db.insert(taskSubjectReports).values({
@@ -101,7 +127,7 @@ export async function recordSubjectMatchObserved(input: {
       reportingTaskId: input.reportingTaskId ?? null,
       origin: input.origin,
       reporterId: input.reporterId ?? null,
-      note: `subject_match_observed:${input.match.outcome}`,
+      note: input.note ?? `subject_match_observed:${input.match.outcome}`,
       anchorSnapshot: input.anchor,
     });
   } catch (error) {

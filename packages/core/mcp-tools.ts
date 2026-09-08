@@ -2062,6 +2062,16 @@ export async function handleBuilddAction(
       // Cross-reference priorSimilarCandidates against currently-open tasks to build
       // the warning. Only call the active-tasks endpoint when there are candidates
       // above the threshold (avoids a needless round-trip on clean filings).
+      // The server resolved this filing's anchor against live tasks and found a
+      // match too imprecise to attach on (same PR, unknown commit; or a sibling
+      // in the same mission). Say so — it used to be computed and discarded.
+      const suggestion = task?.duplicateSuggestion as
+        | { taskId?: string; title?: string; keyType?: string }
+        | undefined;
+      const subjectSuggestion = suggestion?.taskId
+        ? `\n\n⚠ Task ${suggestion.taskId} — "${suggestion.title ?? 'untitled'}" — is already live on the same subject (${suggestion.keyType}). Check it before starting: two agents on one subject is how PRs get superseded.`
+        : '';
+
       let similarTasksWarning = '';
       const aboveThreshold = priorSimilarCandidates.filter(c => c.similarity >= SIMILAR_TASK_WARN_THRESHOLD);
       if (aboveThreshold.length > 0 && task?.id) {
@@ -2092,7 +2102,13 @@ export async function handleBuilddAction(
       const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
 
       if (task.deduplicated) {
-        return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
+        // Two gates return this: the friction-signature gate, and the subject
+        // dedupe that recognises an identifying anchor (same PR generation, same
+        // traced error) already owned by a live task.
+        const how = task.duplicateKeyType
+          ? `A live task already owns this subject (${task.duplicateKeyType})`
+          : 'Friction task already open';
+        return text(`${how}: "${task.title}" (ID: ${task.id})\nYour report has been attached rather than dispatching a second agent onto a separate branch. Follow progress with get_task (taskId ${task.id}), or re-file with fileAnywayReason if this is genuinely distinct work.`);
       }
 
       const statusLabel = task.startAt
@@ -2100,7 +2116,7 @@ export async function handleBuilddAction(
         : task.status === 'assigned'
           ? 'Assigned — a runner has already claimed it'
           : 'Queued — no runner has claimed it yet';
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${similarTasksWarning}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}`);
     }
 
     case 'create_schedule': {

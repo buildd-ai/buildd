@@ -146,7 +146,12 @@ mock.module('@buildd/core/db/schema', () => ({
     updatedAt: 'updatedAt',
     pathManifest: 'pathManifest',
     requiredConnectors: 'requiredConnectors',
+    subjectPrNumber: 'subjectPrNumber',
+    subjectHeadSha: 'subjectHeadSha',
+    subjectErrorSignature: 'subjectErrorSignature',
+    subjectMissionId: 'subjectMissionId',
   },
+  taskSubjectReports: 'taskSubjectReports',
   workspaceSkills: {
     slug: 'slug',
     enabled: 'enabled',
@@ -2700,6 +2705,155 @@ describe('POST /api/tasks', () => {
       expect(response.status).toBe(200);
       expect(captured.values.kind).toBe('observation');
       expect(captured.values.complexity).toBeUndefined();
+    });
+  });
+
+  // ── Pre-dispatch subject dedupe ────────────────────────────────────────────
+  //
+  // prepareSubjectFiling already resolves the incoming anchor against the live
+  // tasks in the workspace. The route used to log that verdict and create the
+  // task anyway, so an `attach` verdict still dispatched a second agent.
+
+  describe('subject dedupe at creation', () => {
+    const FULL_SHA = 'b'.repeat(40);
+
+    function agentAuth() {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_xxx' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-1',
+        createdByWorkerId: null,
+        creationSource: 'mcp',
+        parentTaskId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    }
+
+    function post(body: Record<string, unknown>) {
+      return POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { workspaceId: 'ws-1', ...body },
+      }));
+    }
+
+    it('attaches to the live task instead of dispatching a second agent on the same PR generation', async () => {
+      agentAuth();
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-live',
+        creationSource: 'mcp',
+        title: 'Instrument the cron route',
+        description: 'first filing',
+      });
+
+      const response = await post({
+        title: 'Instrument the cron route',
+        context: { prNumber: 4242, headSha: FULL_SHA },
+      });
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.id).toBe('task-live');
+      expect(data.deduplicated).toBe(true);
+      // No task row written. The only insert is the subject report.
+      const insertedTables = mockTasksInsert.mock.calls.map((c: any) => c[0]);
+      expect(insertedTables).toEqual(['taskSubjectReports']);
+    });
+
+    it('scopes the live-task lookup to this workspace and to non-terminal tasks', async () => {
+      agentAuth();
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-live',
+        creationSource: 'mcp',
+        title: 'Instrument the cron route',
+        description: null,
+      });
+
+      await post({ title: 'Instrument the cron route', context: { prNumber: 4242, headSha: FULL_SHA } });
+
+      // Render the predicate. With a mocked db every WHERE clause is otherwise
+      // invisible, so a lookup that deduped across workspaces would still pass.
+      const probe = mockTasksFindFirst.mock.calls.at(-1)?.[0];
+      const flat = JSON.stringify(probe?.where);
+      expect(flat).toContain('workspaceId');
+      expect(flat).toContain('ws-1');
+      expect(flat).toContain('subjectPrNumber');
+      expect(flat).toContain('4242');
+      expect(flat).toContain('in_progress');
+      expect(flat).not.toContain('cancelled');
+    });
+
+    it('files anyway, with a link to the canonical task, when fileAnywayReason is given', async () => {
+      agentAuth();
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-live',
+        creationSource: 'mcp',
+        title: 'Instrument the cron route',
+        description: null,
+      });
+      const created = { id: 'task-new', workspaceId: 'ws-1', title: 'Instrument the cron route' };
+      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+
+      const response = await post({
+        title: 'Instrument the cron route',
+        context: { prNumber: 4242, headSha: FULL_SHA },
+        fileAnywayReason: 'different failure mode on the same commit',
+      });
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.id).toBe('task-new');
+      expect(data.deduplicated).toBeUndefined();
+    });
+
+    it('never attaches on a mission-only match — every task in a mission shares that key', async () => {
+      agentAuth();
+      // A mission anchor with no planner-issued intent id identifies the MISSION,
+      // not the work. Attaching on it would refuse every task after the first.
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-sibling',
+        creationSource: 'orchestrator',
+        title: 'Some other task in the same mission',
+        description: null,
+      });
+      const created = { id: 'task-new', workspaceId: 'ws-1', title: 'Second mission task' };
+      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+
+      const response = await post({
+        title: 'Second mission task',
+        context: { subjectMissionId: 'mission-1' },
+      });
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.id).toBe('task-new');
+      expect(data.deduplicated).toBeUndefined();
+    });
+
+    it('surfaces a suggestion rather than attaching when only the PR lineage matches', async () => {
+      agentAuth();
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-live',
+        creationSource: 'mcp',
+        title: 'Earlier work on the same PR',
+        description: null,
+      });
+      const created = { id: 'task-new', workspaceId: 'ws-1', title: 'Follow-up on PR' };
+      mockTasksInsert.mockReturnValue({ values: mock(() => ({ returning: mock(() => [created]) })) });
+
+      // No head SHA → same PR, possibly a different commit. The design is
+      // explicit that lineage proposes and never collapses.
+      const response = await post({ title: 'Follow-up on PR', context: { prNumber: 4242 } });
+
+      expect(response.status).toBe(200);
+      const data = await response.json();
+      expect(data.id).toBe('task-new');
+      expect(data.deduplicated).toBeUndefined();
+      expect(data.duplicateSuggestion).toMatchObject({
+        taskId: 'task-live',
+        keyType: 'pr_lineage',
+        title: 'Earlier work on the same PR',
+      });
     });
   });
 });
