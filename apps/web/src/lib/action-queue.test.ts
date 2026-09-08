@@ -286,6 +286,8 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
       title: 'Goal criteria blocked — owner decision needed',
       body: 'Blocking criteria:\n- [fail] Design doc exists',
     },
+    status: 'active',
+    criteriaOverallVerdict: 'fail',
     ...overrides,
   });
 
@@ -329,6 +331,36 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
   it('an escalation with no open note produces none — the note may have been answered', () => {
     const items = buildDecideItems([candidate({ openNote: null })]);
     expect(items).toHaveLength(0);
+  });
+
+  it('an escalated + completed mission produces zero decide items — the flag outlived the mission', () => {
+    const items = buildDecideItems([candidate({ status: 'completed' })]);
+    expect(items).toHaveLength(0);
+    expect(buildActionQueue(items, [])).toHaveLength(0);
+  });
+
+  it('an escalated + archived mission produces zero decide items', () => {
+    const items = buildDecideItems([candidate({ status: 'archived' })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('an escalated mission whose verdict now passes produces zero decide items', () => {
+    const items = buildDecideItems([candidate({ criteriaOverallVerdict: 'pass' })]);
+    expect(items).toHaveLength(0);
+    expect(buildActionQueue(items, [])).toHaveLength(0);
+  });
+
+  it('an escalated + active + failing-verdict mission with an open note still produces exactly one card', () => {
+    const items = buildDecideItems([candidate({ status: 'active', criteriaOverallVerdict: 'fail' })]);
+    expect(items).toHaveLength(1);
+    const queue = buildActionQueue(items, []);
+    expect(queue).toHaveLength(1);
+    expect(queue[0].chip).toBe('DECIDE');
+  });
+
+  it('a paused mission is still live — a decide card can still be a real ask', () => {
+    const items = buildDecideItems([candidate({ status: 'paused' })]);
+    expect(items).toHaveLength(1);
   });
 
   it('ranks DECIDE below QUESTION but above APPROVE', () => {

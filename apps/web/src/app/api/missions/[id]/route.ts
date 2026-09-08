@@ -16,6 +16,7 @@ import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-st
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { resolveTimezone } from '@buildd/core/timezone';
 import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabel } from '@/lib/mission-feed';
+import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -615,6 +616,14 @@ export async function PATCH(
         body: `${existing.status} → ${status}`,
         actor,
       }).catch(e => console.error('[missions/patch] Failed to emit status-change note:', e));
+
+      // A completed/archived mission cannot owe anyone a live decision — an
+      // escalation left standing here is exactly the dead-card bug this closes.
+      // No-op when the mission was never escalated.
+      if (status === 'completed' || status === 'archived') {
+        await resolveCriteriaEscalation(id, 'mission_completed', actor)
+          .catch(e => console.error('[missions/patch] Failed to resolve criteria escalation on close:', e));
+      }
     }
 
     // goalCriteria: each addition/removal is named individually. Criteria have no
@@ -640,6 +649,13 @@ export async function PATCH(
           actor,
         }).catch(e => console.error('[missions/patch] Failed to emit criterion-added note:', e));
       }
+
+      // The escalation note's own advertised exit is editing the criterion via
+      // this same field — leaving the mission stood down after that edit is
+      // the dead end the note tells the owner to walk into. No-op when the
+      // mission was never escalated.
+      await resolveCriteriaEscalation(id, 'criteria_edited', actor)
+        .catch(e => console.error('[missions/patch] Failed to resolve criteria escalation on criteria edit:', e));
     }
 
     // Initiative link/unlink is rare and notable enough to stand on its own too.

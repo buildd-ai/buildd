@@ -1621,12 +1621,21 @@ export default async function HomePage({
         // state, but nothing surfaces that on a page nobody has a reason to
         // open once the heartbeat has gone quiet).
         if (wsIds.length > 0) {
+          // Live-status filter here is an optimisation, not the guarantee — a
+          // completed/archived mission or a passing verdict must never reach
+          // buildDecideItems in the first place, but buildDecideItems re-derives
+          // membership from `status`/`criteriaOverallVerdict` regardless, so this
+          // query narrowing and that function's own check can never drift apart.
           const escalatedMissions = await db.query.missions.findMany({
             where: and(
               inArray(missionsTable.workspaceId, wsIds),
               isNotNull(missionsTable.criteriaEscalatedAt),
+              inArray(missionsTable.status, ['active', 'paused']),
             ),
-            columns: { id: true, title: true, criteriaEscalatedAt: true, criteriaRearmFingerprint: true },
+            columns: {
+              id: true, title: true, status: true,
+              criteriaEscalatedAt: true, criteriaRearmFingerprint: true, goalCriteriaState: true,
+            },
           });
           if (escalatedMissions.length > 0) {
             const escalatedIds = escalatedMissions.map(m => m.id);
@@ -1651,6 +1660,8 @@ export default async function HomePage({
                 criteriaEscalatedAt: m.criteriaEscalatedAt,
                 criteriaRearmFingerprint: m.criteriaRearmFingerprint,
                 openNote: note ? { id: note.id, title: note.title, body: note.body } : null,
+                status: m.status,
+                criteriaOverallVerdict: (m.goalCriteriaState as { overall?: string } | null)?.overall ?? null,
               };
             })));
           }

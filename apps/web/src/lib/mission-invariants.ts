@@ -1,10 +1,10 @@
 /**
  * Mission-state invariants — the pure half of the hourly sweep.
  *
- * Eleven named records, each of which is a defect shape that actually shipped
+ * Twelve named records, each of which is a defect shape that actually shipped
  * and then sat unnoticed for hours or days because nothing in the system could
  * express it as a question. `deriveMissionHealth` answers "how is this mission
- * doing" from task counts; none of these eleven are visible in task counts.
+ * doing" from task counts; none of these twelve are visible in task counts.
  *
  * ── The check is code, the fix is an agent ──────────────────────────────────
  * Every predicate here is plain JavaScript over rows the caller already read.
@@ -15,11 +15,15 @@
  *
  * ── Reporting is not gating ────────────────────────────────────────────────
  * Same discipline as `api/cron/queue-stall`: this module withholds nothing from
- * anything. It names conditions. Ten of the eleven are report-only; exactly one
+ * anything. It names conditions. Ten of the twelve are report-only; one
  * (`orphaned_integration_base`) files a task, because it is unambiguous, severe
- * and self-evidently actionable. Promoting another is a later diff per
- * invariant, and the bar is that it has been observed to fire on a real breach
- * AND stay quiet on a healthy fleet.
+ * and self-evidently actionable; one (`stale_criteria_escalation`) resolves
+ * itself directly through `resolveCriteriaEscalation` — it is a backstop for a
+ * write-side bug (the escalation clear not reaching every exit), not a
+ * condition a human needs to see, so there is nothing to file. Promoting
+ * another invariant to file or resolve is a later diff per invariant, and the
+ * bar is that it has been observed to fire on a real breach AND stay quiet on
+ * a healthy fleet.
  *
  * ── Thresholds are the whole game ──────────────────────────────────────────
  * Most of these states are NORMAL for minutes and pathological for days. A
@@ -129,6 +133,15 @@ export const RELEASE_INVARIANT_CUTOFF = new Date('2026-09-06T12:04:00.000Z');
  * caught the same day.
  */
 export const APPROVED_PR_UNMERGED_MS = 2 * HOUR;
+
+/**
+ * Zero, same reasoning as `MISSION_MERGED_TWICE_MS`: a mission that is
+ * terminal, or whose verdict already passed, while `criteriaEscalatedAt` is
+ * still set is not a state that gets healthier by waiting — every write site
+ * that can end an escalation is supposed to clear the flag in the same
+ * transaction, so any instant of this combination is already the breach.
+ */
+export const STALE_CRITERIA_ESCALATION_MS = 0;
 
 /**
  * The limbo is EXPECTED for about twenty minutes after the last task completes
@@ -280,7 +293,8 @@ export type InvariantKey =
   | 'stranded_commits'
   | 'release_without_head'
   | 'approved_pr_unmerged'
-  | 'mission_unverifiable';
+  | 'mission_unverifiable'
+  | 'stale_criteria_escalation';
 
 export type EntityKind = 'mission' | 'task' | 'worker' | 'release' | 'pull_request';
 
@@ -305,6 +319,13 @@ export interface Invariant {
   remedy: string;
   /** Whether a breach files a task. Exactly one invariant ships with this true. */
   files: boolean;
+  /**
+   * Whether a breach is resolved directly, by calling `resolveCriteriaEscalation`
+   * from the route — not filed, not merely reported. Exactly one invariant ships
+   * with this true; it exists because the condition it names is never itself
+   * the thing to show a human, only evidence that a write site missed an exit.
+   */
+  resolves: boolean;
   /** The query. Pure: rows in, violations out. */
   query: (snapshot: InvariantSnapshot, now: Date) => InvariantViolation[];
 }
@@ -314,6 +335,7 @@ export interface InvariantResult {
   title: string;
   remedy: string;
   files: boolean;
+  resolves: boolean;
   thresholdMs: number;
   violations: InvariantViolation[];
 }
@@ -394,6 +416,7 @@ export const INVARIANTS: Invariant[] = [
       'The flag reads on and does nothing — task PRs are silently targeting trunk. ' +
       'Set the mission back to branchStrategy=mission-branch so the branch is created, or turn the flag off.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const oldestTaskByMission = new Map<string, Date>();
       for (const t of s.tasks) {
@@ -427,6 +450,7 @@ export const INVARIANTS: Invariant[] = [
       'The mission PR merged and delete-branch-on-merge removed the base, so GitHub retargeted this PR at trunk. ' +
       'Re-point it deliberately: retarget to trunk after re-reviewing the diff, or restore the branch and re-base.',
     files: true,
+    resolves: false,
     query: (s, now) => {
       const out: InvariantViolation[] = [];
       for (const w of s.workers) {
@@ -458,6 +482,7 @@ export const INVARIANTS: Invariant[] = [
       'The review gate for this task moved without anyone deciding to move it. ' +
       'Confirm the retarget was intended; if not, re-base the PR onto the mission branch.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const taskById = indexBy(s.tasks, t => t.id);
       const out: InvariantViolation[] = [];
@@ -491,6 +516,7 @@ export const INVARIANTS: Invariant[] = [
       "One task's work is masquerading as the whole mission's. " +
       'Move the commits to a task branch and open a PR into the integration branch instead.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const taskById = indexBy(s.tasks, t => t.id);
       const missionById = indexBy(s.missions, m => m.id);
@@ -526,6 +552,7 @@ export const INVARIANTS: Invariant[] = [
       'The one-merge-per-mission guarantee is broken — the merge-policy tier applied once but the work landed in several pieces. ' +
       'Check whether a retarget sent task PRs straight to trunk, and review what landed unreviewed.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const taskById = indexBy(s.tasks, t => t.id);
       const missionById = indexBy(s.missions, m => m.id);
@@ -572,6 +599,7 @@ export const INVARIANTS: Invariant[] = [
       'The plan exists but the approval path could not act on it (unreadable shape, or a human gate nobody answered). ' +
       'Re-approve it via POST /api/tasks/[id]/approve-plan, or re-run the planning task.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const out: InvariantViolation[] = [];
       for (const t of s.tasks) {
@@ -599,6 +627,7 @@ export const INVARIANTS: Invariant[] = [
     remedy:
       'The escalation worked; nobody was told. Answer the open question on the mission feed, or dismiss it and re-arm the criteria.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const oldestOpenQuestion = new Map<string, Date>();
       for (const n of s.notes) {
@@ -633,6 +662,7 @@ export const INVARIANTS: Invariant[] = [
       'Code was written with nothing to land it, and the completion summary may claim otherwise. ' +
       'Open a PR from the worker branch, or re-run the task.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const taskById = indexBy(s.tasks, t => t.id);
       const out: InvariantViolation[] = [];
@@ -663,6 +693,7 @@ export const INVARIANTS: Invariant[] = [
     remedy:
       'Nothing can say what shipped in this release. Re-resolve its commit range, or mark the release failed if it never deployed.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const out: InvariantViolation[] = [];
       for (const r of s.releases) {
@@ -700,6 +731,7 @@ export const INVARIANTS: Invariant[] = [
     remedy:
       'The merge decision was made and nothing carried it out. Merge it, or record why the policy is refusing.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const openPrs = new Map<string, SnapshotWorker>();
       for (const w of s.workers) {
@@ -736,6 +768,7 @@ export const INVARIANTS: Invariant[] = [
       'Awaiting-verification limbo — nothing will move this mission on its own. ' +
       'Run manage_missions action=evaluate, or complete/close the mission by hand.',
     files: false,
+    resolves: false,
     query: (s, now) => {
       const openDeliverable = new Set<string>();
       const anyTask = new Set<string>();
@@ -769,6 +802,38 @@ export const INVARIANTS: Invariant[] = [
           entityKind: 'mission',
           workspaceId: m.workspaceId,
           detail: `active, 0 open deliverable tasks, ${verdict}, idle ${Math.round(ageMs / HOUR)}h`,
+          ageMs,
+        });
+      }
+      return out;
+    },
+  },
+
+  {
+    key: 'stale_criteria_escalation',
+    title: 'Mission holds a criteria escalation that is no longer live',
+    thresholdMs: STALE_CRITERIA_ESCALATION_MS,
+    remedy:
+      'Resolved automatically by this sweep via resolveCriteriaEscalation() — this is a backstop, not the fix. ' +
+      'If this fires on more than the initial reconciliation pass, a write site (mission close, criteria edit, ' +
+      'or the goal-criteria re-arm) is failing to clear the escalation on its own exit; find and fix that site.',
+    files: false,
+    resolves: true,
+    query: (s, now) => {
+      const out: InvariantViolation[] = [];
+      for (const m of s.missions) {
+        if (!m.criteriaEscalatedAt) continue;
+        const terminal = m.status === 'completed' || m.status === 'archived';
+        const passing = m.criteriaOverallVerdict === 'pass';
+        if (!terminal && !passing) continue;
+        const ageMs = age(now, m.criteriaEscalatedAt) ?? 0;
+        out.push({
+          entityId: m.id,
+          entityKind: 'mission',
+          workspaceId: m.workspaceId,
+          detail: terminal
+            ? `criteriaEscalatedAt set while status='${m.status}'`
+            : `criteriaEscalatedAt set while goalCriteriaState.overall='pass'`,
           ageMs,
         });
       }
@@ -813,6 +878,7 @@ export function evaluateInvariants(snapshot: InvariantSnapshot, now: Date): Inva
       title: inv.title,
       remedy: inv.remedy,
       files: inv.files,
+      resolves: inv.resolves,
       thresholdMs: inv.thresholdMs,
       violations,
     };
@@ -866,7 +932,7 @@ export function formatInvariantReport(
   lines.push('');
 
   for (const r of results) {
-    const stage = r.files ? 'files' : 'report-only';
+    const stage = r.files ? 'files' : r.resolves ? 'resolves' : 'report-only';
     const head = `${r.key}: ${r.violations.length} — ${r.title} [threshold ${humanThreshold(r.thresholdMs)}, ${stage}]`;
     if (r.violations.length === 0) {
       lines.push(`OK  ${head}`);

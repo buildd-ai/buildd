@@ -2,6 +2,8 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, missionNotes, taskSchedules } from '@buildd/core/db/schema';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { GoalCriteriaState } from '@buildd/shared';
+import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
+import { systemActor } from '@/lib/mission-feed';
 
 /**
  * The consumer of a non-pass goal-criteria verdict.
@@ -229,11 +231,14 @@ export async function applyCriteriaRearm(input: {
       criteriaRearmFingerprint: fingerprint,
       criteriaRearmCycles: decision.nextCycles,
       criteriaRearmedAt: now,
-      // A changed verdict clears a prior escalation: the thing the owner was
-      // asked about has moved, so the mission may drive itself again.
-      criteriaEscalatedAt: null,
       updatedAt: now,
     }).where(eq(missions.id, input.missionId));
+
+    // A changed verdict clears a prior escalation: the thing the owner was
+    // asked about has moved, so the mission may drive itself again. Routed
+    // through the single writer — a no-op when the mission was never
+    // escalated, which is the common case on every ordinary rearm.
+    await resolveCriteriaEscalation(input.missionId, 'verdict_changed', systemActor('goal-criteria re-arm'));
   } else if (decision.action === 'escalate') {
     await db.update(missions).set({
       criteriaRearmFingerprint: fingerprint,
