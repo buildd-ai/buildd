@@ -61,8 +61,13 @@ export async function GET(req: NextRequest) {
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
+    // subjectsReconciled is NOT folded into `changed` below: the subject sweep
+    // only runs on the merged/closed branches, each of which already increments
+    // stamped or closed, so adding it would count one event twice. It rides in
+    // `result.reconcile` for forensics and is logged here because it is the one
+    // number that says how often the webhook is actually being missed.
     console.log(
-      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped} errors=${reconcile.errors} unresolvable=${reconcile.unresolvable}`,
+      `[PrReconcile] total=${reconcile.total} stamped=${reconcile.stamped} closed=${reconcile.closed} skipped=${reconcile.skipped} errors=${reconcile.errors} unresolvable=${reconcile.unresolvable} subjectsReconciled=${reconcile.subjectsReconciled}`,
     );
     if (deadZone) {
       console.log(
