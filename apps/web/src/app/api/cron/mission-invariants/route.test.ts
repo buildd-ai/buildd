@@ -57,10 +57,14 @@ mock.module('drizzle-orm', () => ({
   and: (...c: any[]) => ({ c, type: 'and' }),
   like: (f: any, v: any) => ({ f, v, type: 'like' }),
   notInArray: (f: any, v: any) => ({ f, v, type: 'notInArray' }),
+  desc: (f: any) => ({ f, type: 'desc' }),
+  gt: (f: any, v: any) => ({ f, v, type: 'gt' }),
+  lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
   tasks: { id: 'id', title: 'title', status: 'status', context: 'context', description: 'description', workspaceId: 'workspaceId' },
+  cronRuns: { id: 'id', name: 'name', runId: 'runId', verdict: 'verdict', error: 'error', output: 'output', createdAt: 'createdAt', ranAt: 'ranAt' },
 }));
 
 const mockNotify = mock((_opts: any) => undefined);

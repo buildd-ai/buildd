@@ -49,6 +49,7 @@ import { db } from '@buildd/core/db';
 import { tasks } from '@buildd/core/db/schema';
 import { and, eq, like, notInArray, sql } from 'drizzle-orm';
 import { notify } from '@/lib/pushover';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { loadInvariantSnapshot } from '@/lib/mission-invariant-scan';
 import {
   evaluateInvariants,
@@ -163,6 +164,10 @@ async function fileViolation(
 }
 
 export async function POST(req: NextRequest) {
+  return withCronRun('mission-invariants', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) {
     return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
@@ -175,7 +180,7 @@ export async function POST(req: NextRequest) {
   const now = new Date();
   const { snapshot, coverage } = await loadInvariantSnapshot(now);
   const results = evaluateInvariants(snapshot, now);
-  const report = formatInvariantReport(results, { scanned: coverage });
+  const report_content = formatInvariantReport(results, { scanned: coverage });
 
   // ── File, for the invariants staged to file ───────────────────────────────
   const filings: Filing[] = [];
@@ -251,7 +256,7 @@ export async function POST(req: NextRequest) {
     appended: filings.filter(f => f.outcome === 'appended').length,
     dropped: filingsDropped,
     filings,
-    report,
+    report: report_content,
     // The offending ids per invariant, so an agent consuming this response does
     // not have to parse the human-readable report to act on it.
     detail: results
