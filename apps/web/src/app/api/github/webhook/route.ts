@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
-import { and, eq, sql, inArray, isNull, not, or, ne } from 'drizzle-orm';
+import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
 import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -37,7 +37,7 @@ import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
 import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
-import { buildWorkflowRunOutcome } from '@/lib/release/workflow-run';
+import { buildWorkflowRunOutcome, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import {
   prepareSubjectFiling,
   recordSubjectMatchObserved,
@@ -1967,6 +1967,7 @@ async function handleWorkflowRunEvent(event: {
     conclusion: string | null;
     html_url: string;
     head_branch: string | null;
+    head_sha: string;
     repository: { full_name: string };
   };
   installation?: { id: number };
@@ -2050,22 +2051,45 @@ async function advanceReleaseStateFromWorkflowRun(run: {
   name: string;
   conclusion: string | null;
   html_url: string;
+  head_sha: string;
   repository: { full_name: string };
 }): Promise<void> {
-  const newState =
-    run.conclusion === 'success'
-      ? ('deploying' as const)
-      : run.conclusion === 'failure'
-        ? ('failed' as const)
-        : null;
-
+  const newState = mapWorkflowConclusionToReleaseState(run.conclusion);
   if (!newState) return;
 
-  const [matchingRelease] = await db
-    .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state })
+  // Resolve the row by run URL first, then by the commit the run was for.
+  //
+  // The URL alone was a single point of failure. `dispatchWorkflowRelease`
+  // polls for at most ~15s and, when the run has not surfaced yet, returns no
+  // `runUrl` at all — the column stays NULL and no later event can ever match
+  // it. It could also record the WRONG url: before the stale-readback fix
+  // (3cb9ea16) the readback could return a run from weeks earlier, whose
+  // workflow_run event had long since fired. Both cases leave a row stranded
+  // in `dispatched` forever, blocking any further non-forced release of that
+  // commit. The head sha is the durable identity — for a workflow_dispatch
+  // release it is exactly the ref head the row recorded — so fall back to it
+  // and backfill the url we should have had.
+  const byUrl = await db
+    .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl })
     .from(releases)
     .where(eq(releases.runUrl, run.html_url))
     .limit(1);
+
+  const matchingRelease =
+    byUrl[0] ??
+    (
+      await db
+        .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl })
+        .from(releases)
+        .where(
+          and(
+            eq(releases.headSha, run.head_sha),
+            inArray(releases.state, ['dispatched', 'deploying']),
+          ),
+        )
+        .orderBy(desc(releases.createdAt))
+        .limit(1)
+    )[0];
 
   if (!matchingRelease) return;
 
@@ -2073,6 +2097,7 @@ async function advanceReleaseStateFromWorkflowRun(run: {
   if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
 
   const updateFields: Record<string, unknown> = { state: newState };
+  if (!matchingRelease.runUrl) updateFields.runUrl = run.html_url;
   if (newState === 'deploying') {
     updateFields.deployedAt = new Date();
   } else {
