@@ -59,10 +59,18 @@ export type MemoryDigestArm = 'full' | 'task_scoped';
  * RE-RANDOMISES, so no task carries an arm it drew against a different
  * definition of what that arm means.
  *
- * This lands before anyone is enrolled, which is the only time the control can
- * move for free.
+ * v4: the title-fallback step changed from a whole-title phrase match to
+ * filtered, ranked tokens (#2182 + #2201). That changes what BOTH arms contain
+ * for the ~90% of tasks that declare no path manifest and therefore fall
+ * through to the title step — previously they matched nothing at all, now they
+ * can match on tokens. It is the same class of change as v3: the control moved,
+ * so the rows are not poolable and the assignment must be redrawn.
+ *
+ * Bumped pre-emptively, before the release that ships those two PRs. The arm is
+ * already enrolled, so waiting until after would leave rows straddling a change
+ * to their own definition — the one thing the version exists to prevent.
  */
-export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v3';
+export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v4';
 
 /** Byte cap on the workspace-wide digest under the `full` arm. */
 export const FULL_DIGEST_MAX_BYTES = 4096;
