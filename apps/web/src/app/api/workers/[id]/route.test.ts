@@ -7832,6 +7832,10 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     mockWorkersUpdate.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
+    // Without this, mock.calls accumulates across the block and any assertion
+    // that indexes into it (or asserts a type is absent) reads a previous
+    // test's message instead of this one's.
+    mockEnqueueWorkerMessage.mockClear();
   });
 
   it('populates pendingWorkerMessages for overlapping sibling and emits Pusher event', async () => {
@@ -7935,6 +7939,125 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       (u: any) => u.context?.pendingWorkerMessages?.length > 0,
     );
     expect(siblingUpdate).toBeUndefined();
+  });
+
+  // A generated file is not a mutex. These three cases are the reason: over one
+  // recent week docs/specs/INDEX.md and the drizzle journal were among the most
+  // contended files in the repo by concurrent-PR overlap, and not one of those
+  // overlaps was something the two agents needed to agree about.
+  it('regenerable-only overlap sends the regenerate advisory, not path_blocked_on_you', async () => {
+    setupBaseWorkerMock();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...baseWorker, observedTouches: ['docs/specs/INDEX.md'] }]),
+        })),
+      })),
+    });
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['docs/specs/INDEX.md'],
+      task: { pathManifest: ['docs/specs/INDEX.md'] },
+    }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['docs/specs/INDEX.md'] },
+    });
+    expect((await PATCH(req, { params: mockParams })).status).toBe(200);
+
+    const types = mockEnqueueWorkerMessage.mock.calls.map((c: any[]) => c[1].type);
+    expect(types).toContain('path_regenerable_overlap');
+    expect(types).not.toContain('path_blocked_on_you');
+
+    const advisory = mockEnqueueWorkerMessage.mock.calls
+      .find((c: any[]) => c[1].type === 'path_regenerable_overlap')![1];
+    expect(advisory.body.overlappingPaths).toEqual(['docs/specs/INDEX.md']);
+    expect(advisory.body.commands).toContain('bun run specs:check');
+  });
+
+  it('mixed overlap splits: contended paths block, generated paths only advise', async () => {
+    setupBaseWorkerMock();
+    const touches = ['apps/web/src/lib/foo.ts', 'docs/specs/INDEX.md'];
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({ returning: mock(() => [{ ...baseWorker, observedTouches: touches }]) })),
+      })),
+    });
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: touches,
+      task: { pathManifest: touches },
+    }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: touches },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const byType = (t: string) => mockEnqueueWorkerMessage.mock.calls.filter((c: any[]) => c[1].type === t);
+    // The real work is still a real collision.
+    expect(byType('path_blocked_on_you')[0][1].body.overlappingPaths).toEqual(['apps/web/src/lib/foo.ts']);
+    // ...and the generated file must NOT ride along in that block message.
+    expect(byType('path_blocked_on_you')[0][1].body.overlappingPaths).not.toContain('docs/specs/INDEX.md');
+    expect(byType('path_regenerable_overlap')[0][1].body.overlappingPaths).toEqual(['docs/specs/INDEX.md']);
+  });
+
+  it('regenerable overlap still dedupes — a generated file is not re-announced every sync', async () => {
+    setupBaseWorkerMock();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...baseWorker, observedTouches: ['docs/specs/INDEX.md'] }]),
+        })),
+      })),
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['docs/specs/INDEX.md'],
+      task: { pathManifest: ['docs/specs/INDEX.md'] },
+    }]);
+    // Already notified this session.
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null,
+      outputRequirement: 'none',
+      missionId: null,
+      count: 0,
+      context: { notifiedOverlaps: [{ path: 'docs/specs/INDEX.md', siblingTaskId: 'task-2' }] },
+    });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['docs/specs/INDEX.md'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
+    expect(mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected')).toBeUndefined();
   });
 
   it('wildcard guard: sibling with pathManifest ["**"] produces NO notice', async () => {

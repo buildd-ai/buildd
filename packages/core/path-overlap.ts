@@ -174,3 +174,80 @@ export function findBlockingPr(
   }
   return null;
 }
+
+// ── Regenerable paths ─────────────────────────────────────────────────────────
+
+/**
+ * A path whose contents are produced by a command from a source of truth
+ * elsewhere in the tree.
+ */
+export interface RegenerablePath {
+  /** Repo-relative path, no trailing separator. */
+  path: string;
+  /** The command that reproduces it. */
+  command: string;
+  /** What it is generated from — the reason it is safe to overwrite. */
+  why: string;
+}
+
+/**
+ * Generated files that two agents routinely "collide" on without being in
+ * conflict at all.
+ *
+ * Over one recent week these were among the most contended files in the repo by
+ * concurrent-PR overlap, and every one of those overlaps was noise: the losing
+ * side does not need to know what the winning side wrote, only to re-run one
+ * command. Treating them as a mutex costs a message round trip at best and an
+ * abandoned PR at worst.
+ *
+ * Strictly wholly-generated paths only. Deliberately NOT here:
+ *  - `packages/core/drizzle/*.sql` — the journal is rebuilt from these, but each
+ *    file carries DDL only its author can reproduce. Telling an agent to
+ *    regenerate one is telling it to drop a migration. Index collisions between
+ *    them are the schema-change skill's problem, not this list's.
+ *  - `packages/core/package.json` — the recurring collision is the version
+ *    field, which is release-owned. There is no command an agent can run to
+ *    settle it.
+ */
+export const REGENERABLE_PATHS: readonly RegenerablePath[] = [
+  {
+    path: 'docs/specs/INDEX.md',
+    command: 'bun run specs:check',
+    why: 'generated from the frontmatter of every docs/specs/*.md',
+  },
+  {
+    path: 'packages/core/drizzle/meta/_journal.json',
+    command: 'cd packages/core && bun db:generate',
+    why: 'rewritten by drizzle-kit from the migration files on disk',
+  },
+];
+
+/** The registry entry for a path, or null when the path is real work. */
+export function findRegenerable(path: string): RegenerablePath | null {
+  const p = stripTrailingSep(path);
+  return REGENERABLE_PATHS.find(e => e.path === p) ?? null;
+}
+
+/**
+ * Split observed overlapping paths into the ones that are a genuine contention
+ * signal and the ones that just need a command re-run.
+ *
+ * Callers should treat an empty `contended` as "no collision": there is nothing
+ * for the two agents to agree about.
+ */
+export function partitionRegenerableOverlaps(paths: string[]): {
+  contended: string[];
+  regenerable: RegenerablePath[];
+} {
+  const contended: string[] = [];
+  const regenerable: RegenerablePath[] = [];
+  for (const path of paths) {
+    const hit = findRegenerable(path);
+    if (!hit) {
+      contended.push(path);
+    } else if (!regenerable.some(r => r.path === hit.path)) {
+      regenerable.push(hit);
+    }
+  }
+  return { contended, regenerable };
+}

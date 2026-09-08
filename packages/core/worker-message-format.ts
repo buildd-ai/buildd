@@ -15,6 +15,7 @@ export const WORKER_MESSAGE_CAP = 3;
 
 export type WorkerMessageType =
   | 'path_blocked_on_you'
+  | 'path_regenerable_overlap'
   | 'path_released'
   | 'question'
   | 'answer';
@@ -98,6 +99,24 @@ export function formatWorkerMessages(messages: WorkerMessage[]): string {
         return `**AGENT MESSAGE** (path_blocked_on_you, ${from}${branch}): another agent is editing `
           + `${paths.join(', ') || 'paths you hold'}. If you are about to land these files, tell them so:\n`
           + replyRecipe(m, 'answer', 'I am about to land these files — <what you are changing and when>');
+      }
+      case 'path_regenerable_overlap': {
+        // Same detection as path_blocked_on_you, opposite instruction. These
+        // paths are generated, so the two agents are not competing for them:
+        // whoever pushes second re-runs a command and the diff settles. No
+        // reply recipe — there is nothing to negotiate, and offering one turns
+        // a non-event into a round trip.
+        const paths = Array.isArray(m.body?.overlappingPaths)
+          ? (m.body.overlappingPaths as string[])
+          : [];
+        const commands = Array.isArray(m.body?.commands) ? (m.body.commands as string[]) : [];
+        const branch = typeof m.body?.detectedByBranch === 'string' ? ` (branch ${m.body.detectedByBranch})` : '';
+        const pathList = paths.join(', ') || 'a generated file you also touched';
+        const fix = commands.length > 0
+          ? ` Regenerate rather than merge: ${commands.join('; then ')}.`
+          : ' Regenerate it from its source of truth rather than merging the two versions by hand.';
+        return `**AGENT MESSAGE** (path_regenerable_overlap, ${from}${branch}): another agent also touched `
+          + `${pathList}, which is generated. Do not wait for them and do not resolve it as a conflict.${fix}`;
       }
       case 'question': {
         const t = typeof m.body?.text === 'string' ? m.body.text : JSON.stringify(m.body);
