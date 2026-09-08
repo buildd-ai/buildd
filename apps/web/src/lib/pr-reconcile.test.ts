@@ -101,6 +101,14 @@ mock.module('@/lib/mission-pr', () => ({
 
 // ─── GitHub API mock ──────────────────────────────────────────────────────────
 
+// Real SubjectSweepResult shape: reconciled/cancelled are COUNTS, not arrays.
+// A fabricated array shape here would let an implementation reading `.length`
+// pass while silently counting zero against the real module.
+const mockSweepSubjectAnchoredTasks = mock(() => Promise.resolve({ anchored: 0, reconciled: 0, cancelled: 0 }));
+mock.module('@/lib/subject-sweep', () => ({
+  sweepSubjectAnchoredTasks: mockSweepSubjectAnchoredTasks,
+}));
+
 const mockGithubApi = mock(() => Promise.resolve({ state: 'open', merged: false, merged_at: null }));
 
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
@@ -274,6 +282,8 @@ describe('reconcileStalePrWorkers', () => {
     mockMaybeOpenMissionIntegrationPr.mockResolvedValue(null);
     mockCheckAndUnblockDependentMissions.mockReset();
     mockCheckAndUnblockDependentMissions.mockResolvedValue([]);
+    mockSweepSubjectAnchoredTasks.mockReset();
+    mockSweepSubjectAnchoredTasks.mockResolvedValue({ anchored: 0, reconciled: 0, cancelled: 0 });
     // Every outcome now records prLastCheckedAt, so update() must be callable.
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({ where: mock(() => Promise.resolve()) })),
@@ -283,7 +293,7 @@ describe('reconcileStalePrWorkers', () => {
   it('returns zeros when no stale workers found', async () => {
     mockWorkersFindMany.mockResolvedValue([]);
     const result = await reconcileStalePrWorkers();
-    expect(result).toEqual({ total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0, unresolvable: 0 });
+    expect(result).toEqual({ total: 0, stamped: 0, closed: 0, skipped: 0, errors: 0, unresolvable: 0, subjectsReconciled: 0 });
     expect(mockGithubApi).not.toHaveBeenCalled();
   });
 
@@ -1157,5 +1167,101 @@ describe('reconcileStalePrWorkers repo resolution', () => {
 
     // Falls back to the workspace repo rather than trusting the compare url.
     expect(mockGithubApi).toHaveBeenCalledWith(123, '/repos/owner/repo/pulls/9');
+  });
+});
+
+
+// ── Subject-anchor backstop ───────────────────────────────────────────────────
+//
+// The pull_request webhook is documented as lossy, and every other consumer of
+// a merge event has a poller backstop here: workers.mergedAt, the mission PR
+// opener, missions.dependencyMetAt, and the task dependency gate. Subject
+// anchors did not, so a missed delivery left a subject-anchored task pending
+// with subjectResolution = NULL forever even though its PR had merged — two CI
+// retry tasks were found pending for 7 days and 20 hours that way, and their
+// zombie candidacy is re-examined on every claim poll.
+describe('reconcileStalePrWorkers — subject-anchor reconciliation', () => {
+  beforeEach(() => {
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockGithubApi.mockReset();
+    mockCheckDependsOnResolved.mockReset();
+    mockMaybeOpenMissionIntegrationPr.mockReset();
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue(null);
+    mockCheckAndUnblockDependentMissions.mockReset();
+    mockCheckAndUnblockDependentMissions.mockResolvedValue([]);
+    mockSweepSubjectAnchoredTasks.mockReset();
+    mockSweepSubjectAnchoredTasks.mockResolvedValue({ anchored: 0, reconciled: 0, cancelled: 0 });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  it('reconciles subject-anchored tasks when a merge is discovered by polling', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockSweepSubjectAnchoredTasks).toHaveBeenCalledWith('ws1', 42);
+  });
+
+  it('reconciles subject-anchored tasks when the PR closed unmerged', async () => {
+    // dead-pr-shutdown already sweeps on the closed path in the event-driven
+    // flow; the poller has to match it or a closed PR strands its anchors too.
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 99, workspaceId: 'ws1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: false, merged_at: null });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockSweepSubjectAnchoredTasks).toHaveBeenCalledWith('ws1', 99);
+  });
+
+  it('does NOT sweep a PR that is still open', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 7, workspaceId: 'ws1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'open', merged: false, merged_at: null });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockSweepSubjectAnchoredTasks).not.toHaveBeenCalled();
+  });
+
+  it('counts what it reconciled, so a dark heal is distinguishable from an idle one', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockSweepSubjectAnchoredTasks.mockResolvedValue({ anchored: 3, reconciled: 2, cancelled: 2 });
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.subjectsReconciled).toBe(2);
+  });
+
+  it('a sweep failure never costs the merge stamp that already landed', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', prNumber: 42, workspaceId: 'ws1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+    mockSweepSubjectAnchoredTasks.mockRejectedValue(new Error('boom'));
+
+    const result = await reconcileStalePrWorkers();
+
+    expect(result.stamped).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(result.subjectsReconciled).toBe(0);
+  });
+
+  it('still notifies the dependency gate — the sweep is an addition, not a replacement', async () => {
+    mockWorkersFindMany.mockResolvedValue([{ id: 'w1', taskId: 't1', prNumber: 42, workspaceId: 'ws1' }]);
+    mockWorkspacesFindFirst.mockResolvedValue(ws);
+    mockGithubApi.mockResolvedValue({ state: 'closed', merged: true, merged_at: '2026-01-01T00:00:00Z' });
+
+    await reconcileStalePrWorkers();
+
+    expect(mockCheckDependsOnResolved).toHaveBeenCalled();
+    expect(mockSweepSubjectAnchoredTasks).toHaveBeenCalled();
   });
 });

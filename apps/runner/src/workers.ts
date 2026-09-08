@@ -35,6 +35,7 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
+import type { ClaimLogEntry } from './session-logger';
 import {
   SessionStderrCollector,
   flushStderrTrace,
@@ -42,7 +43,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import type { WorkerEnvironment } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -457,6 +458,32 @@ export function metricsOnlyPayload(
   // update type's own keys, so the narrowing lives here — at the one place that
   // owns the field list — instead of at every call site.
   return out as Parameters<BuilddClient['updateWorker']>[1];
+}
+
+/**
+ * Pick the diagnostic detail worth persisting from a claim response.
+ *
+ * Module-local on purpose. It belongs with ClaimLogEntry in session-logger, but
+ * 16 test files replace that module wholesale with `mock.module`, and a new
+ * runtime export there is `undefined` at every one of those call sites rather
+ * than falling back to the real module. A 12-line picker is not worth widening
+ * 16 mock surfaces.
+ *
+ * Omits each key the server did not send: an absent `deferrals` and an all-zero
+ * one are different claims about the world, and claims.log is read by grep — a
+ * spurious `"deferrals":{}` on every idle poll hides the entries that matter.
+ */
+function claimDiagnosticDetail(
+  diagnostics: ClaimDiagnostics | null | undefined,
+): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks'> {
+  if (!diagnostics) return {};
+  return {
+    ...(diagnostics.deferrals && Object.keys(diagnostics.deferrals).length > 0
+      ? { deferrals: diagnostics.deferrals }
+      : {}),
+    ...(typeof diagnostics.pendingTasks === 'number' ? { pendingTasks: diagnostics.pendingTasks } : {}),
+    ...(typeof diagnostics.matchedTasks === 'number' ? { matchedTasks: diagnostics.matchedTasks } : {}),
+  };
 }
 
 export class WorkerManager {
@@ -1020,7 +1047,13 @@ export class WorkerManager {
       if (claimed.length === 0) {
         // Skip logging no_pending_tasks during polling — that's the normal idle state
         if (diagnostics && diagnostics.reason !== 'no_pending_tasks' && diagnostics.reason !== 'budget_exhausted_partial') {
-          claimLog({ event: 'claim_empty', slotsRequested: slots, workersClaimed: 0, diagnosticReason: diagnostics.reason });
+          claimLog({
+            event: 'claim_empty',
+            slotsRequested: slots,
+            workersClaimed: 0,
+            diagnosticReason: diagnostics.reason,
+            ...claimDiagnosticDetail(diagnostics),
+          });
         }
         return [];
       }
@@ -1238,7 +1271,14 @@ export class WorkerManager {
     const { workers: claimed, diagnostics } = claimResult;
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
-      claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
+      claimLog({
+        event: 'claim_empty',
+        slotsRequested: 1,
+        workersClaimed: 0,
+        diagnosticReason: diagnostics?.reason,
+        taskId: task.id,
+        ...claimDiagnosticDetail(diagnostics),
+      });
       console.log(`No tasks claimed (reason: ${reason})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
