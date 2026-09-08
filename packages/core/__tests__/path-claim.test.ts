@@ -73,6 +73,8 @@ let missionNotesFindMany = makeFindMany('missionNotes');
 
 // ── Module mocks (must come before import) ───────────────────────────────────
 
+import * as realPathOverlap from '../path-overlap';
+
 const mockPathsOverlap = mock((_a: string[], _b: string[]) => false);
 
 mock.module('../db/client', () => ({
@@ -101,7 +103,14 @@ mock.module('drizzle-orm', () => ({
   inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
 }));
 
+// Only `pathsOverlap` is stubbed. The rest of the module is re-exported for
+// real, because a factory that lists one export replaces the whole module and
+// every other binding path-claim.ts imports becomes `undefined` — which is not
+// a passing test, it is a hidden one. `stripTrailingSep` was already in that
+// hole: it is only reached once `pathsOverlap` returns true, so the conflict
+// tests below were one un-thrown TypeError away from asserting nothing.
 mock.module('../path-overlap', () => ({
+  ...realPathOverlap,
   pathsOverlap: mockPathsOverlap,
 }));
 
@@ -109,6 +118,7 @@ mock.module('../path-overlap', () => ({
 
 import {
   checkPathClaimConflict,
+  claimObservedPaths,
   insertClaims,
   releaseClaims,
   rearmWaiter,
@@ -506,5 +516,99 @@ describe('releaseClaims — separation of concerns', () => {
     expect(mockUpdate).toHaveBeenCalledTimes(1);
     // No insert to task/PR tables
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// claimObservedPaths — the §6d touch signal, promoted to a held lease
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('claimObservedPaths', () => {
+  beforeEach(resetQueues);
+
+  it('leases a concrete observed path', async () => {
+    queueFindMany('pathClaims', []);
+    const values = mock(async () => undefined);
+    mockInsert.mockReturnValue({ values });
+
+    const leased = await claimObservedPaths(WS, TASK_A, ['apps/web/src/lib/foo.ts']);
+
+    expect(leased).toEqual(['apps/web/src/lib/foo.ts']);
+    // The row must carry the workspace and the task, or the claim-route
+    // backstop (which reads by workspace and skips the owning task) cannot
+    // scope it: it would either miss the lease or block its own holder.
+    expect(values).toHaveBeenCalledWith([
+      { workspaceId: WS, taskId: TASK_A, path: 'apps/web/src/lib/foo.ts' },
+    ]);
+  });
+
+  it('never leases a regenerable path — a generated file is not a mutex', async () => {
+    queueFindMany('pathClaims', []);
+    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
+
+    const leased = await claimObservedPaths(WS, TASK_A, [
+      'docs/specs/INDEX.md',
+      'packages/core/drizzle/meta/_journal.json',
+    ]);
+
+    expect(leased).toEqual([]);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps the real work from a mixed touch set and drops the generated file', async () => {
+    queueFindMany('pathClaims', []);
+    const values = mock(async () => undefined);
+    mockInsert.mockReturnValue({ values });
+
+    const leased = await claimObservedPaths(WS, TASK_A, [
+      'packages/core/db/schema.ts',
+      'packages/core/drizzle/meta/_journal.json',
+    ]);
+
+    expect(leased).toEqual(['packages/core/db/schema.ts']);
+  });
+
+  it('drops the repo-wide sentinel — an undeclared scope is not a lock', async () => {
+    queueFindMany('pathClaims', []);
+    mockInsert.mockReturnValue({ values: mock(async () => undefined) });
+
+    const leased = await claimObservedPaths(WS, TASK_A, ['**']);
+
+    expect(leased).toEqual([]);
+    expect(mockInsert).not.toHaveBeenCalled();
+  });
+
+  it('normalizes and dedupes so one file is never leased twice', async () => {
+    queueFindMany('pathClaims', []);
+    const values = mock(async () => undefined);
+    mockInsert.mockReturnValue({ values });
+
+    const leased = await claimObservedPaths(WS, TASK_A, [
+      'apps/web/src/lib/',
+      'apps/web/src/lib',
+      '  ',
+    ]);
+
+    expect(leased).toEqual(['apps/web/src/lib']);
+  });
+
+  it('is idempotent across syncs — a path already held is not re-inserted', async () => {
+    queueFindMany('pathClaims', [{ path: 'apps/web/src/lib/foo.ts' }]);
+    const values = mock(async () => undefined);
+    mockInsert.mockReturnValue({ values });
+
+    const leased = await claimObservedPaths(WS, TASK_A, [
+      'apps/web/src/lib/foo.ts',
+      'apps/web/src/lib/bar.ts',
+    ]);
+
+    expect(leased).toEqual(['apps/web/src/lib/bar.ts']);
+  });
+
+  it('does not touch the DB for an empty touch set', async () => {
+    const leased = await claimObservedPaths(WS, TASK_A, []);
+    expect(leased).toEqual([]);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(pathClaimsFindMany).not.toHaveBeenCalled();
   });
 });

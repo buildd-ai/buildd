@@ -838,9 +838,13 @@ export async function POST(req: NextRequest) {
   }
 
   // Pre-fetch active path_claims per workspace for the path-overlap backstop.
-  // path_claims holds actual file locks written by check_path_claim; this
-  // backstop defers a pending task whose pathManifest overlaps any held lock,
-  // even if the locking task hasn't opened a PR yet.
+  // path_claims holds actual file locks: declared ones from check_path_claim,
+  // and — since observed touches are auto-leased on worker sync
+  // (claimObservedPaths) — a lease on every file a live worker has actually
+  // edited. This backstop defers a pending task whose pathManifest overlaps any
+  // held lock, even if the locking task hasn't opened a PR yet, which is the
+  // window layer 1 cannot see and the reason the auto-lease matters: the second
+  // agent is stopped before it starts rather than told afterwards.
   const activePathClaimsByWorkspace = new Map<string, Map<string, string[]>>();
   if (openPrWorkspaceIds.length > 0) {
     await Promise.all(openPrWorkspaceIds.map(async (wsId) => {
@@ -881,9 +885,10 @@ export async function POST(req: NextRequest) {
    *
    * Feeds the compensating serialization guard in the dispatch loop: since the
    * authoring pass no longer mints dependsOn edges from a wildcard manifest
-   * (packages/core/path-overlap.ts) and nothing writes path_claims rows
-   * automatically, two scope-undeclared tasks in one mission would otherwise run
-   * concurrently and ping-pong conflict retries on the same files.
+   * (packages/core/path-overlap.ts), and a task with no concrete paths cannot be
+   * matched against a held lease by layer 2 no matter who is holding one, two
+   * scope-undeclared tasks in one mission would otherwise run concurrently and
+   * ping-pong conflict retries on the same files.
    */
   const missionAdvisoryInFlight = new Map<string, Set<string>>();
 
@@ -1041,11 +1046,21 @@ export async function POST(req: NextRequest) {
         //    longer mints stored dependsOn edges (correct — those edges block
         //    until completed+merged, which is not what a file conflict needs),
         //    and neither path-overlap layer can help: layer 1 returns null for a
-        //    wildcard candidate and layer 2 has no concrete paths to compare
-        //    because nothing writes path_claims rows automatically. Two
-        //    scope-undeclared tasks in one mission would therefore edit the same
-        //    files concurrently and ping-pong conflict retries — the exact
-        //    failure mode the ['**'] default was introduced to stop.
+        //    wildcard candidate, and layer 2 is nested inside
+        //    `if (taskManifest?.length)` and compares *this* task's concrete
+        //    paths — of which a scope-undeclared task has none, whatever leases
+        //    the other side holds. Two scope-undeclared tasks in one mission
+        //    would therefore edit the same files concurrently and ping-pong
+        //    conflict retries — the exact failure mode the ['**'] default was
+        //    introduced to stop.
+        //
+        //    Auto-leasing observed touches (PATCH /api/workers/[id] →
+        //    claimObservedPaths) does not retire this guard. It fills layer 2's
+        //    supply side, so a task that DID declare paths is now deferred on a
+        //    file a live worker is actually editing. It cannot help here,
+        //    because the deferral this guard makes is decided by the *candidate*
+        //    having nothing to compare, and because a lease only exists after
+        //    the holder's first sync — this gate runs before either task starts.
         //
         //    So: at most one scope-undeclared task per mission in flight. This
         //    is a SOFT deferral — the task stays pending and is retried on the
