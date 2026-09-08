@@ -40,7 +40,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
@@ -53,7 +53,7 @@ import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
-import { pathsOverlap, isAdvisoryManifest } from '@buildd/core/path-overlap';
+import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 
@@ -2738,13 +2738,22 @@ export async function PATCH(
           newNotifications.push({ path: p, siblingTaskId: sibling.taskId! });
         }
 
+        // A generated file is not a mutex. `docs/specs/INDEX.md` and the drizzle
+        // journal are among the most contended files in this repo by
+        // concurrent-PR overlap, and none of those overlaps is something the two
+        // agents need to agree about — whoever pushes second re-runs one command.
+        // Splitting here keeps the block message about real work while still
+        // passing the generated-file overlap along, with the right verb.
+        const { contended, regenerable } = partitionRegenerableOverlaps(newPaths);
+
         // Emit Pusher event on workspace channel.
         const overlapEvent = {
           detectedWorkerId: id,
           detectedTaskId: worker.taskId,
           siblingWorkerId: sibling.id,
           siblingTaskId: sibling.taskId,
-          overlappingPaths: newPaths,
+          overlappingPaths: contended,
+          regenerablePaths: regenerable.map(r => r.path),
           detectedByBranch: updated.branch ?? worker.branch,
           detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
         };
@@ -2754,17 +2763,32 @@ export async function PATCH(
         // One atomic append (capped in SQL): the sibling is checking in and
         // writing its own context, so a read-modify-write here loses whichever
         // of the two wrote second.
-        await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
-          type: 'path_blocked_on_you',
-          fromTaskId: worker.taskId,
-          toTaskId: sibling.taskId!,
-          body: {
-            overlappingPaths: newPaths,
-            detectedByBranch: updated.branch ?? worker.branch,
-            detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
-            funcNames: [] as string[],
-          },
-        }));
+        if (contended.length > 0) {
+          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+            type: 'path_blocked_on_you',
+            fromTaskId: worker.taskId,
+            toTaskId: sibling.taskId!,
+            body: {
+              overlappingPaths: contended,
+              detectedByBranch: updated.branch ?? worker.branch,
+              detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
+              funcNames: [] as string[],
+            },
+          }));
+        }
+        if (regenerable.length > 0) {
+          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+            type: 'path_regenerable_overlap',
+            fromTaskId: worker.taskId,
+            toTaskId: sibling.taskId!,
+            body: {
+              overlappingPaths: regenerable.map(r => r.path),
+              commands: [...new Set(regenerable.map(r => r.command))],
+              detectedByBranch: updated.branch ?? worker.branch,
+              detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
+            },
+          }));
+        }
       }
 
       // Persist notifiedOverlaps as a jsonb merge, NOT a spread of the snapshot
@@ -3090,10 +3114,7 @@ async function handleReviewerOutcomeIfNeeded(
   const missionForPolicy = missionId
     ? await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        // Deliberately not `requiresReview`: this path has never resolved
-        // mission-level requiresReview, and Option A′ is not the change that
-        // should start. Only the two fields the base-ref rule needs.
-        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
+        columns: WORKERS_POLICY_MISSION_COLUMNS,
       })
     : null;
 

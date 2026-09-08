@@ -132,7 +132,7 @@ export function deriveTaskHealthSignal(
  * for the mission detail page header chip and state-driven CTA.
  * Priority: complete > held > running > failed > manual > active.
  */
-export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification';
+export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
 
 export function deriveMissionDisplayState(opts: {
   status: string;
@@ -149,11 +149,17 @@ export function deriveMissionDisplayState(opts: {
    * `deriveInitiativeDisplayStatus`'s `awaiting_verification`, deliberately.
    */
   criteriaUnverified?: boolean;
+  /** `missions.criteriaEscalatedAt` — set when goal-criteria gate has escalated to owner. */
+  criteriaEscalatedAt?: Date | string | null;
+  /** True when a deliverable task is still open. */
+  hasPendingDeliverableWork?: boolean;
 }): MissionDisplayState {
   if (opts.status === 'completed' || opts.status === 'archived') return 'complete';
   if (opts.isHeld) return 'held';
   if (opts.activeAgents > 0) return 'running';
   if (opts.health === 'FAILING') return 'failed';
+  // Escalated + no pending work: mission awaiting owner decision on criteria
+  if (opts.criteriaEscalatedAt && opts.hasPendingDeliverableWork === false) return 'waiting_decision';
   // Work done + verdict missing outranks 'review': "READY FOR REVIEW" would
   // invite a human to close a mission the platform is refusing to close.
   if (opts.criteriaUnverified && opts.progress !== undefined && opts.progress >= 100) return 'awaiting_verification';
@@ -170,6 +176,8 @@ export function getMissionStateChip(state: MissionDisplayState): { label: string
     case 'review':  return { label: 'READY FOR REVIEW', cls: 'border-status-success text-status-success' };
     case 'awaiting_verification':
                     return { label: 'AWAITING VERIFICATION', cls: 'border-status-warning text-status-warning' };
+    case 'waiting_decision':
+                    return { label: 'AWAITING DECISION', cls: 'border-status-warning text-status-warning' };
     case 'manual':  return { label: 'MANUAL',           cls: 'border-border-default text-text-muted' };
     case 'complete':return { label: 'COMPLETE',         cls: 'border-border-default text-text-muted' };
     case 'active':  return { label: 'AUTO',             cls: 'border-status-info text-status-info' };

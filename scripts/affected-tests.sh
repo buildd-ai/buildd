@@ -7,8 +7,30 @@ set -euo pipefail
 
 log() { echo "::notice::$*" >&2; }
 
+# Repo-wide invariant tests, appended to every non-ALL selection. See
+# scripts/always-run-tests.txt for why, and always-run-tests.test.ts for the
+# gate that keeps the list honest in both directions.
+ALWAYS_MANIFEST="scripts/always-run-tests.txt"
+ALWAYS=""
+if [ -f "$ALWAYS_MANIFEST" ]; then
+  while IFS= read -r entry; do
+    entry="${entry%%#*}"
+    entry="$(echo "$entry" | tr -d '[:space:]')"
+    # A listed file that is not on disk is skipped, not fatal: a partial
+    # checkout (or a different repo the runner cloned) must not fail the build
+    # on a test it does not ship. always-run-tests.test.ts is where a rotted
+    # entry gets caught, and it runs with the full tree.
+    [ -n "$entry" ] && [ -f "$entry" ] && ALWAYS="$ALWAYS $entry"
+  done < "$ALWAYS_MANIFEST"
+fi
+
 # Determine changed files
-if [ -n "${GITHUB_BASE_REF:-}" ]; then
+if [ -n "${AFFECTED_TESTS_CHANGED+x}" ]; then
+  # Test seam: always-run-tests.test.ts drives real selection logic without
+  # having to fabricate a git history. Set (even to empty) it wins over git.
+  log "Changed-file list supplied via AFFECTED_TESTS_CHANGED"
+  CHANGED="${AFFECTED_TESTS_CHANGED}"
+elif [ -n "${GITHUB_BASE_REF:-}" ]; then
   log "PR detected — comparing against origin/${GITHUB_BASE_REF}"
   CHANGED=$(git diff --name-only "origin/${GITHUB_BASE_REF}...HEAD")
 elif [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
@@ -91,11 +113,17 @@ while IFS= read -r file; do
   fi
 done <<< "$CHANGED"
 
-# Deduplicate
-if [ -n "$TESTS" ]; then
-  RESULT=$(echo "$TESTS" | tr ' ' '\n' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+# Union with the repo-wide invariants and deduplicate.
+#
+# The invariants join a selection that already has entries AND a selection that
+# has none: a diff whose only file is CLAUDE.md maps to no colocated test, but
+# skills-listed.test.ts asserts against CLAUDE.md. SKIP there was a real hole,
+# not an optimisation.
+SELECTED="$TESTS $ALWAYS"
+if [ -n "$(echo "$SELECTED" | tr -d '[:space:]')" ]; then
+  RESULT=$(echo "$SELECTED" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ' | sed 's/ *$//')
   COUNT=$(echo "$RESULT" | wc -w | tr -d ' ')
-  log "Running $COUNT affected test(s): $RESULT"
+  log "Running $COUNT test(s): $RESULT"
   echo "$RESULT"
 else
   log "No affected test files found — skipping tests"

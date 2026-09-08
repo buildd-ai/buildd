@@ -148,9 +148,19 @@ export class MemoryStore {
     if (scope) {
       conditions.push(eq(memories.project, scope));
     }
-    if (params.query) {
-      const q = `%${params.query}%`;
-      conditions.push(or(ilike(memories.title, q), ilike(memories.content, q))!);
+    // Tokenized OR match: a phrase-only ILIKE against a multi-word query (a task
+    // title, say) almost never appears verbatim in a memory's title/content, so
+    // it returned zero rows for essentially every real caller. Matching if ANY
+    // token hits title-or-content trades precision for the recall this store
+    // needs -- there is no ranking here to reward the query that matches more
+    // tokens, so AND-only would still zero out on a single absent term.
+    const tokens = params.query?.split(/\s+/).filter(Boolean) ?? [];
+    if (tokens.length > 0) {
+      const tokenConditions = tokens.flatMap(token => {
+        const q = `%${token}%`;
+        return [ilike(memories.title, q), ilike(memories.content, q)];
+      });
+      conditions.push(or(...tokenConditions)!);
     }
     // File scope. `files` was accepted by this signature and documented in the
     // JSDoc above for a long time while being silently ignored, so every caller

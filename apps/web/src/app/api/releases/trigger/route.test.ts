@@ -57,11 +57,14 @@ const mockDetectArchetype = mock(() => 'gated' as any);
 const mockGithubApi = mock(async () => ({ object: { sha: 'fallback-ref-sha' } }) as any);
 const mockAttributeRelease = mock(async () => ({ attributed: 1, skipped: 0 }));
 
-// DB mock: chainable insert().values().returning(), update().set().where(), query.releases.findFirst()
+// DB mock: chainable insert().values().returning(), insert().values().onConflictDoUpdate().returning(),
+// update().set().where(), query.releases.findFirst()
 const mockReturning = mock(async () => [{ id: 'release-uuid-1' }]);
+const mockOnConflictReturning = mock(async () => [{ id: 'release-uuid-1' }]);
+const mockOnConflictDoUpdate = mock(() => ({ returning: mockOnConflictReturning }));
 const mockInsertWhere = mock(async () => []);
 const mockInsert = mock(() => ({
-  values: mock(() => ({ returning: mockReturning })),
+  values: mock(() => ({ returning: mockReturning, onConflictDoUpdate: mockOnConflictDoUpdate })),
 }));
 const mockUpdateSet = mock(() => ({ where: mockInsertWhere }));
 const mockUpdate = mock(() => ({ set: mockUpdateSet }));
@@ -173,6 +176,10 @@ describe('POST /api/releases/trigger', () => {
     mockReleaseFindFirst.mockImplementation(async () => null);
     mockReturning.mockReset();
     mockReturning.mockImplementation(async () => [{ id: 'release-uuid-1' }]);
+    mockOnConflictReturning.mockReset();
+    mockOnConflictReturning.mockImplementation(async () => [{ id: 'release-uuid-1' }]);
+    mockOnConflictDoUpdate.mockReset();
+    mockOnConflictDoUpdate.mockImplementation(() => ({ returning: mockOnConflictReturning }));
     mockInsertWhere.mockReset();
     mockInsertWhere.mockImplementation(async () => []);
     mockGithubApi.mockReset();
@@ -252,6 +259,53 @@ describe('POST /api/releases/trigger', () => {
     // No new insert or dispatch
     expect(mockInsert.mock.calls.length).toBe(insertCallsBefore);
     expect(mockDispatchWorkflowRelease.mock.calls.length).toBe(dispatchCallsBefore);
+  });
+
+  it('force=true bypasses dedup and dispatches even with an existing in-flight row for the same headSha', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockReleaseFindFirst.mockImplementation(async () => ({
+      id: 'existing-release-id',
+      workspaceId: 'ws-1',
+      headSha: 'abc123sha',
+      state: 'dispatched',
+    }));
+    const dispatchCallsBefore = mockDispatchWorkflowRelease.mock.calls.length;
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1', force: true }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.deduped).toBeUndefined();
+    expect(body.runId).toBe(42);
+    // A real dispatch happened despite the existing in-flight row.
+    expect(mockDispatchWorkflowRelease.mock.calls.length).toBe(dispatchCallsBefore + 1);
+  });
+
+  it('force=true upserts via onConflictDoUpdate instead of a raw insert that would hit the unique constraint', async () => {
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockReleaseFindFirst.mockImplementation(async () => ({
+      id: 'existing-release-id',
+      workspaceId: 'ws-1',
+      headSha: 'abc123sha',
+      state: 'dispatched',
+    }));
+    // Simulate the real DB: a plain insert for a headSha that already has a
+    // row (any state) throws the releases_workspace_sha_idx unique
+    // violation. Only the onConflictDoUpdate path succeeds. If the route
+    // regresses to a plain insert on the force path, this throws and the
+    // request fails with a 500 instead of dispatching.
+    mockReturning.mockImplementation(async () => {
+      throw new Error('duplicate key value violates unique constraint "releases_workspace_sha_idx"');
+    });
+    const { POST } = await import('./route');
+    const res = await POST(makeRequest('bld_adminkey', { workspaceId: 'ws-1', force: true }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.releaseId).toBe('release-uuid-1');
+    expect(body.runId).toBe(42);
+    expect(mockOnConflictDoUpdate.mock.calls.length).toBeGreaterThan(0);
+    expect(mockReturning).not.toHaveBeenCalled();
   });
 
   it('attribution job called once on happy path', async () => {
