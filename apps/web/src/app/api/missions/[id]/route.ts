@@ -621,7 +621,17 @@ export async function PATCH(
       // escalation left standing here is exactly the dead-card bug this closes.
       // No-op when the mission was never escalated.
       if (status === 'completed' || status === 'archived') {
-        await resolveCriteriaEscalation(id, 'mission_completed', actor)
+        // An escalation can only still be set here if the criteria never
+        // passed — a passing verdict would already have cleared it via the
+        // 'verdict_changed' exit. So reaching this close with the flag still
+        // set IS the "Waive and complete" exit: an explicit override of a
+        // still-open gate, not an incidental close. 'mission_completed'
+        // stays as the fallback for the (defensive) case where a stale flag
+        // survives on a mission whose criteria actually did pass.
+        const storedCriteria = Array.isArray(existing.goalCriteria) ? existing.goalCriteria : [];
+        const storedVerdict = (existing.goalCriteriaState as { overall?: string } | null)?.overall ?? null;
+        const isWaiver = storedCriteria.length > 0 && storedVerdict !== 'pass';
+        await resolveCriteriaEscalation(id, isWaiver ? 'waived' : 'mission_completed', actor)
           .catch(e => console.error('[missions/patch] Failed to resolve criteria escalation on close:', e));
       }
     }

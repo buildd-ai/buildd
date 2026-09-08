@@ -371,6 +371,22 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
     ], []);
     expect(queue.map(i => i.chip)).toEqual(['QUESTION', 'DECIDE', 'APPROVE']);
   });
+
+  it('carries the failure-pattern recommendation through to the card', () => {
+    const items = buildDecideItems([candidate({
+      recommendation: 'The same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.',
+    })]);
+    const queue = buildActionQueue(items, []);
+    expect(queue[0].recommendation).toBe(
+      'The same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.',
+    );
+  });
+
+  it('leaves recommendation null when the caller supplied none', () => {
+    const items = buildDecideItems([candidate()]);
+    const queue = buildActionQueue(items, []);
+    expect(queue[0].recommendation ?? null).toBeNull();
+  });
 });
 
 describe('partitionEscalations', () => {

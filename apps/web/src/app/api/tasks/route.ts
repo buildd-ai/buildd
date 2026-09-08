@@ -988,8 +988,18 @@ export async function POST(req: NextRequest) {
           taskId: task.id,
         });
         const { reopenCompletedMission } = await import('@/lib/mission-loop');
-        await reopenCompletedMission(missionId, feedActor);
-      }).catch(err => console.error('[task-create] mission-feed/reopen failed:', err));
+        await reopenCompletedMission(missionId, feedActor)
+          .catch(err => console.error('[task-create] mission reopen failed:', err));
+
+        // "File the work" is one of the escalation note's two advertised
+        // exits — a task filed against this mission IS the owner's answer.
+        // Routed through the single writer; a no-op when the mission was
+        // never escalated, which is the common case for most task creation.
+        // Independent catch so a reopen failure above never blocks this.
+        const { resolveCriteriaEscalation } = await import('@/lib/criteria-escalation');
+        await resolveCriteriaEscalation(missionId, 'work_filed', feedActor)
+          .catch(err => console.error('[task-create] criteria escalation resolve failed:', err));
+      }).catch(err => console.error('[task-create] mission-feed failed:', err));
     }
 
     return NextResponse.json({ ...task, subjectIntakeOutcome: intake.outcome });
