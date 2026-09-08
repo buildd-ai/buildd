@@ -279,6 +279,8 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
   const candidate = (overrides?: Partial<EscalatedMissionCandidate>): EscalatedMissionCandidate => ({
     missionId: 'mission-99',
     missionTitle: 'Mission Gamma',
+    missionStatus: 'active',
+    goalCriteriaOverall: 'fail',
     criteriaEscalatedAt: new Date(),
     criteriaRearmFingerprint: 'fail|description:abc123',
     openNote: {
@@ -329,6 +331,29 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
   it('an escalation with no open note produces none — the note may have been answered', () => {
     const items = buildDecideItems([candidate({ openNote: null })]);
     expect(items).toHaveLength(0);
+  });
+
+  it('a completed mission is dropped even with an escalation and open note', () => {
+    const items = buildDecideItems([candidate({ missionStatus: 'completed' })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('an archived mission is dropped even with an escalation and open note', () => {
+    const items = buildDecideItems([candidate({ missionStatus: 'archived' })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('a mission whose current verdict is pass is dropped even though criteriaEscalatedAt is still set', () => {
+    const items = buildDecideItems([candidate({ goalCriteriaOverall: 'pass' })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('an active mission with a still-failing verdict and open note is kept', () => {
+    const items = buildDecideItems([candidate({ missionStatus: 'active', goalCriteriaOverall: 'fail' })]);
+    expect(items).toHaveLength(1);
+    const queue = buildActionQueue(items, []);
+    expect(queue).toHaveLength(1);
+    expect(queue[0].chip).toBe('DECIDE');
   });
 
   it('ranks DECIDE below QUESTION but above APPROVE', () => {

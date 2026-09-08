@@ -228,6 +228,20 @@ export interface BuildActionQueueOptions {
 export interface EscalatedMissionCandidate {
   missionId: string;
   missionTitle: string | null;
+  /**
+   * `missions.status` at read time. `criteriaEscalatedAt` and the open note
+   * are both write-once-in-practice flags — they record that an escalation
+   * happened, not that the mission is still open. A mission that has since
+   * completed or been archived must not resurrect a DECIDE card.
+   */
+  missionStatus: 'active' | 'paused' | 'completed' | 'archived' | 'budget_exhausted' | null;
+  /**
+   * `missions.goalCriteriaState.overall` at read time, or null if the mission
+   * has never been evaluated. A verdict that has since flipped to 'pass'
+   * means the thing that was escalated is no longer true, even though the
+   * escalation timestamp and note are untouched.
+   */
+  goalCriteriaOverall: string | null;
   /** `missions.criteriaEscalatedAt` — null means the gate never escalated it. */
   criteriaEscalatedAt: Date | string | null;
   criteriaRearmFingerprint: string | null;
@@ -235,21 +249,27 @@ export interface EscalatedMissionCandidate {
   openNote: { id: string; title: string; body: string | null } | null;
 }
 
+const DECIDE_TERMINAL_MISSION_STATUSES: ReadonlySet<string> = new Set(['completed', 'archived']);
+
 /**
  * Filters escalated missions down to the ones that actually belong on the
  * action queue, and shapes them into `decide` raw items.
  *
- * Both conditions are required, independently of each other: `criteria-rearm`
- * always escalates alongside an open note in the same transaction, but this
- * function does not assume that invariant holds — a mission whose note was
- * answered (status flips off 'open') or whose verdict changed (clearing
- * criteriaEscalatedAt) must drop out on either signal alone, not just both.
+ * Every condition below is required, independently of the others:
+ * `criteria-rearm` always escalates alongside an open note in the same
+ * transaction, but this function does not assume that invariant holds — a
+ * mission whose note was answered (status flips off 'open'), whose verdict
+ * changed (clearing criteriaEscalatedAt), whose mission completed/archived
+ * out from under it, or whose criteria re-evaluated to 'pass', must drop out
+ * on that signal alone, not just when every signal agrees.
  */
 export function buildDecideItems(candidates: EscalatedMissionCandidate[]): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
   for (const c of candidates) {
     if (!c.criteriaEscalatedAt) continue;
     if (!c.openNote) continue;
+    if (c.missionStatus && DECIDE_TERMINAL_MISSION_STATUSES.has(c.missionStatus)) continue;
+    if (c.goalCriteriaOverall === 'pass') continue;
     items.push({
       kind: 'decide',
       missionId: c.missionId,

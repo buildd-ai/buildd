@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, releases } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
+import { eq, and, inArray, notInArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
 import { ReleaseWidget } from './ReleaseWidget';
@@ -1625,8 +1625,16 @@ export default async function HomePage({
             where: and(
               inArray(missionsTable.workspaceId, wsIds),
               isNotNull(missionsTable.criteriaEscalatedAt),
+              notInArray(missionsTable.status, ['completed', 'archived']),
             ),
-            columns: { id: true, title: true, criteriaEscalatedAt: true, criteriaRearmFingerprint: true },
+            columns: {
+              id: true,
+              title: true,
+              status: true,
+              criteriaEscalatedAt: true,
+              criteriaRearmFingerprint: true,
+              goalCriteriaState: true,
+            },
           });
           if (escalatedMissions.length > 0) {
             const escalatedIds = escalatedMissions.map(m => m.id);
@@ -1648,6 +1656,8 @@ export default async function HomePage({
               return {
                 missionId: m.id,
                 missionTitle: m.title,
+                missionStatus: m.status,
+                goalCriteriaOverall: m.goalCriteriaState?.overall ?? null,
                 criteriaEscalatedAt: m.criteriaEscalatedAt,
                 criteriaRearmFingerprint: m.criteriaRearmFingerprint,
                 openNote: note ? { id: note.id, title: note.title, body: note.body } : null,
