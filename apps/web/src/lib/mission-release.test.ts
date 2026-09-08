@@ -121,6 +121,23 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
 }));
 
+// The mission release path dispatches through recordAndDispatchRelease, which
+// also writes the `releases` row. Stubbed here so this file stays about the
+// claim/commit/abandon protocol; the recorder has its own tests.
+const mockRecordAndDispatchRelease = mock(() =>
+  Promise.resolve({ ok: true as const, releaseId: 'rel-1', deduped: false, headSha: 'sha-1', runId: 5 }) as any,
+);
+mock.module('@/lib/release/record', () => ({
+  recordAndDispatchRelease: mockRecordAndDispatchRelease,
+}));
+
+mock.module('@buildd/core/release-archetype', () => ({
+  detectArchetype: (w: any) =>
+    w?.releaseConfig?.enabled && w?.releaseConfig?.prodBranch !== (w?.gitConfig?.defaultBranch ?? 'main')
+      ? 'gated'
+      : 'none',
+}));
+
 // The shared completion predicate. Mocked here so this file stays about release
 // dedup + strategy dispatch; the predicate's own behaviour is covered in
 // mission-completion.test.ts. Default: the mission is cleared to ship.
@@ -178,6 +195,10 @@ describe('fireMissionReleaseIfComplete', () => {
     mockCanCompleteMission.mockClear();
     mockGithubReposFindFirst.mockReset();
     mockGithubApi.mockReset();
+    mockRecordAndDispatchRelease.mockReset();
+    mockRecordAndDispatchRelease.mockResolvedValue({
+      ok: true, releaseId: 'rel-1', deduped: false, headSha: 'sha-1', runId: 5,
+    } as any);
     failMissionWriteMatching = null;
     missionWrites.length = 0;
     noteInserts.length = 0;
@@ -513,7 +534,16 @@ describe('fireMissionReleaseIfComplete', () => {
 
     await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
 
-    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+    // A mission release used to leave `missions.releasedAt` as its ONLY trace:
+    // no run id, no run url, no releases row. Nothing could verify it, attribute
+    // tasks to it, or advance it from the workflow_run webhook.
+    expect((mockRecordAndDispatchRelease.mock.calls[0] as any[])[0]).toMatchObject({
+      workspaceId: 'ws-1',
+      workflowFile: 'release.yml',
+      ref: 'dev',
+      triggeredBy: 'auto',
+    });
     // Phase 1 claims the attempt, phase 2 commits the release.
     expect(missionWrites.some(w => 'releaseAttemptedAt' in w && w.releaseAttemptedAt instanceof Date)).toBe(true);
     expect(missionWrites.some(w => 'releasedAt' in w && w.releasedAt instanceof Date)).toBe(true);
@@ -522,7 +552,9 @@ describe('fireMissionReleaseIfComplete', () => {
 
   it('workflow_dispatch: a failed dispatch abandons the claim with a decision note', async () => {
     mockWorkspacesFindFirst.mockResolvedValue(DISPATCH_WORKSPACE);
-    mockGithubApi.mockRejectedValue(new Error('422 workflow not found'));
+    mockRecordAndDispatchRelease.mockResolvedValue({
+      ok: false, status: 502, error: '422 workflow not found',
+    } as any);
 
     await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
 
@@ -545,7 +577,7 @@ describe('fireMissionReleaseIfComplete', () => {
     await fireMissionReleaseIfComplete('ws-1', 'mission-1', 'task-1', 'worker-1');
 
     // The dispatch happened exactly once.
-    expect(mockGithubApi).toHaveBeenCalledTimes(1);
+    expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
     // No false failure note on the mission feed.
     expect(noteInserts).toHaveLength(0);
     // And the claim was NOT released — nothing set releaseAttemptedAt back to null.

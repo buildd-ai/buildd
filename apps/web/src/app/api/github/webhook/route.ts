@@ -37,7 +37,8 @@ import { applyPolicyConfigToMergePolicy } from '@/lib/workspace-policy';
 import { reviewerTitle } from '@/lib/task-title';
 import { inspectPullRequestMigrations } from '@/lib/migration-inspector';
 import { tryAutoMergeWorkerPr } from '@/lib/auto-merge';
-import { dispatchWorkflowRelease } from '@/lib/release/dispatch';
+import { recordAndDispatchRelease } from '@/lib/release/record';
+import { detectArchetype } from '@buildd/core/release-archetype';
 import { buildWorkflowRunOutcome, mapWorkflowConclusionToReleaseState } from '@/lib/release/workflow-run';
 import {
   prepareSubjectFiling,
@@ -1094,33 +1095,40 @@ async function handlePullRequestEvent(event: {
                       // did not ship when it did, and handing the claim back frees
                       // the next merge in this mission to dispatch a SECOND
                       // release. See recordDispatchedRelease in lib/mission-release.
-                      let dispatchResult: Awaited<ReturnType<typeof dispatchWorkflowRelease>> | null = null;
-                      try {
-                        dispatchResult = await dispatchWorkflowRelease(
-                          event.installation.id,
-                          owner,
-                          name,
-                          { workflowFile, ref, inputs: { force: 'false', ...inputs } },
-                        );
-                      } catch (err) {
+                      const recorded = await recordAndDispatchRelease({
+                        workspaceId: mergedTask.workspaceId,
+                        archetype: detectArchetype({
+                          name: mergedWorkspace.name,
+                          releaseConfig: mergedWorkspace.releaseConfig,
+                          gitConfig: mergedWorkspace.gitConfig,
+                        }),
+                        installationId: event.installation.id,
+                        owner,
+                        name,
+                        repoFullName: repository.full_name,
+                        workflowFile,
+                        ref,
+                        prodBranch: releaseConfig?.prodBranch ?? mergedWorkspace.gitConfig?.defaultBranch ?? 'main',
+                        inputs: { force: 'false', ...inputs },
+                        triggeredBy: 'auto',
+                      });
+
+                      if (!recorded.ok) {
                         await abandonMissionReleaseAttempt(
                           missionId,
                           'dispatch_failed',
-                          `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
+                          `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${recorded.error}`,
                         );
-                      }
-
-                      if (dispatchResult) {
-                        console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
+                      } else {
+                        console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (release=${recorded.releaseId}, runId=${recorded.runId ?? 'pending'})`);
                         await recordDispatchedRelease(missionId, `${workflowFile}@${ref}`);
 
                         const releaseResult: ReleaseResult = {
                           status: 'pending_ci',
                           message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
-                          runId: dispatchResult.runId,
-                          runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
-                          runStatus: dispatchResult.runStatus,
-                          runConclusion: dispatchResult.runConclusion ?? null,
+                          runId: recorded.runId,
+                          runUrl: recorded.runUrl,
+                          releaseId: recorded.releaseId,
                         };
                         try {
                           await db
@@ -1135,31 +1143,54 @@ async function handlePullRequestEvent(event: {
                   }
                 }
               } else {
-                // every_merge (or future values): dispatch on each merged PR
+                // every_merge (or future values): dispatch on each merged PR.
+                //
+                // Goes through recordAndDispatchRelease so this dispatch leaves
+                // a `releases` row. It used to write only tasks.releaseResult,
+                // and because every automatic path into maybeCreateReleaseRow
+                // filters on strategy branch_merge first, a gated +
+                // workflow_dispatch workspace could never get a row at all —
+                // the Releases page, the queue baseline and the health cron
+                // were blind to every release that actually shipped.
                 const { workflowFile, ref, inputs } = resolution.strategy;
                 const [owner, name] = repository.full_name.split('/');
-                try {
-                  const dispatchResult = await dispatchWorkflowRelease(
-                    event.installation.id,
-                    owner,
-                    name,
-                    { workflowFile, ref, inputs: { force: 'false', ...inputs } },
-                  );
+                const recorded = await recordAndDispatchRelease({
+                  workspaceId: mergedTask.workspaceId,
+                  archetype: detectArchetype({
+                    name: mergedWorkspace.name,
+                    releaseConfig: mergedWorkspace.releaseConfig,
+                    gitConfig: mergedWorkspace.gitConfig,
+                  }),
+                  installationId: event.installation.id,
+                  owner,
+                  name,
+                  repoFullName: repository.full_name,
+                  workflowFile,
+                  ref,
+                  prodBranch: releaseConfig?.prodBranch ?? mergedWorkspace.gitConfig?.defaultBranch ?? 'main',
+                  inputs: { force: 'false', ...inputs },
+                  triggeredBy: 'auto',
+                });
+
+                if (!recorded.ok) {
+                  console.error(`[webhook] Release dispatch failed for ${repository.full_name}: ${recorded.error}`);
+                } else if (!recorded.deduped) {
                   const releaseResult: ReleaseResult = {
                     status: 'pending_ci',
                     message: `Release: dispatched ${workflowFile}@${ref} for ${repository.full_name} — awaiting workflow completion`,
-                    runId: dispatchResult.runId,
-                    runUrl: dispatchResult.runUrl ?? dispatchResult.runsUrl,
-                    runStatus: dispatchResult.runStatus,
-                    runConclusion: dispatchResult.runConclusion ?? null,
+                    runId: recorded.runId,
+                    runUrl: recorded.runUrl,
+                    releaseId: recorded.releaseId,
                   };
-                  await db
-                    .update(tasks)
-                    .set({ releaseResult, updatedAt: new Date() })
-                    .where(eq(tasks.id, mergedTask.id));
-                  console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id}, runId=${dispatchResult.runId ?? 'pending'})`);
-                } catch (err) {
-                  console.error(`[webhook] Release dispatch failed for ${repository.full_name}:`, err);
+                  try {
+                    await db
+                      .update(tasks)
+                      .set({ releaseResult, updatedAt: new Date() })
+                      .where(eq(tasks.id, mergedTask.id));
+                  } catch (err) {
+                    console.error(`[webhook] could not annotate task ${mergedTask.id} with the release result:`, err);
+                  }
+                  console.log(`[webhook] Triggered ${workflowFile}@${ref} for ${repository.full_name} (task ${mergedTask.id}, release=${recorded.releaseId}, runId=${recorded.runId ?? 'pending'})`);
                 }
               }
             }
@@ -1705,15 +1736,6 @@ async function maybeDispatchReviewer(
       // check — passing it through saves a second identical GitHub call.
       prFiles,
     });
-
-    if (reviewerTask?.deduplicated) {
-      // A live reviewer task already owns this PR generation (webhook redelivery,
-      // or the manual review endpoint got there first). Dispatching again is the
-      // duplicate-work bug this guard exists to stop, and the PR already carries
-      // the "reviewing" activity entry from the first dispatch.
-      console.log(`[reviewer] PR #${pr.number} already under review by task ${reviewerTask.id} — skipping duplicate dispatch`);
-      return true; // handled — skip auto-merge
-    }
 
     if (reviewerTask) {
       // dispatchNewTask needs more than just the id — pass the reviewer task details

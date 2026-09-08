@@ -458,6 +458,10 @@ export interface ReleaseResult {
   runStatus?: string;
   // Workflow run conclusion: 'success' | 'failure' | 'timed_out' | null (while running)
   runConclusion?: string | null;
+  // The `releases` row this dispatch created. Without it the task knows it
+  // triggered a release and the release does not know which task triggered it,
+  // which is the same gap `release_tasks` attribution keeps falling into.
+  releaseId?: string;
 }
 
 // Work tracker configuration — links a workspace to an external issue tracker.

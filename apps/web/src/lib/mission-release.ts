@@ -3,8 +3,9 @@ import { missions, missionNotes, tasks, workspaces, githubRepos } from '@buildd/
 import { eq, and, or, lt, isNull, inArray, count } from 'drizzle-orm';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { canCompleteMission } from '@/lib/mission-completion';
-import { githubApi } from '@/lib/github';
 import { executeRelease } from '@/lib/release-executor';
+import { recordAndDispatchRelease } from '@/lib/release/record';
+import { detectArchetype } from '@buildd/core/release-archetype';
 
 // Count tasks in the mission that are not yet terminal (pending, assigned, or in_progress).
 export async function countPendingTasksForMission(missionId: string): Promise<number> {
@@ -188,7 +189,9 @@ export async function fireMissionReleaseIfComplete(
   // Fetch workspace config to check trigger policy
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    columns: { releaseConfig: true, githubRepoId: true },
+    // name and gitConfig feed detectArchetype, which the recorded release row
+    // carries — a row whose archetype is guessed is worse than no row.
+    columns: { name: true, releaseConfig: true, githubRepoId: true, gitConfig: true },
   });
 
   const trigger = resolveReleaseTrigger(workspace?.releaseConfig);
@@ -257,26 +260,43 @@ export async function fireMissionReleaseIfComplete(
     }
 
     const { workflowFile, ref, inputs } = resolution.strategy;
-    try {
-      await githubApi(
-        repo.installation.installationId,
-        `/repos/${repo.fullName}/actions/workflows/${workflowFile}/dispatches`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ref, inputs: { force: 'false', ...inputs } }),
-        },
-      );
-    } catch (err) {
+    const [owner, name] = repo.fullName.split('/');
+
+    // Goes through recordAndDispatchRelease rather than a bare POST to the
+    // dispatches endpoint. That raw call captured no run id and no run url and
+    // wrote no `releases` row, so a mission release left `missions.releasedAt`
+    // as its only trace: nothing to verify, nothing to attribute tasks to, and
+    // nothing for the workflow_run webhook to advance.
+    const recorded = await recordAndDispatchRelease({
+      workspaceId,
+      archetype: detectArchetype({
+        name: workspace?.name,
+        releaseConfig: workspace?.releaseConfig,
+        gitConfig: workspace?.gitConfig,
+      }),
+      installationId: repo.installation.installationId,
+      owner,
+      name,
+      repoFullName: repo.fullName,
+      workflowFile,
+      ref,
+      prodBranch: workspace?.releaseConfig?.prodBranch ?? workspace?.gitConfig?.defaultBranch ?? 'main',
+      inputs: { force: 'false', ...inputs },
+      triggeredBy: 'auto',
+    });
+
+    if (!recorded.ok) {
       await abandonMissionReleaseAttempt(
         missionId,
         'dispatch_failed',
-        `Dispatching ${workflowFile}@${ref} failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Dispatching ${workflowFile}@${ref} failed: ${recorded.error}`,
       );
       return;
     }
 
-    console.log(`[mission-release] mission ${missionId}: dispatched ${workflowFile}@${ref}`);
+    console.log(
+      `[mission-release] mission ${missionId}: dispatched ${workflowFile}@${ref} (release=${recorded.releaseId})`,
+    );
     await recordDispatchedRelease(missionId, `${workflowFile}@${ref}`);
   } else if (resolution.strategy.kind === 'branch_merge') {
     // For branch_merge: delegate to executeRelease with isMissionRelease=true

@@ -164,7 +164,6 @@ mock.module('@buildd/core/db', () => ({
           });
           return terminal;
         },
-
       }),
     }),
   },
@@ -204,7 +203,6 @@ const schemaMock = {
     headSha: 'headSha',
     createdAt: 'createdAt',
   },
-
   knowledgeIngestJobs: {
     id: 'id', workspaceId: 'workspaceId', repo: 'repo', trigger: 'trigger',
     sha: 'sha', prNumber: 'prNumber', scope: 'scope', status: 'status',
@@ -305,6 +303,30 @@ const mockDispatchWorkflowRelease = mock(() =>
 );
 mock.module('@/lib/release/dispatch', () => ({
   dispatchWorkflowRelease: mockDispatchWorkflowRelease,
+}));
+
+// The webhook dispatches releases through recordAndDispatchRelease, which also
+// writes the `releases` row. Kept as a passthrough over the dispatch mock so the
+// existing "did we dispatch, with what" assertions keep their meaning.
+const mockRecordAndDispatchRelease = mock(async (params: any) => {
+  const dispatched: any = await mockDispatchWorkflowRelease(
+    params.installationId,
+    params.owner,
+    params.name,
+    { workflowFile: params.workflowFile, ref: params.ref, inputs: params.inputs },
+  );
+  return {
+    ok: true as const,
+    releaseId: 'rel-auto-1',
+    deduped: false,
+    headSha: 'sha-dev-head',
+    runId: dispatched?.runId,
+    runUrl: dispatched?.runUrl,
+    runsUrl: dispatched?.runsUrl,
+  };
+});
+mock.module('@/lib/release/record', () => ({
+  recordAndDispatchRelease: mockRecordAndDispatchRelease,
 }));
 
 // Pusher — no-op in tests; triggerEvent calls should be silently skipped
@@ -535,6 +557,25 @@ function resetAll() {
   mockPreflightEscalationCheck.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
   mockDispatchWorkflowRelease.mockReset();
+  // mockReset() drops the implementation, so the passthrough is reinstalled.
+  mockRecordAndDispatchRelease.mockReset();
+  mockRecordAndDispatchRelease.mockImplementation(async (params: any) => {
+    const dispatched: any = await mockDispatchWorkflowRelease(
+      params.installationId,
+      params.owner,
+      params.name,
+      { workflowFile: params.workflowFile, ref: params.ref, inputs: params.inputs },
+    );
+    return {
+      ok: true as const,
+      releaseId: 'rel-auto-1',
+      deduped: false,
+      headSha: 'sha-dev-head',
+      runId: dispatched?.runId,
+      runUrl: dispatched?.runUrl,
+      runsUrl: dispatched?.runsUrl,
+    };
+  });
   mockTriggerEvent.mockReset();
   mockRecordDirectProdMerge.mockReset();
   mockRecordDirectProdMerge.mockReturnValue(Promise.resolve());
@@ -1626,6 +1667,74 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
       expect((mockDispatchWorkflowRelease.mock.calls[0] as any[])[3]).toMatchObject({ workflowFile: 'ship.yml' });
+
+      // The point of routing through recordAndDispatchRelease: this dispatch
+      // leaves a `releases` row. It used to write only tasks.releaseResult, so
+      // a gated + workflow_dispatch workspace had no release history at all.
+      expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+      expect((mockRecordAndDispatchRelease.mock.calls[0] as any[])[0]).toMatchObject({
+        workspaceId: 'ws2',
+        triggeredBy: 'auto',
+        workflowFile: 'ship.yml',
+        ref: 'dev',
+        // This fixture declares no prodBranch, so the range is measured against
+        // the default branch and detectArchetype resolves to `none`. Recording
+        // it truthfully is the point — the workspace has releases enabled with
+        // no production branch, and the row now says so.
+        prodBranch: 'dev',
+        archetype: 'none',
+      });
+    });
+
+    it('every_merge: links the task to the release row it created', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 81,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t81-feat', sha: 'sha-81' },
+          html_url: 'https://github.com/test-org/test-repo/pull/81',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w81',
+        task: { id: 't81', status: 'pending', workspaceId: 'ws2', release: 'inherit', title: 'Feature', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws2',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'ship.yml',
+          ref: 'dev',
+          prodBranch: 'main',
+          trigger: 'every_merge',
+        },
+        gitConfig: { defaultBranch: 'dev' },
+      });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      // With a prodBranch distinct from the default branch this is a gated
+      // workspace — the shape that could never produce a release row before.
+      expect((mockRecordAndDispatchRelease.mock.calls[0] as any[])[0]).toMatchObject({
+        archetype: 'gated',
+        prodBranch: 'main',
+        triggeredBy: 'auto',
+      });
+
+      const annotated = updateCalls.find(
+        c => c.table === schemaMock.tasks && (c.setValues as any).releaseResult,
+      );
+      expect(annotated).toBeDefined();
+      // Without this the task knows it triggered a release and the release does
+      // not know which task triggered it.
+      expect((annotated!.setValues as any).releaseResult.releaseId).toBe('rel-auto-1');
     });
 
     it('workflow_dispatch + trigger=manual: does not dispatch', async () => {
@@ -1827,7 +1936,9 @@ describe('POST /api/github/webhook', () => {
         },
       });
       mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
-      mockDispatchWorkflowRelease.mockImplementation(() => Promise.reject(new Error('github 502')) as any);
+      mockRecordAndDispatchRelease.mockImplementation(
+        () => Promise.resolve({ ok: false, status: 502, error: 'github 502' }) as any,
+      );
       mockGithubApi.mockReturnValue(Promise.resolve({}));
 
       const res = await POST(createWebhookRequest('pull_request', payload));
@@ -1875,7 +1986,9 @@ describe('POST /api/github/webhook', () => {
         },
       });
       mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
-      mockDispatchWorkflowRelease.mockImplementation(() => Promise.resolve({ runId: 99, runUrl: 'https://x/99' }) as any);
+      mockRecordAndDispatchRelease.mockImplementation(
+        () => Promise.resolve({ ok: true, releaseId: 'rel-auto-1', deduped: false, headSha: 's', runId: 99, runUrl: 'https://x/99' }) as any,
+      );
       mockGithubApi.mockReturnValue(Promise.resolve({}));
       // The task annotation fails; the dispatch did not.
       failUpdateMatching = values => 'releaseResult' in values;
