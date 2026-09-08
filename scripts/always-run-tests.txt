@@ -16,4 +16,8 @@
 scripts/always-run-tests.test.ts
 scripts/collector-coverage.test.ts
 scripts/cron-instrumentation.test.ts
+# Asserts .github/workflows/release-tag.yml. It reads a fixed path rather than
+# enumerating the repo, so the ls-files heuristic does not flag it — but a change
+# to that workflow still selects no test beside it, which is the same hole.
+scripts/release-tag-workflow.test.ts
 scripts/skills-listed.test.ts
