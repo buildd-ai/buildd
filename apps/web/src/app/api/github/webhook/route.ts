@@ -25,6 +25,7 @@ import {
   claimMissionReleaseAttempt,
   commitMissionRelease,
   abandonMissionReleaseAttempt,
+  recordDispatchedRelease,
 } from '@/lib/mission-release';
 import { canCompleteMission } from '@/lib/mission-completion';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -1087,13 +1088,32 @@ async function handlePullRequestEvent(event: {
                       // Phase 1 claimed the ATTEMPT. Both exits below resolve it.
                       const { workflowFile, ref, inputs } = resolution.strategy;
                       const [owner, name] = repository.full_name.split('/');
+                      // Only the dispatch itself belongs in this try. Everything
+                      // after it is bookkeeping for a release that HAS gone out:
+                      // reporting `dispatch_failed` for a failed write claims prod
+                      // did not ship when it did, and handing the claim back frees
+                      // the next merge in this mission to dispatch a SECOND
+                      // release. See recordDispatchedRelease in lib/mission-release.
+                      let dispatchResult: Awaited<ReturnType<typeof dispatchWorkflowRelease>> | null = null;
                       try {
-                        const dispatchResult = await dispatchWorkflowRelease(
+                        dispatchResult = await dispatchWorkflowRelease(
                           event.installation.id,
                           owner,
                           name,
                           { workflowFile, ref, inputs: { force: 'false', ...inputs } },
                         );
+                      } catch (err) {
+                        await abandonMissionReleaseAttempt(
+                          missionId,
+                          'dispatch_failed',
+                          `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
+                        );
+                      }
+
+                      if (dispatchResult) {
+                        console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
+                        await recordDispatchedRelease(missionId, `${workflowFile}@${ref}`);
+
                         const releaseResult: ReleaseResult = {
                           status: 'pending_ci',
                           message: `Release: dispatched ${workflowFile}@${ref} for mission ${missionId} — awaiting workflow completion`,
@@ -1102,18 +1122,14 @@ async function handlePullRequestEvent(event: {
                           runStatus: dispatchResult.runStatus,
                           runConclusion: dispatchResult.runConclusion ?? null,
                         };
-                        await db
-                          .update(tasks)
-                          .set({ releaseResult, updatedAt: new Date() })
-                          .where(eq(tasks.id, mergedTask.id));
-                        await commitMissionRelease(missionId);
-                        console.log(`[webhook] Mission ${missionId} complete — dispatched ${workflowFile}@${ref} for ${repository.full_name} (runId=${dispatchResult.runId ?? 'pending'})`);
-                      } catch (err) {
-                        await abandonMissionReleaseAttempt(
-                          missionId,
-                          'dispatch_failed',
-                          `Dispatching ${workflowFile}@${ref} for ${repository.full_name} failed: ${err instanceof Error ? err.message : String(err)}`,
-                        );
+                        try {
+                          await db
+                            .update(tasks)
+                            .set({ releaseResult, updatedAt: new Date() })
+                            .where(eq(tasks.id, mergedTask.id));
+                        } catch (err) {
+                          console.error(`[webhook] Mission ${missionId}: dispatched ${workflowFile}@${ref} but could not annotate task ${mergedTask.id}:`, err);
+                        }
                       }
                     }
                   }

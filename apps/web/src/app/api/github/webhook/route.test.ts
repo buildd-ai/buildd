@@ -129,6 +129,15 @@ mock.module('@buildd/core/db', () => ({
     update: (table: any) => ({
       set: (values: any) => {
         updateCalls.push({ table, setValues: values });
+        if (failUpdateMatching?.(values)) {
+          return {
+            where: (_condition: any) => {
+              const p: any = Promise.reject(new Error('update failed'));
+              p.returning = () => p;
+              return p;
+            },
+          };
+        }
         return {
           where: (condition: any) => ({
             returning: () => Promise.resolve([{ id: 'row-1' }]),
@@ -211,6 +220,12 @@ mock.module('@buildd/core/release-strategy', () => ({
   resolveReleaseStrategy: mockResolveReleaseStrategy,
 }));
 
+/**
+ * Makes one `db.update(...).set(payload)` reject, so a test can simulate the
+ * bookkeeping failing AFTER a release dispatch has already gone out.
+ */
+let failUpdateMatching: ((values: any) => boolean) | null = null;
+
 // Mock mission-release helpers
 const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
 // Two-phase release claim. `claim` returning true means this caller owns the
@@ -219,12 +234,20 @@ const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
 const mockClaimMissionReleaseAttempt = mock(() => Promise.resolve(true));
 const mockCommitMissionRelease = mock(() => Promise.resolve());
 const mockAbandonMissionReleaseAttempt = mock(() => Promise.resolve());
+// Passthrough, not an opaque stub: `recordDispatchedRelease` exists precisely to
+// commit the release without letting a write failure masquerade as a dispatch
+// failure, so the assertions that matter are still "was the release recorded"
+// (commit) vs "was a failure reported" (abandon).
+const mockRecordDispatchedRelease = mock((missionId: string, _what?: string) =>
+  mockCommitMissionRelease(missionId as any),
+);
 mock.module('@/lib/mission-release', () => ({
   countPendingTasksForMission: mockCountPendingTasksForMission,
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
   claimMissionReleaseAttempt: mockClaimMissionReleaseAttempt,
   commitMissionRelease: mockCommitMissionRelease,
   abandonMissionReleaseAttempt: mockAbandonMissionReleaseAttempt,
+  recordDispatchedRelease: mockRecordDispatchedRelease,
 }));
 
 // Mission dependency gate. `dependencyMetAt` has exactly one writer, and the
@@ -477,6 +500,7 @@ function resetAll() {
   mockClaimMissionReleaseAttempt.mockReset();
   mockClaimMissionReleaseAttempt.mockReturnValue(Promise.resolve(true));
   mockCommitMissionRelease.mockReset();
+  failUpdateMatching = null;
   mockAbandonMissionReleaseAttempt.mockReset();
   mockCanCompleteMission.mockReset();
   mockCanCompleteMission.mockReturnValue(Promise.resolve({ ok: true, code: 'ok', reason: 'clear' }) as any);
@@ -1797,6 +1821,54 @@ describe('POST /api/github/webhook', () => {
       expect(missionId).toBe('mission-1');
       expect(code).toBe('dispatch_failed');
       expect(String(reason)).toContain('github 502');
+    });
+
+    // THE REGRESSION. The dispatch already reached GitHub; only the follow-up
+    // `tasks.releaseResult` write failed. The old code had that write inside the
+    // dispatch try, so it reported `dispatch_failed` — a release that HAD gone
+    // out was recorded as a failure, the claim was handed back, and the next
+    // merge in the same mission dispatched a second release.
+    it('workflow_dispatch + on_mission_complete: a bookkeeping failure after a successful dispatch still records the release', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 23,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t23-feat', sha: 'sha-23' },
+          html_url: 'https://github.com/test-org/test-repo/pull/23',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w23',
+        task: { id: 't23', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockDispatchWorkflowRelease.mockImplementation(() => Promise.resolve({ runId: 99, runUrl: 'https://x/99' }) as any);
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+      // The task annotation fails; the dispatch did not.
+      failUpdateMatching = values => 'releaseResult' in values;
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      // The release is recorded, because it happened.
+      expect(mockCommitMissionRelease).toHaveBeenCalledWith('mission-1');
+      // And no false dispatch failure is reported.
+      expect(mockAbandonMissionReleaseAttempt).not.toHaveBeenCalled();
     });
 
     it('workflow_dispatch + on_mission_complete: does NOT dispatch when tasks are still pending', async () => {
