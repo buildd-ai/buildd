@@ -1,0 +1,15 @@
+# Repo-wide invariant tests: always run, whatever the diff.
+#
+# affected-tests.sh maps a changed source file to the test file NEXT TO IT.
+# These tests are not about the file next to them — their input is `git
+# ls-files`, i.e. the whole repository — so the change that breaks one of them
+# can never select it. They used to run only when some unrelated part of the
+# diff tripped the `ALL` fan-out, which is why a forgotten `withCronRun` was
+# discovered in CI rather than before the push.
+#
+# scripts/always-run-tests.test.ts guards this list in both directions. Add an
+# entry when you add a test that enumerates the repo; do not remove one to make
+# a red build green.
+scripts/collector-coverage.test.ts
+scripts/cron-instrumentation.test.ts
+scripts/skills-listed.test.ts

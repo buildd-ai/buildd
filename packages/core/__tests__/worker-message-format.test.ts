@@ -92,3 +92,66 @@ describe('reply recipe', () => {
     expect(out).toContain('replyToMsgId: "msg-8"');
   });
 });
+
+
+describe('path_regenerable_overlap', () => {
+  const msg = {
+    id: 'msg-9',
+    type: 'path_regenerable_overlap' as const,
+    fromTaskId: 'task-sender',
+    toTaskId: 'task-me',
+    sentAt: new Date().toISOString(),
+    hopCount: 0,
+    body: {
+      overlappingPaths: ['docs/specs/INDEX.md'],
+      commands: ['bun run specs:check'],
+      detectedByBranch: 'buildd/other',
+    },
+  };
+
+  it('names the command instead of asking the agent to coordinate', () => {
+    const out = formatWorkerMessages([msg]);
+    expect(out).toContain('docs/specs/INDEX.md');
+    expect(out).toContain('bun run specs:check');
+    // Prose, not the default branch's JSON dump of the body — an agent acts on
+    // an instruction and ignores a payload.
+    expect(out).not.toContain('"overlappingPaths"');
+    expect(out).toMatch(/regenerat/i);
+  });
+
+  it('tells the agent explicitly not to wait on the sibling', () => {
+    expect(formatWorkerMessages([msg])).toMatch(/do not wait/i);
+  });
+
+  it('joins multiple commands rather than printing an array literal', () => {
+    const out = formatWorkerMessages([{
+      ...msg,
+      body: {
+        overlappingPaths: ['docs/specs/INDEX.md', 'packages/core/drizzle/meta/_journal.json'],
+        commands: ['bun run specs:check', 'cd packages/core && bun db:generate'],
+      },
+    }]);
+    expect(out).toContain('bun run specs:check');
+    expect(out).toContain('cd packages/core && bun db:generate');
+    expect(out).not.toContain('[');
+  });
+
+  it('does not tell the agent it is blocked', () => {
+    // The whole point: a generated file is not a mutex. Two agents regenerating
+    // the spec index are not in conflict, and telling them they are produces a
+    // wait, a message round trip, or an abandoned PR for nothing.
+    const out = formatWorkerMessages([msg]).toLowerCase();
+    expect(out).not.toContain('blocked');
+    expect(out).not.toContain('about to land');
+  });
+
+  it('renders without a reply recipe — there is nothing to negotiate', () => {
+    expect(formatWorkerMessages([msg])).not.toContain('send_worker_message(');
+  });
+
+  it('falls back readably when the body carries no commands', () => {
+    const out = formatWorkerMessages([{ ...msg, body: { overlappingPaths: ['docs/specs/INDEX.md'] } }]);
+    expect(out).toContain('docs/specs/INDEX.md');
+    expect(out).not.toContain('undefined');
+  });
+});
