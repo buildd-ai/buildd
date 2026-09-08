@@ -916,7 +916,7 @@ export async function PATCH(
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -963,8 +963,12 @@ export async function PATCH(
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       let hasPR = workerHasPR;
 
-      // Auto-detect: if no PR on worker but branch exists, check GitHub for PRs
-      if (!hasPR && worker.branch) {
+      // Resolve the workspace's GitHub repo/installation once — used both to
+      // auto-detect an open PR on the worker's own branch and, for
+      // pr_required, to check whether a PR the task text references by
+      // number is already merged (see fallback below).
+      let repoWithInstallation: { fullName: string; installation: { installationId: number } } | null = null;
+      if (!hasPR && (worker.branch || outputReq === 'pr_required')) {
         const workspace = await db.query.workspaces.findFirst({
           where: eq(workspaces.id, worker.workspaceId),
         });
@@ -974,24 +978,60 @@ export async function PATCH(
             with: { installation: true },
           });
           if (repo?.installation) {
-            try {
-              const owner = repo.fullName.split('/')[0];
-              const prs = await githubApi(
-                repo.installation.installationId,
-                `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(owner + ':' + worker.branch)}&state=open`,
-              );
-              if (Array.isArray(prs) && prs.length > 0) {
-                // Found PR — update worker and let validation pass
-                await db.update(workers).set({
-                  prUrl: prs[0].html_url,
-                  prNumber: prs[0].number,
-                  updatedAt: new Date(),
-                }).where(eq(workers.id, id));
-                hasPR = true;
-                workerHasPR = true;
-              }
-            } catch { /* non-fatal — fall through to normal validation */ }
+            repoWithInstallation = repo as unknown as { fullName: string; installation: { installationId: number } };
           }
+        }
+      }
+
+      // Auto-detect: if no PR on worker but branch exists, check GitHub for open PRs
+      if (!hasPR && worker.branch && repoWithInstallation) {
+        try {
+          const owner = repoWithInstallation.fullName.split('/')[0];
+          const prs = await githubApi(
+            repoWithInstallation.installation.installationId,
+            `/repos/${repoWithInstallation.fullName}/pulls?head=${encodeURIComponent(owner + ':' + worker.branch)}&state=open`,
+          );
+          if (Array.isArray(prs) && prs.length > 0) {
+            // Found PR — update worker and let validation pass
+            await db.update(workers).set({
+              prUrl: prs[0].html_url,
+              prNumber: prs[0].number,
+              updatedAt: new Date(),
+            }).where(eq(workers.id, id));
+            hasPR = true;
+            workerHasPR = true;
+          }
+        } catch { /* non-fatal — fall through to normal validation */ }
+      }
+
+      // pr_required fallback: a task scoped as "rebase/merge PR #N" can lose
+      // its race — the referenced PR merges via a concurrent path before this
+      // worker acts, leaving no new diff to open a PR for. Rather than force
+      // a fresh, empty PR just to satisfy the gate, accept the referenced PR
+      // if it's already merged: DONE = MERGED regardless of who merged it.
+      if (outputReq === 'pr_required' && !hasPR && repoWithInstallation) {
+        const referencedText = `${terminalTaskRow[0]?.title ?? ''} ${terminalTaskRow[0]?.description ?? ''}`;
+        const referencedPrNumbers = [...new Set(
+          [...referencedText.matchAll(/#(\d+)/g)].map((m) => Number(m[1])),
+        )].slice(0, 5);
+
+        for (const prNumber of referencedPrNumbers) {
+          try {
+            const pr = await githubApi(
+              repoWithInstallation.installation.installationId,
+              `/repos/${repoWithInstallation.fullName}/pulls/${prNumber}`,
+            );
+            if (pr?.merged) {
+              await db.update(workers).set({
+                prUrl: pr.html_url,
+                prNumber: pr.number,
+                updatedAt: new Date(),
+              }).where(eq(workers.id, id));
+              hasPR = true;
+              workerHasPR = true;
+              break;
+            }
+          } catch { /* non-fatal — try the next referenced number */ }
         }
       }
 
