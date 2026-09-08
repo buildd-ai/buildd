@@ -1885,6 +1885,7 @@ export class WorkerManager {
         retrieveTaskMemory(this.buildd, {
           workspaceId: task.workspaceId,
           title: task.title,
+          description: task.description,
           pathManifest: task.pathManifest,
         }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
@@ -1897,6 +1898,7 @@ export class WorkerManager {
         derivedBy: taskMemory.derivedBy,
         results: taskMemory.results.length,
         scopePaths: taskMemory.scopePaths.length,
+        inferredPaths: taskMemory.inferredPaths.length,
         pathScopeMissed: taskMemory.pathScopeMissed,
       }), task.id);
 

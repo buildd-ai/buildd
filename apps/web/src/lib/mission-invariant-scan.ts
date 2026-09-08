@@ -2,7 +2,7 @@
  * Snapshot loader for the mission-invariant sweep.
  *
  * The impure half of `lib/mission-invariants.ts`: every DB read and the one
- * bounded set of GitHub calls live here, so the eleven predicates stay pure and
+ * bounded set of GitHub calls live here, so the thirteen predicates stay pure and
  * unit-testable against a constructed snapshot.
  *
  * ── Cost shape ──────────────────────────────────────────────────────────────
@@ -63,11 +63,30 @@ export const RECENT_WINDOW_DAYS = 7;
 /** Reviewer verdicts stay relevant while their PR is open; a fortnight bounds the scan. */
 export const REVIEW_WINDOW_DAYS = 14;
 
+/**
+ * How far back merges are loaded for base-drift counting.
+ *
+ * Drift is only ever counted forward from the moment a PR opened, so a PR older
+ * than this window is credited with less drift than it really has and the
+ * invariant reports it later, or not at all. That is the safe direction for a
+ * signal that files tasks: it fails towards silence, never towards a PR being
+ * accused of drift that predates it.
+ */
+export const BASE_MERGE_WINDOW_DAYS = 14;
+
 export const MAX_MISSIONS = 200;
 export const MAX_MISSION_TASKS = 2000;
 export const MAX_WORKERS = 500;
 export const MAX_RECENT_TASKS = 300;
 export const MAX_RELEASES = 200;
+
+/**
+ * Row cap on the base-drift merge read. Three small columns per row, and the
+ * NEWEST rows are kept (`ORDER BY merged_at DESC`) — which is the direction
+ * that preserves the signal, since drift counts only merges that landed after
+ * a PR opened.
+ */
+export const MAX_BASE_MERGES = 1000;
 
 /**
  * Hard cap on GitHub ref lookups per run. Each is one cheap GET, but the sweep
@@ -130,7 +149,7 @@ export interface ScanResult {
 }
 
 /**
- * Read everything the eleven invariants need, in one bounded pass.
+ * Read everything the thirteen invariants need, in one bounded pass.
  *
  * `now` is injected so the windows are deterministic in tests and identical to
  * the `now` the predicates are evaluated against.
@@ -164,7 +183,12 @@ export async function loadInvariantSnapshot(
   })) as Array<Record<string, any>>;
 
   snapshot.missions = missionRows
-    .filter(m => m.status !== 'archived')
+    // Archived missions are out of scope for every invariant EXCEPT
+    // `stale_criteria_escalation`, whose whole purpose is catching an
+    // escalation that outlived the mission — so it must not be excluded here
+    // the way it would be excluded everywhere else. No other predicate reads
+    // an archived mission's fields in a way this widening could false-fire.
+    .filter(m => m.status !== 'archived' || m.criteriaEscalatedAt != null)
     .map((m): SnapshotMission => ({
       id: m.id,
       workspaceId: m.workspaceId,
@@ -350,6 +374,33 @@ export async function loadInvariantSnapshot(
   snapshot.tasks = [...taskById.values()];
   snapshot.workers = [...workerById.values()];
 
+  // ── Base drift ────────────────────────────────────────────────────────────
+  // Merged rows, which every worker read above deliberately excludes. This is
+  // the only place the snapshot learns that anything landed, and without it
+  // `open_pr_outpaced_by_base` counts zero drift for every PR forever.
+  const baseMergeCutoff = new Date(now.getTime() - BASE_MERGE_WINDOW_DAYS * DAY_MS);
+  const baseMergeRows = (await db.query.workers.findMany({
+    where: and(
+      isNotNull(workers.prBaseRef),
+      isNotNull(workers.mergedAt),
+      gt(workers.mergedAt, baseMergeCutoff),
+    ),
+    columns: { workspaceId: true, prBaseRef: true, mergedAt: true },
+    orderBy: desc(workers.mergedAt),
+    limit: MAX_BASE_MERGES,
+  })) as Array<Record<string, any>>;
+  snapshot.baseMerges = baseMergeRows
+    // Both columns are nullable and the SQL predicate above already excludes
+    // nulls; this is the same fact stated where a reader of the array can see
+    // it, since a null baseRef would otherwise count as drift against every
+    // other null baseRef.
+    .filter(r => r.prBaseRef && r.mergedAt)
+    .map(r => ({
+      workspaceId: r.workspaceId,
+      baseRef: r.prBaseRef,
+      mergedAt: r.mergedAt,
+    }));
+
   // ── Releases + attribution edges ──────────────────────────────────────────
   const releaseRows = (await db.query.releases.findMany({
     where: gt(releases.createdAt, RELEASE_INVARIANT_CUTOFF),
@@ -514,6 +565,7 @@ export async function loadInvariantSnapshot(
       releases: snapshot.releases.length,
       notes: snapshot.notes.length,
       remoteRefs: refsChecked,
+      baseMerges: snapshot.baseMerges.length,
     },
   };
 }

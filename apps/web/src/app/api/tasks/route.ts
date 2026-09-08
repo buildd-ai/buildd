@@ -26,7 +26,7 @@ import {
   recordSubjectMatchObserved,
 } from '@/lib/subject-anchor-observer';
 import type { SubjectFilingOrigin } from '@buildd/core/subject-anchor-observe';
-import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
+import { resolveSubjectPolicy, isIdentifyingSubjectKeyType } from '@buildd/core/subject-anchor-observe';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
@@ -668,6 +668,61 @@ export async function POST(req: NextRequest) {
       origin: subjectOrigin,
     });
 
+    // ── Pre-dispatch dedupe ──────────────────────────────────────────────────
+    //
+    // prepareSubjectFiling has already resolved this filing's anchor against the
+    // live tasks in this workspace and computed a verdict. Until this block the
+    // route reported that verdict to telemetry and created the task anyway, so
+    // an `attach` verdict still put a second agent on a fresh branch — the
+    // detection worked and the prevention did not exist.
+    //
+    // Acting requires BOTH:
+    //   - an identifying key type (see isIdentifyingSubjectKeyType — a bare
+    //     mission id matches every sibling task and must never stop a filing);
+    //   - an `attach` verdict, which wouldBeSubjectOutcome grants to agent
+    //     origins only. A human filing is never silently swallowed; it gets the
+    //     suggestion below instead.
+    const fileAnywayText = typeof fileAnywayReason === 'string' ? fileAnywayReason.trim() : '';
+    const attachTarget = subjectObservation.match
+      && subjectObservation.anchor
+      && subjectObservation.match.outcome === 'attach'
+      && isIdentifyingSubjectKeyType(subjectObservation.match.keyType)
+      && !fileAnywayText
+      ? subjectObservation.match
+      : null;
+
+    if (attachTarget) {
+      await recordSubjectMatchObserved({
+        workspaceId,
+        origin: subjectOrigin,
+        reporterId: apiAccount?.id ?? null,
+        anchor: subjectObservation.anchor!,
+        match: attachTarget,
+        note: `subject_filing_attached:${attachTarget.keyType}`,
+      });
+      console.log(
+        `[subject-dedupe] ${subjectOrigin} filing attached to live task ${attachTarget.taskId} on ${attachTarget.keyType}`,
+      );
+      return NextResponse.json({
+        id: attachTarget.taskId,
+        title: attachTarget.title,
+        description: attachTarget.description,
+        deduplicated: true,
+        duplicateOfTaskId: attachTarget.taskId,
+        duplicateKeyType: attachTarget.keyType,
+      }, { status: 200 });
+    }
+
+    // Not precise enough to stop the filing, but the caller should still know
+    // that work is already in flight — the verdict used to be discarded.
+    const duplicateSuggestion = subjectObservation.match
+      ? {
+          taskId: subjectObservation.match.taskId,
+          title: subjectObservation.match.title,
+          keyType: subjectObservation.match.keyType,
+        }
+      : null;
+
     const skillSlugs: string[] = Array.isArray(rawSkillSlugs) ? [...rawSkillSlugs] : [];
 
     // Resolve skill references if any slugs provided
@@ -988,11 +1043,25 @@ export async function POST(req: NextRequest) {
           taskId: task.id,
         });
         const { reopenCompletedMission } = await import('@/lib/mission-loop');
-        await reopenCompletedMission(missionId, feedActor);
-      }).catch(err => console.error('[task-create] mission-feed/reopen failed:', err));
+        await reopenCompletedMission(missionId, feedActor)
+          .catch(err => console.error('[task-create] mission reopen failed:', err));
+
+        // "File the work" is one of the escalation note's two advertised
+        // exits — a task filed against this mission IS the owner's answer.
+        // Routed through the single writer; a no-op when the mission was
+        // never escalated, which is the common case for most task creation.
+        // Independent catch so a reopen failure above never blocks this.
+        const { resolveCriteriaEscalation } = await import('@/lib/criteria-escalation');
+        await resolveCriteriaEscalation(missionId, 'work_filed', feedActor)
+          .catch(err => console.error('[task-create] criteria escalation resolve failed:', err));
+      }).catch(err => console.error('[task-create] mission-feed failed:', err));
     }
 
-    return NextResponse.json({ ...task, subjectIntakeOutcome: intake.outcome });
+    return NextResponse.json({
+      ...task,
+      subjectIntakeOutcome: intake.outcome,
+      ...(duplicateSuggestion ? { duplicateSuggestion } : {}),
+    });
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
       return NextResponse.json({ error: 'fileAnywayReason must be nonblank' }, { status: 400 });

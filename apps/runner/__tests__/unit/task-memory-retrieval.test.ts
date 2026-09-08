@@ -13,7 +13,13 @@ type Call = { query: string; limit?: number; files?: readonly string[] };
  * query and a correct two-step sequence are indistinguishable from the result.
  */
 function searcher(
-  responses: { byPath?: TaskMemoryObservation[]; byTitle?: TaskMemoryObservation[]; throwOn?: 'path' | 'title' },
+  responses: {
+    byPath?: TaskMemoryObservation[];
+    byInferred?: TaskMemoryObservation[];
+    byTitle?: TaskMemoryObservation[];
+    throwOn?: 'path' | 'title';
+  },
+  declaredPaths: string[] = ['apps/runner/src/index.ts'],
 ): ObservationSearcher & { calls: Call[] } {
   const calls: Call[] = [];
   return {
@@ -22,7 +28,12 @@ function searcher(
       calls.push({ query, limit, files });
       const isPathStep = !!files?.length;
       if (responses.throwOn === (isPathStep ? 'path' : 'title')) throw new Error('boom');
-      return (isPathStep ? responses.byPath : responses.byTitle) ?? [];
+      if (!isPathStep) return responses.byTitle ?? [];
+      // Declared and inferred both arrive as a file scope, so they are told
+      // apart by which paths were sent — otherwise a test could not tell a
+      // step-2 hit from a step-1 hit.
+      const isDeclared = files!.some(f => declaredPaths.includes(f));
+      return (isDeclared ? responses.byPath : responses.byInferred) ?? [];
     },
   };
 }
@@ -32,6 +43,10 @@ const mem = (id: string): TaskMemoryObservation => ({ id, title: `m-${id}`, type
 const task = (over: Partial<Parameters<typeof retrieveTaskMemory>[1]> = {}) => ({
   workspaceId: 'ws-1',
   title: 'Do the thing properly',
+  // No path-shaped text on purpose: these fixtures exercise the declared and
+  // title steps, so the inference step must stay out of the way unless a test
+  // opts into it by supplying a description that names a file.
+  description: 'A description with no file references in it',
   pathManifest: ['apps/runner/src/index.ts'],
   ...over,
 });
@@ -95,7 +110,9 @@ describe('retrieveTaskMemory — the sentinel', () => {
   });
 
   test('concrete paths alongside the sentinel are still used', async () => {
-    const s = searcher({ byPath: [mem('a')] });
+    // Tell the stub which paths count as the DECLARED scope for this case —
+    // it distinguishes step 1 from step 2 by the paths it is handed.
+    const s = searcher({ byPath: [mem('a')] }, ['packages/core']);
     const r = await retrieveTaskMemory(s, task({ pathManifest: ['**', 'packages/core'] }));
 
     expect(r.scopePaths).toEqual(['packages/core']);
@@ -148,5 +165,78 @@ describe('retrieveTaskMemory — degradation', () => {
     const s = searcher({ byPath: [], byTitle: [] });
     await retrieveTaskMemory(s, task(), 9);
     expect(s.calls.map(c => c.limit)).toEqual([9, 9]);
+  });
+});
+
+
+describe('retrieveTaskMemory — inferred paths (step 2)', () => {
+  const DESC = 'The bug is in packages/core/memory-store.ts, see also docs/design';
+
+  test('infers a scope from the task text when none was declared', async () => {
+    const s = searcher({ byInferred: [mem('i')] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC }));
+
+    expect(r.derivedBy).toBe('inferred_paths');
+    expect(r.results.map(m => m.id)).toEqual(['i']);
+    expect(r.inferredPaths).toEqual(['packages/core/memory-store.ts', 'docs/design']);
+    expect(s.calls[0].files).toEqual(['packages/core/memory-store.ts', 'docs/design']);
+  });
+
+  // A declaration is strictly better evidence; inferring alongside it would add
+  // noise to a good signal, and cost a round trip.
+  test('does not infer when a manifest was declared', async () => {
+    const s = searcher({ byPath: [mem('a')] });
+    const r = await retrieveTaskMemory(s, task({ description: DESC }));
+
+    expect(r.derivedBy).toBe('path_manifest');
+    expect(r.inferredPaths).toEqual([]);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test('falls through declared → inferred → title in that order', async () => {
+    const s = searcher({ byPath: [], byInferred: [], byTitle: [mem('t')] },
+      ['apps/runner/src/index.ts']);
+    const r = await retrieveTaskMemory(s, task({ description: DESC }));
+
+    // A declared manifest suppresses inference, so only two steps run here.
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(s.calls.map(c => (c.files?.length ? 'files' : 'title'))).toEqual(['files', 'title']);
+  });
+
+  test('runs inferred then title when nothing was declared', async () => {
+    const s = searcher({ byInferred: [], byTitle: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC }));
+
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(s.calls.map(c => (c.files?.length ? 'files' : 'title'))).toEqual(['files', 'title']);
+  });
+
+  test('reports no_match when all three steps miss', async () => {
+    const s = searcher({ byInferred: [], byTitle: [] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC }));
+
+    expect(r.derivedBy).toBe('no_match');
+    expect(r.inferredPaths.length).toBeGreaterThan(0);
+  });
+
+  // Prose is full of slashes; a description with none of them must not invent a
+  // scope, and must not cost a round trip either.
+  test('a description with no paths yields no inference and no extra call', async () => {
+    const s = searcher({ byTitle: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: 'read/write and/or 9/10' }));
+
+    expect(r.inferredPaths).toEqual([]);
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(s.calls).toHaveLength(1);
+    expect(s.calls[0].files).toBeUndefined();
+  });
+
+  test('the sentinel is stripped from inferred paths too', async () => {
+    const s = searcher({ byTitle: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: ['**'], description: 'read/write only' }));
+
+    expect(r.scopePaths).toEqual([]);
+    expect(r.inferredPaths).toEqual([]);
+    expect(r.derivedBy).toBe('title_phrase');
   });
 });

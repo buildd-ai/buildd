@@ -5,6 +5,7 @@ import { NextRequest } from 'next/server';
 // predicates against a canned snapshot, so the filing path is exercised by a
 // genuinely-evaluated breach rather than by a hand-written violation object.
 import {
+  PR_OUTPACED_DRIFT,
   emptySnapshot,
   remoteRefKey,
   type InvariantSnapshot,
@@ -14,7 +15,7 @@ import {
 // ── Scan mock: the DB + GitHub half is stubbed, the evaluation is real ──────
 
 let scanSnapshot: InvariantSnapshot = emptySnapshot();
-let scanCoverage: ScanCoverage = { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+let scanCoverage: ScanCoverage = { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 };
 const mockLoad = mock(async () => ({ snapshot: scanSnapshot, coverage: scanCoverage }));
 mock.module('@/lib/mission-invariant-scan', () => ({ loadInvariantSnapshot: mockLoad }));
 
@@ -104,6 +105,23 @@ mock.module('@buildd/core/db/schema', () => ({
 const mockNotify = mock((_opts: any) => undefined);
 mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
 
+// stale_criteria_escalation resolves through this single writer rather than
+// filing — stubbed here so the route test can assert the call shape without
+// re-exercising resolveCriteriaEscalation's own DB behavior (covered in
+// criteria-escalation.test.ts).
+let resolveCriteriaEscalationCalls: Array<{ missionId: string; reason: string }> = [];
+let resolveCriteriaEscalationResult: { cleared: boolean } = { cleared: true };
+const mockResolveCriteriaEscalation = mock((missionId: string, reason: string) => {
+  resolveCriteriaEscalationCalls.push({ missionId, reason });
+  return Promise.resolve(resolveCriteriaEscalationResult);
+});
+mock.module('@/lib/criteria-escalation', () => ({
+  resolveCriteriaEscalation: mockResolveCriteriaEscalation,
+}));
+mock.module('@/lib/mission-feed', () => ({
+  systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
+}));
+
 const { POST, invariantFrictionSignature } = await import('./route');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -155,6 +173,35 @@ function orphanedBaseSnapshot(): InvariantSnapshot {
   return s;
 }
 
+/**
+ * A real `open_pr_outpaced_by_base` breach: an old open PR on an ordinary base
+ * with more than the threshold's worth of merges landing on that base after it
+ * opened. Built from real rows so the filing path is exercised by a genuinely
+ * evaluated breach, not a hand-written violation.
+ */
+function outpacedPrSnapshot(): InvariantSnapshot {
+  const s = emptySnapshot();
+  const openedAt = new Date(Date.now() - 20 * HOUR);
+  s.workers = [
+    workerRow({
+      id: 'w-outpaced',
+      prNumber: 7777,
+      prUrl: 'https://github.com/o/r/pull/7777',
+      prBaseRef: 'dev',
+      prLifecycleStatus: 'pr_open',
+      createdAt: openedAt,
+      startedAt: openedAt,
+      completedAt: openedAt,
+    }),
+  ] as any;
+  s.baseMerges = Array.from({ length: PR_OUTPACED_DRIFT }, (_, i) => ({
+    workspaceId: 'ws-1',
+    baseRef: 'dev',
+    mergedAt: new Date(Date.now() - (i + 1) * HOUR),
+  }));
+  return s;
+}
+
 /** A real `stranded_commits` breach — report-only, must never file. */
 function reportOnlySnapshot(): InvariantSnapshot {
   const s = emptySnapshot();
@@ -165,12 +212,15 @@ function reportOnlySnapshot(): InvariantSnapshot {
 beforeEach(() => {
   process.env.CRON_SECRET = CRON_SECRET;
   scanSnapshot = emptySnapshot();
-  scanCoverage = { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+  scanCoverage = { missions: 0, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 };
   existingFrictionTask = null;
   findFirstCalls.length = 0;
   inserted.length = 0;
   updated.length = 0;
   mockNotify.mockClear();
+  resolveCriteriaEscalationCalls = [];
+  resolveCriteriaEscalationResult = { cleared: true };
+  mockResolveCriteriaEscalation.mockClear();
 });
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -191,7 +241,7 @@ describe('auth', () => {
 
 describe('healthy fleet', () => {
   it('spawns nothing: no task, no notification', async () => {
-    scanCoverage = { missions: 12, tasks: 80, workers: 40, releases: 5, notes: 2, remoteRefs: 1 };
+    scanCoverage = { missions: 12, tasks: 80, workers: 40, releases: 5, notes: 2, remoteRefs: 1, baseMerges: 30 };
     const res = await POST(makeRequest());
     const body = await res.json();
 
@@ -204,26 +254,38 @@ describe('healthy fleet', () => {
   });
 
   it('still names every invariant, so a clean run is not a dead query', async () => {
-    scanCoverage = { missions: 12, tasks: 80, workers: 40, releases: 5, notes: 2, remoteRefs: 1 };
+    scanCoverage = { missions: 12, tasks: 80, workers: 40, releases: 5, notes: 2, remoteRefs: 1, baseMerges: 30 };
     const body = await (await POST(makeRequest())).json();
-    expect(body.invariants).toHaveLength(11);
+    expect(body.invariants).toHaveLength(13);
     expect(body.report).toContain('orphaned_integration_base');
     expect(body.report).toContain('mission_unverifiable');
+    expect(body.report).toContain('open_pr_outpaced_by_base');
     expect(body.report).not.toContain('EMPTY SCAN');
+    expect(body.report).not.toContain('NO BASE MERGES LOADED');
   });
 
   it('says EMPTY SCAN when the queries themselves matched no rows', async () => {
     const body = await (await POST(makeRequest())).json();
     expect(body.report).toContain('EMPTY SCAN');
   });
+
+  it('says so when workers were scanned but no base merges were loaded', async () => {
+    // Base drift is the one derived quantity in the sweep. With no merges
+    // loaded its invariant is clean by arithmetic, and a report that did not
+    // say so would look exactly like a fleet whose PRs are keeping up.
+    scanCoverage = { missions: 4, tasks: 20, workers: 9, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 };
+    const body = await (await POST(makeRequest())).json();
+    expect(body.report).toContain('NO BASE MERGES LOADED');
+    expect(body.report).not.toContain('EMPTY SCAN');
+  });
 });
 
-// ── Staging: exactly one invariant files ────────────────────────────────────
+// ── Staging: which invariants file ──────────────────────────────────────────
 
 describe('staging', () => {
   it('reports a report-only breach without filing anything', async () => {
     scanSnapshot = reportOnlySnapshot();
-    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 0 };
+    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 0, baseMerges: 0 };
 
     const body = await (await POST(makeRequest())).json();
     const stranded = body.invariants.find((i: any) => i.key === 'stranded_commits');
@@ -237,7 +299,7 @@ describe('staging', () => {
 
   it('files a task for the one invariant staged to file', async () => {
     scanSnapshot = orphanedBaseSnapshot();
-    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 1 };
+    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 1, baseMerges: 0 };
 
     const body = await (await POST(makeRequest())).json();
 
@@ -251,6 +313,105 @@ describe('staging', () => {
     expect(inserted[0].description).toContain('mission/example-1234');
     expect(mockNotify).toHaveBeenCalled();
   });
+
+  it('files a task for an open PR its base has outrun, and pages once', async () => {
+    // The whole point of staging this one to file: an hourly log line is the
+    // wrong instrument for a condition that exists because nobody looked.
+    scanSnapshot = outpacedPrSnapshot();
+    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 0, baseMerges: PR_OUTPACED_DRIFT };
+
+    const body = await (await POST(makeRequest())).json();
+    const outpaced = body.invariants.find((i: any) => i.key === 'open_pr_outpaced_by_base');
+
+    expect(outpaced.count).toBe(1);
+    expect(outpaced.files).toBe(true);
+    expect(body.filed).toBe(1);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].title).toStartWith('[friction] open_pr_outpaced_by_base');
+    expect(inserted[0].context.frictionSignature).toBe(
+      invariantFrictionSignature('open_pr_outpaced_by_base', 'w-outpaced'),
+    );
+    // The evidence a claiming agent acts on: which PR, how old, how far behind.
+    expect(inserted[0].description).toContain('#7777');
+    expect(inserted[0].description).toContain(`${PR_OUTPACED_DRIFT} merges into 'dev'`);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not file for the same PR twice while the report is open', async () => {
+    // Drift only grows, so this breach re-fires every hour by construction —
+    // dedupe is what stops it becoming an hourly duplicate.
+    scanSnapshot = outpacedPrSnapshot();
+    existingFrictionTask = { id: 'existing-drift-task' };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(inserted).toEqual([]);
+    expect(body.appended).toBe(1);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+});
+
+// ── Resolving: stale_criteria_escalation clears itself, no filing ──────────
+
+function staleEscalationSnapshot(over: Record<string, any> = {}): InvariantSnapshot {
+  const s = emptySnapshot();
+  s.missions = [{
+    id: 'm-stale',
+    workspaceId: 'ws-1',
+    title: 'Escalated but done',
+    status: 'completed',
+    integrationBranchEnabled: false,
+    workingBranch: null,
+    criteriaEscalatedAt: new Date(Date.now() - 2 * HOUR),
+    hasGoalCriteria: true,
+    criteriaOverallVerdict: 'fail',
+    updatedAt: new Date(),
+    ...over,
+  }] as any;
+  return s;
+}
+
+describe('resolving', () => {
+  it('resolves a stranded criteria escalation directly — no friction task, no notification', async () => {
+    scanSnapshot = staleEscalationSnapshot();
+    scanCoverage = { missions: 1, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(resolveCriteriaEscalationCalls).toEqual([{ missionId: 'm-stale', reason: 'mission_completed' }]);
+    expect(body.resolved).toBe(1);
+    const staleResult = body.invariants.find((i: any) => i.key === 'stale_criteria_escalation');
+    expect(staleResult.count).toBe(1);
+    expect(inserted).toEqual([]);
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('uses verdict_changed as the reason for a still-live mission whose verdict passed', async () => {
+    scanSnapshot = staleEscalationSnapshot({ status: 'active', criteriaOverallVerdict: 'pass' });
+    scanCoverage = { missions: 1, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+
+    await POST(makeRequest());
+
+    expect(resolveCriteriaEscalationCalls).toEqual([{ missionId: 'm-stale', reason: 'verdict_changed' }]);
+  });
+
+  it('finds nothing on the next run once the row is fixed', async () => {
+    // First run: the breach is live, the sweep resolves it once.
+    scanSnapshot = staleEscalationSnapshot();
+    scanCoverage = { missions: 1, tasks: 0, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+    const first = await (await POST(makeRequest())).json();
+    expect(first.resolved).toBe(1);
+    expect(resolveCriteriaEscalationCalls).toHaveLength(1);
+
+    // Second run: the DB now reflects the resolution (criteriaEscalatedAt
+    // cleared) — the predicate itself must find nothing, not merely skip a
+    // dedupe check.
+    resolveCriteriaEscalationCalls = [];
+    scanSnapshot = staleEscalationSnapshot({ criteriaEscalatedAt: null });
+    const second = await (await POST(makeRequest())).json();
+    expect(second.resolved).toBe(0);
+    expect(resolveCriteriaEscalationCalls).toHaveLength(0);
+  });
 });
 
 // ── Dedupe: a persistent breach accumulates on ONE task ─────────────────────
@@ -258,7 +419,7 @@ describe('staging', () => {
 describe('dedupe', () => {
   it('appends to the open friction task instead of filing an hourly duplicate', async () => {
     scanSnapshot = orphanedBaseSnapshot();
-    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 1 };
+    scanCoverage = { missions: 0, tasks: 0, workers: 1, releases: 0, notes: 0, remoteRefs: 1, baseMerges: 0 };
     existingFrictionTask = { id: 'existing-task' };
 
     const body = await (await POST(makeRequest())).json();

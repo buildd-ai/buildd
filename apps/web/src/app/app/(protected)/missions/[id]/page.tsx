@@ -7,7 +7,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { inferCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -39,6 +39,8 @@ import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionGoalCriteria from './MissionGoalCriteria';
+import MissionDecisionSheet from './MissionDecisionSheet';
+import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
@@ -866,20 +868,37 @@ export default async function MissionDetailPage({
             (inferCriteriaFailureReading) is the difference between an owner
             editing one line and an owner filing a phantom task. */}
         {displayState === 'waiting_decision' && (() => {
-          const reading = inferCriteriaFailureReading((mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null);
-          const readingCopy = reading === 'criterion_unmeasurable'
-            ? 'the same prose criterion has failed unchanged across every retry — it is likely unmeasurable as written.'
-            : reading === 'work_unowned'
-              ? 'the same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.'
-              : 'goal criteria failed unchanged across every retry the organizer had.';
+          const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
+          const goalCriteria = ((mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null) ?? [];
+          const reading = inferCriteriaFailureReading(goalCriteriaState);
+          const readingCopy = describeCriteriaFailureReading(reading);
+          // First non-passing criterion, by its stable `index` — not array
+          // position in `criteria`, which can skip entries.
+          const failingState = (goalCriteriaState?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+          const failingCriterionIndex = failingState ? failingState.index : null;
+          const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
+          const fileWorkHref = buildFileWorkHref({
+            missionId: id,
+            missionTitle: mission.title,
+            criterion: failingCriterion,
+            evidence: failingState?.evidence ?? null,
+          });
           return (
-            <div className="mb-4 flex items-start gap-2 rounded border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
-              <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-                Waiting for human decision
-              </span>
-              <span className="text-[12px] text-text-secondary">
-                {readingCopy} See Goal Criteria below ↓
-              </span>
+            <div className="mb-4 rounded border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
+                  Waiting for human decision
+                </span>
+                <span className="text-[12px] text-text-secondary">
+                  {readingCopy} See Goal Criteria below ↓
+                </span>
+              </div>
+              <MissionDecisionSheet
+                missionId={id}
+                goalCriteria={goalCriteria}
+                failingCriterionIndex={failingCriterionIndex}
+                fileWorkHref={fileWorkHref}
+              />
             </div>
           );
         })()}

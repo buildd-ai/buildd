@@ -471,6 +471,21 @@ mock.module('@buildd/core/cbm-health', () => ({
   detectCbmEnforcedUnused: mockDetectCbmEnforcedUnused,
 }));
 
+// path-claim reaches a real db client (`packages/core/db/client`, which the
+// `@buildd/core/db` stub above does not cover), so leaving it unmocked means
+// every terminal transition in this file quietly attempts a network round trip
+// inside releaseAndNotify's catch. Stub the three exports anything reachable
+// from route.ts uses: claimObservedPaths (the auto-lease below) and the two
+// releaseAndNotify calls into.
+const mockClaimObservedPaths = mock(async (_ws: string, _task: string, paths: string[]) => paths);
+const mockReleaseClaims = mock(async () => null);
+const mockRearmWaiter = mock(async () => undefined);
+mock.module('@buildd/core/path-claim', () => ({
+  claimObservedPaths: mockClaimObservedPaths,
+  releaseClaims: mockReleaseClaims,
+  rearmWaiter: mockRearmWaiter,
+}));
+
 import { GET, PATCH } from './route';
 
 function createMockRequest(options: {
@@ -2316,6 +2331,93 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
+    });
+
+    it('pr_required + no branch PR + referenced PR is merged → completes and records it', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(baseWorker)
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/2165', prNumber: 2165 });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase, undraft, and merge PR #2165',
+        description: 'Get PR #2165 merged to dev.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165' });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.prNumber).toBe(2165);
+    });
+
+    it('pr_required + referenced PR exists but is not merged → still refuses completion', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase, undraft, and merge PR #2165',
+        description: 'Get PR #2165 merged to dev.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: false, html_url: 'https://github.com/org/repo/pull/2165' });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.hint).toBe('create_pr');
     });
 
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
@@ -7836,6 +7938,10 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     // that indexes into it (or asserts a type is absent) reads a previous
     // test's message instead of this one's.
     mockEnqueueWorkerMessage.mockClear();
+    // mockClear, not mockReset: the default implementation (echo the paths
+    // back) has to survive, or the `not.toHaveBeenCalled` case starts passing
+    // for the wrong reason.
+    mockClaimObservedPaths.mockClear();
   });
 
   it('populates pendingWorkerMessages for overlapping sibling and emits Pusher event', async () => {
@@ -8410,6 +8516,95 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
 
     const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
     expect(overlapEvent).toBeUndefined();
+  });
+
+  // ── §6d-derived leases ────────────────────────────────────────────────────
+  // The touch signal is automatic; the path_claims gate is not. These assert the
+  // join: an observed touch becomes a held lease, so POST /api/workers/claim can
+  // defer the *next* task before it starts instead of §6d telling it afterwards
+  // that it has already lost.
+
+  it('leases a newly observed touch so a later task can be deferred on it', async () => {
+    setupBaseWorkerMock();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith(
+      'ws-1',
+      'task-1',
+      ['apps/web/src/lib/foo.ts'],
+    );
+  });
+
+  it('leases only what this sync added, not the whole accumulated column', async () => {
+    setupBaseWorkerMock();
+    // Already-observed path: leased on the sync that first saw it. Re-sending
+    // the full accumulated list every tick would put a SELECT + INSERT attempt
+    // for up to 500 paths on the hot sync path.
+    mockWorkersFindFirst.mockResolvedValue({
+      ...baseWorker,
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{
+            ...baseWorker,
+            observedTouches: ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        touchedPaths: ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+      },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith(
+      'ws-1',
+      'task-1',
+      ['apps/web/src/lib/bar.ts'],
+    );
+  });
+
+  it('leases nothing when a sync reports no touches', async () => {
+    setupBaseWorkerMock();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).not.toHaveBeenCalled();
+  });
+
+  it('a failed lease never fails the sync', async () => {
+    setupBaseWorkerMock();
+    mockClaimObservedPaths.mockRejectedValueOnce(new Error('claim insert failed'));
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    // The lease is a coordination nicety; the progress report is the contract.
+    expect(res.status).toBe(200);
   });
 });
 
