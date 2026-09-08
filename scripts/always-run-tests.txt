@@ -17,3 +17,4 @@ scripts/always-run-tests.test.ts
 scripts/collector-coverage.test.ts
 scripts/cron-instrumentation.test.ts
 scripts/skills-listed.test.ts
+scripts/workflow-safety.test.ts
