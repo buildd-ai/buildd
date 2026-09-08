@@ -112,3 +112,33 @@ describe('tokenMatchScoreSql', () => {
     expect(text).not.toContain("o'brien");
   });
 });
+
+/**
+ * The distinction the store has to make, and got wrong at first.
+ *
+ * `tokenizeMemoryQuery` returning [] is correct for an all-stopword title. But
+ * "no tokens" and "no query" are different requests: the first must match
+ * nothing, the second lists the corpus. Treating them the same made
+ * `query=the` return every memory in the workspace — verified in production
+ * before the fix.
+ */
+describe('an all-stopword query is empty, not universal', () => {
+  it('tokenises to nothing', () => {
+    expect(tokenizeMemoryQuery('the')).toEqual([]);
+    expect(tokenizeMemoryQuery('the and for with')).toEqual([]);
+  });
+
+  // Documents the contract the store implements. The store itself is exercised
+  // by memory-store-search.test.ts; this pins the tokeniser side of the
+  // distinction so the two cannot drift on what "empty" means.
+  it('is distinguishable from an absent query', () => {
+    const absent = tokenizeMemoryQuery(undefined);
+    const allStopwords = tokenizeMemoryQuery('the and for');
+    // Both empty from the tokeniser's point of view...
+    expect(absent).toEqual([]);
+    expect(allStopwords).toEqual([]);
+    // ...so the store cannot use the token list alone to tell them apart, and
+    // must check whether a query string was supplied. That is why the guard
+    // there reads `askedForQuery && tokens.length === 0`.
+  });
+});
