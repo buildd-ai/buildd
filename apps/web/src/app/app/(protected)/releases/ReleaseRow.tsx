@@ -49,7 +49,10 @@ export function ReleaseRow({
   return (
     <Link
       href={`/app/releases/${release.id}`}
-      className="card p-4 hover:bg-surface-hover transition-colors cursor-pointer"
+      // `block` is load-bearing: `.card` sets background/border but no display,
+      // and an <a> is inline by default — without it these rows collapse into
+      // inline boxes and the content spills out of the card.
+      className="card card-interactive block p-4 cursor-pointer"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
