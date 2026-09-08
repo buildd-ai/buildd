@@ -55,10 +55,6 @@ sql: Object.assign(
 ✓ Result: Identical to current dev (work already integrated)
 ```
 
-## Artifacts
-
-- Completion Report: ac3fb37d-8092-460b-b2bd-c44f649872f5
-
 ## Conclusion
 
 PR #2174's rebase and merge task is complete. The refactoring to align SubagentDelegationPanel with the DerivedMetric<T> pattern is now live in the dev branch with all merge conflicts resolved and CI passing.
