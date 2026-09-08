@@ -62,6 +62,12 @@ both times before any enrolment so there were no collected rows to invalidate:
    declared paths first (`tasks.path_manifest` against `memories.files`) with
    the title as fallback (`policyVersion` bumped to `memory-digest-v3`).
 
+4. The title-fallback step then changed again, from a whole-title phrase match
+   to filtered, ranked tokens. An unfiltered token split would have matched most
+   of the corpus on a stopword and returned the most recently updated rows, so
+   tokens are filtered and results ranked by how many matched
+   (`policyVersion` bumped to `memory-digest-v4`).
+
 That third change matters more than it looks for this experiment. Under v1/v2
 the treatment was effectively *"no memory at all, use `recall`"*, because the
 task-conditional half was empty in both arms. Under v3 the arms are what was
