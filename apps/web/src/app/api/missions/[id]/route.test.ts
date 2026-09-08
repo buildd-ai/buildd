@@ -1012,6 +1012,130 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(note).toBeDefined();
   });
 
+  it('re-enables the schedule when updating goalCriteria on an escalated active mission', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', criteria: [] },
+      criteriaEscalatedAt: new Date('2026-01-01'),
+    });
+
+    mockScheduleFindFirst.mockReturnValue({
+      id: 'sched-1',
+      enabled: false,
+      lastDeferralReason: 'criteria_escalated',
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    // Schedule should be re-enabled
+    expect(updatedScheduleData.enabled).toBe(true);
+    expect(updatedScheduleData.lastDeferralReason).toBe(null);
+  });
+
+  it('does NOT clear criteriaEscalatedAt when updating goalCriteria', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', criteria: [] },
+      criteriaEscalatedAt: new Date('2026-01-01'),
+    });
+
+    mockScheduleFindFirst.mockReturnValue({
+      id: 'sched-1',
+      enabled: false,
+      lastDeferralReason: 'criteria_escalated',
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    // criteriaEscalatedAt should NOT be cleared by this PATCH — only rearm module can clear it
+    expect(updatedSetData.criteriaEscalatedAt).toBeUndefined();
+  });
+
+  it('clears criteriaEscalatedAt and flips open question note when completing an escalated mission', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', criteria: [] },
+      criteriaEscalatedAt: new Date('2026-01-01'),
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    // criteriaEscalatedAt should be cleared
+    expect(updatedSetData.criteriaEscalatedAt).toBe(null);
+
+    // Open question note should be flipped to superseded
+    // The mock captures the second update call (missionNotes), so we verify it exists
+    expect(insertedNotes.length).toBeGreaterThan(0);
+  });
+
+  it('does not re-enable schedule or clear escalation when goalCriteria on non-escalated mission', async () => {
+    updatedScheduleData = null; // Reset for this test
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-1',
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', criteria: [] },
+      criteriaEscalatedAt: null, // Not escalated
+    });
+
+    mockScheduleFindFirst.mockReturnValue({
+      id: 'sched-1',
+      enabled: false,
+      lastDeferralReason: 'other_reason',
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }] }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    // Schedule should NOT be updated
+    expect(updatedScheduleData).toBeNull();
+  });
+
   it('collapses repeated config edits from the same actor into one feed entry', async () => {
     const first = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',

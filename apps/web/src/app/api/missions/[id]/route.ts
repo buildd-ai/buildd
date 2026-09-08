@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { missions, tasks, taskSchedules, workspaces, initiatives } from '@buildd/core/db/schema';
-import { eq } from 'drizzle-orm';
+import { missions, tasks, taskSchedules, workspaces, initiatives, missionNotes } from '@buildd/core/db/schema';
+import { eq, and } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
@@ -319,6 +319,21 @@ export async function PATCH(
             actor,
           }).catch(e => console.error('[missions] override note failed:', e));
         }
+
+        // If the mission was escalated, close the open question note and clear the escalation.
+        // The mission is being closed, which IS the owner's decision on the open question.
+        if (existing.criteriaEscalatedAt !== null) {
+          updateData.criteriaEscalatedAt = null;
+          await db.update(missionNotes)
+            .set({ status: 'superseded', updatedAt: new Date() })
+            .where(
+              and(
+                eq(missionNotes.missionId, id),
+                eq(missionNotes.status, 'open'),
+                eq(missionNotes.type, 'question')
+              )
+            );
+        }
       }
 
       if ((status === 'completed' || status === 'archived') && existing.scheduleId) {
@@ -434,6 +449,21 @@ export async function PATCH(
         }
       }
       updateData.goalCriteria = goalCriteria ?? null;
+
+      // When criteria are updated on an escalated mission whose status is still active/paused,
+      // re-enable the schedule so the next heartbeat tick can run applyCriteriaRearm's rearm
+      // branch, which will clear criteriaEscalatedAt once the verdict actually changes.
+      // Only do this if the status is not transitioning to completed/archived in this same request.
+      const resultingStatus = status !== undefined ? status : existing.status;
+      if (
+        existing.criteriaEscalatedAt !== null &&
+        (resultingStatus === 'active' || resultingStatus === 'paused') &&
+        existing.scheduleId
+      ) {
+        await db.update(taskSchedules)
+          .set({ enabled: true, lastDeferralReason: null, updatedAt: new Date() })
+          .where(eq(taskSchedules.id, existing.scheduleId));
+      }
     }
     if (autoVerify !== undefined) {
       updateData.autoVerify = autoVerify === true ? true : autoVerify === false ? false : null;
