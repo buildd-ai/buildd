@@ -321,6 +321,23 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   const nudgeMode = !ALLOW_CONTROL_PLANE_REFRESH;
   const nudgedCredentials = codexNudged + claudeNudged;
 
+  // Three credential families in one sweep; the health signal is the sum. A
+  // token-refresh job that silently stops refreshing is how every credential
+  // in the system expires at once.
+  report({
+    processed: expiringCodex.length + expiringClaude.length + expiringMcp.length,
+    changed:
+      codexRefreshed + claudeRefreshed + mcpRefreshed +
+      codexNudged + claudeNudged + nudgedCredentials,
+    errors: codexErrors + claudeErrors + mcpErrors,
+    result: {
+      nudgeMode,
+      codex: { checked: expiringCodex.length, refreshed: codexRefreshed, nudged: codexNudged, errors: codexErrors },
+      claude: { checked: expiringClaude.length, refreshed: claudeRefreshed, nudged: claudeNudged, errors: claudeErrors },
+      mcp: { checked: expiringMcp.length, refreshed: mcpRefreshed, errors: mcpErrors },
+    },
+  });
+
   return NextResponse.json({
     nudgeMode,
     nudgedCredentials,

@@ -139,6 +139,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
+  report({
+    processed: blockedTasks.length + credentials.length,
+    changed: reminded + expiryAlerted,
+    result: { checked: blockedTasks.length, reminded, credentialsChecked: credentials.length, expiryAlerted },
+  });
+
   return NextResponse.json({
     ok: true,
     checked: blockedTasks.length,
