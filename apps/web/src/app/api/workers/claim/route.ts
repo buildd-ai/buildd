@@ -56,6 +56,7 @@ import {
   attachCodexCredentials,
   attachPendingCredentialRefreshes,
   attachServerManagedSecrets,
+  resolveAccountCredentialRefreshes,
 } from './credential-injection';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -84,6 +85,32 @@ export async function POST(req: NextRequest) {
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
+
+  /**
+   * Every zero-worker 200 goes through here.
+   *
+   * The claim call is the runner's heartbeat — it polls on a loop whether or not
+   * work exists — so each of these polls is also the only chance an idle runner
+   * gets to discover the credentials its broker is responsible for. Attaching
+   * `pendingCredentialRefreshes` per claimed worker alone meant an online-but-idle
+   * runner was told about nothing and refreshed nothing. Scope is the account's
+   * own team; the payload is metadata, never token material. See
+   * ./credential-injection → resolveAccountCredentialRefreshes.
+   *
+   * Non-200 exits (401/403/400/429/422) deliberately do NOT announce: those are
+   * error bodies the runner throws on rather than parses as a claim response.
+   */
+  const emptyClaim = async (payload: {
+    diagnostics: ClaimDiagnostics;
+    budgetResetsAt?: string | null;
+  }) => {
+    const pendingCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
+    return NextResponse.json({
+      workers: [],
+      ...payload,
+      ...(pendingCredentialRefreshes ? { pendingCredentialRefreshes } : {}),
+    });
+  };
 
   // Auto-derive capabilities from environment when none are explicitly provided
   if (capabilities.length === 0 && body.environment) {
@@ -210,8 +237,7 @@ export async function POST(req: NextRequest) {
   const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
 
   if (availableSlots === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: 'no_slots',
         activeWorkers: activeWorkers.length,
@@ -255,8 +281,7 @@ export async function POST(req: NextRequest) {
 
   const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
   if (workspaceIds.length === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: { reason: 'no_workspaces' } satisfies ClaimDiagnostics,
     });
   }
@@ -426,8 +451,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (claimableTasks.length === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: 'no_pending_tasks',
         availableSlots,
@@ -518,8 +542,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (filteredTasks.length === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: 'capability_mismatch',
         pendingTasks: claimableTasks.length,
@@ -1485,8 +1508,7 @@ export async function POST(req: NextRequest) {
           if (!resetsAt || iso < resetsAt) resetsAt = iso;
         }
       }
-      return NextResponse.json({
-        workers: [],
+      return emptyClaim({
         budgetResetsAt: resetsAt,
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
       });
@@ -1503,8 +1525,7 @@ export async function POST(req: NextRequest) {
     const nonZeroDeferrals = Object.fromEntries(
       Object.entries(deferrals).filter(([, n]) => n > 0),
     ) as ClaimDiagnostics['deferrals'];
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: allDeferred ? 'all_candidates_deferred' : 'race_lost',
         pendingTasks: claimableTasks.length,
@@ -1639,6 +1660,12 @@ export async function POST(req: NextRequest) {
   await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
   await attachClaudeCredentials(claimedWorkers, filteredTasks);
   await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks);
+  // Also announce at the top level so the runner has ONE field to read on every
+  // poll, claim or no claim. This one is account-team-scoped; the per-worker
+  // lists above stay because a claim may serve a workspace outside the
+  // authenticated account's own team, and the runner reads the claude_credential
+  // secretId off the per-worker entry when wiring that worker to its broker.
+  const accountCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {
@@ -1655,6 +1682,7 @@ export async function POST(req: NextRequest) {
 
   return jsonResponse({
     workers: claimedWorkers,
+    ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     ...(accountBudgetExhausted && {
       budgetResetsAt: account.budgetResetsAt,
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,
