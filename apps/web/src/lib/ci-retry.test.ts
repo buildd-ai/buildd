@@ -63,12 +63,29 @@ describe('buildCIRetryTask', () => {
     expect(t!.context.iteration).toBe(2);
   });
 
-  it('embeds a scoped `gh run view --log-failed` command when a run id is provided', () => {
-    const t = buildCIRetryTask({ ...baseParams, ciRunId: 12345, ciRunUrl: 'https://github.com/org/repo/actions/runs/12345' });
-    expect(t!.description).toContain('gh run view 12345 --repo org/repo --log-failed');
-    expect(t!.description).toContain('failed steps only');
+  it('embeds a command that actually returns log output', () => {
+    // `gh run view <id> --log-failed` returns EMPTY output and exit 0 — verified
+    // repeatedly against this repo's own failed runs. It was the retry task's
+    // only instruction for reading the failure, so a cold-start agent followed
+    // it, got nothing, and re-derived the failure by hand. The jobs-logs API is
+    // the form that works.
+    const t = buildCIRetryTask({
+      ...baseParams,
+      ciRunId: 12345,
+      ciRunUrl: 'https://github.com/org/repo/actions/runs/12345',
+      ciFailedJobId: 67890,
+    });
+    expect(t!.description).not.toContain('--log-failed');
+    expect(t!.description).toContain('/repos/org/repo/actions/jobs/67890/logs');
     expect(t!.context.ciRunId).toBe(12345);
-    expect(t!.context.ciRunUrl).toBe('https://github.com/org/repo/actions/runs/12345');
+  });
+
+  it('falls back to naming the run when no failed job id was resolved', () => {
+    const t = buildCIRetryTask({ ...baseParams, ciRunId: 12345, ciRunUrl: 'https://github.com/org/repo/actions/runs/12345' });
+    expect(t!.description).not.toContain('--log-failed');
+    // Without a job id the agent still needs the two-step: list the jobs, then
+    // read the failing one's log.
+    expect(t!.description).toContain('/actions/runs/12345/jobs');
   });
 
   it('omits the gh log section when no run id is available', () => {
