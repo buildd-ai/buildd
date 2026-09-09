@@ -287,8 +287,60 @@ describe('tab count reconciliation', () => {
 // The dispatch UI consumes deriveMissionHealth via /api/buildd/objectives.
 // These exports must remain stable.
 
+describe('deriveMissionHealth — criteriaEscalatedAt', () => {
+  it('returns escalated when criteriaEscalatedAt is set and no agents are active and no pending deliverable work', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
+    });
+    expect(h).toBe('escalated');
+  });
+
+  it('returns active (not escalated) when criteriaEscalatedAt is set but agents are running', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 2,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('active');
+  });
+
+  it('ignores criteriaEscalatedAt when status is completed', () => {
+    const h = deriveMissionHealth({
+      status: 'completed',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('shipped');
+  });
+
+  it('ignores criteriaEscalatedAt when isHeld is true', () => {
+    const h = deriveMissionHealth({
+      status: 'active',
+      activeAgents: 0,
+      cronExpression: null,
+      lastRunAt: null,
+      nextRunAt: null,
+      isHeld: true,
+      criteriaEscalatedAt: new Date(),
+    });
+    expect(h).toBe('held');
+  });
+});
+
 describe('objectives contract — deriveMissionHealth export unchanged', () => {
-  const EXPECTED_HEALTH_VALUES: MissionHealth[] = ['active', 'on-schedule', 'stalled', 'shipped', 'paused', 'idle'];
+  const EXPECTED_HEALTH_VALUES: MissionHealth[] = ['active', 'on-schedule', 'stalled', 'shipped', 'paused', 'idle', 'held', 'budget-exhausted', 'escalated'];
 
   it('all original MissionHealth values still produce valid HEALTH_DISPLAY entries', () => {
     for (const v of EXPECTED_HEALTH_VALUES) {
@@ -612,6 +664,46 @@ describe('deriveMissionDisplayState', () => {
     expect(deriveMissionDisplayState({ ...base, health: 'FAILING' as Health, progress: 100 })).toBe('failed');
     expect(deriveMissionDisplayState({ ...base, orchestrationMode: 'manual', progress: 100 })).toBe('review');
   });
+
+  // Regression: an escalated mission whose failing criterion is not tied to
+  // 100% task completion (progress < 100) used to fall through every branch
+  // to 'active' — the header chip read AUTO while the heartbeat was disabled
+  // and nothing could move without an owner decision.
+  it('waiting_decision when criteria escalated and no pending deliverable work, even below 100% progress', () => {
+    expect(deriveMissionDisplayState({
+      ...base,
+      progress: 40,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
+    })).toBe<MissionDisplayState>('waiting_decision');
+  });
+
+  it('NOT active/AUTO when escalated below 100% progress', () => {
+    expect(deriveMissionDisplayState({
+      ...base,
+      progress: 40,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
+    })).not.toBe<MissionDisplayState>('active');
+  });
+
+  it('NOT waiting_decision when deliverable work is still pending — work still moving is not stuck', () => {
+    expect(deriveMissionDisplayState({
+      ...base,
+      progress: 40,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: true,
+    })).toBe<MissionDisplayState>('active');
+  });
+
+  it('running still outranks waiting_decision — active agents mean the mission is not stuck yet', () => {
+    expect(deriveMissionDisplayState({
+      ...base,
+      activeAgents: 1,
+      criteriaEscalatedAt: new Date(),
+      hasPendingDeliverableWork: false,
+    })).toBe<MissionDisplayState>('running');
+  });
 });
 
 describe('getMissionStateChip', () => {
@@ -627,8 +719,15 @@ describe('getMissionStateChip', () => {
     expect(chip.cls).toContain('status-warning');
   });
 
+  it('waiting_decision state reads AWAITING DECISION, not AUTO', () => {
+    const chip = getMissionStateChip('waiting_decision');
+    expect(chip.label).toBe('AWAITING DECISION');
+    expect(chip.label).not.toBe('AUTO');
+    expect(chip.cls).toContain('status-warning');
+  });
+
   it('all states return a non-empty label and cls', () => {
-    const states: MissionDisplayState[] = ['held', 'running', 'failed', 'manual', 'complete', 'active', 'review', 'awaiting_verification'];
+    const states: MissionDisplayState[] = ['held', 'running', 'failed', 'manual', 'complete', 'active', 'review', 'awaiting_verification', 'waiting_decision'];
     for (const state of states) {
       const chip = getMissionStateChip(state);
       expect(chip.label.length).toBeGreaterThan(0);

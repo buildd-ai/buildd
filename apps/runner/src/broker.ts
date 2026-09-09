@@ -32,6 +32,11 @@ interface ManagedCredential {
   // Credential cache — populated on lease acquire via bootstrap pull; memory only, never disk.
   accessToken: string | null;
   refreshToken: string | null;
+  // Set when the control plane reports that a prior rotation was lost. Terminal:
+  // the stored refresh token is dead, so re-asking only burns another
+  // invalid_grant against the provider. Cleared only by a fresh lease acquire,
+  // which re-bootstraps from whatever the DB holds after a reconnect.
+  refreshDisabled?: boolean;
 }
 
 type CredentialEntry = {
@@ -40,12 +45,19 @@ type CredentialEntry = {
   expiresAt: string | null;
 };
 
+/**
+ * Control-plane connection details for the broker. The runner resolves these in
+ * `index.ts` (env var overriding config.json) and hands them to `start()`.
+ */
+export type BrokerConfig = {
+  apiKey?: string;
+  baseUrl?: string;
+};
+
 class CredentialBroker {
-  private readonly baseUrl: string;
-  private readonly apiKey: string;
+  private baseUrl: string;
+  private apiKey: string;
   private readonly runnerId: string;
-  private readonly endpoint: string;
-  private readonly refreshEndpoint: string;
   readonly socketPath: string;
 
   private managed = new Map<string, ManagedCredential>(); // secretId → info
@@ -58,22 +70,49 @@ class CredentialBroker {
   private credentialFiles = new Map<string, Map<string, string>>();
 
   constructor() {
+    // Env vars only — the module-level singleton is constructed at import time,
+    // before config.json is loaded. The real values arrive via configure()/start().
     this.baseUrl = process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
     this.apiKey = process.env.BUILDD_API_KEY ?? '';
     this.runnerId = process.env.BUILDD_RUNNER_ID ?? hostname();
-    this.endpoint = `${this.baseUrl}/api/runner/credential-lease`;
-    this.refreshEndpoint = `${this.baseUrl}/api/runner/credential-refresh`;
     this.socketPath = process.env.BUILDD_BROKER_SOCKET ?? '/tmp/buildd-broker.sock';
   }
 
+  private get endpoint(): string {
+    return `${this.baseUrl}/api/runner/credential-lease`;
+  }
+
+  private get refreshEndpoint(): string {
+    return `${this.baseUrl}/api/runner/credential-refresh`;
+  }
+
+  /**
+   * Adopt the runner's resolved control-plane config. Called from start(); the
+   * constructor can only see the environment, and the runner's API key normally
+   * lives in config.json rather than BUILDD_API_KEY.
+   */
+  configure(cfg: BrokerConfig): void {
+    if (cfg.apiKey) this.apiKey = cfg.apiKey;
+    if (cfg.baseUrl) this.baseUrl = cfg.baseUrl;
+  }
+
   /** Start heartbeat and refresh loops; register SIGTERM/SIGINT handlers. */
-  start(): void {
+  start(cfg?: BrokerConfig): void {
+    if (cfg) this.configure(cfg);
+    if (!this.apiKey) {
+      // Every control-plane call would 401. The credential path is inert either
+      // way; say so at startup instead of once per acquire, forever.
+      console.warn(
+        '[broker] No control-plane API key — credential leases and refreshes are DISABLED. ' +
+        'Expected config.json apiKey or BUILDD_API_KEY.',
+      );
+    }
     this.heartbeatTimer = setInterval(() => { void this.heartbeatAll(); }, HEARTBEAT_INTERVAL_MS);
     this.refreshTimer = setInterval(() => { void this.refreshExpiring(); }, REFRESH_CHECK_INTERVAL_MS);
     this.startLocalServer();
     process.on('SIGTERM', () => { void this.shutdown(); });
     process.on('SIGINT', () => { void this.shutdown(); });
-    console.log(`[broker] started runnerId=${this.runnerId}`);
+    console.log(`[broker] started runnerId=${this.runnerId} controlPlane=${this.baseUrl} auth=${this.apiKey ? 'ok' : 'MISSING'}`);
   }
 
   /**
@@ -166,6 +205,7 @@ class CredentialBroker {
     expiresAt: string | null,
   ): Promise<void> {
     if (this.shuttingDown) return;
+    if (!this.apiKey) return; // unauthenticated acquire is a guaranteed 401
     try {
       const res = await fetch(this.endpoint, {
         method: 'POST',
@@ -173,7 +213,10 @@ class CredentialBroker {
         body: JSON.stringify({ credentialId: secretId, runnerId: this.runnerId, action: 'acquire' }),
       });
       if (!res.ok) {
-        console.warn(`[broker] acquire failed for ${secretId}: HTTP ${res.status}`);
+        const hint = res.status === 401
+          ? ' — control-plane rejected the runner API key (check config.json apiKey)'
+          : '';
+        console.warn(`[broker] acquire failed for ${secretId}: HTTP ${res.status}${hint}`);
         return;
       }
       const body = await res.json() as { acquired: boolean; leaseId?: string };
@@ -253,10 +296,25 @@ class CredentialBroker {
     if (this.shuttingDown) return;
     const now = Date.now();
     for (const [secretId, cred] of this.managed) {
+      // A lost rotation is terminal — nothing this runner (or any other) can do
+      // will refresh it, so stop asking. The lease is kept so another runner does
+      // not pick the credential up and repeat the same dead attempt.
+      if (cred.refreshDisabled) continue;
       const expMs = cred.expiresAt ? new Date(cred.expiresAt).getTime() : null;
       if (expMs !== null && expMs - now > TWO_HOURS_MS) continue;
-      const result = await runnerRefreshCredential(secretId, cred.purpose);
+      const result = await runnerRefreshCredential(secretId, cred.purpose, {
+        apiKey: this.apiKey,
+        baseUrl: this.baseUrl,
+      });
       console.log(`[broker] refresh ${secretId} purpose=${cred.purpose} → ${result}`);
+      if (result === 'rotation_lost') {
+        cred.refreshDisabled = true;
+        console.warn(
+          `[broker] refresh permanently disabled for ${secretId} (${cred.purpose}) — a prior ` +
+          'rotation was lost and the credential must be reconnected before it can refresh again.',
+        );
+        continue;
+      }
       if (result === 'refreshed') {
         // Optimistically extend so we don't re-refresh until the next claim response corrects it.
         cred.expiresAt = new Date(now + OPTIMISTIC_EXPIRY_AFTER_REFRESH_MS).toISOString();

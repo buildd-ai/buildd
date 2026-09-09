@@ -51,7 +51,7 @@ export function readSessionLogs(workerId: string, maxLines = 50): SessionLogEntr
   }
 }
 
-import type { ClaimDiagnosticReason } from '@buildd/shared';
+import type { ClaimDiagnosticReason, ClaimDiagnostics } from '@buildd/shared';
 
 export interface ClaimLogEntry {
   ts: number;
@@ -64,6 +64,18 @@ export interface ClaimLogEntry {
   status?: number;
   /** Server-reported error/reason string on claim_rejected events */
   reason?: string;
+  /**
+   * Per-reason breakdown behind `all_candidates_deferred`, as computed by the
+   * claim route. Logged because the aggregate reason alone cannot tell a paced
+   * mission from a dead subject anchor, and that is the difference between
+   * "working as designed" and a stall.
+   *
+   * Absent, not empty, when the server sent none.
+   */
+  deferrals?: ClaimDiagnostics['deferrals'];
+  /** Candidate-window sizes: a deferral count is unreadable without them. */
+  pendingTasks?: number;
+  matchedTasks?: number;
 }
 
 const CLAIMS_LOG = join(LOGS_DIR, 'claims.log');

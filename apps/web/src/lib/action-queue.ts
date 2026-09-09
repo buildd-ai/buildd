@@ -1,6 +1,31 @@
 import type { CiGate } from './ci-gate';
 import { resolveStaleGate, type StaleGate } from './pr-freshness';
 
+/**
+ * ── The queue freshness rule ────────────────────────────────────────────────
+ * Every actionable chip asserts something about its subject's CURRENT state —
+ * "this PR is open and mergeable", "this mission owes you a decision right
+ * now" — and may only render while that state is known to be live. A stored
+ * flag (`criteriaEscalatedAt`, `prLifecycleStatus`, a note left `open`) is a
+ * record of when something happened, never proof that it still holds; a
+ * builder must re-derive membership from the subject's current row, not trust
+ * the flag alone.
+ *
+ * MERGE/REVIEW enforce this via `MERGE_CTA_CHIPS` + the STALE gate below.
+ * DECIDE enforces it in `buildDecideItems`: a candidate is dropped unless the
+ * mission is still live (`status` in active/paused) AND its criteria verdict
+ * is not passing, in addition to the escalation flag and the open note.
+ * QUESTION is exempt by construction rather than by a separate check — it is
+ * built from `workers.status === 'waiting_input'` queried fresh on every
+ * build, not from a persisted "this worker asked something" flag, so there is
+ * no stale state for it to trust. RECONNECT and APPROVE are the same shape:
+ * both come from a live re-check (`needsReconnect()` against the credential
+ * row; "does an approved child task exist yet") each time the queue is built.
+ * Any new chip must name which of these two patterns it uses — re-derive on
+ * every build, or gate a persisted flag against a second, independently-live
+ * signal — before it ships.
+ */
+
 export type ActionChip =
   | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'APPROVE'
   | 'STALE'
@@ -69,6 +94,8 @@ export interface WaitingOnYouRawItem {
   /** kind === 'reconnect' — the connector whose credential needs re-authorising. */
   connectorId?: string;
   connectorName?: string;
+  /** kind === 'decide' — the fingerprint of the escalated criteria for dedup. */
+  criteriaRearmFingerprint?: string;
   /** kind === 'merge' — opts this row into the freshness invariant. See EscalationRawItem. */
   prOpenedAt?: Date | null;
   /** `workers.prLastVerifiedAt` — when GitHub last CONFIRMED this row's state. */
@@ -84,6 +111,13 @@ export interface WaitingOnYouRawItem {
    * text would spawn a fresh card every cycle for one unresolved decision.
    */
   criteriaFingerprint?: string;
+  /**
+   * kind === 'decide' — which remedy `inferCriteriaFailureReading` says the
+   * failure pattern supports, already rendered to a sentence by the caller.
+   * A heuristic over LLM-graded prose, so it is shown, never acted on: the
+   * card must not preselect an exit from this alone.
+   */
+  recommendation?: string | null;
 }
 
 export interface EscalationRawItem {
@@ -192,6 +226,7 @@ export interface ActionQueueItem {
 
 // Chip display order: lower index = shown first.
 // BLOCKED: retries exhausted, human must decide — actionable, placed after MERGE.
+// DECIDE: mission criteria escalated, owner decision needed — actionable.
 // RESOLVING is last — it is informational (agent is handling it), not action-required.
 // RECONNECT sits high: a connector that can no longer re-authorise itself
 // silently starves every task that needs it, and the fix is a single tap.
@@ -221,32 +256,59 @@ export interface BuildActionQueueOptions {
   now?: Date;
 }
 
+/** Mission statuses under which a DECIDE card may still be a live ask. */
+const LIVE_MISSION_STATUSES = new Set(['active', 'paused']);
+
 /** A mission that may or may not be waiting on an owner decision. */
 export interface EscalatedMissionCandidate {
   missionId: string;
   missionTitle: string | null;
-  /** `missions.criteriaEscalatedAt` — null means the gate never escalated it. */
+  /**
+   * `missions.criteriaEscalatedAt` — WHEN the escalation happened, never an
+   * assertion that it is still true now. A completed mission, an answered
+   * note, or a verdict that later passed can all leave this column set while
+   * the escalation itself is long dead — see `status` and
+   * `criteriaOverallVerdict` below, which is why membership never reads this
+   * column alone.
+   */
   criteriaEscalatedAt: Date | string | null;
   criteriaRearmFingerprint: string | null;
   /** The mission's open `missionNotes` row of type 'question', if any. */
   openNote: { id: string; title: string; body: string | null } | null;
+  /** `missions.status` — a terminal mission cannot owe anyone a live decision. */
+  status: string;
+  /** `goalCriteriaState.overall` — a passing verdict means nothing is blocked, whatever the stale flag says. */
+  criteriaOverallVerdict: string | null;
+  /**
+   * `describeCriteriaFailureReading(inferCriteriaFailureReading(...))` — which
+   * remedy the failure pattern supports, already rendered to a sentence.
+   * Passed through verbatim; this module never re-derives it from criteria.
+   */
+  recommendation?: string | null;
 }
 
 /**
  * Filters escalated missions down to the ones that actually belong on the
  * action queue, and shapes them into `decide` raw items.
  *
- * Both conditions are required, independently of each other: `criteria-rearm`
- * always escalates alongside an open note in the same transaction, but this
- * function does not assume that invariant holds — a mission whose note was
- * answered (status flips off 'open') or whose verdict changed (clearing
- * criteriaEscalatedAt) must drop out on either signal alone, not just both.
+ * Every condition here is required, independently of the others — this is a
+ * DERIVATION, not a trust of `criteriaEscalatedAt`. `criteria-rearm` always
+ * escalates alongside an open note, sets a non-passing verdict, and leaves the
+ * mission active in the same transaction, but this function does not assume
+ * that invariant holds forever: a mission whose note was answered, whose
+ * verdict later passed, or that was completed/archived out from under a stale
+ * flag must drop out on any one of those signals alone, not just all of them
+ * at once. Same precedent as mission 5a4e7013's correction of cached
+ * goal-criteria verdicts: a persisted flag records when something happened,
+ * never whether it is still true.
  */
 export function buildDecideItems(candidates: EscalatedMissionCandidate[]): WaitingOnYouRawItem[] {
   const items: WaitingOnYouRawItem[] = [];
   for (const c of candidates) {
     if (!c.criteriaEscalatedAt) continue;
     if (!c.openNote) continue;
+    if (!LIVE_MISSION_STATUSES.has(c.status)) continue;
+    if (c.criteriaOverallVerdict === 'pass') continue;
     items.push({
       kind: 'decide',
       missionId: c.missionId,
@@ -255,6 +317,7 @@ export function buildDecideItems(candidates: EscalatedMissionCandidate[]): Waiti
       noteTitle: c.openNote.title,
       question: c.openNote.body ?? undefined,
       criteriaFingerprint: c.criteriaRearmFingerprint ?? 'none',
+      recommendation: c.recommendation ?? null,
     });
   }
   return items;
@@ -452,6 +515,7 @@ export function buildActionQueue(
           noteId: item.noteId,
           noteTitle: item.noteTitle,
           question: item.question,
+          recommendation: item.recommendation ?? null,
         });
       }
     }

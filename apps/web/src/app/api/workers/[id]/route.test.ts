@@ -257,6 +257,7 @@ mock.module('@buildd/core/db/schema', () => ({
   secrets: 'secrets',
   workerErrorTraces: { workerId: 'workerId' },
   workerActionEvents: { workerId: 'workerId' },
+  workerPromptCompositionEvents: { workerId: 'workerId' },
   missions: 'missions',
   taskSchedules: 'taskSchedules',
   backendPauses: 'backendPauses',
@@ -468,6 +469,21 @@ mock.module('@buildd/core/cbm-health', () => ({
   CBM_HEALTH_TERMINAL_STATUSES: ['completed', 'failed', 'error'] as const,
   detectCbmFleetDisabled: mockDetectCbmFleetDisabled,
   detectCbmEnforcedUnused: mockDetectCbmEnforcedUnused,
+}));
+
+// path-claim reaches a real db client (`packages/core/db/client`, which the
+// `@buildd/core/db` stub above does not cover), so leaving it unmocked means
+// every terminal transition in this file quietly attempts a network round trip
+// inside releaseAndNotify's catch. Stub the three exports anything reachable
+// from route.ts uses: claimObservedPaths (the auto-lease below) and the two
+// releaseAndNotify calls into.
+const mockClaimObservedPaths = mock(async (_ws: string, _task: string, paths: string[]) => paths);
+const mockReleaseClaims = mock(async () => null);
+const mockRearmWaiter = mock(async () => undefined);
+mock.module('@buildd/core/path-claim', () => ({
+  claimObservedPaths: mockClaimObservedPaths,
+  releaseClaims: mockReleaseClaims,
+  rearmWaiter: mockRearmWaiter,
 }));
 
 import { GET, PATCH } from './route';
@@ -2317,6 +2333,93 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
     });
 
+    it('pr_required + no branch PR + referenced PR is merged → completes and records it', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce(baseWorker)
+        .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/2165', prNumber: 2165 });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase, undraft, and merge PR #2165',
+        description: 'Get PR #2165 merged to dev.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]); // no open PR on worker's own branch
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: true, html_url: 'https://github.com/org/repo/pull/2165' });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.prNumber).toBe(2165);
+    });
+
+    it('pr_required + referenced PR exists but is not merged → still refuses completion', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue(baseWorker);
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'pr_required',
+        title: 'Rebase, undraft, and merge PR #2165',
+        description: 'Get PR #2165 merged to dev.',
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+        if (path.includes('/pulls?head=')) return Promise.resolve([]);
+        if (path === '/repos/org/repo/pulls/2165') {
+          return Promise.resolve({ number: 2165, merged: false, html_url: 'https://github.com/org/repo/pull/2165' });
+        }
+        return Promise.resolve(null);
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.hint).toBe('create_pr');
+    });
+
     // C17: the gate's predicate was a single-column eq(artifacts.workerId, id).
     // Mission artifacts are inserted with workerId NULL by construction (see
     // api/missions/[id]/artifacts/route.ts), and MCP create_artifact with a
@@ -2891,6 +2994,120 @@ describe('PATCH /api/workers/[id]', () => {
     });
 
     it('does not insert when appendActionEvents is absent', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeNull();
+    });
+  });
+
+  describe('appendPromptCompositionEvents', () => {
+    const VALID_EVENT = {
+      buildIndex: 0,
+      ts: 1000,
+      policyVersion: 'memory-digest-v1',
+      arm: 'task_scoped',
+      propensity: 0.2,
+      fraction: 0.2,
+      digestBytes: 0,
+      digestBytesAvailable: 4096,
+      digestTruncated: false,
+      taskMatchBytes: 300,
+      taskMatchCount: 1,
+      memoryBlockBytes: 300,
+      promptBytes: 5000,
+      memoryShare: 0.06,
+    };
+
+    beforeEach(() => {
+      lastInsertTable = null;
+      lastInsertValues = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'running', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+    });
+
+    it('inserts prompt composition events into worker_prompt_composition_events', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendPromptCompositionEvents: [
+            VALID_EVENT,
+            { ...VALID_EVENT, buildIndex: 1, arm: 'full', propensity: 0.8 },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(2);
+      expect(lastInsertValues[0]).toMatchObject({
+        workerId: 'worker-1',
+        taskId: 'task-1',
+        buildIndex: 0,
+        policyVersion: 'memory-digest-v1',
+        arm: 'task_scoped',
+      });
+      expect(lastInsertValues[0].ts).toBeInstanceOf(Date);
+      expect(lastInsertValues[1]).toMatchObject({ buildIndex: 1, arm: 'full' });
+    });
+
+    it('drops malformed events (missing/invalid required fields)', async () => {
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'running',
+          appendPromptCompositionEvents: [
+            VALID_EVENT,
+            { ...VALID_EVENT, buildIndex: undefined },
+            { ...VALID_EVENT, arm: 'bogus' },
+            { ...VALID_EVENT, ts: 'not-a-number' },
+            { ...VALID_EVENT, policyVersion: undefined },
+          ],
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(1);
+      expect(lastInsertValues[0].buildIndex).toBe(0);
+    });
+
+    it('caps prompt composition events at 50 per request', async () => {
+      const events = Array.from({ length: 80 }, (_, i) => ({ ...VALID_EVENT, buildIndex: i }));
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'running', appendPromptCompositionEvents: events },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toHaveLength(50);
+    });
+
+    it('does not insert when appendPromptCompositionEvents is absent', async () => {
       const req = createMockRequest({
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
@@ -7717,6 +7934,14 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
     mockWorkersUpdate.mockReset();
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
+    // Without this, mock.calls accumulates across the block and any assertion
+    // that indexes into it (or asserts a type is absent) reads a previous
+    // test's message instead of this one's.
+    mockEnqueueWorkerMessage.mockClear();
+    // mockClear, not mockReset: the default implementation (echo the paths
+    // back) has to survive, or the `not.toHaveBeenCalled` case starts passing
+    // for the wrong reason.
+    mockClaimObservedPaths.mockClear();
   });
 
   it('populates pendingWorkerMessages for overlapping sibling and emits Pusher event', async () => {
@@ -7820,6 +8045,125 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
       (u: any) => u.context?.pendingWorkerMessages?.length > 0,
     );
     expect(siblingUpdate).toBeUndefined();
+  });
+
+  // A generated file is not a mutex. These three cases are the reason: over one
+  // recent week docs/specs/INDEX.md and the drizzle journal were among the most
+  // contended files in the repo by concurrent-PR overlap, and not one of those
+  // overlaps was something the two agents needed to agree about.
+  it('regenerable-only overlap sends the regenerate advisory, not path_blocked_on_you', async () => {
+    setupBaseWorkerMock();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...baseWorker, observedTouches: ['docs/specs/INDEX.md'] }]),
+        })),
+      })),
+    });
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['docs/specs/INDEX.md'],
+      task: { pathManifest: ['docs/specs/INDEX.md'] },
+    }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['docs/specs/INDEX.md'] },
+    });
+    expect((await PATCH(req, { params: mockParams })).status).toBe(200);
+
+    const types = mockEnqueueWorkerMessage.mock.calls.map((c: any[]) => c[1].type);
+    expect(types).toContain('path_regenerable_overlap');
+    expect(types).not.toContain('path_blocked_on_you');
+
+    const advisory = mockEnqueueWorkerMessage.mock.calls
+      .find((c: any[]) => c[1].type === 'path_regenerable_overlap')![1];
+    expect(advisory.body.overlappingPaths).toEqual(['docs/specs/INDEX.md']);
+    expect(advisory.body.commands).toContain('bun run specs:check');
+  });
+
+  it('mixed overlap splits: contended paths block, generated paths only advise', async () => {
+    setupBaseWorkerMock();
+    const touches = ['apps/web/src/lib/foo.ts', 'docs/specs/INDEX.md'];
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({ returning: mock(() => [{ ...baseWorker, observedTouches: touches }]) })),
+      })),
+    });
+
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: touches,
+      task: { pathManifest: touches },
+    }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ scheduleId: null, outputRequirement: 'none', missionId: null, count: 0, context: {} })
+      .mockResolvedValueOnce({ context: {} });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: touches },
+    });
+    await PATCH(req, { params: mockParams });
+
+    const byType = (t: string) => mockEnqueueWorkerMessage.mock.calls.filter((c: any[]) => c[1].type === t);
+    // The real work is still a real collision.
+    expect(byType('path_blocked_on_you')[0][1].body.overlappingPaths).toEqual(['apps/web/src/lib/foo.ts']);
+    // ...and the generated file must NOT ride along in that block message.
+    expect(byType('path_blocked_on_you')[0][1].body.overlappingPaths).not.toContain('docs/specs/INDEX.md');
+    expect(byType('path_regenerable_overlap')[0][1].body.overlappingPaths).toEqual(['docs/specs/INDEX.md']);
+  });
+
+  it('regenerable overlap still dedupes — a generated file is not re-announced every sync', async () => {
+    setupBaseWorkerMock();
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ ...baseWorker, observedTouches: ['docs/specs/INDEX.md'] }]),
+        })),
+      })),
+    });
+    mockWorkersFindMany.mockResolvedValue([{
+      id: 'worker-2',
+      taskId: 'task-2',
+      branch: 'buildd/task-2',
+      lastCommitSha: 'def456',
+      observedTouches: ['docs/specs/INDEX.md'],
+      task: { pathManifest: ['docs/specs/INDEX.md'] },
+    }]);
+    // Already notified this session.
+    mockTasksFindFirst.mockResolvedValue({
+      scheduleId: null,
+      outputRequirement: 'none',
+      missionId: null,
+      count: 0,
+      context: { notifiedOverlaps: [{ path: 'docs/specs/INDEX.md', siblingTaskId: 'task-2' }] },
+    });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['docs/specs/INDEX.md'] },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockEnqueueWorkerMessage).not.toHaveBeenCalled();
+    expect(mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected')).toBeUndefined();
   });
 
   it('wildcard guard: sibling with pathManifest ["**"] produces NO notice', async () => {
@@ -8172,6 +8516,95 @@ describe('PATCH /api/workers/[id] — passive overlap detection (§6d)', () => {
 
     const overlapEvent = mockTriggerEvent.mock.calls.find((c: any[]) => c[1] === 'path_overlap_detected');
     expect(overlapEvent).toBeUndefined();
+  });
+
+  // ── §6d-derived leases ────────────────────────────────────────────────────
+  // The touch signal is automatic; the path_claims gate is not. These assert the
+  // join: an observed touch becomes a held lease, so POST /api/workers/claim can
+  // defer the *next* task before it starts instead of §6d telling it afterwards
+  // that it has already lost.
+
+  it('leases a newly observed touch so a later task can be deferred on it', async () => {
+    setupBaseWorkerMock();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith(
+      'ws-1',
+      'task-1',
+      ['apps/web/src/lib/foo.ts'],
+    );
+  });
+
+  it('leases only what this sync added, not the whole accumulated column', async () => {
+    setupBaseWorkerMock();
+    // Already-observed path: leased on the sync that first saw it. Re-sending
+    // the full accumulated list every tick would put a SELECT + INSERT attempt
+    // for up to 500 paths on the hot sync path.
+    mockWorkersFindFirst.mockResolvedValue({
+      ...baseWorker,
+      observedTouches: ['apps/web/src/lib/foo.ts'],
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{
+            ...baseWorker,
+            observedTouches: ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+          }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'running',
+        touchedPaths: ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+      },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).toHaveBeenCalledWith(
+      'ws-1',
+      'task-1',
+      ['apps/web/src/lib/bar.ts'],
+    );
+  });
+
+  it('leases nothing when a sync reports no touches', async () => {
+    setupBaseWorkerMock();
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running' },
+    });
+    await PATCH(req, { params: mockParams });
+
+    expect(mockClaimObservedPaths).not.toHaveBeenCalled();
+  });
+
+  it('a failed lease never fails the sync', async () => {
+    setupBaseWorkerMock();
+    mockClaimObservedPaths.mockRejectedValueOnce(new Error('claim insert failed'));
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'running', touchedPaths: ['apps/web/src/lib/foo.ts'] },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    // The lease is a coordination nicety; the progress report is the contract.
+    expect(res.status).toBe(200);
   });
 });
 

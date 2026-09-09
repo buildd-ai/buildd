@@ -5,9 +5,9 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
-import { deriveMissionHealth, deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
+import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
 import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask } from '@buildd/core/mission-helpers';
-import { inferCriteriaFailureReading } from '@/lib/criteria-rearm';
+import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
@@ -39,6 +39,8 @@ import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
 import MissionGoalCriteria from './MissionGoalCriteria';
+import MissionDecisionSheet from './MissionDecisionSheet';
+import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
 import { getMissionSpendUsd } from '@/lib/mission-budget';
 import { getLinksForEntity } from '@buildd/core/external-links';
@@ -342,15 +344,6 @@ export default async function MissionDetailPage({
   const hasPendingDeliverableWork = (mission.tasks || [])
     .filter(isDeliverableTask)
     .some(t => !['completed', 'cancelled', 'failed'].includes(t.status));
-  const health = deriveMissionHealth({
-    status: mission.status,
-    activeAgents,
-    cronExpression: scheduleCron,
-    lastRunAt: (mission.schedule as any)?.lastRunAt || null,
-    nextRunAt: (mission.schedule as any)?.nextRunAt || null,
-    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
-    hasPendingDeliverableWork,
-  });
   const healthState = deriveTaskHealthSignal(mission, mission.tasks || []);
 
   // Orchestration mode
@@ -388,6 +381,8 @@ export default async function MissionDetailPage({
     health: healthState,
     progress,
     criteriaUnverified,
+    criteriaEscalatedAt: (mission as any).criteriaEscalatedAt ?? null,
+    hasPendingDeliverableWork,
   });
   const stateChip = getMissionStateChip(displayState);
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
@@ -866,6 +861,48 @@ export default async function MissionDetailPage({
           }
         />
 
+        {/* ── Waiting on: owner decision — one owner for mission state ──
+            Above the fold, between the chip row and the progress bar, per
+            docs/design/mission-state-ownership.md's waiting-on placement.
+            Naming which remedy the cycle history supports
+            (inferCriteriaFailureReading) is the difference between an owner
+            editing one line and an owner filing a phantom task. */}
+        {displayState === 'waiting_decision' && (() => {
+          const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
+          const goalCriteria = ((mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null) ?? [];
+          const reading = inferCriteriaFailureReading(goalCriteriaState);
+          const readingCopy = describeCriteriaFailureReading(reading);
+          // First non-passing criterion, by its stable `index` — not array
+          // position in `criteria`, which can skip entries.
+          const failingState = (goalCriteriaState?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+          const failingCriterionIndex = failingState ? failingState.index : null;
+          const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
+          const fileWorkHref = buildFileWorkHref({
+            missionId: id,
+            missionTitle: mission.title,
+            criterion: failingCriterion,
+            evidence: failingState?.evidence ?? null,
+          });
+          return (
+            <div className="mb-4 rounded border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
+              <div className="flex items-start gap-2">
+                <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
+                  Waiting for human decision
+                </span>
+                <span className="text-[12px] text-text-secondary">
+                  {readingCopy} See Goal Criteria below ↓
+                </span>
+              </div>
+              <MissionDecisionSheet
+                missionId={id}
+                goalCriteria={goalCriteria}
+                failingCriterionIndex={failingCriterionIndex}
+                fileWorkHref={fileWorkHref}
+              />
+            </div>
+          );
+        })()}
+
         {/* Progress — shown for all missions with tasks */}
         {totalTasks > 0 && (
           <div className="card p-4 mb-4">
@@ -1150,44 +1187,20 @@ export default async function MissionDetailPage({
         />
       </div>
 
-      {/* ── Waiting on: owner decision — one owner for mission state ──
-          Escalated outranks the generic criteria-gate banner below: it is
-          not "criteria are still failing", it is "the organizer already gave
-          up and stood its own heartbeat down". Naming which remedy the cycle
-          history supports (inferCriteriaFailureReading) is the difference
-          between an owner editing one line and an owner filing a phantom task. */}
-      {health === 'escalated' && (() => {
-        const reading = inferCriteriaFailureReading((mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null);
-        const readingCopy = reading === 'criterion_unmeasurable'
-          ? 'the same prose criterion has failed unchanged across every retry — it is likely unmeasurable as written.'
-          : reading === 'work_unowned'
-            ? 'the same machine-checked criterion has failed unchanged across every retry — the work it names likely has no owner.'
-            : 'goal criteria failed unchanged across every retry the organizer had.';
-        return (
-          <div className="mb-4 flex items-start gap-2 rounded border border-status-warning/30 bg-status-warning/5 px-3 py-2.5">
-            <span className="shrink-0 text-[11px] font-semibold uppercase tracking-wide text-status-warning">
-              Waiting for human decision
-            </span>
-            <span className="text-[12px] text-text-secondary">
-              {readingCopy} See Goal Criteria below ↓
-            </span>
-          </div>
-        );
-      })()}
-
       {/* ── Criteria gate — visible above the fold on all tab views ──
           'unverified' (young/active mission, criteria simply haven't run yet)
           stays quiet — it is not a work-stopping state and must never read
           BLOCKED. Only a failed criterion or a refused completion attempt
           gets alarm styling, and names the criterion + evidence when known.
-          Suppressed once escalated: the banner above already speaks for this
-          mission, and showing both would be two owners for one state. */}
-      {health !== 'escalated' && criteriaGate && criteriaGate.state === 'unverified' && (
+          Suppressed once escalated: the waiting-on-decision banner above the
+          fold already speaks for this mission, and showing both would be two
+          owners for one state. */}
+      {displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
           Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
         </p>
       )}
-      {health !== 'escalated' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
+      {displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
         <div className={`mb-4 flex items-start gap-2 rounded border px-3 py-2.5 ${criteriaGate.tone === 'error' ? 'border-status-error/30 bg-status-error/5' : 'border-status-warning/30 bg-status-warning/5'}`}>
           <span className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide ${CRITERIA_GATE_TONE_CLASS[criteriaGate.tone]}`}>
             {criteriaGate.label}

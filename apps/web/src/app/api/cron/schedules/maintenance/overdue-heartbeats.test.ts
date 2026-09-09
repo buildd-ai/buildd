@@ -32,12 +32,19 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
+  // Operators withCronRun imports. mock.module is process-global, so a
+  // partial stub removes them for every other importer too.
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
   lt: (field: any, value: any) => ({ field, value, type: 'lt' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  // withCronRun imports this; mock.module replaces the whole module, so a
+  // partial stub deletes the export for every other importer in the process.
+  cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
   taskSchedules: 'taskSchedules',
   missions: 'missions',
 }));

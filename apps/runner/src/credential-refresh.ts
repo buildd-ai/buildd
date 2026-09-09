@@ -9,6 +9,9 @@
  *   'locked'         — another refresher holds the DB lock; proceed with existing token
  *   'no_credential'  — lock acquired but credential has no refresh_token (API key type)
  *   'error'          — provider failure; revoke call made for permanent errors (invalid_grant)
+ *   'rotation_lost'  — a prior rotation never completed, so the stored refresh token
+ *                      may already have been consumed and replaced. Terminal: the
+ *                      credential needs reconnecting and MUST NOT be retried.
  */
 
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -16,16 +19,71 @@ import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 
-export type RunnerRefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
+export type RunnerRefreshResult =
+  | 'refreshed'
+  | 'locked'
+  | 'no_credential'
+  | 'error'
+  | 'rotation_lost';
+
+/**
+ * Control-plane auth for this call. Pass the runner's resolved config — the key
+ * normally lives in config.json, and `index.ts` documents BUILDD_API_KEY as a
+ * CI/Docker override that is "NOT recommended". Reading only the env var meant
+ * a stock install sent no Authorization header and 401'd on every attempt.
+ */
+export type RefreshAuth = {
+  apiKey?: string;
+  baseUrl?: string;
+};
 
 export async function runnerRefreshCredential(
   secretId: string,
   purpose: 'claude_credential' | 'codex_credential',
+  auth: RefreshAuth = {},
 ): Promise<RunnerRefreshResult> {
-  const baseUrl = process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
-  const apiKey = process.env.BUILDD_API_KEY ?? '';
+  const baseUrl = auth.baseUrl ?? process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
+  const apiKey = auth.apiKey ?? process.env.BUILDD_API_KEY ?? '';
   const endpoint = `${baseUrl}/api/runner/credential-refresh`;
-  const authHeader = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+
+  // Without a key every call is a guaranteed 401. Say so once and stop, rather
+  // than walking the lock/commit sequence and warning about each rejection.
+  if (!apiKey) {
+    console.warn(
+      `[runner-refresh] No control-plane API key available for ${secretId} — cannot refresh. ` +
+      'Pass the runner config apiKey (config.json) or set BUILDD_API_KEY.',
+    );
+    return 'error';
+  }
+
+  const authHeader = { Authorization: `Bearer ${apiKey}` };
+
+  /**
+   * Give the refresh lock back after an attempt that never reached the provider.
+   *
+   * `lock` stamps a rotation marker on the credential, and only an outcome clears
+   * it. So every exit that holds the lock without having got a successful provider
+   * response has to say so, or the marker stands and the credential is declared a
+   * lost rotation on the next cycle — a local DNS failure or an API-key credential
+   * would be killed for nothing.
+   *
+   * The one exit that must NOT call this is a failure after the provider answered
+   * successfully: there the token really may have rotated, and the marker is the
+   * only record of it.
+   */
+  const releaseUnusedLock = async (why: string): Promise<void> => {
+    try {
+      await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ secretId, purpose, action: 'release' }),
+      });
+    } catch (err) {
+      // Best effort. Failing to release only means the lock waits out its window
+      // — and the marker then reads as a lost rotation, which is the safe error.
+      console.warn(`[runner-refresh] Failed to release unused lock for ${secretId} (${why}):`, err instanceof Error ? err.message : String(err));
+    }
+  };
 
   // ── Step 1: acquire the DB refresh lock ─────────────────────────────────────
   let lockRes: Response;
@@ -45,13 +103,32 @@ export async function runnerRefreshCredential(
     return 'error';
   }
 
-  const lockBody = await lockRes.json() as { locked: boolean; refreshToken?: string | null; expiresAt?: string | null };
+  const lockBody = await lockRes.json() as {
+    locked: boolean;
+    rotationLost?: boolean;
+    refreshToken?: string | null;
+    expiresAt?: string | null;
+  };
   if (!lockBody.locked) {
+    // Distinguish "someone else is refreshing, try later" from "a prior rotation
+    // was lost". The provider rotates the refresh token on every use, so in the
+    // second case the stored token is dead and there is nothing to come back to.
+    if (lockBody.rotationLost) {
+      console.warn(
+        `[runner-refresh] Rotation lost for ${secretId} (${purpose}) — a previous refresh never ` +
+        'completed, so the stored refresh token cannot be reused. The control plane has marked ' +
+        'the credential as needing reconnection; not retrying.',
+      );
+      return 'rotation_lost';
+    }
     return 'locked';
   }
 
   const { refreshToken } = lockBody;
   if (!refreshToken) {
+    // API-key credential: there is nothing to rotate and the provider is never
+    // contacted, so hand the lock straight back.
+    await releaseUnusedLock('no refresh token');
     return 'no_credential';
   }
 
@@ -74,6 +151,8 @@ export async function runnerRefreshCredential(
     });
   } catch (err) {
     console.warn(`[runner-refresh] Network error refreshing ${purpose} for ${secretId}:`, err instanceof Error ? err.message : String(err));
+    // The request never completed, so nothing was rotated.
+    await releaseUnusedLock('provider unreachable');
     return 'error';
   }
 
@@ -98,10 +177,18 @@ export async function runnerRefreshCredential(
         } catch (revokeErr) {
           console.warn(`[runner-refresh] Failed to post revoke for ${secretId}:`, revokeErr instanceof Error ? revokeErr.message : String(revokeErr));
         }
+        // revoke is itself a terminal outcome and resolves the rotation marker
+        // server-side, so no release on top of it.
+      } else {
+        // A 4xx that is not a revocation is still a refusal — nothing rotated.
+        await releaseUnusedLock(`provider refused: HTTP ${providerRes.status}`);
       }
     } else {
-      // 5xx or other transient failure — leave the lock; the 60-minute window handles retry.
+      // 5xx or other transient failure. The provider answered and refused, so
+      // nothing was rotated — and when the runner drives the refresh the control
+      // plane never sees this response, so nobody else will resolve the marker.
       console.warn(`[runner-refresh] Transient provider error for ${purpose} ${secretId}: HTTP ${providerRes.status}`);
+      await releaseUnusedLock(`provider error: HTTP ${providerRes.status}`);
     }
     return 'error';
   }
@@ -128,6 +215,11 @@ export async function runnerRefreshCredential(
     });
   } catch (err) {
     console.warn(`[runner-refresh] Failed to commit tokens for ${secretId}:`, err instanceof Error ? err.message : String(err));
+    // Do NOT release here. The provider already answered and rotated the refresh
+    // token; this failure means the replacement is lost. The control plane's
+    // rotation marker is exactly what records that, so leave it standing — the
+    // next lock attempt will report rotationLost instead of presenting a consumed
+    // token and getting an unexplained invalid_grant.
     return 'error';
   }
 

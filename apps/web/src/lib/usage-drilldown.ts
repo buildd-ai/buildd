@@ -356,6 +356,100 @@ export function costProxyTokens(inputTokens: DerivedMetric<Distribution>): numbe
 
 // ── The view ─────────────────────────────────────────────────────────────────
 
+// ── buildd MCP action breakdown ──────────────────────────────────────────────
+
+/**
+ * Per-action frequency for the buildd MCP tool.
+ *
+ * This panel exists because the page previously told readers the opposite:
+ * "which action ran was never captured. There is nothing to approximate it
+ * with." That was true when written and stopped being true when the runner
+ * started writing `worker_action_events`. A surface that asserts its own data
+ * is impossible is worse than one that omits it, because it stops anyone
+ * looking.
+ *
+ * Deliberately NOT the RUNTIME/WORK split. That classification is
+ * task-conditional — `create_pr` and `merge_pr` are RUNTIME only under a
+ * particular `outputRequirement`/`loopConfig` — and its contract belongs to
+ * health-analytics-spec §4.3 item 1 / WU-4, which scopes `action-events.ts` to
+ * "the events exist and carry enough context" and leaves the join to the panel
+ * that consumes it. Guessing the taxonomy here would create a second,
+ * conflicting one. So: raw counts now, classification when the contract is in
+ * hand.
+ */
+export interface ActionBreakdownPanel {
+  /** Actions in the window, most frequent first. */
+  actions: Array<{ action: string; calls: number; share: number }>;
+  totalCalls: number;
+  /**
+   * THIRD coverage class, distinct from `tools.coverage`'s
+   * histogram/derived/none: there is no derived fallback here, only "captured"
+   * or "not yet". Read against `capturedSince`.
+   */
+  workersWithEvents: number;
+  workers: number;
+  capturedSince: string;
+  /**
+   * True when the window opens before capture began, so a low count means
+   * "not yet recorded" rather than "quiet". Set independently of whether any
+   * events were found, because the caveat is a property of the WINDOW.
+   */
+  windowPredatesCapture: boolean;
+  /** Row cap hit — counts are floors. */
+  truncated: boolean;
+}
+
+/** Rows this panel needs. Structural only, so the module stays pure. */
+export interface ActionEventLike {
+  workerId: string;
+  action: string;
+}
+
+export function buildActionBreakdownPanel(input: {
+  rows: readonly ActionEventLike[];
+  workers: number;
+  windowStart: Date;
+  capturedSince?: string;
+  rowLimit: number;
+}): ActionBreakdownPanel {
+  const capturedSince = input.capturedSince ?? ACTION_EVENTS_CAPTURED_SINCE_DEFAULT;
+  const counts = new Map<string, number>();
+  const workerIds = new Set<string>();
+  for (const r of input.rows) {
+    if (!r.action) continue;
+    counts.set(r.action, (counts.get(r.action) ?? 0) + 1);
+    workerIds.add(r.workerId);
+  }
+  const totalCalls = [...counts.values()].reduce((a, b) => a + b, 0);
+  const actions = [...counts.entries()]
+    .map(([action, calls]) => ({
+      action,
+      calls,
+      share: totalCalls > 0 ? (calls / totalCalls) * 100 : 0,
+    }))
+    // Frequency desc, then name asc so equal counts render in a stable order
+    // rather than shifting between reloads.
+    .sort((a, b) => b.calls - a.calls || (a.action < b.action ? -1 : 1));
+
+  return {
+    actions,
+    totalCalls,
+    workersWithEvents: workerIds.size,
+    workers: input.workers,
+    capturedSince,
+    windowPredatesCapture: input.windowStart < new Date(`${capturedSince}T00:00:00Z`),
+    truncated: input.rows.length >= input.rowLimit,
+  };
+}
+
+/**
+ * Mirrors `ACTION_EVENTS_CAPTURED_SINCE` in `action-events.ts`, which cannot be
+ * imported here: that module reaches `@buildd/core/db`, and this one is read by
+ * a client component. The caller passes the real value; this is only the
+ * fallback so the type stays non-optional.
+ */
+const ACTION_EVENTS_CAPTURED_SINCE_DEFAULT = '2026-09-03';
+
 export interface UsageDrilldownView {
   window: DrilldownWindow;
   /** The window as requested, for the link back to Health. */
@@ -370,6 +464,8 @@ export interface UsageDrilldownView {
   codeNavigation: CodeNavigationPanel;
   shell: ShellPanel;
   adoption: IndexAdoptionLine;
+  /** Null when the caller could not read the event stream at all. */
+  actions: ActionBreakdownPanel | null;
 }
 
 export function buildUsageDrilldownView(input: {
@@ -378,6 +474,7 @@ export function buildUsageDrilldownView(input: {
   previous: PreviousPeriod | null;
   scan: ScanBounds;
   cbm: CbmHealthSummary | null;
+  actions?: ActionBreakdownPanel | null;
 }): UsageDrilldownView {
   const { resolution, current, previous, scan, cbm } = input;
   return {
@@ -392,6 +489,7 @@ export function buildUsageDrilldownView(input: {
     codeNavigation: buildCodeNavigationPanel(current, previous, resolution.window),
     shell: buildShellPanel(current),
     adoption: indexAdoptionLine(cbm, resolution.window),
+    actions: input.actions ?? null,
   };
 }
 

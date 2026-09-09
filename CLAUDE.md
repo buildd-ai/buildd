@@ -269,6 +269,7 @@ locally does not fail the suite for everyone else.
 - **Spec sync**: `.claude/skills/spec-sync/` — Keep `docs/SPEC.md` the source of truth and reconcile the doc/site repos against it.
 - **UI designer**: `.claude/skills/ui_designer/` — Brand moodboard and design tokens
 - **Buildd MCP consumer**: `.claude/skills/buildd-mcp-consumer/` — The consumer-facing counterpart to `buildd-workflow`, for any workspace's workers (not buildd's own contributor loop): task lifecycle, blocked-vs-question, friction dedupe, artifact/knowledge discipline, and the `direct`/`mission-branch` PR-base distinction. This is what the MCP server's trimmed `instructions` block and the `buildd://workspace/skills` resource both point to — see `apps/web/src/app/api/mcp/route.ts`.
+- **Delivery forensics**: `.claude/skills/delivery-forensics/` — Measure the delivery loop itself from raw sources: prod DB over the neon HTTP driver (direct `psql` to Neon times out), GitHub Actions job logs (`gh run view --log-failed` returns empty — go via `actions/jobs/<id>/logs`), the Coder runner, KB and CBM. Use for "why do PRs conflict / fail CI / get abandoned" questions, and for the base-drift metric neither source stores.
 
 ## Specs & Docs Layout
 

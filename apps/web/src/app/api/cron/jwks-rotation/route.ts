@@ -21,6 +21,7 @@ import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { generateSigningKeypair, makeKid, type KeyPairJwk } from '@/lib/signing-keys';
 import { reportOps } from '@buildd/core/report-ops';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 import {
   ACTIVE_MAX_AGE_MS,
   RETIRING_WINDOW_MS,
@@ -35,18 +36,7 @@ function getSigningKeyTeamId(): string {
 
 export const maxDuration = 60;
 
-async function rotate(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-
-  const authHeader = req.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+async function rotate(req: NextRequest, report: CronReport) {
   const force = req.nextUrl.searchParams.get('force') === 'true';
   const now = new Date();
 
@@ -117,14 +107,19 @@ async function rotate(req: NextRequest) {
     ? Math.floor((now.getTime() - activeKey.createdAt.getTime()) / 86_400_000)
     : null;
 
-  return NextResponse.json({
+  const result = {
     rotated,
     newKid,
     activeKeyAgeDays: ageDays,
     deletedExpiredKeys: deleted,
     activeKid: rotated ? newKid : (activeKey?.label ?? null),
     liveKeyCount: liveKeys.length + (rotated ? 1 : 0) - deleted,
-  });
+  };
+  // Most runs correctly rotate nothing — the key is not old enough yet — so
+  // `changed: 0` here is the healthy case and must not read as failure. Only a
+  // run that errors AND changes nothing is a problem.
+  report({ processed: liveKeys.length, changed: (rotated ? 1 : 0) + deleted, errors: 0, result });
+  return NextResponse.json(result);
 }
 
 /**
@@ -140,8 +135,12 @@ async function rotate(req: NextRequest) {
  * the cause.
  */
 export async function GET(req: NextRequest) {
+  return withCronRun('jwks-rotation', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
   try {
-    return await rotate(req);
+    return await rotate(req, report);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     await reportOps({

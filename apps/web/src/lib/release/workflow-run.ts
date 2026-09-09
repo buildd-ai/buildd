@@ -13,6 +13,32 @@ export interface WorkflowRunPayload {
   head_branch: string | null;
 }
 
+/** Terminal-ish state a completed workflow_run implies for its `releases` row. */
+export type ReleaseStateFromRun = 'deploying' | 'failed' | null;
+
+/**
+ * Map a completed run's conclusion onto the release row's next state.
+ *
+ * This used to handle exactly `success` and `failure` and return early for
+ * everything else — so a run that was `cancelled`, `timed_out` or died at
+ * `startup_failure` left its release row sitting in `dispatched` forever, in a
+ * state no sweeper covered, silently blocking any further non-forced release of
+ * that commit.
+ *
+ * `action_required` is the one conclusion that genuinely is not an outcome: the
+ * run is waiting on a human and a later event will carry the real verdict.
+ * Everything else is terminal, including `skipped` and `neutral` — a release
+ * workflow that skipped shipped nothing, and recording that as a failed release
+ * is accurate, not pessimistic.
+ */
+export function mapWorkflowConclusionToReleaseState(
+  conclusion: string | null,
+): ReleaseStateFromRun {
+  if (conclusion === 'success') return 'deploying';
+  if (conclusion === null || conclusion === 'action_required') return null;
+  return 'failed';
+}
+
 /**
  * Map a completed GitHub workflow_run onto an updated ReleaseResult.
  * Pure: no I/O.

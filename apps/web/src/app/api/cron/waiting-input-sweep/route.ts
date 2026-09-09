@@ -33,6 +33,7 @@ import { db } from '@buildd/core/db';
 import { workers } from '@buildd/core/db/schema';
 import { and, eq, lt } from 'drizzle-orm';
 import { cleanupStuckWaitingInput } from '@/lib/stale-workers';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
@@ -46,14 +47,10 @@ export const maxDuration = 60;
 const CANDIDATE_CUTOFF_MS = 4 * 60 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-  const token = req.headers.get('authorization')?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  return withCronRun('waiting-input-sweep', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const cutoff = new Date(Date.now() - CANDIDATE_CUTOFF_MS);
 
@@ -86,10 +83,9 @@ export async function POST(req: NextRequest) {
     `[Cron] waiting-input-sweep: accounts=${accountIds.length} failedWorkers=${failedWorkers} retriedTasks=${retriedTasks} errors=${errors}`,
   );
 
-  return NextResponse.json({
-    accountsSwept: accountIds.length,
-    failedWorkers,
-    retriedTasks,
-    errors,
-  });
+  const result = { accountsSwept: accountIds.length, failedWorkers, retriedTasks, errors };
+  // Nothing stuck is the normal, healthy state, so changed=0 with errors=0 is
+  // fine. Reclaiming a worker or retrying a task is the real work.
+  report({ processed: accountIds.length, changed: failedWorkers + retriedTasks, errors, result });
+  return NextResponse.json(result);
 }

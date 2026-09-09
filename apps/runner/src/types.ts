@@ -1,5 +1,6 @@
 import type { RoleConfig } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
+import type { PromptCompositionEvent } from './memory-digest-policy.js';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -201,6 +202,14 @@ export interface LocalWorker {
   pendingMcpCalls?: Array<{ server: string; tool: string; ts: number; ok: boolean; durationMs?: number }>;  // Buffered MCP tool calls awaiting sync
   pendingErrorTraces?: Array<{ pattern: string; excerpt: string; source?: string }>;  // Buffered agent tool-output error matches awaiting sync
   pendingActionEvents?: Array<{ action: string; ts: number }>;  // Buffered buildd MCP action calls awaiting sync (see action-events.ts)
+  // Buffered prompt-composition records awaiting sync — one per prompt build,
+  // in both memory-digest arms (see memory-digest-policy.ts).
+  pendingPromptCompositionEvents?: PromptCompositionEvent[];
+  // Counts calls to buildPromptCompositionRecord for this worker. A worker can
+  // build more than one prompt (e.g. the bwrap-retry restart in startSession
+  // rebuilds from scratch), so this is the ordering key for those rows —
+  // never reset mid-worker, or two builds would collide on buildIndex.
+  promptBuildIndex?: number;
   // Paths written while path-claim endpoint was unreachable (timeout/error). Flushed
   // on the next successful claim call. Also included in update_progress PATCH body so
   // the server can register them retroactively if the hook never recovers.
@@ -212,7 +221,12 @@ export interface LocalWorker {
    * carry usage, whereas the SDK result's per-model map is empty on seat auth.
    */
   tokenTally?: { inputTokens: number; outputTokens: number };
-  sandboxMountGap?: boolean;  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap
+  // Set when sandbox_mount_gap abort fires; signals server to exempt from retry cap.
+  // Currently never set — the abort was disabled after it fired on file content
+  // (test titles, fixture strings) rather than real denials. Detection now only
+  // annotates via addMilestone (see workers.ts). Left in place for the exitCause
+  // taxonomy to re-enable once the tightened scanner has a production track record.
+  sandboxMountGap?: boolean;
   bwrapRetryPending?: boolean;  // Set when bwrap namespace denial fires mid-run; startSession will restart without sandbox
   // Phase tracking (reasoning text → tool call grouping)
   phaseText: string | null;
@@ -430,6 +444,18 @@ export interface BuilddTask {
   attachments?: Array<{ id: string; filename: string; url: string }>;
   // Task taxonomy
   kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+  /**
+   * Files/globs the task declared it expects to touch (`tasks.path_manifest`).
+   *
+   * The claim response has always carried this — its task query has no column
+   * projection and passes the row wholesale — it simply was not declared here,
+   * so nothing on the runner could see it. It is the strongest key available
+   * for task-scoped memory retrieval; see task-memory-retrieval.ts.
+   *
+   * May contain the repo-wide sentinel `'**'`, which means "no scope declared"
+   * and must not be treated as a path.
+   */
+  pathManifest?: string[] | null;
   // Agent backend to use for execution
   backend?: 'claude' | 'codex';
   // Output requirement — what deliverables are enforced on completion
@@ -610,4 +636,11 @@ export interface LocalUIConfig {
   // too — eliminating cross-workspace filesystem access.
   // Set via BUILDD_WORKSPACE_ISOLATION_ROOT env var.
   workspaceIsolationRoot?: string;
+  // Share of tasks (0–1) enrolled in the `task_scoped` workspace-memory arm,
+  // which drops the workspace-wide digest from the prompt and keeps only the
+  // task-specific matches. Default 0 — nobody is enrolled and every prompt is
+  // byte-identical to before the arm existed. Set via
+  // BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION. A value outside [0, 1] is
+  // treated as 0, not clamped: see resolveTaskScopedFraction.
+  memoryDigestTaskScopedFraction?: number;
 }

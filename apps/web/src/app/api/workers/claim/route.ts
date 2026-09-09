@@ -56,6 +56,7 @@ import {
   attachCodexCredentials,
   attachPendingCredentialRefreshes,
   attachServerManagedSecrets,
+  resolveAccountCredentialRefreshes,
 } from './credential-injection';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
@@ -84,6 +85,32 @@ export async function POST(req: NextRequest) {
   if (!runner) {
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
+
+  /**
+   * Every zero-worker 200 goes through here.
+   *
+   * The claim call is the runner's heartbeat — it polls on a loop whether or not
+   * work exists — so each of these polls is also the only chance an idle runner
+   * gets to discover the credentials its broker is responsible for. Attaching
+   * `pendingCredentialRefreshes` per claimed worker alone meant an online-but-idle
+   * runner was told about nothing and refreshed nothing. Scope is the account's
+   * own team; the payload is metadata, never token material. See
+   * ./credential-injection → resolveAccountCredentialRefreshes.
+   *
+   * Non-200 exits (401/403/400/429/422) deliberately do NOT announce: those are
+   * error bodies the runner throws on rather than parses as a claim response.
+   */
+  const emptyClaim = async (payload: {
+    diagnostics: ClaimDiagnostics;
+    budgetResetsAt?: string | null;
+  }) => {
+    const pendingCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
+    return NextResponse.json({
+      workers: [],
+      ...payload,
+      ...(pendingCredentialRefreshes ? { pendingCredentialRefreshes } : {}),
+    });
+  };
 
   // Auto-derive capabilities from environment when none are explicitly provided
   if (capabilities.length === 0 && body.environment) {
@@ -210,8 +237,7 @@ export async function POST(req: NextRequest) {
   const availableSlots = Math.min(maxTasks, account.maxConcurrentWorkers - activeWorkers.length);
 
   if (availableSlots === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: 'no_slots',
         activeWorkers: activeWorkers.length,
@@ -255,8 +281,7 @@ export async function POST(req: NextRequest) {
 
   const workspaceIds = [...new Set([...openIds, ...restrictedIds])];
   if (workspaceIds.length === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: { reason: 'no_workspaces' } satisfies ClaimDiagnostics,
     });
   }
@@ -426,8 +451,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (claimableTasks.length === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: 'no_pending_tasks',
         availableSlots,
@@ -518,8 +542,7 @@ export async function POST(req: NextRequest) {
   });
 
   if (filteredTasks.length === 0) {
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: 'capability_mismatch',
         pendingTasks: claimableTasks.length,
@@ -838,9 +861,13 @@ export async function POST(req: NextRequest) {
   }
 
   // Pre-fetch active path_claims per workspace for the path-overlap backstop.
-  // path_claims holds actual file locks written by check_path_claim; this
-  // backstop defers a pending task whose pathManifest overlaps any held lock,
-  // even if the locking task hasn't opened a PR yet.
+  // path_claims holds actual file locks: declared ones from check_path_claim,
+  // and — since observed touches are auto-leased on worker sync
+  // (claimObservedPaths) — a lease on every file a live worker has actually
+  // edited. This backstop defers a pending task whose pathManifest overlaps any
+  // held lock, even if the locking task hasn't opened a PR yet, which is the
+  // window layer 1 cannot see and the reason the auto-lease matters: the second
+  // agent is stopped before it starts rather than told afterwards.
   const activePathClaimsByWorkspace = new Map<string, Map<string, string[]>>();
   if (openPrWorkspaceIds.length > 0) {
     await Promise.all(openPrWorkspaceIds.map(async (wsId) => {
@@ -881,9 +908,10 @@ export async function POST(req: NextRequest) {
    *
    * Feeds the compensating serialization guard in the dispatch loop: since the
    * authoring pass no longer mints dependsOn edges from a wildcard manifest
-   * (packages/core/path-overlap.ts) and nothing writes path_claims rows
-   * automatically, two scope-undeclared tasks in one mission would otherwise run
-   * concurrently and ping-pong conflict retries on the same files.
+   * (packages/core/path-overlap.ts), and a task with no concrete paths cannot be
+   * matched against a held lease by layer 2 no matter who is holding one, two
+   * scope-undeclared tasks in one mission would otherwise run concurrently and
+   * ping-pong conflict retries on the same files.
    */
   const missionAdvisoryInFlight = new Map<string, Set<string>>();
 
@@ -1041,11 +1069,21 @@ export async function POST(req: NextRequest) {
         //    longer mints stored dependsOn edges (correct — those edges block
         //    until completed+merged, which is not what a file conflict needs),
         //    and neither path-overlap layer can help: layer 1 returns null for a
-        //    wildcard candidate and layer 2 has no concrete paths to compare
-        //    because nothing writes path_claims rows automatically. Two
-        //    scope-undeclared tasks in one mission would therefore edit the same
-        //    files concurrently and ping-pong conflict retries — the exact
-        //    failure mode the ['**'] default was introduced to stop.
+        //    wildcard candidate, and layer 2 is nested inside
+        //    `if (taskManifest?.length)` and compares *this* task's concrete
+        //    paths — of which a scope-undeclared task has none, whatever leases
+        //    the other side holds. Two scope-undeclared tasks in one mission
+        //    would therefore edit the same files concurrently and ping-pong
+        //    conflict retries — the exact failure mode the ['**'] default was
+        //    introduced to stop.
+        //
+        //    Auto-leasing observed touches (PATCH /api/workers/[id] →
+        //    claimObservedPaths) does not retire this guard. It fills layer 2's
+        //    supply side, so a task that DID declare paths is now deferred on a
+        //    file a live worker is actually editing. It cannot help here,
+        //    because the deferral this guard makes is decided by the *candidate*
+        //    having nothing to compare, and because a lease only exists after
+        //    the holder's first sync — this gate runs before either task starts.
         //
         //    So: at most one scope-undeclared task per mission in flight. This
         //    is a SOFT deferral — the task stays pending and is retried on the
@@ -1470,8 +1508,7 @@ export async function POST(req: NextRequest) {
           if (!resetsAt || iso < resetsAt) resetsAt = iso;
         }
       }
-      return NextResponse.json({
-        workers: [],
+      return emptyClaim({
         budgetResetsAt: resetsAt,
         diagnostics: { reason: 'budget_exhausted' } satisfies ClaimDiagnostics,
       });
@@ -1488,8 +1525,7 @@ export async function POST(req: NextRequest) {
     const nonZeroDeferrals = Object.fromEntries(
       Object.entries(deferrals).filter(([, n]) => n > 0),
     ) as ClaimDiagnostics['deferrals'];
-    return NextResponse.json({
-      workers: [],
+    return emptyClaim({
       diagnostics: {
         reason: allDeferred ? 'all_candidates_deferred' : 'race_lost',
         pendingTasks: claimableTasks.length,
@@ -1624,6 +1660,12 @@ export async function POST(req: NextRequest) {
   await attachCodexCredentials(claimedWorkers, filteredTasks, account.id);
   await attachClaudeCredentials(claimedWorkers, filteredTasks);
   await attachPendingCredentialRefreshes(claimedWorkers, filteredTasks);
+  // Also announce at the top level so the runner has ONE field to read on every
+  // poll, claim or no claim. This one is account-team-scoped; the per-worker
+  // lists above stay because a claim may serve a workspace outside the
+  // authenticated account's own team, and the runner reads the claude_credential
+  // secretId off the per-worker entry when wiring that worker to its broker.
+  const accountCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
 
   // Notify on task claims — routed to the OWNING team's channel (not a global one).
   for (const cw of claimedWorkers) {
@@ -1640,6 +1682,7 @@ export async function POST(req: NextRequest) {
 
   return jsonResponse({
     workers: claimedWorkers,
+    ...(accountCredentialRefreshes ? { pendingCredentialRefreshes: accountCredentialRefreshes } : {}),
     ...(accountBudgetExhausted && {
       budgetResetsAt: account.budgetResetsAt,
       diagnostics: { reason: 'budget_exhausted_partial' } satisfies ClaimDiagnostics,

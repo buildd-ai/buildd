@@ -3,108 +3,70 @@
 // Proactively refreshes and verifies agent-backend credentials:
 //   1. Codex OAuth tokens expiring within 1 hour (OpenAI rotates refresh token on each use)
 //   2. Claude OAuth tokens (claude_credential) expiring within 1 hour (Anthropic rotates refresh token on each use)
-//   3. MCP connector OAuth tokens expiring within 10 minutes (standard OAuth 2.1 refresh)
+//   3. MCP connector OAuth tokens due within this cron's own cadence (standard OAuth 2.1 refresh)
 //   4. Claude credentials (oauth_token / anthropic_api_key) — cheap GET /v1/models ping
 //      to catch out-of-band revocations between spawns
 //
-// Auth: Bearer CRON_SECRET (external scheduler) or x-vercel-cron: 1 (Vercel native cron).
+// Auth: Bearer CRON_SECRET, via withCronRun. The only accepted credential —
+// platform-native cron does not fire in this project (cron-manifest.json).
 // Schedule: every 4 hours.
 //
 // Mode:
-//   BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true  → direct token-endpoint calls from Vercel (opt-in fallback)
-//   default (unset)                           → nudge mode: per-credential runner tasks
+//   BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true  → direct token-endpoint calls from Vercel (opt-in break-glass)
+//   default (unset)                          → observe only: count what is expiring, act on nothing
+//
+// Who actually refreshes: the runner-side credential broker
+// (apps/runner/src/broker.ts → runnerRefreshCredential), which learns which
+// credentials it holds from the claim response and refreshes them from a stable
+// egress IP. This route does NOT hand the work to an agent. It used to, by
+// filing a `[sys] refresh credential …` task per expiring credential — a title
+// no runner code matched, so the row went down the ordinary claim path and a
+// general-purpose agent picked it up, 401'd for want of a control-plane key, and
+// failed. Every sweep. One of those agents also took the refresh lock, called
+// the provider, and lost the rotated refresh token to output redaction; because
+// the provider rotates on use, that killed the credential outright. The title
+// leaked the credential's identifier into the dashboard and push notifications
+// on the way. Filing work an agent cannot do is worse than filing nothing.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { secrets, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, isNull, lt, ne, or, sql } from 'drizzle-orm';
+import { secrets } from '@buildd/core/db/schema';
+import { and, eq, isNull, lt, ne, or, sql } from 'drizzle-orm';
 import { refreshCodexCredential } from '@/lib/codex-credential';
 import { refreshClaudeCredential, verifyClaudeCredential } from '@/lib/claude-credential';
 import { refreshMcpConnectorCredential } from '@/lib/mcp-connector-refresh';
 import { recordCredentialAuthSuccess } from '@/lib/credential-health';
 import { notifyTeam } from '@/lib/notify';
 import { sweepLookaheadMinutes } from '@/lib/cron-cadence';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
-// For team-wide secrets (workspaceId = null), look up any workspace for the team.
-async function resolveWorkspaceForTeam(
-  teamId: string,
-  cache: Map<string, string | null>,
-): Promise<string | null> {
-  if (cache.has(teamId)) return cache.get(teamId)!;
-  const ws = await db.query.workspaces.findFirst({
-    where: eq(workspaces.teamId, teamId),
-    columns: { id: true },
-  });
-  const wsId = ws?.id ?? null;
-  cache.set(teamId, wsId);
-  return wsId;
-}
-
-// Create a nudge task for a credential refresh if one is not already pending.
-// Returns 'nudged' if a new task was created, 'deduped' if one already exists,
-// or 'no_workspace' if no workspace could be resolved for the credential.
-async function nudgeCredentialRefresh(
-  credId: string,
-  purpose: 'codex_credential' | 'claude_credential',
-  credWorkspaceId: string | null,
-  teamId: string,
-  teamWorkspaceCache: Map<string, string | null>,
-): Promise<'nudged' | 'deduped' | 'no_workspace'> {
-  const wsId = credWorkspaceId ?? (await resolveWorkspaceForTeam(teamId, teamWorkspaceCache));
-  if (!wsId) return 'no_workspace';
-
-  const title = `[sys] refresh credential ${credId}`;
-  // Dedupe against in-flight nudges too, not just pending ones. Matching only
-  // 'pending' meant a nudge that had been claimed (assigned/in_progress) no
-  // longer counted, so every sweep filed another copy of a task that was
-  // already being worked — each copy burning a worker slot (2026-08-28).
-  const existing = await db.query.tasks.findFirst({
-    where: and(
-      eq(tasks.title, title),
-      inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
-    ),
-    columns: { id: true },
-  });
-  if (existing) return 'deduped';
-
-  await db.insert(tasks).values({
-    workspaceId: wsId,
-    title,
-    description: `Refresh expiring ${purpose} credential.\n\nSecretId: ${credId}\nPurpose: ${purpose}\n\nCall POST /api/runner/credential-refresh with secretId, purpose, and action=lock to claim the refresh lock, then action=commit with the new tokens.`,
-    priority: 50,
-    tier: 'budget',
-    taskClass: 'bookkeeping',
-    outputRequirement: 'none',
-  });
-  return 'nudged';
-}
-
 export async function GET(req: NextRequest) {
-  // Accept either CRON_SECRET (external scheduler) or Vercel's native cron header
-  const isVercelCron = req.headers.get('x-vercel-cron') === '1';
-  if (!isVercelCron) {
-    const cronSecret = process.env.CRON_SECRET;
-    if (!cronSecret) {
-      return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-    }
-    const token = req.headers.get('authorization')?.replace('Bearer ', '');
-    if (token !== cronSecret) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-  }
+  return withCronRun('codex-token-refresh', req, report => runCronJob(req, report));
+}
+
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   const ALLOW_CONTROL_PLANE_REFRESH = process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH === 'true';
 
   // ── Codex credentials expiring within 1 hour ────────────────────────────────
   // Skip revoked rows — invalid_grant permanently kills the refresh_token family.
   // Retrying wastes calls and rotates no new token.
+  //
+  // A NULL tokenExpiresAt is swept in, not filtered out — same reasoning as the
+  // connector branch below. NULL is not "no deadline", it is "we do not know
+  // when this dies": the provider omitted expires_in, or a failed refresh
+  // cleared the column. Under isNotNull() such a row dropped out of every
+  // subsequent sweep, making the state a one-way trap with manual reconnect the
+  // only exit.
   const expiringCodex = await db.query.secrets.findMany({
     where: and(
       eq(secrets.purpose, 'codex_credential'),
-      isNotNull(secrets.tokenExpiresAt),
-      lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+      or(
+        isNull(secrets.tokenExpiresAt),
+        lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+      ),
       ne(secrets.healthStatus, 'revoked'),
     ),
     columns: { id: true, teamId: true, workspaceId: true },
@@ -116,8 +78,6 @@ export async function GET(req: NextRequest) {
   let codexErrors = 0;
   let codexNoCredential = 0;
   let codexRevoked = 0;
-  let codexNudged = 0;
-  let codexDeduped = 0;
 
   if (ALLOW_CONTROL_PLANE_REFRESH) {
     for (const cred of expiringCodex) {
@@ -146,39 +106,31 @@ export async function GET(req: NextRequest) {
         codexNoCredential++;
       }
     }
-  } else {
-    // Nudge mode: create runner tasks to refresh instead of direct token-endpoint calls.
-    // IP-flip on Vercel's rotating egress is the root cause of invalid_grant revocations;
-    // delegating to a colocated runner avoids the IP change.
-    const teamWorkspaceCache = new Map<string, string | null>();
-    for (const cred of expiringCodex) {
-      const outcome = await nudgeCredentialRefresh(
-        cred.id,
-        'codex_credential',
-        cred.workspaceId ?? null,
-        cred.teamId,
-        teamWorkspaceCache,
-      );
-      codexResults[cred.id] = outcome;
-      if (outcome === 'nudged') codexNudged++;
-      else if (outcome === 'deduped') codexDeduped++;
-    }
   }
+  // Flag off: the runner's broker refreshes these from its own stable IP. There
+  // is nothing for the control plane to do but say what it saw.
 
   console.log(
     ALLOW_CONTROL_PLANE_REFRESH
       ? `[Cron] Codex token refresh: checked=${expiringCodex.length} refreshed=${codexRefreshed} locked=${codexLocked} errors=${codexErrors} revoked=${codexRevoked}`
-      : `[Cron] Codex token nudge: checked=${expiringCodex.length} nudged=${codexNudged} deduped=${codexDeduped}`,
+      : `[Cron] Codex tokens expiring: checked=${expiringCodex.length} (observe only; runner broker owns refresh)`,
   );
 
   // ── Claude credentials (claude_credential) expiring within 1 hour ───────────
   // Skip revoked rows — 400/401 from Anthropic means the refresh_token family is
   // permanently dead. Retrying wastes calls and won't recover; the user must reconnect.
+  //
+  // NULL tokenExpiresAt is included for the same reason as the codex branch: an
+  // unknown deadline needs a look, and excluding it guaranteed the row was
+  // never looked at again. `healthStatus` is what marks a credential beyond
+  // saving; a null column should not be doing that job silently.
   const expiringClaude = await db.query.secrets.findMany({
     where: and(
       eq(secrets.purpose, 'claude_credential'),
-      isNotNull(secrets.tokenExpiresAt),
-      lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+      or(
+        isNull(secrets.tokenExpiresAt),
+        lt(secrets.tokenExpiresAt, sql`NOW() + INTERVAL '1 hour'`),
+      ),
       ne(secrets.healthStatus, 'revoked'),
     ),
     columns: { id: true, teamId: true, workspaceId: true },
@@ -189,8 +141,6 @@ export async function GET(req: NextRequest) {
   let claudeLocked = 0;
   let claudeErrors = 0;
   let claudeNoCredential = 0;
-  let claudeNudged = 0;
-  let claudeDeduped = 0;
 
   if (ALLOW_CONTROL_PLANE_REFRESH) {
     // BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true: opt-in fallback that retains this
@@ -206,35 +156,23 @@ export async function GET(req: NextRequest) {
       else if (outcome === 'error') claudeErrors++;
       else if (outcome === 'no_credential') claudeNoCredential++;
     }
-  } else {
-    // Nudge mode: create runner tasks to refresh instead of direct token-endpoint calls.
-    const teamWorkspaceCache = new Map<string, string | null>();
-    for (const cred of expiringClaude) {
-      const outcome = await nudgeCredentialRefresh(
-        cred.id,
-        'claude_credential',
-        cred.workspaceId ?? null,
-        cred.teamId,
-        teamWorkspaceCache,
-      );
-      claudeRefreshResults[cred.id] = outcome;
-      if (outcome === 'nudged') claudeNudged++;
-      else if (outcome === 'deduped') claudeDeduped++;
-    }
   }
+  // Flag off: observe only, as above.
 
   console.log(
     ALLOW_CONTROL_PLANE_REFRESH
       ? `[Cron] Claude token refresh: checked=${expiringClaude.length} refreshed=${claudeRefreshed} locked=${claudeLocked} errors=${claudeErrors}`
-      : `[Cron] Claude token nudge: checked=${expiringClaude.length} nudged=${claudeNudged} deduped=${claudeDeduped}`,
+      : `[Cron] Claude tokens expiring: checked=${expiringClaude.length} (observe only; runner broker owns refresh)`,
   );
 
   // ── Zombie claude_credential detection ────────────────────────────────────────
-  // Rows with tokenExpiresAt = null (set by 400/401 on refresh) are permanently dead.
-  // Log them so ops can see which workspaces need user reconnect. Workers fall back to
-  // the setup token (oauth_token purpose) automatically via the health-aware resolver,
-  // so these zombies don't block work — but they silently imply the managed refresh
-  // is disabled until the user reconnects.
+  // Rows with tokenExpiresAt = null: a refresh that returned 400/401 clears the
+  // column, and so does a token response without expires_in. The sweep above now
+  // retries them rather than stranding them, so this is no longer a terminal
+  // diagnosis — it is the ops view of which workspaces are running on an unknown
+  // deadline. Workers fall back to the setup token (oauth_token purpose)
+  // automatically via the health-aware resolver, so these don't block work — but
+  // they silently imply managed refresh is degraded until the user reconnects.
   // Kept regardless of BUILDD_ALLOW_CONTROL_PLANE_REFRESH for ops visibility.
   const zombieClaude = await db.query.secrets.findMany({
     where: and(
@@ -247,7 +185,7 @@ export async function GET(req: NextRequest) {
   if (zombieClaude.length > 0) {
     for (const z of zombieClaude) {
       console.warn(
-        `[Cron] Zombie claude_credential: id=${z.id} team=${z.teamId} workspace=${z.workspaceId ?? 'team-wide'} healthStatus=${z.healthStatus} lastError=${z.lastVerificationError ?? 'none'} — user must reconnect`,
+        `[Cron] Zombie claude_credential: id=${z.id} team=${z.teamId} workspace=${z.workspaceId ?? 'team-wide'} healthStatus=${z.healthStatus} lastError=${z.lastVerificationError ?? 'none'} — expiry unknown, managed refresh degraded until reconnect`,
       );
     }
   }
@@ -324,24 +262,42 @@ export async function GET(req: NextRequest) {
     `[Cron] Claude credential verification: checked=${claudeCreds.length} verified=${claudeVerified} failed=${claudeFailed}`,
   );
 
-  const nudgeMode = !ALLOW_CONTROL_PLANE_REFRESH;
-  const nudgedCredentials = codexNudged + claudeNudged;
+  // Three credential families in one sweep; the health signal is the sum. A
+  // token-refresh job that silently stops refreshing is how every credential
+  // in the system expires at once.
+  //
+  // With the flag off, codex/claude contribute 0 to `changed` by design — the
+  // broker does that work and reports its own outcome. `changed` staying 0 does
+  // not alarm on its own (see cron-health: it needs errors too), so an
+  // observe-only pass reads as healthy idle, which is what it is.
+  report({
+    processed: expiringCodex.length + expiringClaude.length + expiringMcp.length,
+    changed: codexRefreshed + claudeRefreshed + mcpRefreshed,
+    errors: codexErrors + claudeErrors + mcpErrors,
+    result: {
+      controlPlaneRefresh: ALLOW_CONTROL_PLANE_REFRESH,
+      codex: { checked: expiringCodex.length, refreshed: codexRefreshed, errors: codexErrors },
+      claude: { checked: expiringClaude.length, refreshed: claudeRefreshed, errors: claudeErrors },
+      mcp: { checked: expiringMcp.length, refreshed: mcpRefreshed, errors: mcpErrors },
+    },
+  });
 
   return NextResponse.json({
-    nudgeMode,
-    nudgedCredentials,
+    // False means the runner-side broker owns codex/claude refresh and this pass
+    // only counted. Without it, `checked: n` with no outcome fields is ambiguous.
+    controlPlaneRefresh: ALLOW_CONTROL_PLANE_REFRESH,
     codex: {
       checked: expiringCodex.length,
       ...(ALLOW_CONTROL_PLANE_REFRESH
         ? { refreshed: codexRefreshed, locked: codexLocked, errors: codexErrors, revoked: codexRevoked, noCredential: codexNoCredential }
-        : { nudged: codexNudged, deduped: codexDeduped }),
+        : {}),
       secrets: codexResults,
     },
     claudeRefresh: {
       checked: expiringClaude.length,
       ...(ALLOW_CONTROL_PLANE_REFRESH
         ? { refreshed: claudeRefreshed, locked: claudeLocked, errors: claudeErrors, noCredential: claudeNoCredential }
-        : { nudged: claudeNudged, deduped: claudeDeduped }),
+        : {}),
       secrets: claudeRefreshResults,
       zombies: zombieClaude.length,
     },

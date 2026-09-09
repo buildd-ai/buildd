@@ -458,6 +458,10 @@ export interface ReleaseResult {
   runStatus?: string;
   // Workflow run conclusion: 'success' | 'failure' | 'timed_out' | null (while running)
   runConclusion?: string | null;
+  // The `releases` row this dispatch created. Without it the task knows it
+  // triggered a release and the release does not know which task triggered it,
+  // which is the same gap `release_tasks` attribution keeps falling into.
+  releaseId?: string;
 }
 
 // Work tracker configuration — links a workspace to an external issue tracker.
@@ -1364,6 +1368,76 @@ export const workerActionEvents = pgTable('worker_action_events', {
   actionTsIdx: index('worker_action_events_action_ts_idx').on(t.action, t.ts),
 }));
 
+/**
+ * One row per prompt build, in both memory-digest arms (see
+ * apps/runner/src/memory-digest-policy.ts PromptCompositionRecord). Replaces
+ * the two places this record used to land — the per-worker session log
+ * (pruned after 48h, shorter than the ciRetry/conflictRetry/reviewerRetry/
+ * criteriaRearm chains the experiment is measured across) and runner stdout
+ * (outlives the log but isn't queryable).
+ *
+ * `buildIndex` rather than a column on `workers`: a single worker can build
+ * more than one prompt (e.g. the bwrap-retry restart in startSession rebuilds
+ * from scratch on the same worker/task), and a column would silently keep
+ * only the last build. This table keeps all of them, ordered by buildIndex
+ * within (workerId, taskId).
+ *
+ * `propensity` and `fraction` are recorded as assigned, not recomputed later
+ * from the currently configured fraction — the fraction can be reconfigured
+ * between assignment and analysis, and an off-policy estimate divides by the
+ * propensity that was actually in effect. `policyVersion` must never be
+ * pooled across values: a version bump changes what the arms mean.
+ *
+ * Low volume relative to worker_action_events (one row per prompt build, not
+ * per MCP call), so — unlike that table — this one is not pruned by the
+ * task-archive cron; the experiment needs the full history across a task's
+ * retry chain.
+ */
+export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }).notNull(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }),
+  // 0-based, ordered per (workerId, taskId) — see rationale above.
+  buildIndex: integer('build_index').notNull(),
+  // Runner-reported build time, not insert time — same ordering rationale as
+  // worker_action_events.ts.
+  ts: timestamp('ts', { withTimezone: true }).notNull(),
+  policyVersion: text('policy_version').notNull(),
+  arm: text('arm').notNull().$type<'full' | 'task_scoped'>(),
+  // Probability this unit would have been assigned the arm it actually got,
+  // as recorded at assignment time — see table comment.
+  propensity: decimal('propensity', { precision: 5, scale: 4 }).notNull(),
+  // The configured task_scoped share this assignment was drawn against.
+  fraction: decimal('fraction', { precision: 5, scale: 4 }).notNull(),
+  digestBytes: integer('digest_bytes').notNull(),
+  // Bytes the workspace-wide digest WOULD have occupied under `full`, recorded
+  // in both arms so the saving is computable from a control row alone.
+  digestBytesAvailable: integer('digest_bytes_available').notNull(),
+  digestTruncated: boolean('digest_truncated').notNull(),
+  taskMatchBytes: integer('task_match_bytes').notNull(),
+  taskMatchCount: integer('task_match_count').notNull(),
+  // Which retrieval step produced the matches (declared paths, title fallback,
+  // a miss, or not attempted). NULLABLE on purpose: a row written by a runner
+  // that predates the field is genuinely UNKNOWN, and defaulting it to any
+  // value would encode an inference as data. taskMatchCount alone cannot
+  // distinguish five path-overlap hits from five stopword hits, so without
+  // this column retrieval quality is unrecoverable from stored rows.
+  taskMatchDerivedBy: text('task_match_derived_by'),
+  // Agent backend. Also NULLABLE, and for the same reason — the Codex path
+  // delivers persona/skills/instructions through a file on disk rather than the
+  // prompt, so promptBytes and memoryShare mean a different thing per backend
+  // and rows must be segmented, never pooled. Defaulting absent rows to
+  // 'claude' would silently pool a Codex row into the Claude cohort.
+  backend: text('backend'),
+  memoryBlockBytes: integer('memory_block_bytes').notNull(),
+  promptBytes: integer('prompt_bytes').notNull(),
+  memoryShare: decimal('memory_share', { precision: 5, scale: 4 }).notNull(),
+}, (t) => ({
+  workerBuildIdx: uniqueIndex('worker_prompt_composition_events_worker_build_idx').on(t.workerId, t.buildIndex),
+  taskTsIdx: index('worker_prompt_composition_events_task_ts_idx').on(t.taskId, t.ts),
+  policyArmIdx: index('worker_prompt_composition_events_policy_arm_idx').on(t.policyVersion, t.arm),
+}));
+
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
@@ -1394,6 +1468,73 @@ export const artifacts = pgTable('artifacts', {
 }));
 
 // Mission notes — lightweight append-only feed for agent↔user communication
+/**
+ * Review feedback on a PR, captured for RETRIEVAL rather than for the activity
+ * feed.
+ *
+ * Why this exists separately from `mission_notes`, which already records a
+ * reviewer verdict: that row is a timeline entry. It is gated on the task having
+ * a mission (dropping the majority of PR-owning workers), it holds no file path,
+ * and it is not indexed for lookup. So the most valuable engineering context the
+ * system produces — "a reviewer already objected to exactly this, on exactly
+ * this file" — could not be surfaced to the next agent about to edit that file.
+ *
+ * The point is prevention. An objection retrieved BEFORE the code is written
+ * avoids a round trip; the same objection read after review has already cost it.
+ * That makes this the one corpus whose value does not depend on volume: a single
+ * "don't use db.transaction() with the neon-http driver" is useful the first
+ * time it is retrieved.
+ *
+ * Rows are facts about what a reviewer said. Nothing here is derived, scored, or
+ * summarised — a later ingest step indexes `body` into the knowledge store and
+ * that is where interpretation belongs.
+ */
+export const reviewFeedback = pgTable('review_feedback', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  /**
+   * GitHub's own id for the review or comment. UNIQUE, because the webhook is
+   * lossy in both directions: it drops deliveries and it redelivers them. Dedupe
+   * has to key on the upstream identity, not on our insert time.
+   */
+  githubId: text('github_id').notNull(),
+  workspaceId: uuid('workspace_id').notNull(),
+  /** Nullable: a review can arrive for a PR whose worker row we cannot resolve. */
+  taskId: uuid('task_id'),
+  workerId: uuid('worker_id'),
+  repoFullName: text('repo_full_name').notNull(),
+  prNumber: integer('pr_number').notNull(),
+  /** Head SHA the review was submitted against — the code actually being judged. */
+  headSha: text('head_sha'),
+  /**
+   * `review` is a top-level submission (carries a verdict, often no path);
+   * `inline_comment` is anchored to a file and line, which is what makes it
+   * retrievable by path.
+   */
+  kind: text('kind').notNull().$type<'review' | 'inline_comment'>(),
+  state: text('state').$type<'approved' | 'changes_requested' | 'commented'>(),
+  /** Repo-relative path this feedback is anchored to. Null for top-level reviews. */
+  path: text('path'),
+  line: integer('line'),
+  /**
+   * The diff hunk the comment was left on. Kept because an objection is often
+   * unintelligible without the code it points at, and the hunk is the only
+   * record of what that code looked like at the time.
+   */
+  diffHunk: text('diff_hunk'),
+  body: text('body').notNull(),
+  authorLogin: text('author_login'),
+  authorType: text('author_type').notNull().$type<'user' | 'bot'>(),
+  /** When GitHub recorded it, not when we did — the webhook can be hours late. */
+  submittedAt: timestamp('submitted_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  githubIdUnique: uniqueIndex('review_feedback_github_id_unique').on(t.githubId),
+  // The retrieval path: "what has a reviewer said about this file before".
+  workspacePathIdx: index('review_feedback_workspace_path_idx').on(t.workspaceId, t.path),
+  prIdx: index('review_feedback_pr_idx').on(t.workspaceId, t.prNumber),
+  taskIdx: index('review_feedback_task_idx').on(t.taskId),
+}));
+
 export const missionNotes = pgTable('mission_notes', {
   id: uuid('id').primaryKey().defaultRandom(),
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'cascade' }),
@@ -1717,10 +1858,29 @@ export const secrets = pgTable('secrets', {
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
-  // tokenExpiresAt enables efficient "expiring soon" cron queries; lastRefreshedAt doubles as
-  // the optimistic-lock column for the refresh-rotation pattern. See docs/credentials-architecture.md.
+  // tokenExpiresAt enables efficient "expiring soon" cron queries.
+  // See docs/credentials-architecture.md.
   tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  // Last time a refresh actually SUCCEEDED — this is what the UI shows as
+  // "Last refreshed". For claude_credential / codex_credential it is written only
+  // on a successful commit; the refresh lock lives in refreshLockedAt below.
+  // (mcp_connector_credential still uses this column as its own lock — see
+  // lib/mcp-connector-refresh.ts. Converging the two is a follow-up.)
   lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  // Refresh lock. Stamped by the atomic UPDATE that claims the right to call the
+  // provider's token endpoint, so only one caller refreshes per 60-minute window.
+  // Split out from lastRefreshedAt because one column cannot be both: a lock is
+  // stamped on every *attempt*, which made a credential that fails every cycle
+  // indistinguishable from one that is working.
+  refreshLockedAt: timestamp('refresh_locked_at', { withTimezone: true }),
+  // Set when a rotation goes in flight, cleared the moment its outcome is known
+  // (success, revocation, or a provider error we actually received). A value still
+  // present long afterwards therefore means we never learned the outcome — the
+  // provider may have consumed the stored refresh token and issued a replacement
+  // that we lost. Providers that rotate the refresh token on every use kill the
+  // stored token in that case, so retrying is a guaranteed invalid_grant; the
+  // refresh paths fail closed on a stale value instead of retrying into it.
+  rotationStartedAt: timestamp('rotation_started_at', { withTimezone: true }),
   // Verification lifecycle (codex_credential only): the last time the credential was
   // smoke-tested against the real provider API, and the error string if it failed.
   lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
@@ -1729,10 +1889,10 @@ export const secrets = pgTable('secrets', {
   // expired (or is about to), cleared by the reconnect/refresh success paths so a
   // later expiry is a new episode. Read by /api/cron/connector-block-notify.
   expiryNotifiedAt: timestamp('expiry_notified_at', { withTimezone: true }),
-  // Last time a refresh actually SUCCEEDED. Distinct from lastRefreshedAt, which
-  // the optimistic lock stamps on every *attempt* before the token endpoint is
-  // called — so lastRefreshedAt alone cannot tell "refresh is working" from
-  // "refresh is being attempted and failing every cycle".
+  // mcp_connector_credential only: last time a refresh actually SUCCEEDED, as
+  // distinct from lastRefreshedAt, which that path's optimistic lock still stamps
+  // on every *attempt*. The claude_credential / codex_credential paths solve the
+  // same problem with refreshLockedAt instead and leave this column NULL.
   lastRefreshSucceededAt: timestamp('last_refresh_succeeded_at', { withTimezone: true }),
   // Credential health — set by spawn-time auth failures and active verification.
   // healthy: last use/verify succeeded; degraded: ≥1 auth failure, < threshold;
@@ -2290,6 +2450,46 @@ export const oauthBudgetEpisodesRelations = relations(oauthBudgetEpisodes, ({ on
 // See docs/credentials-architecture.md. The legacy per-workspace codex_credentials
 // table was dropped in migration 0047 (no rows existed).
 
+// ── Cron run history ─────────────────────────────────────────────────────────
+//
+// Every scheduled sweep already computes a verdict on its own work — how many
+// rows it looked at, how many it changed, how many calls failed — and every one
+// of them threw that verdict away at the route boundary. Three PR sweeps ran
+// hourly for months returning "errors on every row, nothing changed", which is
+// a complete description of an outage that nothing was in a position to read
+// (PR #2125). This table is where the verdict lands so a trend can be checked.
+//
+// `changed` is the load-bearing column. A sweep with nothing to do and a sweep
+// that cannot do anything both report processed=0; only `errors` and `changed`
+// together separate healthy idle from total failure.
+export const cronRuns = pgTable('cron_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  // Route slug, optionally with a scope suffix ('pr-reconcile:merge-state'),
+  // because two cadences of one route are two different health signals.
+  job: text('job').notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true }).defaultNow().notNull(),
+  finishedAt: timestamp('finished_at', { withTimezone: true }),
+  durationMs: integer('duration_ms'),
+  // Did the handler return without throwing. A false here is a harder failure
+  // than a non-zero `errors`: the sweep did not finish at all.
+  ok: boolean('ok').notNull(),
+  // Normalized verdict. Null means the route reported nothing — still a useful
+  // heartbeat, but it cannot participate in the health check.
+  processed: integer('processed'),
+  changed: integer('changed'),
+  errors: integer('errors'),
+  // The route's own result object, verbatim, for when the normalized numbers
+  // say something is wrong but not what.
+  result: jsonb('result').$type<Record<string, unknown>>(),
+  error: text('error'),
+  // Set on the run that fired an alert, so the next few runs stay quiet
+  // instead of paging hourly forever.
+  alertedAt: timestamp('alerted_at', { withTimezone: true }),
+}, (t) => ({
+  // Serves the health window query and the per-job retention delete.
+  jobStartedIdx: index('cron_runs_job_started_idx').on(t.job, t.startedAt),
+}));
+
 // ── OAuth (MCP connector for claude.ai and other MCP clients) ────────────────
 // Implements OAuth 2.1 with PKCE. Tokens are workspace-scoped: each issued
 // JWT carries the workspaceId the user picked during /authorize, and the
@@ -2579,7 +2779,11 @@ export const darkCheckAlerts = pgTable('dark_check_alerts', {
 export type DarkCheckAlert = typeof darkCheckAlerts.$inferSelect;
 
 // Path claims — held file-path locks for coordinating parallel workers.
-// A row per (task, path) written by check_path_claim on success.
+// A row per (task, path), from either of two writers: check_path_claim, when an
+// agent declares a path up front, and claimObservedPaths on worker sync, which
+// leases the paths §6d observed the worker actually touching (minus regenerable
+// files and the '**' sentinel). The second writer is what puts traffic through
+// the claim-route backstop; a declaration-only table sat idle.
 // released_at IS NULL → active hold; set to NOW() on terminal task status,
 // PR merged/closed, or worker reaper. No uniqueness constraint on
 // (workspace_id, path) because conflict detection uses prefix matching in
@@ -2721,3 +2925,6 @@ export type Memory = typeof memories.$inferSelect;
 export type NewMemory = typeof memories.$inferInsert;
 
 // smoke-test-3-ci-retry-1 20260725
+
+export type CronRun = typeof cronRuns.$inferSelect;
+export type NewCronRun = typeof cronRuns.$inferInsert;

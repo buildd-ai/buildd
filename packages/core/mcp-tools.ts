@@ -369,7 +369,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
-    trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses the empty-commit check, NOT CI. "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
+    trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses BOTH the empty-commit check in the workflow itself AND buildd\'s own in-flight dedup guard for this headSha (without force, a repeat call for a commit already dispatched returns the existing release without re-dispatching — reported as "not dispatched", not as success). "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
@@ -2062,6 +2062,16 @@ export async function handleBuilddAction(
       // Cross-reference priorSimilarCandidates against currently-open tasks to build
       // the warning. Only call the active-tasks endpoint when there are candidates
       // above the threshold (avoids a needless round-trip on clean filings).
+      // The server resolved this filing's anchor against live tasks and found a
+      // match too imprecise to attach on (same PR, unknown commit; or a sibling
+      // in the same mission). Say so — it used to be computed and discarded.
+      const suggestion = task?.duplicateSuggestion as
+        | { taskId?: string; title?: string; keyType?: string }
+        | undefined;
+      const subjectSuggestion = suggestion?.taskId
+        ? `\n\n⚠ Task ${suggestion.taskId} — "${suggestion.title ?? 'untitled'}" — is already live on the same subject (${suggestion.keyType}). Check it before starting: two agents on one subject is how PRs get superseded.`
+        : '';
+
       let similarTasksWarning = '';
       const aboveThreshold = priorSimilarCandidates.filter(c => c.similarity >= SIMILAR_TASK_WARN_THRESHOLD);
       if (aboveThreshold.length > 0 && task?.id) {
@@ -2092,7 +2102,13 @@ export async function handleBuilddAction(
       const createdTaskUrl = `${createAppBase}/app/tasks/${task.id}`;
 
       if (task.deduplicated) {
-        return text(`Friction task already open: "${task.title}" (ID: ${task.id})\nYour report has been appended. Follow progress with get_task (taskId ${task.id}).`);
+        // Two gates return this: the friction-signature gate, and the subject
+        // dedupe that recognises an identifying anchor (same PR generation, same
+        // traced error) already owned by a live task.
+        const how = task.duplicateKeyType
+          ? `A live task already owns this subject (${task.duplicateKeyType})`
+          : 'Friction task already open';
+        return text(`${how}: "${task.title}" (ID: ${task.id})\nYour report has been attached rather than dispatching a second agent onto a separate branch. Follow progress with get_task (taskId ${task.id}), or re-file with fileAnywayReason if this is genuinely distinct work.`);
       }
 
       const statusLabel = task.startAt
@@ -2100,7 +2116,7 @@ export async function handleBuilddAction(
         : task.status === 'assigned'
           ? 'Assigned — a runner has already claimed it'
           : 'Queued — no runner has claimed it yet';
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${similarTasksWarning}`);
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}`);
     }
 
     case 'create_schedule': {
@@ -4086,9 +4102,20 @@ export async function handleBuilddAction(
         }
         return errorResult(`Release trigger failed: ${raw}`);
       }
+      if (data.deduped) {
+        return text(
+          `Not dispatched: a release for this commit is already in flight (release ${data.releaseId}, repo ${data.repo}).\n` +
+            `Pass force: true to dispatch anyway.`,
+        );
+      }
+      if (!data.workflowFile || !data.ref) {
+        return errorResult(
+          `Release trigger returned an incomplete response (missing workflowFile/ref) — treating as failed, not dispatched. Raw: ${JSON.stringify(data)}`,
+        );
+      }
       const runLine = data.runUrl
         ? `\nRun: ${data.runUrl} (status: ${data.runStatus ?? 'unknown'}${data.runConclusion ? `, ${data.runConclusion}` : ''})`
-        : `\nFollow: ${data.runsUrl}`;
+        : `\nNo run has surfaced yet — follow: ${data.runsUrl}`;
       return text(
         `Release dispatched on ${data.repo} (${data.workflowFile}, ref=${data.ref}).${runLine}\n` +
           `Note: this opens the release PR — it does not deploy. Prod ships when that PR passes CI and merges.`,

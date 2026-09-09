@@ -43,7 +43,7 @@ const LEASE_ENDPOINT = `${CONTROL_PLANE}/api/runner/credential-lease`;
 const REFRESH_ENDPOINT = `${CONTROL_PLANE}/api/runner/credential-refresh`;
 
 const originalFetch = globalThis.fetch;
-let fetchCalls: Array<{ url: string; body: Record<string, unknown> }>;
+let fetchCalls: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }>;
 
 function makeFetchMock(responses: Array<{ body: unknown; status?: number }>) {
   let callIndex = 0;
@@ -58,7 +58,7 @@ function makeFetchMock(responses: Array<{ body: unknown; status?: number }>) {
         body = { __urlencoded: raw };
       }
     }
-    fetchCalls.push({ url, body });
+    fetchCalls.push({ url, body, headers: (init?.headers ?? {}) as Record<string, string> });
     const r = responses[callIndex++] ?? { body: {}, status: 200 };
     return new Response(JSON.stringify(r.body), {
       status: r.status ?? 200,
@@ -355,17 +355,24 @@ describe('refreshExpiring', () => {
 // ── crash recovery ────────────────────────────────────────────────────────────
 
 /**
- * These tests simulate a broker process crashing mid-rotation and assert that
- * the credential is left in a non-corrupted, refreshable state.
+ * These tests simulate a broker process crashing mid-rotation and assert what the
+ * broker does with whatever the control plane then tells it.
  *
  * The lock→provider→commit sequence is:
- *   1. lock   — sets lastRefreshedAt=NOW() on the DB row, returns current refresh_token
+ *   1. lock     — stamps refreshLockedAt=NOW() and rotationStartedAt, returns the
+ *                 current refresh_token
  *   2. provider — calls the OAuth token endpoint with the refresh_token
- *   3. commit  — writes new access_token + refresh_token to the DB
+ *   3. commit   — writes the new access_token + refresh_token, clears rotationStartedAt
  *
- * Crash before commit (step 2→3): DB still holds the OLD refresh_token because
- * commit never ran. The old token is still valid; the next lease-holder retries
- * after the 60-minute lock window expires.
+ * Crash before commit (step 2→3) is NOT automatically safe. The provider rotates
+ * the refresh token on every use, so if it issued a replacement and we lost it, the
+ * stored token is permanently dead — retrying is a guaranteed invalid_grant. Which
+ * case we are in is not knowable from the runner, so the control plane decides:
+ * rotationStartedAt survived the crash, and the next lock either finds it fresh
+ * (still in flight, answer 'locked') or stale (lost, answer rotationLost).
+ *
+ * The broker's job is therefore to obey the answer: retry only when the control
+ * plane hands back a token, and stop permanently on rotationLost.
  *
  * Crash after commit (step 3→use): DB holds the NEW committed tokens. A new
  * broker bootstraps and obtains them immediately — no data loss.
@@ -387,7 +394,7 @@ describe('crash recovery — mid-rotation invariants', () => {
     fetchCalls = []; // reset — setup calls accounted for
   }
 
-  test('crash before commit: DB retains old refresh token and credential is refreshable after lock expires', async () => {
+  test('crash before commit: broker retries only when the control plane hands a token back', async () => {
     // 30-min expiry triggers the 2-h window check in refreshExpiring.
     const soonExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString();
     await setupLeasedBroker(broker, soonExpiry, {
@@ -458,7 +465,8 @@ describe('crash recovery — mid-rotation invariants', () => {
     // ── After the lock window expires, the old RT is used for a successful refresh ─
     fetchCalls = [];
     globalThis.fetch = makeFetchMock([
-      // lock succeeds (60-min window has passed — simulated by the mock returning locked: true)
+      // lock succeeds: the control plane judged the interrupted rotation still
+      // usable and handed the token back (60-min window has passed).
       { body: { locked: true, refreshToken: 'initial-rt' } },
       // provider accepts the old RT and issues fresh tokens
       { body: { access_token: 'recovered-at', refresh_token: 'recovered-rt', expires_in: 3600 } },
@@ -748,3 +756,172 @@ describe('fetchTokenFromBroker', () => {
 // NOTE: Tests requiring real fs I/O (socket lifecycle, credential file updates) live in
 // apps/runner/__tests__/standalone/ because Bun's mock.module is process-global — other
 // unit tests that mock 'fs' without these exports would break them.
+
+// ── auth sourcing (regression: prod runner has no BUILDD_API_KEY) ─────────────
+//
+// The broker read process.env.BUILDD_API_KEY as its only source, but the runner
+// keeps its key in config.json — index.ts calls the env var a CI/Docker override
+// that is "NOT recommended". On a normal install the broker therefore sent no
+// Authorization header, every acquire returned 401, and the whole runner-side
+// refresh path was inert: `managed` never filled, so refreshExpiring() looped
+// over nothing while the control-plane cron re-nudged a doomed task every 4h.
+//
+// These tests run with the env var DELETED, which is the real prod shape. The
+// suite's own beforeEach used to set it, which is why nothing caught this.
+describe('auth sourcing', () => {
+  let configured: CredentialBroker;
+
+  beforeEach(() => {
+    delete process.env.BUILDD_API_KEY;
+    delete process.env.BUILDD_CLIENT_URL;
+    configured = new CredentialBroker();
+  });
+
+  test('sends the config-sourced apiKey on acquire when BUILDD_API_KEY is unset', async () => {
+    configured.configure({ apiKey: 'bld_from_config', baseUrl: CONTROL_PLANE });
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
+
+    configured.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchCalls.length).toBeGreaterThan(0);
+    expect(fetchCalls[0].url).toBe(LEASE_ENDPOINT);
+    expect(fetchCalls[0].headers.Authorization).toBe('Bearer bld_from_config');
+  });
+
+  test('sends the config-sourced apiKey on bootstrap too', async () => {
+    configured.configure({ apiKey: 'bld_from_config', baseUrl: CONTROL_PLANE });
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
+
+    configured.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchCalls).toHaveLength(2);
+    expect(fetchCalls[1].url).toBe(REFRESH_ENDPOINT);
+    expect(fetchCalls[1].headers.Authorization).toBe('Bearer bld_from_config');
+  });
+
+  test('configured baseUrl retargets both endpoints, not just the default', async () => {
+    configured.configure({ apiKey: 'bld_from_config', baseUrl: 'https://staging.example.com' });
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
+
+    configured.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchCalls[0].url).toBe('https://staging.example.com/api/runner/credential-lease');
+    expect(fetchCalls[1].url).toBe('https://staging.example.com/api/runner/credential-refresh');
+  });
+
+  test('does not call the control plane at all when no key is available', async () => {
+    globalThis.fetch = makeFetchMock([{ body: { acquired: true, leaseId: LEASE_ID } }]);
+
+    configured.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  test('start() forwards its config to the auth header', async () => {
+    const socketPath = `/tmp/buildd-broker-authtest-${process.pid}.sock`;
+    process.env.BUILDD_BROKER_SOCKET = socketPath;
+    const started = new CredentialBroker();
+    try {
+      started.configure({ apiKey: 'unused' });
+      started.start({ apiKey: 'bld_started_key', baseUrl: CONTROL_PLANE });
+      globalThis.fetch = makeFetchMock([
+        { body: { acquired: true, leaseId: LEASE_ID } },
+        BOOTSTRAP_RESPONSE,
+      ]);
+
+      started.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(fetchCalls[0].headers.Authorization).toBe('Bearer bld_started_key');
+    } finally {
+      await started.shutdown();
+      delete process.env.BUILDD_BROKER_SOCKET;
+      try { unlinkSync(socketPath); } catch {}
+    }
+  });
+
+  test('still honours BUILDD_API_KEY when nothing is configured', async () => {
+    process.env.BUILDD_API_KEY = API_KEY;
+    process.env.BUILDD_CLIENT_URL = CONTROL_PLANE;
+    const envBroker = new CredentialBroker();
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      BOOTSTRAP_RESPONSE,
+    ]);
+
+    envBroker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'claude_credential', expiresAt: null }]);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(fetchCalls[0].headers.Authorization).toBe(`Bearer ${API_KEY}`);
+  });
+});
+
+
+// ── lost rotation ─────────────────────────────────────────────────────────────
+
+describe('refreshExpiring — lost rotation', () => {
+  const SOON = () => new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+  async function leaseCredential(expiresAt: string) {
+    globalThis.fetch = makeFetchMock([
+      { body: { acquired: true, leaseId: LEASE_ID } },
+      { body: { accessToken: 'at', refreshToken: 'rt', expiresAt } },
+    ]);
+    broker.notifyCredentials([{ secretId: SECRET_ID, purpose: 'codex_credential', expiresAt }]);
+    await new Promise((r) => setTimeout(r, 20));
+    fetchCalls = [];
+  }
+
+  test('stops attempting refresh once the control plane reports a lost rotation', async () => {
+    const expiresAt = SOON();
+    await leaseCredential(expiresAt);
+
+    globalThis.fetch = makeFetchMock([{ body: { locked: false, rotationLost: true } }]);
+    await (broker as any).refreshExpiring();
+    expect(fetchCalls.filter((c) => c.body.action === 'lock')).toHaveLength(1);
+
+    // Every later tick must be a no-op: the credential cannot be refreshed by
+    // anyone, and re-asking burns an invalid_grant against the provider.
+    fetchCalls = [];
+    globalThis.fetch = makeFetchMock([{ body: { locked: false, rotationLost: true } }]);
+    await (broker as any).refreshExpiring();
+    await (broker as any).refreshExpiring();
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  test('keeps retrying when the lock is merely held by another refresher', async () => {
+    const expiresAt = SOON();
+    await leaseCredential(expiresAt);
+
+    globalThis.fetch = makeFetchMock([{ body: { locked: false } }]);
+    await (broker as any).refreshExpiring();
+    fetchCalls = [];
+
+    globalThis.fetch = makeFetchMock([{ body: { locked: false } }]);
+    await (broker as any).refreshExpiring();
+    expect(fetchCalls.filter((c) => c.body.action === 'lock')).toHaveLength(1);
+  });
+
+  test('keeps the lease after a lost rotation so no other runner spins on it', async () => {
+    const expiresAt = SOON();
+    await leaseCredential(expiresAt);
+
+    globalThis.fetch = makeFetchMock([{ body: { locked: false, rotationLost: true } }]);
+    await (broker as any).refreshExpiring();
+
+    expect((broker as any).managed.has(SECRET_ID)).toBe(true);
+  });
+});

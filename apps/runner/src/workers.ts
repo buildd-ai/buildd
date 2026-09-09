@@ -35,6 +35,7 @@ import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
+import type { ClaimLogEntry } from './session-logger';
 import {
   SessionStderrCollector,
   flushStderrTrace,
@@ -42,7 +43,7 @@ import {
 } from './session-diagnostics';
 import { archiveSession } from './history-store';
 import { extractTenantContext, decryptTenantSecret } from './tenant-crypto';
-import type { WorkerEnvironment } from '@buildd/shared';
+import type { WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import {
   resolveBypassPermissions,
   resolveMaxBudgetUsd,
@@ -50,11 +51,13 @@ import {
   resolveSessionModel,
   resolveActualModel,
   discoverModelCapabilities,
-  buildPrompt,
+  buildPromptWithComposition,
   buildSessionSummary,
   generatePromptSuggestions,
   extractFilesFromToolCalls,
 } from './prompt-builder';
+import { buildPromptCompositionRecord, appendPromptCompositionEvent } from './memory-digest-policy';
+import { retrieveTaskMemory } from './task-memory-retrieval';
 import { resolveClaudeBinaryPath } from './sdk-binary-path';
 import { HookFactory } from './hook-factory';
 import { scanToolResult, clearWorkerThrottle } from './error-trace-scanner';
@@ -456,6 +459,32 @@ export function metricsOnlyPayload(
   // update type's own keys, so the narrowing lives here — at the one place that
   // owns the field list — instead of at every call site.
   return out as Parameters<BuilddClient['updateWorker']>[1];
+}
+
+/**
+ * Pick the diagnostic detail worth persisting from a claim response.
+ *
+ * Module-local on purpose. It belongs with ClaimLogEntry in session-logger, but
+ * 16 test files replace that module wholesale with `mock.module`, and a new
+ * runtime export there is `undefined` at every one of those call sites rather
+ * than falling back to the real module. A 12-line picker is not worth widening
+ * 16 mock surfaces.
+ *
+ * Omits each key the server did not send: an absent `deferrals` and an all-zero
+ * one are different claims about the world, and claims.log is read by grep — a
+ * spurious `"deferrals":{}` on every idle poll hides the entries that matter.
+ */
+function claimDiagnosticDetail(
+  diagnostics: ClaimDiagnostics | null | undefined,
+): Pick<ClaimLogEntry, 'deferrals' | 'pendingTasks' | 'matchedTasks'> {
+  if (!diagnostics) return {};
+  return {
+    ...(diagnostics.deferrals && Object.keys(diagnostics.deferrals).length > 0
+      ? { deferrals: diagnostics.deferrals }
+      : {}),
+    ...(typeof diagnostics.pendingTasks === 'number' ? { pendingTasks: diagnostics.pendingTasks } : {}),
+    ...(typeof diagnostics.matchedTasks === 'number' ? { matchedTasks: diagnostics.matchedTasks } : {}),
+  };
 }
 
 export class WorkerManager {
@@ -989,7 +1018,16 @@ export class WorkerManager {
       // in explicitly so a multi-workspace OAuth token is allowed to claim the
       // next pending task across all accessible workspaces (server ranks/picks),
       // rather than being rejected by the ambiguous-claim guard.
-      let claimPollResult: { workers: any[]; diagnostics?: any; budgetResetsAt?: string | null };
+      let claimPollResult: {
+        workers: any[];
+        diagnostics?: any;
+        budgetResetsAt?: string | null;
+        pendingCredentialRefreshes?: Array<{
+          secretId: string;
+          purpose: 'claude_credential' | 'codex_credential';
+          expiresAt: string | null;
+        }>;
+      };
       try {
         claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
       } catch (err: any) {
@@ -999,6 +1037,18 @@ export class WorkerManager {
         throw err;
       }
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
+
+      // Credential discovery. This is the ONLY path by which an idle runner
+      // learns which credentials its broker is responsible for: the server now
+      // announces them at the top level of every claim response, including the
+      // polls that claim nothing. Reading it here — before the empty-claim
+      // return below — is the whole point; the per-worker field in
+      // startClaimedWorker() can only fire when work was actually claimed.
+      // notifyCredentials() is idempotent, so both paths announcing is safe.
+      const announced = claimPollResult.pendingCredentialRefreshes;
+      if (announced && announced.length > 0) {
+        notifyBrokerCredentials(announced);
+      }
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since
@@ -1019,7 +1069,13 @@ export class WorkerManager {
       if (claimed.length === 0) {
         // Skip logging no_pending_tasks during polling — that's the normal idle state
         if (diagnostics && diagnostics.reason !== 'no_pending_tasks' && diagnostics.reason !== 'budget_exhausted_partial') {
-          claimLog({ event: 'claim_empty', slotsRequested: slots, workersClaimed: 0, diagnosticReason: diagnostics.reason });
+          claimLog({
+            event: 'claim_empty',
+            slotsRequested: slots,
+            workersClaimed: 0,
+            diagnosticReason: diagnostics.reason,
+            ...claimDiagnosticDetail(diagnostics),
+          });
         }
         return [];
       }
@@ -1237,7 +1293,14 @@ export class WorkerManager {
     const { workers: claimed, diagnostics } = claimResult;
     if (claimed.length === 0) {
       const reason = diagnostics?.reason || 'unknown';
-      claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, diagnosticReason: diagnostics?.reason, taskId: task.id });
+      claimLog({
+        event: 'claim_empty',
+        slotsRequested: 1,
+        workersClaimed: 0,
+        diagnosticReason: diagnostics?.reason,
+        taskId: task.id,
+        ...claimDiagnosticDetail(diagnostics),
+      });
       console.log(`No tasks claimed (reason: ${reason})`);
       throw Object.assign(
         new Error(`Server rejected claim for task "${task.title}" — ${reason === 'no_pending_tasks' ? 'task is no longer available (may already be claimed or completed)' : `reason: ${reason}`}`),
@@ -1836,11 +1899,30 @@ export class WorkerManager {
       }
 
       // Fetch workspace memory context in parallel: full digest + task-specific matches + feedback memories
-      const [compactResult, taskSearchResults, feedbackMemories] = await Promise.all([
+      const [compactResult, taskMemory, feedbackMemories] = await Promise.all([
         this.buildd.getCompactObservations(task.workspaceId),
-        this.buildd.searchObservations(task.workspaceId, task.title, 5),
+        // Declared paths first, task title as fallback — see
+        // task-memory-retrieval.ts for why these are ordered steps rather than
+        // one blended query, and why the provenance is recorded.
+        retrieveTaskMemory(this.buildd, {
+          workspaceId: task.workspaceId,
+          title: task.title,
+          description: task.description,
+          pathManifest: task.pathManifest,
+        }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
+      const taskSearchResults = taskMemory.results;
+      // Which step produced the match, emitted by the code that did the work
+      // rather than inferred later. A bare count cannot distinguish five hits
+      // from a declared path overlap from five hits sharing a stopword.
+      sessionLog(worker.id, 'info', 'task-memory-retrieval', JSON.stringify({
+        derivedBy: taskMemory.derivedBy,
+        results: taskMemory.results.length,
+        scopePaths: taskMemory.scopePaths.length,
+        inferredPaths: taskMemory.inferredPaths.length,
+        pathScopeMissed: taskMemory.pathScopeMissed,
+      }), task.id);
 
       // Fetch full content for task-specific memory matches
       const fullObservations = taskSearchResults.length > 0
@@ -1871,7 +1953,7 @@ export class WorkerManager {
 
       // Build prompt with workspace context
       const inputPolicy = (task.context?.inputPolicy as string) || 'autonomous';
-      let promptText = buildPrompt({
+      const built = buildPromptWithComposition({
         task,
         worker,
         gitConfig,
@@ -1884,7 +1966,9 @@ export class WorkerManager {
         inputAsRetry: this.config.inputAsRetry,
         resolvedContextProviders: (task.context as any)?.resolvedContextProviders as string[] | undefined,
         feedbackMemories,
+        memoryDigestTaskScopedFraction: this.config.memoryDigestTaskScopedFraction,
       });
+      let promptText = built.promptText;
 
       // Add tenant context to prompt (Dispatch multi-tenant mode)
       const promptTenantCtx = extractTenantContext(task.context as Record<string, unknown>);
@@ -3052,6 +3136,40 @@ export class WorkerManager {
           console.error(`[Worker ${worker.id}] Failed to write Codex AGENTS.md:`, err);
         }
       }
+
+      // One composition record per prompt build, in BOTH arms. The control row
+      // is the denominator: without it, "no task_scoped prompts" and "no
+      // prompts at all" look identical.
+      //
+      // Deliberately emitted HERE — below the Codex AGENTS.md prepend above and
+      // below the tenant-context append — because this is the last line that
+      // mutates promptText. Built any earlier, promptBytes is short by whatever
+      // a later branch adds and memoryShare is correspondingly inflated.
+      const composition = buildPromptCompositionRecord({
+        assignment: built.assignment,
+        memory: built.memory,
+        promptText,
+        backend: task.backend,
+        taskMatchDerivedBy: taskMemory.derivedBy,
+      });
+      sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
+      // Also on stdout, as a live "is the arm firing at all" signal. Whether
+      // that outlives the process is a property of the deployment's launcher,
+      // not of this code: the reference one appends to a container-local file
+      // inside a restart loop, so it accumulates history but is unrotated and
+      // dies with the container. Neither sink is a queryable rail — see the
+      // open question in the design doc.
+      console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
+      // Durable, queryable rail: neither of the above survives long enough or
+      // is queryable enough to analyse the arm across a task's retry chain.
+      const { buffer: promptCompositionBuffer, nextBuildIndex } = appendPromptCompositionEvent(
+        worker.pendingPromptCompositionEvents,
+        worker.promptBuildIndex,
+        composition,
+        Date.now(),
+      );
+      worker.pendingPromptCompositionEvents = promptCompositionBuffer;
+      worker.promptBuildIndex = nextBuildIndex;
 
       // Build prompt: use AsyncIterable<SDKUserMessage> when images are attached,
       // so image content blocks are included in the initial message to the agent.
@@ -4499,7 +4617,11 @@ If something is missing or incomplete, describe what and fix it now.`;
             if (prResult.url) worker.prUrl = prResult.url;
           }
 
-          const traces = scanToolResult(worker.id, text, source);
+          // `is_error` gates the broad patterns — see error-trace-scanner.ts.
+          // Without it, five in six firings landed on successful output.
+          const traces = scanToolResult(worker.id, text, source, {
+            isError: block.is_error === true,
+          });
           if (traces.length > 0) {
             if (!worker.pendingErrorTraces) worker.pendingErrorTraces = [];
             const redact = this.secretRedactors.get(worker.id);
@@ -4534,23 +4656,31 @@ If something is missing or incomplete, describe what and fix it now.`;
 
             // sandbox_mount_gap: a path needed by npm postinstall, a config read, or a tool
             // binary is not mounted in the bwrap sandbox. Unlike bwrap_namespace_denied, the
-            // sandbox itself is functional — only the allowlist config is missing. Do NOT flip
-            // _bwrapSupported (that would disable sandbox globally for unrelated tasks).
-            // Fast-fail so the operator can add the path via BUILDD_MOUNT_ALLOWLIST_EXTRA and
-            // retry cleanly. The server exempts this worker from the code-retry cap.
-            if (traces.some(t => t.pattern === 'sandbox_mount_gap') && !worker.sandboxMountGap) {
-              worker.sandboxMountGap = true;
+            // sandbox itself is functional — only the allowlist config is missing.
+            //
+            // This used to fast-fail the session (abort + worker.sandboxMountGap = true, which
+            // the server reads as a requeue exempt from the retry cap). That made the detector's
+            // precision the blast radius of a whole task: the scanner's own regexes turned out to
+            // match file CONTENT (a test title, a grepped source line) as readily as a real
+            // denial, and a false positive killed 58 turns of legitimate work with no way back.
+            // Until precision is demonstrated in production, annotate only — log it and record a
+            // milestone for triage — and let the session keep running. A missed real gap still
+            // surfaces: the agent's own subsequent commands will keep failing and that failure
+            // reaches the normal path. Re-enable the abort once the tightened scanner (see
+            // error-trace-scanner.ts's validate/requiresError gates) has a track record.
+            if (traces.some(t => t.pattern === 'sandbox_mount_gap')) {
               const gapTrace = traces.find(t => t.pattern === 'sandbox_mount_gap')!;
               const pathMatch = gapTrace.excerpt.match(/(?:\bENOENT\b|\bEACCES\b)[^'":]*['"]?([/~][\w./-]+)/i);
               const gapPath = pathMatch?.[1] ?? gapTrace.excerpt.slice(0, 120);
               console.warn(
-                `[runner] Sandbox mount gap for worker ${worker.id}: "${gapPath}" is not in bwrap allowlist. ` +
-                'Session aborted for clean retry. Set BUILDD_MOUNT_ALLOWLIST_EXTRA to expose the path.',
+                `[runner] Suspected sandbox mount gap for worker ${worker.id}: "${gapPath}" may not be ` +
+                'in the bwrap allowlist. Not aborting — annotating only until precision is demonstrated.',
               );
-              worker.error = `Sandbox mount gap: "${gapPath}" is not mounted in the bwrap sandbox. ` +
-                `Add BUILDD_MOUNT_ALLOWLIST_EXTRA=${gapPath}:ro to the runner environment to expose it.`;
-              const session = this.sessions.get(worker.id);
-              if (session) session.abortController.abort();
+              this.addMilestone(worker, {
+                type: 'status',
+                label: `sandbox_mount_gap_suspected: ${gapPath}`,
+                ts: Date.now(),
+              });
             }
           }
 

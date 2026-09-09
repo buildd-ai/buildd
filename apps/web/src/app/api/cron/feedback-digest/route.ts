@@ -11,22 +11,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { runFeedbackDigest, getFeedbackStats } from '@/lib/feedback-digest';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60; // Allow up to 60s for processing
 
 export async function POST(req: NextRequest) {
-  // ── Auth ───────────────────────────────────────────────────────────────
-  const authHeader = req.headers.get('authorization');
-  const cronSecret = process.env.CRON_SECRET;
+  return withCronRun('feedback-digest', req, report => runCronJob(req, report));
+}
 
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
-
-  const token = authHeader?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   // ── Parameters ─────────────────────────────────────────────────────────
   const url = new URL(req.url);
@@ -39,6 +32,12 @@ export async function POST(req: NextRequest) {
     // Gather stats for the response (includes positive signals too)
     const stats = await getFeedbackStats(windowHours);
 
+    report({
+      processed: digest.totalFeedback,
+      changed: digest.results.length,
+      result: { windowHours, totalNegativeFeedback: digest.totalFeedback, teams: digest.results.length },
+    });
+
     return NextResponse.json({
       ok: true,
       windowHours,
@@ -50,6 +49,7 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     console.error('[feedback-digest] Pipeline error:', error);
+    report({ processed: 0, changed: 0, errors: 1, result: { error: String(error) } });
     return NextResponse.json(
       { error: 'Feedback digest failed', detail: String(error) },
       { status: 500 },

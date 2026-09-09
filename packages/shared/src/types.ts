@@ -1071,6 +1071,18 @@ export interface DegradedConnector {
   detail?: string;
 }
 
+/**
+ * A credential the runner's broker should pre-refresh (expiring within 2 hours).
+ *
+ * Metadata only — never token material. `secretId` names the row; the runner
+ * exchanges it for a fresh token via POST /api/runner/credential-refresh.
+ */
+export interface PendingCredentialRefresh {
+  secretId: string;
+  purpose: 'claude_credential' | 'codex_credential';
+  expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
+}
+
 export interface ClaimTasksResponse {
   workers: Array<{
     id: string;
@@ -1092,12 +1104,11 @@ export interface ClaimTasksResponse {
     claudeAccessToken?: string;
     /** When the claudeAccessToken expires (epoch ms). Used by the runner for preflight checks. */
     claudeTokenExpiresAt?: string | null;
-    /** Credentials expiring within 2 hours — runner pre-refreshes via POST /api/runner/credential-refresh */
-    pendingCredentialRefreshes?: Array<{
-      secretId: string;
-      purpose: 'claude_credential' | 'codex_credential';
-      expiresAt: string | null; // ISO 8601 — runner decides whether to refresh
-    }>;
+    /** Credentials expiring within 2 hours, scoped to THIS task's workspace team.
+     *  Kept per-worker because the runner also reads the claude_credential secretId
+     *  off it to wire the worker to the broker at spawn time, and because a claim
+     *  may serve a workspace outside the authenticated account's own team. */
+    pendingCredentialRefreshes?: PendingCredentialRefresh[];
     /** Decrypted MCP credential secrets mapped by label (env var name) → value */
     mcpSecrets?: Record<string, string>;
     /** Active MCP connector configs resolved at claim time (URL + optional auth headers, or assertion-mode exchange metadata) */
@@ -1125,6 +1136,18 @@ export interface ClaimTasksResponse {
   diagnostics?: ClaimDiagnostics;
   /** ISO timestamp when the account's OAuth budget resets (present when budget is exhausted but tenant tasks were still served) */
   budgetResetsAt?: string | null;
+  /**
+   * Credentials of the AUTHENTICATED ACCOUNT'S OWN TEAM that expire within 2 hours.
+   *
+   * Announced on every claim poll — including polls that claim nothing — because
+   * the claim call is the runner's heartbeat. The per-worker field above only
+   * exists when something was claimed, so an idle-but-online runner's credential
+   * broker never discovered the credentials it is responsible for and never
+   * refreshed them. This is that discovery channel.
+   *
+   * Scope is a single team (the account's), never wider. Metadata only.
+   */
+  pendingCredentialRefreshes?: PendingCredentialRefresh[];
 }
 
 /** @deprecated Use Memory service types instead. Kept for backward compat. */

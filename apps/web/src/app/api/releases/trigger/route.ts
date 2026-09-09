@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { eq, and, inArray } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { isGitHubAppConfigured, githubApi } from '@/lib/github';
+import { isGitHubAppConfigured } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
-import { dispatchWorkflowRelease, releasePreflight } from '@/lib/release/dispatch';
+import { recordAndDispatchRelease } from '@/lib/release/record';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import { attributeRelease } from '@buildd/core/release-attribution';
-import { db } from '@buildd/core/db';
-import { releases } from '@buildd/core/db/schema';
 
 /**
  * Trigger a release on a workspace's repo. The workspace declares HOW it
@@ -130,134 +126,49 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // workflow_dispatch path
-    const sourceRef = strategy.ref;
-    const prodBranch = target.releaseConfig?.prodBranch ?? target.defaultBranch;
+    // workflow_dispatch path — insert the row, dispatch, read the run back and
+    // attribute, all through the one shared path the webhook and mission
+    // release paths also use (lib/release/record.ts). Four call sites used to
+    // dispatch releases and only this one recorded them.
+    const recorded = await recordAndDispatchRelease({
+      workspaceId: target.workspaceId,
+      archetype,
+      installationId: target.installationId,
+      owner: target.owner,
+      name: target.name,
+      repoFullName: target.repoFullName,
+      workflowFile: strategy.workflowFile,
+      ref: strategy.ref,
+      prodBranch: target.releaseConfig?.prodBranch ?? target.defaultBranch,
+      inputs: strategy.inputs,
+      triggeredBy,
+      force: body.force,
+    });
 
-    // Gather T1 readiness data at dispatch time.
-    let headSha: string | undefined;
-    let previousSha: string | undefined;
-    let ciStateAtDispatch: 'passing' | 'failing' | 'pending' | undefined;
-    let commitsAheadAtDispatch: number | undefined;
-
-    try {
-      const preflight = await releasePreflight(target.installationId, target.owner, target.name, {
-        ref: sourceRef,
-        prodBranch,
-      });
-      headSha = preflight.refHeadSha;
-      previousSha = preflight.previousSha;
-      if (preflight.ciState && preflight.ciState !== 'unknown') {
-        ciStateAtDispatch = preflight.ciState as 'passing' | 'failing' | 'pending';
-      }
-      commitsAheadAtDispatch = preflight.aheadBy;
-    } catch {
-      // Preflight failure is non-fatal — proceed without T1 data.
-    }
-
-    // A compare with zero commits ahead leaves `refHeadSha` undefined (it's
-    // derived from the commit range, not the ref itself), and a thrown
-    // preflight leaves it undefined too. Resolve the ref's head directly
-    // before dispatching: a release row with no head sha has no commit range
-    // for `attributeRelease` to walk, and letting one through here is how a
-    // release used to reach `healthy` carrying no head sha at all (see the
-    // matching guards in release-executor.ts / release-verification.ts on the
-    // other end of this row's lifecycle).
-    if (!headSha) {
-      try {
-        const ref = await githubApi(target.installationId, `/repos/${target.owner}/${target.name}/git/ref/heads/${sourceRef}`);
-        headSha = ref?.object?.sha as string | undefined;
-      } catch {
-        // leave headSha undefined — refused below
-      }
-    }
-
-    if (!headSha) {
+    if (!recorded.ok) {
       return NextResponse.json(
-        {
-          ok: false,
-          error: `Could not resolve the head commit of ${sourceRef} — refusing to dispatch a release with no head sha.`,
-        },
-        { status: 422 },
+        { ok: false, error: recorded.error, ...(recorded.releaseId ? { releaseId: recorded.releaseId } : {}) },
+        { status: recorded.status },
       );
     }
 
-    // Idempotency: if a row for this headSha already exists in an in-flight state, return it.
-    {
-      const existing = await db.query.releases.findFirst({
-        where: and(
-          eq(releases.workspaceId, target.workspaceId),
-          eq(releases.headSha, headSha),
-          inArray(releases.state, ['dispatched', 'deploying']),
-        ),
-      });
-      if (existing) {
-        return NextResponse.json({
-          ok: true,
-          strategy: 'workflow_dispatch',
-          repo: target.repoFullName,
-          releaseId: existing.id,
-          deduped: true,
-        });
-      }
-    }
-
-    // Insert the releases row before dispatch so we have a record even if dispatch fails.
-    const [releaseRow] = await db
-      .insert(releases)
-      .values({
-        workspaceId: target.workspaceId,
-        archetype,
-        headSha,
-        previousSha,
-        state: 'dispatched',
-        verificationStrategy: archetype === 'gated' ? 'http' : 'none',
-        triggeredBy,
-        dispatchedAt: new Date(),
-        ciStateAtDispatch,
-        commitsAheadAtDispatch,
-      })
-      .returning({ id: releases.id });
-
-    const releaseId = releaseRow.id;
-
-    try {
-      const result = await dispatchWorkflowRelease(target.installationId, target.owner, target.name, {
-        workflowFile: strategy.workflowFile,
-        ref: strategy.ref,
-        inputs: strategy.inputs,
-      });
-
-      // Back-fill the run URL once we have it from the readback.
-      if (result.runUrl) {
-        await db.update(releases).set({ runUrl: result.runUrl }).where(eq(releases.id, releaseId));
-      }
-
-      // M1 attribution — fire-and-forget; does not block the response.
-      if (previousSha && headSha) {
-        void attributeRelease({
-          releaseId,
-          workspaceId: target.workspaceId,
-          previousSha,
-          headSha,
-          archetype,
-          repoFullName: target.repoFullName,
-          githubInstallationId: target.installationId,
-          db: db as any,
-        });
-      }
-
-      return NextResponse.json({
-        ok: true,
-        strategy: 'workflow_dispatch',
-        repo: target.repoFullName,
-        releaseId,
-        ...result,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return NextResponse.json({ ok: false, error: message }, { status: 502 });
-    }
+    return NextResponse.json({
+      ok: true,
+      strategy: 'workflow_dispatch',
+      repo: target.repoFullName,
+      releaseId: recorded.releaseId,
+      ...(recorded.deduped
+        ? { deduped: true }
+        : {
+            dispatched: true,
+            workflowFile: strategy.workflowFile,
+            ref: strategy.ref,
+            inputs: strategy.inputs,
+            runId: recorded.runId,
+            runUrl: recorded.runUrl,
+            runsUrl: recorded.runsUrl,
+          }),
+    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ ok: false, error: `Internal error: ${message}` }, { status: 500 });

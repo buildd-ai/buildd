@@ -13,6 +13,7 @@ import { UsageClient } from './UsageClient';
 import { computeUsageStats, type UsageWorkerRow } from '@/lib/usage-stats';
 import type { CbmHealthSummary } from '@/lib/cbm-insight';
 import {
+  buildActionBreakdownPanel,
   buildUsageDrilldownView,
   resolveDrilldownWindow,
   type PreviousPeriod,
@@ -74,6 +75,7 @@ const view = (over: {
   previous?: PreviousPeriod | null;
   cbm?: CbmHealthSummary | null;
   truncated?: boolean;
+  actions?: Parameters<typeof buildUsageDrilldownView>[0]['actions'];
 } = {}) =>
   buildUsageDrilldownView({
     resolution: resolveDrilldownWindow(over.window ?? '7d'),
@@ -86,6 +88,22 @@ const view = (over: {
       completeSince: '2026-08-27T00:00:00.000Z',
     },
     cbm: over.cbm === undefined ? cbm() : over.cbm,
+    actions: over.actions === undefined ? actionPanel() : over.actions,
+  });
+
+/** Default action panel: captured window, a few actions, full coverage. */
+const actionPanel = (over: Partial<Parameters<typeof buildActionBreakdownPanel>[0]> = {}) =>
+  buildActionBreakdownPanel({
+    rows: [
+      { workerId: 'w1', action: 'update_progress' },
+      { workerId: 'w1', action: 'update_progress' },
+      { workerId: 'w2', action: 'claim_task' },
+    ],
+    workers: 4,
+    windowStart: new Date('2026-09-05T00:00:00Z'),
+    capturedSince: '2026-09-03',
+    rowLimit: 5000,
+    ...over,
   });
 
 const render = (over: Parameters<typeof view>[0] = {}, wsFilter: string | null = null) =>
@@ -252,14 +270,68 @@ describe('UsageClient — index adoption', () => {
   });
 });
 
-describe('UsageClient — what is deliberately absent', () => {
-  it('ships without the buildd action decomposition and says so, with no stand-in', () => {
+describe('UsageClient — buildd action breakdown', () => {
+  it('renders per-action counts, most frequent first', () => {
     const html = render();
-    expect(html).toContain('data-testid="usage-no-action-decomposition"');
-    expect(html).toContain('which action ran was never captured');
-    // No aggregate stand-in in its place: the buildd tool row is not rendered
-    // at all rather than shown as one undifferentiated count.
-    expect(html).not.toContain('mcp__buildd__buildd');
+    expect(html).toContain('data-testid="usage-section-actions"');
+    expect(html).toContain('update_progress');
+    expect(html).toContain('claim_task');
+    expect(html.indexOf('update_progress')).toBeLessThan(html.indexOf('claim_task'));
+  });
+
+  it('no longer claims the data is impossible', () => {
+    // This page used to assert "which action ran was never captured. There is
+    // nothing to approximate it with." That became false when the runner began
+    // writing worker_action_events, and the old copy was actively stopping
+    // readers from looking.
+    const html = render();
+    expect(html).not.toContain('which action ran was never captured');
+    expect(html).not.toContain('There is nothing to approximate it with');
+    expect(html).not.toContain('data-testid="usage-no-action-decomposition"');
+  });
+
+  it('states the coverage denominator, not just the counts', () => {
+    expect(render()).toContain('2/4 workers recorded');
+  });
+
+  it('warns when the window opens before capture began', () => {
+    // No backfill exists, so a pre-capture window cannot tell "quiet" from
+    // "not yet recorded" — and a 30d window still opens before that date.
+    const html = render({
+      actions: actionPanel({ windowStart: new Date('2026-08-01T00:00:00Z') }),
+    });
+    expect(html).toContain('not yet recorded');
+  });
+
+  it('does not warn once the window is entirely inside the captured period', () => {
+    expect(render()).not.toContain('not yet recorded');
+  });
+
+  it('warns on a pre-capture window even when no events came back', () => {
+    // The caveat is a property of the window, not of the result set. An empty
+    // pre-capture window is exactly the case that must not read as zero.
+    const html = render({
+      actions: actionPanel({ rows: [], windowStart: new Date('2026-08-01T00:00:00Z') }),
+    });
+    expect(html).toContain('No actions recorded in this window');
+    expect(html).toContain('not yet recorded');
+  });
+
+  it('renders nothing at all when the event stream could not be read', () => {
+    // Absence is not zero: the panel disappears rather than showing 0 actions.
+    const html = render({ actions: null });
     expect(html).not.toContain('data-testid="usage-section-actions"');
+  });
+
+  it('says counts are floors when the row cap was hit', () => {
+    const many = Array.from({ length: 20 }, () => ({ workerId: 'w1', action: 'claim_task' }));
+    const html = render({ actions: actionPanel({ rows: many, rowLimit: 20 }) });
+    expect(html).toContain('counts are floors');
+  });
+
+  it('still declines to invent the runtime/work split', () => {
+    // That classification is task-conditional and its contract is not settled
+    // here; a guessed taxonomy would compete with the real one.
+    expect(render()).toContain('No runtime/work split');
   });
 });

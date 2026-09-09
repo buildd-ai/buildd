@@ -308,15 +308,28 @@ export async function setupWorktree(
       }
     }
 
-    // Determine if there is a resume candidate from prior attempt context.
-    // Prefer resumeBranch (new canonical field) over baseBranch (legacy CI retry).
+    // Determine if there is a resume candidate from prior attempt context —
+    // i.e. a branch to check out and push to DIRECTLY, as opposed to a base to
+    // cut a new branch FROM. Only `resumeBranch` carries that meaning.
+    //
+    // This used to also fall back to `taskContext.baseBranch` ("legacy CI
+    // retry field") when `resumeBranch` was absent. That fallback was
+    // ambiguous by construction: `baseBranch` is ALSO the field a
+    // mission-branch task's declared base arrives in (context.baseBranch =
+    // the mission integration branch), and such a task never sets
+    // `resumeBranch` — cutting a fresh branch from that base is exactly what
+    // it wants. The two meanings are indistinguishable from `baseBranch`
+    // alone, so treating it as a resume candidate made a mission-branch task
+    // check out its own base directly (confirmed live, twice — task a0f00ee9
+    // and its own follow-up). Every genuine resume caller now sets
+    // `resumeBranch` explicitly alongside `baseBranch` (see ci-retry.ts,
+    // conflict-retry.ts, workers/[id]/route.ts's request-changes retry,
+    // respond/route.ts, stale-workers.ts) — this fallback is no longer needed
+    // for them and is actively wrong for mission-branch tasks.
     const resumeCandidate =
-      (typeof taskContext?.resumeBranch === 'string' && taskContext.resumeBranch.length > 0
+      typeof taskContext?.resumeBranch === 'string' && taskContext.resumeBranch.length > 0
         ? taskContext.resumeBranch as string
-        : undefined) ??
-      (typeof taskContext?.baseBranch === 'string' && (taskContext.baseBranch as string).length > 0
-        ? taskContext.baseBranch as string
-        : undefined);
+        : undefined;
 
     // Warn if parent repo has sparse checkout enabled. Git worktrees get their
     // own sparse-checkout config so this doesn't directly affect the worktree,

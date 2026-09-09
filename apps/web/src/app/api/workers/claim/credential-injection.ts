@@ -16,7 +16,7 @@
 import { db } from '@buildd/core/db';
 import { secrets } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull, isNull, lt, not, or, sql } from 'drizzle-orm';
-import type { ClaimTasksResponse } from '@buildd/shared';
+import type { ClaimTasksResponse, PendingCredentialRefresh } from '@buildd/shared';
 import { getSecretsProvider } from '@buildd/core/secrets';
 import { resolveCodexCredential } from '@/lib/codex-credential';
 import { resolveClaudeCredential } from '@/lib/claude-credential';
@@ -218,6 +218,12 @@ export async function attachClaudeCredentials(
  *
  * Server-side claim-gate refresh has been removed; the runner is the sole
  * refresh origin.
+ *
+ * This is the PER-WORKER list and therefore only speaks when something was
+ * claimed. `resolveAccountCredentialRefreshes` below is the top-level
+ * counterpart that also fires on an empty claim, so an idle runner discovers
+ * its credentials at all. Both are emitted; see the note there for why this one
+ * is kept rather than replaced.
  */
 export async function attachPendingCredentialRefreshes(
   claimedWorkers: ClaimTasksResponse['workers'],
@@ -254,5 +260,66 @@ export async function attachPendingCredentialRefreshes(
     } catch (err) {
       console.warn(`[claim] Failed to query pending credential refreshes for workspace ${wsId}:`, err);
     }
+  }
+}
+
+/**
+ * Resolve the pre-refresh list for the AUTHENTICATED ACCOUNT alone — no claimed
+ * task, no workspace — for the top-level `pendingCredentialRefreshes` the claim
+ * route returns on every poll.
+ *
+ * Why this exists: `attachPendingCredentialRefreshes` above can only speak when
+ * a worker was claimed. A runner that is online but idle claims nothing, so it
+ * was told about nothing, its credential broker's managed set stayed empty, and
+ * `refreshExpiring()` iterated over an empty map — the credentials it is
+ * responsible for silently aged out. The claim call is the runner's heartbeat,
+ * so announcing here is what makes an idle runner discover its own credentials.
+ *
+ * SCOPE — the crux. The per-worker version keys off the claimed task's
+ * `workspace.teamId` (see the note at the top of this file: deliberate, to stop
+ * cross-team leakage). With no task there is no workspace to key off, so the
+ * boundary is the account's OWN team — `accounts.teamId`, the team the
+ * presented API key belongs to. Never wider than one team, and narrowed further
+ * to team-wide rows plus this account's own: another account's personal
+ * credential in the same team is not this runner's to manage.
+ *
+ * The payload is metadata only (`secretId`, `purpose`, `expiresAt`) — no token
+ * material ever crosses this boundary; the runner exchanges a secretId for a
+ * token through /api/runner/credential-refresh, which authenticates separately.
+ *
+ * Non-fatal like every other block here: a failure returns nothing so the claim
+ * still succeeds.
+ */
+export async function resolveAccountCredentialRefreshes(
+  account: { id: string; teamId?: string | null },
+): Promise<PendingCredentialRefresh[] | undefined> {
+  if (!process.env.ENCRYPTION_KEY) return undefined;
+  // No team means no scope. Fail closed rather than announce across teams.
+  if (!account.teamId) return undefined;
+
+  try {
+    const twoHoursFromNow = sql`NOW() + INTERVAL '2 hours'`;
+    const pendingRows = await db.query.secrets.findMany({
+      where: and(
+        eq(secrets.teamId, account.teamId),
+        inArray(secrets.purpose, ['claude_credential', 'codex_credential']),
+        not(eq(secrets.healthStatus, 'revoked')),
+        isNotNull(secrets.tokenExpiresAt),
+        lt(secrets.tokenExpiresAt, twoHoursFromNow),
+        or(isNull(secrets.accountId), eq(secrets.accountId, account.id)),
+      ),
+      columns: { id: true, purpose: true, tokenExpiresAt: true },
+    });
+
+    if (pendingRows.length === 0) return undefined;
+
+    return pendingRows.map(row => ({
+      secretId: row.id,
+      purpose: row.purpose as 'claude_credential' | 'codex_credential',
+      expiresAt: row.tokenExpiresAt ? (row.tokenExpiresAt as Date).toISOString() : null,
+    }));
+  } catch (err) {
+    console.warn('[claim] Failed to query account-scoped pending credential refreshes:', err);
+    return undefined;
   }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── mock setup (before any imports that trigger module loading) ───────────────
@@ -33,16 +33,86 @@ function makeReq(url = 'http://localhost:3000/api/workspaces/ws-1/codex-credenti
   return new NextRequest(url, { method: 'POST' });
 }
 
-// ── tests ─────────────────────────────────────────────────────────────────────
+function resetMocks() {
+  mockGetCurrentUser.mockReset();
+  mockVerifyWorkspaceAccess.mockReset();
+  mockRefreshCodexCredential.mockReset();
+  mockGetCodexSecretId.mockReset();
+  mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+  mockGetCodexSecretId.mockResolvedValue('secret-1');
+  mockRefreshCodexCredential.mockResolvedValue('refreshed');
+}
 
-describe('POST /api/workspaces/[id]/codex-credential/refresh', () => {
+// ── flag OFF (default): control-plane refresh must be rejected ────────────────
+//
+// docs/design/runner-oauth-broker.md: after the interactive grant, every
+// token-endpoint call must originate from the runner's static egress IP. This
+// route runs on the control plane, so it must not call the refresh helper
+// unless the same opt-in escape hatch the crons use is set.
+
+describe('POST /api/workspaces/[id]/codex-credential/refresh — control-plane refresh disabled (default)', () => {
   beforeEach(() => {
-    mockGetCurrentUser.mockReset();
-    mockVerifyWorkspaceAccess.mockReset();
-    mockRefreshCodexCredential.mockReset();
-    mockGetCodexSecretId.mockReset();
-    mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-    mockGetCodexSecretId.mockResolvedValue('secret-1');
+    resetMocks();
+    delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
+  });
+
+  it('rejects with 503 and never calls the refresh helper', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makeReq(), { params: mockParams });
+    expect(res.status).toBe(503);
+    const data = await res.json();
+    expect(data.status).toBe('control_plane_refresh_disabled');
+    expect(typeof data.error).toBe('string');
+    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+  });
+
+  it('explains that refresh is runner-originated', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makeReq(), { params: mockParams });
+    const data = await res.json();
+    expect(`${data.error} ${data.detail ?? ''}`.toLowerCase()).toContain('runner');
+  });
+
+  it('does not resolve the secret id — no DB work for a request that cannot proceed', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    await POST(makeReq(), { params: mockParams });
+    expect(mockGetCodexSecretId).not.toHaveBeenCalled();
+  });
+
+  it('treats any value other than "true" as off', async () => {
+    process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = '1';
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makeReq(), { params: mockParams });
+    expect(res.status).toBe(503);
+    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+  });
+
+  it('still returns 401 when not authenticated', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    const res = await POST(makeReq(), { params: mockParams });
+    expect(res.status).toBe(401);
+    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+  });
+
+  it('still returns 404 when workspace not found', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockVerifyWorkspaceAccess.mockResolvedValue(null);
+    const res = await POST(makeReq(), { params: mockParams });
+    expect(res.status).toBe(404);
+    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+  });
+});
+
+// ── flag ON: opt-in escape hatch, same as the crons ───────────────────────────
+
+describe('POST /api/workspaces/[id]/codex-credential/refresh — BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true', () => {
+  beforeEach(() => {
+    resetMocks();
+    process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = 'true';
+  });
+
+  afterEach(() => {
+    delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
   });
 
   it('returns 401 when not authenticated', async () => {

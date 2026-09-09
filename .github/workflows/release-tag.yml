@@ -1,5 +1,28 @@
 name: Tag Release
 
+# Tags what production just shipped, for EVERY pull request merged into `main`.
+#
+# Two holes this replaces, both of which put untagged code into production:
+#
+# 1. The job used to be gated on the PR title starting with `Release v` or
+#    `Hotfix v`. 18 merged PRs did not match — including #858 "Hotfix OAuth
+#    loopback redirect validation", which starts with `Hotfix ` but not
+#    `Hotfix v` — so the job never ran and each one deployed with no tag and no
+#    release. The version now comes from `apps/web/package.json` on `main`,
+#    which is what the release actually bumped, and the same source
+#    `scripts/release.sh --tag` already uses as the manual escape hatch.
+#
+# 2. `git tag` was called unconditionally. When the version was already tagged,
+#    the step died with `fatal: tag 'vX.Y.Z' already exists` and exit 128 —
+#    observed in run 33274797597, where Hotfix v0.186.1 (#1914) merged 1h47m
+#    after Release v0.186.1 (#1915) had already tagged that version. The hotfix
+#    shipped to production covered by no tag at all, and the only trace was a
+#    red workflow nobody was watching. That case is now an explicit, readable
+#    failure that says which SHA is uncovered and how to fix it.
+#
+# A merge that needs no new tag (the version is already tagged at this very
+# commit) is a clean no-op, so redelivery is harmless.
+
 on:
   pull_request:
     types: [closed]
@@ -7,10 +30,7 @@ on:
 
 jobs:
   tag:
-    if: >-
-      github.event.pull_request.merged == true &&
-      (startsWith(github.event.pull_request.title, 'Release v') ||
-       startsWith(github.event.pull_request.title, 'Hotfix v'))
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,27 +40,61 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Extract version and tag
+      - name: Resolve the shipped version
         id: version
         run: |
-          VERSION=$(echo "${{ github.event.pull_request.title }}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
-          echo "Tagging ${VERSION}"
-          git tag "$VERSION"
-          git push origin "$VERSION"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
 
-      - name: Create GitHub Release
+          SEMVER=$(node -p "require('./apps/web/package.json').version")
+          if [ -z "$SEMVER" ] || [ "$SEMVER" = "undefined" ]; then
+            echo "::error title=No version to tag::Could not read a version from apps/web/package.json on main."
+            exit 1
+          fi
+          VERSION="v${SEMVER}"
+          HEAD_SHA=$(git rev-parse HEAD)
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if ! git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
+            echo "needs_tag=true" >> "$GITHUB_OUTPUT"
+            echo "${VERSION} is not tagged yet — will tag ${HEAD_SHA}"
+            exit 0
+          fi
+
+          TAGGED_SHA=$(git rev-list -n 1 "refs/tags/${VERSION}")
+          if [ "$TAGGED_SHA" = "$HEAD_SHA" ]; then
+            echo "needs_tag=false" >> "$GITHUB_OUTPUT"
+            echo "${VERSION} already tags ${HEAD_SHA} — nothing to do"
+            exit 0
+          fi
+
+          # The merge shipped code that no tag covers, and picking a version is
+          # a human decision (this is the concurrent hotfix/release collision).
+          echo "::error title=Production shipped untagged::${VERSION} already tags ${TAGGED_SHA}, but main is now at ${HEAD_SHA}. That commit is deployed and covered by no tag. Bump the version (bun run release:hotfix) or tag it by hand (PACKAGE_FILES=apps/web/package.json scripts/release.sh --tag)."
+          exit 1
+
+      - name: Tag and release
+        if: steps.version.outputs.needs_tag == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          set -euo pipefail
+
           VERSION="${{ steps.version.outputs.version }}"
 
-          # Get the previous tag to generate changelog
-          PREV_TAG=$(git tag --sort=-v:refname --list 'v*' | grep -v "^${VERSION}$" | head -1)
+          git tag "$VERSION"
+          git push origin "$VERSION"
 
+          PREV_TAG=$(git tag --sort=-v:refname --list 'v*' | grep -v "^${VERSION}$" | head -1 || true)
+
+          # `grep -v` exits 1 when it selects nothing, and under `set -e` that
+          # used to fail this step AFTER the tag had already been pushed —
+          # leaving a tag with no GitHub release. A release whose only commit is
+          # the version bump hits that exact case.
           if [ -n "$PREV_TAG" ]; then
-            NOTES=$(git log "${PREV_TAG}..${VERSION}" --format='- %s' --no-merges | grep -v 'chore: bump version')
+            NOTES=$(git log "${PREV_TAG}..${VERSION}" --format='- %s' --no-merges | grep -v 'chore: bump version' || true)
           else
             NOTES="Initial release"
           fi
@@ -52,6 +106,7 @@ jobs:
           gh release create "$VERSION" --title "$VERSION" --notes "$NOTES"
 
       - name: Verify CHANGELOG promotion
+        if: steps.version.outputs.needs_tag == 'true'
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           SEMVER="${VERSION#v}"

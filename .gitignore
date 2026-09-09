@@ -23,3 +23,6 @@ scripts/seed/.last-seed.json
 # Python bytecode from scripts/
 __pycache__/
 *.pyc
+
+# Isolated BUILDD_HOME for the auto-update health probe (see runHealthProbe).
+.health-probe/

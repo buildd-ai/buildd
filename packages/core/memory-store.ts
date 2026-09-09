@@ -14,6 +14,10 @@ import { db } from './db';
 import { memories } from './db/schema';
 import { eq, and, inArray, or, ilike, desc, count as dbCount } from 'drizzle-orm';
 import { normalizeProject } from './project-scope';
+import { normalizeMemoryFileScope } from './memory-file-scope';
+import { tokenizeMemoryQuery } from './memory-query-tokens';
+import { tokenMatchScoreSql } from './memory-query-tokens-sql';
+import { memoryFilesOverlapSql } from './memory-file-scope-sql';
 
 // ── Types (same shape as the former HTTP client) ──────────────────────────────
 
@@ -117,7 +121,13 @@ export class MemoryStore {
     return { markdown: lines.join('\n\n---\n\n'), count: rows.length };
   }
 
-  /** Search memories by query text, type, project, or files. */
+  /**
+   * Search memories by query text, type, project, and/or declared file scope.
+   *
+   * Every supplied filter is ANDed. `query` is a substring match on the whole
+   * string; `files` matches a memory whose own `files` overlap the given paths
+   * (exact, or either side being a directory prefix of the other).
+   */
   async search(params: {
     query?: string;
     type?: string;
@@ -140,10 +150,58 @@ export class MemoryStore {
     if (scope) {
       conditions.push(eq(memories.project, scope));
     }
-    if (params.query) {
-      const q = `%${params.query}%`;
-      conditions.push(or(ilike(memories.title, q), ilike(memories.content, q))!);
+    // Tokenized OR match: a phrase-only ILIKE against a multi-word query (a task
+    // title, say) almost never appears verbatim in a memory's title/content, so
+    // it returned zero rows for essentially every real caller. Matching if ANY
+    // token hits title-or-content trades precision for the recall this store
+    // needs -- there is no ranking here to reward the query that matches more
+    // tokens, so AND-only would still zero out on a single absent term.
+    // Tokens are filtered, not merely split — see memory-query-tokens.ts. An
+    // unfiltered split lets one stopword (`%the%`) match most of the corpus,
+    // and since results are ordered by recency the caller then receives "the N
+    // most recently updated memories" dressed up as a task match. A title made
+    // entirely of stopwords yields no tokens and so searches nothing, which is
+    // the honest answer rather than everything.
+    const tokens = tokenizeMemoryQuery(params.query);
+    // A query was asked for but nothing in it is worth searching — a title made
+    // entirely of stopwords, or too short to tokenise. That must return NOTHING,
+    // not everything.
+    //
+    // Falling through with zero tokens adds no condition, which is
+    // indistinguishable from "no query supplied" and so lists the whole corpus
+    // ordered by recency. Caught in production: `query=the` returned every
+    // memory in the workspace. The caller then takes its `limit` off the top and
+    // reports a populated match count, which is precisely the
+    // looks-like-retrieval-working failure this module exists to prevent.
+    const askedForQuery = typeof params.query === 'string' && params.query.trim().length > 0;
+    if (askedForQuery && tokens.length === 0) {
+      return { results: [], total: 0, limit, offset };
     }
+    if (tokens.length > 0) {
+      const tokenConditions = tokens.flatMap(token => {
+        const q = `%${token}%`;
+        return [ilike(memories.title, q), ilike(memories.content, q)];
+      });
+      conditions.push(or(...tokenConditions)!);
+    }
+    // File scope. `files` was accepted by this signature and documented in the
+    // JSDoc above for a long time while being silently ignored, so every caller
+    // that passed it got an unscoped search and no error. It is an AND filter,
+    // the same as `type` and `project` — a caller that wants "paths OR title"
+    // runs two searches and decides which result to prefer, which keeps the
+    // provenance of a hit ("matched on declared paths" vs "matched on title")
+    // legible instead of collapsing both into one ranked list this store has no
+    // ranking to produce.
+    const scopePaths = normalizeMemoryFileScope(params.files);
+    const filesCondition = memoryFilesOverlapSql(scopePaths);
+    if (filesCondition) {
+      conditions.push(filesCondition);
+    }
+
+    // One point per token found in title-or-content. Built from the same token
+    // list as the WHERE clause so the ordering can never disagree with the
+    // filter about what counts as a match.
+    const tokenMatchScore = tokenMatchScoreSql(tokens);
 
     const where = and(...conditions);
 
@@ -151,10 +209,20 @@ export class MemoryStore {
       db.select({ total: dbCount() }).from(memories).where(where),
       db.query.memories.findMany({
         where,
+        // Best match first when there is a query, then recency. Without this a
+        // row matching one token outranks a row matching five, purely because
+        // it was touched more recently -- so the tokenisation would widen
+        // recall without improving what the caller actually receives inside
+        // its `limit`. Falls back to pure recency when there is no query.
+        //
         // id breaks ties: bulk-imported rows share an updatedAt, and without a
         // stable tiebreaker LIMIT/OFFSET pagination silently skips and repeats
         // rows -- which made backfill-knowledge-chunks miss ~30% of memories.
-        orderBy: [desc(memories.updatedAt), desc(memories.id)],
+        orderBy: [
+          ...(tokenMatchScore ? [desc(tokenMatchScore)] : []),
+          desc(memories.updatedAt),
+          desc(memories.id),
+        ],
         limit,
         offset,
       }),

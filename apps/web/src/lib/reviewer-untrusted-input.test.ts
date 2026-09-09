@@ -20,6 +20,10 @@ mock.module('@buildd/core/db', () => ({
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
+      // createReviewerTask probes for a live reviewer task on the same PR
+      // generation before creating one. No match here — these tests are about
+      // the prompt, not the dedupe.
+      tasks: { findFirst: mock(() => Promise.resolve(null)) },
     },
   },
 }));
@@ -29,6 +33,7 @@ mock.module('@buildd/core/db/schema', () => ({
   workers: 'workers',
   missionNotes: 'missionNotes',
   artifacts: 'artifacts',
+  taskSubjectReports: 'taskSubjectReports',
 }));
 
 mock.module('drizzle-orm', () => ({

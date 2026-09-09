@@ -43,6 +43,13 @@ const makeUpdateChain = (calls: any[]) => ({
   }),
 });
 
+/**
+ * The cron_runs table stub, shared between the schema mock and the db mock so
+ * inserts can be attributed. withCronRun writes a run row through the same
+ * `db.insert`, and an untargeted capture counts it as the route's own write.
+ */
+const CRON_RUNS_TABLE = { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' };
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -55,8 +62,9 @@ mock.module('@buildd/core/db', () => ({
       accountWorkspaces: { findMany: mockAccountWorkspacesFindMany },
       accounts: { findMany: mockAccountsFindMany },
     },
-    insert: mock((_table: any) => ({
+    insert: mock((table: any) => ({
       values: mock((vals: any) => {
+        if (table === CRON_RUNS_TABLE) return { returning: mock(() => [{ id: 'run-1' }]) };
         tasksInsertValues = vals;
         if (insertError) throw insertError;
         // `insertConflict` models the partial unique index
@@ -84,6 +92,10 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 mock.module('drizzle-orm', () => ({
+  // Operators withCronRun imports. mock.module is process-global, so a
+  // partial stub removes them for every other importer too.
+  desc: (a: any) => ({ a, op: 'desc' }),
+  gt: (a: any, b: any) => ({ a, b, op: 'gt' }),
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => args,
   lte: (field: any, value: any) => ({ field, value, type: 'lte' }),
@@ -96,6 +108,9 @@ mock.module('drizzle-orm', () => ({
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
+  // withCronRun imports this; mock.module replaces the whole module, so a
+  // partial stub deletes the export for every other importer in the process.
+  cronRuns: CRON_RUNS_TABLE,
   taskSchedules: 'taskSchedules',
   tasks: 'tasks',
   workspaces: 'workspaces',

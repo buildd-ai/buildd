@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
+import { workers, tasks, artifacts, workspaces, githubRepos, missionNotes, accounts, teams, tenantBudgets, oauthBudgetEpisodes, workerErrorTraces, workerActionEvents, workerPromptCompositionEvents, connectors, secrets, missions, taskSchedules } from '@buildd/core/db/schema';
 import { githubApi, postPrReview } from '@/lib/github';
 import { eq, and, or, desc, gte, gt, inArray, isNull, not, sql } from 'drizzle-orm';
 import { triggerEvent, channels, events } from '@/lib/pusher';
@@ -40,7 +40,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { resolvePolicy } from '@/lib/merge-policy';
+import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 import { secrets as secretsTable } from '@buildd/core/db/schema';
@@ -52,8 +52,9 @@ import { classifyReportedFailure, isConcurrencyConflictError } from '@/lib/worke
 import { sweepSubjectAnchoredTasks } from '@/lib/subject-sweep';
 import { shutdownDeadBuilddPrs } from '@/lib/dead-pr-shutdown';
 import { releaseAndNotify } from '@/lib/path-claim-release';
+import { claimObservedPaths } from '@buildd/core/path-claim';
 import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@buildd/core/worker-messages';
-import { pathsOverlap, isAdvisoryManifest } from '@buildd/core/path-overlap';
+import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
 
@@ -573,6 +574,7 @@ export async function PATCH(
     appendMcpCalls,
     appendErrorTraces,
     appendActionEvents,
+    appendPromptCompositionEvents,
     waitingFor,
     // Token usage
     inputTokens, outputTokens,
@@ -739,6 +741,67 @@ export async function PATCH(
       }
     }
   }
+  // appendPromptCompositionEvents: insert one row per prompt build into
+  // worker_prompt_composition_events (the durable rail the memory-digest
+  // experiment reads back — see PromptCompositionRecord in
+  // apps/runner/src/memory-digest-policy.ts). Cap at 50 rather than
+  // appendActionEvents' 200: a session builds a handful of prompts, not one
+  // row per MCP call. onConflictDoNothing guards the (worker_id, build_index)
+  // unique index — the runner restores a drained buffer and retries on a
+  // failed PATCH, so the same buildIndex can legitimately be shipped twice.
+  if (appendPromptCompositionEvents && Array.isArray(appendPromptCompositionEvents) && appendPromptCompositionEvents.length > 0) {
+    const rows = appendPromptCompositionEvents
+      .filter((e: any) => e
+        && typeof e.buildIndex === 'number' && Number.isFinite(e.buildIndex)
+        && typeof e.ts === 'number'
+        && typeof e.policyVersion === 'string' && e.policyVersion.length > 0
+        && (e.arm === 'full' || e.arm === 'task_scoped')
+        && typeof e.propensity === 'number'
+        && typeof e.fraction === 'number'
+        && typeof e.digestBytes === 'number'
+        && typeof e.digestBytesAvailable === 'number'
+        && typeof e.digestTruncated === 'boolean'
+        && typeof e.taskMatchBytes === 'number'
+        && typeof e.taskMatchCount === 'number'
+        && typeof e.memoryBlockBytes === 'number'
+        && typeof e.promptBytes === 'number'
+        && typeof e.memoryShare === 'number')
+      .slice(0, 50)
+      .map((e: any) => ({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        buildIndex: e.buildIndex,
+        ts: new Date(e.ts),
+        policyVersion: String(e.policyVersion).slice(0, 100),
+        arm: e.arm,
+        propensity: String(e.propensity),
+        fraction: String(e.fraction),
+        digestBytes: e.digestBytes,
+        digestBytesAvailable: e.digestBytesAvailable,
+        digestTruncated: e.digestTruncated,
+        taskMatchBytes: e.taskMatchBytes,
+        taskMatchCount: e.taskMatchCount,
+        // Both deliberately absent from the validation filter above: a runner
+        // that predates these fields must still be able to write a row, and
+        // NULL there is the honest record of "this runner did not report it".
+        // Coercing them to a default would pool an unknown backend into the
+        // Claude cohort and an unknown provenance into a real one.
+        taskMatchDerivedBy: typeof e.taskMatchDerivedBy === 'string' && e.taskMatchDerivedBy
+          ? e.taskMatchDerivedBy.slice(0, 40)
+          : null,
+        backend: typeof e.backend === 'string' && e.backend ? e.backend.slice(0, 40) : null,
+        memoryBlockBytes: e.memoryBlockBytes,
+        promptBytes: e.promptBytes,
+        memoryShare: String(e.memoryShare),
+      }));
+    if (rows.length > 0) {
+      try {
+        await db.insert(workerPromptCompositionEvents).values(rows).onConflictDoNothing();
+      } catch (err) {
+        console.error('[workers PATCH] failed to insert prompt composition events', err);
+      }
+    }
+  }
   // Branch: persist actual checkout branch when resume branch was used
   if (typeof branch === 'string' && branch.length > 0) updates.branch = branch;
   // Git stats
@@ -836,6 +899,12 @@ export async function PATCH(
 
   // §6d Passive observed-touches accumulation.
   // On terminal status: clear. On update_progress with touchedPaths: dedup-append, cap at 500.
+  //
+  // Paths this sync actually added to the column. Feeds the auto-lease below,
+  // which must not re-offer the whole accumulated list every tick: that would
+  // put a SELECT plus an INSERT attempt for up to 500 paths on the hot sync
+  // path to discover, every time, that they are all already held.
+  let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
     updates.observedTouches = null;
   } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
@@ -850,11 +919,15 @@ export async function PATCH(
     } else {
       updates.observedTouches = merged;
     }
+    // Diffed against the *stored* column, i.e. after the cap: a path truncated
+    // away must not become a lease nobody can see it holding.
+    const existingSet = new Set(existing);
+    newlyObservedPaths = (updates.observedTouches as string[]).filter(p => !existingSet.has(p));
   }
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema })
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -901,8 +974,12 @@ export async function PATCH(
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       let hasPR = workerHasPR;
 
-      // Auto-detect: if no PR on worker but branch exists, check GitHub for PRs
-      if (!hasPR && worker.branch) {
+      // Resolve the workspace's GitHub repo/installation once — used both to
+      // auto-detect an open PR on the worker's own branch and, for
+      // pr_required, to check whether a PR the task text references by
+      // number is already merged (see fallback below).
+      let repoWithInstallation: { fullName: string; installation: { installationId: number } } | null = null;
+      if (!hasPR && (worker.branch || outputReq === 'pr_required')) {
         const workspace = await db.query.workspaces.findFirst({
           where: eq(workspaces.id, worker.workspaceId),
         });
@@ -912,24 +989,60 @@ export async function PATCH(
             with: { installation: true },
           });
           if (repo?.installation) {
-            try {
-              const owner = repo.fullName.split('/')[0];
-              const prs = await githubApi(
-                repo.installation.installationId,
-                `/repos/${repo.fullName}/pulls?head=${encodeURIComponent(owner + ':' + worker.branch)}&state=open`,
-              );
-              if (Array.isArray(prs) && prs.length > 0) {
-                // Found PR — update worker and let validation pass
-                await db.update(workers).set({
-                  prUrl: prs[0].html_url,
-                  prNumber: prs[0].number,
-                  updatedAt: new Date(),
-                }).where(eq(workers.id, id));
-                hasPR = true;
-                workerHasPR = true;
-              }
-            } catch { /* non-fatal — fall through to normal validation */ }
+            repoWithInstallation = repo as unknown as { fullName: string; installation: { installationId: number } };
           }
+        }
+      }
+
+      // Auto-detect: if no PR on worker but branch exists, check GitHub for open PRs
+      if (!hasPR && worker.branch && repoWithInstallation) {
+        try {
+          const owner = repoWithInstallation.fullName.split('/')[0];
+          const prs = await githubApi(
+            repoWithInstallation.installation.installationId,
+            `/repos/${repoWithInstallation.fullName}/pulls?head=${encodeURIComponent(owner + ':' + worker.branch)}&state=open`,
+          );
+          if (Array.isArray(prs) && prs.length > 0) {
+            // Found PR — update worker and let validation pass
+            await db.update(workers).set({
+              prUrl: prs[0].html_url,
+              prNumber: prs[0].number,
+              updatedAt: new Date(),
+            }).where(eq(workers.id, id));
+            hasPR = true;
+            workerHasPR = true;
+          }
+        } catch { /* non-fatal — fall through to normal validation */ }
+      }
+
+      // pr_required fallback: a task scoped as "rebase/merge PR #N" can lose
+      // its race — the referenced PR merges via a concurrent path before this
+      // worker acts, leaving no new diff to open a PR for. Rather than force
+      // a fresh, empty PR just to satisfy the gate, accept the referenced PR
+      // if it's already merged: DONE = MERGED regardless of who merged it.
+      if (outputReq === 'pr_required' && !hasPR && repoWithInstallation) {
+        const referencedText = `${terminalTaskRow[0]?.title ?? ''} ${terminalTaskRow[0]?.description ?? ''}`;
+        const referencedPrNumbers = [...new Set(
+          [...referencedText.matchAll(/#(\d+)/g)].map((m) => Number(m[1])),
+        )].slice(0, 5);
+
+        for (const prNumber of referencedPrNumbers) {
+          try {
+            const pr = await githubApi(
+              repoWithInstallation.installation.installationId,
+              `/repos/${repoWithInstallation.fullName}/pulls/${prNumber}`,
+            );
+            if (pr?.merged) {
+              await db.update(workers).set({
+                prUrl: pr.html_url,
+                prNumber: pr.number,
+                updatedAt: new Date(),
+              }).where(eq(workers.id, id));
+              hasPR = true;
+              workerHasPR = true;
+              break;
+            }
+          } catch { /* non-fatal — try the next referenced number */ }
         }
       }
 
@@ -2612,6 +2725,43 @@ export async function PATCH(
     ? pendingWorkerMessages.filter(m => !deliveredMessageIds.includes(m?.id ?? ''))
     : pendingWorkerMessages;
 
+  // §6d-derived lease: the observed touch is also a claim.
+  //
+  // This is the only place the three overlap mechanisms actually meet, and the
+  // reason it exists is that two of them were each missing the other's half:
+  //
+  //   - `tasks.pathManifest` is declared at authoring time and gates claims
+  //     (findBlockingPr, layer 1), but only describes what the author *thought*
+  //     the scope was — hence the `'**'` sentinel for the common case where
+  //     nobody declared one.
+  //   - `path_claims` sits ahead of the write and is the only mechanism that can
+  //     stop a second agent from starting (the layer-2 backstop in
+  //     POST /api/workers/claim), but nothing wrote a row unless an agent
+  //     volunteered a `check_path_claim` call — so the gate was rarely holding
+  //     a lease when a claim came past it.
+  //   - §6d below has the opposite problem: the touch signal is automatic and
+  //     complete, but its only output is an advisory message, and it can only
+  //     fire once both sides have already edited the file.
+  //
+  // Leasing the touch converts §6d's after-the-fact report into a lock the next
+  // claim is deferred on. `claimObservedPaths` drops regenerable paths (a
+  // generated file is not a mutex) and the sentinel; release is already keyed to
+  // taskId, so every terminal signal frees these with the correct reason —
+  // merged / pending_merge / abandoned — with no new plumbing.
+  //
+  // Fire-and-forget: a lease is a coordination nicety, the progress report is
+  // the contract, so a failure here must never reject the sync.
+  if (newlyObservedPaths.length > 0 && worker.workspaceId && worker.taskId && !isTerminalStatus) {
+    try {
+      const leased = await claimObservedPaths(worker.workspaceId, worker.taskId, newlyObservedPaths);
+      if (leased.length > 0) {
+        console.log(`[path-claim] auto-lease: worker ${id} holds ${leased.length} observed path(s) for task ${worker.taskId}`);
+      }
+    } catch (err) {
+      console.error(`[path-claim] auto-lease failed for worker ${id}:`, err);
+    }
+  }
+
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
   const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
@@ -2676,13 +2826,22 @@ export async function PATCH(
           newNotifications.push({ path: p, siblingTaskId: sibling.taskId! });
         }
 
+        // A generated file is not a mutex. `docs/specs/INDEX.md` and the drizzle
+        // journal are among the most contended files in this repo by
+        // concurrent-PR overlap, and none of those overlaps is something the two
+        // agents need to agree about — whoever pushes second re-runs one command.
+        // Splitting here keeps the block message about real work while still
+        // passing the generated-file overlap along, with the right verb.
+        const { contended, regenerable } = partitionRegenerableOverlaps(newPaths);
+
         // Emit Pusher event on workspace channel.
         const overlapEvent = {
           detectedWorkerId: id,
           detectedTaskId: worker.taskId,
           siblingWorkerId: sibling.id,
           siblingTaskId: sibling.taskId,
-          overlappingPaths: newPaths,
+          overlappingPaths: contended,
+          regenerablePaths: regenerable.map(r => r.path),
           detectedByBranch: updated.branch ?? worker.branch,
           detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
         };
@@ -2692,17 +2851,32 @@ export async function PATCH(
         // One atomic append (capped in SQL): the sibling is checking in and
         // writing its own context, so a read-modify-write here loses whichever
         // of the two wrote second.
-        await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
-          type: 'path_blocked_on_you',
-          fromTaskId: worker.taskId,
-          toTaskId: sibling.taskId!,
-          body: {
-            overlappingPaths: newPaths,
-            detectedByBranch: updated.branch ?? worker.branch,
-            detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
-            funcNames: [] as string[],
-          },
-        }));
+        if (contended.length > 0) {
+          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+            type: 'path_blocked_on_you',
+            fromTaskId: worker.taskId,
+            toTaskId: sibling.taskId!,
+            body: {
+              overlappingPaths: contended,
+              detectedByBranch: updated.branch ?? worker.branch,
+              detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
+              funcNames: [] as string[],
+            },
+          }));
+        }
+        if (regenerable.length > 0) {
+          await enqueueWorkerMessage(sibling.taskId!, buildWorkerMessage({
+            type: 'path_regenerable_overlap',
+            fromTaskId: worker.taskId,
+            toTaskId: sibling.taskId!,
+            body: {
+              overlappingPaths: regenerable.map(r => r.path),
+              commands: [...new Set(regenerable.map(r => r.command))],
+              detectedByBranch: updated.branch ?? worker.branch,
+              detectedBySha: updated.lastCommitSha ?? worker.lastCommitSha ?? null,
+            },
+          }));
+        }
       }
 
       // Persist notifiedOverlaps as a jsonb merge, NOT a spread of the snapshot
@@ -3028,10 +3202,7 @@ async function handleReviewerOutcomeIfNeeded(
   const missionForPolicy = missionId
     ? await db.query.missions.findFirst({
         where: eq(missions.id, missionId),
-        // Deliberately not `requiresReview`: this path has never resolved
-        // mission-level requiresReview, and Option A′ is not the change that
-        // should start. Only the two fields the base-ref rule needs.
-        columns: { mergePolicy: true, workingBranch: true, integrationBranchEnabled: true },
+        columns: WORKERS_POLICY_MISSION_COLUMNS,
       })
     : null;
 

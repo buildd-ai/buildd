@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { watcherEvents, workerActionEvents } from '@buildd/core/db/schema';
 import { lt, sql } from 'drizzle-orm';
+import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 export const maxDuration = 60;
 
@@ -59,16 +60,10 @@ const ACTION_EVENTS_RETENTION_DAYS = 45;
 const WATCHER_EVENTS_RETENTION_DAYS = 90;
 
 export async function GET(req: NextRequest) {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return NextResponse.json({ error: 'CRON_SECRET not configured' }, { status: 500 });
-  }
+  return withCronRun('task-archive', req, report => runCronJob(req, report));
+}
 
-  const authHeader = req.headers.get('authorization');
-  const token = authHeader?.replace('Bearer ', '');
-  if (token !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
 
   // Archive stale failed tasks that nothing live still depends on.
   // The `?` jsonb operator tests whether the task's id exists as an element of a
@@ -119,5 +114,11 @@ export async function GET(req: NextRequest) {
     console.warn('[TaskArchive] watcher_events prune failed:', pruneErr instanceof Error ? pruneErr.message : pruneErr);
   }
 
-  return NextResponse.json({ ok: true, archived, prunedActionEvents, prunedWatcherEvents });
+  const summary = { ok: true, archived, prunedActionEvents, prunedWatcherEvents };
+  report({
+    changed: archived + prunedActionEvents + prunedWatcherEvents,
+    errors: 0,
+    result: summary,
+  });
+  return NextResponse.json(summary);
 }
