@@ -27,6 +27,7 @@ import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
+import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -364,9 +365,25 @@ export async function tryAutoMergeWorkerPr(params: {
     return;
   }
 
+  // Mission-PR branch-lifecycle gate (P3) — same rule as the manual merge_pr
+  // route: refuse to merge the mission PR while a sibling task PR based on
+  // the integration branch is still open, since merging deletes that branch.
+  const mergingTask = worker.taskId
+    ? await db.query.tasks.findFirst({
+        where: eq(tasks.id, worker.taskId),
+        columns: { id: true, title: true, taskClass: true, missionId: true },
+      })
+    : null;
+  const mergeGate = await guardMissionPrMerge(mergingTask);
+  if (mergeGate.blocks) {
+    console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${mergeGate.reason}`);
+    return;
+  }
+
   const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
+    await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);
   } else {
     console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
     // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)

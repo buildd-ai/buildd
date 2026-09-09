@@ -191,6 +191,61 @@ function holdsLivePr(w: WorkerRow | undefined): boolean {
   return !DEAD_PR_LIFECYCLE.has(w.prLifecycleStatus ?? '');
 }
 
+/** One deliverable task's branch/PR state, as the mission PR body reports it. */
+export interface TaskBranchSummary {
+  taskId: string;
+  title: string;
+  branch: string | null;
+  prNumber: number | null;
+  state: 'merged' | 'open' | 'closed' | 'no_pr';
+}
+
+/**
+ * The task branches that fed this mission's integration branch — one row per
+ * deliverable task, each with its branch, PR number and state.
+ *
+ * Used to render the mission PR's topology (P4): a reviewer deciding on the
+ * mission PR currently cannot see what fed it, and this is the source of that
+ * text. Same deliverable filter and same "newest worker per task" rule as
+ * `evaluateMissionWorkState`, deliberately — a task's row here must agree with
+ * whether that task counted as landed there.
+ */
+export async function describeMissionIntegrationTopology(missionId: string): Promise<TaskBranchSummary[]> {
+  const missionTasks = (await db.query.tasks.findMany({
+    where: eq(tasks.missionId, missionId),
+    columns: { id: true, title: true, mode: true, taskClass: true },
+  })) ?? [];
+  const deliverable = missionTasks.filter(t => t.mode !== 'planning' && t.taskClass === 'work');
+  if (deliverable.length === 0) return [];
+
+  const allWorkers = ((await db.query.workers.findMany({
+    where: inArray(workers.taskId, deliverable.map(t => t.id)),
+    columns: {
+      taskId: true, branch: true, prUrl: true, prNumber: true,
+      mergedAt: true, prLifecycleStatus: true, startedAt: true, createdAt: true,
+    },
+  })) ?? []) as Array<WorkerRow & { branch: string | null }>;
+  const latest = latestWorkerByTask(allWorkers);
+
+  return deliverable.map(t => {
+    const w = latest.get(t.id) as (WorkerRow & { branch: string | null }) | undefined;
+    const state: TaskBranchSummary['state'] = !w?.prNumber
+      ? 'no_pr'
+      : w.mergedAt
+        ? 'merged'
+        : DEAD_PR_LIFECYCLE.has(w.prLifecycleStatus ?? '')
+          ? 'closed'
+          : 'open';
+    return {
+      taskId: t.id,
+      title: t.title,
+      branch: w?.branch ?? null,
+      prNumber: w?.prNumber ?? null,
+      state,
+    };
+  });
+}
+
 export interface MissionWorkState {
   /** Every deliverable task has landed, and none is still waiting on a PR. */
   complete: boolean;
@@ -508,12 +563,13 @@ export async function openMissionIntegrationPr(
   let prData: { number?: number; html_url?: string; base?: { ref?: string } } | null = adoptable;
   if (!prData) {
     try {
+      const topology = await describeMissionIntegrationTopology(missionId);
       prData = await githubApi(installationId, `/repos/${repo.fullName}/pulls`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           title: `${mission.title}`,
-          body: missionPrBody({ missionId, branch, base }),
+          body: missionPrBody({ missionId, branch, base, topology }),
           head: branch,
           base,
         }),
@@ -704,15 +760,116 @@ async function findOpenPrForBranch(
   }
 }
 
-function missionPrBody(opts: { missionId: string; branch: string; base: string }): string {
+/**
+ * The mission PR body, including its topology: the task branches that fed the
+ * integration branch (each with its PR number and state), then the
+ * integration branch, then trunk (P4). Plain text, three levels, so a
+ * reviewer can see what fed this PR — and so a violation (a task branch with
+ * no PR, or a PR still open) is visible on sight rather than requiring a
+ * separate lookup.
+ */
+function missionPrBody(opts: {
+  missionId: string;
+  branch: string;
+  base: string;
+  topology: TaskBranchSummary[];
+}): string {
+  const taskLines = opts.topology.length > 0
+    ? opts.topology.map(t => {
+        const branchLabel = t.branch ? `\`${t.branch}\`` : '(no branch)';
+        const prLabel = t.prNumber ? `PR #${t.prNumber} — ${t.state}` : 'no PR';
+        return `  - ${branchLabel} — ${t.title} — ${prLabel}`;
+      }).join('\n')
+    : '  (no deliverable tasks)';
+
   return [
     `Integration PR for a buildd mission.`,
     '',
-    `- Integration branch: \`${opts.branch}\``,
-    `- Target: \`${opts.base}\``,
+    `Topology:`,
+    taskLines,
+    `  ↓`,
+    `  \`${opts.branch}\` — integration branch`,
+    `  ↓`,
+    `  \`${opts.base}\` — trunk`,
     '',
     `Each task in this mission had its own branch and its own PR into \`${opts.branch}\`.`,
     `Those PRs are already reviewed and merged there; this PR is the single gate for the`,
     `mission as a whole, so it is the one that carries the workspace's merge policy.`,
   ].join('\n');
+}
+
+/** Outcome of {@link guardMissionPrMerge}. */
+export type MissionPrMergeGate = { blocks: false } | { blocks: true; reason: string };
+
+/**
+ * May this task's PR merge right now?
+ *
+ * The merge-side counterpart to the `awaitingPr` logic in
+ * `evaluateMissionWorkState`, which owns OPENING the mission PR on the same
+ * condition. `openMissionIntegrationPr` never opens the mission PR while a
+ * task PR is still unmerged — but nothing enforced that at MERGE time, and
+ * merging is where a premature branch deletion actually happens (P3).
+ *
+ * Returns `{ blocks: false }` for any PR that is not the mission PR itself —
+ * every other merge is unaffected. For the mission PR, refuses while any
+ * task PR based on the integration branch is still open: merging deletes
+ * that branch (`finalizeMissionPrMerge`), which would orphan every PR still
+ * targeting it — the exact production shape (six task PRs stranded by one
+ * premature merge) this closes.
+ */
+export async function guardMissionPrMerge(
+  task: { title?: string | null; taskClass?: string | null; missionId?: string | null } | null | undefined,
+): Promise<MissionPrMergeGate> {
+  if (!task || !isMissionPrTask(task) || !task.missionId) return { blocks: false };
+  const work = await evaluateMissionWorkState(task.missionId);
+  if (work.unmergedPrCount > 0) {
+    const plural = work.unmergedPrCount === 1;
+    return {
+      blocks: true,
+      reason:
+        `${work.unmergedPrCount} task PR(s) based on this mission's integration branch ` +
+        `${plural ? 'is' : 'are'} still open — merging the mission PR now would delete the ` +
+        `integration branch out from under ${plural ? 'it' : 'them'}`,
+    };
+  }
+  return { blocks: false };
+}
+
+/**
+ * After a mission PR merges, delete its integration branch — deliberately,
+ * not via the repo's delete-branch-on-merge setting.
+ *
+ * That repo setting cannot be scoped to "only after every task PR based on
+ * this branch has already landed" — it fires on ANY merge with the branch as
+ * head, which is exactly how a prior mission lost six task PRs' review gate:
+ * the mission PR merged early, the setting deleted the branch, and GitHub
+ * silently retargeted the still-open task PRs to trunk. `guardMissionPrMerge`
+ * above closes the "early" half; this closes the other half by having buildd
+ * own the deletion itself, at the moment it is actually safe.
+ *
+ * No-op for anything that is not a mission PR. Best-effort: a failed delete
+ * leaves a stale branch, not a broken mission.
+ */
+export async function finalizeMissionPrMerge(
+  task: { title?: string | null; taskClass?: string | null; missionId?: string | null } | null | undefined,
+  installationId: number,
+  repoFullName: string,
+): Promise<void> {
+  if (!task || !isMissionPrTask(task) || !task.missionId) return;
+  const mission = await db.query.missions.findFirst({
+    where: eq(missions.id, task.missionId),
+    columns: { workingBranch: true, integrationBranchEnabled: true },
+  });
+  const branch = missionIntegrationBase(mission);
+  if (!branch) return;
+  try {
+    await githubApi(
+      installationId,
+      `/repos/${repoFullName}/git/refs/heads/${encodeURIComponent(branch)}`,
+      { method: 'DELETE' },
+    );
+    console.log(`[mission-pr] deleted integration branch '${branch}' on ${repoFullName} after mission PR merge`);
+  } catch (err) {
+    console.error(`[mission-pr] failed to delete integration branch '${branch}' on ${repoFullName}:`, err);
+  }
 }

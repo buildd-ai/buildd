@@ -375,6 +375,7 @@ mock.module('@/lib/pr-review-request', () => ({
 
 // Import handler AFTER mocks
 import { POST } from './route';
+import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 // Real renderer (not mocked) — the tests below assert on comment bodies the
 // route hands to GitHub, so they build fixtures with the same code path.
 import { renderPrActivityComment, SPINNER_PATH } from '@/lib/pr-activity-comment';
@@ -3061,6 +3062,127 @@ describe('pull_request → workers.prBaseRef sync', () => {
 
     const baseRefWrites = updateCalls.filter(c => 'prBaseRef' in (c.setValues ?? {}));
     expect(baseRefWrites.length).toBe(0);
+  });
+});
+
+// ── P2b: a task PR retargeted OFF its mission's integration branch has lost
+// its review gate — a loud event (mission note + notification), not absorbed.
+describe('pull_request retarget off the mission integration branch (P2b)', () => {
+  beforeEach(resetAll);
+
+  const INTEGRATION_BRANCH = 'mission/example-slug-0a1b2c3d';
+
+  function retargetOffPayload(overrides: Record<string, any> = {}) {
+    return {
+      action: 'edited',
+      changes: { base: { ref: { from: INTEGRATION_BRANCH } } },
+      pull_request: {
+        number: 9,
+        merged: false,
+        draft: false,
+        head: { ref: 'buildd/abc12345-fix', sha: 'sha-9' },
+        base: { ref: 'dev' },
+        html_url: 'https://github.com/test-org/test-repo/pull/9',
+      },
+      installation: { id: 12345 },
+      repository: { full_name: 'test-org/test-repo' },
+      ...overrides,
+    };
+  }
+
+  function taskWorker(overrides: Record<string, any> = {}) {
+    return {
+      id: 'w-1', workspaceId: 'ws-1', taskId: 't-1', prBaseRef: INTEGRATION_BRANCH,
+      task: { id: 't-1', title: 'Do thing', taskClass: 'work', missionId: 'mission-1', context: null },
+      ...overrides,
+    };
+  }
+
+  function optedInMission(overrides: Record<string, any> = {}) {
+    mockMissionsFindFirst.mockReturnValue({
+      workingBranch: INTEGRATION_BRANCH, integrationBranchEnabled: true, ...overrides,
+    });
+  }
+
+  it('reports loudly when a task PR is retargeted off the integration branch', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    const noteInserts = insertCalls.filter(c => c.values?.type === 'warning');
+    expect(noteInserts.length).toBe(1);
+    expect(noteInserts[0].values.missionId).toBe('mission-1');
+    expect(noteInserts[0].values.body).toContain(INTEGRATION_BRANCH);
+    expect(noteInserts[0].values.body).toContain('dev');
+    expect(mockNotifyMissionPrReady).toHaveBeenCalledTimes(1);
+    expect((mockNotifyMissionPrReady.mock.calls[0] as any[])[1].reason).toBe('base_retargeted');
+  });
+
+  it('does not report when the retarget is not off the integration branch (moving ONTO it)', async () => {
+    // The complementary case already covered by the plain prBaseRef-sync
+    // suite — asserted here too so this describe is self-contained about
+    // what does NOT fire.
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ prBaseRef: 'dev' }));
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload({
+      changes: { base: { ref: { from: 'dev' } } },
+      pull_request: { ...retargetOffPayload().pull_request, base: { ref: INTEGRATION_BRANCH } },
+    })));
+
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('does not report for the mission PR itself', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({
+      task: { id: 't-own', title: `${MISSION_PR_TASK_PREFIX}Checkout arc`, taskClass: 'bookkeeping', missionId: 'mission-1', context: null },
+    }));
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('does not report for a stacked-plan phase — its base was never the integration branch', async () => {
+    const predecessorBranch = 'buildd/predecessor00-earlier-thing';
+    mockWorkersFindFirst.mockReturnValue(taskWorker({
+      prBaseRef: predecessorBranch,
+      task: { id: 't-2', title: 'Second phase', taskClass: 'work', missionId: 'mission-1', context: { baseBranch: predecessorBranch } },
+    }));
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload({
+      changes: { base: { ref: { from: predecessorBranch } } },
+      pull_request: { ...retargetOffPayload().pull_request, base: { ref: 'dev' } },
+    })));
+
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('does not report when the mission has no integration base', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    optedInMission({ integrationBranchEnabled: false });
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
+  });
+
+  it('does not report for a task with no mission', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({
+      task: { id: 't-1', title: 'Do thing', taskClass: 'work', missionId: null, context: null },
+    }));
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
+    expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
   });
 });
 

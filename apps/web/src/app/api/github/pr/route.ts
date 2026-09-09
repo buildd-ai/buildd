@@ -6,8 +6,14 @@ import { githubApi, mergePullRequest } from '@/lib/github';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
-import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX } from '@/lib/mission-pr';
-import { isMissionIntegrationBase, missionIntegrationBase } from '@buildd/core/mission-integration';
+import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import {
+  isMissionIntegrationBase,
+  isMissionPrTask,
+  isPrLegalForMissionTask,
+  isStackedPhaseBase,
+  missionIntegrationBase,
+} from '@buildd/core/mission-integration';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -135,6 +141,24 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Worker belongs to different account' }, { status: 403 });
     }
 
+    // Option A′ derivation — read once, used everywhere below that a PR's head
+    // or base needs to be checked against a mission's integration branch:
+    // adoption of an out-of-band PR, the HEAD guard, and the DERIVE-DON'T-ACCEPT
+    // checks at PR creation. `missionIntegrationBase` returns null for a mission
+    // that has not opted in, which is what makes every check below inert for
+    // such a mission (and for a task with no mission at all).
+    const mission = worker.task?.missionId
+      ? await db.query.missions.findFirst({
+          where: eq(missions.id, worker.task.missionId),
+          columns: { workingBranch: true, integrationBranchEnabled: true },
+        })
+      : null;
+    const integrationBase = missionIntegrationBase(mission);
+    const isMissionPrOwner = !!(worker.task && isMissionPrTask(worker.task));
+    const taskContext = worker.task?.context as Record<string, unknown> | null;
+    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
+    const isStackedPhase = isStackedPhaseBase({ contextBaseBranch, head, mission });
+
     // If an existing PR URL is provided, register it directly without going through GitHub API.
     // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation
     // (e.g. the PR was created via gh CLI in a different repo).
@@ -150,6 +174,26 @@ export async function POST(req: NextRequest) {
           deduplicated: true,
         });
       }
+
+      // ── Mission-integration legality gate on adoption ──────────────────────
+      // A PR adopted through this path was opened OUTSIDE buildd (e.g. `gh pr
+      // create`), so `create_pr` never derived its base — the caller's `base`
+      // here is the only claim we have. Refuse rather than record-and-move-on:
+      // the whole point of Option A′ is that a mission task PR MUST target the
+      // integration branch, and silently accepting an adoption whose claimed
+      // base disagrees (or omits it) would let exactly that gate quietly
+      // vanish on a PR buildd never got to derive. The caller can retarget
+      // the real PR on GitHub and retry.
+      if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
+        const claimedBase = typeof base === 'string' ? base : null;
+        if (!isPrLegalForMissionTask({ baseRef: claimedBase, mission, isMissionPrTask: false })) {
+          return NextResponse.json({
+            error: `Cannot adopt this PR: its base ('${claimedBase ?? 'unknown'}') is not this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch.`,
+            hint: `Retarget the PR to base '${integrationBase}' on GitHub, then retry with the corrected base.`,
+          }, { status: 400 });
+        }
+      }
+
       const prNumberMatch = existingPrUrl.match(/\/pull\/(\d+)/);
       const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
       // NOTE: prBaseRef is deliberately NOT set here. This path registers a PR
@@ -255,8 +299,6 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
     const retryIteration = typeof taskContext?.iteration === 'number' ? taskContext.iteration : 0;
     const maxIterations = typeof taskContext?.maxIterations === 'number' ? taskContext.maxIterations : 3;
 
@@ -402,19 +444,42 @@ export async function POST(req: NextRequest) {
     // When context.baseBranch is a mission integration branch and the runner created
     // a worktree directly on that branch (a bug), this guard catches the bad PR before
     // it bypasses mission-PR coordination.
-    if (worker.task?.missionId) {
-      const mission = await db.query.missions.findFirst({
-        where: eq(missions.id, worker.task.missionId),
-        columns: { workingBranch: true, integrationBranchEnabled: true },
-      });
-      const integrationBase = missionIntegrationBase(mission);
-      if (integrationBase && head === integrationBase && !worker.task?.title?.startsWith(MISSION_PR_TASK_PREFIX)) {
-        // Task worker opened PR with head = mission integration branch (wrong).
-        // Only the mission PR owner may do that.
-        const recoveryPath = `1. Cut a new task branch from the mission integration branch: git checkout -b buildd/<taskid>-<slug> origin/${integrationBase}\n2. Cherry-pick or re-apply the changes there\n3. Open the PR against the mission branch as base`;
+    if (integrationBase && head === integrationBase && !isMissionPrOwner) {
+      // Task worker opened PR with head = mission integration branch (wrong).
+      // Only the mission PR owner may do that.
+      const recoveryPath = `1. Cut a new task branch from the mission integration branch: git checkout -b buildd/<taskid>-<slug> origin/${integrationBase}\n2. Cherry-pick or re-apply the changes there\n3. Open the PR against the mission branch as base`;
+      return NextResponse.json({
+        error: `Task PR cannot target the mission integration branch (${integrationBase}) as its HEAD. The mission PR is the coordination unit between trunk and the integration branch. Task PRs must be based on the integration branch, not be the integration branch itself.`,
+        hint: `Cut a task branch FROM the mission integration branch and open the PR from there. Recovery: ${recoveryPath}`,
+      }, { status: 400 });
+    }
+
+    // ── DERIVE, DON'T ACCEPT (Option A′) ────────────────────────────────────
+    // For a task whose mission has an integration base, both the head and the
+    // base of its PR are already known to the server — head is the worker's
+    // own branch (workers.branch), base is the mission's integration branch —
+    // so a caller-supplied value is checked against the derived one rather
+    // than trusted. Before this, a caller passing base='dev' silently
+    // overrode its own mission's integration base (the production incident
+    // this closes: one mission produced six separate trunk merges from task
+    // PRs that should all have gone through a single mission PR).
+    //
+    // Exempt: the mission PR owner (handled above — its head IS the
+    // integration branch and its base is trunk, by design) and a genuine
+    // stacked-plan phase (`isStackedPhaseBase` — its correct base is a
+    // sibling task's own branch, not the integration branch).
+    if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
+      if (worker.branch && head !== worker.branch) {
         return NextResponse.json({
-          error: `Task PR cannot target the mission integration branch (${integrationBase}) as its HEAD. The mission PR is the coordination unit between trunk and the integration branch. Task PRs must be based on the integration branch, not be the integration branch itself.`,
-          hint: `Cut a task branch FROM the mission integration branch and open the PR from there. Recovery: ${recoveryPath}`,
+          error: `Task PR head '${head}' does not match this worker's own branch ('${worker.branch}'). A task PR's head must be the branch this worker actually committed to.`,
+          hint: `Open the PR with head='${worker.branch}'.`,
+        }, { status: 400 });
+      }
+      if (typeof base === 'string' && base && base !== integrationBase) {
+        const recoveryPath = `1. This mission uses an integration branch — task PRs base on it, not on '${base}'.\n2. Open the PR with base='${integrationBase}' (or omit base and let the server derive it).`;
+        return NextResponse.json({
+          error: `Task PR base '${base}' disagrees with this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch, not '${base}'.`,
+          hint: `Drop the explicit base (the server derives it), or pass base='${integrationBase}'. Recovery: ${recoveryPath}`,
         }, { status: 400 });
       }
     }
@@ -430,16 +495,18 @@ export async function POST(req: NextRequest) {
           title,
           body: effectivePrBody,
           head,
-          base: base
-            // Stacked plan phases store predecessor branch in context.baseBranch
-            // Recovery tasks may instead store the current head there, which
-            // cannot be used as a PR base.
-            || (contextBaseBranch !== head ? contextBaseBranch : undefined)
-            || taskContext?.targetBranch as string
-            || workspace.gitConfig?.targetBranch
-            || workspace.gitConfig?.defaultBranch
-            || repo.defaultBranch
-            || 'main',
+          base: (integrationBase && !isMissionPrOwner && !isStackedPhase)
+            ? integrationBase
+            : base
+              // Stacked plan phases store predecessor branch in context.baseBranch
+              // Recovery tasks may instead store the current head there, which
+              // cannot be used as a PR base.
+              || (contextBaseBranch !== head ? contextBaseBranch : undefined)
+              || taskContext?.targetBranch as string
+              || workspace.gitConfig?.targetBranch
+              || workspace.gitConfig?.defaultBranch
+              || repo.defaultBranch
+              || 'main',
           draft: draft || false,
         }),
       }
@@ -832,6 +899,24 @@ export async function PUT(req: NextRequest) {
       }
     }
 
+    // ── Mission-PR branch-lifecycle gate (P3) ───────────────────────────────
+    // Applies even under `force`: this guards data integrity (deleting the
+    // integration branch out from under sibling PRs still targeting it), not
+    // the review policy `force` exists to bypass.
+    const mergingTask = worker.taskId
+      ? await db.query.tasks.findFirst({
+          where: eq(tasks.id, worker.taskId),
+          columns: { id: true, title: true, taskClass: true, missionId: true },
+        })
+      : null;
+    const mergeGate = await guardMissionPrMerge(mergingTask);
+    if (mergeGate.blocks) {
+      return NextResponse.json({
+        error: `cannot merge the mission PR yet: ${mergeGate.reason}`,
+        hint: 'Wait for the remaining task PRs to merge into the integration branch, then retry.',
+      }, { status: 409 });
+    }
+
     const result = await mergePullRequest(
       repo.installation.installationId,
       repo.fullName,
@@ -844,6 +929,7 @@ export async function PUT(req: NextRequest) {
         .update(workers)
         .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
         .where(eq(workers.id, worker.id));
+      await finalizeMissionPrMerge(mergingTask, repo.installation.installationId, repo.fullName);
     } else if (/resource not accessible by integration/i.test(result.message)) {
       // The GitHub App installation lacks the required permissions.
       // Merging requires pull_requests:write AND contents:write.

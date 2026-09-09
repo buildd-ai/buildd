@@ -16,6 +16,9 @@ const mockWorkersFindMany = mock(() => [] as any[]);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
 const mockTasksFindFirst = mock(() => Promise.resolve(null) as any);
+// `guardMissionPrMerge`/`finalizeMissionPrMerge` (P3) run through
+// `evaluateMissionWorkState`, which reads deliverable tasks via findMany.
+const mockTasksFindMany = mock(() => Promise.resolve([]) as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
 const mockWorkersUpdate = mock(() => ({
@@ -73,7 +76,7 @@ mock.module('@buildd/core/db', () => ({
       // may take the slot, while for every other mission the column keeps its
       // legacy meaning. Null = not opted in, which is what these cases assert.
       missions: { findFirst: mockMissionsFindFirst },
-      tasks: { findFirst: mockTasksFindFirst },
+      tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
     },
     update: () => mockWorkersUpdate(),
   },
@@ -104,6 +107,7 @@ mock.module('@/lib/pr-review-request', () => ({
 
 // Import handler AFTER mocks
 import { POST, PATCH, PUT, GET } from './route';
+import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 
 // Shared account + workspace defaults for most tests (same team → access granted)
 const ACCOUNT = { id: 'account-1', teamId: 'team-1' };
@@ -138,6 +142,10 @@ describe('POST /api/github/pr', () => {
     mockGithubReposFindFirst.mockReset();
     mockWorkersUpdate.mockReset();
     mockGetTeamWorkspaceIds.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
 
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
@@ -521,6 +529,327 @@ describe('POST /api/github/pr', () => {
 
     expect(res.status).toBe(200);
     expect(payloads.some(p => 'primaryPrNumber' in p)).toBe(false);
+  });
+
+  // ── Option A′: derive, don't accept (P1) ────────────────────────────────
+  //
+  // Once a mission has an integration base, the server already knows the
+  // correct head (the worker's own branch) and base (the integration branch)
+  // — a caller-supplied value is checked against the derivation, not trusted.
+  describe('Option A′ — derive, don’t accept (P1)', () => {
+    const INTEGRATION_BRANCH = 'mission/checkout-arc-1a2b3c4d';
+    const WORKER_BRANCH = 'buildd/t-1-do-thing';
+
+    function taskWorker(overrides: Record<string, any> = {}) {
+      return {
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        branch: WORKER_BRANCH,
+        workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
+        task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
+        ...overrides,
+      };
+    }
+
+    function optedInMission(overrides: Record<string, any> = {}) {
+      mockMissionsFindFirst.mockResolvedValue({
+        workingBranch: INTEGRATION_BRANCH,
+        integrationBranchEnabled: true,
+        ...overrides,
+      });
+    }
+
+    function noExistingPr() {
+      // Dedup-by-head GET call, hit before the derive/refuse checks.
+      mockGithubApi.mockResolvedValueOnce([]);
+    }
+
+    it('refuses a caller-supplied base that disagrees with the integration base', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH, base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain(INTEGRATION_BRANCH);
+      expect(mockGithubApi).not.toHaveBeenCalledWith(
+        expect.anything(), expect.anything(), expect.objectContaining({ method: 'POST' }),
+      );
+    });
+
+    it('accepts a caller base that agrees with the integration base', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH, base: INTEGRATION_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('derives the base when the caller omits it entirely', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      expect(createCall).toBeDefined();
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe(INTEGRATION_BRANCH);
+    });
+
+    it('refuses a caller-supplied head that disagrees with the worker’s own branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'some-other-branch' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain(WORKER_BRANCH);
+    });
+
+    it('allows the mission-PR owner to open head=integration-branch, base=trunk', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        branch: INTEGRATION_BRANCH,
+        task: { id: 't-own', missionId: 'obj-1', title: `${MISSION_PR_TASK_PREFIX}Checkout arc`, taskClass: 'bookkeeping', context: null },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'Checkout arc' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Checkout arc', head: INTEGRATION_BRANCH, base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('is unaffected for a task with no mission — explicit head/base pass through', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({ task: { id: 't-1', missionId: null, title: 'Do thing', taskClass: 'work', context: null } }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'some-other-branch', base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('is unaffected for a mission with no integration base — explicit base passes through', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission({ integrationBranchEnabled: false });
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'some-other-branch', base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('respects a stacked-phase task’s predecessor base instead of forcing the integration branch', async () => {
+      const predecessorBranch = 'buildd/predecessor00-earlier-thing';
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        task: { id: 't-2', missionId: 'obj-1', title: 'Second phase', taskClass: 'work', context: { baseBranch: predecessorBranch } },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe(predecessorBranch);
+    });
+
+    it('resolves a recovery task (context.baseBranch === head) to the integration base', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: { baseBranch: WORKER_BRANCH } },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe(INTEGRATION_BRANCH);
+    });
+  });
+
+  // ── Option A′: adoption legality gate (P2a) ─────────────────────────────
+  describe('adoption (prUrl) — mission-integration legality gate (P2a)', () => {
+    const INTEGRATION_BRANCH = 'mission/checkout-arc-1a2b3c4d';
+
+    function taskWorker(overrides: Record<string, any> = {}) {
+      return {
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        branch: 'buildd/t-1-do-thing',
+        workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
+        task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
+        ...overrides,
+      };
+    }
+
+    function optedInMission(overrides: Record<string, any> = {}) {
+      mockMissionsFindFirst.mockResolvedValue({
+        workingBranch: INTEGRATION_BRANCH,
+        integrationBranchEnabled: true,
+        ...overrides,
+      });
+    }
+
+    it('refuses adoption of an out-of-band PR based on trunk instead of the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      optedInMission();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain(INTEGRATION_BRANCH);
+    });
+
+    it('refuses adoption when the claimed base is omitted entirely', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      optedInMission();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing', prUrl: 'https://github.com/owner/repo/pull/42' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+    });
+
+    it('adopts when the claimed base matches the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      optedInMission();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: INTEGRATION_BRANCH, prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('is unaffected when the mission has no integration base', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      optedInMission({ integrationBranchEnabled: false });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('allows adoption of the mission PR itself (head=integration branch, base=trunk)', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        task: { id: 't-own', missionId: 'obj-1', title: `${MISSION_PR_TASK_PREFIX}Checkout arc`, taskClass: 'bookkeeping', context: null },
+      }));
+      optedInMission();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'Checkout arc', head: INTEGRATION_BRANCH,
+          base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
   });
 
   it('calls githubApi with correct parameters', async () => {
@@ -1620,6 +1949,8 @@ describe('PUT /api/github/pr', () => {
     });
     mockTasksFindFirst.mockReset();
     mockTasksFindFirst.mockResolvedValue(null);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockResolvedValue(null);
     mockReadPrReviewStatus.mockReset();
     mockReadPrReviewStatus.mockResolvedValue({
@@ -2450,6 +2781,127 @@ describe('PUT /api/github/pr', () => {
     expect(data.alreadyMerged).toBe(true);
     expect(data.pr.number).toBe(1870);
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  // ── Mission-PR branch-lifecycle gate (P3) ─────────────────────────────────
+  describe('mission-PR branch-lifecycle gate (P3)', () => {
+    const BRANCH = 'mission/checkout-arc-1a2b3c4d';
+
+    function missionPrWorkerOk() {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-own',
+        accountId: 'account-1',
+        taskId: 't-own',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockTasksFindFirst.mockResolvedValue({
+        id: 't-own',
+        requiresReview: false,
+        missionId: 'mission-1',
+        title: `${MISSION_PR_TASK_PREFIX}Checkout arc`,
+        taskClass: 'bookkeeping',
+      });
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: null, requiresReview: false, workingBranch: BRANCH, integrationBranchEnabled: true,
+      });
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+
+    const put = () => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-own', prNumber: 42 },
+    }));
+
+    it('refuses to merge the mission PR while a sibling task PR is still open', async () => {
+      missionPrWorkerOk();
+      mockTasksFindMany.mockResolvedValue([
+        { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+      ]);
+      mockWorkersFindMany.mockResolvedValue([
+        { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: null, prLifecycleStatus: 'pr_open', startedAt: new Date(), createdAt: new Date() },
+      ]);
+
+      const res = await put();
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.error).toContain('still open');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+      missionPrWorkerOk();
+      mockTasksFindMany.mockResolvedValue([
+        { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+      ]);
+      mockWorkersFindMany.mockResolvedValue([
+        { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+      ]);
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockGithubApi).toHaveBeenCalledWith(
+        expect.anything(),
+        `/repos/owner/repo/git/refs/heads/${encodeURIComponent(BRANCH)}`,
+        expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+
+    it('does not gate an ordinary task PR merge — only the mission PR is gated', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 't-2',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockTasksFindFirst.mockResolvedValue({
+        id: 't-2', requiresReview: false, missionId: 'mission-1', title: 'Task 2', taskClass: 'work',
+      });
+      mockMissionsFindFirst.mockResolvedValue({
+        mergePolicy: null, requiresReview: false, workingBranch: BRANCH, integrationBranchEnabled: true,
+      });
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+      // mockGithubApi's call history is not cleared between tests in this
+      // describe (only its implementation is reset) — clear it so this
+      // negative assertion checks THIS test's calls, not accumulated ones.
+      mockGithubApi.mockClear();
+
+      const res = await PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', prNumber: 42 },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+      expect(mockGithubApi).not.toHaveBeenCalledWith(
+        expect.anything(), expect.stringContaining('/git/refs/heads/'), expect.objectContaining({ method: 'DELETE' }),
+      );
+    });
+
+    it('applies even under an admin force merge — this guards data integrity, not review policy', async () => {
+      missionPrWorkerOk();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
+      mockTasksFindMany.mockResolvedValue([
+        { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+      ]);
+      mockWorkersFindMany.mockResolvedValue([
+        { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: null, prLifecycleStatus: 'pr_open', startedAt: new Date(), createdAt: new Date() },
+      ]);
+
+      const res = await PUT(createPutRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-own', prNumber: 42, force: true },
+      }));
+
+      expect(res.status).toBe(409);
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
   });
 });
 

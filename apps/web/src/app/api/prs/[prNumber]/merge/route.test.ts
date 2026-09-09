@@ -11,10 +11,16 @@ const mockMergePullRequest = mock(() => Promise.resolve({ merged: true, message:
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockCheckDependsOnResolved = mock(() => Promise.resolve());
 const mockCheckAndUnblockDependentMissions = mock(() => Promise.resolve());
+// P3 mission-PR branch-lifecycle gate: guardMissionPrMerge/finalizeMissionPrMerge
+// (real, unmocked `@/lib/mission-pr`) read tasks/missions and delete the branch
+// via githubApi — none of which this route needed before.
+const mockGithubApi = mock(() => Promise.resolve({}) as any);
+const mockTasksFindMany = mock(() => Promise.resolve([]) as any);
+const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserWorkspaceIds: mockGetUserWorkspaceIds }));
-mock.module('@/lib/github', () => ({ mergePullRequest: mockMergePullRequest }));
+mock.module('@/lib/github', () => ({ mergePullRequest: mockMergePullRequest, githubApi: mockGithubApi }));
 mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: mockCheckDependsOnResolved }));
 mock.module('@/lib/mission-dependency', () => ({ checkAndUnblockDependentMissions: mockCheckAndUnblockDependentMissions }));
 mock.module('@/lib/pusher', () => ({
@@ -28,6 +34,8 @@ mock.module('@buildd/core/db', () => ({
     query: {
       workers: { findMany: mockWorkersFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
+      tasks: { findMany: mockTasksFindMany },
+      missions: { findFirst: mockMissionsFindFirst },
     },
     update: mockWorkersUpdate,
   },
@@ -54,6 +62,7 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 import { POST } from './route';
+import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 
 function makeRequest(
   prNumber = '42',
@@ -97,6 +106,12 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     mockWorkspacesFindMany.mockResolvedValue([]);
     mockMergePullRequest.mockReset();
     mockTriggerEvent.mockReset();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({});
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -271,5 +286,91 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
     expect(res.status).toBe(200);
+  });
+});
+
+// ── P3: mission-PR branch-lifecycle gate — the human-triggered merge path ────
+describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P3)', () => {
+  const BRANCH = 'mission/checkout-arc-1a2b3c4d';
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockTriggerEvent.mockReset();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({});
+    mockTasksFindMany.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue({ workingBranch: BRANCH, integrationBranchEnabled: true });
+    const updateWhere = mock(() => Promise.resolve());
+    const updateSet = mock(() => ({ where: updateWhere }));
+    mockWorkersUpdate.mockReturnValue({ set: updateSet });
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+  });
+
+  const missionPrWorker = {
+    ...openWorker,
+    task: { id: 't-own', missionId: 'mission-1', status: 'completed', title: `${MISSION_PR_TASK_PREFIX}Checkout arc`, taskClass: 'bookkeeping' },
+  };
+
+  it('refuses to merge the mission PR while a sibling task PR is still open', async () => {
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+    ]);
+    // Two workers.findMany calls happen in sequence: the route's own
+    // matchingWorkers lookup first, then evaluateMissionWorkState's (scoped to
+    // the mission's deliverable tasks) inside the P3 guard.
+    mockWorkersFindMany.mockResolvedValueOnce([missionPrWorker]).mockResolvedValueOnce([
+      { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: null, prLifecycleStatus: 'pr_open', startedAt: new Date(), createdAt: new Date() },
+    ]);
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('still open');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },
+    ]);
+    mockWorkersFindMany.mockResolvedValueOnce([missionPrWorker]).mockResolvedValueOnce([
+      { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+    ]);
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    expect(mockGithubApi).toHaveBeenCalledWith(
+      workspace.githubRepo.installation.installationId,
+      `/repos/${workspace.githubRepo.fullName}/git/refs/heads/${encodeURIComponent(BRANCH)}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  it('does not gate an ordinary task PR merge', async () => {
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    expect(mockGithubApi).not.toHaveBeenCalledWith(
+      expect.anything(), expect.stringContaining('/git/refs/heads/'), expect.objectContaining({ method: 'DELETE' }),
+    );
   });
 });
