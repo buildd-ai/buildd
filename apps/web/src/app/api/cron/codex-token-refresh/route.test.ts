@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { NextRequest } from 'next/server';
 
 // ── DB mocks ────────────────────────────────────────────────────────────────
@@ -7,8 +7,12 @@ const mockSecretsFindMany = mock(() => [] as any[]);
 const mockTasksFindFirst = mock(() => null as any);
 const mockWorkspacesFindFirst = mock(() => ({ id: 'ws-1' }) as any);
 
+/**
+ * Every non-cron_runs insert the route attempts, captured. The route is
+ * expected never to add to this — the assertion is on emptiness — so an
+ * accidental write shows up as a test failure rather than as silence.
+ */
 let tasksInsertValues: any[] = [];
-let tasksInsertError: Error | null = null;
 
 /**
  * The cron_runs table stub, shared between the schema mock and the db mock so
@@ -28,7 +32,6 @@ mock.module('@buildd/core/db', () => ({
       values: mock((vals: any) => {
         if (table === CRON_RUNS_TABLE) return { returning: mock(() => [{ id: 'run-1' }]) };
         tasksInsertValues.push(vals);
-        if (tasksInsertError) throw tasksInsertError;
         return { returning: mock(() => [{ id: 'task-1', ...vals }]) };
       }),
     })),
@@ -113,7 +116,6 @@ describe('GET /api/cron/codex-token-refresh', () => {
     mockRecordSuccess.mockReset();
     mockNotifyTeam.mockReset();
     tasksInsertValues = [];
-    tasksInsertError = null;
 
     // Defaults
     process.env.CRON_SECRET = 'test-secret';
@@ -163,17 +165,20 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(res.status).toBe(401);
   });
 
-  // ── Nudge mode (default) ──────────────────────────────────────────────────
+  // ── Observe-only mode (default) ───────────────────────────────────────────
+  //
+  // This sweep used to file one task per expiring credential, titled
+  // `[sys] refresh credential <id>`. Nothing on the runner side matched that
+  // title, so the row went down the ordinary claim path and a general-purpose
+  // agent picked it up — with no control-plane key in its sandbox, so it 401'd
+  // and the task failed, every sweep, indefinitely. Worse, one such agent did
+  // take the refresh lock, called the provider, and lost the rotated refresh
+  // token to output redaction; rotation-on-use makes that unrecoverable. The
+  // title also published the credential's identifier everywhere a task title is
+  // rendered. The runner-side broker owns refresh now; with the opt-in flag off
+  // this route observes and reports, and takes no action.
 
-  it('nudgeMode=true when BUILDD_ALLOW_CONTROL_PLANE_REFRESH is unset', async () => {
-    const res = await GET(authedRequest());
-    expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body.nudgeMode).toBe(true);
-    expect(body.nudgedCredentials).toBe(0);
-  });
-
-  it('creates nudge task for expiring codex credential', async () => {
+  it('creates no task for an expiring codex credential', async () => {
     mockSecretsFindMany.mockReturnValueOnce([
       { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
     ]).mockReturnValue([]);
@@ -181,19 +186,11 @@ describe('GET /api/cron/codex-token-refresh', () => {
     const res = await GET(authedRequest());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.nudgeMode).toBe(true);
-    expect(body.nudgedCredentials).toBe(1);
-    expect(body.codex.nudged).toBe(1);
-    expect(body.codex.deduped).toBe(0);
-    expect(tasksInsertValues).toHaveLength(1);
-    expect(tasksInsertValues[0].title).toBe('[sys] refresh credential sec-1');
-    expect(tasksInsertValues[0].priority).toBe(50);
-    expect(tasksInsertValues[0].tier).toBe('budget');
-    expect(tasksInsertValues[0].outputRequirement).toBe('none');
+    expect(tasksInsertValues).toHaveLength(0);
+    expect(body.codex.checked).toBe(1);
   });
 
-  it('creates nudge task for expiring claude credential', async () => {
-    // First findMany call (codex) returns empty, second (claude) returns one
+  it('creates no task for an expiring claude credential', async () => {
     mockSecretsFindMany
       .mockReturnValueOnce([])  // codex expiring
       .mockReturnValueOnce([{ id: 'sec-2', teamId: 'team-1', workspaceId: 'ws-1' }])  // claude expiring
@@ -202,51 +199,55 @@ describe('GET /api/cron/codex-token-refresh', () => {
     const res = await GET(authedRequest());
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.nudgedCredentials).toBe(1);
-    expect(body.claudeRefresh.nudged).toBe(1);
-    expect(tasksInsertValues[0].title).toBe('[sys] refresh credential sec-2');
-    expect(tasksInsertValues[0].description).toContain('claude_credential');
+    expect(tasksInsertValues).toHaveLength(0);
+    expect(body.claudeRefresh.checked).toBe(1);
   });
 
-  it('deduplicates: skips task creation if pending task already exists', async () => {
+  it('never writes a credential identifier into a task row', async () => {
+    mockSecretsFindMany
+      .mockReturnValueOnce([{ id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' }])
+      .mockReturnValueOnce([{ id: 'sec-2', teamId: 'team-1', workspaceId: null }])
+      .mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    expect(tasksInsertValues).toHaveLength(0);
+    const written = JSON.stringify(tasksInsertValues);
+    expect(written).not.toContain('sec-1');
+    expect(written).not.toContain('sec-2');
+  });
+
+  it('does not look for a task to dedupe against, nor a workspace to file one in', async () => {
+    // Both queries existed only to serve the task-filing path. Reaching either
+    // means some remnant of it survived.
+    mockSecretsFindMany.mockReturnValueOnce([
+      { id: 'sec-1', teamId: 'team-1', workspaceId: null },
+    ]).mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    expect(mockTasksFindFirst).not.toHaveBeenCalled();
+    expect(mockWorkspacesFindFirst).not.toHaveBeenCalled();
+  });
+
+  it('reports what it observed, in no nudge vocabulary', async () => {
     mockSecretsFindMany.mockReturnValueOnce([
       { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
     ]).mockReturnValue([]);
-    mockTasksFindFirst.mockReturnValue({ id: 'existing-task' });
 
     const res = await GET(authedRequest());
     const body = await res.json();
-    expect(body.codex.nudged).toBe(0);
-    expect(body.codex.deduped).toBe(1);
-    expect(tasksInsertValues).toHaveLength(0);
+    expect(body.controlPlaneRefresh).toBe(false);
+    expect(body.codex.checked).toBe(1);
+    expect(body).not.toHaveProperty('nudgeMode');
+    expect(body).not.toHaveProperty('nudgedCredentials');
+    expect(body.codex).not.toHaveProperty('nudged');
+    expect(body.codex).not.toHaveProperty('deduped');
+    expect(body.claudeRefresh).not.toHaveProperty('nudged');
+    expect(body.claudeRefresh).not.toHaveProperty('deduped');
   });
 
-  it('resolves workspace from team when credential workspaceId is null', async () => {
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: null },
-    ]).mockReturnValue([]);
-    mockWorkspacesFindFirst.mockReturnValue({ id: 'resolved-ws' });
-
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.codex.nudged).toBe(1);
-    expect(tasksInsertValues[0].workspaceId).toBe('resolved-ws');
-  });
-
-  it('records no_workspace result when no workspace found for team', async () => {
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-1', teamId: 'team-1', workspaceId: null },
-    ]).mockReturnValue([]);
-    mockWorkspacesFindFirst.mockReturnValue(null);
-
-    const res = await GET(authedRequest());
-    const body = await res.json();
-    expect(body.codex.nudged).toBe(0);
-    expect(body.codex.secrets['sec-1']).toBe('no_workspace');
-    expect(tasksInsertValues).toHaveLength(0);
-  });
-
-  it('does not call refreshCodexCredential or refreshClaudeCredential in nudge mode', async () => {
+  it('does not call refreshCodexCredential or refreshClaudeCredential when the flag is off', async () => {
     mockSecretsFindMany.mockReturnValueOnce([
       { id: 'sec-1', teamId: 'team-1', workspaceId: 'ws-1' },
     ]).mockReturnValue([]);
@@ -258,12 +259,13 @@ describe('GET /api/cron/codex-token-refresh', () => {
 
   // ── Direct mode (BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true) ─────────────────
 
-  it('nudgeMode=false when BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true', async () => {
+  it('reports controlPlaneRefresh=true when BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true', async () => {
+    // The break-glass fallback — refresh straight from the control plane, at
+    // the cost of a rotating egress IP. Deliberately kept, deliberately opt-in.
     process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = 'true';
     const res = await GET(authedRequest());
     const body = await res.json();
-    expect(body.nudgeMode).toBe(false);
-    expect(body.nudgedCredentials).toBe(0);
+    expect(body.controlPlaneRefresh).toBe(true);
   });
 
   it('calls refreshCodexCredential in direct mode', async () => {
@@ -297,7 +299,7 @@ describe('GET /api/cron/codex-token-refresh', () => {
   // ── Response shape ────────────────────────────────────────────────────────
 
   it('always runs MCP refresh regardless of mode', async () => {
-    // nudge mode — MCP is not affected
+    // flag off — MCP is not affected
     mockSecretsFindMany.mockReturnValue([]).mockReturnValueOnce([]).mockReturnValueOnce([])
       .mockReturnValueOnce([]).mockReturnValueOnce([{ id: 'mcp-1' }]).mockReturnValue([]);
     mockRefreshMcp.mockReturnValue(Promise.resolve('refreshed'));
@@ -320,7 +322,7 @@ describe('GET /api/cron/codex-token-refresh', () => {
     expect(sweep).toContain('300');
   });
 
-  it('includes null-expiry credentials in the sweep instead of stranding them', async () => {
+  it('includes null-expiry connector credentials in the sweep instead of stranding them', async () => {
     // A NULL tokenExpiresAt is where the refresher parks a credential it marked
     // dead, and where an AS that omits expires_in leaves one. isNotNull() meant
     // neither was ever retried — a manual reconnect was the only way out.
@@ -331,6 +333,45 @@ describe('GET /api/cron/codex-token-refresh', () => {
     const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
     const sweep = wheres.find(w => w.includes("1 minute"));
     expect(sweep).toContain('isNull');
+  });
+
+  it('includes null-expiry codex credentials in the sweep instead of stranding them', async () => {
+    // Same trap, one branch over: a token response without expires_in stores
+    // NULL, and isNotNull() then excluded that row from every later sweep — so
+    // the credential most in need of a refresh was the one guaranteed never to
+    // be offered another.
+    mockSecretsFindMany.mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
+    const sweep = wheres.find(w => w.includes('codex_credential'));
+    expect(sweep, 'no query selects codex credentials').toBeDefined();
+    expect(sweep).toContain('isNull');
+  });
+
+  it('includes null-expiry claude credentials in the expiry sweep', async () => {
+    mockSecretsFindMany.mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
+    // Zombie detection also selects claude_credential rows by a null expiry;
+    // the expiry sweep is the one carrying an upper bound.
+    const sweep = wheres.find(w => w.includes('claude_credential') && w.includes('"type":"lt"'));
+    expect(sweep, 'no claude expiry sweep found').toBeDefined();
+    expect(sweep).toContain('isNull');
+  });
+
+  it('no expiry sweep filters a null expiry out', async () => {
+    // One assertion covering every credential family: isNotNull on
+    // tokenExpiresAt is a one-way trap, so it should appear nowhere.
+    mockSecretsFindMany.mockReturnValue([]);
+
+    await GET(authedRequest());
+
+    const wheres = mockSecretsFindMany.mock.calls.map(c => JSON.stringify(c[0]?.where ?? null));
+    expect(wheres.some(w => w.includes('isNotNull'))).toBe(false);
   });
 
   it('always runs zombie detection regardless of mode', async () => {
@@ -344,32 +385,5 @@ describe('GET /api/cron/codex-token-refresh', () => {
     const body = await res.json();
     expect(body.claudeVerify).toBeDefined();
     expect(typeof body.claudeVerify.checked).toBe('number');
-  });
-});
-
-// Regression (2026-08-28): the nudge dedupe only looked for a *pending* task
-// with the same title, so every cron pass filed a fresh nudge while the previous
-// one was still assigned/in_progress. Each doomed copy burned worker slots
-// (4 silent-start workers in 4 hours for one credential).
-describe('nudge dedupe covers in-flight tasks, not just pending', () => {
-  it('matches an existing nudge task in pending, assigned or in_progress', async () => {
-    process.env.CRON_SECRET = 'test-secret';
-    delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
-    tasksInsertValues = [];
-    mockSecretsFindMany.mockReset();
-    mockTasksFindFirst.mockReset();
-    mockSecretsFindMany.mockReturnValueOnce([
-      { id: 'sec-inflight', teamId: 'team-1', workspaceId: 'ws-1' },
-    ]).mockReturnValue([]);
-    mockTasksFindFirst.mockReturnValue(null);
-
-    await GET(makeRequest('test-secret'));
-
-    const dedupeCall = mockTasksFindFirst.mock.calls[0]?.[0] as any;
-    expect(dedupeCall).toBeDefined();
-    const statusFilter = JSON.stringify(dedupeCall.where);
-    expect(statusFilter).toContain('pending');
-    expect(statusFilter).toContain('assigned');
-    expect(statusFilter).toContain('in_progress');
   });
 });
