@@ -4468,7 +4468,7 @@ describe('claim gate overrides', () => {
   });
 
   describe('advisory-manifest mission serialization (compensating guard)', () => {
-    function advisoryTask(id: string, missionId: string | null, manifest: string[] = ['**']) {
+    function advisoryTask(id: string, missionId: string | null, manifest: string[] = ['**'], category?: string) {
       return {
         id,
         workspaceId: 'ws-1',
@@ -4477,6 +4477,7 @@ describe('claim gate overrides', () => {
         backend: 'claude' as const,
         dependsOn: [],
         pathManifest: manifest,
+        category,
         context: {},
         workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null },
       };
@@ -4681,6 +4682,41 @@ describe('claim gate overrides', () => {
       mockGetActiveClaimsByWorkspace.mockResolvedValue(
         new Map([['task-9', ['apps/web/src/a.ts']]]),
       );
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    // ── Reviewer tasks never declare a pathManifest (they read a diff, they
+    // don't edit files), so every reviewer task is scope-undeclared by
+    // construction. Left ungated, an orchestration/investigation task that is
+    // ALSO scope-undeclared and stays in flight in the mission permanently
+    // occupies the mission's one undeclared-scope slot and starves every
+    // reviewer task in that mission — regardless of workspace capacity.
+
+    it('claims a scope-undeclared review task even while a non-review sibling is in flight with undeclared scope', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', ['**'], 'review')])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'], category: 'chore' },
+      ]));
+
+      const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
+      const data = await res.json();
+
+      expect(data.workers).toHaveLength(1);
+    });
+
+    it('does not count an in-flight review task as occupying the mission scope-undeclared slot', async () => {
+      mockTasksFindMany
+        .mockResolvedValueOnce([advisoryTask('task-1', 'mission-A', ['**'], 'chore')])
+        .mockResolvedValue([]);
+      mockDbSelect.mockReturnValue(makeSelectChain([
+        { missionId: 'mission-A', taskId: 'task-9', pathManifest: ['**'], category: 'review' },
+      ]));
 
       const res = await POST(createMockRequest({ headers: { Authorization: 'Bearer bld_test' }, body: { runner: 'r' } }));
       const data = await res.json();
