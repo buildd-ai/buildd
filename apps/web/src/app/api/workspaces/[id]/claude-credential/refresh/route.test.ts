@@ -5,8 +5,8 @@ import { NextRequest } from 'next/server';
 
 const mockGetCurrentUser = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
-const mockRefreshCodexCredential = mock(() => Promise.resolve('refreshed' as any));
-const mockGetCodexSecretId = mock(() => Promise.resolve('secret-1' as string | null));
+const mockRefreshClaudeCredential = mock(() => Promise.resolve('refreshed' as any));
+const mockGetClaudeSecretId = mock(() => Promise.resolve('secret-1' as string | null));
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -16,9 +16,9 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
-mock.module('@/lib/codex-credential', () => ({
-  refreshCodexCredential: mockRefreshCodexCredential,
-  getCodexSecretId: mockGetCodexSecretId,
+mock.module('@/lib/claude-credential', () => ({
+  refreshClaudeCredential: mockRefreshClaudeCredential,
+  getClaudeSecretId: mockGetClaudeSecretId,
 }));
 
 // ── imports (after mocks) ─────────────────────────────────────────────────────
@@ -29,18 +29,18 @@ import { POST } from './route';
 
 const mockParams = Promise.resolve({ id: 'ws-1' });
 
-function makeReq(url = 'http://localhost:3000/api/workspaces/ws-1/codex-credential/refresh'): NextRequest {
+function makeReq(url = 'http://localhost:3000/api/workspaces/ws-1/claude-credential/refresh'): NextRequest {
   return new NextRequest(url, { method: 'POST' });
 }
 
 function resetMocks() {
   mockGetCurrentUser.mockReset();
   mockVerifyWorkspaceAccess.mockReset();
-  mockRefreshCodexCredential.mockReset();
-  mockGetCodexSecretId.mockReset();
+  mockRefreshClaudeCredential.mockReset();
+  mockGetClaudeSecretId.mockReset();
   mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-  mockGetCodexSecretId.mockResolvedValue('secret-1');
-  mockRefreshCodexCredential.mockResolvedValue('refreshed');
+  mockGetClaudeSecretId.mockResolvedValue('secret-1');
+  mockRefreshClaudeCredential.mockResolvedValue('refreshed');
 }
 
 // ── flag OFF (default): control-plane refresh must be rejected ────────────────
@@ -50,7 +50,7 @@ function resetMocks() {
 // route runs on the control plane, so it must not call the refresh helper
 // unless the same opt-in escape hatch the crons use is set.
 
-describe('POST /api/workspaces/[id]/codex-credential/refresh — control-plane refresh disabled (default)', () => {
+describe('POST /api/workspaces/[id]/claude-credential/refresh — control-plane refresh disabled (default)', () => {
   beforeEach(() => {
     resetMocks();
     delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
@@ -63,7 +63,7 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh — control-plane r
     const data = await res.json();
     expect(data.status).toBe('control_plane_refresh_disabled');
     expect(typeof data.error).toBe('string');
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
   });
 
   it('explains that refresh is runner-originated', async () => {
@@ -76,7 +76,7 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh — control-plane r
   it('does not resolve the secret id — no DB work for a request that cannot proceed', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     await POST(makeReq(), { params: mockParams });
-    expect(mockGetCodexSecretId).not.toHaveBeenCalled();
+    expect(mockGetClaudeSecretId).not.toHaveBeenCalled();
   });
 
   it('treats any value other than "true" as off', async () => {
@@ -84,14 +84,14 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh — control-plane r
     mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(503);
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
   });
 
   it('still returns 401 when not authenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(401);
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
   });
 
   it('still returns 404 when workspace not found', async () => {
@@ -99,13 +99,13 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh — control-plane r
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(404);
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
   });
 });
 
 // ── flag ON: opt-in escape hatch, same as the crons ───────────────────────────
 
-describe('POST /api/workspaces/[id]/codex-credential/refresh — BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true', () => {
+describe('POST /api/workspaces/[id]/claude-credential/refresh — BUILDD_ALLOW_CONTROL_PLANE_REFRESH=true', () => {
   beforeEach(() => {
     resetMocks();
     process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH = 'true';
@@ -115,11 +115,49 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh — BUILDD_ALLOW_CO
     delete process.env.BUILDD_ALLOW_CONTROL_PLANE_REFRESH;
   });
 
+  it('refreshes by resolved secret id (team scope by default)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(makeReq(), { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status).toBe('refreshed');
+    expect(mockRefreshClaudeCredential).toHaveBeenCalledWith('secret-1');
+    expect(mockGetClaudeSecretId).toHaveBeenCalledWith({ teamId: 'team-1' });
+  });
+
+  it('uses workspace scope when scope=workspace', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    const res = await POST(
+      makeReq('http://localhost:3000/api/workspaces/ws-1/claude-credential/refresh?scope=workspace'),
+      { params: mockParams },
+    );
+    expect(res.status).toBe(200);
+    expect(mockGetClaudeSecretId).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
+  });
+
+  it('returns no_credential and skips refresh when no secret at scope', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetClaudeSecretId.mockResolvedValue(null);
+    const res = await POST(makeReq(), { params: mockParams });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.status).toBe('no_credential');
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
+  });
+
+  it('passes through locked / error outcomes', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockRefreshClaudeCredential.mockResolvedValue('locked');
+    const res = await POST(makeReq(), { params: mockParams });
+    const data = await res.json();
+    expect(data.status).toBe('locked');
+  });
+
   it('returns 401 when not authenticated', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(401);
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
   });
 
   it('returns 404 when workspace not found', async () => {
@@ -127,44 +165,6 @@ describe('POST /api/workspaces/[id]/codex-credential/refresh — BUILDD_ALLOW_CO
     mockVerifyWorkspaceAccess.mockResolvedValue(null);
     const res = await POST(makeReq(), { params: mockParams });
     expect(res.status).toBe(404);
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
-  });
-
-  it('returns no_credential and skips refresh when no secret at scope', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockGetCodexSecretId.mockResolvedValue(null);
-    const res = await POST(makeReq(), { params: mockParams });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.status).toBe('no_credential');
-    expect(mockRefreshCodexCredential).not.toHaveBeenCalled();
-  });
-
-  it('refreshes by resolved secret id (team scope by default)', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('refreshed');
-    const res = await POST(makeReq(), { params: mockParams });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.status).toBe('refreshed');
-    expect(mockRefreshCodexCredential).toHaveBeenCalledWith('secret-1');
-    // team-wide scope by default
-    expect(mockGetCodexSecretId).toHaveBeenCalledWith({ teamId: 'team-1' });
-  });
-
-  it('uses workspace scope when scope=workspace', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('refreshed');
-    const res = await POST(makeReq('http://localhost:3000/api/workspaces/ws-1/codex-credential/refresh?scope=workspace'), { params: mockParams });
-    expect(res.status).toBe(200);
-    expect(mockGetCodexSecretId).toHaveBeenCalledWith({ teamId: 'team-1', workspaceId: 'ws-1' });
-  });
-
-  it('passes through locked / error outcomes', async () => {
-    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-    mockRefreshCodexCredential.mockResolvedValue('locked');
-    const res = await POST(makeReq(), { params: mockParams });
-    const data = await res.json();
-    expect(data.status).toBe('locked');
+    expect(mockRefreshClaudeCredential).not.toHaveBeenCalled();
   });
 });
