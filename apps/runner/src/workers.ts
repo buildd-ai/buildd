@@ -1017,7 +1017,16 @@ export class WorkerManager {
       // in explicitly so a multi-workspace OAuth token is allowed to claim the
       // next pending task across all accessible workspaces (server ranks/picks),
       // rather than being rejected by the ambiguous-claim guard.
-      let claimPollResult: { workers: any[]; diagnostics?: any; budgetResetsAt?: string | null };
+      let claimPollResult: {
+        workers: any[];
+        diagnostics?: any;
+        budgetResetsAt?: string | null;
+        pendingCredentialRefreshes?: Array<{
+          secretId: string;
+          purpose: 'claude_credential' | 'codex_credential';
+          expiresAt: string | null;
+        }>;
+      };
       try {
         claimPollResult = await this.buildd.claimTask(slots, undefined, this.config.localUiUrl, undefined, undefined, true, this.environment);
       } catch (err: any) {
@@ -1027,6 +1036,18 @@ export class WorkerManager {
         throw err;
       }
       const { workers: claimed, diagnostics, budgetResetsAt } = claimPollResult;
+
+      // Credential discovery. This is the ONLY path by which an idle runner
+      // learns which credentials its broker is responsible for: the server now
+      // announces them at the top level of every claim response, including the
+      // polls that claim nothing. Reading it here — before the empty-claim
+      // return below — is the whole point; the per-worker field in
+      // startClaimedWorker() can only fire when work was actually claimed.
+      // notifyCredentials() is idempotent, so both paths announcing is safe.
+      const announced = claimPollResult.pendingCredentialRefreshes;
+      if (announced && announced.length > 0) {
+        notifyBrokerCredentials(announced);
+      }
 
       // Server reports account budget exhausted but still served tenant tasks.
       // Emit an informational event for the UI — no circuit breaker needed since

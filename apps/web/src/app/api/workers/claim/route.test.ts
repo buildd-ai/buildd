@@ -4835,3 +4835,156 @@ describe('claim insert — atomic duplicate-worker guard', () => {
     expect(taskUpdates.some(u => u.status === 'pending' && u.claimedBy === null)).toBe(true);
   });
 });
+
+/**
+ * Idle-runner credential discovery.
+ *
+ * The claim call is the runner's heartbeat: it polls on a loop whether or not
+ * work exists. `pendingCredentialRefreshes` used to be attached per claimed
+ * worker only, so a poll that claimed nothing announced nothing, the runner's
+ * credential broker stayed empty, and an idle-but-online runner never
+ * refreshed the credentials it is responsible for. The top-level field below is
+ * the fix, so the zero-worker polls are the cases that matter here.
+ */
+describe('claim response — top-level pendingCredentialRefreshes', () => {
+  const ORIGINAL_KEY = process.env.ENCRYPTION_KEY;
+
+  const expiringRow = {
+    id: 'sec-1',
+    purpose: 'claude_credential',
+    tokenExpiresAt: new Date('2026-09-03T10:00:00.000Z'),
+  };
+
+  beforeEach(() => {
+    process.env.ENCRYPTION_KEY = 'test-encryption-key';
+    // Top-level suites do not inherit the file-wide beforeEach.
+    mockAuthenticateApiKey.mockReset();
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api', teamId: 'team-1',
+    });
+    mockGetAccountWorkspacePermissions.mockReset();
+    mockGetAccountWorkspacePermissions.mockResolvedValue([]);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([]);
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockAccountWorkspacesFindMany.mockReset();
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockTeamsFindFirst.mockReset();
+    mockTeamsFindFirst.mockResolvedValue(null);
+    mockHeartbeatsFindFirst.mockReset();
+    mockHeartbeatsFindFirst.mockResolvedValue({ id: 'hb-1' });
+    mockMissionsFindMany.mockReset();
+    mockMissionsFindMany.mockResolvedValue([]);
+    mockOauthEpisodesFindMany.mockReset();
+    mockOauthEpisodesFindMany.mockResolvedValue([]);
+    mockBackendPausesFindMany.mockReset();
+    mockBackendPausesFindMany.mockResolvedValue([]);
+    mockConnectorsFindMany.mockReset();
+    mockConnectorsFindMany.mockResolvedValue([]);
+    mockConnectorSharesFindMany.mockReset();
+    mockConnectorSharesFindMany.mockResolvedValue([]);
+    mockConnectorWorkspacesFindMany.mockReset();
+    mockConnectorWorkspacesFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindMany.mockReset();
+    mockWorkspaceSkillsFindMany.mockResolvedValue([]);
+    mockWorkspaceSkillsFindFirst.mockReset();
+    mockWorkspaceSkillsFindFirst.mockResolvedValue(null);
+    mockGetActiveClaimsByWorkspace.mockReset();
+    mockGetActiveClaimsByWorkspace.mockResolvedValue(new Map());
+    mockSecretsFindMany.mockReset();
+    mockSecretsFindMany.mockResolvedValue([expiringRow]);
+    mockSecretsProviderGet.mockReset();
+    mockSecretsProviderGet.mockResolvedValue(null);
+    mockDbSelect.mockReset();
+    mockDbSelect.mockReturnValue(makeSelectChain([]));
+    mockDbExecute.mockReset();
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = ORIGINAL_KEY;
+  });
+
+  const poll = (body: Record<string, unknown> = {}) =>
+    POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'idle-runner', ...body },
+    }));
+
+  // THE case this change exists for.
+  it('announces credentials on a poll that claims zero workers', async () => {
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([]); // nothing pending — the idle runner's normal state
+
+    const res = await poll();
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data.workers).toHaveLength(0);
+    expect(data.diagnostics?.reason).toBe('no_pending_tasks');
+    expect(data.pendingCredentialRefreshes).toEqual([
+      { secretId: 'sec-1', purpose: 'claude_credential', expiresAt: '2026-09-03T10:00:00.000Z' },
+    ]);
+  });
+
+  it('announces on the no-slots early return', async () => {
+    const res = await poll({ maxTasks: 0 });
+    const data = await res.json();
+
+    expect(data.diagnostics?.reason).toBe('no_slots');
+    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+  });
+
+  it('announces on the no-workspaces early return', async () => {
+    const res = await poll();
+    const data = await res.json();
+
+    expect(data.diagnostics?.reason).toBe('no_workspaces');
+    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+  });
+
+  it('announces alongside the per-worker field when a task IS claimed', async () => {
+    mockGetAccountWorkspacePermissions.mockResolvedValue([{ workspaceId: 'ws-1', canClaim: true }]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1', accessMode: 'restricted', teamId: 'team-1' }]);
+    mockTasksFindMany.mockResolvedValue([{
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'A task',
+      backend: 'claude',
+      dependsOn: [],
+      context: {},
+      workspace: { id: 'ws-1', teamId: 'team-1', gitConfig: null, repo: 'org/repo' },
+    }]);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => ({ returning: mock(() => [{ id: 'task-1' }]), catch: mock(() => {}) })) })),
+    });
+
+    const res = await poll();
+    const data = await res.json();
+
+    expect(data.workers).toHaveLength(1);
+    // The per-worker field stays — the runner reads the claude_credential
+    // secretId off it to wire that worker to the broker at spawn time.
+    expect(data.workers[0].pendingCredentialRefreshes).toHaveLength(1);
+    expect(data.pendingCredentialRefreshes).toHaveLength(1);
+  });
+
+  it('announces nothing for an account with no team — the scope would be unbounded', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1', maxConcurrentWorkers: 5, type: 'user', authType: 'api', teamId: null,
+    });
+
+    const res = await poll();
+    const data = await res.json();
+
+    expect(data.diagnostics?.reason).toBe('no_workspaces');
+    expect(data.pendingCredentialRefreshes).toBeUndefined();
+  });
+});
