@@ -27,6 +27,34 @@ const ANTHROPIC_API_VERSION = '2023-06-01';
 const CLAUDE_OAUTH_CLIENT_ID = process.env.CLAUDE_OAUTH_CLIENT_ID ?? '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const PURPOSE = 'claude_credential' as const;
 
+/**
+ * How long a rotation may stay "in flight" before we treat it as lost.
+ *
+ * `secrets.rotationStartedAt` is stamped when a rotation begins and cleared as
+ * soon as its outcome is known — success, revocation, or a provider error we
+ * actually received. Still set after this long means we never learned the
+ * outcome (crash, kill, timeout), so the provider may have consumed the stored
+ * refresh token and issued a replacement that never reached us. Anthropic
+ * rotates the refresh token on every use, so the stored one is then permanently
+ * dead and every later attempt is a guaranteed failure.
+ *
+ * Deliberately duplicated (not shared) with lib/codex-credential.ts and
+ * api/runner/credential-refresh/route.ts so neither module has to import the
+ * other; keep the three in sync.
+ */
+const ROTATION_LOST_AFTER_MS = 10 * 60 * 1000; // 10 minutes
+
+const ROTATION_LOST_ERROR =
+  'A previous token rotation never completed, so the stored refresh token may already ' +
+  'have been consumed and replaced. It cannot be used again — reconnect Claude in ' +
+  'Settings → Credentials.';
+
+/** True when a rotation marker is old enough that its rotation must be considered lost. */
+function isRotationLost(rotationStartedAt: Date | string | null | undefined): boolean {
+  if (!rotationStartedAt) return false;
+  return Date.now() - new Date(rotationStartedAt).getTime() > ROTATION_LOST_AFTER_MS;
+}
+
 // ── Input type ────────────────────────────────────────────────────────────────
 
 /**
@@ -75,7 +103,7 @@ export interface ClaudeCredential {
   lastRefreshedAt: Date | null;
 }
 
-export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
+export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error' | 'revoked';
 
 // ── Verify result ─────────────────────────────────────────────────────────────
 
@@ -314,9 +342,12 @@ export async function getClaudeSecretId(scope: ClaudeScope): Promise<string | nu
 /**
  * Server-side refresh of the Claude OAuth tokens for one secret row.
  *
- * Uses a DB-level optimistic lock on `lastRefreshedAt` so only one caller
+ * Uses a DB-level optimistic lock on `refreshLockedAt` so only one caller
  * refreshes per 60-minute window. Anthropic ROTATES the refresh token on each
- * use — the new refresh token is always persisted.
+ * use — the new refresh token is always persisted. Because of that rotation a
+ * refresh is a state mutation, not an idempotent read: `rotationStartedAt`
+ * records that one is in flight so an attempt whose outcome was never learned
+ * fails closed instead of retrying into a dead token.
  *
  * Must NOT be called from worker processes — server-only. Workers receive only
  * the access_token (via claudeAccessToken on the claim response) and never
@@ -326,14 +357,21 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
   // Atomically claim the refresh lock.
   const [claimed] = await db
     .update(secrets)
-    .set({ lastRefreshedAt: sql`NOW()`, updatedAt: sql`NOW()` })
+    .set({
+      refreshLockedAt: sql`NOW()`,
+      // COALESCE, not NOW(): if an earlier rotation left this set, preserve the
+      // original start time. Overwriting it would erase the only evidence that
+      // the earlier rotation was never resolved.
+      rotationStartedAt: sql`COALESCE(${secrets.rotationStartedAt}, NOW())`,
+      updatedAt: sql`NOW()`,
+    })
     .where(
       and(
         eq(secrets.id, secretId),
         eq(secrets.purpose, PURPOSE),
         or(
-          isNull(secrets.lastRefreshedAt),
-          lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '60 minutes'`),
+          isNull(secrets.refreshLockedAt),
+          lt(secrets.refreshLockedAt, sql`NOW() - INTERVAL '60 minutes'`),
         ),
       ),
     )
@@ -345,6 +383,25 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
       columns: { id: true },
     });
     return exists ? 'locked' : 'no_credential';
+  }
+
+  // We hold the lock — but a rotation marker that predates it means a previous
+  // attempt never reported an outcome. The stored refresh token may already have
+  // been spent, so do not spend it again: mark the credential dead and stop. The
+  // marker is deliberately left in place so every later cycle short-circuits here.
+  if (isRotationLost(claimed.rotationStartedAt)) {
+    console.warn(`[Claude] Refresh abandoned for secret ${secretId}: previous rotation never completed`);
+    await db
+      .update(secrets)
+      .set({
+        tokenExpiresAt: null,
+        healthStatus: 'revoked',
+        lastVerificationError: ROTATION_LOST_ERROR,
+        updatedAt: sql`NOW()`,
+      })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+    await recordCredentialAuthFailure(secretId, ROTATION_LOST_ERROR);
+    return 'revoked';
   }
 
   const blob = decodeBlob(claimed.encryptedValue);
@@ -369,17 +426,30 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
         // Mark healthStatus = 'revoked' so resolveClaudeCredential skips this credential
         // and the claim route falls through to the setup token (serverOauthToken) instead.
         // tokenExpiresAt stays null to signal the zombie state for backward-compat checks.
+        // The outcome is known, so the rotation is resolved, not lost.
         await db
           .update(secrets)
-          .set({ tokenExpiresAt: null, healthStatus: 'revoked', lastVerificationError: detail, updatedAt: sql`NOW()` })
+          .set({
+            tokenExpiresAt: null,
+            healthStatus: 'revoked',
+            lastVerificationError: detail,
+            rotationStartedAt: null,
+            updatedAt: sql`NOW()`,
+          })
           .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
         await recordCredentialAuthFailure(secretId, detail);
       } else {
         // Transient failure (5xx, rate-limit, etc.): shorten the lock so the cron / claim
         // gate can retry after ~15 minutes instead of waiting the full 60-minute window.
+        // The rotation marker is cleared too — the provider answered and refused, so
+        // nothing was rotated, and leaving it set would make the retry look lost.
         await db
           .update(secrets)
-          .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+          .set({
+            refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+            rotationStartedAt: null,
+            updatedAt: sql`NOW()`,
+          })
           .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
       }
       return 'error';
@@ -406,6 +476,10 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
         encryptedValue: encodeBlob({ access_token: newAccessToken, refresh_token: newRefreshToken }),
         tokenExpiresAt,
         lastVerificationError: null,
+        // The rotation resolved successfully: this is the one place a Claude refresh
+        // records a success, and it drops the in-flight marker.
+        lastRefreshedAt: sql`NOW()`,
+        rotationStartedAt: null,
         updatedAt: sql`NOW()`,
       })
       .where(eq(secrets.id, secretId));
@@ -415,10 +489,17 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
     return 'refreshed';
   } catch (err) {
     console.warn(`[Claude] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
-    // Transient network error: shorten the lock so the credential can be retried sooner.
+    // Transient network error: shorten the lock so the credential can be retried
+    // sooner, and clear the rotation marker — a request that failed at the socket
+    // did not get a rotated token issued to it, and keeping the marker would turn
+    // a DNS blip into a permanently dead credential.
     await db
       .update(secrets)
-      .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+      .set({
+        refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+        rotationStartedAt: null,
+        updatedAt: sql`NOW()`,
+      })
       .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
     return 'error';
   }

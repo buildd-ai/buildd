@@ -9,6 +9,9 @@
  *   'locked'         — another refresher holds the DB lock; proceed with existing token
  *   'no_credential'  — lock acquired but credential has no refresh_token (API key type)
  *   'error'          — provider failure; revoke call made for permanent errors (invalid_grant)
+ *   'rotation_lost'  — a prior rotation never completed, so the stored refresh token
+ *                      may already have been consumed and replaced. Terminal: the
+ *                      credential needs reconnecting and MUST NOT be retried.
  */
 
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -16,7 +19,12 @@ import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
 const CLAUDE_TOKEN_URL = 'https://platform.claude.com/v1/oauth/token';
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 
-export type RunnerRefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
+export type RunnerRefreshResult =
+  | 'refreshed'
+  | 'locked'
+  | 'no_credential'
+  | 'error'
+  | 'rotation_lost';
 
 /**
  * Control-plane auth for this call. Pass the runner's resolved config — the key
@@ -68,8 +76,24 @@ export async function runnerRefreshCredential(
     return 'error';
   }
 
-  const lockBody = await lockRes.json() as { locked: boolean; refreshToken?: string | null; expiresAt?: string | null };
+  const lockBody = await lockRes.json() as {
+    locked: boolean;
+    rotationLost?: boolean;
+    refreshToken?: string | null;
+    expiresAt?: string | null;
+  };
   if (!lockBody.locked) {
+    // Distinguish "someone else is refreshing, try later" from "a prior rotation
+    // was lost". The provider rotates the refresh token on every use, so in the
+    // second case the stored token is dead and there is nothing to come back to.
+    if (lockBody.rotationLost) {
+      console.warn(
+        `[runner-refresh] Rotation lost for ${secretId} (${purpose}) — a previous refresh never ` +
+        'completed, so the stored refresh token cannot be reused. The control plane has marked ' +
+        'the credential as needing reconnection; not retrying.',
+      );
+      return 'rotation_lost';
+    }
     return 'locked';
   }
 

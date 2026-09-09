@@ -1,11 +1,12 @@
 /**
  * Unit tests for apps/runner/src/credential-refresh.ts
  *
- * Mocks fetch globally; covers the four observable paths:
+ * Mocks fetch globally; covers the observable paths:
  *   1. lock miss            → 'locked'
  *   2. happy-path refresh   → 'refreshed'
  *   3. invalid_grant (400)  → revoke call made, 'error'
  *   4. transient 5xx        → no revoke call, 'error'
+ *   5. lost rotation        → 'rotation_lost', provider never called
  *
  * Run: bun test apps/runner/__tests__/unit/credential-refresh.test.ts
  */
@@ -264,5 +265,48 @@ describe('auth sourcing', () => {
     await runnerRefreshCredential(SECRET_ID, 'claude_credential');
 
     expect(fetchCalls[0].headers.Authorization).toBe(`Bearer ${API_KEY}`);
+  });
+});
+
+// ── lost rotation ───────────────────────────────────────────────────────────
+//
+// The control plane answers { locked: false, rotationLost: true } when a prior
+// rotation started and never reported an outcome. The provider rotates the
+// refresh token on every use, so the stored one may already be spent — there is
+// nothing to retry, and 'locked' would be the wrong answer because it means
+// "someone else is refreshing, try again later".
+
+describe('lost rotation', () => {
+  test('returns rotation_lost when the control plane reports a lost rotation', async () => {
+    globalThis.fetch = makeFetchMock([{ body: { locked: false, rotationLost: true } }]);
+
+    const result = await runnerRefreshCredential(SECRET_ID, 'codex_credential');
+
+    expect(result).toBe('rotation_lost');
+  });
+
+  test('never calls the provider token endpoint on a lost rotation', async () => {
+    globalThis.fetch = makeFetchMock([{ body: { locked: false, rotationLost: true } }]);
+
+    await runnerRefreshCredential(SECRET_ID, 'codex_credential');
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].url).toBe(`${CONTROL_PLANE}/api/runner/credential-refresh`);
+    expect(fetchCalls.some((c) => c.url.includes('auth.openai.com'))).toBe(false);
+  });
+
+  test('does not post a commit or a revoke on a lost rotation', async () => {
+    globalThis.fetch = makeFetchMock([{ body: { locked: false, rotationLost: true } }]);
+
+    await runnerRefreshCredential(SECRET_ID, 'codex_credential');
+
+    expect(fetchCalls.some((c) => c.body.action === 'commit')).toBe(false);
+    expect(fetchCalls.some((c) => c.body.action === 'revoke')).toBe(false);
+  });
+
+  test('still returns locked when the lock is merely held by someone else', async () => {
+    globalThis.fetch = makeFetchMock([{ body: { locked: false } }]);
+
+    expect(await runnerRefreshCredential(SECRET_ID, 'codex_credential')).toBe('locked');
   });
 });

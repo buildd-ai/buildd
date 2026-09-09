@@ -8,6 +8,12 @@ const mockAuthenticateApiKey = mock(() => Promise.resolve(null as any));
 // Innermost returning mock so tests can control what the UPDATE...RETURNING yields.
 const mockDbUpdateReturning = mock(() => Promise.resolve([]));
 
+// Captured UPDATE ... SET payloads / WHERE predicates, in call order. Needed to
+// assert *which column* carries the refresh lock — a mocked db makes every
+// predicate invisible otherwise.
+const dbUpdateSets: Array<Record<string, unknown>> = [];
+const dbUpdateWheres: unknown[] = [];
+
 // db.query.secrets.findFirst mock (used for commit + revoke + bootstrap)
 const mockDbFindFirst = mock(() => Promise.resolve(null as any));
 
@@ -21,9 +27,15 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@buildd/core/db', () => ({
   db: {
     update: () => ({
-      set: () => ({
-        where: () => ({ returning: mockDbUpdateReturning }),
-      }),
+      set: (payload: any) => {
+        dbUpdateSets.push(payload);
+        return {
+          where: (predicate: any) => {
+            dbUpdateWheres.push(predicate);
+            return { returning: mockDbUpdateReturning };
+          },
+        };
+      },
     }),
     query: {
       secrets: {
@@ -49,6 +61,8 @@ mock.module('@buildd/core/db/schema', () => ({
     id: 'id',
     purpose: 'purpose',
     lastRefreshedAt: 'last_refreshed_at',
+    refreshLockedAt: 'refresh_locked_at',
+    rotationStartedAt: 'rotation_started_at',
     healthStatus: 'health_status',
     teamId: 'team_id',
   },
@@ -120,6 +134,8 @@ describe('POST /api/runner/credential-refresh', () => {
     mockRecordCredentialAuthSuccess.mockReset();
     mockRecordCredentialAuthFailure.mockReset();
     mockNotifyTeam.mockReset();
+    dbUpdateSets.length = 0;
+    dbUpdateWheres.length = 0;
 
     // Default: authenticated runner
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acct-1', teamId: 'team-1', level: 'worker' });
@@ -131,6 +147,8 @@ describe('POST /api/runner/credential-refresh', () => {
       secretId: 'secret-1',
     });
     mockDbUpdateReturning.mockResolvedValue([]);
+    // Default: the credential exists and belongs to the authenticated caller's team.
+    mockDbFindFirst.mockResolvedValue({ id: 'secret-1', teamId: 'team-1' });
   });
 
   // ── auth ───────────────────────────────────────────────────────────────────
@@ -234,6 +252,8 @@ describe('POST /api/runner/credential-refresh', () => {
     it('returns ok:true and calls recordCredentialAuthSuccess on success', async () => {
       const existingBlob = { access_token: 'old-at', refresh_token: 'old-rt' };
       mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1',
+        teamId: 'team-1',
         encryptedValue: `enc:${JSON.stringify(existingBlob)}`,
       });
 
@@ -265,6 +285,8 @@ describe('POST /api/runner/credential-refresh', () => {
     it('merges new tokens into existing blob (preserves extra fields for codex)', async () => {
       const existingBlob = { access_token: 'old-at', refresh_token: 'old-rt', account_id: 'acc1', id_token: 'idt' };
       mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1',
+        teamId: 'team-1',
         encryptedValue: `enc:${JSON.stringify(existingBlob)}`,
       });
 
@@ -290,7 +312,7 @@ describe('POST /api/runner/credential-refresh', () => {
 
   describe('action=revoke', () => {
     it('returns ok:true on success', async () => {
-      mockDbFindFirst.mockResolvedValue({ healthStatus: 'degraded', teamId: 'team-1' });
+      mockDbFindFirst.mockResolvedValue({ id: 'secret-1', healthStatus: 'degraded', teamId: 'team-1' });
       const res = await POST(makeReq({ ...BASE, action: 'revoke' }));
       expect(res.status).toBe(200);
       const data = await res.json();
@@ -298,13 +320,13 @@ describe('POST /api/runner/credential-refresh', () => {
     });
 
     it('calls recordCredentialAuthFailure with secretId and reason', async () => {
-      mockDbFindFirst.mockResolvedValue({ healthStatus: 'healthy', teamId: 'team-1' });
+      mockDbFindFirst.mockResolvedValue({ id: 'secret-1', healthStatus: 'healthy', teamId: 'team-1' });
       await POST(makeReq({ ...BASE, action: 'revoke', reason: 'HTTP 401' }));
       expect(mockRecordCredentialAuthFailure).toHaveBeenCalledWith('secret-1', 'HTTP 401');
     });
 
     it('fires notifyTeam on first revocation (was not already revoked)', async () => {
-      mockDbFindFirst.mockResolvedValue({ healthStatus: 'healthy', teamId: 'team-1' });
+      mockDbFindFirst.mockResolvedValue({ id: 'secret-1', healthStatus: 'healthy', teamId: 'team-1' });
       await POST(makeReq({ ...BASE, action: 'revoke' }));
       expect(mockNotifyTeam).toHaveBeenCalledTimes(1);
       expect(mockNotifyTeam.mock.calls[0][0]).toBe('team-1');
@@ -312,7 +334,7 @@ describe('POST /api/runner/credential-refresh', () => {
     });
 
     it('does NOT fire notifyTeam when already revoked', async () => {
-      mockDbFindFirst.mockResolvedValue({ healthStatus: 'revoked', teamId: 'team-1' });
+      mockDbFindFirst.mockResolvedValue({ id: 'secret-1', healthStatus: 'revoked', teamId: 'team-1' });
       await POST(makeReq({ ...BASE, action: 'revoke' }));
       expect(mockNotifyTeam).not.toHaveBeenCalled();
     });
@@ -395,6 +417,233 @@ describe('POST /api/runner/credential-refresh', () => {
       expect(res.status).toBe(400);
       const data = await res.json();
       expect(data.error).toContain('runnerId');
+    });
+  });
+
+
+  // ── tenancy scoping ────────────────────────────────────────────────────────
+  //
+  // Invariant: every action on a credential must verify the credential belongs to
+  // the caller's team. A valid API key is authority over that team's credentials,
+  // not over an arbitrary secret id. `bootstrap` already enforced this through the
+  // credential_leases check; lock/commit/revoke did not.
+
+  describe('tenancy scoping', () => {
+    for (const action of ['lock', 'commit', 'revoke'] as const) {
+      it(`returns 403 for action=${action} when the credential belongs to another team`, async () => {
+        mockDbFindFirst.mockResolvedValue({
+          id: 'secret-1',
+          teamId: 'team-OTHER',
+          healthStatus: 'healthy',
+          encryptedValue: 'enc:{"access_token":"at","refresh_token":"rt"}',
+        });
+        mockDbUpdateReturning.mockResolvedValue([{
+          encryptedValue: 'enc:{"access_token":"at","refresh_token":"rt"}',
+          tokenExpiresAt: null,
+        }]);
+
+        const res = await POST(makeReq({
+          ...BASE, action, accessToken: 'new-at', refreshToken: 'new-rt',
+        }));
+
+        expect(res.status).toBe(403);
+        const data = await res.json();
+        expect(data.error).toBe('Forbidden');
+      });
+
+      it(`writes nothing and returns no token for action=${action} across teams`, async () => {
+        mockDbFindFirst.mockResolvedValue({
+          id: 'secret-1',
+          teamId: 'team-OTHER',
+          healthStatus: 'healthy',
+          encryptedValue: 'enc:{"access_token":"at","refresh_token":"other-team-rt"}',
+        });
+
+        const res = await POST(makeReq({
+          ...BASE, action, accessToken: 'new-at', refreshToken: 'new-rt',
+        }));
+
+        const bodyText = await res.text();
+        expect(bodyText).not.toContain('other-team-rt');
+        // No UPDATE may be issued for a credential the caller does not own.
+        expect(dbUpdateSets).toHaveLength(0);
+        expect(mockRecordCredentialAuthFailure).not.toHaveBeenCalled();
+        expect(mockRecordCredentialAuthSuccess).not.toHaveBeenCalled();
+      });
+
+      it(`returns 404 for action=${action} when the credential does not exist`, async () => {
+        mockDbFindFirst.mockResolvedValue(null);
+        const res = await POST(makeReq({
+          ...BASE, action, accessToken: 'new-at', refreshToken: 'new-rt',
+        }));
+        expect(res.status).toBe(404);
+        expect(dbUpdateSets).toHaveLength(0);
+      });
+    }
+  });
+
+  // ── refresh lock lives on refreshLockedAt, not lastRefreshedAt ─────────────
+
+  describe('refresh lock column', () => {
+    it('takes the lock on refreshLockedAt and does not stamp lastRefreshedAt', async () => {
+      mockDbUpdateReturning.mockResolvedValue([{
+        encryptedValue: 'enc:{"access_token":"at","refresh_token":"rt"}',
+        tokenExpiresAt: null,
+      }]);
+
+      await POST(makeReq({ ...BASE, action: 'lock' }));
+
+      const lockSet = dbUpdateSets[0]!;
+      expect('refreshLockedAt' in lockSet).toBe(true);
+      // A lock is an attempt, not a success — lastRefreshedAt must stay untouched.
+      expect('lastRefreshedAt' in lockSet).toBe(false);
+    });
+
+    it('gates the lock UPDATE on refresh_locked_at, never on last_refreshed_at', async () => {
+      mockDbUpdateReturning.mockResolvedValue([{
+        encryptedValue: 'enc:{"access_token":"at","refresh_token":"rt"}',
+        tokenExpiresAt: null,
+      }]);
+
+      await POST(makeReq({ ...BASE, action: 'lock' }));
+
+      const predicate = JSON.stringify(dbUpdateWheres[0]);
+      expect(predicate).toContain('refresh_locked_at');
+      expect(predicate).not.toContain('last_refreshed_at');
+      expect(predicate).toContain('60 minutes');
+    });
+
+    it('stamps lastRefreshedAt on commit — the only place a success is recorded', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1',
+        teamId: 'team-1',
+        encryptedValue: 'enc:{"access_token":"old-at","refresh_token":"old-rt"}',
+      });
+
+      await POST(makeReq({
+        ...BASE, action: 'commit', accessToken: 'new-at', refreshToken: 'new-rt',
+      }));
+
+      const commitSet = dbUpdateSets[0]!;
+      expect('lastRefreshedAt' in commitSet).toBe(true);
+    });
+  });
+
+  // ── lost rotation ──────────────────────────────────────────────────────────
+  //
+  // The provider rotates the refresh token on every use, so a refresh is a state
+  // mutation. If a rotation started and we never learned its outcome, the stored
+  // refresh token may already have been consumed and replaced by one we lost —
+  // permanently dead. Handing it out again is a guaranteed invalid_grant, so the
+  // route must fail closed rather than retry into it.
+
+  describe('lost rotation', () => {
+    const STALE = new Date(Date.now() - 30 * 60 * 1000);   // 30 min — well past the window
+    const IN_FLIGHT = new Date(Date.now() - 60 * 1000);    // 1 min — a live rotation
+
+    it('returns { locked: false, rotationLost: true } when a prior rotation never completed', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'healthy', rotationStartedAt: STALE,
+      });
+
+      const res = await POST(makeReq({ ...BASE, action: 'lock' }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.locked).toBe(false);
+      expect(data.rotationLost).toBe(true);
+    });
+
+    it('does not hand out the stored refresh token when a rotation was lost', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'healthy', rotationStartedAt: STALE,
+      });
+      mockDbUpdateReturning.mockResolvedValue([{
+        encryptedValue: 'enc:{"access_token":"at","refresh_token":"dead-rt"}',
+        tokenExpiresAt: null,
+      }]);
+
+      const res = await POST(makeReq({ ...BASE, action: 'lock' }));
+      const bodyText = await res.text();
+      expect(bodyText).not.toContain('dead-rt');
+    });
+
+    it('marks the credential revoked and records why', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'degraded', rotationStartedAt: STALE,
+      });
+
+      await POST(makeReq({ ...BASE, action: 'lock' }));
+
+      const set = dbUpdateSets[0]!;
+      expect(set.healthStatus).toBe('revoked');
+      expect(typeof set.lastVerificationError).toBe('string');
+      expect(set.lastVerificationError as string).toContain('rotation');
+    });
+
+    it('notifies the team exactly once — not again on the next attempt', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'healthy', rotationStartedAt: STALE,
+      });
+      await POST(makeReq({ ...BASE, action: 'lock' }));
+      expect(mockNotifyTeam).toHaveBeenCalledTimes(1);
+      expect(mockNotifyTeam.mock.calls[0][0]).toBe('team-1');
+
+      // Second attempt: the credential is already revoked, so no second alert.
+      mockNotifyTeam.mockClear();
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'revoked', rotationStartedAt: STALE,
+      });
+      await POST(makeReq({ ...BASE, action: 'lock' }));
+      expect(mockNotifyTeam).not.toHaveBeenCalled();
+    });
+
+    it('still returns rotationLost on a repeat attempt so the runner never retries', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'revoked', rotationStartedAt: STALE,
+      });
+      const res = await POST(makeReq({ ...BASE, action: 'lock' }));
+      const data = await res.json();
+      expect(data.rotationLost).toBe(true);
+    });
+
+    it('treats a recent rotationStartedAt as in-flight, not lost', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1', teamId: 'team-1', healthStatus: 'healthy', rotationStartedAt: IN_FLIGHT,
+      });
+      mockDbUpdateReturning.mockResolvedValue([]); // lock held by the in-flight caller
+
+      const res = await POST(makeReq({ ...BASE, action: 'lock' }));
+      const data = await res.json();
+      expect(data.locked).toBe(false);
+      expect(data.rotationLost).toBeUndefined();
+      expect(mockNotifyTeam).not.toHaveBeenCalled();
+    });
+
+    it('preserves an existing rotationStartedAt when taking the lock', async () => {
+      // COALESCE, not NOW(): overwriting the marker on every lock would erase the
+      // only evidence that an earlier rotation was never resolved.
+      mockDbUpdateReturning.mockResolvedValue([{
+        encryptedValue: 'enc:{"access_token":"at","refresh_token":"rt"}',
+        tokenExpiresAt: null,
+      }]);
+
+      await POST(makeReq({ ...BASE, action: 'lock' }));
+
+      expect(JSON.stringify(dbUpdateSets[0]!.rotationStartedAt)).toContain('COALESCE');
+    });
+
+    it('clears rotationStartedAt on a successful commit', async () => {
+      mockDbFindFirst.mockResolvedValue({
+        id: 'secret-1',
+        teamId: 'team-1',
+        encryptedValue: 'enc:{"access_token":"old-at","refresh_token":"old-rt"}',
+      });
+
+      await POST(makeReq({
+        ...BASE, action: 'commit', accessToken: 'new-at', refreshToken: 'new-rt',
+      }));
+
+      expect(dbUpdateSets[0]!.rotationStartedAt).toBeNull();
     });
   });
 

@@ -32,6 +32,11 @@ interface ManagedCredential {
   // Credential cache — populated on lease acquire via bootstrap pull; memory only, never disk.
   accessToken: string | null;
   refreshToken: string | null;
+  // Set when the control plane reports that a prior rotation was lost. Terminal:
+  // the stored refresh token is dead, so re-asking only burns another
+  // invalid_grant against the provider. Cleared only by a fresh lease acquire,
+  // which re-bootstraps from whatever the DB holds after a reconnect.
+  refreshDisabled?: boolean;
 }
 
 type CredentialEntry = {
@@ -291,6 +296,10 @@ class CredentialBroker {
     if (this.shuttingDown) return;
     const now = Date.now();
     for (const [secretId, cred] of this.managed) {
+      // A lost rotation is terminal — nothing this runner (or any other) can do
+      // will refresh it, so stop asking. The lease is kept so another runner does
+      // not pick the credential up and repeat the same dead attempt.
+      if (cred.refreshDisabled) continue;
       const expMs = cred.expiresAt ? new Date(cred.expiresAt).getTime() : null;
       if (expMs !== null && expMs - now > TWO_HOURS_MS) continue;
       const result = await runnerRefreshCredential(secretId, cred.purpose, {
@@ -298,6 +307,14 @@ class CredentialBroker {
         baseUrl: this.baseUrl,
       });
       console.log(`[broker] refresh ${secretId} purpose=${cred.purpose} → ${result}`);
+      if (result === 'rotation_lost') {
+        cred.refreshDisabled = true;
+        console.warn(
+          `[broker] refresh permanently disabled for ${secretId} (${cred.purpose}) — a prior ` +
+          'rotation was lost and the credential must be reconnected before it can refresh again.',
+        );
+        continue;
+      }
       if (result === 'refreshed') {
         // Optimistically extend so we don't re-refresh until the next claim response corrects it.
         cred.expiresAt = new Date(now + OPTIMISTIC_EXPIRY_AFTER_REFRESH_MS).toISOString();

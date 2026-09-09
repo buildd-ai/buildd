@@ -34,6 +34,7 @@ mock.module('@buildd/core/db/schema', () => ({
     id: 'id', teamId: 'team_id', accountId: 'account_id', workspaceId: 'workspace_id',
     purpose: 'purpose', encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at', lastRefreshedAt: 'last_refreshed_at',
+    refreshLockedAt: 'refresh_locked_at', rotationStartedAt: 'rotation_started_at',
     lastVerifiedAt: 'last_verified_at', lastVerificationError: 'last_verification_error',
     healthStatus: 'health_status', updatedAt: 'updated_at',
   },
@@ -711,5 +712,144 @@ describe('resolveAnthropicAuth', () => {
       row({ purpose: 'claude_credential', encryptedValue: 'enc:not-json' }),
     ]));
     expect(await resolveAnthropicAuth({ teamId: 'team-1' })).toBeNull();
+  });
+});
+
+// ── refresh lock / lost rotation ──────────────────────────────────────────────
+//
+// The refresh lock and "a refresh actually succeeded" are different facts and now
+// live in different columns (refreshLockedAt / lastRefreshedAt). A rotation whose
+// outcome we never learned gets its own marker, rotationStartedAt: Anthropic also
+// rotates the refresh token on each use, so a lost rotation kills the stored one.
+
+describe('refreshClaudeCredential — lock column and lost rotation', () => {
+  let sets: Array<Record<string, unknown>>;
+  let wheres: unknown[];
+
+  function wireUpdates(lockRow: Record<string, unknown> | null) {
+    sets = [];
+    wheres = [];
+    let calls = 0;
+    mockUpdate.mockImplementation(() => {
+      calls++;
+      const isLock = calls === 1;
+      return {
+        set: mock((payload: Record<string, unknown>) => {
+          sets.push(payload);
+          return {
+            where: mock((predicate: unknown) => {
+              wheres.push(predicate);
+              return {
+                returning: mock(() => Promise.resolve(isLock && lockRow ? [lockRow] : [])),
+              };
+            }),
+          };
+        }),
+      };
+    });
+  }
+
+  const claudeBlob = (access: string, refresh: string) =>
+    `enc:${JSON.stringify({ access_token: access, refresh_token: refresh })}`;
+  const STALE_ROTATION = new Date(Date.now() - 30 * 60 * 1000);
+
+  const okRefresh = () => mock(() => Promise.resolve({
+    ok: true,
+    json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+  })) as any;
+
+  beforeEach(() => {
+    mockUpdate.mockReset();
+    mockFindFirst.mockReset();
+  });
+
+  it('claims the refresh lock on refreshLockedAt, not lastRefreshedAt', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = okRefresh();
+
+    await refreshClaudeCredential('s-1');
+
+    expect('refreshLockedAt' in sets[0]!).toBe(true);
+    expect('lastRefreshedAt' in sets[0]!).toBe(false);
+    const predicate = JSON.stringify(wheres[0]);
+    expect(predicate).toContain('refresh_locked_at');
+    expect(predicate).not.toContain('last_refreshed_at');
+  });
+
+  it('preserves an existing rotationStartedAt when claiming the lock', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = okRefresh();
+
+    await refreshClaudeCredential('s-1');
+
+    expect(JSON.stringify(sets[0]!.rotationStartedAt)).toContain('COALESCE');
+  });
+
+  it('stamps lastRefreshedAt and clears rotationStartedAt on a successful refresh', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = okRefresh();
+
+    expect(await refreshClaudeCredential('s-1')).toBe('refreshed');
+    const commit = sets[1]!;
+    expect('lastRefreshedAt' in commit).toBe(true);
+    expect(commit.rotationStartedAt).toBeNull();
+  });
+
+  it('returns revoked without calling the provider when a prior rotation was lost', async () => {
+    wireUpdates({
+      id: 's-1',
+      encryptedValue: claudeBlob('at', 'dead-rt'),
+      rotationStartedAt: STALE_ROTATION,
+    });
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+    globalThis.fetch = fetchMock as any;
+
+    expect(await refreshClaudeCredential('s-1')).toBe('revoked');
+    expect(fetchMock).not.toHaveBeenCalled();
+    const update = sets[1]!;
+    expect(update.healthStatus).toBe('revoked');
+    expect(update.lastVerificationError as string).toContain('rotation');
+    expect('rotationStartedAt' in update).toBe(false);
+  });
+
+  it('treats a fresh rotationStartedAt as in-flight and proceeds with the refresh', async () => {
+    wireUpdates({
+      id: 's-1',
+      encryptedValue: claudeBlob('at', 'rt'),
+      rotationStartedAt: new Date(Date.now() - 30 * 1000),
+    });
+    globalThis.fetch = okRefresh();
+
+    expect(await refreshClaudeCredential('s-1')).toBe('refreshed');
+  });
+
+  it('walks back refreshLockedAt (not lastRefreshedAt) and clears the marker on a transient 5xx', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) })) as any;
+
+    expect(await refreshClaudeCredential('s-1')).toBe('error');
+    const recovery = sets[1]!;
+    expect('refreshLockedAt' in recovery).toBe(true);
+    expect('lastRefreshedAt' in recovery).toBe(false);
+    expect(recovery.rotationStartedAt).toBeNull();
+  });
+
+  it('clears rotationStartedAt when fetch throws', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = mock(() => Promise.reject(new Error('boom'))) as any;
+
+    expect(await refreshClaudeCredential('s-1')).toBe('error');
+    expect(sets[1]!.rotationStartedAt).toBeNull();
+  });
+
+  it('clears the rotation marker on permanent revocation without touching lastRefreshedAt', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) })) as any;
+
+    expect(await refreshClaudeCredential('s-1')).toBe('error');
+    const update = sets[1]!;
+    expect(update.healthStatus).toBe('revoked');
+    expect(update.rotationStartedAt).toBeNull();
+    expect('lastRefreshedAt' in update).toBe(false);
   });
 });

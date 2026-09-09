@@ -1858,10 +1858,29 @@ export const secrets = pgTable('secrets', {
   label: text('label'),
   encryptedValue: text('encrypted_value').notNull(),
   // Token lifecycle (set only for expiring/refreshing credentials: codex_credential, oauth_token).
-  // tokenExpiresAt enables efficient "expiring soon" cron queries; lastRefreshedAt doubles as
-  // the optimistic-lock column for the refresh-rotation pattern. See docs/credentials-architecture.md.
+  // tokenExpiresAt enables efficient "expiring soon" cron queries.
+  // See docs/credentials-architecture.md.
   tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  // Last time a refresh actually SUCCEEDED — this is what the UI shows as
+  // "Last refreshed". For claude_credential / codex_credential it is written only
+  // on a successful commit; the refresh lock lives in refreshLockedAt below.
+  // (mcp_connector_credential still uses this column as its own lock — see
+  // lib/mcp-connector-refresh.ts. Converging the two is a follow-up.)
   lastRefreshedAt: timestamp('last_refreshed_at', { withTimezone: true }),
+  // Refresh lock. Stamped by the atomic UPDATE that claims the right to call the
+  // provider's token endpoint, so only one caller refreshes per 60-minute window.
+  // Split out from lastRefreshedAt because one column cannot be both: a lock is
+  // stamped on every *attempt*, which made a credential that fails every cycle
+  // indistinguishable from one that is working.
+  refreshLockedAt: timestamp('refresh_locked_at', { withTimezone: true }),
+  // Set when a rotation goes in flight, cleared the moment its outcome is known
+  // (success, revocation, or a provider error we actually received). A value still
+  // present long afterwards therefore means we never learned the outcome — the
+  // provider may have consumed the stored refresh token and issued a replacement
+  // that we lost. Providers that rotate the refresh token on every use kill the
+  // stored token in that case, so retrying is a guaranteed invalid_grant; the
+  // refresh paths fail closed on a stale value instead of retrying into it.
+  rotationStartedAt: timestamp('rotation_started_at', { withTimezone: true }),
   // Verification lifecycle (codex_credential only): the last time the credential was
   // smoke-tested against the real provider API, and the error string if it failed.
   lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }),
@@ -1870,10 +1889,10 @@ export const secrets = pgTable('secrets', {
   // expired (or is about to), cleared by the reconnect/refresh success paths so a
   // later expiry is a new episode. Read by /api/cron/connector-block-notify.
   expiryNotifiedAt: timestamp('expiry_notified_at', { withTimezone: true }),
-  // Last time a refresh actually SUCCEEDED. Distinct from lastRefreshedAt, which
-  // the optimistic lock stamps on every *attempt* before the token endpoint is
-  // called — so lastRefreshedAt alone cannot tell "refresh is working" from
-  // "refresh is being attempted and failing every cycle".
+  // mcp_connector_credential only: last time a refresh actually SUCCEEDED, as
+  // distinct from lastRefreshedAt, which that path's optimistic lock still stamps
+  // on every *attempt*. The claude_credential / codex_credential paths solve the
+  // same problem with refreshLockedAt instead and leave this column NULL.
   lastRefreshSucceededAt: timestamp('last_refresh_succeeded_at', { withTimezone: true }),
   // Credential health — set by spawn-time auth failures and active verification.
   // healthy: last use/verify succeeded; degraded: ≥1 auth failure, < threshold;

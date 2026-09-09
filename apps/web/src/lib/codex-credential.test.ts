@@ -29,6 +29,8 @@ mock.module('@buildd/core/db/schema', () => ({
     encryptedValue: 'encrypted_value',
     tokenExpiresAt: 'token_expires_at',
     lastRefreshedAt: 'last_refreshed_at',
+    refreshLockedAt: 'refresh_locked_at',
+    rotationStartedAt: 'rotation_started_at',
     lastVerifiedAt: 'last_verified_at',
     lastVerificationError: 'last_verification_error',
     healthStatus: 'health_status',
@@ -68,6 +70,7 @@ import {
   getCodexStatus,
   normalizeCodexAuthJson,
   verifyCodexCredential,
+  writeBackCodexTokens,
 } from './codex-credential';
 
 // helper: build an encrypted blob the way the lib does (encrypt = `enc:${json}`)
@@ -785,5 +788,230 @@ describe('verifyCodexCredential', () => {
     expect(logs).not.toContain('SECRET_AT');
     expect(logs).not.toContain('SECRET_RT');
     logSpy.mockRestore(); errSpy.mockRestore(); warnSpy.mockRestore();
+  });
+});
+
+// ── refresh lock / lost rotation ──────────────────────────────────────────────
+//
+// Two separable concerns that used to share one column:
+//   * the 60-minute refresh lock  → secrets.refreshLockedAt
+//   * "a refresh actually worked"  → secrets.lastRefreshedAt
+// and one that had no column at all: a rotation whose outcome we never learned.
+// OpenAI rotates the refresh token on every use, so that case leaves the stored
+// token permanently dead — retrying it is a guaranteed invalid_grant.
+
+describe('refreshCodexCredential — lock column and lost rotation', () => {
+  let originalFetch: typeof globalThis.fetch;
+  let sets: Array<Record<string, unknown>>;
+  let wheres: unknown[];
+
+  // Wire db.update so every SET payload and WHERE predicate is observable, and
+  // the first UPDATE (the lock claim) returns `lockRow`.
+  function wireUpdates(lockRow: Record<string, unknown> | null) {
+    sets = [];
+    wheres = [];
+    let calls = 0;
+    mockDbUpdate.mockImplementation(() => {
+      calls++;
+      const isLock = calls === 1;
+      return {
+        set: mock((payload: Record<string, unknown>) => {
+          sets.push(payload);
+          return {
+            where: mock((predicate: unknown) => {
+              wheres.push(predicate);
+              return {
+                returning: mock(() => Promise.resolve(isLock && lockRow ? [lockRow] : [])),
+              };
+            }),
+          };
+        }),
+      };
+    });
+  }
+
+  const STALE_ROTATION = new Date(Date.now() - 30 * 60 * 1000);
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+    process.env.CODEX_OAUTH_CLIENT_ID = 'codex-client-test';
+    mockDbUpdate.mockReset();
+    mockDbFindFirst.mockReset();
+    mockDbFindMany.mockReset();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env.CODEX_OAUTH_CLIENT_ID;
+  });
+
+  it('claims the refresh lock on refreshLockedAt, not lastRefreshedAt', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    await refreshCodexCredential('s-1');
+
+    expect('refreshLockedAt' in sets[0]!).toBe(true);
+    // A lock is stamped on every attempt; lastRefreshedAt must mean "it worked".
+    expect('lastRefreshedAt' in sets[0]!).toBe(false);
+    const predicate = JSON.stringify(wheres[0]);
+    expect(predicate).toContain('refresh_locked_at');
+    expect(predicate).not.toContain('last_refreshed_at');
+  });
+
+  it('preserves an existing rotationStartedAt when claiming the lock', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    await refreshCodexCredential('s-1');
+
+    expect(JSON.stringify(sets[0]!.rotationStartedAt)).toContain('COALESCE');
+  });
+
+  it('stamps lastRefreshedAt and clears rotationStartedAt on a successful refresh', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    const result = await refreshCodexCredential('s-1');
+
+    expect(result).toBe('refreshed');
+    const commit = sets[1]!;
+    expect('lastRefreshedAt' in commit).toBe(true);
+    expect(commit.rotationStartedAt).toBeNull();
+  });
+
+  it('returns revoked without calling the provider when a prior rotation was lost', async () => {
+    // The lock claim comes back carrying a rotation marker from an attempt that
+    // never resolved: the stored refresh token may already have been consumed.
+    wireUpdates({
+      id: 's-1',
+      encryptedValue: blobWithIdToken('at', 'dead-rt', 'acc'),
+      rotationStartedAt: STALE_ROTATION,
+    });
+    const fetchMock = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) }));
+    globalThis.fetch = fetchMock as any;
+
+    const result = await refreshCodexCredential('s-1');
+
+    expect(result).toBe('revoked');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('marks a lost rotation revoked and keeps the marker so retries stay closed', async () => {
+    wireUpdates({
+      id: 's-1',
+      encryptedValue: blobWithIdToken('at', 'dead-rt', 'acc'),
+      rotationStartedAt: STALE_ROTATION,
+    });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: true, json: () => Promise.resolve({}) })) as any;
+
+    await refreshCodexCredential('s-1');
+
+    const update = sets[1]!;
+    expect(update.healthStatus).toBe('revoked');
+    expect(update.lastVerificationError as string).toContain('rotation');
+    // Clearing the marker would let the next cycle hand the dead token out again.
+    expect('rotationStartedAt' in update).toBe(false);
+  });
+
+  it('treats a fresh rotationStartedAt as in-flight and proceeds with the refresh', async () => {
+    wireUpdates({
+      id: 's-1',
+      encryptedValue: blobWithIdToken('at', 'rt', 'acc'),
+      rotationStartedAt: new Date(Date.now() - 30 * 1000),
+    });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    expect(await refreshCodexCredential('s-1')).toBe('refreshed');
+  });
+
+  it('clears rotationStartedAt on a transient 5xx so the retry is not read as lost', async () => {
+    // The provider answered — it just failed. Nothing was rotated, so the retry
+    // in ~15 minutes must not trip the lost-rotation guard.
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) })) as any;
+
+    expect(await refreshCodexCredential('s-1')).toBe('error');
+    const recovery = sets[1]!;
+    expect(recovery.rotationStartedAt).toBeNull();
+    // The lock walk-back moves refreshLockedAt, never lastRefreshedAt.
+    expect('refreshLockedAt' in recovery).toBe(true);
+    expect('lastRefreshedAt' in recovery).toBe(false);
+  });
+
+  it('clears rotationStartedAt when fetch throws', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.reject(new Error('boom'))) as any;
+
+    expect(await refreshCodexCredential('s-1')).toBe('error');
+    expect(sets[1]!.rotationStartedAt).toBeNull();
+  });
+
+  it('releases the lock on refreshLockedAt on permanent revocation, preserving lastRefreshedAt', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: false, status: 400,
+      json: () => Promise.resolve({ error: 'invalid_grant' }),
+    })) as any;
+
+    expect(await refreshCodexCredential('s-1')).toBe('revoked');
+    const update = sets[1]!;
+    expect(update.refreshLockedAt).toBeNull();
+    // The last real success must survive — it is what the UI shows the operator.
+    expect('lastRefreshedAt' in update).toBe(false);
+    expect(update.rotationStartedAt).toBeNull();
+  });
+});
+
+describe('writeBackCodexTokens — rotation marker', () => {
+  beforeEach(() => {
+    mockDbUpdate.mockReset();
+    mockDbFindMany.mockReset();
+  });
+
+  it('records the success and clears rotationStartedAt', async () => {
+    mockDbFindMany.mockResolvedValue([
+      { id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc'), accountId: null, workspaceId: null },
+    ]);
+    const sets: Array<Record<string, unknown>> = [];
+    const wheres: unknown[] = [];
+    mockDbUpdate.mockImplementation(() => ({
+      set: mock((payload: Record<string, unknown>) => {
+        sets.push(payload);
+        return {
+          where: mock((predicate: unknown) => {
+            wheres.push(predicate);
+            return { returning: mock(() => Promise.resolve([{ id: 's-1' }])) };
+          }),
+        };
+      }),
+    }));
+
+    const ok = await writeBackCodexTokens(
+      { teamId: 't-1' },
+      { accessToken: 'new-at', refreshToken: 'new-rt', expiresIn: 3600 },
+    );
+
+    expect(ok).toBe(true);
+    // A write-back IS a completed rotation: it is a success, and it resolves any
+    // in-flight marker.
+    expect('lastRefreshedAt' in sets[0]!).toBe(true);
+    expect(sets[0]!.rotationStartedAt).toBeNull();
+    // Its 30-second dedup window is not the refresh lock — it guards against two
+    // workers writing back the same session's tokens, so it stays on the success
+    // column rather than competing for refreshLockedAt.
+    expect(JSON.stringify(wheres[0])).toContain('30 seconds');
   });
 });

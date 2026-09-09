@@ -7,6 +7,34 @@ import { recordCredentialAuthSuccess, recordCredentialAuthFailure } from './cred
 const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 const PURPOSE = 'codex_credential' as const;
 
+/**
+ * How long a rotation may stay "in flight" before we treat it as lost.
+ *
+ * `secrets.rotationStartedAt` is stamped when a rotation begins and cleared as
+ * soon as its outcome is known — success, revocation, or a provider error we
+ * actually received. Still set after this long means we never learned the
+ * outcome (crash, kill, timeout), so OpenAI may have consumed the stored refresh
+ * token and issued a replacement that never reached us. OpenAI rotates the
+ * refresh token on every use, so the stored one is then permanently dead and
+ * every later attempt is a guaranteed invalid_grant.
+ *
+ * Deliberately duplicated (not shared) with lib/claude-credential.ts and
+ * api/runner/credential-refresh/route.ts so neither module has to import the
+ * other; keep the three in sync.
+ */
+const ROTATION_LOST_AFTER_MS = 10 * 60 * 1000; // 10 minutes
+
+const ROTATION_LOST_ERROR =
+  'A previous token rotation never completed, so the stored refresh token may already ' +
+  'have been consumed and replaced. It cannot be used again — reconnect ChatGPT in ' +
+  'Settings → Credentials.';
+
+/** True when a rotation marker is old enough that its rotation must be considered lost. */
+function isRotationLost(rotationStartedAt: Date | string | null | undefined): boolean {
+  if (!rotationStartedAt) return false;
+  return Date.now() - new Date(rotationStartedAt).getTime() > ROTATION_LOST_AFTER_MS;
+}
+
 export interface CodexAuthJson {
   /** OAuth fields (required for OAuth credentials) */
   access_token?: string;
@@ -357,25 +385,35 @@ export type RefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error' |
 /**
  * Refresh the Codex OAuth tokens for one secret row (identified by id).
  *
- * Uses a DB-level optimistic lock on `lastRefreshedAt` so only one caller
+ * Uses a DB-level optimistic lock on `refreshLockedAt` so only one caller
  * refreshes at a time. OpenAI ROTATES the refresh token on each use — the new
  * refresh token is always persisted, even if it looks identical to the old one.
+ * Because of that rotation, a refresh is a state mutation, not an idempotent
+ * read: `rotationStartedAt` records that one is in flight so an attempt whose
+ * outcome was never learned fails closed instead of retrying into invalid_grant.
  *
  * Never logs token values.
  */
 export async function refreshCodexCredential(secretId: string): Promise<RefreshResult> {
-  // Atomically claim refresh rights: only proceed if last_refreshed_at is NULL
+  // Atomically claim refresh rights: only proceed if refresh_locked_at is NULL
   // or older than the lock window. Concurrent callers get nothing back.
   const [claimed] = await db
     .update(secrets)
-    .set({ lastRefreshedAt: sql`NOW()`, updatedAt: sql`NOW()` })
+    .set({
+      refreshLockedAt: sql`NOW()`,
+      // COALESCE, not NOW(): if an earlier rotation left this set, preserve the
+      // original start time. Overwriting it would erase the only evidence that
+      // the earlier rotation was never resolved.
+      rotationStartedAt: sql`COALESCE(${secrets.rotationStartedAt}, NOW())`,
+      updatedAt: sql`NOW()`,
+    })
     .where(
       and(
         eq(secrets.id, secretId),
         eq(secrets.purpose, PURPOSE),
         or(
-          isNull(secrets.lastRefreshedAt),
-          lt(secrets.lastRefreshedAt, sql`NOW() - INTERVAL '60 minutes'`),
+          isNull(secrets.refreshLockedAt),
+          lt(secrets.refreshLockedAt, sql`NOW() - INTERVAL '60 minutes'`),
         ),
       ),
     )
@@ -389,7 +427,27 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     return exists ? 'locked' : 'no_credential';
   }
 
-  // We hold the lock. Decrypt the stored blob.
+  // We hold the lock — but a rotation marker that predates it means a previous
+  // attempt never reported an outcome. The stored refresh token may already have
+  // been spent, so do not spend it again: mark the credential dead and stop.
+  // The marker is deliberately left in place so every later cycle short-circuits
+  // here rather than handing the dead token to the provider.
+  if (isRotationLost(claimed.rotationStartedAt)) {
+    console.warn(`[Codex] Refresh abandoned for secret ${secretId}: previous rotation never completed`);
+    await db
+      .update(secrets)
+      .set({
+        tokenExpiresAt: null,
+        healthStatus: 'revoked',
+        lastVerificationError: ROTATION_LOST_ERROR,
+        updatedAt: sql`NOW()`,
+      })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+    await recordCredentialAuthFailure(secretId, ROTATION_LOST_ERROR);
+    return 'revoked';
+  }
+
+  // Decrypt the stored blob.
   const blob = decodeBlob(claimed.encryptedValue);
   const currentRefreshToken = blob.refresh_token;
   // API key credentials have no refresh_token — nothing to refresh via OAuth.
@@ -420,11 +478,20 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
       if (res.status === 400 || res.status === 401) {
         // 400/401 = permanent revocation (invalid_grant or session terminated by OpenAI).
         // Mark healthStatus='revoked' immediately so resolveCodexCredential skips this
-        // credential and the claim route fails fast. Reset lastRefreshedAt so the cron
-        // does not hold a 60-minute lock on a dead credential.
+        // credential and the claim route fails fast. Release the lock (refreshLockedAt)
+        // so the cron does not hold a 60-minute lock on a dead credential; lastRefreshedAt
+        // is left alone because it now records the last refresh that actually worked.
+        // The outcome is known, so the rotation is resolved, not lost.
         await db
           .update(secrets)
-          .set({ tokenExpiresAt: null, healthStatus: 'revoked', lastVerificationError: detail.slice(0, 500), lastRefreshedAt: null, updatedAt: sql`NOW()` })
+          .set({
+            tokenExpiresAt: null,
+            healthStatus: 'revoked',
+            lastVerificationError: detail.slice(0, 500),
+            refreshLockedAt: null,
+            rotationStartedAt: null,
+            updatedAt: sql`NOW()`,
+          })
           .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
         await recordCredentialAuthFailure(secretId, detail);
         return 'revoked';
@@ -434,9 +501,17 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
       // gate can retry after ~15 minutes instead of waiting the full 60-minute window.
       // The lock was stamped NOW() before the HTTP call; walking it back 45 minutes means
       // the lock reopens at NOW() + 15 minutes.
+      //
+      // The rotation marker is cleared too: the provider answered and refused, so
+      // nothing was rotated. Leaving it set would make the retry 15 minutes from
+      // now look like a lost rotation and kill a credential over a 5xx.
       await db
         .update(secrets)
-        .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+        .set({
+          refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+          rotationStartedAt: null,
+          updatedAt: sql`NOW()`,
+        })
         .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
       return 'error';
     }
@@ -468,6 +543,10 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
           id_token: newIdToken,
         }),
         tokenExpiresAt,
+        // The rotation resolved successfully: this is the one place a codex refresh
+        // records a success, and it drops the in-flight marker.
+        lastRefreshedAt: sql`NOW()`,
+        rotationStartedAt: null,
         updatedAt: sql`NOW()`,
       })
       .where(eq(secrets.id, secretId));
@@ -476,10 +555,17 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     return 'refreshed';
   } catch (err) {
     console.warn(`[Codex] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
-    // Transient network error: shorten the lock so the credential can be retried sooner.
+    // Transient network error: shorten the lock so the credential can be retried
+    // sooner, and clear the rotation marker — a request that failed at the socket
+    // did not get a rotated token issued to it, and keeping the marker would turn
+    // a DNS blip into a permanently dead credential.
     await db
       .update(secrets)
-      .set({ lastRefreshedAt: sql`NOW() - INTERVAL '45 minutes'`, updatedAt: sql`NOW()` })
+      .set({
+        refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+        rotationStartedAt: null,
+        updatedAt: sql`NOW()`,
+      })
       .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
     return 'error';
   }
@@ -530,15 +616,23 @@ export async function writeBackCodexTokens(
   });
   const tokenExpiresAt = tokens.expiresIn != null ? new Date(Date.now() + tokens.expiresIn * 1000) : null;
 
-  // Optimistic lock: write-back only if not updated within the last 30s.
-  // Multiple workers completing simultaneously could race here; last write wins is fine
-  // since they all have fresh tokens from the same session window.
+  // Optimistic lock: write-back only if there was no successful token write in the
+  // last 30s. Multiple workers completing simultaneously could race here; last
+  // write wins is fine since they all have fresh tokens from the same session window.
+  //
+  // This deliberately stays on lastRefreshedAt rather than moving to refreshLockedAt:
+  // it is a dedup window between concurrent *successful* write-backs, not the
+  // 60-minute refresh lock. Stamping refreshLockedAt here would extend that lock on
+  // every worker completion and could starve the server-side refresh path.
   const [updated] = await db
     .update(secrets)
     .set({
       encryptedValue: newBlob,
       ...(tokenExpiresAt ? { tokenExpiresAt } : {}),
+      // A write-back IS a completed rotation (the CLI rotated the tokens in-session),
+      // so it records a success and resolves any in-flight marker.
       lastRefreshedAt: sql`NOW()`,
+      rotationStartedAt: null,
       updatedAt: sql`NOW()`,
     })
     .where(
@@ -707,7 +801,10 @@ export async function verifyCodexCredential(secretId: string): Promise<VerifyRes
             id_token: newIdToken,
           }),
           ...(tokenExpiresAt ? { tokenExpiresAt } : {}),
+          // The refresh grant succeeded and the rotated tokens are persisted here,
+          // so this is a genuine success and resolves any in-flight marker.
           lastRefreshedAt: sql`NOW()`,
+          rotationStartedAt: null,
           lastVerifiedAt: sql`NOW()`,
           lastVerificationError: null,
           updatedAt: sql`NOW()`,
