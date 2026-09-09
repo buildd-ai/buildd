@@ -28,9 +28,15 @@ export interface CIRetryParams {
   };
   failureContext: string;
   repoFullName: string;
-  /** GitHub Actions run id/url for the failed run — lets the agent pull scoped logs via `gh run view`. */
+  /** GitHub Actions run id/url for the failed run. */
   ciRunId?: number | null;
   ciRunUrl?: string | null;
+  /**
+   * Id of the job that actually failed, when the webhook resolved one. Lets the
+   * instruction point straight at a log that returns content instead of making
+   * the agent list jobs first.
+   */
+  ciFailedJobId?: number | null;
   /** Workspace-level max CI retries (from gitConfig.maxCiRetries). Overrides task-level maxIterations. 0 disables. */
   workspaceMaxCiRetries?: number;
   /**
@@ -61,7 +67,7 @@ export interface CIRetryTask {
  * which prevents infinite retry loops.
  */
 export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
-  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, workspaceMaxCiRetries, foreignHeadSha, foreignCommitAuthor } = params;
+  const { originalTask, worker, failureContext, repoFullName, ciRunId, ciRunUrl, ciFailedJobId, workspaceMaxCiRetries, foreignHeadSha, foreignCommitAuthor } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.iteration === 'number' ? ctx.iteration : 0;
@@ -94,7 +100,7 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
 
   return {
     title: `[CI Retry #${displayIteration}] ${cleanTitle}`,
-    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations),
+    description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations, ciFailedJobId ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
     creationSource: 'webhook',
@@ -149,16 +155,29 @@ function buildRetryDescription(
   foreignHeadSha?: boolean,
   foreignCommitAuthor?: string,
   isFinalAttempt?: boolean,
+  ciFailedJobId?: number | null,
 ): string {
-  // Don't ship the full (verbose) log — point the agent at `gh run view`, which
-  // returns only the failed steps' output, so it pulls just what it needs.
+  // `gh run view <id> --log-failed` returns EMPTY output and exit 0 — it is not
+  // a retention problem, the command simply does not produce the failed-step
+  // output it advertises. It used to be the only instruction here, so an agent
+  // followed it, got nothing, and reconstructed the failure by hand. Point at
+  // the jobs-logs API, which returns the log.
+  const logCommand = ciFailedJobId
+    ? `gh api /repos/${repoFullName}/actions/jobs/${ciFailedJobId}/logs`
+    : `# find the failing job, then read its log\ngh api /repos/${repoFullName}/actions/runs/${ciRunId}/jobs \\\n  -q '.jobs[] | select(.conclusion=="failure") | .id'\ngh api /repos/${repoFullName}/actions/jobs/<JOB_ID>/logs`;
+
   const logSection = ciRunId
-    ? `## Pull the failing logs (failed steps only)
+    ? `## Pull the failing log
 
 \`\`\`bash
-gh run view ${ciRunId} --repo ${repoFullName} --log-failed
+${logCommand}
 \`\`\`
-Grep or tail if the output is large — don't dump the whole thing.${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
+The log is long. Strip the timestamp prefix and read the tail, or pull just the
+test digest:
+\`\`\`bash
+gh api /repos/${repoFullName}/actions/jobs/${ciFailedJobId ?? '<JOB_ID>'}/logs \\
+  | sed 's/^[0-9T:.-]*Z //' | awk '/unit test files? failed:/,/Full output/'
+\`\`\`${ciRunUrl ? `\nRun: ${ciRunUrl}` : ''}
 `
     : '';
 

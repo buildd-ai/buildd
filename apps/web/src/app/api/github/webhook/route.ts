@@ -2,11 +2,12 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
-import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
+import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent, githubApiText } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
+import { extractFailureDigest } from '@/lib/ci-failure-digest';
 import {
   reviewRowFromEvent,
   commentRowFromEvent,
@@ -1332,6 +1333,7 @@ async function handleCheckSuiteFailure(
         failureContext,
         repoFullName: repository.full_name,
         ciRunId: ciLogs.runId,
+        ciFailedJobId: ciLogs.failedJobId,
         ciRunUrl: ciLogs.runUrl,
         workspaceMaxCiRetries: workspace.gitConfig?.maxCiRetries,
         foreignHeadSha,
@@ -1476,11 +1478,16 @@ async function checkPrIsDraft(
 }
 
 interface CIFailureInfo {
-  /** Human-readable failed-job/step summary, or null if it couldn't be built. */
+  /** Failed-job/step summary plus the extracted failure digest, or null. */
   summary: string | null;
-  /** Actions run ID — lets the fix-task agent pull scoped logs via `gh run view`. */
+  /** Actions run ID. */
   runId: number | null;
   runUrl: string | null;
+  /**
+   * Id of the first failed job. The retry instruction needs it to name a log
+   * endpoint that returns content; without it the agent has to list jobs first.
+   */
+  failedJobId: number | null;
 }
 
 interface CommitAuthorInfo {
@@ -1539,7 +1546,7 @@ async function fetchCIFailureLogs(
   repoFullName: string,
   headSha: string,
 ): Promise<CIFailureInfo> {
-  const empty: CIFailureInfo = { summary: null, runId: null, runUrl: null };
+  const empty: CIFailureInfo = { summary: null, runId: null, runUrl: null, failedJobId: null };
   try {
     const runsData = await githubApi(
       installationId,
@@ -1558,12 +1565,14 @@ async function fetchCIFailureLogs(
       `/repos/${repoFullName}/actions/runs/${run.id}/jobs`,
     );
     if (!jobsData?.jobs?.length) {
-      return { summary: null, runId, runUrl };
+      return { summary: null, runId, runUrl, failedJobId: null };
     }
 
     const failedJobs: string[] = [];
+    let firstFailedJobId: number | null = null;
     for (const job of jobsData.jobs) {
       if (job.conclusion === 'failure') {
+        if (firstFailedJobId === null && typeof job.id === 'number') firstFailedJobId = job.id;
         const failedSteps = (job.steps || [])
           .filter((s: { conclusion?: string }) => s.conclusion === 'failure')
           .map((s: { name?: string }) => `  - Step "${s.name}" failed`)
@@ -1572,12 +1581,34 @@ async function fetchCIFailureLogs(
       }
     }
     if (failedJobs.length === 0) {
-      return { summary: null, runId, runUrl };
+      return { summary: null, runId, runUrl, failedJobId: null };
     }
+
+    // Job and step names alone told a cold-start retry agent that "Run tests"
+    // failed and nothing more. Carry the actual digest — the failing file and
+    // test names — so the retry starts from the failure instead of rediscovering
+    // it. One job only, and the extractor caps what it returns.
+    let digest: string | null = null;
+    if (firstFailedJobId !== null) {
+      try {
+        const log = await githubApiText(
+          installationId,
+          `/repos/${repoFullName}/actions/jobs/${firstFailedJobId}/logs`,
+        );
+        digest = extractFailureDigest(log);
+      } catch (err) {
+        // Soft: the job/step summary below is still worth shipping, and a retry
+        // task with a thinner description beats no retry task.
+        console.warn(`Could not read job log ${firstFailedJobId} for ${repoFullName}:`, err);
+      }
+    }
+
+    const digestSection = digest ? `\n\n${digest}` : '';
     return {
-      summary: `CI failed on ${repoFullName} (run: ${runUrl})\n\n${failedJobs.join('\n\n')}`,
+      summary: `CI failed on ${repoFullName} (run: ${runUrl})\n\n${failedJobs.join('\n\n')}${digestSection}`,
       runId,
       runUrl,
+      failedJobId: firstFailedJobId,
     };
   } catch (error) {
     console.warn(`Failed to fetch CI logs for ${repoFullName}@${headSha}:`, error);

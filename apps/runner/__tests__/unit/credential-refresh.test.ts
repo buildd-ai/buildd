@@ -18,7 +18,7 @@ const API_KEY = 'bld_test_key';
 const SECRET_ID = 'secret-uuid-1234';
 
 const originalFetch = globalThis.fetch;
-let fetchCalls: Array<{ url: string; body: Record<string, unknown> }>;
+let fetchCalls: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }>;
 let mockFetch: ReturnType<typeof mock>;
 
 function makeFetchMock(
@@ -38,7 +38,7 @@ function makeFetchMock(
         body = { __urlencoded: raw };
       }
     }
-    fetchCalls.push({ url, body });
+    fetchCalls.push({ url, body, headers: (init?.headers ?? {}) as Record<string, string> });
     const { body: resBody, status = 200 } = responses[callIndex++] ?? { body: {}, status: 200 };
     return new Response(JSON.stringify(resBody), { status, headers: { 'Content-Type': 'application/json' } });
   }) as any;
@@ -202,5 +202,67 @@ describe('runnerRefreshCredential', () => {
       expect(result).toBe('no_credential');
       expect(fetchCalls).toHaveLength(1);
     });
+  });
+});
+
+// ── auth sourcing (regression: prod runner has no BUILDD_API_KEY) ─────────────
+//
+// The runner stores its API key in config.json, not the environment —
+// index.ts documents BUILDD_API_KEY as a CI/Docker override that is "NOT
+// recommended". This module used to read the env var as its ONLY source, so on
+// a normal install `apiKey` was '' and every control-plane call went out with
+// no Authorization header at all: 401, forever, warned and swallowed.
+describe('auth sourcing', () => {
+  beforeEach(() => {
+    delete process.env.BUILDD_API_KEY;
+    delete process.env.BUILDD_CLIENT_URL;
+  });
+
+  test('uses the apiKey passed by the caller when BUILDD_API_KEY is unset', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: null, expiresAt: null } },
+    ]);
+
+    await runnerRefreshCredential(SECRET_ID, 'claude_credential', {
+      apiKey: 'bld_from_config',
+      baseUrl: CONTROL_PLANE,
+    });
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].headers.Authorization).toBe('Bearer bld_from_config');
+  });
+
+  test('uses the baseUrl passed by the caller, not the buildd.dev default', async () => {
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: null, expiresAt: null } },
+    ]);
+
+    await runnerRefreshCredential(SECRET_ID, 'claude_credential', {
+      apiKey: 'bld_from_config',
+      baseUrl: 'https://staging.example.com',
+    });
+
+    expect(fetchCalls[0].url).toBe('https://staging.example.com/api/runner/credential-refresh');
+  });
+
+  test('refuses to call the control plane with no key rather than 401-looping', async () => {
+    globalThis.fetch = makeFetchMock([{ body: {} }]);
+
+    const result = await runnerRefreshCredential(SECRET_ID, 'claude_credential');
+
+    expect(result).toBe('error');
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  test('still honours BUILDD_API_KEY when no explicit auth is passed', async () => {
+    process.env.BUILDD_API_KEY = API_KEY;
+    process.env.BUILDD_CLIENT_URL = CONTROL_PLANE;
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: null, expiresAt: null } },
+    ]);
+
+    await runnerRefreshCredential(SECRET_ID, 'claude_credential');
+
+    expect(fetchCalls[0].headers.Authorization).toBe(`Bearer ${API_KEY}`);
   });
 });

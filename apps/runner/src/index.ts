@@ -837,7 +837,14 @@ if (workerManager) {
   });
   // Start the credential broker daemon — acquires Postgres leases and proactively
   // refreshes credentials on behalf of all workers on this runner.
-  credentialBroker.start();
+  //
+  // The resolved config is passed explicitly: the broker singleton is constructed
+  // at import time and can only see the environment, but a stock install keeps
+  // its API key in config.json (BUILDD_API_KEY is a CI/Docker override we
+  // document as "NOT recommended"). Left to the env alone the broker sent no
+  // Authorization header, 401'd on every lease acquire, and silently never
+  // refreshed a single credential.
+  credentialBroker.start({ apiKey: config.apiKey, baseUrl: config.builddServer });
 } else if (config.serverless || !config.apiKey) {
   // In serverless mode, poll the public /api/version endpoint
   pollVersion();
