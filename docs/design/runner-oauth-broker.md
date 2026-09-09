@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 assertions:
   # Current state — control-plane refresh (what we are REPLACING). These should pass today.
   - type: symbol
@@ -58,7 +58,15 @@ OAuth credentials for Claude and Codex execute successfully for a period after t
 - Claude: `"invalid_grant"` on token refresh; `healthStatus = 'revoked'` set in DB.
 - Codex: `"Your access token could not be refreshed because you have since logged out or signed in to another account."` on the first or second proactive cron refresh.
 
-The pattern is consistent: credentials work during the initial post-grant window (API calls originate from the runner at a static egress IP), then fail at the first control-plane–initiated refresh. The control plane runs on Vercel, whose outbound IPs rotate across Vercel's shared egress fleet. This means the first `POST /token` for a refresh arrives from a **different IP than every prior API call** — a location flip that trips provider anomaly detection (Anthropic and OpenAI both apply it).
+The pattern is consistent: credentials work during the initial post-grant window (API calls originate from the runner at a static egress IP), then fail at the first control-plane–initiated refresh.
+
+> **CAVEAT (2026-09-09).** This causal claim was inferred from that correlation
+> and never measured. A single-use refresh token whose rotation response is lost
+> produces an **identical** signature — works through the post-grant window,
+> dies at the first refresh — with no anomaly detection involved. The
+> runner-origin design is still worth keeping, because a single stable holder is
+> independently correct, but the IP causation itself remains unverified and
+> nothing downstream should be justified by it alone. The control plane runs on Vercel, whose outbound IPs rotate across Vercel's shared egress fleet. This means the first `POST /token` for a refresh arrives from a **different IP than every prior API call** — a location flip that trips provider anomaly detection (Anthropic and OpenAI both apply it).
 
 The control plane calls the token endpoint in two places today:
 1. `GET /api/cron/codex-token-refresh` — runs every 4 hours on Vercel; calls `refreshClaudeCredential()` / `refreshCodexCredential()`.
@@ -96,7 +104,23 @@ The invariant broken is where the rotation call itself originates. After the ini
 
 Phase 1 ships first. It eliminates the IP-flip problem without introducing a long-running broker process.
 
-**Crux:** The DB-level refresh lock must be acquired and the new tokens must be **persisted before they are used**. If the runner acquires the lock, calls the token endpoint, then crashes before writing back, the old tokens remain in the DB. On the next claim the control plane would serve the stale tokens, and the next runner-initiated refresh (locked out for 60 minutes) cannot start. The write-back call must complete and be confirmed before the runner uses the new access token to spawn a worker; any crash between refresh and write-back is safe (old tokens still work for the current run; the next refresh window corrects them).
+**Crux:** The DB-level refresh lock must be acquired and the new tokens must be **persisted before they are used**. If the runner acquires the lock, calls the token endpoint, then crashes before writing back, the old tokens remain in the DB. On the next claim the control plane would serve the stale tokens, and the next runner-initiated refresh (locked out for 60 minutes) cannot start.
+
+> **CORRECTION (2026-09-09).** This paragraph originally ended: "any crash
+> between refresh and write-back is safe (old tokens still work for the current
+> run; the next refresh window corrects them)." **That is false for a rotating
+> refresh token**, which is exactly what Codex has — OpenAI issues a new refresh
+> token on every call and consumes the old one. If the provider rotated and we
+> lost the response, the stored token is already dead; no later window corrects
+> it, because every subsequent attempt presents a consumed token and gets
+> `invalid_grant`. The window is unrecoverable, not safe.
+>
+> Moving the caller from Vercel to the runner does not close this window — it
+> relocates it. The mitigation is *detection*, not retry: a `rotationStartedAt`
+> marker stamped when a rotation begins and cleared only when it commits, so an
+> unresolved rotation terminates in one reconnect signal instead of a retry
+> loop. See `docs/specs/credential-refresh-lifecycle.md` INV-3 through INV-5.
+> Shipped in PR #2236.
 
 #### 1a. Runner-side refresh module
 
@@ -152,7 +176,32 @@ The claim route populates this for any credential associated with the claimed ta
 
 **Control-plane cron becomes a nudge:**
 
-The existing `GET /api/cron/codex-token-refresh` is changed from "call token endpoint" to "create lightweight credential-refresh tasks." For each credential expiring within 2 hours, the cron creates a task with `roleSlug = null` (system task), `tier = 'budget'`, title `[sys] refresh credential <secretId>`. These tasks are claimed by the runner's existing claim loop (or a dedicated claim path for system tasks) and result in `runnerRefreshCredential()` being called. This provides a refresh path when no regular tasks are being claimed (runner idle but online).
+> **SUPERSEDED (2026-09-09) — this mechanism shipped and has been removed
+> again.** It is recorded here because the failure it caused is instructive.
+>
+> As proposed: the cron created a task titled `[sys] refresh credential
+> <secretId>` for each expiring credential, to be intercepted by "the runner's
+> existing claim loop (or a dedicated claim path for system tasks)".
+>
+> **The interception was never built.** Nothing in `apps/runner/` ever matched
+> that title, so the row fell through the ordinary claim path and a full Claude
+> agent picked it up, with the token-exchange protocol described to it as English
+> prose in the task description. The agent had no control-plane API key (it is
+> deliberately withheld from the worker subprocess), so it failed — every four
+> hours, indefinitely. One such agent acquired the real refresh lock, called the
+> provider, and lost the rotated token to output redaction, which by the
+> correction above **permanently destroyed that credential**. The task title also
+> published the credential's identifier into a user-visible task name.
+>
+> Removed in PR #2234. The idle-runner gap it was covering is now closed properly
+> by announcing credentials on every claim poll, including polls that claim
+> nothing (PR #2235) — the runner's claim loop already *is* a periodic heartbeat,
+> so no synthetic task is needed to manufacture one.
+>
+> **General lesson:** a task description is not an implementation. Delegating a
+> protocol with irreversible state transitions to an agent, without a code path
+> that intercepts it first, means an LLM improvising against a single-use
+> credential.
 
 The cron's `refreshClaudeCredential()` and `refreshCodexCredential()` calls are **removed** once Phase 1 ships. The cron retains the zombie-detection log block (no credential calls, just queries).
 
@@ -185,7 +234,18 @@ Order of operations with no credential-death window:
 
 2. **Enable runner-side refresh** via config flag `BUILDD_RUNNER_REFRESH=true` on the runner. The runner begins doing claim-path refreshes via `runnerRefreshCredential()`. Control-plane cron still runs in parallel — safe because the DB lock prevents double-rotation.
 
-3. **Remove control-plane direct refresh:** once `BUILDD_RUNNER_REFRESH=true` has been stable for one full cron cycle (4 hours), remove the `refreshClaudeCredential()`/`refreshCodexCredential()` calls from the claim route and change the cron to nudge-only. Deploy.
+3. **Remove control-plane direct refresh:** remove the
+   `refreshClaudeCredential()`/`refreshCodexCredential()` calls from the claim
+   route and stop the cron calling them by default.
+
+   > **AS SHIPPED (2026-09-09).** No `BUILDD_RUNNER_REFRESH` flag was ever built
+   > — the gate that exists is `BUILDD_ALLOW_CONTROL_PLANE_REFRESH`, which is off
+   > by default and enables the control-plane path as break-glass. Steps 2 and 3
+   > here name a flag that does not exist in the codebase; treat the flag name as
+   > historical. The cron is not "nudge-only" either: it observes and reports,
+   > and creates no tasks (PR #2234). Two operator-triggered routes were also
+   > calling the provider from the control plane with no gate at all until PR
+   > #2233 closed them.
 
 4. **Currently-flagged credentials need one manual re-auth.** Any credential currently in `healthStatus = 'revoked'` (killed by a prior Vercel IP-flip refresh) cannot be recovered by this change — the refresh token family is already dead. Users with revoked credentials will need to reconnect via the OAuth device-code flow (`docs/design/oauth-device-login.md`). The FIRST refresh after re-auth must already originate from the runner (step 2 complete before re-auth is prompted).
 
