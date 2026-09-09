@@ -18,14 +18,37 @@ const OPENAI_TOKEN_URL = 'https://auth.openai.com/oauth/token';
 
 export type RunnerRefreshResult = 'refreshed' | 'locked' | 'no_credential' | 'error';
 
+/**
+ * Control-plane auth for this call. Pass the runner's resolved config — the key
+ * normally lives in config.json, and `index.ts` documents BUILDD_API_KEY as a
+ * CI/Docker override that is "NOT recommended". Reading only the env var meant
+ * a stock install sent no Authorization header and 401'd on every attempt.
+ */
+export type RefreshAuth = {
+  apiKey?: string;
+  baseUrl?: string;
+};
+
 export async function runnerRefreshCredential(
   secretId: string,
   purpose: 'claude_credential' | 'codex_credential',
+  auth: RefreshAuth = {},
 ): Promise<RunnerRefreshResult> {
-  const baseUrl = process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
-  const apiKey = process.env.BUILDD_API_KEY ?? '';
+  const baseUrl = auth.baseUrl ?? process.env.BUILDD_CLIENT_URL ?? 'https://buildd.dev';
+  const apiKey = auth.apiKey ?? process.env.BUILDD_API_KEY ?? '';
   const endpoint = `${baseUrl}/api/runner/credential-refresh`;
-  const authHeader = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+
+  // Without a key every call is a guaranteed 401. Say so once and stop, rather
+  // than walking the lock/commit sequence and warning about each rejection.
+  if (!apiKey) {
+    console.warn(
+      `[runner-refresh] No control-plane API key available for ${secretId} — cannot refresh. ` +
+      'Pass the runner config apiKey (config.json) or set BUILDD_API_KEY.',
+    );
+    return 'error';
+  }
+
+  const authHeader = { Authorization: `Bearer ${apiKey}` };
 
   // ── Step 1: acquire the DB refresh lock ─────────────────────────────────────
   let lockRes: Response;
