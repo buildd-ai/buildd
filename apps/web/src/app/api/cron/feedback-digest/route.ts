@@ -32,6 +32,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     // Gather stats for the response (includes positive signals too)
     const stats = await getFeedbackStats(windowHours);
 
+    report({
+      processed: digest.totalFeedback,
+      changed: digest.results.length,
+      result: { windowHours, totalNegativeFeedback: digest.totalFeedback, teams: digest.results.length },
+    });
+
     return NextResponse.json({
       ok: true,
       windowHours,
@@ -43,6 +49,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     });
   } catch (error) {
     console.error('[feedback-digest] Pipeline error:', error);
+    report({ processed: 0, changed: 0, errors: 1, result: { error: String(error) } });
     return NextResponse.json(
       { error: 'Feedback digest failed', detail: String(error) },
       { status: 500 },

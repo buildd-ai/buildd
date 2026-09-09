@@ -65,10 +65,25 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     ),
   };
 
+  const totalOutcomes = buckets.reduce((s, b) => s + b.total, 0);
+  // This job only ever computes and returns — `changed` is the count of routing
+  // flags it raised, which is the only thing about a run worth judging.
+  const flagCount = flags.undershoots.length + flags.overshoots.length;
+  report({
+    processed: totalOutcomes,
+    changed: flagCount,
+    result: {
+      totalOutcomes,
+      buckets: buckets.length,
+      undershoots: flags.undershoots.length,
+      overshoots: flags.overshoots.length,
+    },
+  });
+
   return NextResponse.json({
     windowDays: 7,
     windowStart: windowStart.toISOString(),
-    totalOutcomes: buckets.reduce((s, b) => s + b.total, 0),
+    totalOutcomes,
     buckets,
     flags,
   });
