@@ -3,8 +3,9 @@ import { missions, missionNotes, tasks, workspaces, githubRepos } from '@buildd/
 import { eq, and, or, lt, isNull, inArray, count } from 'drizzle-orm';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import { canCompleteMission } from '@/lib/mission-completion';
-import { githubApi } from '@/lib/github';
 import { executeRelease } from '@/lib/release-executor';
+import { recordAndDispatchRelease } from '@/lib/release/record';
+import { detectArchetype } from '@buildd/core/release-archetype';
 
 // Count tasks in the mission that are not yet terminal (pending, assigned, or in_progress).
 export async function countPendingTasksForMission(missionId: string): Promise<number> {
@@ -148,6 +149,34 @@ export async function abandonMissionReleaseAttempt(
   }
 }
 
+/**
+ * Phase 2 for a release that HAS already gone out.
+ *
+ * Separated from {@link commitMissionRelease} because the two failure modes are
+ * not the same event. Once the dispatch (or merge) has left the building, a
+ * failure to write it down is a bookkeeping failure, and it must NOT be
+ * reported as `dispatch_failed`/`execute_failed`: that note is read as "prod
+ * did not ship", and the release did ship.
+ *
+ * Nor may it abandon the claim. `abandonMissionReleaseAttempt` clears
+ * `releaseAttemptedAt`, which frees the very next task completion to dispatch a
+ * SECOND release for the same mission. Leaving the claim held means the only
+ * retry path is the bounded {@link MISSION_RELEASE_ATTEMPT_STALE_MS} window —
+ * at most one duplicate per 30 minutes instead of one per completion.
+ */
+export async function recordDispatchedRelease(missionId: string, what: string): Promise<void> {
+  try {
+    await commitMissionRelease(missionId);
+  } catch (err) {
+    console.error(
+      `[mission-release] mission ${missionId}: released ${what} but FAILED to record it — ` +
+        `the claim is left held, so a retry can only happen after the stale window. ` +
+        `The mission reads as unreleased while prod has shipped:`,
+      err,
+    );
+  }
+}
+
 // Called after a task completes. If the workspace trigger is `on_mission_complete`
 // and the task belongs to a mission that is now all-terminal, fires exactly one
 // release via the atomic claim + executes the appropriate strategy.
@@ -160,7 +189,9 @@ export async function fireMissionReleaseIfComplete(
   // Fetch workspace config to check trigger policy
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
-    columns: { releaseConfig: true, githubRepoId: true },
+    // name and gitConfig feed detectArchetype, which the recorded release row
+    // carries — a row whose archetype is guessed is worse than no row.
+    columns: { name: true, releaseConfig: true, githubRepoId: true, gitConfig: true },
   });
 
   const trigger = resolveReleaseTrigger(workspace?.releaseConfig);
@@ -229,29 +260,49 @@ export async function fireMissionReleaseIfComplete(
     }
 
     const { workflowFile, ref, inputs } = resolution.strategy;
-    try {
-      await githubApi(
-        repo.installation.installationId,
-        `/repos/${repo.fullName}/actions/workflows/${workflowFile}/dispatches`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ref, inputs: { force: 'false', ...inputs } }),
-        },
-      );
-      console.log(`[mission-release] mission ${missionId}: dispatched ${workflowFile}@${ref}`);
-      await commitMissionRelease(missionId);
-    } catch (err) {
+    const [owner, name] = repo.fullName.split('/');
+
+    // Goes through recordAndDispatchRelease rather than a bare POST to the
+    // dispatches endpoint. That raw call captured no run id and no run url and
+    // wrote no `releases` row, so a mission release left `missions.releasedAt`
+    // as its only trace: nothing to verify, nothing to attribute tasks to, and
+    // nothing for the workflow_run webhook to advance.
+    const recorded = await recordAndDispatchRelease({
+      workspaceId,
+      archetype: detectArchetype({
+        name: workspace?.name,
+        releaseConfig: workspace?.releaseConfig,
+        gitConfig: workspace?.gitConfig,
+      }),
+      installationId: repo.installation.installationId,
+      owner,
+      name,
+      repoFullName: repo.fullName,
+      workflowFile,
+      ref,
+      prodBranch: workspace?.releaseConfig?.prodBranch ?? workspace?.gitConfig?.defaultBranch ?? 'main',
+      inputs: { force: 'false', ...inputs },
+      triggeredBy: 'auto',
+    });
+
+    if (!recorded.ok) {
       await abandonMissionReleaseAttempt(
         missionId,
         'dispatch_failed',
-        `Dispatching ${workflowFile}@${ref} failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Dispatching ${workflowFile}@${ref} failed: ${recorded.error}`,
       );
+      return;
     }
+
+    console.log(
+      `[mission-release] mission ${missionId}: dispatched ${workflowFile}@${ref} (release=${recorded.releaseId})`,
+    );
+    await recordDispatchedRelease(missionId, `${workflowFile}@${ref}`);
   } else if (resolution.strategy.kind === 'branch_merge') {
     // For branch_merge: delegate to executeRelease with isMissionRelease=true
     // so the trigger policy is bypassed. Uses the completing task's info to
     // determine the source branch / release PR.
+    let released = false;
     try {
       const result = await executeRelease({ taskId, workerId, workspaceId, isMissionRelease: true });
       console.log(`[mission-release] mission ${missionId}: branch_merge result: ${result.status} — ${result.message}`);
@@ -269,7 +320,7 @@ export async function fireMissionReleaseIfComplete(
           result.skipReason === 'mission_integration_branch',
         );
       } else {
-        await commitMissionRelease(missionId);
+        released = true;
       }
     } catch (err) {
       await abandonMissionReleaseAttempt(
@@ -277,7 +328,10 @@ export async function fireMissionReleaseIfComplete(
         'execute_failed',
         `executeRelease threw: ${err instanceof Error ? err.message : String(err)}`,
       );
+      return;
     }
+
+    if (released) await recordDispatchedRelease(missionId, 'branch_merge');
   } else {
     await abandonMissionReleaseAttempt(
       missionId,

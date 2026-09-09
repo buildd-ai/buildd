@@ -129,6 +129,15 @@ mock.module('@buildd/core/db', () => ({
     update: (table: any) => ({
       set: (values: any) => {
         updateCalls.push({ table, setValues: values });
+        if (failUpdateMatching?.(values)) {
+          return {
+            where: (_condition: any) => {
+              const p: any = Promise.reject(new Error('update failed'));
+              p.returning = () => p;
+              return p;
+            },
+          };
+        }
         return {
           where: (condition: any) => ({
             returning: () => Promise.resolve([{ id: 'row-1' }]),
@@ -144,12 +153,16 @@ mock.module('@buildd/core/db', () => ({
         where: (_cond: any) => {
           selectWhereCalls.push({ table, condition: _cond });
           const rows = selectTableResults(table);
-          if (rows) {
-            return Object.assign(Promise.resolve(rows), {
-              limit: (_n: number) => Promise.resolve(rows),
-            });
-          }
-          return { limit: (_n: number) => Promise.resolve([]) };
+          const settled = rows ?? [];
+          // `.orderBy(...).limit(n)` is the shape of the release sha-fallback
+          // lookup; a mock missing it throws instead of exercising the code.
+          const terminal: any = Object.assign(Promise.resolve(settled), {
+            limit: (_n: number) => Promise.resolve(settled),
+            orderBy: (_o: any) => Object.assign(Promise.resolve(settled), {
+              limit: (_n: number) => Promise.resolve(settled),
+            }),
+          });
+          return terminal;
         },
       }),
     }),
@@ -158,6 +171,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
   inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
   isNull: (field: any) => ({ field, type: 'isNull' }),
@@ -177,7 +191,18 @@ const schemaMock = {
   workers: { id: 'id', prNumber: 'prNumber', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef' },
   workspaces: { id: 'id', repo: 'repo', githubRepoId: 'githubRepoId' },
   missions: { id: 'id', releasedAt: 'released_at' },
-  releases: { id: 'id', workspaceId: 'workspaceId', state: 'state', runUrl: 'runUrl' },
+  // headSha and createdAt are load-bearing for the sha-fallback lookup: a column
+  // missing from this stub is `undefined` in the predicate, and JSON.stringify
+  // drops it — so an assertion on the WHERE clause silently stops checking the
+  // field it names.
+  releases: {
+    id: 'id',
+    workspaceId: 'workspaceId',
+    state: 'state',
+    runUrl: 'runUrl',
+    headSha: 'headSha',
+    createdAt: 'createdAt',
+  },
   knowledgeIngestJobs: {
     id: 'id', workspaceId: 'workspaceId', repo: 'repo', trigger: 'trigger',
     sha: 'sha', prNumber: 'prNumber', scope: 'scope', status: 'status',
@@ -211,6 +236,12 @@ mock.module('@buildd/core/release-strategy', () => ({
   resolveReleaseStrategy: mockResolveReleaseStrategy,
 }));
 
+/**
+ * Makes one `db.update(...).set(payload)` reject, so a test can simulate the
+ * bookkeeping failing AFTER a release dispatch has already gone out.
+ */
+let failUpdateMatching: ((values: any) => boolean) | null = null;
+
 // Mock mission-release helpers
 const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
 // Two-phase release claim. `claim` returning true means this caller owns the
@@ -219,12 +250,20 @@ const mockCountPendingTasksForMission = mock(() => Promise.resolve(0));
 const mockClaimMissionReleaseAttempt = mock(() => Promise.resolve(true));
 const mockCommitMissionRelease = mock(() => Promise.resolve());
 const mockAbandonMissionReleaseAttempt = mock(() => Promise.resolve());
+// Passthrough, not an opaque stub: `recordDispatchedRelease` exists precisely to
+// commit the release without letting a write failure masquerade as a dispatch
+// failure, so the assertions that matter are still "was the release recorded"
+// (commit) vs "was a failure reported" (abandon).
+const mockRecordDispatchedRelease = mock((missionId: string, _what?: string) =>
+  mockCommitMissionRelease(missionId as any),
+);
 mock.module('@/lib/mission-release', () => ({
   countPendingTasksForMission: mockCountPendingTasksForMission,
   fireMissionReleaseIfComplete: mock(() => Promise.resolve()),
   claimMissionReleaseAttempt: mockClaimMissionReleaseAttempt,
   commitMissionRelease: mockCommitMissionRelease,
   abandonMissionReleaseAttempt: mockAbandonMissionReleaseAttempt,
+  recordDispatchedRelease: mockRecordDispatchedRelease,
 }));
 
 // Mission dependency gate. `dependencyMetAt` has exactly one writer, and the
@@ -264,6 +303,30 @@ const mockDispatchWorkflowRelease = mock(() =>
 );
 mock.module('@/lib/release/dispatch', () => ({
   dispatchWorkflowRelease: mockDispatchWorkflowRelease,
+}));
+
+// The webhook dispatches releases through recordAndDispatchRelease, which also
+// writes the `releases` row. Kept as a passthrough over the dispatch mock so the
+// existing "did we dispatch, with what" assertions keep their meaning.
+const mockRecordAndDispatchRelease = mock(async (params: any) => {
+  const dispatched: any = await mockDispatchWorkflowRelease(
+    params.installationId,
+    params.owner,
+    params.name,
+    { workflowFile: params.workflowFile, ref: params.ref, inputs: params.inputs },
+  );
+  return {
+    ok: true as const,
+    releaseId: 'rel-auto-1',
+    deduped: false,
+    headSha: 'sha-dev-head',
+    runId: dispatched?.runId,
+    runUrl: dispatched?.runUrl,
+    runsUrl: dispatched?.runsUrl,
+  };
+});
+mock.module('@/lib/release/record', () => ({
+  recordAndDispatchRelease: mockRecordAndDispatchRelease,
 }));
 
 // Pusher — no-op in tests; triggerEvent calls should be silently skipped
@@ -477,6 +540,7 @@ function resetAll() {
   mockClaimMissionReleaseAttempt.mockReset();
   mockClaimMissionReleaseAttempt.mockReturnValue(Promise.resolve(true));
   mockCommitMissionRelease.mockReset();
+  failUpdateMatching = null;
   mockAbandonMissionReleaseAttempt.mockReset();
   mockCanCompleteMission.mockReset();
   mockCanCompleteMission.mockReturnValue(Promise.resolve({ ok: true, code: 'ok', reason: 'clear' }) as any);
@@ -493,6 +557,25 @@ function resetAll() {
   mockPreflightEscalationCheck.mockReset();
   mockTryAutoMergeWorkerPr.mockReset();
   mockDispatchWorkflowRelease.mockReset();
+  // mockReset() drops the implementation, so the passthrough is reinstalled.
+  mockRecordAndDispatchRelease.mockReset();
+  mockRecordAndDispatchRelease.mockImplementation(async (params: any) => {
+    const dispatched: any = await mockDispatchWorkflowRelease(
+      params.installationId,
+      params.owner,
+      params.name,
+      { workflowFile: params.workflowFile, ref: params.ref, inputs: params.inputs },
+    );
+    return {
+      ok: true as const,
+      releaseId: 'rel-auto-1',
+      deduped: false,
+      headSha: 'sha-dev-head',
+      runId: dispatched?.runId,
+      runUrl: dispatched?.runUrl,
+      runsUrl: dispatched?.runsUrl,
+    };
+  });
   mockTriggerEvent.mockReset();
   mockRecordDirectProdMerge.mockReset();
   mockRecordDirectProdMerge.mockReturnValue(Promise.resolve());
@@ -1584,6 +1667,74 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(mockDispatchWorkflowRelease).toHaveBeenCalledTimes(1);
       expect((mockDispatchWorkflowRelease.mock.calls[0] as any[])[3]).toMatchObject({ workflowFile: 'ship.yml' });
+
+      // The point of routing through recordAndDispatchRelease: this dispatch
+      // leaves a `releases` row. It used to write only tasks.releaseResult, so
+      // a gated + workflow_dispatch workspace had no release history at all.
+      expect(mockRecordAndDispatchRelease).toHaveBeenCalledTimes(1);
+      expect((mockRecordAndDispatchRelease.mock.calls[0] as any[])[0]).toMatchObject({
+        workspaceId: 'ws2',
+        triggeredBy: 'auto',
+        workflowFile: 'ship.yml',
+        ref: 'dev',
+        // This fixture declares no prodBranch, so the range is measured against
+        // the default branch and detectArchetype resolves to `none`. Recording
+        // it truthfully is the point — the workspace has releases enabled with
+        // no production branch, and the row now says so.
+        prodBranch: 'dev',
+        archetype: 'none',
+      });
+    });
+
+    it('every_merge: links the task to the release row it created', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 81,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t81-feat', sha: 'sha-81' },
+          html_url: 'https://github.com/test-org/test-repo/pull/81',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w81',
+        task: { id: 't81', status: 'pending', workspaceId: 'ws2', release: 'inherit', title: 'Feature', missionId: null },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws2',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'ship.yml',
+          ref: 'dev',
+          prodBranch: 'main',
+          trigger: 'every_merge',
+        },
+        gitConfig: { defaultBranch: 'dev' },
+      });
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+
+      await POST(createWebhookRequest('pull_request', payload));
+
+      // With a prodBranch distinct from the default branch this is a gated
+      // workspace — the shape that could never produce a release row before.
+      expect((mockRecordAndDispatchRelease.mock.calls[0] as any[])[0]).toMatchObject({
+        archetype: 'gated',
+        prodBranch: 'main',
+        triggeredBy: 'auto',
+      });
+
+      const annotated = updateCalls.find(
+        c => c.table === schemaMock.tasks && (c.setValues as any).releaseResult,
+      );
+      expect(annotated).toBeDefined();
+      // Without this the task knows it triggered a release and the release does
+      // not know which task triggered it.
+      expect((annotated!.setValues as any).releaseResult.releaseId).toBe('rel-auto-1');
     });
 
     it('workflow_dispatch + trigger=manual: does not dispatch', async () => {
@@ -1785,7 +1936,9 @@ describe('POST /api/github/webhook', () => {
         },
       });
       mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
-      mockDispatchWorkflowRelease.mockImplementation(() => Promise.reject(new Error('github 502')) as any);
+      mockRecordAndDispatchRelease.mockImplementation(
+        () => Promise.resolve({ ok: false, status: 502, error: 'github 502' }) as any,
+      );
       mockGithubApi.mockReturnValue(Promise.resolve({}));
 
       const res = await POST(createWebhookRequest('pull_request', payload));
@@ -1797,6 +1950,56 @@ describe('POST /api/github/webhook', () => {
       expect(missionId).toBe('mission-1');
       expect(code).toBe('dispatch_failed');
       expect(String(reason)).toContain('github 502');
+    });
+
+    // THE REGRESSION. The dispatch already reached GitHub; only the follow-up
+    // `tasks.releaseResult` write failed. The old code had that write inside the
+    // dispatch try, so it reported `dispatch_failed` — a release that HAD gone
+    // out was recorded as a failure, the claim was handed back, and the next
+    // merge in the same mission dispatched a second release.
+    it('workflow_dispatch + on_mission_complete: a bookkeeping failure after a successful dispatch still records the release', async () => {
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 23,
+          merged: true,
+          draft: false,
+          head: { ref: 'buildd/t23-feat', sha: 'sha-23' },
+          html_url: 'https://github.com/test-org/test-repo/pull/23',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w23',
+        task: { id: 't23', status: 'pending', workspaceId: 'ws4', release: 'inherit', title: 'Feature', missionId: 'mission-1' },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws4',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          trigger: 'on_mission_complete',
+        },
+      });
+      mockCountPendingTasksForMission.mockReturnValue(Promise.resolve(0));
+      mockRecordAndDispatchRelease.mockImplementation(
+        () => Promise.resolve({ ok: true, releaseId: 'rel-auto-1', deduped: false, headSha: 's', runId: 99, runUrl: 'https://x/99' }) as any,
+      );
+      mockGithubApi.mockReturnValue(Promise.resolve({}));
+      // The task annotation fails; the dispatch did not.
+      failUpdateMatching = values => 'releaseResult' in values;
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+
+      expect(res.status).toBe(200);
+      // The release is recorded, because it happened.
+      expect(mockCommitMissionRelease).toHaveBeenCalledWith('mission-1');
+      // And no false dispatch failure is reported.
+      expect(mockAbandonMissionReleaseAttempt).not.toHaveBeenCalled();
     });
 
     it('workflow_dispatch + on_mission_complete: does NOT dispatch when tasks are still pending', async () => {
@@ -2761,6 +2964,7 @@ describe('workflow_run → releases state advancement', () => {
         conclusion,
         html_url: RUN_URL,
         head_branch: 'dev',
+        head_sha: 'sha-dev-head',
         repository: { full_name: 'test-org/test-repo' },
         ...overrides.workflow_run,
       },
@@ -2819,17 +3023,114 @@ describe('workflow_run → releases state advancement', () => {
     expect(releaseUpdate).toBeUndefined();
   });
 
-  it('no-ops on neutral conclusion (cancelled)', async () => {
+  // This used to assert that `cancelled` left the row untouched. That WAS the
+  // behaviour, and it was the bug: only `success` and `failure` were mapped, so
+  // a cancelled / timed_out / startup_failure run left its release row in
+  // `dispatched` forever — a state no sweeper covered, which also blocked every
+  // future non-forced release of that commit.
+  it.each(['cancelled', 'timed_out', 'startup_failure', 'skipped'])(
+    'marks the release failed when the run concluded %s',
+    async (conclusion) => {
+      selectTableResults = (t) =>
+        t === schemaMock.releases
+          ? [{ id: 'release-3', workspaceId: 'ws-release', state: 'dispatched' }]
+          : null;
+
+      const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload(conclusion)));
+      expect(res.status).toBe(200);
+
+      const releaseUpdate = updateCalls.find(
+        (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'failed',
+      );
+      expect(releaseUpdate).toBeDefined();
+      expect(String((releaseUpdate!.setValues as any).failureReason)).toContain(conclusion);
+    },
+  );
+
+  it('leaves the row alone when the run is not really concluded (action_required)', async () => {
     selectTableResults = (t) =>
       t === schemaMock.releases
-        ? [{ id: 'release-3', workspaceId: 'ws-release', state: 'dispatched' }]
+        ? [{ id: 'release-3b', workspaceId: 'ws-release', state: 'dispatched' }]
         : null;
 
-    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('cancelled')));
+    const res = await POST(
+      createWebhookRequest('workflow_run', makeWorkflowRunPayload('action_required')),
+    );
     expect(res.status).toBe(200);
 
+    // A later event carries the real verdict; recording a failure now would be
+    // wrong and terminal.
     const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
     expect(releaseUpdate).toBeUndefined();
+  });
+
+  // ── resolution by head sha ────────────────────────────────────────────────
+  //
+  // `run_url` alone was a single point of failure. dispatchWorkflowRelease
+  // polls ~15s for the run and, when it has not surfaced, stores no url at all
+  // — nothing can ever match that row again. It could also store the WRONG url:
+  // before 3cb9ea16 the readback could return a run from weeks earlier, whose
+  // workflow_run event had long since fired. Production has one row stranded
+  // exactly that way.
+  it('falls back to the head sha when no row carries this run url, and backfills the url', async () => {
+    let releasesQuery = 0;
+    selectTableResults = (t) => {
+      if (t !== schemaMock.releases) return null;
+      releasesQuery++;
+      // First query is by run_url and misses; second is the sha fallback.
+      return releasesQuery === 1
+        ? []
+        : [{ id: 'release-stranded', workspaceId: 'ws-release', state: 'dispatched', runUrl: null }];
+    };
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'deploying',
+    );
+    expect(releaseUpdate).toBeDefined();
+    // The url we should have had at dispatch time.
+    expect((releaseUpdate!.setValues as any).runUrl).toBe(RUN_URL);
+  });
+
+  it('scopes the sha fallback to in-flight rows, by sha', async () => {
+    // The mock ignores WHERE clauses, so the predicate is the only proof the
+    // fallback cannot resurrect a terminal release or match another commit.
+    let releasesQuery = 0;
+    selectTableResults = (t) => {
+      if (t !== schemaMock.releases) return null;
+      releasesQuery++;
+      return releasesQuery === 1 ? [] : [];
+    };
+
+    await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+
+    const fallback = selectWhereCalls.filter(c => c.table === schemaMock.releases).at(-1);
+    const flat = JSON.stringify(fallback?.condition);
+    expect(flat).toContain('sha-dev-head');
+    expect(flat).toContain('headSha');
+    expect(flat).toContain('dispatched');
+    expect(flat).toContain('deploying');
+  });
+
+  it('does not overwrite a run url that is already recorded', async () => {
+    let releasesQuery = 0;
+    selectTableResults = (t) => {
+      if (t !== schemaMock.releases) return null;
+      releasesQuery++;
+      return releasesQuery === 1
+        ? [{ id: 'release-5', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }]
+        : [];
+    };
+
+    await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'deploying',
+    );
+    expect(releaseUpdate).toBeDefined();
+    expect((releaseUpdate!.setValues as any).runUrl).toBeUndefined();
   });
 
   it('does not regress a release already in healthy state', async () => {
