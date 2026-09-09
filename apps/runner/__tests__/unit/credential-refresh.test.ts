@@ -171,7 +171,10 @@ describe('runnerRefreshCredential', () => {
       const result = await runnerRefreshCredential(SECRET_ID, 'claude_credential');
 
       expect(result).toBe('error');
-      expect(fetchCalls).toHaveLength(2);
+      expect(fetchCalls.some((c) => c.body.action === 'revoke')).toBe(false);
+      // Not a revocation, but still a refusal: the lock is handed back so the
+      // rotation marker does not read as a lost rotation later.
+      expect(fetchCalls.some((c) => c.body.action === 'release')).toBe(true);
     });
   });
 
@@ -185,9 +188,10 @@ describe('runnerRefreshCredential', () => {
       const result = await runnerRefreshCredential(SECRET_ID, 'claude_credential');
 
       expect(result).toBe('error');
-      // Only 2 calls: lock + provider. No revoke, no commit.
-      expect(fetchCalls).toHaveLength(2);
-      // Second call is the provider endpoint, not a revoke
+      // No revoke (not a revocation) and no commit (nothing to commit).
+      expect(fetchCalls.some((c) => c.body.action === 'revoke')).toBe(false);
+      expect(fetchCalls.some((c) => c.body.action === 'commit')).toBe(false);
+      // Second call is the provider endpoint, not a control-plane call.
       expect(fetchCalls[1].url).not.toContain('credential-refresh');
     });
   });
@@ -201,7 +205,10 @@ describe('runnerRefreshCredential', () => {
       const result = await runnerRefreshCredential(SECRET_ID, 'claude_credential');
 
       expect(result).toBe('no_credential');
-      expect(fetchCalls).toHaveLength(1);
+      // The provider is never contacted for an API-key credential...
+      expect(fetchCalls.every((c) => c.url.includes('credential-refresh'))).toBe(true);
+      // ...but the lock still has to be handed back.
+      expect(fetchCalls.some((c) => c.body.action === 'release')).toBe(true);
     });
   });
 });
@@ -229,8 +236,11 @@ describe('auth sourcing', () => {
       baseUrl: CONTROL_PLANE,
     });
 
-    expect(fetchCalls).toHaveLength(1);
     expect(fetchCalls[0].headers.Authorization).toBe('Bearer bld_from_config');
+    // Every control-plane call carries the caller's key, including the release.
+    for (const call of fetchCalls) {
+      expect(call.headers.Authorization).toBe('Bearer bld_from_config');
+    }
   });
 
   test('uses the baseUrl passed by the caller, not the buildd.dev default', async () => {
@@ -308,5 +318,131 @@ describe('lost rotation', () => {
     globalThis.fetch = makeFetchMock([{ body: { locked: false } }]);
 
     expect(await runnerRefreshCredential(SECRET_ID, 'codex_credential')).toBe('locked');
+  });
+});
+
+
+// ── releasing an unused lock ──────────────────────────────────────────────────
+//
+// Whether a failed attempt may clear the control plane's rotation marker depends
+// on one thing only: did the provider get the request? Before that, nothing was
+// rotated and the lock must be released so a network blip is not mistaken for a
+// lost rotation. After that — including a failed commit — the provider may already
+// have rotated the token, so the marker must survive and the runner stays quiet.
+
+describe('releasing an unused lock', () => {
+  test('posts release when the provider is never reached', async () => {
+    let callIndex = 0;
+    fetchCalls = [];
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      let body: Record<string, unknown> = {};
+      if (init?.body) {
+        try { body = JSON.parse(init.body as string) as Record<string, unknown>; }
+        catch { body = { __urlencoded: init.body as string }; }
+      }
+      fetchCalls.push({ url, body, headers: (init?.headers ?? {}) as Record<string, string> });
+      callIndex++;
+      if (callIndex === 1) {
+        return new Response(JSON.stringify({ locked: true, refreshToken: 'rt-old' }), { status: 200 });
+      }
+      if (callIndex === 2) throw new Error('ECONNREFUSED');  // provider unreachable
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as any;
+
+    const result = await runnerRefreshCredential(SECRET_ID, 'codex_credential');
+
+    expect(result).toBe('error');
+    const release = fetchCalls.find((c) => c.body.action === 'release');
+    expect(release).toBeDefined();
+    expect(release!.body.secretId).toBe(SECRET_ID);
+  });
+
+  test('does NOT post release when the commit fails — the rotation may already have happened', async () => {
+    let callIndex = 0;
+    fetchCalls = [];
+    globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+      let body: Record<string, unknown> = {};
+      if (init?.body) {
+        try { body = JSON.parse(init.body as string) as Record<string, unknown>; }
+        catch { body = { __urlencoded: init.body as string }; }
+      }
+      fetchCalls.push({ url, body, headers: (init?.headers ?? {}) as Record<string, string> });
+      callIndex++;
+      if (callIndex === 1) {
+        return new Response(JSON.stringify({ locked: true, refreshToken: 'rt-old' }), { status: 200 });
+      }
+      if (callIndex === 2) {
+        // Provider answered and rotated the token.
+        return new Response(
+          JSON.stringify({ access_token: 'at-new', refresh_token: 'rt-new', expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      throw new Error('ECONNRESET writing commit');  // the replacement is now lost
+    }) as any;
+
+    const result = await runnerRefreshCredential(SECRET_ID, 'codex_credential');
+
+    expect(result).toBe('error');
+    expect(fetchCalls.some((c) => c.body.action === 'commit')).toBe(true);
+    // Clearing the marker here would erase the evidence of the lost rotation.
+    expect(fetchCalls.some((c) => c.body.action === 'release')).toBe(false);
+  });
+
+  test('posts release when the provider refuses with a 5xx', async () => {
+    // The provider answered and refused, so nothing was rotated. When the runner
+    // drives the refresh, the control plane never sees that response — so if the
+    // runner does not release, the marker stands and the credential is declared a
+    // lost rotation an hour later.
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: 'rt-old' } },
+      { body: {}, status: 503 },
+      { body: { ok: true } },
+    ]);
+
+    expect(await runnerRefreshCredential(SECRET_ID, 'codex_credential')).toBe('error');
+    expect(fetchCalls.some((c) => c.body.action === 'release')).toBe(true);
+  });
+
+  test('posts release when the credential has no refresh token to rotate', async () => {
+    // An API-key credential never reaches the provider at all. Holding the marker
+    // would kill a credential that cannot even be refreshed by this path.
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: null } },
+      { body: { ok: true } },
+    ]);
+
+    expect(await runnerRefreshCredential(SECRET_ID, 'codex_credential')).toBe('no_credential');
+    expect(fetchCalls.some((c) => c.body.action === 'release')).toBe(true);
+  });
+
+  test('posts revoke, not release, on a permanent invalid_grant', async () => {
+    // revoke is itself a terminal outcome and clears the marker server-side, so a
+    // release on top would be redundant — and would muddy the health signal.
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: 'rt-old' } },
+      { body: { error: 'invalid_grant', error_description: 'Token has been revoked' }, status: 400 },
+      { body: { ok: true } },
+    ]);
+
+    expect(await runnerRefreshCredential(SECRET_ID, 'codex_credential')).toBe('error');
+    expect(fetchCalls.some((c) => c.body.action === 'revoke')).toBe(true);
+    expect(fetchCalls.some((c) => c.body.action === 'release')).toBe(false);
+  });
+
+  test('leaves no path holding the rotation marker except a post-response failure', async () => {
+    // Guard on the whole shape: every early exit that never got a successful
+    // provider response must either release or revoke. Only the commit failure —
+    // where the token really may have rotated — is allowed to stay silent.
+    globalThis.fetch = makeFetchMock([
+      { body: { locked: true, refreshToken: 'rt-old' } },
+      { body: {}, status: 500 },
+      { body: { ok: true } },
+    ]);
+    await runnerRefreshCredential(SECRET_ID, 'claude_credential');
+    const resolving = fetchCalls.filter(
+      (c) => c.body.action === 'release' || c.body.action === 'revoke',
+    );
+    expect(resolving).toHaveLength(1);
   });
 });

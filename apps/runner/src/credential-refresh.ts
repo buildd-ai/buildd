@@ -58,6 +58,33 @@ export async function runnerRefreshCredential(
 
   const authHeader = { Authorization: `Bearer ${apiKey}` };
 
+  /**
+   * Give the refresh lock back after an attempt that never reached the provider.
+   *
+   * `lock` stamps a rotation marker on the credential, and only an outcome clears
+   * it. So every exit that holds the lock without having got a successful provider
+   * response has to say so, or the marker stands and the credential is declared a
+   * lost rotation on the next cycle — a local DNS failure or an API-key credential
+   * would be killed for nothing.
+   *
+   * The one exit that must NOT call this is a failure after the provider answered
+   * successfully: there the token really may have rotated, and the marker is the
+   * only record of it.
+   */
+  const releaseUnusedLock = async (why: string): Promise<void> => {
+    try {
+      await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ secretId, purpose, action: 'release' }),
+      });
+    } catch (err) {
+      // Best effort. Failing to release only means the lock waits out its window
+      // — and the marker then reads as a lost rotation, which is the safe error.
+      console.warn(`[runner-refresh] Failed to release unused lock for ${secretId} (${why}):`, err instanceof Error ? err.message : String(err));
+    }
+  };
+
   // ── Step 1: acquire the DB refresh lock ─────────────────────────────────────
   let lockRes: Response;
   try {
@@ -99,6 +126,9 @@ export async function runnerRefreshCredential(
 
   const { refreshToken } = lockBody;
   if (!refreshToken) {
+    // API-key credential: there is nothing to rotate and the provider is never
+    // contacted, so hand the lock straight back.
+    await releaseUnusedLock('no refresh token');
     return 'no_credential';
   }
 
@@ -121,6 +151,8 @@ export async function runnerRefreshCredential(
     });
   } catch (err) {
     console.warn(`[runner-refresh] Network error refreshing ${purpose} for ${secretId}:`, err instanceof Error ? err.message : String(err));
+    // The request never completed, so nothing was rotated.
+    await releaseUnusedLock('provider unreachable');
     return 'error';
   }
 
@@ -145,10 +177,18 @@ export async function runnerRefreshCredential(
         } catch (revokeErr) {
           console.warn(`[runner-refresh] Failed to post revoke for ${secretId}:`, revokeErr instanceof Error ? revokeErr.message : String(revokeErr));
         }
+        // revoke is itself a terminal outcome and resolves the rotation marker
+        // server-side, so no release on top of it.
+      } else {
+        // A 4xx that is not a revocation is still a refusal — nothing rotated.
+        await releaseUnusedLock(`provider refused: HTTP ${providerRes.status}`);
       }
     } else {
-      // 5xx or other transient failure — leave the lock; the 60-minute window handles retry.
+      // 5xx or other transient failure. The provider answered and refused, so
+      // nothing was rotated — and when the runner drives the refresh the control
+      // plane never sees this response, so nobody else will resolve the marker.
       console.warn(`[runner-refresh] Transient provider error for ${purpose} ${secretId}: HTTP ${providerRes.status}`);
+      await releaseUnusedLock(`provider error: HTTP ${providerRes.status}`);
     }
     return 'error';
   }
@@ -175,6 +215,11 @@ export async function runnerRefreshCredential(
     });
   } catch (err) {
     console.warn(`[runner-refresh] Failed to commit tokens for ${secretId}:`, err instanceof Error ? err.message : String(err));
+    // Do NOT release here. The provider already answered and rotated the refresh
+    // token; this failure means the replacement is lost. The control plane's
+    // rotation marker is exactly what records that, so leave it standing — the
+    // next lock attempt will report rotationLost instead of presenting a consumed
+    // token and getting an unexplained invalid_grant.
     return 'error';
   }
 

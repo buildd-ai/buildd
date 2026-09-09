@@ -453,8 +453,15 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
   // API key credentials have no refresh_token — nothing to refresh via OAuth.
   if (!currentRefreshToken) return 'no_credential';
 
+  // The provider call gets its own try, deliberately. Whether a failed attempt may
+  // clear the rotation marker depends on exactly one thing: did OpenAI get the
+  // request? Before that, nothing was rotated. From the response onward — including
+  // our own commit write — OpenAI may already have issued a replacement refresh
+  // token, and clearing the marker would erase the only evidence that we lost it.
+  // A single try around both cannot tell those apart, so the split is the control.
+  let res: Response;
   try {
-    const res = await fetch(OPENAI_TOKEN_URL, {
+    res = await fetch(OPENAI_TOKEN_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -463,7 +470,23 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
         client_id: codexOAuthClientId(),
       }).toString(),
     });
+  } catch (err) {
+    console.warn(`[Codex] Token refresh unreachable for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
+    // The request never completed, so nothing was rotated. Shorten the lock and
+    // clear the marker — keeping it would turn a DNS blip into a permanently dead
+    // credential 15 minutes later, when the shortened lock reopens.
+    await db
+      .update(secrets)
+      .set({
+        refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+        rotationStartedAt: null,
+        updatedAt: sql`NOW()`,
+      })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+    return 'error';
+  }
 
+  try {
     if (!res.ok) {
       let errorBody = '';
       try {
@@ -554,16 +577,17 @@ export async function refreshCodexCredential(secretId: string): Promise<RefreshR
     console.log(`[Codex] Token refreshed for secret ${secretId}`);
     return 'refreshed';
   } catch (err) {
-    console.warn(`[Codex] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
-    // Transient network error: shorten the lock so the credential can be retried
-    // sooner, and clear the rotation marker — a request that failed at the socket
-    // did not get a rotated token issued to it, and keeping the marker would turn
-    // a DNS blip into a permanently dead credential.
+    console.warn(`[Codex] Token refresh failed after the provider responded for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
+    // A response was received and something after it threw — reading the body, or
+    // the commit write itself. OpenAI may already have rotated the refresh token,
+    // in which case the stored one is dead. rotationStartedAt is deliberately NOT
+    // cleared: it is the only record that a rotation may have been lost, and this
+    // is the case the column exists for. The lock is still walked back so the loss
+    // surfaces on the next cycle instead of hiding for the full 60-minute window.
     await db
       .update(secrets)
       .set({
         refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
-        rotationStartedAt: null,
         updatedAt: sql`NOW()`,
       })
       .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));

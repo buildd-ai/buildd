@@ -13,7 +13,7 @@ type AllowedPurpose = (typeof ALLOWED_PURPOSES)[number];
 // Actions that operate on a specific credential and therefore must prove the
 // credential belongs to the caller's team. `bootstrap` proves it differently —
 // via an active credential_leases row held by the calling runner.
-const TEAM_SCOPED_ACTIONS = ['lock', 'commit', 'revoke'] as const;
+const TEAM_SCOPED_ACTIONS = ['lock', 'commit', 'revoke', 'release'] as const;
 
 /**
  * How long a rotation may stay "in flight" before we treat it as lost.
@@ -215,6 +215,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
+  // ── release ──────────────────────────────────────────────────────────────────
+  //
+  // The counterpart to `lock`, for the one failure the caller can be certain
+  // about: it took the lock but never got the request to the provider (connect
+  // refused, DNS failure), so nothing was rotated. Without this the marker would
+  // stay set after a runner-side network blip and the credential would be
+  // declared a lost rotation an hour later — killing a working credential.
+  //
+  // Callers MUST NOT use this once a provider response has been seen. From there
+  // on a failure is post-rotation and the marker has to survive; that is what
+  // makes a genuinely lost rotation detectable.
+
+  if (action === 'release') {
+    await db
+      .update(secrets)
+      .set({
+        // Same walk-back as the libraries' transient path: retry in ~15 minutes
+        // rather than holding a dead lock for the full window.
+        refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+        rotationStartedAt: null,
+        updatedAt: sql`NOW()`,
+      })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, purpose as AllowedPurpose)));
+
+    // Deliberately no health transition: an unused lock is neither a successful
+    // refresh nor an auth failure, and recording either would corrupt the signal.
+    return NextResponse.json({ ok: true });
+  }
+
   // ── revoke ───────────────────────────────────────────────────────────────────
 
   if (action === 'revoke') {
@@ -291,5 +320,8 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  return NextResponse.json({ error: 'Invalid action. Must be lock, commit, revoke, or bootstrap' }, { status: 400 });
+  return NextResponse.json(
+    { error: 'Invalid action. Must be lock, commit, release, revoke, or bootstrap' },
+    { status: 400 },
+  );
 }

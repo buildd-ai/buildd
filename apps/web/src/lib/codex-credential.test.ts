@@ -806,20 +806,24 @@ describe('refreshCodexCredential — lock column and lost rotation', () => {
   let wheres: unknown[];
 
   // Wire db.update so every SET payload and WHERE predicate is observable, and
-  // the first UPDATE (the lock claim) returns `lockRow`.
-  function wireUpdates(lockRow: Record<string, unknown> | null) {
+  // the first UPDATE (the lock claim) returns `lockRow`. `throwOnUpdate` makes the
+  // Nth UPDATE fail, which is how a crash *after* the provider responded is
+  // simulated — the case where a rotation is genuinely lost.
+  function wireUpdates(lockRow: Record<string, unknown> | null, throwOnUpdate?: number) {
     sets = [];
     wheres = [];
     let calls = 0;
     mockDbUpdate.mockImplementation(() => {
       calls++;
       const isLock = calls === 1;
+      const shouldThrow = calls === throwOnUpdate;
       return {
         set: mock((payload: Record<string, unknown>) => {
           sets.push(payload);
           return {
             where: mock((predicate: unknown) => {
               wheres.push(predicate);
+              if (shouldThrow) throw new Error('db write failed mid-rotation');
               return {
                 returning: mock(() => Promise.resolve(isLock && lockRow ? [lockRow] : [])),
               };
@@ -951,12 +955,47 @@ describe('refreshCodexCredential — lock column and lost rotation', () => {
     expect('lastRefreshedAt' in recovery).toBe(false);
   });
 
-  it('clears rotationStartedAt when fetch throws', async () => {
+  it('clears rotationStartedAt when the provider is never reached', async () => {
+    // fetch threw, so no request completed and nothing was rotated. Keeping the
+    // marker here would turn a DNS blip into a permanently dead credential.
     wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
     globalThis.fetch = mock(() => Promise.reject(new Error('boom'))) as any;
 
     expect(await refreshCodexCredential('s-1')).toBe('error');
     expect(sets[1]!.rotationStartedAt).toBeNull();
+  });
+
+  it('KEEPS rotationStartedAt when a response arrived and the commit write fails', async () => {
+    // This is the failure the column exists for: OpenAI answered 200 and issued a
+    // replacement refresh token, then our own write lost it. The stored token is
+    // now dead. Clearing the marker would erase the only evidence, and the next
+    // cycle would present the consumed token and get invalid_grant with no reason.
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') }, 2);
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    expect(await refreshCodexCredential('s-1')).toBe('error');
+    // sets[1] is the failed commit; sets[2] is the recovery update.
+    const recovery = sets[2]!;
+    expect('rotationStartedAt' in recovery).toBe(false);
+    // The lock is still walked back so the loss surfaces on the next cycle rather
+    // than sitting invisible for the full 60-minute window.
+    expect('refreshLockedAt' in recovery).toBe(true);
+  });
+
+  it('KEEPS rotationStartedAt when the response body fails to parse', async () => {
+    // A response was received, so the token may already have been rotated —
+    // whether we could read the body is irrelevant to that.
+    wireUpdates({ id: 's-1', encryptedValue: blobWithIdToken('at', 'rt', 'acc') });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.reject(new Error('unexpected end of JSON input')),
+    })) as any;
+
+    expect(await refreshCodexCredential('s-1')).toBe('error');
+    expect('rotationStartedAt' in sets[1]!).toBe(false);
   });
 
   it('releases the lock on refreshLockedAt on permanent revocation, preserving lastRefreshedAt', async () => {

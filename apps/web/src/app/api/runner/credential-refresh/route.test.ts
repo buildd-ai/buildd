@@ -429,7 +429,7 @@ describe('POST /api/runner/credential-refresh', () => {
   // credential_leases check; lock/commit/revoke did not.
 
   describe('tenancy scoping', () => {
-    for (const action of ['lock', 'commit', 'revoke'] as const) {
+    for (const action of ['lock', 'commit', 'revoke', 'release'] as const) {
       it(`returns 403 for action=${action} when the credential belongs to another team`, async () => {
         mockDbFindFirst.mockResolvedValue({
           id: 'secret-1',
@@ -644,6 +644,41 @@ describe('POST /api/runner/credential-refresh', () => {
       }));
 
       expect(dbUpdateSets[0]!.rotationStartedAt).toBeNull();
+    });
+  });
+
+
+  // ── release ────────────────────────────────────────────────────────────────
+  //
+  // The counterpart to `lock` for the one failure the runner can be sure about:
+  // it took the lock but never got the request to the provider (connect refused,
+  // DNS failure), so nothing was rotated. Without this, a runner-side network
+  // blip would leave the marker set, and the credential would be declared a lost
+  // rotation an hour later — killing a perfectly good credential.
+  //
+  // The runner must NOT call this once a response has been seen; a failure from
+  // there on is post-rotation and the marker has to survive.
+
+  describe('action=release', () => {
+    it('walks the lock back and clears the rotation marker', async () => {
+      const res = await POST(makeReq({ ...BASE, action: 'release' }));
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.ok).toBe(true);
+
+      const set = dbUpdateSets[0]!;
+      expect(set.rotationStartedAt).toBeNull();
+      expect(JSON.stringify(set.refreshLockedAt)).toContain('45 minutes');
+      // Releasing an unused lock is not a success and not a failure.
+      expect('lastRefreshedAt' in set).toBe(false);
+      expect('healthStatus' in set).toBe(false);
+    });
+
+    it('does not touch credential health', async () => {
+      await POST(makeReq({ ...BASE, action: 'release' }));
+      expect(mockRecordCredentialAuthFailure).not.toHaveBeenCalled();
+      expect(mockRecordCredentialAuthSuccess).not.toHaveBeenCalled();
+      expect(mockNotifyTeam).not.toHaveBeenCalled();
     });
   });
 

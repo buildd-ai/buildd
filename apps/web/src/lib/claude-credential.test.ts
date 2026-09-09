@@ -726,19 +726,23 @@ describe('refreshClaudeCredential — lock column and lost rotation', () => {
   let sets: Array<Record<string, unknown>>;
   let wheres: unknown[];
 
-  function wireUpdates(lockRow: Record<string, unknown> | null) {
+  // `throwOnUpdate` makes the Nth UPDATE fail, which is how a crash *after* the
+  // provider responded is simulated — the case where a rotation is genuinely lost.
+  function wireUpdates(lockRow: Record<string, unknown> | null, throwOnUpdate?: number) {
     sets = [];
     wheres = [];
     let calls = 0;
     mockUpdate.mockImplementation(() => {
       calls++;
       const isLock = calls === 1;
+      const shouldThrow = calls === throwOnUpdate;
       return {
         set: mock((payload: Record<string, unknown>) => {
           sets.push(payload);
           return {
             where: mock((predicate: unknown) => {
               wheres.push(predicate);
+              if (shouldThrow) throw new Error('db write failed mid-rotation');
               return {
                 returning: mock(() => Promise.resolve(isLock && lockRow ? [lockRow] : [])),
               };
@@ -834,12 +838,39 @@ describe('refreshClaudeCredential — lock column and lost rotation', () => {
     expect(recovery.rotationStartedAt).toBeNull();
   });
 
-  it('clears rotationStartedAt when fetch throws', async () => {
+  it('clears rotationStartedAt when the provider is never reached', async () => {
+    // fetch threw, so no request completed and nothing was rotated.
     wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
     globalThis.fetch = mock(() => Promise.reject(new Error('boom'))) as any;
 
     expect(await refreshClaudeCredential('s-1')).toBe('error');
     expect(sets[1]!.rotationStartedAt).toBeNull();
+  });
+
+  it('KEEPS rotationStartedAt when a response arrived and the commit write fails', async () => {
+    // The provider answered 200 and rotated the token; our own write lost the
+    // replacement. The marker is the only evidence — it must survive.
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') }, 2);
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ access_token: 'new-at', refresh_token: 'new-rt', expires_in: 3600 }),
+    })) as any;
+
+    expect(await refreshClaudeCredential('s-1')).toBe('error');
+    const recovery = sets[2]!;
+    expect('rotationStartedAt' in recovery).toBe(false);
+    expect('refreshLockedAt' in recovery).toBe(true);
+  });
+
+  it('KEEPS rotationStartedAt when the response body fails to parse', async () => {
+    wireUpdates({ id: 's-1', encryptedValue: claudeBlob('at', 'rt') });
+    globalThis.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.reject(new Error('unexpected end of JSON input')),
+    })) as any;
+
+    expect(await refreshClaudeCredential('s-1')).toBe('error');
+    expect('rotationStartedAt' in sets[1]!).toBe(false);
   });
 
   it('clears the rotation marker on permanent revocation without touching lastRefreshedAt', async () => {

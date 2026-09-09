@@ -407,8 +407,15 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
   const blob = decodeBlob(claimed.encryptedValue);
   if (!blob.refresh_token) return 'no_credential';
 
+  // The provider call gets its own try, deliberately. Whether a failed attempt may
+  // clear the rotation marker depends on exactly one thing: did Anthropic get the
+  // request? Before that, nothing was rotated. From the response onward — including
+  // our own commit write — a replacement refresh token may already have been issued,
+  // and clearing the marker would erase the only evidence that we lost it. A single
+  // try around both cannot tell those apart, so the split is the control.
+  let res: Response;
   try {
-    const res = await fetch(CLAUDE_TOKEN_URL, {
+    res = await fetch(CLAUDE_TOKEN_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -417,7 +424,23 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
         client_id: CLAUDE_OAUTH_CLIENT_ID,
       }),
     });
+  } catch (err) {
+    console.warn(`[Claude] Token refresh unreachable for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
+    // The request never completed, so nothing was rotated. Shorten the lock and
+    // clear the marker — keeping it would turn a DNS blip into a permanently dead
+    // credential 15 minutes later, when the shortened lock reopens.
+    await db
+      .update(secrets)
+      .set({
+        refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
+        rotationStartedAt: null,
+        updatedAt: sql`NOW()`,
+      })
+      .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
+    return 'error';
+  }
 
+  try {
     if (!res.ok) {
       const detail = `HTTP ${res.status}`;
       console.warn(`[Claude] Token refresh failed for secret ${secretId}: ${detail}`);
@@ -488,16 +511,18 @@ export async function refreshClaudeCredential(secretId: string): Promise<Refresh
     console.log(`[Claude] Token refreshed for secret ${secretId}`);
     return 'refreshed';
   } catch (err) {
-    console.warn(`[Claude] Token refresh error for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
-    // Transient network error: shorten the lock so the credential can be retried
-    // sooner, and clear the rotation marker — a request that failed at the socket
-    // did not get a rotated token issued to it, and keeping the marker would turn
-    // a DNS blip into a permanently dead credential.
+    console.warn(`[Claude] Token refresh failed after the provider responded for secret ${secretId}:`, err instanceof Error ? err.message : 'unknown');
+    // A response was received and something after it threw — reading the body, or
+    // the commit write itself. A replacement refresh token may already have been
+    // issued, in which case the stored one is dead. rotationStartedAt is
+    // deliberately NOT cleared: it is the only record that a rotation may have been
+    // lost, and this is the case the column exists for. The lock is still walked
+    // back so the loss surfaces on the next cycle rather than hiding for the full
+    // 60-minute window.
     await db
       .update(secrets)
       .set({
         refreshLockedAt: sql`NOW() - INTERVAL '45 minutes'`,
-        rotationStartedAt: null,
         updatedAt: sql`NOW()`,
       })
       .where(and(eq(secrets.id, secretId), eq(secrets.purpose, PURPOSE)));
