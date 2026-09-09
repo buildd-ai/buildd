@@ -29,6 +29,41 @@ function CredAction({
   );
 }
 
+/** Shape of a `POST .../{claude,codex}-credential/refresh` response body. */
+interface RefreshResponseBody {
+  status?: string;
+  error?: string;
+  detail?: string;
+}
+
+/**
+ * Turn a credential-refresh response into the card's status message.
+ *
+ * `ok` is checked before `status` because the route can refuse outright: with
+ * `BUILDD_ALLOW_CONTROL_PLANE_REFRESH` off it answers 503 with `error`/`detail`
+ * explaining that refresh is runner-originated. Switching on `status` alone fell
+ * through to "No credential to refresh." — wrong, and unhelpful, for a
+ * credential that is connected and simply cannot be refreshed from here.
+ *
+ * A refusal renders the server's own text rather than a message keyed off the
+ * status code, so the explanation stays accurate if the route rewords it.
+ *
+ * Exported for unit tests; both credential cards share it.
+ */
+export function refreshResultMessage(
+  ok: boolean,
+  data: RefreshResponseBody | null,
+): { type: 'success' | 'error'; text: string } {
+  if (!ok) {
+    const text = [data?.error, data?.detail].filter(Boolean).join(' ');
+    return { type: 'error', text: text || 'Failed to refresh token' };
+  }
+  if (data?.status === 'refreshed') return { type: 'success', text: 'Token refreshed.' };
+  if (data?.status === 'locked') return { type: 'success', text: 'Token was refreshed recently.' };
+  if (data?.status === 'error') return { type: 'error', text: 'Refresh failed — the credential may be invalid.' };
+  return { type: 'error', text: 'No credential to refresh.' };
+}
+
 /**
  * Per-backend readiness from `GET /api/teams/[id]/backend-readiness`.
  * `strandedPending` is the whole point: pending tasks whose EFFECTIVE backend
@@ -961,11 +996,11 @@ function ClaudeConnectedAccountCard({ accessWorkspaceId, scope, teamTargets, fal
     setMsg(null);
     try {
       const res = await fetch(`${base}/refresh${q}`, { method: 'POST' });
-      const data = await res.json();
-      if (data.status === 'refreshed') { setMsg({ type: 'success', text: 'Token refreshed.' }); await load(); }
-      else if (data.status === 'locked') setMsg({ type: 'success', text: 'Token was refreshed recently.' });
-      else if (data.status === 'error') setMsg({ type: 'error', text: 'Refresh failed — the credential may be invalid.' });
-      else setMsg({ type: 'error', text: 'No credential to refresh.' });
+      // A refusal (503, control-plane refresh disabled) carries its own explanation
+      // in the body — surface it instead of guessing from `status`.
+      const data = await res.json().catch(() => null) as RefreshResponseBody | null;
+      setMsg(refreshResultMessage(res.ok, data));
+      if (res.ok && data?.status === 'refreshed') await load();
     } catch {
       setMsg({ type: 'error', text: 'Failed to refresh token' });
     } finally {
@@ -1324,11 +1359,11 @@ function CodexCard({ accessWorkspaceId, scope, teamTargets, strand, onCredential
     setMsg(null);
     try {
       const res = await fetch(`${base}/refresh${q}`, { method: 'POST' });
-      const data = await res.json();
-      if (data.status === 'refreshed') { setMsg({ type: 'success', text: 'Token refreshed.' }); await load(); }
-      else if (data.status === 'locked') setMsg({ type: 'success', text: 'Token was refreshed recently.' });
-      else if (data.status === 'error') setMsg({ type: 'error', text: 'Refresh failed — the credential may be invalid.' });
-      else setMsg({ type: 'error', text: 'No credential to refresh.' });
+      // A refusal (503, control-plane refresh disabled) carries its own explanation
+      // in the body — surface it instead of guessing from `status`.
+      const data = await res.json().catch(() => null) as RefreshResponseBody | null;
+      setMsg(refreshResultMessage(res.ok, data));
+      if (res.ok && data?.status === 'refreshed') await load();
     } catch {
       setMsg({ type: 'error', text: 'Failed to refresh token' });
     } finally {
