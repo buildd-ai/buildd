@@ -141,6 +141,28 @@ export async function githubApi(installationId: number, path: string, options: R
   return response.json();
 }
 
+/**
+ * Same auth as githubApi, but returns the body as text.
+ *
+ * Actions job logs are plain text, so githubApi's unconditional
+ * `response.json()` throws on them. Callers must bound what they do with the
+ * result — a single job log runs to megabytes.
+ */
+export async function githubApiText(installationId: number, path: string): Promise<string> {
+  const token = await getInstallationToken(installationId);
+  const response = await fetch(`https://api.github.com${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub API error: ${response.status} ${await response.text()}`);
+  }
+  return response.text();
+}
+
 // List repositories for an installation (with pagination)
 export async function listInstallationRepos(installationId: number) {
   const allRepos: Array<Record<string, unknown>> = [];
