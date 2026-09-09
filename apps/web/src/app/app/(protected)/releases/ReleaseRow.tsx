@@ -47,10 +47,23 @@ export function ReleaseRow({
   archetypeBadge,
 }: ReleaseRowProps) {
   return (
-    <Link
-      href={`/app/releases/${release.id}`}
-      className="card p-4 hover:bg-surface-hover transition-colors cursor-pointer"
-    >
+    // The card is a <div>, not the <Link>, for two reasons. `.card` sets
+    // background/border but no `display`, so an inline <a> host collapses the
+    // whole row. And this row contains its own outbound links (commit range,
+    // workflow run) — nesting <a> inside <a> is invalid HTML, and the parser's
+    // adoption-agency algorithm splits it into several sibling cards, which is
+    // what painted a card fragment over the workspace name.
+    //
+    // Instead: an absolutely-positioned overlay Link makes the whole card
+    // clickable, and the real anchors below get `relative` so they paint and
+    // take clicks above that overlay. No z-index — a positioned element already
+    // beats non-positioned content, and the card is not a stacking context.
+    <div className="card card-interactive relative p-4">
+      <Link
+        href={`/app/releases/${release.id}`}
+        aria-label={`Release detail for ${workspaceName}`}
+        className="absolute inset-0 cursor-pointer"
+      />
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap mb-2">
@@ -79,10 +92,9 @@ export function ReleaseRow({
             {commitRangeUrl && (
               <a
                 href={commitRangeUrl}
-                onClick={(e) => e.stopPropagation()}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-mono text-primary hover:underline"
+                className="relative font-mono text-primary hover:underline"
               >
                 {release.previousSha?.slice(0, 7)}...{release.headSha?.slice(0, 7)}
               </a>
@@ -108,15 +120,14 @@ export function ReleaseRow({
         {release.runUrl && (
           <a
             href={release.runUrl}
-            onClick={(e) => e.stopPropagation()}
             target="_blank"
             rel="noopener noreferrer"
-            className="shrink-0 text-[11px] font-mono text-primary hover:underline"
+            className="relative shrink-0 text-[11px] font-mono text-primary hover:underline"
           >
             Run →
           </a>
         )}
       </div>
-    </Link>
+    </div>
   );
 }
