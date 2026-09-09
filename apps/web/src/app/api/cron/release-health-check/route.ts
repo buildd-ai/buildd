@@ -9,7 +9,9 @@
 // window narrower than the poll interval silently skips every release that
 // lands in the gap (see apps/web/src/lib/cron-cadence.ts).
 //
-// Also sweeps releases stuck in `deploying`: verifyReleaseDeployment only ever
+// Also sweeps releases stuck in `dispatched` (no matching workflow_run ever
+// arrived, so the row would otherwise never reach a terminal state and would
+// block re-releasing that commit) and in `deploying`: verifyReleaseDeployment only ever
 // runs once, fire-and-forget, when a release enters `deploying` (see
 // advanceReleaseStateFromWorkflowRun in the github webhook route). If that one
 // attempt no-ops (e.g. releaseConfig.verificationUrl was unset at the time) or
@@ -96,10 +98,10 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     results.push({ releaseId: row.id, outcome });
   }
 
-  // Stale 'deploying' sweep — see file header.
   const retryStaleCutoff = new Date(Date.now() - RETRY_STALE_MINUTES * 60_000);
   const hardFailCutoff = new Date(Date.now() - HARD_FAIL_STALE_HOURS * 3_600_000);
 
+  // Stale 'deploying' sweep — see file header.
   const staleDeploying = await db
     .select({ id: releases.id, deployedAt: releases.deployedAt, workspaceId: releases.workspaceId })
     .from(releases)
@@ -137,6 +139,47 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
+  // Stale 'dispatched' sweep.
+  //
+  // A dispatched row is waiting for its workflow_run webhook. If that event
+  // never matches — the readback resolved no run url, or resolved a stale one,
+  // or the delivery was simply lost — nothing else ever revisits the row: the
+  // sweep above only looks at `deploying`, and `verifyReleaseDeployment`
+  // early-returns unless the state is exactly `deploying`. The row then sits in
+  // `dispatched` forever AND blocks every future non-forced release of that
+  // commit, because the trigger route's dedup check treats `dispatched` as
+  // in-flight. One production row sat here through 25 consecutive green runs of
+  // this very job.
+  //
+  // There is nothing to retry from here (the run may not exist at all), so the
+  // only correct move is to let it reach a terminal state and say why.
+  const staleDispatched = await db
+    .select({ id: releases.id, workspaceId: releases.workspaceId, dispatchedAt: releases.dispatchedAt })
+    .from(releases)
+    .where(and(eq(releases.state, 'dispatched'), lt(releases.dispatchedAt, hardFailCutoff)));
+
+  let dispatchedHardFailed = 0;
+  for (const row of staleDispatched) {
+    const [updated] = await db
+      .update(releases)
+      .set({
+        state: 'failed',
+        failureReason:
+          `never advanced past 'dispatched' within ${HARD_FAIL_STALE_HOURS}h — ` +
+          `no matching workflow_run was received, so the dispatch outcome is unknown`,
+      })
+      .where(and(eq(releases.id, row.id), eq(releases.state, 'dispatched')))
+      .returning({ id: releases.id });
+
+    if (updated) {
+      dispatchedHardFailed++;
+      await triggerEvent(channels.workspace(row.workspaceId), events.RELEASE_UPDATED, {
+        releaseId: row.id,
+        state: 'failed',
+      });
+    }
+  }
+
   console.log(
     JSON.stringify({
       event: 'release_health_check',
@@ -146,8 +189,28 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       staleDeploying: staleDeploying.length,
       staleRetried,
       staleHardFailed,
+      staleDispatched: staleDispatched.length,
+      dispatchedHardFailed,
     }),
   );
+
+  // The verdict, not just a heartbeat. This sweep's whole purpose is to catch
+  // releases that stalled silently, so a run of it that accomplishes nothing
+  // must be legible as such — otherwise the watcher has the same failure mode
+  // it was built to detect.
+  report({
+    processed: candidates.length + staleDeploying.length + staleDispatched.length,
+    changed: degraded + staleRetried + staleHardFailed + dispatchedHardFailed,
+    result: {
+      probed,
+      degraded,
+      staleDeploying: staleDeploying.length,
+      staleRetried,
+      staleHardFailed,
+      staleDispatched: staleDispatched.length,
+      dispatchedHardFailed,
+    },
+  });
 
   return NextResponse.json({
     ok: true,
@@ -158,5 +221,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     staleDeploying: staleDeploying.length,
     staleRetried,
     staleHardFailed,
+    staleDispatched: staleDispatched.length,
+    dispatchedHardFailed,
   });
 }

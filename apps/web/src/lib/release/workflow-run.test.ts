@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'bun:test';
-import { buildWorkflowRunOutcome, type WorkflowRunPayload } from './workflow-run';
+import {
+  buildWorkflowRunOutcome,
+  mapWorkflowConclusionToReleaseState,
+  type WorkflowRunPayload,
+} from './workflow-run';
 import type { ReleaseResult } from '@buildd/core/db/schema';
 
 const baseRun = (over: Partial<WorkflowRunPayload> = {}): WorkflowRunPayload => ({
@@ -99,5 +103,27 @@ describe('buildWorkflowRunOutcome', () => {
     };
     const result = buildWorkflowRunOutcome(withHooks, baseRun());
     expect(result.hooksRan).toEqual([{ description: 'notify', success: true }]);
+  });
+});
+
+describe('mapWorkflowConclusionToReleaseState', () => {
+  it('advances a successful run to deploying', () => {
+    expect(mapWorkflowConclusionToReleaseState('success')).toBe('deploying');
+  });
+
+  // The regression: these all used to return early, leaving the release row in
+  // `dispatched` — a state no sweeper covered and which blocks re-releasing
+  // that commit without `force`.
+  it.each(['failure', 'cancelled', 'timed_out', 'startup_failure', 'stale', 'skipped', 'neutral'])(
+    'treats %s as a terminal failure rather than leaving the row in limbo',
+    conclusion => {
+      expect(mapWorkflowConclusionToReleaseState(conclusion)).toBe('failed');
+    },
+  );
+
+  it('leaves a row alone when the run is not really concluded', () => {
+    // `action_required` waits on a human; a later event carries the verdict.
+    expect(mapWorkflowConclusionToReleaseState(null)).toBeNull();
+    expect(mapWorkflowConclusionToReleaseState('action_required')).toBeNull();
   });
 });

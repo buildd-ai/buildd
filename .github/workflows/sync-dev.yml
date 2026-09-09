@@ -1,16 +1,41 @@
 name: Sync dev from main
 
+# Keeps `dev` fast-forwardable from `main` after a release, and recreates `dev`
+# if it is ever deleted outright.
+#
+# Two things this workflow must never do, both learned the hard way:
+#
+# 1. It must not force-push `dev`. The old version reset `dev` to `main`
+#    whenever the two had diverged, justified by "dev→main PRs mean all dev
+#    commits are already in main". That is false for the documented
+#    `release:hotfix` path (branch→main, never touching dev) and false for
+#    anything merged to `dev` between a release PR's head SHA and the merge
+#    click. It fired on 2026-08-29 after a hotfix went straight to main and
+#    flattened `dev`, which is what produces the "phantom upstream commits,
+#    every PR suddenly conflicts" symptom. Divergence is now a loud failure
+#    for a human to resolve, never a silent rewrite.
+#
+# 2. It must not act on unrelated branch deletions. GitHub's `delete` event
+#    does NOT support a `branches:` filter — it is accepted and silently
+#    ignored — so `delete: { branches: [dev] }` fires for EVERY branch deleted
+#    in the repo. Because merged PRs auto-delete their head branch, that was
+#    87 of the last 100 runs of this workflow. The ref is therefore checked in
+#    an `if:`, which is the only place the filter actually works.
+
 on:
   push:
     branches: [main]
   delete:
-    branches: [dev]
 
 permissions:
   contents: write
 
 jobs:
   sync:
+    # The `delete` half of the trigger cannot be scoped declaratively (see above),
+    # so scope it here. A feature branch being deleted is not this workflow's
+    # business.
+    if: github.event_name != 'delete' || (github.event.ref_type == 'branch' && github.event.ref == 'dev')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -18,27 +43,35 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Ensure dev exists and matches main
+      - name: Ensure dev exists and is fast-forwardable from main
         run: |
-          if git ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1; then
-            echo "dev exists, syncing to main..."
-            git fetch origin dev
-            git checkout dev
+          set -euo pipefail
 
-            # Try fast-forward first (clean case)
-            if git merge --ff-only origin/main 2>/dev/null; then
-              echo "Fast-forwarded dev to main"
-              git push origin dev
-            else
-              # dev has diverged — force-reset to main
-              # Safe because dev→main PRs mean all dev commits are already in main
-              echo "dev has diverged from main, force-resetting..."
-              git reset --hard origin/main
-              git push --force origin dev
-              echo "✅ dev force-reset to main"
-            fi
-          else
+          if ! git ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1; then
             echo "dev branch missing, recreating from main..."
             git checkout -b dev
             git push origin dev
+            exit 0
           fi
+
+          echo "dev exists, syncing from main..."
+          git fetch origin dev
+          git checkout dev
+
+          if git merge --ff-only origin/main; then
+            echo "Fast-forwarded dev to main"
+            git push origin dev
+            exit 0
+          fi
+
+          # Diverged. Report what is at risk and stop — do NOT rewrite dev.
+          echo "::error title=dev has diverged from main::dev cannot be fast-forwarded from main. Resolve this by hand; this workflow will not rewrite dev."
+          echo ""
+          echo "Commits on dev that are NOT on main (these are what a force-reset would have destroyed):"
+          git log --oneline origin/main..origin/dev || true
+          echo ""
+          echo "Commits on main that are NOT on dev:"
+          git log --oneline origin/dev..origin/main || true
+          echo ""
+          echo "To reconcile: git checkout dev && git merge origin/main && git push origin dev"
+          exit 1

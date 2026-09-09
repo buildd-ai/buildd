@@ -834,6 +834,13 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
 
     const archivedMissions = await runMissionArchive(now);
 
+    report({
+      processed,
+      changed: created,
+      errors,
+      result: { created, skipped, deferred, errors, triggerChecks, heartbeatOrphans, archivedMissions },
+    });
+
     return NextResponse.json({
       processed,
       created,
