@@ -83,7 +83,7 @@ export function isAutoResolveMergeConflictsEnabled(
  * Returns the PR's repo URL if different from workspace repo, or null otherwise.
  */
 async function detectCrossRepoPr(
-  installationId: string | null,
+  installationId: number | null,
   repoFullName: string,
   prNumber: number,
   workspaceRepoUrl: string | null | undefined,
@@ -93,19 +93,13 @@ async function detectCrossRepoPr(
   }
 
   try {
-    const prData = await githubApi(
-      installationId,
-      async (octokit) => {
-        const [owner, repo] = repoFullName.split('/');
-        return octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
-      }
-    );
+    const prData = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
 
-    if (!prData.data.head?.repo?.full_name) {
+    if (!prData?.head?.repo?.full_name) {
       return null;
     }
 
-    const prRepoFullName = prData.data.head.repo.full_name;
+    const prRepoFullName = prData.head.repo.full_name;
 
     // Normalize both URLs for comparison
     const normalizeRepo = (url: string | null | undefined): string | null => {
