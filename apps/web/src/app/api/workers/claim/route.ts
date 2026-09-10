@@ -912,6 +912,17 @@ export async function POST(req: NextRequest) {
    * matched against a held lease by layer 2 no matter who is holding one, two
    * scope-undeclared tasks in one mission would otherwise run concurrently and
    * ping-pong conflict retries on the same files.
+   *
+   * `category: 'review'` tasks are excluded from both sides of this guard.
+   * `createReviewerTask` (lib/reviewer.ts) never sets a pathManifest — a
+   * reviewer reads a diff and posts a verdict, it has no file scope to
+   * declare — so every reviewer task is "scope-undeclared" by construction.
+   * Counting it as the mission's one undeclared-scope occupant blocks every
+   * other reviewer task in the same mission (they can never conflict with each
+   * other on disk), and worse, an orchestration/investigation task that is
+   * ALSO scope-undeclared and stays in flight starves reviewer tasks
+   * indefinitely — the mission's heartbeat loop keeps refilling that slot
+   * before a reviewer ever gets a turn.
    */
   const missionAdvisoryInFlight = new Map<string, Set<string>>();
 
@@ -933,7 +944,7 @@ export async function POST(req: NextRequest) {
     // of aggregated so we don't add a second round trip; the count is the same
     // number of joined worker rows the aggregate produced.
     const missionInFlightRows = await db
-      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest })
+      .select({ missionId: tasks.missionId, taskId: tasks.id, pathManifest: tasks.pathManifest, category: tasks.category })
       .from(workers)
       .innerJoin(tasks, eq(tasks.id, workers.taskId))
       .where(and(
@@ -943,7 +954,7 @@ export async function POST(req: NextRequest) {
     for (const row of missionInFlightRows) {
       if (!row.missionId) continue;
       missionActiveCountMap.set(row.missionId, (missionActiveCountMap.get(row.missionId) ?? 0) + 1);
-      if (declaresNoScope(row.pathManifest as string[] | null)) {
+      if (row.category !== 'review' && declaresNoScope(row.pathManifest as string[] | null)) {
         const set = missionAdvisoryInFlight.get(row.missionId) ?? new Set<string>();
         if (row.taskId) set.add(row.taskId);
         missionAdvisoryInFlight.set(row.missionId, set);
@@ -1097,7 +1108,14 @@ export async function POST(req: NextRequest) {
         //    the conflict. Cost: a mission's other scope-undeclared tasks wait
         //    on a parked question — visible as the advisory_manifest deferral
         //    counter and as the parked task's own "Needs Input" state.
-        if (declaresNoScope(taskManifest)) {
+        //
+        //    `category: 'review'` candidates skip this gate entirely: a
+        //    reviewer never edits files, so it cannot conflict with whatever
+        //    the mission's in-flight scope-undeclared occupant is doing, and
+        //    gating it here just adds a second review-starvation failure mode
+        //    on top of the one already fixed above (an orchestration task
+        //    holding the slot would otherwise block every reviewer forever).
+        if ((task as any).category !== 'review' && declaresNoScope(taskManifest)) {
           const advisoryPeers = missionAdvisoryInFlight.get(taskMissionId);
           const blockingPeer = advisoryPeers
             ? [...advisoryPeers].find(id => id !== task.id)
