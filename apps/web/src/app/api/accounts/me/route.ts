@@ -27,14 +27,14 @@ export async function GET(req: NextRequest) {
   if (account.authType === 'oauth') {
     const config = readPacingConfig(process.env);
     try {
+      const now = new Date();
       const accountIds = await resolveSeatIdPeers({
         id: account.id,
         teamId: account.teamId ?? '',
         seatId: account.seatId ?? null,
       });
-      const episodes = await loadOauthEpisodes(accountIds);
+      const episodes = await loadOauthEpisodes(accountIds, undefined, now);
       const capacity = learnOauthCapacity(episodes, { quantile: config.quantile });
-      const now = new Date();
       const { windowStartedAt, usage } = await measureOauthWindow({
         accountIds,
         now,
