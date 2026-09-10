@@ -120,7 +120,7 @@ no-signal branch (`mission-loop.ts:162`), not a separate terminal status.
 
 ## 3. Why is mission `dac620f2` (active, 100%, heartbeat still ticking) stuck?
 
-`manage_missions get` on `dac620f2-2b2e-4a58-993c-96cfd7df249f` returns:
+`manage_missions get` on mission `dac620f2` returns:
 
 ```
 [active] [HELD]
