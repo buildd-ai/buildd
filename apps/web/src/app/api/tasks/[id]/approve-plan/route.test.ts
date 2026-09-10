@@ -61,6 +61,9 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -389,5 +392,50 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
     expect(data.error).toContain('rejected');
     // No child tasks created from a rejected plan.
     expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('deduplicates plan steps with existing pending/in-progress tasks', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+
+    // Route handler and approvePlan() each fetch the planning task independently,
+    // so this must satisfy both calls, not just the first.
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'plan-task-1',
+      mode: 'planning',
+      status: 'completed',
+      workspaceId: 'ws-1',
+      missionId: 'mission-1',
+      result: {
+        structuredOutput: {
+          plan: [
+            { ref: 'step-1', title: 'Aggregate results', description: 'Synthesize work' },
+            { ref: 'step-2', title: 'Monitor PR review', description: 'Check PR status' },
+            { ref: 'step-3', title: 'Deploy', description: 'Deploy to prod' },
+          ],
+          summary: 'Three step plan',
+        },
+      },
+      workspace: { id: 'ws-1' },
+    });
+
+    // findMany for dedup returns existing pending tasks with matching titles
+    mockTasksFindMany.mockResolvedValueOnce([
+      { title: 'Aggregate results' }, // Already pending, should be skipped
+      { title: 'Monitor PR review' },   // Already pending, should be skipped
+      // 'Deploy' is not pending, so it should be created
+    ]);
+
+    const request = createMockRequest();
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    // Only 'Deploy' should be created (the other two are deduped)
+    expect(data.tasks).toHaveLength(1);
+    expect(data.tasks).toEqual(['child-task-1']);
+
+    // Verify only the non-duplicate step was inserted
+    expect(mockInsertValues).toHaveLength(1);
+    expect(mockInsertValues[0].title).toBe('Deploy');
   });
 });

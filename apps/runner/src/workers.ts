@@ -1130,11 +1130,14 @@ export class WorkerManager {
     const task = claimedWorker.task;
     if (!task) return null;
 
-    const workspacePath = this.resolver.resolve({
-      id: task.workspaceId,
-      name: task.workspace?.name || 'unknown',
-      repo: task.workspace?.repo,
-    });
+    const workspacePath = this.resolver.resolve(
+      {
+        id: task.workspaceId,
+        name: task.workspace?.name || 'unknown',
+        repo: task.workspace?.repo,
+      },
+      (task.context as Record<string, unknown> | null) ?? null
+    );
 
     if (!workspacePath) {
       console.error(`Cannot resolve workspace for claimed task: ${task.title}`);
@@ -1316,11 +1319,14 @@ export class WorkerManager {
     const fullTask = claimedWorker.task || task;
 
     // Resolve workspace path from the FULL claimed task (see note above).
-    const workspacePath = this.resolver.resolve({
-      id: fullTask.workspaceId,
-      name: fullTask.workspace?.name || 'unknown',
-      repo: fullTask.workspace?.repo,
-    });
+    const workspacePath = this.resolver.resolve(
+      {
+        id: fullTask.workspaceId,
+        name: fullTask.workspace?.name || 'unknown',
+        repo: fullTask.workspace?.repo,
+      },
+      (fullTask.context as Record<string, unknown> | null) ?? null
+    );
 
     if (!workspacePath) {
       const wsName = fullTask.workspace?.name || fullTask.workspaceId;

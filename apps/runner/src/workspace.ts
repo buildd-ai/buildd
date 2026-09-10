@@ -41,8 +41,8 @@ export function ensureIsolatedClone(
 }
 
 export interface WorkspaceResolver {
-  resolve(workspace: { id: string; name: string; repo?: string | null }): string | null;
-  debugResolve(workspace: { id: string; name: string; repo?: string | null }): ResolveDebugInfo;
+  resolve(workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): string | null;
+  debugResolve(workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): ResolveDebugInfo;
   listLocalDirectories(): string[];
   getPathOverrides(): Record<string, string>;
   setPathOverride(workspaceName: string, localPath: string): void;
@@ -195,8 +195,15 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
     return gitRemoteCache;
   };
 
-  const attemptResolve = (workspace: { id: string; name: string; repo?: string | null }): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
+  const attemptResolve = (workspace: { id: string; name: string; repo?: string | null }, taskContext?: Record<string, unknown> | null): { path: string | null; attempts: ResolveDebugInfo['attemptedPaths'] } => {
     const attempts: ResolveDebugInfo['attemptedPaths'] = [];
+
+    // Cross-repo override from task context (e.g., conflict-retry on cross-repo PR).
+    // When a task has prRepoUrl in context, it means the work is on a different repo
+    // than the task's workspace. Use that repo URL for resolution instead.
+    const prRepoOverride = taskContext && typeof taskContext.prRepoUrl === 'string'
+      ? taskContext.prRepoUrl
+      : null;
 
     // Tier 3B: per-workspace isolated clone takes priority when isolation is enabled.
     if (isolationRoot && workspace.id && workspace.repo) {
@@ -222,9 +229,11 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       if (exists) return { path: overridePath, attempts };
     }
 
-    // Try git remote matching first (most reliable)
-    if (workspace.repo) {
-      const normalizedTarget = normalizeGitUrl(workspace.repo);
+    // Try git remote matching first (most reliable).
+    // When prRepoOverride is set (cross-repo case), use that instead of workspace.repo.
+    const repoUrlToMatch = prRepoOverride || workspace.repo;
+    if (repoUrlToMatch) {
+      const normalizedTarget = normalizeGitUrl(repoUrlToMatch);
       if (normalizedTarget) {
         const cache = getGitCache();
         const remoteMatches: string[] = [];
@@ -247,11 +256,13 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
             if (aExact !== bExact) return aExact - bExact;
             return an.length - bn.length;
           })[0];
-          attempts.push({ path: best, exists: true, method: 'git-remote' });
+          const method = prRepoOverride ? 'git-remote-override' : 'git-remote';
+          attempts.push({ path: best, exists: true, method });
           return { path: best, attempts };
         }
         // Log that we tried git matching but found no match
-        attempts.push({ path: `git:${normalizedTarget}`, exists: false, method: 'git-remote' });
+        const method = prRepoOverride ? 'git-remote-override' : 'git-remote';
+        attempts.push({ path: `git:${normalizedTarget}`, exists: false, method });
       }
     }
 
@@ -410,12 +421,15 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
   };
 
   return {
-    resolve(workspace) {
-      const { path } = attemptResolve(workspace);
+    resolve(workspace, taskContext) {
+      const { path } = attemptResolve(workspace, taskContext);
       if (!path) {
         const dirs = listDirs();
         const normalizedRepo = normalizeGitUrl(workspace.repo);
-        console.warn(`Could not resolve workspace: "${workspace.name}" (id: ${workspace.id}, repo: ${workspace.repo || 'none'}, normalized: ${normalizedRepo || 'none'})`);
+        const prRepoOverride = taskContext && typeof taskContext.prRepoUrl === 'string'
+          ? taskContext.prRepoUrl
+          : null;
+        console.warn(`Could not resolve workspace: "${workspace.name}" (id: ${workspace.id}, repo: ${workspace.repo || 'none'}, normalized: ${normalizedRepo || 'none'}${prRepoOverride ? `, prRepoUrl: ${prRepoOverride}` : ''})`);
         console.warn(`  Available directories: ${dirs.join(', ')}`);
         // List git remotes for debugging
         const cache = getGitCache();
@@ -428,11 +442,11 @@ export function createWorkspaceResolver(projectRoots: string | string[], isolati
       return path;
     },
 
-    debugResolve(workspace) {
+    debugResolve(workspace, taskContext) {
       // Clear cache to get fresh data
       gitRemoteCache = null;
 
-      const { path, attempts } = attemptResolve(workspace);
+      const { path, attempts } = attemptResolve(workspace, taskContext);
       return {
         workspace,
         projectsRoot: roots.join(', '),
