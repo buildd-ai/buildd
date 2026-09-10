@@ -538,6 +538,15 @@ export interface TaskResult {
   reaperAutoCompleted?: boolean;
   /** Reaper audit trail moved here so result.summary carries the outcome, not forensics. See spec B.5. */
   reaperForensics?: string;
+  /**
+   * Provenance of `summary`. 'agent' = the agent explicitly passed it to
+   * complete_task. 'fallback' = the runner derived it from the SDK's last
+   * assistant message because the session ended without a complete_task
+   * call — often a stray conversational aside, not an outcome. Consumers
+   * (KB ingestion, UI) must not present a 'fallback' summary as an
+   * authored outcome. Missing = written before this field existed.
+   */
+  summarySource?: 'agent' | 'fallback';
 }
 
 // Per-model token usage from SDK result
