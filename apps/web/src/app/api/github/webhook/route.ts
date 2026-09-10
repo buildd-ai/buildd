@@ -18,7 +18,13 @@ import {
 import { notify } from '@/lib/pushover';
 import { checkAndUnblockDependentMissions } from '@/lib/mission-dependency';
 import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
-import { isMissionIntegrationBase, shouldAnnounceBaseAdvance } from '@buildd/core/mission-integration';
+import {
+  isMissionIntegrationBase,
+  isMissionPrTask,
+  isStackedPhaseBase,
+  missionIntegrationBase,
+  shouldAnnounceBaseAdvance,
+} from '@buildd/core/mission-integration';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -592,6 +598,15 @@ async function handlePullRequestEvent(event: {
   if (pr.base?.ref) {
     const observedBaseRef = pr.base.ref;
     try {
+      // Read the prior base ref BEFORE the write below — `.returning()` on an
+      // UPDATE only yields POST-update rows, and detecting a mission-gate
+      // retarget (P2b) needs the value it moved FROM, not just that it moved.
+      const retargetCandidate = await db.query.workers.findFirst({
+        where: workerOwnsPr(repository.full_name, pr.number),
+        columns: { id: true, workspaceId: true, taskId: true, prBaseRef: true },
+        with: { task: { columns: { id: true, title: true, taskClass: true, missionId: true, context: true } } },
+      });
+
       const rebased = await db
         .update(workers)
         .set({ prBaseRef: observedBaseRef, updatedAt: new Date() })
@@ -607,6 +622,46 @@ async function handlePullRequestEvent(event: {
           `[webhook] PR #${pr.number} base ref now '${observedBaseRef}' `
           + `on worker ${row.id} [action=${action}]`,
         );
+      }
+
+      // A task PR (never the mission PR itself) whose base MOVED OFF its
+      // mission's integration branch has lost its review gate. This is how
+      // the production incident happened: a PR whose head was the
+      // integration branch merged, the repo's delete-branch-on-merge setting
+      // removed that branch, and GitHub silently retargeted every remaining
+      // task PR of the mission to trunk. Loud, not absorbed — never handled
+      // anywhere before this (no `base_ref_changed` / `automatic_base_change_
+      // succeeded` handling existed at all).
+      const retargetMissionId: string | null = retargetCandidate?.task?.missionId ?? null;
+      if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && retargetCandidate.prBaseRef && !isMissionPrTask(retargetCandidate.task)) {
+        const task = retargetCandidate.task;
+        const mission = await db.query.missions.findFirst({
+          where: eq(missions.id, retargetMissionId),
+          columns: { workingBranch: true, integrationBranchEnabled: true },
+        });
+        const integrationBase = missionIntegrationBase(mission);
+        const taskContext = task.context as Record<string, unknown> | null;
+        const stacked = isStackedPhaseBase({
+          contextBaseBranch: taskContext?.baseBranch as string | undefined,
+          head: pr.head?.ref ?? null,
+          mission,
+        });
+        if (
+          !stacked &&
+          integrationBase &&
+          retargetCandidate.prBaseRef === integrationBase &&
+          observedBaseRef !== integrationBase
+        ) {
+          await reportMissionGateRetarget({
+            missionId: retargetMissionId,
+            taskTitle: task.title,
+            prNumber: pr.number,
+            prUrl: pr.html_url,
+            headSha: pr.head?.sha ?? observedBaseRef,
+            fromBase: integrationBase,
+            toBase: observedBaseRef,
+          });
+        }
       }
     } catch (err) {
       // Never fail the webhook over bookkeeping — a missed sync self-heals on the
@@ -1230,6 +1285,55 @@ async function handlePullRequestEvent(event: {
       }
     }
   }
+}
+
+/**
+ * A task PR's base moved OFF its mission's integration branch (P2b) — a lost
+ * review gate, reported loudly rather than absorbed. Best-effort: a failure
+ * here must never fail the webhook, and the retarget itself already
+ * persisted (`workers.prBaseRef`) regardless of whether this reporting
+ * succeeds.
+ */
+async function reportMissionGateRetarget(opts: {
+  missionId: string;
+  taskTitle: string;
+  prNumber: number;
+  prUrl: string;
+  headSha: string;
+  fromBase: string;
+  toBase: string;
+}): Promise<void> {
+  const message =
+    `${opts.taskTitle} — PR #${opts.prNumber}'s base moved from the mission's integration ` +
+    `branch (\`${opts.fromBase}\`) to \`${opts.toBase}\`. This PR has lost its mission review ` +
+    `gate — likely GitHub auto-retargeting after the integration branch was deleted. Retarget ` +
+    `it back to \`${opts.fromBase}\` or route it through the mission PR.`;
+  try {
+    await db.insert(missionNotes).values({
+      missionId: opts.missionId,
+      authorType: 'system',
+      type: 'warning',
+      title: `PR #${opts.prNumber} lost its mission integration gate`,
+      body: message,
+      status: 'open',
+    });
+  } catch (err) {
+    console.error(`[webhook] failed to record gate-retarget note for PR #${opts.prNumber}:`, err);
+  }
+  await notifyMissionPrReady(opts.missionId, {
+    title: `PR #${opts.prNumber} retargeted off the mission integration branch`,
+    prUrl: opts.prUrl,
+    prNumber: opts.prNumber,
+    headSha: opts.headSha,
+    reason: 'base_retargeted',
+    message,
+  }).catch(err =>
+    console.error(`[webhook] failed to notify gate-retarget for PR #${opts.prNumber}:`, err),
+  );
+  console.error(
+    `[webhook] PR #${opts.prNumber} (mission ${opts.missionId}) retargeted off integration ` +
+    `branch '${opts.fromBase}' onto '${opts.toBase}' — review gate lost`,
+  );
 }
 
 /**

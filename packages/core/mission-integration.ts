@@ -112,3 +112,62 @@ export function shouldAnnounceBaseAdvance(pr: {
 }): boolean {
   return pr.merged === true && looksLikeMissionIntegrationBranch(pr.baseRef);
 }
+
+/**
+ * Is `baseRef` a legal base for a mission task's pull request?
+ *
+ * The one predicate for "buildd did not open this PR (or its base moved after
+ * the fact), so is it still where it belongs" — asked from PR adoption
+ * (`create_pr` with an externally-supplied `prUrl`) and from webhook retarget
+ * handling, which must never disagree about the answer.
+ *
+ * True whenever the mission has no integration base (nothing to enforce), or
+ * `baseRef` equals it. The sole exception is the mission PR itself — its base
+ * is trunk, by design — so callers must say which task they mean via
+ * `isMissionPrTask`; this predicate has no way to tell a mission PR apart from
+ * a task PR wrongly pointed at trunk without being told.
+ */
+export function isPrLegalForMissionTask(args: {
+  baseRef?: string | null;
+  mission?: MissionIntegrationFields | null;
+  isMissionPrTask: boolean;
+}): boolean {
+  const integrationBase = missionIntegrationBase(args.mission);
+  if (!integrationBase) return true;
+  if (args.isMissionPrTask) return true;
+  const ref = args.baseRef?.trim();
+  return !!ref && ref === integrationBase;
+}
+
+/**
+ * Does `contextBaseBranch` name a genuine stacked-plan predecessor, rather
+ * than the Option A′ default or the recovery-task current-head marker?
+ *
+ * A stacked plan step's `context.baseBranch` names a *sibling task's own
+ * branch* (`approve-plan.ts`'s `resolveDependencyBranch`) — real stacking,
+ * and legitimately not the mission's integration branch, because the PR is
+ * meant to merge into the predecessor's branch before that branch itself
+ * lands on the integration branch. A recovery task's `context.baseBranch`
+ * instead names the CURRENT head (a marker that predates `resumeBranch`) and
+ * must not be mistaken for a stacked declaration — nor must the Option A′
+ * default, where `context.baseBranch` was filled in as the integration base
+ * itself and so trivially matches it.
+ *
+ * Every mission-integration derivation/enforcement point (PR creation,
+ * adoption, retarget detection) must skip a task this returns `true` for —
+ * its correct base is the recorded predecessor branch, not the mission's
+ * integration branch, and forcing the latter would break the stack.
+ */
+export function isStackedPhaseBase(args: {
+  contextBaseBranch?: string | null;
+  head?: string | null;
+  mission?: MissionIntegrationFields | null;
+}): boolean {
+  const integrationBase = missionIntegrationBase(args.mission);
+  if (!integrationBase) return false;
+  const base = args.contextBaseBranch?.trim();
+  if (!base) return false;
+  if (base === integrationBase) return false;
+  if (base === args.head) return false;
+  return true;
+}
