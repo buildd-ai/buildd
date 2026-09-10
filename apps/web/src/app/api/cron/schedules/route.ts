@@ -13,6 +13,7 @@ import { getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { runHealthWatcher } from '@/lib/health-watcher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
+import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { runStaleWorkerCleanup } from './maintenance/stale-workers';
@@ -622,6 +623,25 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               }
             }
 
+            // Wait, don't plan: every non-terminal task is on a known self-resolving
+            // condition (budget pause, queued reviewer/retry, loop backoff). Record
+            // when to check back and skip the LLM entirely — never re-propose the
+            // same wait/monitor/aggregate/merge coordination steps under new wording.
+            if (prepass.action === 'skip_waiting') {
+              await db.update(taskSchedules).set({
+                nextRunAt: prepass.waitUntil,
+                lastDeferralReason: 'heartbeat_waiting',
+                lastDeferredAt: now,
+                updatedAt: now,
+              }).where(eq(taskSchedules.id, schedule.id));
+              await recordHeartbeatWaitNote(linkedMission.id, prepass.reason, prepass.waitUntil).catch(e =>
+                console.error(`[heartbeat-prepass] failed to record wait note for mission ${linkedMission.id}:`, e),
+              );
+              deterministicHeartbeatSkips++;
+              skipped++;
+              continue;
+            }
+
             if (prepass.action === 'skip_blocked' || prepass.action === 'skip_no_change') {
               const deferReason = prepass.action === 'skip_blocked' ? 'heartbeat_blocked' : 'heartbeat_no_change';
               await db.update(taskSchedules).set({ lastDeferralReason: deferReason, lastDeferredAt: now, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
@@ -633,6 +653,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             if (prepass.action === 'invoke_llm') {
               // Persist current state hash so the next heartbeat can detect no-change.
               await db.update(taskSchedules).set({ lastHeartbeatStateHash: prepass.stateKey, updatedAt: now }).where(eq(taskSchedules.id, schedule.id));
+              // Real planning is resuming — close out any wait note left over
+              // from a prior cycle rather than leaving a stale "waiting" note visible.
+              await resolveHeartbeatWaitNote(linkedMission.id).catch(e =>
+                console.error(`[heartbeat-prepass] failed to resolve wait note for mission ${linkedMission.id}:`, e),
+              );
               llmHeartbeatInvocations++;
             }
             // Otherwise this is a criteria re-arm falling through from

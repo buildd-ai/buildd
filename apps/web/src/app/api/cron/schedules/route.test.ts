@@ -488,6 +488,50 @@ describe('GET /api/cron/schedules', () => {
     }));
   });
 
+  describe('waiting heartbeat (skip_waiting)', () => {
+    function heartbeatSchedule() {
+      return makeSchedule({
+        workspaceId: 'ws-1',
+        taskTemplate: {
+          title: 'Mission: Waiting',
+          mode: 'planning',
+          priority: 0,
+          context: { heartbeat: true },
+        },
+      });
+    }
+
+    it('records wait-until and creates zero tasks instead of invoking the planner', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+      const waitUntil = new Date('2026-01-01T05:00:00Z');
+      mockPrepass.mockResolvedValue({ action: 'skip_waiting', reason: 'provider budget/rate-limit pause', waitUntil } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).toBeNull();
+      expect(body.deterministicHeartbeatSkips).toBe(1);
+      const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_waiting');
+      expect(deferral).toBeDefined();
+      expect(deferral?.set?.nextRunAt).toEqual(waitUntil);
+    });
+
+    it('resumes planning on the next cycle once evaluateHeartbeatPrepass no longer reports skip_waiting', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', workspaceId: 'ws-1', status: 'active' });
+      mockPrepass.mockResolvedValue({ action: 'invoke_llm', stateKey: 'sk-2' } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(body.llmHeartbeatInvocations).toBe(1);
+      expect(tasksInsertValues).not.toBeNull();
+      const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'heartbeat_waiting');
+      expect(deferral).toBeUndefined();
+    });
+  });
+
   describe('criteria-blocked heartbeat', () => {
     function heartbeatSchedule() {
       return makeSchedule({

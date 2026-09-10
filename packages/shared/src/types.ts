@@ -1302,6 +1302,19 @@ export interface TaskSubjectAnchor {
   subjectMissionId?: string;
   source: 'context' | 'url' | 'text' | 'system' | 'backfill';
   confidence: 'exact' | 'derived';
+  /**
+   * Coordination-step classification (wait/aggregate/merge/verify), set only on
+   * kind='mission' anchors created for planner-generated coordination tasks.
+   * Lets successive heartbeat cycles dedupe repeated wait/monitor/aggregate/merge
+   * steps by INTENT instead of by title wording — see approve-plan.ts.
+   */
+  coordinationIntent?: 'wait' | 'aggregate' | 'merge' | 'verify';
+  /**
+   * Sorted, deduped PR numbers referenced by a coordination step's own title/
+   * description — the "subject PR set" half of its dedupe key. Empty when the
+   * step names no specific PR (the common case for generic wait/aggregate steps).
+   */
+  subjectPrNumbers?: number[];
 }
 
 export type SubjectIntakeOutcome =

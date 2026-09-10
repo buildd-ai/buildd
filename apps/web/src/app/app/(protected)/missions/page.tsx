@@ -192,6 +192,10 @@ export default async function MissionsPage({
     const scheduleCron = (obj.schedule as any)?.cronExpression || null;
     const rawDeferralReason = (obj.schedule as any)?.lastDeferralReason || null;
     const lastDeferredAt = (obj.schedule as any)?.lastDeferredAt ? String((obj.schedule as any).lastDeferredAt) : null;
+    // The heartbeat prepass records this as `nextRunAt` when it's deliberately
+    // waiting on a known self-resolving condition (see heartbeat-prepass.ts) —
+    // read it back so the mission renders BLOCKED, not idle, while it waits.
+    const heartbeatWaitingUntil = rawDeferralReason === 'heartbeat_waiting' ? nextRunAt ?? null : null;
 
     // Compute whether the per-schedule concurrent cap is still actually exceeded.
     // If not, clear the stale 'concurrent_cap' reason so the badge shows AUTO.
@@ -318,7 +322,7 @@ export default async function MissionsPage({
         const w = (t.workers as any[])?.[0];
         return w?.prUrl && !w?.mergedAt && w?.prLifecycleStatus !== 'closed';
       }).length,
-      healthState: deriveTaskHealthSignal(obj, obj.tasks || []),
+      healthState: deriveTaskHealthSignal({ ...obj, heartbeatWaitingUntil }, obj.tasks || []),
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),
       initiativeId: obj.initiativeId || null,

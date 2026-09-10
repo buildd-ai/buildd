@@ -734,6 +734,9 @@ export default async function HomePage({
               : null;
 
             const rawDeferralReason = (mission.schedule as any)?.lastDeferralReason ?? null;
+            // See heartbeat-prepass.ts: recorded as `nextRunAt` while the heartbeat
+            // is deliberately waiting on a known self-resolving condition.
+            const heartbeatWaitingUntil = rawDeferralReason === 'heartbeat_waiting' ? nextRunAt : null;
 
             // Check if per-schedule concurrent cap is still exceeded; if not, clear the stale reason.
             let lastDeferralReason = rawDeferralReason;
@@ -799,7 +802,7 @@ export default async function HomePage({
               orchestrationMode,
               status: mission.status,
               segments,
-              healthState: deriveTaskHealthSignal(mission, mission.tasks),
+              healthState: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks),
               inFlightTasks: mission.tasks.flatMap(t => (t as any).workers.filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
               lastDeferralReason,
               lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,
