@@ -2,10 +2,10 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-08
+last_verified: 2026-09-10
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/criteria-escalation.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/mission-base-guard.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
 keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber]
 supersedes: []
@@ -322,18 +322,36 @@ stored — it is derived on read from the state of associated tasks via
 - **One task, one branch, one PR — in every branch shape.** Tasks under a mission
   MUST NOT share a branch and MUST NOT be represented by a single PR.
   `missions.workingBranch` is the mission's *integration* branch (shape
-  `mission/<slug>-<id8>`, written lazily on first task creation for a mission
-  whose workspace has a repo), and it is the **base** of the mission's task PRs
-  only when that mission has opted in (`missions.integrationBranchEnabled`,
-  default `false`). For an opted-in mission, task PRs merge into the integration
+  `mission/<slug>-<id8>`), and it is the **base** of the mission's task PRs only
+  when that mission has opted in (`missions.integrationBranchEnabled`, resolved
+  once at mission creation from the request's `branchStrategy` or the
+  workspace's configured default). Both the flag and the branch name MUST be
+  written in the same operation that creates the mission, and the ref MUST be
+  ensured on the remote there too: a mission-branch mission must never exist in
+  the enabled-but-inert state where a task can be claimed before its base
+  exists. For an opted-in mission, task PRs merge into the integration
   branch and the mission's work reaches trunk through exactly one PR from that
   branch — the mission integration PR, which is the mission's single human gate.
   That PR is opened automatically: the `pull_request` webhook calls
   `maybeOpenMissionIntegrationPr` when a task PR merges, and
   `openMissionIntegrationPr` opens it once every deliverable task of the mission is
   terminal and every deliverable PR has merged into the integration branch. For every
-  other mission — the default — each task PR targets the workspace's trunk branch
+  other mission, each task PR targets the workspace's trunk branch
   and `workingBranch` retargets nothing.
+- **A task PR's base is refused at every door, not only at the front one.** For a
+  task whose mission has an integration base, a pull request whose base is not
+  that branch MUST be refused wherever buildd would otherwise record it against
+  the worker: PR creation (`create_pr`), adoption of a caller-supplied `prUrl`,
+  adoption of a PR that already exists on the worker's branch, and the
+  completion handler's GitHub auto-detect. A base buildd cannot read is illegal —
+  unknown MUST NOT resolve to a passing check. The `pull_request` webhook cannot
+  refuse anything, so its enforcement form is repair: when a task PR is observed
+  based off the integration branch, buildd retargets it back and announces it,
+  falling back to the lost-gate report when the branch no longer exists. The
+  exemptions are exactly those of the base derivation itself — the mission-PR
+  owner task (`MISSION_PR_TASK_PREFIX`, whose base IS trunk by design), a
+  stacked-plan phase (`isStackedPhaseBase`), a mission with no integration base,
+  and a task with no mission.
 - `missions.primaryPrNumber`/`primaryPrUrl` MUST only ever be claimed by a PR
   whose base ref is a trunk branch of the workspace (`gitConfig.targetBranch`,
   `gitConfig.defaultBranch`, or the repo default). A PR based on the mission

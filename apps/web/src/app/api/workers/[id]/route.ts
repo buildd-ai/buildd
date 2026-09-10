@@ -57,6 +57,7 @@ import { buildWorkerMessage, enqueueWorkerMessage, clearWorkerMessages } from '@
 import { pathsOverlap, isAdvisoryManifest, partitionRegenerableOverlaps } from '@buildd/core/path-overlap';
 import { isNonReactivatableError } from '@/lib/worker-termination';
 import { markInstructionsDelivered } from '@/lib/worker-instructions';
+import { loadMissionBaseGuard } from '@/lib/mission-base-guard';
 
 /**
  * Worker statuses from which no further live update is legal. Every optimistic
@@ -927,7 +928,11 @@ export async function PATCH(
 
   const terminalTaskRow = isTerminalStatus && worker.taskId
     ? await db
-        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description })
+        // `taskClass` is here for the Option A′ auto-detect guard below:
+        // `isMissionPrTask` needs it to tell the mission PR's own owner task
+        // (head = integration branch, base = trunk, legal) apart from a task
+        // PR wrongly pointed at trunk. Title alone would exempt nothing.
+        .select({ outputRequirement: tasks.outputRequirement, missionId: tasks.missionId, scheduleId: tasks.scheduleId, mode: tasks.mode, category: tasks.category, context: tasks.context, creationSource: tasks.creationSource, outputSchema: tasks.outputSchema, title: tasks.title, description: tasks.description, taskClass: tasks.taskClass })
         .from(tasks)
         .where(eq(tasks.id, worker.taskId))
         .limit(1)
@@ -995,6 +1000,16 @@ export async function PATCH(
       }
 
       // Auto-detect: if no PR on worker but branch exists, check GitHub for open PRs
+      //
+      // This is the fourth door a PR can enter buildd through, and the one the
+      // Option A′ derivation could not see: it adopts whatever open PR exists
+      // on the worker's branch, however it got there. `gh pr create --base
+      // <trunk>` followed by complete_task lands here — create_pr is never
+      // called, so nothing derives or checks the base, and a mission task PR
+      // pointed at trunk is recorded as this task's deliverable with its
+      // review gate already gone. Refuse the adoption instead, with the same
+      // retarget instruction the front door gives.
+      let autoDetectRefusal: { error: string; hint: string } | null = null;
       if (!hasPR && worker.branch && repoWithInstallation) {
         try {
           const owner = repoWithInstallation.fullName.split('/')[0];
@@ -1003,16 +1018,42 @@ export async function PATCH(
             `/repos/${repoWithInstallation.fullName}/pulls?head=${encodeURIComponent(owner + ':' + worker.branch)}&state=open`,
           );
           if (Array.isArray(prs) && prs.length > 0) {
-            // Found PR — update worker and let validation pass
-            await db.update(workers).set({
-              prUrl: prs[0].html_url,
+            const guard = await loadMissionBaseGuard({
+              task: terminalTaskRow[0]
+                ? {
+                    title: terminalTaskRow[0].title,
+                    taskClass: terminalTaskRow[0].taskClass,
+                    missionId: terminalTaskRow[0].missionId,
+                    context: terminalTaskRow[0].context,
+                  }
+                : null,
+              head: worker.branch,
+            });
+            const detectedBaseRef = typeof prs[0].base?.ref === 'string' ? prs[0].base.ref : null;
+            autoDetectRefusal = guard.refusal(detectedBaseRef, {
               prNumber: prs[0].number,
-              updatedAt: new Date(),
-            }).where(eq(workers.id, id));
-            hasPR = true;
-            workerHasPR = true;
+              action: 'adopt',
+            });
+            if (!autoDetectRefusal) {
+              // Found PR — update worker and let validation pass
+              await db.update(workers).set({
+                prUrl: prs[0].html_url,
+                prNumber: prs[0].number,
+                // The base ref came straight from GitHub in this request and the
+                // column is empty on this path by construction (we only get here
+                // when the worker had no PR at all), so recording it is safe and
+                // stops the merge-policy chain from having to guess later.
+                ...(detectedBaseRef ? { prBaseRef: detectedBaseRef } : {}),
+                updatedAt: new Date(),
+              }).where(eq(workers.id, id));
+              hasPR = true;
+              workerHasPR = true;
+            }
           }
         } catch { /* non-fatal — fall through to normal validation */ }
+      }
+      if (autoDetectRefusal) {
+        return NextResponse.json(autoDetectRefusal, { status: 400 });
       }
 
       // pr_required fallback: a task scoped as "rebase/merge PR #N" can lose
