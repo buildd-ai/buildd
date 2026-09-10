@@ -8,7 +8,7 @@ import { cookies } from 'next/headers';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
-import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
+import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
 import { computeMissionProgress, computeMissionSkyline } from '@buildd/core/mission-helpers';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -113,7 +113,6 @@ export default async function MissionsPage({
   const allMissions = await db.query.missions.findMany({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
-    limit: 50,
     columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
@@ -362,7 +361,7 @@ export default async function MissionsPage({
 
   const activeGroups = FILTER_TO_GROUPS.active ?? [];
   const activeCount = missionsList.filter(
-    (m) => activeGroups.includes(healthToGroup(m.health, m.progress))
+    (m) => activeGroups.includes(statusToGroup({ status: m.status, isHeld: m.isHeld, startAt: m.startAt, progress: m.progress }))
   ).length;
 
   return (
