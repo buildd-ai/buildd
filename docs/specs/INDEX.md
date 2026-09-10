@@ -67,7 +67,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.
 - [Provider Failover](./provider-failover.md) · @max — verified 2026-08-25
   When a task's agent backend hits a budget or rate-limit wall or has its credential rejected, the system MUST re-queue that task on another enabled, un-walled backend, or park it until the earliest provider reset.
-- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-07-18
+- [Runner Liveness](./runner-liveness.md) · @max — verified 2026-09-10
   The coordination layer MUST detect a runner or worker that has gone silent, reclaim or permanently fail its task, and alert ops on systematic failure without ever blocking the claim path.
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.

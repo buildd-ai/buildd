@@ -33,6 +33,7 @@ import { extractBuilddAction } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
+import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { ClaimLogEntry } from './session-logger';
@@ -807,7 +808,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
