@@ -3,6 +3,8 @@ import {
   MISSION_BRANCH_PREFIX,
   shouldAnnounceBaseAdvance,
   isMissionIntegrationBase,
+  isPrLegalForMissionTask,
+  isStackedPhaseBase,
   looksLikeMissionIntegrationBranch,
   missionIntegrationBase,
 } from '../mission-integration';
@@ -153,5 +155,74 @@ describe('shouldAnnounceBaseAdvance', () => {
   it('does not announce when the base ref is unknown', () => {
     expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: null })).toBe(false);
     expect(shouldAnnounceBaseAdvance({ merged: true })).toBe(false);
+  });
+});
+
+describe('isPrLegalForMissionTask', () => {
+  it('is legal when the base equals the integration branch', () => {
+    expect(
+      isPrLegalForMissionTask({ baseRef: 'mission/checkout-arc-1a2b3c4d', mission: OPTED_IN, isMissionPrTask: false }),
+    ).toBe(true);
+  });
+
+  it('is illegal when a task PR bases on trunk instead of the integration branch', () => {
+    expect(
+      isPrLegalForMissionTask({ baseRef: 'dev', mission: OPTED_IN, isMissionPrTask: false }),
+    ).toBe(false);
+  });
+
+  it('is illegal when the base is unknown', () => {
+    expect(
+      isPrLegalForMissionTask({ baseRef: null, mission: OPTED_IN, isMissionPrTask: false }),
+    ).toBe(false);
+  });
+
+  it('exempts the mission PR itself, whose base is trunk by design', () => {
+    expect(
+      isPrLegalForMissionTask({ baseRef: 'dev', mission: OPTED_IN, isMissionPrTask: true }),
+    ).toBe(true);
+  });
+
+  it('is legal for any base when the mission has no integration base', () => {
+    expect(
+      isPrLegalForMissionTask({ baseRef: 'dev', mission: null, isMissionPrTask: false }),
+    ).toBe(true);
+    expect(
+      isPrLegalForMissionTask({ baseRef: null, mission: { ...OPTED_IN, integrationBranchEnabled: false }, isMissionPrTask: false }),
+    ).toBe(true);
+  });
+});
+
+describe('isStackedPhaseBase', () => {
+  const HEAD = 'buildd/deadbeef-do-thing';
+  const PREDECESSOR = 'buildd/predecessor00-earlier-thing';
+
+  it('is true for a genuine predecessor branch declaration', () => {
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: OPTED_IN }),
+    ).toBe(true);
+  });
+
+  it('is false when context.baseBranch is unset', () => {
+    expect(isStackedPhaseBase({ contextBaseBranch: undefined, head: HEAD, mission: OPTED_IN })).toBe(false);
+    expect(isStackedPhaseBase({ contextBaseBranch: null, head: HEAD, mission: OPTED_IN })).toBe(false);
+  });
+
+  it('is false when context.baseBranch is the Option A′ default (equals the integration branch)', () => {
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: OPTED_IN.workingBranch, head: HEAD, mission: OPTED_IN }),
+    ).toBe(false);
+  });
+
+  it('is false when context.baseBranch is the recovery-task current-head marker', () => {
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: HEAD, head: HEAD, mission: OPTED_IN }),
+    ).toBe(false);
+  });
+
+  it('is false when the mission has no integration base — nothing to stack against', () => {
+    expect(
+      isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: null }),
+    ).toBe(false);
   });
 });

@@ -41,7 +41,16 @@ const mockSelect = mock((fields: Record<string, unknown>) => {
   chain.innerJoin = () => chain;
   chain.where = (pred: unknown) => {
     capturedWhere = pred;
-    return Promise.resolve(fixtureMissionMerges ? [rowFromFixture()] : selectRows);
+    const rows = fixtureMissionMerges ? [rowFromFixture()] : selectRows;
+    // Thenable AND chainable: `loadMissionShipState` awaits `.where(...)`
+    // directly, `loadShippedMissionIds` chains `.groupBy(...)` after it.
+    const resultChain: Record<string, unknown> = {
+      groupBy: () => Promise.resolve(rows),
+      then: (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
+        Promise.resolve(rows).then(resolve, reject),
+      catch: (reject: (e: unknown) => unknown) => Promise.resolve(rows).catch(reject),
+    };
+    return resultChain;
   };
   return chain;
 });
@@ -52,6 +61,7 @@ import {
   classifyMissionShipState,
   shouldQueryMissionShipState,
   loadMissionShipState,
+  loadShippedMissionIds,
   type MissionShipEvidence,
   type MissionShipState,
 } from './mission-ship-state';
@@ -349,5 +359,45 @@ describe("loadMissionShipState — Option A' integration-branch merges", () => {
     fixtureMissionMerges = [{ taskId: 't-1', prBaseRef: null }];
 
     expect(await loadMissionShipState(mission, gatedWorkspace)).toBe('merged_unshipped');
+  });
+});
+
+// ── loadShippedMissionIds — batched rollup signal ───────────────────────────
+
+describe('loadShippedMissionIds', () => {
+  beforeEach(() => {
+    mockSelect.mockClear();
+    selectCallCount = 0;
+    capturedWhere = null;
+    selectRows = [];
+    fixtureMissionMerges = null;
+  });
+
+  it('returns an empty set and issues NO query for an empty mission list', async () => {
+    const out = await loadShippedMissionIds([]);
+    expect(out.size).toBe(0);
+    expect(selectCallCount).toBe(0);
+  });
+
+  it('issues exactly one query for many missions — not one per mission', async () => {
+    selectRows = [{ missionId: 'm-1' }, { missionId: 'm-2' }];
+    await loadShippedMissionIds(['m-1', 'm-2', 'm-3']);
+    expect(selectCallCount).toBe(1);
+  });
+
+  it('returns the mission ids with at least one task in a healthy release', async () => {
+    selectRows = [{ missionId: 'm-1' }];
+    const out = await loadShippedMissionIds(['m-1', 'm-2']);
+    expect(out.has('m-1')).toBe(true);
+    expect(out.has('m-2')).toBe(false);
+  });
+
+  it('scopes to the given mission ids and partitions on healthy releases', async () => {
+    selectRows = [];
+    await loadShippedMissionIds(['m-1', 'm-2']);
+    const where = render(capturedWhere);
+    expect(where).toContain('"tasks"."mission_id" in');
+    expect(where).toContain('"releases"."state" = ');
+    expect(renderParams(capturedWhere)).toContain('healthy');
   });
 });

@@ -17,11 +17,22 @@ mock.module('@/lib/github', () => ({
 let mockFindFirst = mock(() => null as any);
 let mockUpdateReturns: any[] = [];
 let capturedInsertValues: any[] = [];
+// P3 mission-PR branch-lifecycle gate: guardMissionPrMerge/finalizeMissionPrMerge
+// (real, unmocked `@/lib/mission-pr`) read deliverable tasks + their workers and
+// the mission row — none of which this file needed before.
+let mockTasksFindMany = mock(() => [] as any[]);
+let mockWorkersFindMany = mock(() => [] as any[]);
+let mockMissionsFindFirst = mock(() => null as any);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
-      tasks: { findFirst: (...args: any[]) => mockFindFirst(...args) },
+      tasks: {
+        findFirst: (...args: any[]) => mockFindFirst(...args),
+        findMany: (...args: any[]) => mockTasksFindMany(...args),
+      },
+      workers: { findMany: (...args: any[]) => mockWorkersFindMany(...args) },
+      missions: { findFirst: (...args: any[]) => mockMissionsFindFirst(...args) },
     },
     update: (_table: any) => ({
       set: (_vals: any) => ({
@@ -45,6 +56,8 @@ mock.module('drizzle-orm', () => ({
   or: (...args: any[]) => ({ type: 'or', args }),
   sql: (strings: any, ...values: any[]) => ({ type: 'sql', strings, values }),
   isNull: (a: any) => ({ type: 'isNull', a }),
+  isNotNull: (a: any) => ({ type: 'isNotNull', a }),
+  inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
   ne: (a: any, b: any) => ({ type: 'ne', a, b }),
 }));
 
@@ -52,6 +65,7 @@ mock.module('@buildd/core/db/schema', () => ({
   tasks: 'tasks',
   missionNotes: 'missionNotes',
   missions: 'missions',
+  workers: 'workers',
 }));
 
 mock.module('@/lib/mission-notifications', () => ({
@@ -803,6 +817,78 @@ describe("tryAutoMergeWorkerPr — Option A' mission integration PR", () => {
     });
 
     expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
+// ── P3: mission-PR branch-lifecycle gate — the automatic (CI-green / reviewer-
+// approve) merge path, which funnels through tryAutoMergeWorkerPr the same as
+// the manual merge_pr and dashboard-merge routes. ───────────────────────────
+describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () => {
+  beforeEach(() => {
+    mockMergePullRequest.mockClear();
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockTasksFindMany = mock(() => [] as any[]);
+    mockWorkersFindMany = mock(() => [] as any[]);
+    mockMissionsFindFirst = mock(() => null as any);
+  });
+
+  const missionPrTask = {
+    id: 'task-owner', title: 'Ship mission: Checkout arc', taskClass: 'bookkeeping',
+    missionId: 'mission-1', mission: optedInMission,
+  };
+
+  it('refuses to merge the mission PR while a sibling task PR is still open', async () => {
+    mockFindFirst = mock(() => missionPrTask) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+    mockTasksFindMany = mock(() => [{ id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' }]) as any;
+    mockWorkersFindMany = mock(() => [
+      { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: MISSION_BRANCH, mergedAt: null, prLifecycleStatus: 'pr_open', startedAt: new Date(), createdAt: new Date() },
+    ]) as any;
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-owner', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
+    mockFindFirst = mock(() => missionPrTask) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+    mockTasksFindMany = mock(() => [{ id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' }]) as any;
+    mockWorkersFindMany = mock(() => [
+      { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: MISSION_BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
+    ]) as any;
+    mockMissionsFindFirst = mock(() => optedInMission) as any;
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-owner', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    expect(mockGithubApi).toHaveBeenCalledWith(
+      1,
+      `/repos/buildd-ai/buildd/git/refs/heads/${encodeURIComponent(MISSION_BRANCH)}`,
+      expect.objectContaining({ method: 'DELETE' }),
+    );
   });
 });
 
