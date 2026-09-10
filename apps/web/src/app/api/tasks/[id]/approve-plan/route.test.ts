@@ -61,6 +61,9 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
+  and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  desc: (field: any) => ({ field, type: 'desc' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
@@ -394,8 +397,9 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('deduplicates plan steps with existing pending/in-progress tasks', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
 
-    // First findFirst returns the planning task
-    mockTasksFindFirst.mockResolvedValueOnce({
+    // Route handler and approvePlan() each fetch the planning task independently,
+    // so this must satisfy both calls, not just the first.
+    mockTasksFindFirst.mockResolvedValue({
       id: 'plan-task-1',
       mode: 'planning',
       status: 'completed',
