@@ -45,6 +45,14 @@ const mockReadPrReviewStatus = mock(() => Promise.resolve({
   mergeBlocked: null,
 }));
 
+// Mocks for the mission-integration-branch auto-review feature
+const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }) as any);
+const mockFindLiveReviewerTaskForHead = mock(() => Promise.resolve(null) as any);
+const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAppendPrActivity = mock(() => Promise.resolve());
+const mockPickReviewerRole = mock(() => ({ role: 'reviewer', source: 'policy' as const }) as any);
+const mockListWorkspaceRoles = mock(() => Promise.resolve([{ slug: 'reviewer', isRole: true }]) as any);
+
 // Mock api-auth
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -100,9 +108,31 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 // Mock pr-review-request — the stored-verdict lookup the agent-review
-// self-merge gate consults.
+// self-merge gate consults, plus the role listing the auto-review feature uses.
 mock.module('@/lib/pr-review-request', () => ({
   readPrReviewStatus: mockReadPrReviewStatus,
+  listWorkspaceRoles: mockListWorkspaceRoles,
+}));
+
+// Mock reviewer — auto-review dedup + task creation
+mock.module('@/lib/reviewer', () => ({
+  createReviewerTask: mockCreateReviewerTask,
+  findLiveReviewerTaskForHead: mockFindLiveReviewerTaskForHead,
+}));
+
+// Mock task-dispatch — dispatching the reviewer task once created
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+}));
+
+// Mock pr-activity-comment — sticky "reviewing" comment on the PR
+mock.module('@/lib/pr-activity-comment', () => ({
+  appendPrActivity: mockAppendPrActivity,
+}));
+
+// Mock pr-review-status — reviewer role selection
+mock.module('@/lib/pr-review-status', () => ({
+  pickReviewerRole: mockPickReviewerRole,
 }));
 
 // Import handler AFTER mocks
@@ -146,6 +176,18 @@ describe('POST /api/github/pr', () => {
     mockMissionsFindFirst.mockResolvedValue(null);
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
+    mockCreateReviewerTask.mockReset();
+    mockCreateReviewerTask.mockResolvedValue({ id: 'reviewer-task-1' });
+    mockFindLiveReviewerTaskForHead.mockReset();
+    mockFindLiveReviewerTaskForHead.mockResolvedValue(null);
+    mockDispatchNewTask.mockReset();
+    mockDispatchNewTask.mockResolvedValue(undefined);
+    mockAppendPrActivity.mockReset();
+    mockAppendPrActivity.mockResolvedValue(undefined);
+    mockPickReviewerRole.mockReset();
+    mockPickReviewerRole.mockReturnValue({ role: 'reviewer', source: 'policy' });
+    mockListWorkspaceRoles.mockReset();
+    mockListWorkspaceRoles.mockResolvedValue([{ slug: 'reviewer', isRole: true }]);
 
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
@@ -1882,6 +1924,192 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(500);
     const data = await res.json();
     expect(data.error).toBe('GitHub API rate limit exceeded');
+  });
+
+  // ── Auto-review for task PRs into mission integration branches ──────────
+  //
+  // A manual-orchestration mission has no heartbeat loop to notice a task PR
+  // sitting open on its integration branch — this fires the review request at
+  // the moment the PR lands instead. It reuses `missionBaseGuard.enforced`
+  // (Option A′), so it only ever fires for exactly the PRs whose base was
+  // just derived to the integration branch above.
+  describe('auto-review for mission task PRs into the integration branch', () => {
+    const INTEGRATION_BRANCH = 'mission/test-mission-1a2b3c4d';
+    const WORKER_BRANCH = 'buildd/t-1-do-thing';
+    const MISSION_TASK = {
+      id: 't-1',
+      title: 'Do thing',
+      description: 'Task description',
+      backend: 'claude' as const,
+      missionId: 'mission-1',
+      pathManifest: null,
+      taskClass: 'work',
+      context: null,
+    };
+
+    function taskWorker(overrides: Record<string, any> = {}) {
+      return {
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        branch: WORKER_BRANCH,
+        workspace: WORKSPACE_OK,
+        task: MISSION_TASK,
+        ...overrides,
+      };
+    }
+
+    function optedInMission(overrides: Record<string, any> = {}) {
+      mockMissionsFindFirst.mockResolvedValue({
+        workingBranch: INTEGRATION_BRANCH,
+        integrationBranchEnabled: true,
+        ...overrides,
+      });
+    }
+
+    function noExistingPr() {
+      mockGithubApi.mockResolvedValueOnce([]);
+    }
+
+    it('requests review for a fresh task PR into the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+      expect(mockDispatchNewTask).toHaveBeenCalled();
+      const createArgs = mockCreateReviewerTask.mock.calls[0][0];
+      expect(createArgs.prNumber).toBe(42);
+      expect(createArgs.headSha).toBe('headsha');
+    });
+
+    it('does not request a review for a draft PR', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH, draft: true },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not request a review for the mission-PR owner itself', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        branch: INTEGRATION_BRANCH,
+        task: { ...MISSION_TASK, title: `${MISSION_PR_TASK_PREFIX}Test mission`, taskClass: 'bookkeeping' },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Test mission',
+        base: { ref: 'dev', sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Test mission', head: INTEGRATION_BRANCH, base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not stack a second reviewer when one is already in flight', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+      mockFindLiveReviewerTaskForHead.mockResolvedValue({ id: 'existing-reviewer-task' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('requests review when adopting a prUrl already based on the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({ prUrl: null, prNumber: null }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH },
+        head: { sha: 'headsha' },
+        draft: false,
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1',
+          title: 'Do thing',
+          head: WORKER_BRANCH,
+          base: INTEGRATION_BRANCH,
+          prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+      expect(mockDispatchNewTask).toHaveBeenCalled();
+    });
   });
 });
 
