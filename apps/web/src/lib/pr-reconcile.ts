@@ -551,6 +551,8 @@ export interface MissionPrSweepResult {
   nothingToShip: number;
   /** Work not finished yet — the normal answer for most candidates. */
   notReady: number;
+  /** Mission PR already merged: the mission has shipped, nothing left to open. */
+  alreadyShipped: number;
   /** Opener threw, or reported an API failure. Retried next run. */
   errors: number;
 }
@@ -596,6 +598,7 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
     prClosed: 0,
     nothingToShip: 0,
     notReady: 0,
+    alreadyShipped: 0,
     errors: 0,
   };
 
@@ -628,6 +631,19 @@ export async function sweepMissionIntegrationPrs(): Promise<MissionPrSweepResult
       // decision, and saying so hourly would be noise, not signal.
       if (owner?.state === 'closed') {
         result.prClosed++;
+        continue;
+      }
+      // The mission PR already merged: it has shipped. There is nothing left to
+      // open, and the branch it shipped from is usually deleted on merge — so
+      // falling through would evaluate work as "complete", attempt a PR against
+      // a branch GitHub no longer has, and count an `api_error` on every sweep,
+      // forever. That is what this branch's absence was doing.
+      //
+      // Advancing `missions.status` past `active` on merge is a separate concern
+      // and deliberately not done here — this sweep opens PRs, it does not own
+      // mission lifecycle.
+      if (owner?.state === 'merged') {
+        result.alreadyShipped++;
         continue;
       }
 

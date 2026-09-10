@@ -386,6 +386,50 @@ describe('openMissionIntegrationPr — owner state', () => {
     expect(r).toEqual({ ok: true, prNumber: 43, prUrl: 'pr-43', created: true });
   });
 
+  it('treats a deleted head branch as nothing to ship, not an api_error', async () => {
+    // A mission that already shipped has its branch deleted on merge, so the
+    // compare 404s. Reported as `api_error`, that made the mission PR sweep log
+    // and count an error on every hourly run, forever. It is not a failure —
+    // there is no ref for a PR to carry.
+    landedWork();
+    taskRowsForMission.push(ownerTask());
+    workerRowsByTask['t-own'] = [worker({ taskId: 't-own', id: 'w-own', prUrl: 'pr-42', prNumber: 42, mergedAt: T0 })];
+    githubThrows['/compare/'] = 'GitHub API error: 404 Not Found';
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('no_commits');
+    expect(githubCalls.some(c => c.method === 'POST')).toBe(false);
+  });
+
+  it('still reports api_error for a compare failure that is not a missing ref', async () => {
+    landedWork();
+    taskRowsForMission.push(ownerTask());
+    workerRowsByTask['t-own'] = [worker({ taskId: 't-own', id: 'w-own', prUrl: 'pr-42', prNumber: 42, mergedAt: T0 })];
+    githubThrows['/compare/'] = 'GitHub API error: 500 Internal Server Error';
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect((r as { reason: string }).reason).toBe('api_error');
+  });
+
+  it('opens a second PR when a merged mission recreated its branch and is ahead', async () => {
+    // The `merged` state deliberately falls through (mission-pr.ts state
+    // comment): a heartbeat mission, follow-up or CI retry can land more work
+    // on a recreated integration branch. Short-circuiting on merge stranded it
+    // while the completion gate passed the mission as done — a false green.
+    landedWork();
+    taskRowsForMission.push(ownerTask());
+    workerRowsByTask['t-own'] = [worker({ taskId: 't-own', id: 'w-own', prUrl: 'pr-42', prNumber: 42, mergedAt: T0 })];
+    githubResponses['/compare/'] = { ahead_by: 4 };
+    githubResponses['/pulls?state=open'] = [];
+    githubResponses['/pulls'] = { number: 99, html_url: 'pr-99', base: { ref: 'dev' } };
+
+    const r = await openMissionIntegrationPr(MISSION_ID);
+
+    expect(r).toEqual({ ok: true, prNumber: 99, prUrl: 'pr-99', created: true });
+  });
+
   it('reports no_commits rather than opening an empty second PR', async () => {
     landedWork();
     taskRowsForMission.push(ownerTask());

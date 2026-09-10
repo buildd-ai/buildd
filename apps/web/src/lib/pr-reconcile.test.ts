@@ -901,6 +901,51 @@ describe('sweepMissionIntegrationPrs', () => {
     expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
   });
 
+  it('treats a merged mission PR as shipped, without attempting to open another', async () => {
+    // Regression: `findMissionPrOwner` returns state 'merged', but the sweep
+    // branched only on 'open' and 'closed'. A shipped mission therefore fell
+    // through, its work evaluated as complete, and the opener ran against a
+    // branch GitHub had deleted on merge — an api_error counted on every sweep,
+    // forever, with an hourly "running but accomplishing nothing" alert.
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({
+      taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u',
+      mergedAt: new Date('2026-09-08T12:53:19Z'), state: 'merged',
+    });
+
+    const result = await sweepMissionIntegrationPrs();
+
+    expect(result.alreadyShipped).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(mockMaybeOpenMissionIntegrationPr).not.toHaveBeenCalled();
+  });
+
+  it('says nothing in the logs about a mission that already shipped', async () => {
+    mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
+    mockFindMissionPrOwner.mockResolvedValue({
+      taskId: 't', workerId: 'w', prNumber: 9, prUrl: 'u',
+      mergedAt: new Date('2026-09-08T12:53:19Z'), state: 'merged',
+    });
+    // Prod's shape: the branch was deleted on merge, so if the sweep ever
+    // reaches the opener it gets an api_error and logs it. Without the merged
+    // branch above, that is exactly what happened on every run.
+    mockEvaluateMissionWorkState.mockResolvedValue({ complete: true, landedOnIntegrationCount: 3 });
+    mockMaybeOpenMissionIntegrationPr.mockResolvedValue({
+      ok: false, reason: 'api_error', detail: 'Reference does not exist',
+    });
+
+    const logs: unknown[][] = [];
+    const origErr = console.error;
+    const origWarn = console.warn;
+    console.error = (...a: unknown[]) => { logs.push(a); };
+    console.warn = (...a: unknown[]) => { logs.push(a); };
+    await sweepMissionIntegrationPrs();
+    console.error = origErr;
+    console.warn = origWarn;
+
+    expect(logs).toEqual([]);
+  });
+
   it('never reopens a mission PR a human closed, and says nothing about it', async () => {
     mockMissionsFindMany.mockResolvedValue([{ id: 'm1' }]);
     mockFindMissionPrOwner.mockResolvedValue({

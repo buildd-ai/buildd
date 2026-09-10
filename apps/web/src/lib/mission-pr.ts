@@ -433,6 +433,18 @@ export async function openMissionIntegrationPr(
       return { ok: false, reason: 'no_commits', detail: `${branch} is not ahead of ${base}` };
     }
   } catch (err) {
+    // A 404 here means GitHub has no such head branch — it was deleted on merge
+    // and nothing has recreated it. That is "nothing to ship", not a failure:
+    // there is no ref for a PR to carry. Reporting it as `api_error` made the
+    // mission PR sweep log and count an error on every run, forever, for every
+    // mission that had already shipped (an hourly "running but accomplishing
+    // nothing" alert). The `merged` state deliberately falls through to here
+    // (see the state comment above) so that a *recreated* branch still gets its
+    // second PR — so this must stay a per-attempt classification, not a
+    // short-circuit on merge.
+    if (githubErrorStatus(err) === 404) {
+      return { ok: false, reason: 'no_commits', detail: `${branch} no longer exists on the remote` };
+    }
     return {
       ok: false,
       reason: 'api_error',

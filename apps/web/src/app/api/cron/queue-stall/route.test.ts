@@ -99,6 +99,15 @@ mock.module('@/lib/backend-strand', () => ({
   createBackendStrandProbe: () => ({ check: mockStrandCheck }),
 }));
 
+// OAuth budget pacing (lib/pacing-stall.ts) reads the team's OAuth accounts and
+// their learned window capacity; stub it to the verdict each case is about, the
+// same way the backend probe above is stubbed.
+let pacingVerdict: { pct: number } | null = null;
+const mockPacingCheck = mock((_task: any) => Promise.resolve(pacingVerdict));
+mock.module('@/lib/pacing-stall', () => ({
+  createPacingProbe: () => ({ check: mockPacingCheck }),
+}));
+
 const mockNotify = mock((_opts: any) => undefined);
 mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
 
@@ -135,6 +144,8 @@ function task(over: Record<string, unknown> = {}) {
     subjectResolution: null,
     subjectAnchor: null,
     pathManifest: ['apps/web/src/lib/foo.ts'],
+    priority: 0,
+    kind: null,
     workspace: {
       id: 'ws-1',
       name: 'buildd',
@@ -165,6 +176,7 @@ beforeEach(() => {
   mockCheckMissionBudgetExhausted.mockClear();
   mockCheckMissionBudgetExhausted.mockResolvedValue(false);
   strandVerdict = null;
+  pacingVerdict = null;
   mockStrandCheck.mockClear();
   mockNotify.mockClear();
 });
@@ -693,5 +705,86 @@ describe('queue-stall cron — missing backend credential', () => {
     expect(second.notified).toBe(0);
     // Dedupe skips gate evaluation entirely — no credential lookups either.
     expect(mockStrandCheck).not.toHaveBeenCalled();
+  });
+});
+
+describe('OAuth budget pacing', () => {
+  // Regression: a task the claim route defers as `routing_paused` used to be
+  // reported as `no_gate_identified` ("no runner is offering role X"), which
+  // sends the operator to look at runners when the answer is spend.
+  it('names routing_paused for a task held by budget pacing', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0 })];
+    pacingVerdict = { pct: 0.97 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('routing_paused');
+  });
+
+  it('explains how to get the task moving instead of blaming the runner', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0 })];
+    pacingVerdict = { pct: 0.97 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].detail).toContain('pacing');
+    expect(body.stalled[0].detail).not.toContain('no runner');
+  });
+
+  it('reports the measured pressure, not a hardcoded threshold', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0 })];
+    pacingVerdict = { pct: 0.97 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].detail).toContain('97%');
+  });
+
+  it('falls through to no_gate_identified when pacing is not holding it', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0 })];
+    pacingVerdict = null;
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('no_gate_identified');
+  });
+
+  it('passes the task team, priority and kind to the probe', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0, kind: 'coordination' })];
+    pacingVerdict = null;
+
+    await (await POST(makeRequest())).json();
+
+    const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
+    // teamId is the input whose loss silently disables the whole gate
+    // (`if (!task.teamId) return null`), and it depends on teamId staying in the
+    // candidate query's workspace columns — the same failure class this file
+    // warns about for `backend` and `pathManifest`.
+    expect(arg.teamId).toBe('team-1');
+    expect(arg.priority).toBe(0);
+    expect(arg.kind).toBe('coordination');
+  });
+
+  it('does not blame pacing for a task carrying an explicit model', async () => {
+    // The router returns `explicit_override` before the pause gate, so such a
+    // task can never be paced. The claim route writes `context.model` onto every
+    // task it claims and the requeue paths do not clear it, so this is the
+    // common re-queued-task shape — not an exotic one.
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0, context: { model: 'claude-opus-4-6' } })];
+    pacingVerdict = { pct: 0.97 };
+
+    await (await POST(makeRequest())).json();
+
+    const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
+    expect(arg.explicitModel).toBe('claude-opus-4-6');
+  });
+
+  it('does not assert pacing as the sole cause of an hours-old stall', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0 })];
+    pacingVerdict = { pct: 0.97 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].detail).toContain('verify');
   });
 });
