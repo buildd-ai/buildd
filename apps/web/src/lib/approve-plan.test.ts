@@ -24,7 +24,10 @@ let taskRows: Record<string, any> = {};
 let workerRows: Record<string, any> = {};
 /** plan-step index → context to persist on the created row (emulates a stamp). */
 let contextSeeds: Record<number, any> = {};
+/** Rows returned for the "existing children of this planning task" dup-approval guard. */
 let childrenRows: any[] = [];
+/** Rows returned for the "existing open sibling tasks under this mission" dedup query. */
+let existingMissionTasksRows: any[] = [];
 const insertedValues: any[] = [];
 const updateCalls: { id: string; set: any }[] = [];
 
@@ -39,10 +42,11 @@ mock.module('drizzle-orm', () => ({
   eq: (col: any, val: any) => ({ _op: 'eq', args: [col, val] }),
   and: (...args: any[]) => ({ _op: 'and', args }),
   desc: (col: any) => ({ _op: 'desc', col }),
+  inArray: (col: any, vals: any) => ({ _op: 'inArray', args: [col, vals] }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'tasks.id', parentTaskId: 'tasks.parent_task_id' },
+  tasks: { id: 'tasks.id', parentTaskId: 'tasks.parent_task_id', missionId: 'tasks.mission_id', status: 'tasks.status' },
   workspaces: { id: 'workspaces.id' },
   workers: { taskId: 'workers.task_id', createdAt: 'workers.created_at' },
   missions: { id: 'missions.id' },
@@ -61,6 +65,14 @@ function eqValue(where: any): string | undefined {
   return undefined;
 }
 
+/** True when a where-tree (possibly wrapped in and()) filters on the given mocked column token. */
+function whereHasCol(where: any, col: string): boolean {
+  if (!where) return false;
+  if (where._op === 'eq' || where._op === 'inArray') return where.args[0] === col;
+  if (where._op === 'and') return where.args.some((part: any) => whereHasCol(part, col));
+  return false;
+}
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -69,7 +81,11 @@ mock.module('@buildd/core/db', () => ({
           const id = eqValue(args?.where);
           return Promise.resolve(id ? taskRows[id] : undefined);
         },
-        findMany: () => Promise.resolve(childrenRows),
+        findMany: (args: any) => {
+          if (whereHasCol(args?.where, 'tasks.parent_task_id')) return Promise.resolve(childrenRows);
+          if (whereHasCol(args?.where, 'tasks.mission_id')) return Promise.resolve(existingMissionTasksRows);
+          return Promise.resolve([]);
+        },
       },
       workspaces: { findFirst: () => Promise.resolve(workspaceRow) },
       missions: { findFirst: () => Promise.resolve(missionRow) },
@@ -112,6 +128,7 @@ function reset() {
   workerRows = {};
   contextSeeds = {};
   childrenRows = [];
+  existingMissionTasksRows = [];
   insertedValues.length = 0;
   updateCalls.length = 0;
   planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: null };
@@ -259,5 +276,121 @@ describe('approvePlan — Option A′ integration branch as the default base', (
     missionRow = { workingBranch: null, integrationBranchEnabled: true };
     await approvePlan(PLANNING_TASK_ID, [{ ref: 'solo', title: 'Do the thing' }] as any);
     expect('baseBranch' in insertedContext(0)).toBe(false);
+  });
+});
+
+describe('approvePlan — coordination-task dedup (subject anchor + intent, not title)', () => {
+  beforeEach(reset);
+
+  // The exact nine coordination-task titles observed across one mission's
+  // blocked heartbeat cycles (budget wait, review monitor, merge, aggregate —
+  // reworded every cycle). All nine collapse to the three real intents.
+  const NINE_TITLES = [
+    'Wait for token budget reset',
+    'Wait for Claude session budget reset',
+    'Monitor PR review completion',
+    'Monitor review completion and merge PRs',
+    'Aggregate results and evaluate mission completion',
+    'Aggregate results & evaluate mission completion',
+    'Aggregate results and close mission',
+    'Merge approved PRs to dev',
+    'Merge reviewed PRs to dev',
+  ];
+
+  function withMission() {
+    planningTaskRow = { id: PLANNING_TASK_ID, workspaceId: 'ws-1', missionId: 'm-1' };
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    missionRow = { workingBranch: null, integrationBranchEnabled: false };
+  }
+
+  it('collapses all nine reworded titles into three surviving tasks', async () => {
+    withMission();
+    const plan = NINE_TITLES.map((title, i) => ({ ref: `s${i}`, title }));
+    const result = await approvePlan(PLANNING_TASK_ID, plan as any);
+
+    expect(result.taskIds.length).toBe(3);
+    expect(result.droppedSteps?.length).toBe(6);
+    expect(result.droppedSteps?.every(d => d.reason === 'coordination_intent')).toBe(true);
+
+    const intents = insertedValues.map(v => (v.subjectAnchor as any)?.coordinationIntent).sort();
+    expect(intents).toEqual(['aggregate', 'merge', 'wait']);
+    expect(insertedValues.every(v => v.kind === 'coordination')).toBe(true);
+  });
+
+  it('drops a new step matching an already-open coordination task by intent, regardless of wording', async () => {
+    withMission();
+    existingMissionTasksRows = [
+      { id: 'existing-wait-task', title: 'Wait for token budget reset', subjectAnchor: { version: 1, kind: 'mission', subjectMissionId: 'm-1', source: 'system', confidence: 'derived', coordinationIntent: 'wait', subjectPrNumbers: [] } },
+    ];
+
+    const result = await approvePlan(
+      PLANNING_TASK_ID,
+      [{ ref: 'w2', title: 'Wait until the Claude session budget comes back' }] as any,
+    );
+
+    expect(result.taskIds.length).toBe(0);
+    expect(result.droppedSteps).toEqual([{ ref: 'w2', reason: 'coordination_intent', matchedTaskId: 'existing-wait-task' }]);
+  });
+
+  it('falls back to exact-title matching for a step with no classifiable intent', async () => {
+    withMission();
+    existingMissionTasksRows = [
+      { id: 'existing-flaky', title: 'Investigate flaky test', subjectAnchor: null },
+    ];
+
+    const dropped = await approvePlan(PLANNING_TASK_ID, [{ ref: 'x', title: 'Investigate flaky test' }] as any);
+    expect(dropped.taskIds.length).toBe(0);
+    expect(dropped.droppedSteps).toEqual([{ ref: 'x', reason: 'exact_title', matchedTaskId: 'existing-flaky' }]);
+
+    reset();
+    withMission();
+    existingMissionTasksRows = [
+      { id: 'existing-flaky', title: 'Investigate flaky test', subjectAnchor: null },
+    ];
+    const kept = await approvePlan(PLANNING_TASK_ID, [{ ref: 'y', title: 'Investigate flaky test — take 2' }] as any);
+    expect(kept.taskIds.length).toBe(1);
+    expect(kept.droppedSteps).toBeUndefined();
+  });
+
+  it('does not dedupe two merge steps naming different specific PRs', async () => {
+    withMission();
+    const result = await approvePlan(
+      PLANNING_TASK_ID,
+      [
+        { ref: 'm1', title: 'Merge PR #10 to dev' },
+        { ref: 'm2', title: 'Merge PR #20 to dev' },
+      ] as any,
+    );
+    expect(result.taskIds.length).toBe(2);
+    expect(result.droppedSteps).toBeUndefined();
+  });
+
+  it('leaves non-mission plans untouched (no dedup query, nothing dropped)', async () => {
+    // planningTaskRow default from reset() has missionId: null
+    const result = await approvePlan(
+      PLANNING_TASK_ID,
+      NINE_TITLES.map((title, i) => ({ ref: `s${i}`, title })) as any,
+    );
+    expect(result.taskIds.length).toBe(NINE_TITLES.length);
+    expect(result.droppedSteps).toBeUndefined();
+  });
+
+  it('drops a dependent step cleanly when the step it depends on was deduped away', async () => {
+    withMission();
+    existingMissionTasksRows = [
+      { id: 'existing-wait-task', title: 'Wait for budget', subjectAnchor: { version: 1, kind: 'mission', subjectMissionId: 'm-1', source: 'system', confidence: 'derived', coordinationIntent: 'wait', subjectPrNumbers: [] } },
+    ];
+    // 'follow-up' depends on 'w', which will be dropped as a duplicate of the
+    // existing wait task — must not throw, and must not carry a dangling dependsOn.
+    const result = await approvePlan(
+      PLANNING_TASK_ID,
+      [
+        { ref: 'w', title: 'Wait for the budget to reset' },
+        { ref: 'follow-up', title: 'Do the actual coding work', dependsOn: ['w'] },
+      ] as any,
+    );
+    expect(result.taskIds.length).toBe(1);
+    const followUpCall = updateCalls.find(c => c.id === result.taskIds[0]);
+    expect(followUpCall?.set?.dependsOn).toBeUndefined();
   });
 });

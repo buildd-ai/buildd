@@ -344,7 +344,13 @@ export default async function MissionDetailPage({
   const hasPendingDeliverableWork = (mission.tasks || [])
     .filter(isDeliverableTask)
     .some(t => !['completed', 'cancelled', 'failed'].includes(t.status));
-  const healthState = deriveTaskHealthSignal(mission, mission.tasks || []);
+  // See heartbeat-prepass.ts: recorded as `nextRunAt` while the heartbeat is
+  // deliberately waiting on a known self-resolving condition — read it back so
+  // the mission renders BLOCKED, not idle, while it waits.
+  const heartbeatWaitingUntil = (mission.schedule as any)?.lastDeferralReason === 'heartbeat_waiting'
+    ? (mission.schedule as any)?.nextRunAt ?? null
+    : null;
+  const healthState = deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks || []);
 
   // Orchestration mode
   const orchestrationMode = (mission.orchestrationMode as 'auto' | 'manual') ?? 'auto';
