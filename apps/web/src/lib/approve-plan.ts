@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, and, inArray } from 'drizzle-orm';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import type { PlanStep } from '@buildd/shared';
@@ -14,11 +14,48 @@ export interface ApprovePlanResult {
 }
 
 /**
+ * Filter plan steps to remove duplicates of existing pending/in-progress tasks.
+ * Deduplicates by exact title match within the same mission, preventing successive
+ * heartbeat cycles from spawning duplicate coordination tasks.
+ */
+async function filterDuplicatePlanSteps(
+  plan: PlanStep[],
+  missionId: string
+): Promise<PlanStep[]> {
+  // Fetch all pending/in-progress tasks in the mission
+  const existingPending = await db.query.tasks.findMany({
+    where: and(
+      eq(tasks.missionId, missionId),
+      inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
+    ),
+    columns: { title: true },
+  });
+
+  const existingTitles = new Set(existingPending.map(t => t.title));
+
+  // Filter: keep only steps whose titles don't already exist
+  const deduped = plan.filter(step => !existingTitles.has(step.title));
+
+  if (deduped.length < plan.length) {
+    console.log(
+      `[plan-dedup] Filtered ${plan.length - deduped.length}/${plan.length} duplicate plan steps ` +
+      `for mission ${missionId}`
+    );
+  }
+
+  return deduped;
+}
+
+/**
  * Create child execution tasks from a planning task's structured plan.
  *
  * Two-pass process:
  * 1. Create all tasks with empty dependsOn (to get IDs)
  * 2. Resolve ref→ID for dependsOn and baseBranch
+ *
+ * Deduplication: skips plan steps that would create tasks with the same title
+ * as existing pending/in-progress tasks in the same mission (from prior cycles).
+ * This prevents duplicate coordination tasks from successive heartbeat cycles.
  *
  * Throws on circular dependencies or if plan was already approved.
  */
@@ -35,6 +72,12 @@ export async function approvePlan(
 
   if (!task) {
     throw new Error(`Planning task ${planningTaskId} not found`);
+  }
+
+  // Deduplicate: filter out plan steps that would create duplicate tasks
+  let dedupedPlan = plan;
+  if (task.missionId) {
+    dedupedPlan = await filterDuplicatePlanSteps(plan, task.missionId);
   }
 
   // Fetch workspace git config for branch name prediction
@@ -72,7 +115,7 @@ export async function approvePlan(
   }
 
   // Validate: no circular dependencies
-  const cycle = detectCircularDeps(plan);
+  const cycle = detectCircularDeps(dedupedPlan);
   if (cycle) {
     throw new Error(`Circular dependency detected: ${cycle.join(' → ')}`);
   }
@@ -82,7 +125,7 @@ export async function approvePlan(
   const refToTitle: Record<string, string> = {};
   const createdTaskIds: string[] = [];
 
-  for (const step of plan) {
+  for (const step of dedupedPlan) {
     const [created] = await db
       .insert(tasks)
       .values({
@@ -116,7 +159,7 @@ export async function approvePlan(
   }
 
   // Second pass: resolve dependsOn refs and baseBranch to actual IDs/branch names
-  for (const step of plan) {
+  for (const step of dedupedPlan) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (step.dependsOn && step.dependsOn.length > 0) {

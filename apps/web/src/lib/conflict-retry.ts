@@ -24,6 +24,7 @@ import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notify } from '@/lib/pushover';
+import { githubApi } from '@/lib/github';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -73,6 +74,65 @@ export function isAutoResolveMergeConflictsEnabled(
   return gitConfig?.autoResolveMergeConflicts !== false;
 }
 
+// ── Cross-repo detection ──────────────────────────────────────────────────
+
+/**
+ * Check if a PR belongs to a different repo than the workspace.
+ * Useful for detecting cross-repo PRs that need repo override in task context.
+ *
+ * Returns the PR's repo URL if different from workspace repo, or null otherwise.
+ */
+async function detectCrossRepoPr(
+  installationId: string | null,
+  repoFullName: string,
+  prNumber: number,
+  workspaceRepoUrl: string | null | undefined,
+): Promise<string | null> {
+  if (!installationId || !repoFullName) {
+    return null;
+  }
+
+  try {
+    const prData = await githubApi(
+      installationId,
+      async (octokit) => {
+        const [owner, repo] = repoFullName.split('/');
+        return octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+      }
+    );
+
+    if (!prData.data.head?.repo?.full_name) {
+      return null;
+    }
+
+    const prRepoFullName = prData.data.head.repo.full_name;
+
+    // Normalize both URLs for comparison
+    const normalizeRepo = (url: string | null | undefined): string | null => {
+      if (!url) return null;
+      const match = url.match(/github\.com[:/](.+?)(\.git)?$/i) ||
+                    url.match(/^([^/]+\/[^/]+)$/);
+      return match ? match[1].toLowerCase() : null;
+    };
+
+    const normalizedWorkspaceRepo = normalizeRepo(workspaceRepoUrl);
+    const normalizedPrRepo = prRepoFullName.toLowerCase();
+
+    // If the PR repo differs from workspace repo, return the PR repo URL
+    if (normalizedWorkspaceRepo !== normalizedPrRepo) {
+      return `https://github.com/${prRepoFullName}.git`;
+    }
+
+    return null;
+  } catch (err) {
+    console.warn(
+      `[conflict-retry] Failed to detect PR repo for #${prNumber} in ${repoFullName}:`,
+      err instanceof Error ? err.message : String(err)
+    );
+    return null;
+  }
+}
+
 // ── Retry task builder ────────────────────────────────────────────────────────
 
 export interface ConflictRetryInput {
@@ -117,8 +177,8 @@ export interface ConflictRetryTask {
  *
  * Returns null when retries are exhausted or disabled (maxConflictIterations === 0).
  */
-export function buildConflictRetryTask(params: ConflictRetryInput): ConflictRetryTask | null {
-  const { originalTask, worker, headSha, repoFullName, maxConflictIterations } = params;
+export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?: string | null }): ConflictRetryTask | null {
+  const { originalTask, worker, headSha, repoFullName, maxConflictIterations, prRepoUrl } = params;
   const ctx = originalTask.context || {};
 
   const currentIteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 0;
@@ -170,6 +230,10 @@ export function buildConflictRetryTask(params: ConflictRetryInput): ConflictRetr
       conflictIteration: nextIteration,
       maxConflictIterations: maxIterations,
       prNumber: worker.prNumber,
+      // Cross-repo override: when the PR is in a different repo than the task's workspace,
+      // pass the PR repo URL so the worker resolver can find the correct directory.
+      // This enables conflict-retry on cross-repo PRs (e.g., a dispatch PR in a buildd workspace).
+      ...(prRepoUrl ? { prRepoUrl } : {}),
       ...(ctx.skillSlugs ? { skillSlugs: ctx.skillSlugs } : {}),
       ...(ctx.verificationCommand ? { verificationCommand: ctx.verificationCommand } : {}),
     },
@@ -221,6 +285,8 @@ export interface DispatchConflictRetryParams {
   repoFullName: string;
   /** Workspace ID. */
   workspaceId: string;
+  /** PR's repo URL when it differs from workspace repo (cross-repo case). */
+  prRepoUrl?: string | null;
 }
 
 export interface DispatchConflictRetryResult {
@@ -351,6 +417,21 @@ export async function dispatchConflictRetry(
     }
   }
 
+  // Detect cross-repo PRs: when the PR's repo differs from the workspace repo,
+  // pass the PR repo URL so the worker can resolve to the correct directory.
+  let prRepoUrl: string | null = null;
+  if (installationId) {
+    prRepoUrl = await detectCrossRepoPr(
+      installationId,
+      repoFullName,
+      prNumber,
+      workspace.repo,
+    ).catch(err => {
+      console.warn(`[conflict-retry] cross-repo detection failed (non-fatal):`, err);
+      return null;
+    });
+  }
+
   const retryTask = buildConflictRetryTask({
     originalTask: {
       id: task.id,
@@ -364,6 +445,7 @@ export async function dispatchConflictRetry(
     worker: { id: worker.id, branch: worker.branch, prNumber },
     headSha,
     repoFullName,
+    prRepoUrl,
   });
 
   if (!retryTask) {
