@@ -756,7 +756,35 @@ describe('OAuth budget pacing', () => {
     await (await POST(makeRequest())).json();
 
     const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
+    // teamId is the input whose loss silently disables the whole gate
+    // (`if (!task.teamId) return null`), and it depends on teamId staying in the
+    // candidate query's workspace columns — the same failure class this file
+    // warns about for `backend` and `pathManifest`.
+    expect(arg.teamId).toBe('team-1');
     expect(arg.priority).toBe(0);
     expect(arg.kind).toBe('coordination');
+  });
+
+  it('does not blame pacing for a task carrying an explicit model', async () => {
+    // The router returns `explicit_override` before the pause gate, so such a
+    // task can never be paced. The claim route writes `context.model` onto every
+    // task it claims and the requeue paths do not clear it, so this is the
+    // common re-queued-task shape — not an exotic one.
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0, context: { model: 'claude-opus-4-6' } })];
+    pacingVerdict = { pct: 0.97 };
+
+    await (await POST(makeRequest())).json();
+
+    const arg = mockPacingCheck.mock.calls.at(-1)?.[0] as any;
+    expect(arg.explicitModel).toBe('claude-opus-4-6');
+  });
+
+  it('does not assert pacing as the sole cause of an hours-old stall', async () => {
+    candidateTasks = [task({ roleSlug: 'builder', priority: 0 })];
+    pacingVerdict = { pct: 0.97 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].detail).toContain('verify');
   });
 });

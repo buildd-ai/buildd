@@ -17,7 +17,7 @@
 
 import { db } from '@buildd/core/db';
 import { accounts } from '@buildd/core/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { resolveEffectiveModel, type TaskKind } from '@buildd/core/model-router';
 import {
   learnOauthCapacity,
@@ -32,18 +32,36 @@ import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib
  * capacity). Cached per team: the watchdog runs inside a 40s gate budget and a
  * team's pressure does not vary between tasks in one sweep.
  */
-async function teamOauthPressurePct(teamId: string): Promise<number | null> {
+async function teamPressurePct(teamId: string): Promise<number | null> {
   const pacingConfig = readPacingConfig(process.env);
-  if (!pacingConfig.enabled) return null;
 
-  // Pacing is measured across an account's seat peers. Any OAuth account on the
-  // team is a valid entry point — resolveSeatIdPeers expands it to the peer set
-  // that actually shares the provider window.
-  const oauthAccount = await db.query.accounts.findFirst({
-    where: and(eq(accounts.teamId, teamId), eq(accounts.authType, 'oauth')),
-    columns: { id: true, teamId: true, seatId: true },
+  // The claim route derives `dailyBudgetPct` for the *claiming* account and
+  // takes the max of two signals: API-key spend against the daily cap, and
+  // learned OAuth window pressure. The watchdog cannot know which account will
+  // claim, so it takes the max across the team and words its verdict
+  // conditionally rather than asserting causation — see the gate detail line.
+  const teamAccounts = await db.query.accounts.findMany({
+    where: eq(accounts.teamId, teamId),
+    columns: { id: true, teamId: true, seatId: true, authType: true, totalCost: true, maxCostPerDay: true },
+    // Deterministic: `findFirst` with no ordering meant the reported window
+    // could come from a different seat group on each run.
+    orderBy: (a, { asc }) => [asc(a.createdAt)],
   });
-  if (!oauthAccount) return null;
+  if (teamAccounts.length === 0) return null;
+
+  // API-key spend pressure, mirroring claim/route.ts. Without this, api-key
+  // teams at their daily cap still got the misleading fallback this gate exists
+  // to remove.
+  let pct = 0;
+  for (const a of teamAccounts) {
+    if (a.authType !== 'api' || !a.maxCostPerDay) continue;
+    const cap = parseFloat(a.maxCostPerDay.toString());
+    if (!cap) continue;
+    pct = Math.max(pct, Math.min(1, parseFloat((a.totalCost ?? 0).toString()) / cap));
+  }
+
+  const oauthAccount = teamAccounts.find(a => a.authType === 'oauth');
+  if (!oauthAccount || !pacingConfig.enabled) return pct > 0 ? pct : null;
 
   const accountIds = await resolveSeatIdPeers({
     id: oauthAccount.id,
@@ -52,8 +70,9 @@ async function teamOauthPressurePct(teamId: string): Promise<number | null> {
   });
   const episodes = await loadOauthEpisodes(accountIds);
   const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
-  // No exhaustion history yet: pacing is inert, exactly as it is in the claim route.
-  if (capacity.confidence === 'none') return null;
+  // No exhaustion history yet: OAuth pacing is inert, exactly as in the claim
+  // route. Any API-key pressure measured above still stands.
+  if (capacity.confidence === 'none') return pct > 0 ? pct : null;
 
   const { usage } = await measureOauthWindow({
     accountIds,
@@ -61,7 +80,7 @@ async function teamOauthPressurePct(teamId: string): Promise<number | null> {
     lastResetsAt: episodes[0]?.resetsAt ?? null,
   });
 
-  return oauthBudgetPressure({ usage, capacity }).pct;
+  return Math.max(pct, oauthBudgetPressure({ usage, capacity }).pct);
 }
 
 /**
@@ -92,6 +111,14 @@ export function createPacingProbe() {
       teamId: string | null | undefined;
       priority: number | null | undefined;
       kind: string | null | undefined;
+      /**
+       * `context.model`. The router returns `explicit_override` BEFORE the pause
+       * gate, so a task carrying one can never be paced — and the claim route
+       * writes `context.model` onto every task it claims, which the requeue
+       * paths do not clear. Without this, the most common re-queued stall would
+       * be confidently misattributed to spend.
+       */
+      explicitModel: string | null | undefined;
     }): Promise<{ pct: number } | null> {
       // Pacing is per provider-window, which is scoped by team at minimum.
       if (!task.teamId) return null;
@@ -99,7 +126,7 @@ export function createPacingProbe() {
       let pct: number | null;
       try {
         if (!pressureCache.has(task.teamId)) {
-          pressureCache.set(task.teamId, teamOauthPressurePct(task.teamId));
+          pressureCache.set(task.teamId, teamPressurePct(task.teamId));
         }
         pct = await pressureCache.get(task.teamId)!;
       } catch {
@@ -112,7 +139,7 @@ export function createPacingProbe() {
       // Ask the router itself. `paused` is the only decision that leaves a task
       // unclaimed; a downshift still runs it, just on a cheaper tier.
       const decision = resolveEffectiveModel({
-        explicitModel: null,
+        explicitModel: task.explicitModel ?? null,
         kind: routerKind(task.kind),
         complexity: null,
         roleFloor: null,

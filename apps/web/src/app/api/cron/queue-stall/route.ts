@@ -418,15 +418,18 @@ async function resolveStallGate(
       teamId: task.workspace?.teamId ?? null,
       priority: task.priority,
       kind: task.kind,
+      explicitModel: typeof ctx.model === 'string' ? ctx.model : null,
     });
     if (paced) {
       return {
         gate: 'routing_paused',
         detail:
-          `held by OAuth budget pacing at ${Math.round(paced.pct * 100)}% of learned window capacity — `
-          + `priority-0 work pauses while pressure is this high. It resumes when the window resets; `
-          + `to run it now, raise its priority, press Start (an explicit start bypasses pacing), `
-          + `or set OAUTH_BUDGET_PACING=off`,
+          `budget pacing is currently pausing work like this — team pressure is at `
+          + `${Math.round(paced.pct * 100)}% and priority-0 non-coordination tasks pause above 95%. `
+          + `That is very likely why it is unclaimed, but it is measured now and not over the whole `
+          + `stall, and pacing applies per claiming account — so verify before ruling other causes out. `
+          + `It resumes when the window resets; to run it now, raise its priority, press Start (an `
+          + `explicit start bypasses pacing), or set OAUTH_BUDGET_PACING=off`,
       };
     }
   }
