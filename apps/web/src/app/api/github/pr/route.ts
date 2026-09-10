@@ -20,7 +20,11 @@ import {
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
-import { readPrReviewStatus } from '@/lib/pr-review-request';
+import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
+import { dispatchNewTask } from '@/lib/task-dispatch';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { pickReviewerRole } from '@/lib/pr-review-status';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -94,6 +98,113 @@ async function resolveWorkerByPrNumber(
   }
 
   return matchingWorkers[0];
+}
+
+/**
+ * Request a review for a task PR that targets a mission's integration branch.
+ *
+ * Callers gate this on `missionBaseGuard.enforced` (see `@/lib/mission-base-guard`,
+ * the shared source of truth for "is this PR's base the mission's integration
+ * branch"), so this function does not re-derive that — it only decides which
+ * reviewer role to use and dedupes against an already in-flight review. This
+ * exists because a manual-orchestration mission has no heartbeat loop to
+ * notice an open task PR sitting unreviewed, so the request is fired here,
+ * at the moment the PR is created or adopted, instead.
+ *
+ * Best-effort: any failure is logged and swallowed. Requesting a review must
+ * never fail PR creation/adoption itself.
+ */
+async function requestIntegrationBranchReview(params: {
+  workspace: { id: string; gitConfig?: unknown };
+  teamId: string;
+  task: {
+    id: string;
+    title: string;
+    description: string | null;
+    backend: 'claude' | 'codex';
+    missionId: string | null;
+    pathManifest?: string[] | null;
+    requiresReview?: boolean | null;
+  };
+  head: string;
+  prNumber: number;
+  prUrl: string;
+  headSha: string;
+  baseRef: string;
+  installationId: number;
+  repoFullName: string;
+}): Promise<void> {
+  try {
+    const existingReview = await findLiveReviewerTaskForHead(
+      params.workspace.id,
+      params.prNumber,
+      params.headSha,
+    );
+    if (existingReview) return;
+
+    const mission = params.task.missionId
+      ? await db.query.missions.findFirst({
+          where: eq(missions.id, params.task.missionId),
+          columns: RESOLVE_POLICY_MISSION_COLUMNS,
+        })
+      : null;
+
+    const policy = resolvePolicy(
+      params.workspace as never,
+      mission,
+      { requiresReview: params.task.requiresReview ?? false },
+      { baseRef: params.baseRef },
+    );
+    const roles = await listWorkspaceRoles(params.workspace.id, params.teamId);
+    const picked = pickReviewerRole({
+      requested: null,
+      policyRole: policy.agentReview?.reviewerRole ?? null,
+      available: roles,
+    });
+    if (!picked.role) return;
+
+    const reviewerTask = await createReviewerTask({
+      workspaceId: params.workspace.id,
+      originalTaskId: params.task.id,
+      originalTask: {
+        title: params.task.title,
+        description: params.task.description,
+        backend: params.task.backend,
+        missionId: params.task.missionId,
+        pathManifest: params.task.pathManifest ?? null,
+      },
+      worker: { branch: params.head },
+      prNumber: params.prNumber,
+      prUrl: params.prUrl,
+      headSha: params.headSha,
+      reviewerRole: picked.role,
+      installationId: params.installationId,
+      repoFullName: params.repoFullName,
+    });
+
+    if (reviewerTask?.id && !reviewerTask.deduplicated) {
+      await dispatchNewTask(
+        {
+          id: reviewerTask.id,
+          title: `Review PR #${params.prNumber}: ${params.task.title}`,
+          description: null,
+          workspaceId: params.workspace.id,
+          missionId: params.task.missionId,
+        },
+        params.workspace as never,
+      );
+
+      await appendPrActivity({
+        installationId: params.installationId,
+        repoFullName: params.repoFullName,
+        prNumber: params.prNumber,
+        entry: { kind: 'reviewing', detail: `reviewer role \`${picked.role}\`` },
+        workspaceId: params.workspace.id,
+      }).catch(() => {});
+    }
+  } catch (err) {
+    console.error(`[create_pr] auto-review request failed (non-fatal) for PR #${params.prNumber}:`, err);
+  }
 }
 
 // POST /api/github/pr - Create a pull request
@@ -184,6 +295,13 @@ export async function POST(req: NextRequest) {
       // the real PR on GitHub and retry.
       const prNumberMatch = existingPrUrl.match(/\/pull\/(\d+)/);
       const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+      // Hoisted out of the `enforced` branch below so a successful review-status
+      // read there can be reused afterwards to request a review — the whole
+      // point of fetching the real PR here is that it's the only place on this
+      // path that ever calls GitHub, so re-fetching it just for the review
+      // request would be wasted work on the common (non-mission) path too.
+      let adoptRepo: { fullName: string; installation: { installationId: number } | null } | undefined;
+      let realPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
       if (missionBaseGuard.enforced) {
         // Prefer GitHub's answer over the caller's. The caller-supplied `base`
         // is a *claim* about a PR buildd never opened, and a claim is exactly
@@ -196,13 +314,13 @@ export async function POST(req: NextRequest) {
         // than recording the violation and moving on.
         let observedBase: string | null = typeof base === 'string' ? base : null;
         if (prNumber && worker.workspace?.githubRepoId) {
-          const adoptRepo = await db.query.githubRepos.findFirst({
+          adoptRepo = await db.query.githubRepos.findFirst({
             where: eq(githubRepos.id, worker.workspace.githubRepoId),
             with: { installation: true },
           });
           if (adoptRepo?.installation && existingPrUrl.includes(`/${adoptRepo.fullName}/pull/`)) {
             try {
-              const realPr = await githubApi(
+              realPr = await githubApi(
                 adoptRepo.installation.installationId,
                 `/repos/${adoptRepo.fullName}/pulls/${prNumber}`,
               );
@@ -211,6 +329,7 @@ export async function POST(req: NextRequest) {
               }
             } catch {
               // Unreadable — keep the claim. Unknown still refuses below.
+              realPr = null;
             }
           }
         }
@@ -236,6 +355,42 @@ export async function POST(req: NextRequest) {
           trunk: trunkBranches(worker.workspace?.gitConfig),
         });
         await supersedeAncestorEscalations(db, worker.task?.parentTaskId, prNumber);
+
+        // Same review request as the fresh-creation path below, for a PR
+        // adopted onto the integration branch instead of created by buildd.
+        // Needs the real PR fetched above (head SHA, draft state) — an
+        // adoption we could only verify via the caller's claim never reaches
+        // here, since missionBaseGuard.refusal already rejected it above.
+        if (
+          missionBaseGuard.enforced &&
+          !draft &&
+          realPr?.head?.sha &&
+          !(realPr as { draft?: boolean }).draft &&
+          adoptRepo?.installation &&
+          worker.workspace &&
+          worker.task
+        ) {
+          await requestIntegrationBranchReview({
+            workspace: { id: worker.workspace.id, gitConfig: worker.workspace.gitConfig },
+            teamId: account.teamId,
+            task: {
+              id: worker.task.id,
+              title: worker.task.title,
+              description: worker.task.description,
+              backend: worker.task.backend,
+              missionId: worker.task.missionId,
+              pathManifest: worker.task.pathManifest as string[] | null,
+              requiresReview: worker.task.requiresReview,
+            },
+            head,
+            prNumber,
+            prUrl: existingPrUrl,
+            headSha: realPr.head.sha,
+            baseRef: realPr.base?.ref ?? integrationBase!,
+            installationId: adoptRepo.installation.installationId,
+            repoFullName: adoptRepo.fullName,
+          });
+        }
       }
       return NextResponse.json({
         ok: true,
@@ -634,6 +789,34 @@ export async function POST(req: NextRequest) {
 
     // Auto-merge intent flag: Buildd will merge the PR via webhook when all CI checks pass
     const autoMergeEnabled = !!(workspace.gitConfig?.autoMergeOnGreenCI ?? workspace.gitConfig?.autoMergePR);
+
+    // Task PRs based on a mission integration branch have no heartbeat loop to
+    // notice them sitting open — request a review now rather than leaving them
+    // to age. `missionBaseGuard.enforced` is the same predicate the base checks
+    // above already used, so this fires exactly when the derived base is the
+    // integration branch.
+    if (missionBaseGuard.enforced && !draft && worker.task) {
+      await requestIntegrationBranchReview({
+        workspace: { id: workspace.id, gitConfig: workspace.gitConfig },
+        teamId: account.teamId,
+        task: {
+          id: worker.task.id,
+          title: worker.task.title,
+          description: worker.task.description,
+          backend: worker.task.backend,
+          missionId: worker.task.missionId,
+          pathManifest: worker.task.pathManifest as string[] | null,
+          requiresReview: worker.task.requiresReview,
+        },
+        head,
+        prNumber: prData.number,
+        prUrl: prData.html_url,
+        headSha: prData.head?.sha ?? '',
+        baseRef: prData.base?.ref ?? integrationBase!,
+        installationId: repo.installation.installationId,
+        repoFullName: repo.fullName,
+      });
+    }
 
     return NextResponse.json({
       ok: true,
