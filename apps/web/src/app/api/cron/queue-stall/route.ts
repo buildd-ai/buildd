@@ -75,6 +75,7 @@ import { declaresNoScope } from '@buildd/core/path-overlap';
 // in PR #1864 and replaced by configuration-time surfacing); the watchdog names
 // the condition, it never withholds a task from anything.
 import { createBackendStrandProbe } from '@/lib/backend-strand';
+import { createPacingProbe } from '@/lib/pacing-stall';
 import {
   DEP_SATISFYING_STATUSES,
   DEP_UNBLOCKING_PR_LIFECYCLE,
@@ -140,6 +141,7 @@ export type StallGate =
   | 'workspace_cap_reached'
   | 'backend_credential_missing'
   | 'advisory_manifest'
+  | 'routing_paused'
   | 'no_gate_identified';
 
 interface CandidateWorkspace {
@@ -166,6 +168,8 @@ interface Candidate {
   subjectResolution: string | null;
   subjectAnchor: { source?: string | null } | null;
   pathManifest: string[] | null;
+  priority: number | null;
+  kind: string | null;
   workspace?: CandidateWorkspace | null;
 }
 
@@ -184,6 +188,7 @@ interface DepIndex {
 }
 
 type BackendStrandProbe = ReturnType<typeof createBackendStrandProbe>;
+type PacingProbe = ReturnType<typeof createPacingProbe>;
 
 interface GateVerdict {
   gate: StallGate;
@@ -210,6 +215,7 @@ async function resolveStallGate(
   deps: DepIndex,
   advisoryPeers: AdvisoryPeerIndex,
   strandProbe: BackendStrandProbe,
+  pacingProbe: PacingProbe,
   now: Date,
 ): Promise<GateVerdict | null> {
   const ctx = task.context ?? {};
@@ -401,6 +407,30 @@ async function resolveStallGate(
     }
   }
 
+  // ── OAuth budget pacing ───────────────────────────────────────────────────
+  // Soft and self-clearing (pressure falls when the provider window resets), so
+  // it sits below every permanent gate — but it MUST precede the fallback.
+  // `routing_paused` is by far the most common real reason a claimable task
+  // sits unclaimed, and reporting it as `no_gate_identified` actively misleads:
+  // the fallback blames runners and roles, while the fix is spend.
+  {
+    const paced = await pacingProbe.check({
+      teamId: task.workspace?.teamId ?? null,
+      priority: task.priority,
+      kind: task.kind,
+    });
+    if (paced) {
+      return {
+        gate: 'routing_paused',
+        detail:
+          `held by OAuth budget pacing at ${Math.round(paced.pct * 100)}% of learned window capacity — `
+          + `priority-0 work pauses while pressure is this high. It resumes when the window resets; `
+          + `to run it now, raise its priority, press Start (an explicit start bypasses pacing), `
+          + `or set OAUTH_BUDGET_PACING=off`,
+      };
+    }
+  }
+
   // ── No gate found ─────────────────────────────────────────────────────────
   // The claim query would accept this task, so nothing is asking for it:
   // usually no runner online offering the role.
@@ -446,6 +476,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       // declaresNoScope() would (correctly) call "no scope declared" — so an
       // omission here turns the gate on for the entire queue rather than off.
       pathManifest: true,
+      priority: true,
+      kind: true,
     },
     with: {
       workspace: {
@@ -591,6 +623,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // One probe per run: the provider mask is read once per team and each
   // credential lookup once per (backend, workspace), however long the queue is.
   const strandProbe = createBackendStrandProbe();
+  const pacingProbe = createPacingProbe();
 
   for (let i = 0; i < examinedSet.length; i++) {
     if (Date.now() - gateStart > GATE_BUDGET_MS) {
@@ -600,7 +633,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     const task = examinedSet[i];
     let verdict: GateVerdict | null = null;
     try {
-      verdict = await resolveStallGate(task, deps, advisoryPeers, strandProbe, now);
+      verdict = await resolveStallGate(task, deps, advisoryPeers, strandProbe, pacingProbe, now);
     } catch (err) {
       // A gate helper throwing must not blind the whole run — report it as its
       // own finding rather than losing the task.
