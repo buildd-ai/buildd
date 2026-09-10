@@ -663,7 +663,7 @@ export async function POST(req: NextRequest) {
         teamId: account.teamId ?? '',
         seatId: account.seatId ?? null,
       });
-      const episodes = await loadOauthEpisodes(accountIds);
+      const episodes = await loadOauthEpisodes(accountIds, undefined, now);
       const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
 
       if (capacity.confidence !== 'none') {

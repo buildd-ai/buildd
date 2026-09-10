@@ -58,7 +58,7 @@ describe('loadOauthEpisodes', () => {
       },
     ];
 
-    const result = await loadOauthEpisodes(['acc1', 'acc2']);
+    const result = await loadOauthEpisodes(['acc1', 'acc2'], undefined, NOW);
     expect(result).toHaveLength(2);
     expect(result[0].turns).toBe(50);
     expect(result[1].turns).toBe(30);
@@ -77,9 +77,41 @@ describe('loadOauthEpisodes', () => {
         weightedTokens: 200,
       },
     ];
-    const result = await loadOauthEpisodes(['acc1']);
+    const result = await loadOauthEpisodes(['acc1'], undefined, NOW);
     expect(result).toHaveLength(1);
     expect(result[0].turns).toBe(10);
+  });
+
+  it('filters out episodes with stale resetsAt (reset already happened)', async () => {
+    const staleResetTime = new Date(NOW.getTime() - 2 * HOUR);
+    const recentResetTime = new Date(NOW.getTime() + 2 * HOUR);
+
+    mockEpisodeRows = [
+      {
+        exhaustedAt: new Date(NOW.getTime() - 3 * HOUR),
+        resetsAt: recentResetTime, // future → not stale
+        workerCount: 5,
+        turns: 100,
+        inputTokens: 2000,
+        outputTokens: 0,
+        weightedTurns: 100,
+        weightedTokens: 2000,
+      },
+      {
+        exhaustedAt: new Date(NOW.getTime() - 6 * HOUR),
+        resetsAt: staleResetTime, // past → stale, should be filtered
+        workerCount: 2,
+        turns: 20,
+        inputTokens: 500,
+        outputTokens: 0,
+        weightedTurns: 20,
+        weightedTokens: 500,
+      },
+    ];
+
+    const result = await loadOauthEpisodes(['acc1'], undefined, NOW);
+    expect(result).toHaveLength(1);
+    expect(result[0].turns).toBe(100);
   });
 });
 

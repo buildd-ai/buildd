@@ -26,6 +26,8 @@ export interface OauthSessionForecast {
   limiter: string | null;
   episodes: number;
   state: 'learning' | 'active';
+  /** Age of the newest episode in milliseconds; null if no episodes (still learning) */
+  observationAgeMs: number | null;
 }
 
 export interface MonthlyBudgetForecast {
@@ -326,7 +328,7 @@ export async function getBudgetForecast(
       // Representative account for UI key (first in group)
       const representativeId = group[0].id;
 
-      const episodes = await loadOauthEpisodes(accountIds);
+      const episodes = await loadOauthEpisodes(accountIds, undefined, now);
       const capacity = learnOauthCapacity(episodes, { quantile: config.quantile });
       const { windowStartedAt, usage } = await measureOauthWindow({
         accountIds,
@@ -336,6 +338,11 @@ export async function getBudgetForecast(
       const pressure = oauthBudgetPressure({ usage, capacity });
       const windowEnd = windowEndsAt(windowStartedAt);
       const confidence = oauthEpisodeConfidence(capacity.confidence);
+
+      // Calculate observation age: how old is the newest episode?
+      const observationAgeMs = episodes.length > 0
+        ? now.getTime() - episodes[0].exhaustedAt.getTime()
+        : null;
 
       oauthSessions.push({
         kind: 'oauth',
@@ -347,6 +354,7 @@ export async function getBudgetForecast(
         limiter: pressure.limiter,
         episodes: capacity.samples,
         state: capacity.confidence === 'none' ? 'learning' : 'active',
+        observationAgeMs,
       });
     } catch {
       // Skip groups that fail rather than crashing the whole forecast
