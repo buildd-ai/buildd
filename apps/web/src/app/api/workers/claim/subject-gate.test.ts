@@ -190,6 +190,19 @@ describe('subjectLivenessCondition — emitted SQL', () => {
     ]);
   });
 
+  it('REGRESSION (2026-09-10): reads subject_resolution through COALESCE', () => {
+    // subject_resolution is NULL for the entire life of a task until the sweep
+    // marks it 'reconciled' — i.e. every live PR-anchored task (every reviewer
+    // task, from the moment it is created) has subject_resolution = NULL. A
+    // bare `"subject_resolution" = 'reconciled'` evaluates to SQL NULL (not
+    // FALSE) on such a row, which poisons the whole AND chain to NULL, makes
+    // `NOT (...)` NULL, and a NULL WHERE predicate excludes the row — so every
+    // review task pended forever regardless of any other gate. Dropping the
+    // COALESCE here must fail this test the same way it broke production.
+    const { text } = renderSubjectGate();
+    expect(text).toMatch(/COALESCE\("tasks"\."subject_resolution", ''\) = \$1/);
+  });
+
   it('treats binding sources as the mortal set, never the exempt set', () => {
     const { text } = renderSubjectGate();
     expect(text).toMatch(/COALESCE\("tasks"\."subject_anchor"->>'source', ''\) IN \(\$2, \$3\)/);
