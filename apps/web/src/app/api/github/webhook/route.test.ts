@@ -3485,6 +3485,96 @@ describe('pull_request retarget off the mission integration branch (P2b)', () =>
     expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
     expect(mockNotifyMissionPrReady).not.toHaveBeenCalled();
   });
+
+  // ── The webhook's form of "refused" ────────────────────────────────────
+  //
+  // A webhook cannot 400 at anyone, so enforcement here is putting the base
+  // back. Reporting is what is left when it cannot — which is the production
+  // shape, where the integration branch was deleted and there is nothing to
+  // restore to.
+  it('restores the base to the integration branch instead of only reporting', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    const patchCall = (mockGithubApi.mock.calls as any[]).find(
+      c => c[1] === '/repos/test-org/test-repo/pulls/9' && c[2]?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    expect(JSON.parse(patchCall[2].body)).toEqual({ base: INTEGRATION_BRANCH });
+    // Still announced — a silent repair hides that something opened a mission
+    // task PR on trunk in the first place.
+    const noteInserts = insertCalls.filter(c => c.values?.type === 'warning');
+    expect(noteInserts.length).toBe(1);
+    expect(noteInserts[0].values.body).toContain('retargeted it back');
+  });
+
+  it('falls back to the lost-gate report when the base cannot be restored', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    optedInMission();
+    mockGithubApi.mockImplementation((_id: number, path: string, init?: any) => {
+      if (init?.method === 'PATCH') return Promise.reject(new Error('422 Unprocessable Entity'));
+      return Promise.resolve({});
+    });
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload()));
+
+    const noteInserts = insertCalls.filter(c => c.values?.type === 'warning');
+    expect(noteInserts.length).toBe(1);
+    expect(noteInserts[0].values.body).toContain('could not restore');
+    expect(noteInserts[0].values.body).toContain('lost its mission review');
+  });
+
+  // The shape that let two task PRs reach trunk: they were NEVER on the
+  // integration branch, so a detector keyed on "moved off a known-good base"
+  // saw nothing. What matters is where the PR points now.
+  it('acts on a PR that was never recorded on the integration branch (prBaseRef null)', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ prBaseRef: null }));
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload({
+      action: 'opened',
+      changes: undefined,
+    })));
+
+    const patchCall = (mockGithubApi.mock.calls as any[]).find(
+      c => c[1] === '/repos/test-org/test-repo/pulls/9' && c[2]?.method === 'PATCH',
+    );
+    expect(patchCall).toBeDefined();
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(1);
+  });
+
+  it('does not touch a PR whose head IS the integration branch — head cannot equal base', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker({ prBaseRef: null }));
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload({
+      pull_request: {
+        ...retargetOffPayload().pull_request,
+        head: { ref: INTEGRATION_BRANCH, sha: 'sha-9' },
+      },
+    })));
+
+    const patchCall = (mockGithubApi.mock.calls as any[]).find(
+      c => c[1] === '/repos/test-org/test-repo/pulls/9' && c[2]?.method === 'PATCH',
+    );
+    expect(patchCall).toBeUndefined();
+    // Still reported: that shape is its own violation.
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(1);
+  });
+
+  it('does not act on a PR that has already merged', async () => {
+    mockWorkersFindFirst.mockReturnValue(taskWorker());
+    optedInMission();
+
+    await POST(createWebhookRequest('pull_request', retargetOffPayload({
+      action: 'closed',
+      pull_request: { ...retargetOffPayload().pull_request, merged: true },
+    })));
+
+    expect(insertCalls.filter(c => c.values?.type === 'warning').length).toBe(0);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

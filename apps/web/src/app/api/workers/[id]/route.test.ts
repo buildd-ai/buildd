@@ -487,6 +487,7 @@ mock.module('@buildd/core/path-claim', () => ({
 }));
 
 import { GET, PATCH } from './route';
+import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 
 function createMockRequest(options: {
   method?: string;
@@ -2331,6 +2332,160 @@ describe('PATCH /api/workers/[id]', () => {
       const res = await PATCH(req, { params: mockParams });
 
       expect(res.status).toBe(200);
+    });
+
+    // ── Option A′: the completion-time auto-detect door ────────────────────
+    //
+    // This adoption path is how `gh pr create --base dev` + complete_task gets
+    // a mission task PR onto trunk without create_pr ever being called: the
+    // derivation never sees it, so completion has to ask the same question.
+    describe('mission-integration legality gate on auto-detect', () => {
+      const INTEGRATION_BRANCH = 'mission/example-slug-0a1b2c3d';
+
+      function detectedPr(baseRef: string | null) {
+        mockGithubApi.mockResolvedValue([
+          {
+            html_url: 'https://github.com/org/repo/pull/42',
+            number: 42,
+            state: 'open',
+            ...(baseRef ? { base: { ref: baseRef } } : {}),
+          },
+        ]);
+      }
+
+      function completingWorker(taskRow: Record<string, any>) {
+        mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+        mockWorkersFindFirst
+          .mockResolvedValueOnce(baseWorker)
+          .mockResolvedValueOnce({ ...baseWorker, prUrl: 'https://github.com/org/repo/pull/42', prNumber: 42 });
+        mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', ...taskRow });
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+        mockGithubReposFindFirst.mockResolvedValue({
+          id: 'repo-1',
+          fullName: 'org/repo',
+          installation: { installationId: 123 },
+        });
+        mockWorkersUpdate.mockReturnValue({
+          set: mock(() => ({
+            where: mock(() => ({
+              returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+            })),
+          })),
+        });
+      }
+
+      function optedInMission(overrides: Record<string, any> = {}) {
+        mockMissionsFindFirst.mockResolvedValue({
+          workingBranch: INTEGRATION_BRANCH,
+          integrationBranchEnabled: true,
+          ...overrides,
+        });
+      }
+
+      function completionRequest() {
+        return createMockRequest({
+          method: 'PATCH',
+          headers: { Authorization: 'Bearer bld_test' },
+          body: { status: 'completed' },
+        });
+      }
+
+      it('refuses to adopt an auto-detected PR that targets trunk', async () => {
+        completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
+        optedInMission();
+        detectedPr('dev');
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain(INTEGRATION_BRANCH);
+        expect(data.error).toContain('#42');
+        expect(data.hint).toContain(INTEGRATION_BRANCH);
+      });
+
+      it('refuses when the auto-detected PR reports no base ref', async () => {
+        completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
+        optedInMission();
+        detectedPr(null);
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(400);
+      });
+
+      it('adopts an auto-detected PR based on the integration branch, and records its base', async () => {
+        let capturedWorkerSet: any = null;
+        completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
+        mockWorkersUpdate.mockReturnValue({
+          set: mock((updates: any) => {
+            if (updates?.prNumber === 42) capturedWorkerSet = updates;
+            return {
+              where: mock(() => ({
+                returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+              })),
+            };
+          }),
+        });
+        optedInMission();
+        detectedPr(INTEGRATION_BRANCH);
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(capturedWorkerSet?.prBaseRef).toBe(INTEGRATION_BRANCH);
+      });
+
+      it('is unaffected for a task with no mission', async () => {
+        completingWorker({ missionId: null, taskClass: 'work', title: 'Do thing', context: null });
+        mockMissionsFindFirst.mockResolvedValue(null);
+        detectedPr('dev');
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('is unaffected for a mission with no integration base', async () => {
+        completingWorker({ missionId: 'mission-1', taskClass: 'work', title: 'Do thing', context: null });
+        optedInMission({ integrationBranchEnabled: false });
+        detectedPr('dev');
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('exempts the mission-PR owner, whose PR legitimately targets trunk', async () => {
+        completingWorker({
+          missionId: 'mission-1',
+          taskClass: 'bookkeeping',
+          title: `${MISSION_PR_TASK_PREFIX}Example mission`,
+          context: null,
+        });
+        optedInMission();
+        detectedPr('dev');
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
+      });
+
+      it('exempts a stacked-plan phase, whose base is the predecessor branch', async () => {
+        const predecessor = 'buildd/predecessor00-earlier-thing';
+        completingWorker({
+          missionId: 'mission-1',
+          taskClass: 'work',
+          title: 'Second phase',
+          context: { baseBranch: predecessor },
+        });
+        optedInMission();
+        detectedPr(predecessor);
+
+        const res = await PATCH(completionRequest(), { params: mockParams });
+
+        expect(res.status).toBe(200);
+      });
     });
 
     it('pr_required + no branch PR + referenced PR is merged → completes and records it', async () => {

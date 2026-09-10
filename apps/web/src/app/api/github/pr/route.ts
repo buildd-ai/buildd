@@ -7,13 +7,7 @@ import { githubApi, mergePullRequest } from '@/lib/github';
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
 import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
-import {
-  isMissionIntegrationBase,
-  isMissionPrTask,
-  isPrLegalForMissionTask,
-  isStackedPhaseBase,
-  missionIntegrationBase,
-} from '@buildd/core/mission-integration';
+import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -153,11 +147,15 @@ export async function POST(req: NextRequest) {
           columns: { workingBranch: true, integrationBranchEnabled: true },
         })
       : null;
-    const integrationBase = missionIntegrationBase(mission);
-    const isMissionPrOwner = !!(worker.task && isMissionPrTask(worker.task));
+    // The same guard object every other door uses (completion auto-detect,
+    // webhook retarget), so a base this route refuses cannot be acquired by
+    // walking in through one of them instead.
+    const missionBaseGuard = buildMissionBaseGuard({ mission, task: worker.task, head });
+    const integrationBase = missionBaseGuard.integrationBase;
+    const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
     const contextBaseBranch = taskContext?.baseBranch as string | undefined;
-    const isStackedPhase = isStackedPhaseBase({ contextBaseBranch, head, mission });
+    const isStackedPhase = missionBaseGuard.isStackedPhase;
 
     // If an existing PR URL is provided, register it directly without going through GitHub API.
     // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation
@@ -184,18 +182,43 @@ export async function POST(req: NextRequest) {
       // base disagrees (or omits it) would let exactly that gate quietly
       // vanish on a PR buildd never got to derive. The caller can retarget
       // the real PR on GitHub and retry.
-      if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
-        const claimedBase = typeof base === 'string' ? base : null;
-        if (!isPrLegalForMissionTask({ baseRef: claimedBase, mission, isMissionPrTask: false })) {
-          return NextResponse.json({
-            error: `Cannot adopt this PR: its base ('${claimedBase ?? 'unknown'}') is not this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch.`,
-            hint: `Retarget the PR to base '${integrationBase}' on GitHub, then retry with the corrected base.`,
-          }, { status: 400 });
-        }
-      }
-
       const prNumberMatch = existingPrUrl.match(/\/pull\/(\d+)/);
       const prNumber = prNumberMatch ? parseInt(prNumberMatch[1], 10) : null;
+      if (missionBaseGuard.enforced) {
+        // Prefer GitHub's answer over the caller's. The caller-supplied `base`
+        // is a *claim* about a PR buildd never opened, and a claim is exactly
+        // what this gate exists to stop being load-bearing: an agent can pass
+        // `base: <integration branch>` while the real PR targets trunk, and the
+        // check would pass on the strength of the sentence rather than the
+        // pull request. When the workspace has a GitHub App installation we can
+        // simply read the real base ref; when it does not (the case this whole
+        // path was added for) we fall back to the claim, which is still better
+        // than recording the violation and moving on.
+        let observedBase: string | null = typeof base === 'string' ? base : null;
+        if (prNumber && worker.workspace?.githubRepoId) {
+          const adoptRepo = await db.query.githubRepos.findFirst({
+            where: eq(githubRepos.id, worker.workspace.githubRepoId),
+            with: { installation: true },
+          });
+          if (adoptRepo?.installation && existingPrUrl.includes(`/${adoptRepo.fullName}/pull/`)) {
+            try {
+              const realPr = await githubApi(
+                adoptRepo.installation.installationId,
+                `/repos/${adoptRepo.fullName}/pulls/${prNumber}`,
+              );
+              if (typeof realPr?.base?.ref === 'string' && realPr.base.ref) {
+                observedBase = realPr.base.ref;
+              }
+            } catch {
+              // Unreadable — keep the claim. Unknown still refuses below.
+            }
+          }
+        }
+        const refusal = missionBaseGuard.refusal(observedBase, { prNumber, action: 'adopt' });
+        if (refusal) {
+          return NextResponse.json(refusal, { status: 400 });
+        }
+      }
       // NOTE: prBaseRef is deliberately NOT set here. This path registers a PR
       // that was opened outside buildd (e.g. via gh CLI), so the only base we have
       // is the caller-supplied `base` — an unverified claim about a PR we never
@@ -318,6 +341,25 @@ export async function POST(req: NextRequest) {
             `/repos/${repo.fullName}/pulls/${existing.number}`,
           );
         } catch {}
+
+        // ── Mission-integration legality gate on dedup-adoption ─────────────
+        // This branch adopts a PR buildd did NOT open — that is the whole point
+        // of it, and it is also the exact shape of the bypass: an agent runs
+        // `gh pr create --base <trunk>` and then calls create_pr, which finds
+        // the PR here and records it, returning 200 long before the
+        // derive-don't-accept checks further down ever run. Ask the same
+        // question those checks ask, against the base GitHub reports.
+        const dedupBaseRef = (typeof prDetail.base?.ref === 'string' && prDetail.base.ref)
+          ? prDetail.base.ref
+          : (typeof existing.base?.ref === 'string' ? existing.base.ref : null);
+        const dedupRefusal = missionBaseGuard.refusal(dedupBaseRef, {
+          prNumber: existing.number,
+          action: 'adopt',
+        });
+        if (dedupRefusal) {
+          return NextResponse.json(dedupRefusal, { status: 400 });
+        }
+
         // Update worker with the existing PR info and diff stats
         await db
           .update(workers)
