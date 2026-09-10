@@ -652,8 +652,7 @@ Nothing about symbol/route/migration resolution is buildd-specific: the
 checker resolves claims against whatever repository a workspace owns via
 `workspaces.repoUrl` (`packages/core/db/schema.ts:1790`) — that anchor already
 exists and needs no new work. What is currently buildd-hardcoded, and must be
-parameterized before another workspace (moa-ops, cue, or a future one) gets
-this for free:
+parameterized before another workspace gets this for free:
 
 1. **The weekly Tier-3 cron is a single hardcoded schedule row** (`ecc45c47`)
    that exists only in the buildd workspace. Fix: creating the Tier-3 cron
