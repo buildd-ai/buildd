@@ -518,6 +518,12 @@ export interface TaskResult {
   nextSuggestion?: string;
   /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
   reaperAutoCompleted?: boolean;
+  /** The summary this replaced, when an admin corrected it after completion. See correct_task_result. */
+  previousSummary?: string;
+  /** ISO timestamp of the last admin correction to `summary`. */
+  summaryCorrectedAt?: string;
+  /** Identifier of the caller that made the correction (worker id or token label). */
+  correctedBy?: string;
 }
 
 /**

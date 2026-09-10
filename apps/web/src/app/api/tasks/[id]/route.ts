@@ -183,7 +183,7 @@ export async function PATCH(
     }
 
     const body = await req.json();
-    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, maxLoops, actorWorkerId } = body;
+    const { title, description, priority, project, missionId, dependsOn, status, roleSlug, requiredConnectors: rawRequiredConnectors, externalIssueId, externalIssueUrl, backend, maxLoops, actorWorkerId, resultSummary, correctedBy } = body;
 
     const updateData: Partial<typeof tasks.$inferInsert> = {
       updatedAt: new Date(),
@@ -264,6 +264,31 @@ export async function PATCH(
         );
       }
       updateData.loopConfig = normalized;
+    }
+
+    // Correct a completed/failed task's stored result.summary after the fact (e.g. a
+    // stray assistant aside got captured, or a runner/server bug garbled it). The
+    // completion PATCH in /api/workers/[id] refuses to write result once a task is
+    // terminal, so this is the only path to amend the durable record — gated to admin
+    // token level at the MCP layer (correct_task_result), not here.
+    if (resultSummary !== undefined) {
+      if (typeof resultSummary !== 'string' || resultSummary.trim() === '') {
+        return NextResponse.json({ error: 'resultSummary must be a non-empty string' }, { status: 400 });
+      }
+      if (!['completed', 'failed'].includes(task.status)) {
+        return NextResponse.json(
+          { error: `Cannot correct result.summary on a '${task.status}' task — only completed or failed tasks have a stored result to correct.` },
+          { status: 400 },
+        );
+      }
+      const existingResult = (task.result || {}) as Record<string, unknown>;
+      updateData.result = {
+        ...existingResult,
+        summary: resultSummary,
+        previousSummary: existingResult.summary as string | undefined,
+        summaryCorrectedAt: new Date().toISOString(),
+        correctedBy: correctedBy || undefined,
+      };
     }
 
     if (status !== undefined) {
