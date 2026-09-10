@@ -67,6 +67,9 @@ export interface GitStats {
   linesAdded?: number;
   linesRemoved?: number;
   lastCommitSha?: string;
+  /** `git status --porcelain` (tracked files only — untracked `??` entries
+   *  excluded) found something at collection time. */
+  dirtyWorktree?: boolean;
 }
 
 /**
@@ -592,24 +595,36 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
  * @param cwd - The working directory to collect stats from
  * @param workerId - For logging
  * @param fallbackCommitCount - Fallback count if git rev-list fails (e.g. from worker.commits.length)
+ * @param baseRef - The ref this worktree was actually cut from (setupWorktree's
+ *   `SetupWorktreeResult.base`, e.g. `origin/main` or a mission integration
+ *   branch). When present, this is what commit-count and diff stats are
+ *   measured against — a branch cut from a mission integration branch must
+ *   report its OWN diff, not the integration branch's whole diff vs
+ *   dev/main/master. Falls back to that dev/main/master search when absent
+ *   (older callers, or a worktree set up before this field existed).
  */
 export async function collectGitStats(
   cwd: string | undefined,
   workerId: string,
   fallbackCommitCount?: number,
+  baseRef?: string,
 ): Promise<GitStats> {
   if (!cwd) return {};
 
   const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const };
-  const stats: Record<string, number | string | undefined> = {};
+  const stats: Record<string, number | string | boolean | undefined> = {};
 
   try {
     stats.lastCommitSha = execSync('git rev-parse HEAD', opts).trim();
   } catch {}
   try {
-    // Count commits on this branch vs default branch
-    const defaultBranch = execSync('git rev-parse --abbrev-ref HEAD@{upstream}', opts).trim().replace(/^origin\//, '') || 'main';
-    const count = execSync(`git rev-list --count HEAD ^origin/${defaultBranch}`, opts).trim();
+    // Count commits on this branch vs the ref it was actually cut from.
+    let compareRef = baseRef;
+    if (!compareRef) {
+      const defaultBranch = execSync('git rev-parse --abbrev-ref HEAD@{upstream}', opts).trim().replace(/^origin\//, '') || 'main';
+      compareRef = `origin/${defaultBranch}`;
+    }
+    const count = execSync(`git rev-list --count HEAD ^${compareRef}`, opts).trim();
     stats.commitCount = parseInt(count, 10) || 0;
   } catch {
     // Fallback: use locally tracked commits
@@ -618,26 +633,46 @@ export async function collectGitStats(
   try {
     // Compute full PR diff: find the merge-base with the base branch so we capture all
     // commits on this branch, not just the last commit (HEAD~1 only shows the final commit).
-    // Try branch candidates in order; the first one that yields a merge-base wins.
+    // Prefer the ref this worktree was actually cut from; a branch cut from a mission
+    // integration branch must diff against THAT branch, not dev/main/master — diffing
+    // against dev there reports the integration branch's whole accumulated diff as this
+    // worker's own, even when this worker made zero commits of its own.
     let mergeBase = '';
-    for (const candidate of ['origin/dev', 'origin/main', 'origin/master']) {
+    if (baseRef) {
       try {
-        const result = execSync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts).trim();
-        if (result) { mergeBase = result; break; }
+        const result = execSync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts).trim();
+        if (result) mergeBase = result;
       } catch {}
+    }
+    if (!mergeBase) {
+      for (const candidate of ['origin/dev', 'origin/main', 'origin/master']) {
+        try {
+          const result = execSync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts).trim();
+          if (result) { mergeBase = result; break; }
+        } catch {}
+      }
     }
     const diffTarget = mergeBase || 'HEAD~1';
     const numstat = execSync(`git diff --numstat ${diffTarget} 2>/dev/null || true`, opts).trim();
+    let added = 0, removed = 0, files = 0;
     if (numstat) {
-      let added = 0, removed = 0, files = 0;
       for (const line of numstat.split('\n')) {
         const [a, r] = line.split('\t');
         if (a !== '-') { added += parseInt(a, 10) || 0; removed += parseInt(r, 10) || 0; files++; }
       }
-      stats.filesChanged = files;
-      stats.linesAdded = added;
-      stats.linesRemoved = removed;
     }
+    stats.filesChanged = files;
+    stats.linesAdded = added;
+    stats.linesRemoved = removed;
+  } catch {}
+  try {
+    // Tracked-file modifications only — an untracked (`??`) entry is not
+    // something to commit-and-PR-or-discard, it's just a scratch file the
+    // agent hasn't decided about yet.
+    const porcelain = execSync('git status --porcelain', opts).toString();
+    stats.dirtyWorktree = porcelain
+      .split('\n')
+      .some(line => line.length > 0 && !line.startsWith('??'));
   } catch {}
 
   return stats;
