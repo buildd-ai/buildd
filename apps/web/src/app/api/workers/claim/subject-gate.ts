@@ -51,6 +51,20 @@ export {
  *
  * Inserted into claimableConditions after the held-mission gate and before the
  * dependency gate, per §6 ordering.
+ *
+ * `subject_resolution` MUST be read through COALESCE. It is NULL for the
+ * entire life of a task until the reconciliation sweep marks it 'reconciled' —
+ * i.e. NULL is the normal, live state, not an edge case. SQL's three-valued
+ * logic makes `NULL = 'reconciled'` evaluate to NULL (not FALSE), so on any
+ * row where subject_kind/subject_pr_number are both non-NULL (every
+ * system-anchored reviewer task, unconditionally) the un-coalesced inner AND
+ * chain evaluates to NULL instead of FALSE, `NOT (NULL)` is NULL, and a NULL
+ * WHERE predicate excludes the row — permanently, from creation, regardless
+ * of every other gate. This is why every `[review]` task pended forever with
+ * no visible reason (2026-09-10 incident): the SQL diverged from
+ * `isSubjectDead()` below, which reads `subjectResolution !== 'reconciled'`
+ * and correctly treats `null !== 'reconciled'` as `true` — only the SQL
+ * transcription had the gap.
  */
 export function subjectLivenessCondition(): SQL {
   const bindingSources = sql.join(
@@ -61,7 +75,7 @@ export function subjectLivenessCondition(): SQL {
   return sql`NOT (
     ${tasks.subjectKind} = 'pull_request'
     AND ${tasks.subjectPrNumber} IS NOT NULL
-    AND ${tasks.subjectResolution} = ${SUBJECT_DEAD_RESOLUTION}
+    AND COALESCE(${tasks.subjectResolution}, '') = ${SUBJECT_DEAD_RESOLUTION}
     AND COALESCE(${tasks.subjectAnchor}->>'source', '') IN (${bindingSources})
     AND COALESCE(${tasks.subjectAnchor}->>'confidence', '') != ${SUBJECT_ADVISORY_CONFIDENCE}
     AND COALESCE(${tasks.context}->>${BYPASS_SUBJECT_GATE_KEY}, '') != 'true'
