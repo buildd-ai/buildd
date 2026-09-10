@@ -1673,9 +1673,9 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Active OAuth session rows — labeled by account name */}
         {activeSessions.map((s) => (
           <div key={s.accountId} className="px-4 py-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
               <span className="text-sm text-text-primary">{s.accountName || 'Claude session'}</span>
-              <div className="flex items-center gap-2 text-xs text-text-secondary">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                 <span
                   className="tabular-nums font-medium text-text-primary"
                   title="Usage vs. conservative floor (p25 of exhaustion history). Real remaining capacity is typically higher."
@@ -1726,9 +1726,9 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Monthly dollar budget */}
         {forecast.monthly && (
           <div className="px-4 py-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
               <span className="text-sm text-text-primary">Monthly budget</span>
-              <div className="flex items-center gap-2 text-xs text-text-secondary">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                 {/* LIFETIME (calendar): spend accumulates from the 1st, so it is
                     labelled with that anchor rather than left to look windowed. */}
                 <span className="tabular-nums font-medium text-text-primary">
@@ -1778,9 +1778,9 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Codex budget (only show when exhausted — for reset-time visibility) */}
         {forecast.codex?.isExhausted && (
           <div className="px-4 py-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
               <span className="text-sm text-text-primary">Codex budget</span>
-              <div className="flex items-center gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-2 text-xs">
                 <span className="text-status-error font-medium">exhausted</span>
                 {forecast.codex.resetsAt && (
                   <>
@@ -1796,9 +1796,9 @@ function BudgetForecastSection({ forecast, now }: { forecast: BudgetForecast; no
         {/* Mission budgets — top 3 nearest to exhaustion */}
         {forecast.missions.slice(0, 3).map((m) => (
           <div key={m.missionId} className="px-4 py-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 gap-y-1">
               <span className="text-sm text-text-secondary truncate max-w-[10rem]">{m.missionTitle}</span>
-              <div className="flex items-center gap-2 text-xs text-text-secondary">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-text-secondary">
                 <span className={`font-medium tabular-nums ${
                   m.pctUsed >= 90 ? 'text-status-error' :
                   m.pctUsed >= 70 ? 'text-status-warning' :
