@@ -168,7 +168,16 @@ export function deriveTaskHealthSignal(
  * for the mission detail page header chip and state-driven CTA.
  * Priority: complete > held > running > failed > manual > active.
  */
-export type MissionDisplayState = 'held' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
+/**
+ * `blocked` and `stalled` close the two gaps the mission-state audit found
+ * (`docs/design/mission-state-ownership.md` §3, Bugs A and B): an unmet
+ * dependency and a mission whose open tasks have no live worker both used to
+ * fall through to `active`, so the header chip read AUTO for a mission that
+ * could not move. Only `deriveMissionStateView` produces them —
+ * `deriveMissionDisplayState` keeps its historical chain, so nothing that reads
+ * it changes behaviour until it adopts the accessor.
+ */
+export type MissionDisplayState = 'held' | 'blocked' | 'stalled' | 'running' | 'failed' | 'manual' | 'complete' | 'active' | 'review' | 'awaiting_verification' | 'waiting_decision';
 
 export function deriveMissionDisplayState(opts: {
   status: string;
@@ -207,6 +216,13 @@ export function deriveMissionDisplayState(opts: {
 export function getMissionStateChip(state: MissionDisplayState): { label: string; cls: string } {
   switch (state) {
     case 'held':    return { label: 'HELD',             cls: 'border-status-warning text-status-warning' };
+    case 'blocked': return { label: 'BLOCKED',          cls: 'border-status-error text-status-error' };
+    // "IDLE", not "STALLED": `MissionHealth` already uses the word `stalled` for
+    // a scheduling stall (mission has not run for 2× its cron interval), and the
+    // two have different inputs and different remedies. The chip names what the
+    // reader sees — no worker on open work — and leaves the word to the axis
+    // that owns it (design doc Q3).
+    case 'stalled': return { label: 'IDLE',             cls: 'border-status-warning text-status-warning' };
     case 'running': return { label: 'RUNNING',          cls: 'border-status-success text-status-success' };
     case 'failed':  return { label: 'FAILED',           cls: 'border-status-error text-status-error' };
     case 'review':  return { label: 'READY FOR REVIEW', cls: 'border-status-success text-status-success' };

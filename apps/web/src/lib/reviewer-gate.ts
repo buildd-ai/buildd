@@ -40,9 +40,18 @@ export interface ReviewerGateReviewerTask {
   /** A worker in a LIVE_WORKER_STATUSES state is currently claimed on this task. */
   hasLiveWorker: boolean;
   createdAt: Date;
+  context?: Record<string, unknown> | null;
+  startAt?: Date | null;
+}
+
+export interface ReviewerStallFacts {
+  seats: { inProgress: number; maxConcurrentTasks: number } | null;
+  /** null means the lookup failed; [] means no recorded pauses. */
+  budgetPauses: string[] | null;
 }
 
 export interface ReviewerGateInput {
+  stallFacts?: ReviewerStallFacts;
   policyTier: 'auto-threshold' | 'agent-review' | 'human' | string;
   /** From an open reviewer_escalated mission note for this task, if any. */
   escalationReason: string | null;
@@ -53,7 +62,7 @@ export interface ReviewerGateInput {
   /** When the PR opened — used to judge staleness when no reviewer task exists yet. */
   prOpenedAt: Date | null;
   now: Date;
-  /** Minutes a reviewer may sit unclaimed before "not started" counts as "not coming". Default 30. */
+  /** Minutes without a live reviewer before surfacing a stall. Default 30. */
   queuedThresholdMinutes?: number;
   /**
    * Option A′: is this a TASK PR whose base is its mission's integration
@@ -79,6 +88,31 @@ const DEFAULT_QUEUED_THRESHOLD_MINUTES = 30;
 
 function minutesSince(from: Date, now: Date): number {
   return (now.getTime() - from.getTime()) / 60000;
+}
+
+function stallReason(input: ReviewerGateInput): string {
+  const rt = input.reviewerTask;
+  const facts = input.stallFacts;
+  const age = Math.max(0, Math.floor(minutesSince(rt?.createdAt ?? input.prOpenedAt!, input.now)));
+  const parts = [rt
+    ? `${rt.status === 'pending' ? 'Pending' : `Reviewer ${rt.status}, no live worker`} · task age ${age}m`
+    : `No reviewer task recorded · PR waiting ${age}m`];
+  parts.push(facts?.seats
+    ? `seats ${facts.seats.inProgress}/${facts.seats.maxConcurrentTasks}` : 'seats unknown');
+  const floor = rt?.startAt && rt.startAt > input.now ? rt.startAt : null;
+  const providerFloor = floor && rt?.context?.budgetExhausted === true;
+  if (facts?.budgetPauses == null) parts.push('budget pause unknown');
+  else if (facts.budgetPauses.length) parts.push(...facts.budgetPauses);
+  else if (!providerFloor) parts.push('no recorded budget pause');
+  if (floor) parts.push(`${providerFloor ? 'provider retry' : 'scheduled start'} floor until ${floor.toISOString()}`);
+  const reason = rt?.context?.lastClaimAttemptReason;
+  const stampedAt = rt?.context?.lastClaimAttemptAt;
+  // A stamp is historical evidence, not a new pre-filter evaluation. Preserve
+  // the exact reason and its observation time instead of asserting it still holds.
+  parts.push(typeof reason === 'string' && reason.length > 0
+    ? `claimable: last attempt no — ${reason} (${typeof stampedAt === 'string' ? stampedAt : 'time unknown'})`
+    : 'claimable: not yet diagnosed');
+  return parts.join(' · ');
 }
 
 export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResult {
@@ -124,14 +158,11 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
 
   if (!rt) {
     if (input.policyTier === 'agent-review') {
-      // A reviewer task should exist under this policy but doesn't yet — most
-      // likely a dispatch race right after the PR opened. Give it the same
-      // grace period as an unclaimed reviewer task before concluding nobody
-      // is coming.
+      // Allow the configured grace period before surfacing the missing task.
       if (input.prOpenedAt && minutesSince(input.prOpenedAt, input.now) > threshold) {
         return {
           actor: 'human',
-          reason: `No reviewer has started after ${threshold}m — check for a stuck dispatch`,
+          reason: stallReason(input),
         };
       }
       return { actor: 'agent', agentState: 'queued', reason: 'review queued' };
@@ -152,7 +183,7 @@ export function resolveReviewerGate(input: ReviewerGateInput): ReviewerGateResul
     if (minutesSince(rt.createdAt, input.now) > threshold) {
       return {
         actor: 'human',
-        reason: `Reviewer has not started in over ${threshold}m — likely seat contention or backoff`,
+        reason: stallReason(input),
       };
     }
     return { actor: 'agent', agentState: 'queued', reason: 'review queued' };

@@ -4,26 +4,33 @@ superseded_by: docs/specs/mission-task-lifecycle.md#mission-completion-gate
 superseded_on: 2026-08-29
 superseded_reason: Described criteria as advisory metadata evaluated as a side effect of completion. The shipped contract inverts that — completion requests a verdict and the verdict gates completion (PR #1901).
 assertions:
-  - type: symbol
+  - id: goal-criteria-column
+    type: symbol
     name: goalCriteria
     path: packages/core/db/schema.ts
-  - type: symbol
+  - id: goal-criterion-type
+    type: symbol
     name: GoalCriterion
     path: packages/shared/src/types.ts
-  - type: symbol
+  - id: evaluate-goal-criteria-fn
+    type: symbol
     name: evaluateGoalCriteria
     path: packages/core/mission-helpers.ts
-  - type: route
+  - id: mission-evaluate-route
+    type: route
     method: POST
     path: /api/missions/[id]/evaluate
     file: apps/web/src/app/api/missions/[id]/evaluate/route.ts
-  - type: symbol
+  - id: kpis-column
+    type: symbol
     name: kpis
     path: packages/core/db/schema.ts
-  - type: symbol
+  - id: initiative-kpi-type
+    type: symbol
     name: InitiativeKPI
     path: packages/shared/src/types.ts
-  - type: symbol
+  - id: evaluate-initiative-kpis-fn
+    type: symbol
     name: evaluateInitiativeKPIs
     path: packages/core/mission-helpers.ts
 ---

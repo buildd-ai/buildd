@@ -179,6 +179,11 @@ export class BuilddClient {
     filesChanged?: number;
     linesAdded?: number;
     linesRemoved?: number;
+    // `git status --porcelain` (tracked files only) found something at the
+    // worktree. Kept current by the periodic sync so complete_task — which
+    // reaches the server directly from the agent's MCP tool, with no local
+    // git access — has a fresh value to gate on.
+    dirtyWorktree?: boolean;
     // Token usage
     inputTokens?: number;
     outputTokens?: number;
@@ -563,6 +568,14 @@ export class BuilddClient {
      * updatedAt staleness rule for those workers.
      */
     activeWorkerIds?: string[],
+    /**
+     * This runner codebase's own git commit and package version — NOT a task
+     * commit. Lets the platform tell a stale-code runner from a merged fix
+     * alone, instead of requiring SSH into the host to curl its local
+     * /api/version endpoint.
+     */
+    runnerCommit?: string | null,
+    runnerVersion?: string | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number }> {
     const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
     if (activeWorkerIds) {
@@ -577,6 +590,8 @@ export class BuilddClient {
       payload.sandboxEnabled = sandboxEnabled;
       payload.sandboxProbeAt = sandboxProbeAt;
     }
+    if (runnerCommit) payload.runnerCommit = runnerCommit;
+    if (runnerVersion) payload.runnerVersion = runnerVersion;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),

@@ -118,6 +118,93 @@ describe('knowledge mirror — complete_task', () => {
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain('completed successfully');
   });
+
+  it('tags the completion PATCH summarySource=agent when the agent passes a summary', async () => {
+    const patchCalls: any[] = [];
+    const api = (async (endpoint: string, opts?: any) => {
+      if (opts?.method === 'PATCH' && endpoint === '/api/workers/w-1') {
+        patchCalls.push(JSON.parse(opts.body));
+        return { turns: 1 };
+      }
+      if (endpoint === '/api/workers/w-1') return { taskId: 't-1' };
+      if (endpoint === '/api/tasks/t-1') return { title: 'X' };
+      return {};
+    }) as ApiFn;
+
+    await handleBuilddAction(api, 'complete_task', { summary: 'Fixed the bug in X' }, ctxWith(makeRecordingStore()));
+
+    expect(patchCalls).toHaveLength(1);
+    expect(patchCalls[0].summary).toBe('Fixed the bug in X');
+    expect(patchCalls[0].summarySource).toBe('agent');
+  });
+
+  // The poisoning vector this test guards: a retry worker calls complete_task
+  // with no summary of its own, so the mirror falls back to whatever is
+  // already persisted on the task row. If an earlier worker's session ended
+  // without ever calling complete_task, that persisted value is the runner's
+  // 'fallback' capture of its last assistant message — often a conversational
+  // aside, never a real outcome — and must not be re-ingested into the KB task
+  // corpus as if it were authored content just because a later, summary-less
+  // complete_task call happened to read it back.
+  it('does NOT mirror a persisted fallback summary into the task card when the agent supplies none', async () => {
+    const store = makeRecordingStore();
+    const api = routedApi({
+      'PATCH /api/workers/w-1': { turns: 1 },
+      'GET /api/workers/w-1': { taskId: 't-1' },
+      'GET /api/tasks/t-1': {
+        title: 'Investigate flaky test',
+        result: {
+          summary: 'That call wasn\'t needed — waiting for the Monitor task to notify me.',
+          summarySource: 'fallback',
+        },
+      },
+    });
+
+    await handleBuilddAction(api, 'complete_task', {}, ctxWith(store));
+
+    const task = store.upserts.find(u => u.namespace === `${MOCK_WORKSPACE_ID}:task`);
+    expect(task).toBeDefined();
+    expect(task!.chunks[0].content).not.toContain('waiting for the Monitor task');
+    // Degrades to a bare outcome marker instead of fabricating a narrative.
+    expect(task!.chunks[0].content).toContain('## Outcome\nSUCCESS');
+
+    const session = store.upserts.find(u => u.namespace === `${MOCK_WORKSPACE_ID}:session`);
+    expect(session!.chunks[0].content).not.toContain('waiting for the Monitor task');
+  });
+
+  it('still mirrors a persisted agent-authored summary when the agent supplies none this call', async () => {
+    const store = makeRecordingStore();
+    const api = routedApi({
+      'PATCH /api/workers/w-1': { turns: 1 },
+      'GET /api/workers/w-1': { taskId: 't-1' },
+      'GET /api/tasks/t-1': {
+        title: 'Investigate flaky test',
+        result: { summary: 'Root-caused the flake to a shared mock leaking state.', summarySource: 'agent' },
+      },
+    });
+
+    await handleBuilddAction(api, 'complete_task', {}, ctxWith(store));
+
+    const task = store.upserts.find(u => u.namespace === `${MOCK_WORKSPACE_ID}:task`);
+    expect(task!.chunks[0].content).toContain('Root-caused the flake');
+  });
+
+  it('still mirrors a persisted summary with no summarySource at all (pre-fix legacy rows)', async () => {
+    const store = makeRecordingStore();
+    const api = routedApi({
+      'PATCH /api/workers/w-1': { turns: 1 },
+      'GET /api/workers/w-1': { taskId: 't-1' },
+      'GET /api/tasks/t-1': {
+        title: 'Investigate flaky test',
+        result: { summary: 'Legacy summary written before summarySource existed.' },
+      },
+    });
+
+    await handleBuilddAction(api, 'complete_task', {}, ctxWith(store));
+
+    const task = store.upserts.find(u => u.namespace === `${MOCK_WORKSPACE_ID}:task`);
+    expect(task!.chunks[0].content).toContain('Legacy summary written before summarySource existed');
+  });
 });
 
 describe('knowledge mirror — create_pr', () => {

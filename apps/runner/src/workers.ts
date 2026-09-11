@@ -33,6 +33,7 @@ import { extractBuilddAction } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
 import { runProvisionGate } from './env-verify';
+import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
 import { runVerificationCommand, resolveCommand } from './runner-verification';
 import { sessionLog, cleanupOldLogs, readSessionLogs, claimLog } from './session-logger';
 import type { ClaimLogEntry } from './session-logger';
@@ -66,6 +67,7 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
+import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap } from './cbm-bootstrap.js';
@@ -807,7 +809,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }
@@ -3420,7 +3422,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
         sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
         // Mirrors the sibling non-abort branch's local 'waiting' state — the
         // session is gone here, but 'waiting' + no live session is already a
         // recognized local state elsewhere in this file.
@@ -3475,7 +3477,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Budget exceeded - report as error with specific message
         sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
         worker.status = 'error';
         worker.error = 'Budget limit exceeded';
         worker.currentAction = 'Budget exceeded';
@@ -3526,7 +3528,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
 
         // B (write-back): After a successful OAuth Codex session, the CLI may have
         // silently refreshed the tokens. Read the auth.json we left in place
@@ -3681,8 +3683,13 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
-          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
-          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
+          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing).
+          // This fires only when the session ended without the agent calling complete_task itself,
+          // so the "summary" is whatever the agent happened to say last — often a conversational
+          // aside ("waiting for CI"), not an outcome. Tag it 'fallback' so downstream consumers
+          // (KB ingestion, UI) never present it as an authored result. See docs/specs — the agent's
+          // own complete_task PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
+          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage, summarySource: 'fallback' as const } : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
           // Subagent spans — terminal-only flush
@@ -3793,12 +3800,13 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.error = errMsg;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        const errLower = errMsg.toLowerCase();
-        // OAuth seat session caps ("You've hit your session limit") are a usage
-        // exhaustion just like a dollar budget — flag them so the server fails
-        // the task over (Codex) / holds it until reset instead of hard-failing.
-        const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') ||
-          errLower.includes('max budget') || errLower.includes('session limit') || errLower.includes('hit your session');
+        // OAuth seat session caps ("You've hit your session limit") and Codex
+        // quota walls ("You've hit your usage limit") are a usage exhaustion
+        // just like a dollar budget — flag them so the server fails the task
+        // over (Codex <-> Claude) / holds it until reset instead of hard-
+        // failing. Shared with the web route's isBudgetExhaustionError and the
+        // claim breaker's classifyClaimError so all three can't drift apart.
+        const isBudgetError = isBudgetExhaustionError(errMsg);
         // Steering-delivery crash: the CLI rejected a malformed spawn invocation
         // (e.g. --session-id + --resume without --fork-session). This is an infra
         // failure — must not consume a task retry attempt.

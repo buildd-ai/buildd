@@ -518,6 +518,21 @@ export interface TaskResult {
   nextSuggestion?: string;
   /** Set by the stale-worker reaper when it auto-completes a task that delivered a PR/artifact. */
   reaperAutoCompleted?: boolean;
+  /** The summary this replaced, when an admin corrected it after completion. See correct_task_result. */
+  previousSummary?: string;
+  /** ISO timestamp of the last admin correction to `summary`. */
+  summaryCorrectedAt?: string;
+  /** Identifier of the caller that made the correction (worker id or token label). */
+  correctedBy?: string;
+  /**
+   * Provenance of `summary`. 'agent' = the agent explicitly passed it to
+   * complete_task. 'fallback' = the runner derived it from the SDK's last
+   * assistant message because the session ended without a complete_task
+   * call — often a stray conversational aside, not an outcome. Consumers
+   * (KB ingestion, UI) must not present a 'fallback' summary as an
+   * authored outcome. Missing = written before this field existed.
+   */
+  summarySource?: 'agent' | 'fallback';
 }
 
 /**

@@ -129,6 +129,47 @@ describe('classifyClaimError', () => {
     expect(classifyClaimError('some weird worker-specific bug')).toBeNull();
     expect(classifyClaimError('econnreset')).toBeNull();
   });
+
+  // Regression: Codex-backed workers hard-failed instead of tripping the
+  // breaker, because this function only recognised Claude's session-limit
+  // wording. Codex's own quota wall ("You've hit your usage limit ... try
+  // again at <time>.") matched none of the existing branches.
+  describe('Codex usage/quota wall', () => {
+    test('classifies "hit your usage limit" as context-scoped', () => {
+      const res = classifyClaimError(
+        "you've hit your usage limit. upgrade to pro or try again at 3:45pm.",
+      );
+      expect(res).not.toBeNull();
+      expect(res!.scope).toBe('context');
+      expect(res!.label).toContain('Usage limit hit');
+    });
+
+    test('parses the "try again at" reset time', () => {
+      const res = classifyClaimError(
+        "you've hit your usage limit. or try again at 8pm.",
+      );
+      expect(res).not.toBeNull();
+      expect(res!.pauseMs).toBeGreaterThan(0);
+    });
+
+    test('uses the 5h default when no reset time is parseable', () => {
+      const res = classifyClaimError("you've hit your usage limit.");
+      expect(res).not.toBeNull();
+      expect(res!.pauseMs).toBe(5 * 60 * 60 * 1000);
+    });
+
+    test('is detected before generic rate-limit patterns', () => {
+      const res = classifyClaimError(
+        "you've hit your usage limit. or try again at 3am.",
+      );
+      expect(res!.scope).toBe('context');
+    });
+
+    test('does not fire on prose that merely mentions a usage limit', () => {
+      // Anchored on "hit your usage limit", not the bare noun phrase.
+      expect(classifyClaimError('the api enforces a usage limit of 100 req/min')).toBeNull();
+    });
+  });
 });
 
 describe('parseResetDelay', () => {

@@ -1,33 +1,40 @@
 ---
-status: implemented
+status: proposed
 assertions:
   # Current state — control-plane refresh (what we are REPLACING). These should pass today.
-  - type: symbol
+  - id: claude-credential-refresh-symbol
+    type: symbol
     name: refreshClaudeCredential
     path: apps/web/src/lib/claude-credential.ts
-  - type: symbol
+  - id: codex-credential-refresh-symbol
+    type: symbol
     name: refreshCodexCredential
     path: apps/web/src/lib/codex-credential.ts
-  - type: route
+  - id: codex-token-refresh-cron-route
+    type: route
     method: GET
     path: /api/cron/codex-token-refresh
     file: apps/web/src/app/api/cron/codex-token-refresh/route.ts
-  - type: symbol
+  - id: materialize-claude-config-dir-symbol
+    type: symbol
     name: materializeClaudeConfigDir
     path: apps/runner/src/claude-auth.ts
   # Phase 1 targets — will fail until the implementation PR ships.
-  - type: symbol
+  - id: runner-refresh-credential-symbol
+    type: symbol
     name: runnerRefreshCredential
     path: apps/runner/src/credential-refresh.ts
     skip_until: "2026-10-31"
     skip_reason: "Phase 1 runner-side refresh module — implementation task filed after spec approval"
-  - type: route
+  - id: runner-credential-refresh-route
+    type: route
     method: POST
     path: /api/runner/credential-refresh
     file: apps/web/src/app/api/runner/credential-refresh/route.ts
     skip_until: "2026-10-31"
     skip_reason: "Phase 1 write-back endpoint for runner-reported token rotation — not yet implemented"
-  - type: symbol_reachable
+  - id: pending-credential-refreshes-reachable
+    type: symbol_reachable
     symbol: pendingCredentialRefreshes
     entry: apps/web/src/app/api/workers/claim/route.ts
     as: assign

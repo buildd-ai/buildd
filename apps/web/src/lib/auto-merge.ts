@@ -285,6 +285,11 @@ export async function evaluateAutoMergeSafety(
  * Pass `bound` when a model `approve` verdict is what authorises this merge —
  * see `auto-merge-bound.ts`. Omitting it means "CI green under a policy a human
  * configured", which is not bounded by base ref.
+ *
+ * Returns whether the merge actually landed, and — when it did not — the
+ * reason, so a caller that has a second, differently-authorised path to try
+ * (the reviewer approve handler falling back to the unbounded self-merge
+ * check after the bounded attempt is refused) knows whether to bother.
  */
 export async function tryAutoMergeWorkerPr(params: {
   installationId: number;
@@ -294,7 +299,7 @@ export async function tryAutoMergeWorkerPr(params: {
   worker: { id: string; taskId: string | null; workspaceId?: string };
   policy: MergePolicy;
   bound?: ModelApproveBound;
-}): Promise<void> {
+}): Promise<{ merged: boolean; reason?: string }> {
   const { installationId, repoFullName, prNumber, headSha, worker, policy, bound } = params;
 
   // One mission read serves both callers of it inside the safety rails: the
@@ -327,20 +332,20 @@ export async function tryAutoMergeWorkerPr(params: {
           console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
           return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
         });
-        if (dispatchResult.dispatched) return;
+        if (dispatchResult.dispatched) return { merged: false, reason: safetyCheck.reason };
         if (dispatchResult.superseded) {
           // Supersession detected — escalateSupersession already fired inside dispatch
-          return;
+          return { merged: false, reason: safetyCheck.reason };
         }
         if (dispatchResult.disabled) {
           // Feature disabled — fall through to mission notification so human sees it
         } else if (dispatchResult.exhausted) {
           // Cap reached — escalate to human with a real decision
           await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
-          return;
+          return { merged: false, reason: safetyCheck.reason };
         } else {
           // Duplicate dedup hit — already handling it
-          return;
+          return { merged: false, reason: safetyCheck.reason };
         }
       }
     }
@@ -362,7 +367,7 @@ export async function tryAutoMergeWorkerPr(params: {
         });
       }
     }
-    return;
+    return { merged: false, reason: safetyCheck.reason };
   }
 
   // Mission-PR branch-lifecycle gate (P3) — same rule as the manual merge_pr
@@ -377,38 +382,40 @@ export async function tryAutoMergeWorkerPr(params: {
   const mergeGate = await guardMissionPrMerge(mergingTask);
   if (mergeGate.blocks) {
     console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${mergeGate.reason}`);
-    return;
+    return { merged: false, reason: mergeGate.reason };
   }
 
   const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);
-  } else {
-    console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
-    // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)
-    if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
-      const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
-      if (workspaceId) {
-        const dispatchResult = await dispatchConflictRetry({
-          workerId: worker.id,
-          taskId: worker.taskId,
-          prNumber,
-          headSha,
-          repoFullName,
-          workspaceId,
-        }).catch(err => {
-          console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
-          return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
-        });
-        if (dispatchResult.superseded) {
-          // Supersession detected — escalateSupersession already fired inside dispatch
-        } else if (dispatchResult.exhausted && worker.taskId) {
-          await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
-        }
+    return { merged: true };
+  }
+
+  console.warn(`Failed to auto-merge PR #${prNumber} on ${repoFullName}: ${result.message}`);
+  // Handle race-condition conflict (PR was clean at eval time but dirty at merge time)
+  if (classifyMergeFailure(result.message) === 'conflict' && worker.taskId) {
+    const workspaceId = worker.workspaceId ?? await resolveWorkspaceId(worker.taskId);
+    if (workspaceId) {
+      const dispatchResult = await dispatchConflictRetry({
+        workerId: worker.id,
+        taskId: worker.taskId,
+        prNumber,
+        headSha,
+        repoFullName,
+        workspaceId,
+      }).catch(err => {
+        console.error(`[auto-merge] conflict-retry dispatch failed for PR #${prNumber}:`, err);
+        return { dispatched: false } as import('@/lib/conflict-retry').DispatchConflictRetryResult;
+      });
+      if (dispatchResult.superseded) {
+        // Supersession detected — escalateSupersession already fired inside dispatch
+      } else if (dispatchResult.exhausted && worker.taskId) {
+        await escalateConflictExhaustion(worker.taskId, repoFullName, prNumber, headSha);
       }
     }
   }
+  return { merged: false, reason: result.message };
 }
 
 /**

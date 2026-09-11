@@ -855,10 +855,10 @@ export default async function TaskDetailPage({
               <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
-              Paused — {budgetBackendLabel} budget/rate-limit.{' '}
+              Recorded {budgetBackendLabel} budget/rate-limit.{' '}
               {budgetResetsAtIso
-                ? <>Retries ~<LocalTime iso={budgetResetsAtIso} suffix="." /></>
-                : 'Auto-retries when it resets.'}
+                ? <>Recorded reset: <LocalTime iso={budgetResetsAtIso} suffix="." /></>
+                : 'No reset time recorded.'}
             </div>
             {switchOptions.length > 0 && (
               <SwitchBackendButton taskId={id} options={switchOptions} />
@@ -1254,8 +1254,14 @@ export default async function TaskDetailPage({
         {/* Deliverables */}
         {(task.result as any) && (
           (() => {
-            const result = task.result as { summary?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
+            const result = task.result as { summary?: string; summarySource?: string; branch?: string; commits?: number; sha?: string; files?: number; added?: number; removed?: number; prUrl?: string; prNumber?: number; structuredOutput?: Record<string, unknown> };
             const hasCodeDeliverables = (result.commits ?? 0) > 0 || !!result.prUrl || !!result.branch;
+            const isFallbackSummary = result.summarySource === 'fallback';
+            const fallbackChip = (
+              <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+                unauthored · last message
+              </span>
+            );
 
             return (
               <div className="mb-8">
@@ -1266,6 +1272,7 @@ export default async function TaskDetailPage({
                 {/* Non-code summary — shown prominently when no code deliverables */}
                 {!hasCodeDeliverables && result.summary && (
                   <div className="p-5 bg-surface-2 border border-border-default rounded-[10px] mb-4">
+                    {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
                     <MarkdownContent content={result.summary} />
                     <div className="mt-3 pt-2 border-t border-border-default/50 flex items-center justify-between gap-3">
                       <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} />
@@ -1328,6 +1335,7 @@ export default async function TaskDetailPage({
                     </div>
                     {result.summary && (
                       <div className="text-sm text-text-secondary mt-2">
+                        {isFallbackSummary && <div className="mb-2">{fallbackChip}</div>}
                         <MarkdownContent content={result.summary} />
                         <div className="mt-2 flex justify-end">
                           <AiFeedback entityType="summary" entityId={`task-${task.id}-summary`} compact />

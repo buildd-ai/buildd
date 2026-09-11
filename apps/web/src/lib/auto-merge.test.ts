@@ -892,6 +892,81 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
   });
 });
 
+// ── Return value: a caller with a second, differently-authorised merge path
+// (the reviewer approve handler falling back to the unbounded self-merge
+// check after a bounded attempt is refused) needs to know whether the merge
+// actually landed, and why not when it didn't. ──────────────────────────────
+describe('tryAutoMergeWorkerPr — return value', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+  });
+
+  const CLEAN_GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const ORDINARY_FILES = [{ filename: 'apps/web/src/lib/foo.ts', additions: 4, deletions: 1 }];
+
+  it('reports merged: true on a successful merge', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'task/x' } });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result).toEqual({ merged: true });
+  });
+
+  it('names conflicts as the reason for a dirty PR — the SAME shape a caller uses to distinguish "not authorised" from "would authorise, but blocked"', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { ref: 'task/x' } });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('conflicts');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('reports merged: false with the GitHub failure message when the merge call itself fails', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'task/x' } });
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'PR has already been merged' });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result).toEqual({ merged: false, reason: 'PR has already been merged' });
+  });
+});
+
 // ── Option A': the bound on a merge driven by a MODEL approve verdict ────────
 //
 // A reviewer agent's `approve` may merge unattended only into the mission's own

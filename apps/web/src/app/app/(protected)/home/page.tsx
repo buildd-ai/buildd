@@ -81,6 +81,7 @@ import {
 import { LIVE_WORKER_STATUSES, LIVE_TASK_STATUSES } from '@/lib/task-presentation';
 import { selectReviewerEvidence } from '@/lib/reviewer-evidence';
 import { resolveReviewerGate } from '@/lib/reviewer-gate';
+import { createReviewerStallFactsLoader } from '@/lib/reviewer-stall-facts';
 import { StageChip } from '@/components/StageChip';
 import { deriveStage } from '@/lib/stage';
 
@@ -975,6 +976,9 @@ export default async function HomePage({
               roleSlug: string | null;
               reviewerWorkerId: string | null;
               reviewerStartedAt: Date | null;
+              context: Record<string, unknown> | null;
+              startAt: Date | null;
+              mission: { status: string } | null;
             }>();
             if (openTaskIds.length > 0) {
               const reviewerTasksRaw = await db.query.tasks.findMany({
@@ -982,8 +986,9 @@ export default async function HomePage({
                   inArray(tasks.parentTaskId, openTaskIds),
                   eq(tasks.category, 'review'),
                 ),
-                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true },
+                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, startAt: true },
                 with: {
+                  mission: { columns: { status: true } },
                   workers: {
                     where: inArray(workers.status, [...LIVE_WORKER_STATUSES]),
                     columns: { id: true, status: true, startedAt: true },
@@ -1003,6 +1008,9 @@ export default async function HomePage({
                   roleSlug: rt.roleSlug ?? null,
                   reviewerWorkerId: liveWorker?.id ?? null,
                   reviewerStartedAt: liveWorker?.startedAt ?? null,
+                  context: rt.context,
+                  startAt: rt.startAt,
+                  mission: rt.mission,
                 });
               }
             }
@@ -1037,7 +1045,7 @@ export default async function HomePage({
 
             const wsRowsForInbox = await db.query.workspaces.findMany({
               where: inArray(workspacesTable.id, [...new Set(openPrWorkers.map(w => w.workspaceId))]),
-              columns: { id: true, name: true, gitConfig: true },
+              columns: { id: true, name: true, gitConfig: true, teamId: true, maxConcurrentTasks: true },
             });
             const wsInboxMap = new Map(wsRowsForInbox.map(ws => [ws.id, ws]));
 
@@ -1047,6 +1055,7 @@ export default async function HomePage({
             // human. Both the in-flight cards and the escalation inbox below read
             // from this one map so they can never disagree.
             const gateNow = new Date();
+            const stallFactsLoader = createReviewerStallFactsLoader(gateNow);
             for (const w of openPrWorkers) {
               if (!w.taskId) continue;
               const ws = wsInboxMap.get(w.workspaceId);
@@ -1065,8 +1074,12 @@ export default async function HomePage({
                 escalationReason: escalatedMap.get(w.taskId) ?? null,
                 approvalSummary: approvedMap.get(w.taskId) ?? null,
                 reviewerTask: rt
-                  ? { status: rt.status as any, hasLiveWorker: rt.hasLiveWorker, createdAt: rt.createdAt }
+                  ? { status: rt.status as any, hasLiveWorker: rt.hasLiveWorker, createdAt: rt.createdAt, context: rt.context, startAt: rt.startAt }
                   : null,
+                queuedThresholdMinutes: policy.stallNotifyMinutes,
+                stallFacts: ws && !rt?.hasLiveWorker && gateNow.getTime() - (rt?.createdAt ?? w.completedAt ?? gateNow).getTime() > (policy.stallNotifyMinutes ?? 30) * 60_000
+                  ? await stallFactsLoader.load(ws, rt ?? {})
+                  : undefined,
                 prOpenedAt: w.completedAt ?? null,
                 now: gateNow,
                 // Option A′: the tier drop in resolvePolicy is also what removes
@@ -2226,9 +2239,8 @@ export default async function HomePage({
                       </div>
                     </div>
                   ))}
-                  {/* Review-queued PR cards — reviewer task exists but hasn't been
-                      claimed yet (seat contention, backoff, or dispatch lag). The
-                      agent still owns these, so no merge affordance is offered. */}
+                  {/* Review-queued PR cards have no live reviewer worker.
+                      The agent still owns these during the dispatch grace period. */}
                   {reviewQueuedPrs.map((item) => (
                     <div
                       key={item.taskId}
