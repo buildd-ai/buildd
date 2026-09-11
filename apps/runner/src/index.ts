@@ -11,7 +11,7 @@ import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
-  buildHealthProbeSpawn, hasAutoUpdateBudget, AUTO_UPDATE_RETRY_LIMIT } from './updater';
+  buildHealthProbeSpawn, hasAutoUpdateBudget, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -83,14 +83,6 @@ const DEBUG_MODE = process.argv.includes('--debug') || !!process.env.PORT;
 
 // Auto-update idle threshold: update automatically when 0 workers for this long
 const IDLE_UPDATE_DELAY_MS = 5 * 60 * 1000; // 5 minutes idle before auto-updating
-
-// Read version from package.json (updated by release script + CI)
-const PKG_VERSION = (() => {
-  try {
-    const pkg = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf-8'));
-    return pkg.version || '0.0.0';
-  } catch { return '0.0.0'; }
-})();
 
 // Non-blocking git command helper using Bun.spawn
 async function gitAsync(args: string[], cwd = BUILDD_DIR, timeout = 10_000): Promise<string> {

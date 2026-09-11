@@ -1093,6 +1093,13 @@
       "when": 1789122695406,
       "tag": "0156_empty_speed",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1789126200816,
+      "tag": "0157_noisy_marauders",
+      "breakpoints": true
     }
   ]
 }
