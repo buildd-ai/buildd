@@ -225,7 +225,7 @@ describe('buildKnowledgeContext corpora hint', () => {
     expect(text).toContain('memory 208');
     expect(text).toContain('code indexed');
     expect(text).toContain('docs 340');
-    expect(text).toContain('query_knowledge');
+    expect(text).toContain('recall before diagnosing');
   });
 
   it('shows code not indexed when no code chunks', async () => {
@@ -887,9 +887,9 @@ describe('buildClusteredKnowledgeContext — rendering, budget, and failure', ()
       workspaceId: 'ws-1', teamId: 'team-1',
       trigger: ERROR_TRIGGER, chain: CHAIN, store: withCounts,
     });
-    // Dropping this silently removed the "query_knowledge before diagnosing"
+    // Dropping this silently removed the "recall before diagnosing"
     // instruction for exactly the population the recipe targets.
-    expect(parts[0]).toContain('query_knowledge before diagnosing');
+    expect(parts[0]).toContain('recall before diagnosing');
   });
 
   it('truncates at the section budget, and honours it', async () => {

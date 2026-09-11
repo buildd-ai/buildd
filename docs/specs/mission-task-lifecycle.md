@@ -48,13 +48,20 @@ an enum) to allow extension without migrations.
 - `outputRequirement = 'pr_required'` MUST block `complete_task` unless
   `workers.prUrl` is set.
 - `outputRequirement = 'auto'` (the default) MUST block `complete_task` when the
-  worker has committed at least one commit and has neither a tracked/detected PR
-  nor a deliverable artifact — a commit with no PR and no artifact is a stranded
-  change that a bare "completed" status would misrepresent as landed. A task
-  with zero commits (e.g. research/recon) is unaffected. GitHub auto-detection
-  by branch name (not worker id) means a branch whose PR was opened by an
-  earlier worker row — e.g. a CI/conflict retry continuing on the same branch —
-  still satisfies the gate.
+  worker has committed at least one commit — or has uncommitted modifications
+  to tracked files sitting in its worktree — and has neither a tracked/detected
+  PR nor a deliverable artifact. Either shape is a stranded change that a bare
+  "completed" status would misrepresent as landed: a commit with no PR/artifact
+  never reaches the branch's reviewable history, and an uncommitted edit never
+  even reaches a commit. A task with zero commits AND a clean worktree (e.g.
+  research/recon) is unaffected. GitHub auto-detection by branch name (not
+  worker id) means a branch whose PR was opened by an earlier worker row — e.g.
+  a CI/conflict retry continuing on the same branch — still satisfies the gate.
+  The dirty-worktree signal is `workers.dirtyWorktree`, refreshed by the
+  runner's periodic sync (`git status --porcelain`, tracked files only —
+  untracked entries don't count) — `complete_task` calls made directly by the
+  agent's MCP tool reach the server with no local git access of their own, so
+  the gate reads whatever the sync loop most recently reported.
 - A task transitions to `failed` permanently after `MAX_WORKER_RETRIES = 3`
   failed workers with no deliverables.
 - A task with `roleSlug = null` is claimable by any runner with access to the
@@ -77,6 +84,25 @@ an enum) to allow extension without migrations.
   WHEN `complete_task` is called THEN the server returns a 400 with
   `hint: 'create_pr'` — the task is NOT completed. GIVEN the same worker has
   zero commits, completion succeeds unchanged.
+- AC-3b: GIVEN `outputRequirement = 'auto'`, `commitCount = 0`,
+  `workers.dirtyWorktree = true`, no PR detected, and no deliverable artifact
+  WHEN `complete_task` is called THEN the server returns a 400 with
+  `hint: 'create_pr'` — the task is NOT completed. GIVEN the same worker has a
+  clean worktree, or has a deliverable artifact, or its branch already carries
+  a PR (e.g. a CI/conflict retry), completion succeeds unchanged regardless of
+  the dirty-worktree flag.
+- AC-3c: GIVEN `outputRequirement = 'auto'`, `summarySource = 'fallback'` (the
+  runner's own session-end PATCH, not an agent-authored `complete_task` call —
+  see `docs/specs`'s summary-provenance note in workers.ts), no PR detected,
+  and no deliverable artifact WHEN `complete_task` is called THEN the server
+  returns a 400 with `hint: 'create_pr'` — the task is NOT completed,
+  regardless of `commitCount`/`dirtyWorktree`. A fallback summary is a stalled
+  session, never a deliberate "nothing to ship" conclusion, so it cannot rely
+  on self-reported commit/worktree stats (which a worktree that never
+  diverged from its base can misreport as "nothing happened" — see
+  `collectGitStats` in `apps/runner/src/git-operations.ts`) as the only gate.
+  GIVEN the same completion carries a PR, or `summarySource = 'agent'`,
+  completion succeeds unchanged.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`

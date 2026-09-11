@@ -142,7 +142,7 @@ describe('resolveReviewerGate — under-fire direction (human genuinely owns the
       }),
     );
     expect(result.actor).toBe('human');
-    expect(result.reason).toMatch(/not started/i);
+    expect(result.reason).toContain('Pending · task age 40m');
   });
 
   it('no reviewer task under agent-review policy, PR stale beyond threshold → human', () => {
@@ -452,5 +452,59 @@ describe('Home, the escalation inbox and stall-notify agree about a quarantined 
     // The direction that silently deletes a review gate.
     expect(routesSayHuman(humanWorkspace, null)).toBe(true);
     expect(homeSaysHuman(humanWorkspace, null)).toBe(true);
+  });
+});
+
+describe('reviewer stall facts', () => {
+  const reviewerTask = {
+    status: 'pending' as const, hasLiveWorker: false,
+    createdAt: new Date(NOW.getTime() - 47 * MINUTE_MS),
+    context: { lastClaimAttemptReason: 'no_pending_tasks', lastClaimAttemptAt: '2026-09-01T11:58:00Z' },
+  };
+  it('free seats and a filtered claim show the verbatim stamp without guessing a cause', () => {
+    const result = resolveReviewerGate(baseInput({
+      reviewerTask,
+      stallFacts: { seats: { inProgress: 0, maxConcurrentTasks: 4 }, budgetPauses: [] },
+    }));
+    expect(result.reason).toContain('Pending · task age 47m');
+    expect(result.reason).toContain('seats 0/4');
+    expect(result.reason).toContain('no recorded budget pause');
+    expect(result.reason).toContain('claimable: last attempt no — no_pending_tasks');
+    expect(result.reason).toContain('2026-09-01T11:58:00Z');
+    expect(result.reason).not.toMatch(/contention|backoff|likely/i);
+  });
+  it('missing evidence remains unknown, including claimability without a stamp', () => {
+    const result = resolveReviewerGate(baseInput({ reviewerTask: { ...reviewerTask, context: {} } }));
+    expect(result.reason).toContain('seats unknown');
+    expect(result.reason).toContain('budget pause unknown');
+    expect(result.reason).toContain('claimable: not yet diagnosed');
+    expect(result.reason).not.toMatch(/no recorded budget pause|contention|backoff/i);
+  });
+  it('shows recorded pauses and an active provider retry floor', () => {
+    const result = resolveReviewerGate(baseInput({
+      reviewerTask: { ...reviewerTask, startAt: new Date('2026-09-01T13:00:00Z'), context: { budgetExhausted: true } },
+      stallFacts: { seats: { inProgress: 4, maxConcurrentTasks: 4 }, budgetPauses: ['codex budget pause until 2026-09-01T13:00:00.000Z'] },
+    }));
+    expect(result.reason).toContain('seats 4/4');
+    expect(result.reason).toContain('codex budget pause until');
+    expect(result.reason).toContain('provider retry floor until');
+    expect(result.reason).not.toContain('no recorded budget pause');
+  });
+  it('does not present an expired retry floor as an active pause', () => {
+    const result = resolveReviewerGate(baseInput({
+      reviewerTask: { ...reviewerTask, startAt: new Date(NOW.getTime() - MINUTE_MS), context: { budgetExhausted: true } },
+      stallFacts: { seats: null, budgetPauses: [] },
+    }));
+    expect(result.reason).not.toContain('retry floor');
+    expect(result.reason).toContain('no recorded budget pause');
+  });
+  it('missing reviewer task does not imply a stuck dispatch', () => {
+    const result = resolveReviewerGate(baseInput({ prOpenedAt: reviewerTask.createdAt }));
+    expect(result.reason).toContain('No reviewer task recorded');
+    expect(result.reason).not.toMatch(/stuck dispatch|not started|likely/i);
+  });
+  it('uses the configured threshold without changing ownership before it elapses', () => {
+    expect(resolveReviewerGate(baseInput({ reviewerTask, queuedThresholdMinutes: 60 })).actor).toBe('agent');
+    expect(resolveReviewerGate(baseInput({ reviewerTask, queuedThresholdMinutes: 15 })).reason).toContain('Pending · task age 47m');
   });
 });

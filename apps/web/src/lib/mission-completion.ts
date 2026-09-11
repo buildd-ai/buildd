@@ -40,31 +40,21 @@ import { postMissionFeedEvent, systemActor } from '@/lib/mission-feed';
  * DB-touching predicate lives here.
  */
 
-/** Why a completion was refused. `ok` is the only value that permits the write. */
-export type CompletionDecisionCode =
-  | 'ok'
-  | 'mission_not_found'
-  | 'mission_not_active'
-  | 'no_deliverables'
-  | 'pending_deliverables'
-  | 'infra_stalled'
-  | 'awaiting_merge'
-  | 'awaiting_mission_pr'
-  | 'criteria_failed'
-  | 'criteria_pending'
-  | 'criteria_unverified';
-
 /**
- * Refusals that mean "the goal criteria did not clear". Exported so callers can
- * branch on the class without string-prefix matching — a `startsWith('criteria_')`
- * test in another module silently stops matching the day a code is renamed, and
- * TypeScript cannot see it.
+ * The decision vocabulary lives in `@buildd/core/mission-completion-codes` — a
+ * DB-free module, so the mission state accessor and client panels can read the
+ * codes without pulling Drizzle into the browser bundle. Re-exported here so
+ * every existing import of `CompletionDecisionCode` / `CRITERIA_BLOCK_CODES`
+ * from this module keeps resolving to the one definition.
  */
-export const CRITERIA_BLOCK_CODES = ['criteria_failed', 'criteria_pending', 'criteria_unverified'] as const;
-
-export function isCriteriaBlockCode(code: CompletionDecisionCode): boolean {
-  return (CRITERIA_BLOCK_CODES as readonly string[]).includes(code);
-}
+export {
+  CRITERIA_BLOCK_CODES,
+  isCriteriaBlockCode,
+  MERGE_BLOCK_CODES,
+  isMergeBlockCode,
+} from '@buildd/core/mission-completion-codes';
+export type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
+import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 
 /** Which caller asked. Recorded on the decision event for diagnosis. */
 export type CompletionPath =

@@ -6,6 +6,7 @@ import {
   declaresNoScope,
   shouldSerializeByManifest,
   stripTrailingSep,
+  intersectPaths,
   REGENERABLE_PATHS,
   findRegenerable,
   partitionRegenerableOverlaps,
@@ -105,6 +106,43 @@ describe('pathsOverlap', () => {
   it('still returns false for empty arrays even when combined with "**" elsewhere', () => {
     expect(pathsOverlap([], ['**'])).toBe(false);
     expect(pathsOverlap(['**'], [])).toBe(false);
+  });
+});
+
+describe('intersectPaths', () => {
+  it('returns the exact paths two sets share', () => {
+    expect(
+      intersectPaths(
+        ['apps/web/src/lib/foo.ts', 'apps/web/src/lib/bar.ts'],
+        ['apps/web/src/lib/bar.ts', 'packages/core/baz.ts'],
+      ),
+    ).toEqual(['apps/web/src/lib/bar.ts']);
+  });
+
+  it('matches a directory against a file inside it', () => {
+    expect(intersectPaths(['apps/web/src/lib'], ['apps/web/src/lib/foo.ts'])).toEqual(['apps/web/src/lib']);
+    expect(intersectPaths(['apps/web/src/lib/foo.ts'], ['apps/web/src/lib'])).toEqual(['apps/web/src/lib/foo.ts']);
+  });
+
+  it('ignores trailing separators, as pathsOverlap does', () => {
+    expect(intersectPaths(['packages/core/'], ['packages/core/db/schema.ts'])).toEqual(['packages/core']);
+  });
+
+  it('returns nothing when the sets are disjoint', () => {
+    expect(intersectPaths(['a/b.ts'], ['c/d.ts'])).toEqual([]);
+    expect(intersectPaths([], ['a/b.ts'])).toEqual([]);
+  });
+
+  it('does not expand the repo-wide sentinel into a named path', () => {
+    // pathsOverlap answers "could these collide?" and says yes for '**'.
+    expect(pathsOverlap(['**'], ['apps/web/src/lib/foo.ts'])).toBe(true);
+    // intersectPaths names the evidence, and '**' names no file anyone touched.
+    expect(intersectPaths(['**'], ['apps/web/src/lib/foo.ts'])).toEqual([]);
+    expect(intersectPaths(['apps/web/src/lib/foo.ts'], ['**'])).toEqual([]);
+  });
+
+  it('deduplicates repeated entries on the left', () => {
+    expect(intersectPaths(['a/b.ts', 'a/b.ts'], ['a/b.ts'])).toEqual(['a/b.ts']);
   });
 });
 

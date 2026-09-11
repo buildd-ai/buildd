@@ -21,6 +21,14 @@
 // (state='failed') for ones stuck past HARD_FAIL_STALE_HOURS so the release
 // reaches a terminal state instead of hanging indefinitely.
 //
+// Also sweeps `degraded` releases whose failure reason is a sha mismatch:
+// main advances continuously, so a later legitimate merge can land on top of
+// a release's own headSha during the watch window, making the deploy-identity
+// endpoint report a *newer* sha and tripping the mismatch check even though
+// production is fine. probeAndDegrade checks GitHub ancestry before degrading
+// to stop new false positives; this sweep re-checks ancestry for rows that
+// already degraded and heals them back to `healthy` once confirmed.
+//
 // Trigger: cron-manifest.json (external scheduler). Vercel-native crons do not
 // fire in this project, so nothing may be parked in vercel.json.
 // Auth: Bearer token matching CRON_SECRET env var.
@@ -29,11 +37,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { releases, workspaces } from '@buildd/core/db/schema';
 import { eq, and, gte, lt, sql } from 'drizzle-orm';
-import { probeAndDegrade } from '@/lib/release-health-watcher';
+import { probeAndDegrade, healSupersededRelease, type RepoIdentity } from '@/lib/release-health-watcher';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
 import { releaseWatchWindowMinutes } from '@/lib/cron-cadence';
 import { triggerEvent, channels, events } from '@/lib/pusher';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+import { WORKSPACE_INSTALLATION_WITH, pickWorkspaceRepoIdentity } from '@/lib/workspace-installation';
 
 export const maxDuration = 60;
 
@@ -47,6 +56,20 @@ const HARD_FAIL_STALE_HOURS = 24;
 
 export async function GET(req: NextRequest) {
   return withCronRun('release-health-check', req, report => runCronJob(req, report));
+}
+
+// Resolved once per row rather than joined into the main candidates query —
+// only the sha-mismatch branch (a minority of probes) ever needs it, and the
+// repo-mediated installation pointer requires the relational `with` shape
+// (see workspace-installation.ts), which a hand-written innerJoin can't express.
+async function resolveRepoIdentity(workspaceId: string): Promise<RepoIdentity> {
+  const workspace = await db.query.workspaces.findFirst({
+    where: eq(workspaces.id, workspaceId),
+    columns: { id: true, repo: true, githubInstallationId: true, githubRepoId: true },
+    with: WORKSPACE_INSTALLATION_WITH,
+  });
+  const identity = pickWorkspaceRepoIdentity(workspace);
+  return { installationId: identity.installationId, fullName: identity.fullName };
 }
 
 async function runCronJob(req: NextRequest, report: CronReport): Promise<NextResponse> {
@@ -81,6 +104,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     if (!row.verificationUrl) continue;
 
     probed++;
+    const repoIdentity = await resolveRepoIdentity(row.workspaceId);
     const outcome = await probeAndDegrade(
       {
         id: row.id,
@@ -92,6 +116,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       },
       row.verificationUrl,
       db,
+      repoIdentity,
     );
 
     if (outcome === 'degraded') degraded++;
@@ -180,6 +205,57 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
+  // Self-heal sweep: a release degraded on a sha mismatch can be a false
+  // positive — a later legitimate merge landed on top of it mid-watch-window,
+  // and the mismatch is really "production moved forward", not "production
+  // broke". probeAndDegrade's own ancestry check (above) prevents new false
+  // positives, but this covers rows that already degraded before that check
+  // existed, or before a supersession could be confirmed at the time. Scoped
+  // to the same hard-fail lookback as the sweeps above so it doesn't rescan
+  // ancient degraded rows on every tick, and to the sha-mismatch reason
+  // specifically — an HTTP-error or network-error degradation describes the
+  // endpoint itself failing, which no sha comparison can exonerate.
+  const healableDegraded = await db
+    .select({
+      id: releases.id,
+      workspaceId: releases.workspaceId,
+      verificationStrategy: releases.verificationStrategy,
+      deployUrl: releases.deployUrl,
+      headSha: releases.headSha,
+      healthyAt: releases.healthyAt,
+      verificationUrl: sql<string | null>`${workspaces.releaseConfig}->>'verificationUrl'`,
+    })
+    .from(releases)
+    .innerJoin(workspaces, eq(releases.workspaceId, workspaces.id))
+    .where(
+      and(
+        eq(releases.state, 'degraded'),
+        eq(releases.verificationStrategy, 'http'),
+        gte(releases.healthyAt, hardFailCutoff),
+        sql`${releases.failureReason} LIKE 'deployed sha % does not match release head sha %'`,
+      ),
+    );
+
+  let healed = 0;
+  for (const row of healableDegraded) {
+    if (!row.verificationUrl) continue;
+    const repoIdentity = await resolveRepoIdentity(row.workspaceId);
+    const outcome = await healSupersededRelease(
+      {
+        id: row.id,
+        workspaceId: row.workspaceId,
+        verificationStrategy: row.verificationStrategy,
+        deployUrl: row.deployUrl,
+        headSha: row.headSha,
+        healthyAt: row.healthyAt,
+      },
+      row.verificationUrl,
+      db,
+      repoIdentity,
+    );
+    if (outcome === 'healed') healed++;
+  }
+
   console.log(
     JSON.stringify({
       event: 'release_health_check',
@@ -191,6 +267,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       staleHardFailed,
       staleDispatched: staleDispatched.length,
       dispatchedHardFailed,
+      healableDegraded: healableDegraded.length,
+      healed,
     }),
   );
 
@@ -199,8 +277,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // must be legible as such — otherwise the watcher has the same failure mode
   // it was built to detect.
   report({
-    processed: candidates.length + staleDeploying.length + staleDispatched.length,
-    changed: degraded + staleRetried + staleHardFailed + dispatchedHardFailed,
+    processed: candidates.length + staleDeploying.length + staleDispatched.length + healableDegraded.length,
+    changed: degraded + staleRetried + staleHardFailed + dispatchedHardFailed + healed,
     result: {
       probed,
       degraded,
@@ -209,6 +287,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       staleHardFailed,
       staleDispatched: staleDispatched.length,
       dispatchedHardFailed,
+      healableDegraded: healableDegraded.length,
+      healed,
     },
   });
 
@@ -223,5 +303,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     staleHardFailed,
     staleDispatched: staleDispatched.length,
     dispatchedHardFailed,
+    healableDegraded: healableDegraded.length,
+    healed,
   });
 }

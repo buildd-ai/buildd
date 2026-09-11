@@ -41,14 +41,27 @@ let worktreeListOutput = '';
 
 // Controls `git status --porcelain` run inside an existing worktree directory.
 // Non-empty = that tree has uncommitted changes and must not be force-removed.
+// Reused by the collectGitStats tests below for the same command.
 let statusPorcelain = '';
 // When true the status probe itself fails (timeout, corrupt index) — an
 // inconclusive answer, which must not be read as "clean".
 let statusFails = false;
 
+// Controls `git merge-base HEAD <ref>`. Empty string = the probe fails (no
+// merge base found for that ref), which is what a real repo does for a ref
+// that doesn't exist locally.
+let mergeBaseOutput = 'abc1234';
+// Controls `git diff --numstat <target>`.
+let numstatOutput = '';
+// Controls `git rev-parse HEAD` — the SHA collectGitStats considers reporting
+// as lastCommitSha. Defaults to something other than mergeBaseOutput so
+// existing tests (which don't care about lastCommitSha) see it reported.
+let headOutput = 'deadbee';
+
 function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   syncCalls.push({ cmd, opts });
   if (cmd.includes('worktree list --porcelain')) return worktreeListOutput;
+  if (cmd === 'git rev-parse HEAD') return headOutput;
   if (cmd.includes('status --porcelain')) {
     if (statusFails) {
       const err: any = new Error('fatal: not a git repository');
@@ -69,7 +82,8 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
     err.status = 1;
     throw err;
   }
-  // git rev-list --count: used by fetchBranch to verify resume candidate exists
+  // git rev-list --count: used by fetchBranch to verify resume candidate exists,
+  // and by collectGitStats to count commits vs the base ref.
   if (cmd.includes('rev-list --count')) {
     if (revListBehavior === 'missing') {
       const err: any = new Error('unknown revision or path not in the working tree');
@@ -78,6 +92,19 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
     }
     if (revListBehavior === 'diverged') return '100';
     return '5'; // ok — branch exists, not diverged
+  }
+  // git merge-base HEAD <ref>: used by collectGitStats to find the diff target.
+  if (cmd.startsWith('git merge-base HEAD')) {
+    if (!mergeBaseOutput) {
+      const err: any = new Error('fatal: no merge base found');
+      err.status = 1;
+      throw err;
+    }
+    return mergeBaseOutput;
+  }
+  // git diff --numstat <target>: used by collectGitStats for the diff stat.
+  if (cmd.startsWith('git diff --numstat')) {
+    return numstatOutput;
   }
   return '';
 }
@@ -105,7 +132,7 @@ function mockExecFile(
 // This avoids the top-level await race where other files' mock.module() calls can
 // run during the await and replace the module before it resolves.
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { setupWorktree, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
+const { setupWorktree, collectGitStats, __setGitOpsDeps, __resetGitOpsDeps } = require('../../src/git-operations');
 
 // Inject mocks before any test runs. Uses the exported dep-injection hook so
 // the test works regardless of bun version and mock.module registry state.
@@ -474,5 +501,126 @@ describe('setupWorktree', () => {
     expect(syncCalls.some(c => c.cmd.includes(`worktree remove --force "${WORKTREE_PATH}"`))).toBe(true);
     expect(result?.path).toBe(WORKTREE_PATH);
     expect(result?.branch).toBe('buildd/test-branch');
+  });
+});
+
+describe('collectGitStats', () => {
+  beforeEach(() => {
+    syncCalls.length = 0;
+    statusPorcelain = '';
+    statusFails = false;
+    revListBehavior = 'ok';
+    mergeBaseOutput = 'abc1234';
+    numstatOutput = '';
+    headOutput = 'deadbee';
+  });
+
+  // The cross-PR SHA binding incident: a worktree that never diverged from
+  // its base (zero commits of its own) has HEAD sitting exactly on the
+  // merge-base — which is the base's OWN tip, not a commit this worker made.
+  // The base moves as sibling branches/missions merge into it, so reporting
+  // that SHA as "this worker's last commit" attributes someone else's
+  // already-merged work to this task.
+  test('a SHA equal to the resolved merge-base (no divergence) is not reported as lastCommitSha', async () => {
+    mergeBaseOutput = 'shared-tip-sha';
+    headOutput = 'shared-tip-sha'; // HEAD === merge-base: this worker made zero commits
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.lastCommitSha).toBeUndefined();
+  });
+
+  test('a SHA ahead of the resolved merge-base is reported as lastCommitSha', async () => {
+    mergeBaseOutput = 'shared-tip-sha';
+    headOutput = 'own-commit-sha'; // HEAD !== merge-base: this worker's own commit
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.lastCommitSha).toBe('own-commit-sha');
+  });
+
+  test('reports lastCommitSha as-is when no base can be resolved at all', async () => {
+    mergeBaseOutput = ''; // every merge-base probe fails
+    headOutput = 'whatever-head-sha';
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, undefined);
+
+    expect(stats.lastCommitSha).toBe('whatever-head-sha');
+  });
+
+  test('does not fabricate a diff via HEAD~1 when no base can be resolved', async () => {
+    mergeBaseOutput = ''; // every merge-base probe fails
+    numstatOutput = '10\t2\tsrc/unrelated.ts\n'; // would show up if a HEAD~1 fallback were used
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, undefined);
+
+    expect(stats.filesChanged).toBeUndefined();
+    expect(stats.linesAdded).toBeUndefined();
+    expect(stats.linesRemoved).toBeUndefined();
+    expect(syncCalls.some(c => c.cmd.includes('diff --numstat HEAD~1'))).toBe(false);
+  });
+
+  test('diffs against the worktree\'s actual base ref, not the dev/main/master search', async () => {
+    await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    const mergeBaseCalls = syncCalls.filter(c => c.cmd.startsWith('git merge-base HEAD'));
+    expect(mergeBaseCalls).toHaveLength(1);
+    expect(mergeBaseCalls[0].cmd).toContain('origin/mission/foo-integration-abc123');
+    // Never falls back to probing dev/main/master once the base ref resolves.
+    expect(syncCalls.some(c => c.cmd.includes('merge-base HEAD origin/dev'))).toBe(false);
+    expect(syncCalls.some(c => c.cmd.includes('merge-base HEAD origin/main'))).toBe(false);
+  });
+
+  // The exact bug from the incident: a branch cut from a mission integration
+  // branch, with zero commits of its own, must report an empty diff — not the
+  // integration branch's whole accumulated diff vs dev.
+  test('a zero-commit branch off an integration branch reports 0 files / 0 / 0', async () => {
+    numstatOutput = ''; // no diff between HEAD and the correct merge-base
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.filesChanged).toBe(0);
+    expect(stats.linesAdded).toBe(0);
+    expect(stats.linesRemoved).toBe(0);
+  });
+
+  test('still reports a real diff against the resolved base ref', async () => {
+    numstatOutput = '10\t2\tsrc/a.ts\n5\t0\tsrc/b.ts\n';
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.filesChanged).toBe(2);
+    expect(stats.linesAdded).toBe(15);
+    expect(stats.linesRemoved).toBe(2);
+  });
+
+  test('falls back to the dev/main/master search when no base ref is known', async () => {
+    await collectGitStats('/worktree', 'worker-1', 0, undefined);
+
+    expect(syncCalls.some(c => c.cmd.includes('merge-base HEAD origin/dev'))).toBe(true);
+  });
+
+  test('reports dirtyWorktree=true when a tracked file is modified', async () => {
+    statusPorcelain = ' M apps/web/src/foo.ts\n';
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0);
+
+    expect(stats.dirtyWorktree).toBe(true);
+  });
+
+  test('reports dirtyWorktree=false when only untracked files are present', async () => {
+    statusPorcelain = '?? scratch.txt\n';
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0);
+
+    expect(stats.dirtyWorktree).toBe(false);
+  });
+
+  test('reports dirtyWorktree=false on a clean worktree', async () => {
+    statusPorcelain = '';
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0);
+
+    expect(stats.dirtyWorktree).toBe(false);
   });
 });
