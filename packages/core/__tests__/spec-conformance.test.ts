@@ -15,6 +15,8 @@ import {
   evaluateDoc,
   evaluateAllDocs,
   resolveConformanceConfig,
+  computeWatchSet,
+  isWatched,
   type RawAssertion,
   type TypedAssertion,
   type AssertionResult,
@@ -459,5 +461,98 @@ describe('evaluateDoc end-to-end', () => {
     expect(evaluation.results).toEqual([]);
     expect(evaluation.validationErrors).toHaveLength(1);
     expect(evaluation.derivedStatus).toBe('unverified');
+  });
+});
+
+// ─── computeWatchSet / isWatched (§4) ───────────────────────────────────────
+
+describe('computeWatchSet', () => {
+  test('always watches docs/design/** in full, independent of any assertion', () => {
+    const dir = join(root, 'watch-design-prefix');
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'design', 'no-assertions.md'), ['---', 'status: proposed', '---', '# No assertions', ''].join('\n'));
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const watchSet = computeWatchSet(config);
+
+    expect(watchSet.prefixes).toContain('docs/design/');
+    expect(isWatched('docs/design/no-assertions.md', watchSet)).toBe(true);
+    expect(isWatched('docs/design/brand-new-doc-not-yet-discovered.md', watchSet)).toBe(true);
+  });
+
+  test('collects path/file/entry fields from assertions across both spec and design docs', () => {
+    const dir = join(root, 'watch-assertion-fields');
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
+    writeFileSync(
+      join(dir, 'docs', 'design', 'a.md'),
+      [
+        '---',
+        'status: proposed',
+        'assertions:',
+        '  - id: sym',
+        '    type: symbol',
+        '    name: foo',
+        '    path: apps/runner/src/foo.ts',
+        '  - id: reach',
+        '    type: symbol_reachable',
+        '    symbol: bar',
+        '    entry: apps/web/src/app/api/workers/[id]/route.ts',
+        '---',
+        '# A',
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dir, 'docs', 'specs', 'b.md'),
+      [
+        '---',
+        'status: draft',
+        'assertions:',
+        '  - id: rt',
+        '    type: route',
+        '    method: GET',
+        '    path: /api/thing',
+        '    file: apps/web/src/app/api/thing/route.ts',
+        '---',
+        '# B',
+        '',
+      ].join('\n'),
+    );
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const watchSet = computeWatchSet(config);
+
+    expect(watchSet.paths).toContain('apps/runner/src/foo.ts');
+    expect(watchSet.paths).toContain('apps/web/src/app/api/workers/[id]/route.ts');
+    expect(watchSet.paths).toContain('apps/web/src/app/api/thing/route.ts');
+    expect(isWatched('apps/runner/src/foo.ts', watchSet)).toBe(true);
+    expect(isWatched('apps/web/src/app/api/unrelated/route.ts', watchSet)).toBe(false);
+  });
+
+  test('a doc that lives outside docs/specs/** only enters the watch set via its own referenced paths, not wholesale', () => {
+    const dir = join(root, 'watch-specs-not-wholesale');
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'specs', 'untouched.md'), ['---', 'status: draft', '---', '# Untouched', ''].join('\n'));
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const watchSet = computeWatchSet(config);
+
+    expect(isWatched('docs/specs/untouched.md', watchSet)).toBe(false);
+  });
+
+  test('an assertion missing id (invalid) does not contribute its path to the watch set', () => {
+    const dir = join(root, 'watch-invalid-assertion');
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    writeFileSync(
+      join(dir, 'docs', 'design', 'invalid.md'),
+      ['---', 'status: proposed', 'assertions:', '  - type: symbol', '    name: foo', '    path: apps/should-not-be-watched.ts', '---', '# Invalid', ''].join('\n'),
+    );
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const watchSet = computeWatchSet(config);
+
+    expect(watchSet.paths).not.toContain('apps/should-not-be-watched.ts');
   });
 });

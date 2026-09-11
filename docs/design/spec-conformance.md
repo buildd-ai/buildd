@@ -775,6 +775,28 @@ directly against a numbered slice instead of re-deriving scope from the design.
    is the generalization step, and only matters once Slices 1–6 are proven on
    the buildd workspace itself.
 
+**CI wiring is not its own numbered slice.** Two gaps surfaced only once
+Slice 2 was being wired: the Slice-1 checker (`scripts/check-spec-conformance.ts`)
+had no GitHub Actions invocation at all, so §3's claim that "CI is the
+enforcement point" was untrue in practice; and §4's delta gate — a keyed
+buildd artifact recording the last fully-checked commit, used to skip a run
+when nothing in the watch set changed — was unimplemented, so every Tier-2
+job ran unconditionally. Both landed together, outside the slice numbering
+above: a `Spec Conformance Check` workflow runs the Slice-1 checker with
+`--fail-on-contradiction` on every PR and on push to `dev`, gated by
+`scripts/spec-conformance-delta-gate.ts` (`computeWatchSet`/`isWatched` in
+`packages/core/spec-conformance.ts` implement the watch set itself). The
+gate's write-back runs only from push-to-`dev`, since a PR's tip is not
+generally an ancestor of `dev` and the "last fully-checked commit" pointer
+only means something against a single serialized, linear history; the `check`
+half is read-only and safe to run from any number of concurrent PR checks
+against that same trunk-recorded pointer. Recording the artifact needed a
+write path the platform didn't have: every existing artifact-create route
+requires an owning mission, initiative, or worker, but this marker must
+outlive any of those, so `POST /api/workspaces/[id]/artifacts` (workspace-scoped,
+upserting on the existing `(workspaceId, key)` unique index) was added
+alongside it.
+
 ---
 
 ## Worked Examples

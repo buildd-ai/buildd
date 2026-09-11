@@ -39,6 +39,7 @@
     "specs:check": "bun run scripts/check-specs.ts",
     "specs:lint": "bun run scripts/check-specs.ts --check",
     "specs:conformance": "bun run scripts/check-spec-conformance.ts",
+    "specs:conformance-gate": "bun run scripts/spec-conformance-delta-gate.ts",
     "cron:plan": "bun run scripts/sync-crons.ts --dry-run",
     "cron:sync": "bun run scripts/sync-crons.ts",
     "cron:check": "bun run scripts/sync-crons.ts --check",

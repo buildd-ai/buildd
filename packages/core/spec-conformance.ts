@@ -573,3 +573,50 @@ export function evaluateDoc(doc: DiscoveredDoc, config: ConformanceConfig, now?:
 export function evaluateAllDocs(config: ConformanceConfig, now?: Date): DocEvaluation[] {
   return discoverDocs(config).map((d) => evaluateDoc(d, config, now));
 }
+
+// ─── Watch set (§4) ─────────────────────────────────────────────────────────
+
+/**
+ * §4's watch set: `docs/design/**` UNION every path referenced in any `path`,
+ * `file`, or `entry` field across all spec and design docs. Deliberately NOT
+ * `docs/specs/**` in full — the design doc names only `docs/design/**` as the
+ * always-watched prefix; a spec doc's own file only enters the set via its
+ * own assertions, same as any other doc.
+ *
+ * Fields are collected from every syntactically valid assertion regardless
+ * of doc type or declared status — the watch set answers "what code proves or
+ * disproves a claim somewhere in this repo", not "what currently passes".
+ */
+export interface WatchSet {
+  /** Path prefixes: any changed file starting with one of these is watched in full. */
+  prefixes: string[];
+  /** Exact repo-root-relative paths referenced by an assertion's path/file/entry field. */
+  paths: string[];
+}
+
+const WATCHED_ASSERTION_FIELDS = ['path', 'file', 'entry'];
+
+export function computeWatchSet(config: ConformanceConfig): WatchSet {
+  const paths = new Set<string>();
+
+  for (const doc of discoverDocs(config)) {
+    const content = readFileSync(join(config.repoRoot, doc.path), 'utf8');
+    const frontmatter = parseFrontmatter(content);
+    const { valid } = validateAssertions(frontmatter?.assertions ?? []);
+    for (const assertion of valid) {
+      for (const field of WATCHED_ASSERTION_FIELDS) {
+        const value = assertion.fields[field];
+        if (value) paths.add(value);
+      }
+    }
+  }
+
+  const designPrefix = config.designRoot.endsWith('/') ? config.designRoot : `${config.designRoot}/`;
+  return { prefixes: [designPrefix], paths: [...paths].sort() };
+}
+
+/** Whether a repo-root-relative changed file falls inside the watch set. */
+export function isWatched(changedFile: string, watchSet: WatchSet): boolean {
+  if (watchSet.paths.includes(changedFile)) return true;
+  return watchSet.prefixes.some((prefix) => changedFile.startsWith(prefix));
+}
