@@ -16,9 +16,13 @@ mock.module('@/lib/pusher', () => ({
   events: { RELEASE_UPDATED: 'release:updated' },
 }));
 
-const mockProbeAndDegrade = mock((_release: any, _url: string, _db: any) => Promise.resolve('ok'));
+const mockProbeAndDegrade = mock((_release: any, _url: string, _db: any, _repoIdentity?: any) => Promise.resolve('ok'));
+const mockHealSupersededRelease = mock((_release: any, _url: string, _db: any, _repoIdentity: any) =>
+  Promise.resolve('unresolved'),
+);
 mock.module('@/lib/release-health-watcher', () => ({
   probeAndDegrade: mockProbeAndDegrade,
+  healSupersededRelease: mockHealSupersededRelease,
 }));
 
 const mockVerifyReleaseDeployment = mock((_releaseId: string, _db: any) => Promise.resolve());
@@ -29,6 +33,8 @@ mock.module('@/lib/release-verification', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   // withCronRun imports this; mock.module replaces the whole module, so a
   // partial stub deletes the export for every other importer in the process.
+  // `workers` is needed transitively: route.ts -> workspace-installation.ts ->
+  // repo-scope.ts imports `workers` from this same module at the top level.
   cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
   releases: {
     id: 'id',
@@ -40,8 +46,16 @@ mock.module('@buildd/core/db/schema', () => ({
     deployedAt: 'deployedAt',
     dispatchedAt: 'dispatchedAt',
     workspaceId: 'workspaceId',
+    failureReason: 'failureReason',
   },
-  workspaces: { id: 'id', releaseConfig: 'releaseConfig' },
+  workspaces: {
+    id: 'id',
+    repo: 'repo',
+    releaseConfig: 'releaseConfig',
+    githubInstallationId: 'githubInstallationId',
+    githubRepoId: 'githubRepoId',
+  },
+  workers: { id: 'id' },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -56,9 +70,9 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
-// Three select() calls happen per request, in order: (1) healthy-window
-// candidates, (2) stale-deploying candidates, (3) stale-dispatched candidates.
-// Queue results for each.
+// Four select() calls happen per request, in order: (1) healthy-window
+// candidates, (2) stale-deploying candidates, (3) stale-dispatched candidates,
+// (4) degraded-but-healable candidates. Queue results for each.
 let selectResults: any[][];
 let updateReturning: any[][];
 let updateCalls: Array<{ values: any; where?: any }>;
@@ -72,9 +86,17 @@ let selectCallCount = 0;
  * to look at.
  */
 let selectConditions: any[];
+// Result of resolveRepoIdentity's db.query.workspaces.findFirst lookup —
+// defaults to no linked repo/installation (both null identity fields).
+let queryWorkspaceResult: any = null;
 
 function makeMockDb(): any {
   return {
+    query: {
+      workspaces: {
+        findFirst: (_opts: any) => Promise.resolve(queryWorkspaceResult),
+      },
+    },
     select: (_cols?: any) => ({
       from: (_table: any) => ({
         innerJoin: (_join: any, _cond: any) => ({
@@ -122,14 +144,17 @@ const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
 
 beforeEach(() => {
   process.env.CRON_SECRET = CRON_SECRET;
-  selectResults = [[], [], []];
+  selectResults = [[], [], [], []];
   updateReturning = [];
   updateCalls = [];
   selectConditions = [];
   selectCallCount = 0;
+  queryWorkspaceResult = null;
   mockTriggerEvent.mockClear();
   mockProbeAndDegrade.mockClear();
   mockProbeAndDegrade.mockResolvedValue('ok' as any);
+  mockHealSupersededRelease.mockClear();
+  mockHealSupersededRelease.mockResolvedValue('unresolved' as any);
   mockVerifyReleaseDeployment.mockClear();
   mockVerifyReleaseDeployment.mockResolvedValue(undefined as any);
 });
@@ -278,7 +303,9 @@ describe('release-health-check cron — stale dispatched sweep', () => {
     selectResults = [[], [], []];
     await GET(makeRequest());
 
-    const flat = JSON.stringify(selectConditions.at(-1));
+    // Index 2: (0) healthy candidates, (1) stale-deploying, (2) stale-dispatched,
+    // (3) healable-degraded — not .at(-1), which is the sweep added after this one.
+    const flat = JSON.stringify(selectConditions[2]);
     expect(flat).toContain('dispatched');
     expect(flat).toContain('"type":"lt"');
     expect(flat).toContain('dispatchedAt');
@@ -305,5 +332,100 @@ describe('release-health-check cron — stale dispatched sweep', () => {
     expect(data.staleDispatched).toBe(1);
     expect(data.dispatchedHardFailed).toBe(0);
     expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('release-health-check cron — self-heal degraded (sha-mismatch false positives)', () => {
+  // Regression context: a release can degrade because a *later* legitimate
+  // merge landed on top of its own headSha mid-watch-window — the deploy
+  // identity endpoint then reports a newer sha and trips the mismatch check
+  // even though production is fine. probeAndDegrade's own ancestry check
+  // (unit-tested in release-health-watcher.test.ts) stops new false
+  // positives; this sweep re-checks and heals rows that already degraded.
+  const degradedRow = {
+    id: 'rel-degraded-1',
+    workspaceId: 'ws-1',
+    verificationStrategy: 'http',
+    deployUrl: null,
+    headSha: 'sha-old',
+    healthyAt: hoursAgo(1),
+    verificationUrl: 'https://example.com/api/version',
+  };
+
+  it('does nothing when there are no healable degraded releases', async () => {
+    selectResults = [[], [], [], []];
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(data.healableDegraded).toBe(0);
+    expect(data.healed).toBe(0);
+    expect(mockHealSupersededRelease).not.toHaveBeenCalled();
+  });
+
+  it('calls healSupersededRelease for each degraded candidate and counts a heal', async () => {
+    selectResults = [[], [], [], [degradedRow]];
+    mockHealSupersededRelease.mockResolvedValue('healed' as any);
+    queryWorkspaceResult = { githubRepo: { fullName: 'org/repo', installation: { installationId: 7 } } };
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(mockHealSupersededRelease).toHaveBeenCalledTimes(1);
+    const call = mockHealSupersededRelease.mock.calls[0];
+    expect(call[0].id).toBe('rel-degraded-1');
+    expect(call[1]).toBe('https://example.com/api/version');
+    expect(call[3]).toEqual({ installationId: 7, fullName: 'org/repo' });
+    expect(data.healableDegraded).toBe(1);
+    expect(data.healed).toBe(1);
+  });
+
+  it('does not count a heal when healSupersededRelease reports unresolved', async () => {
+    selectResults = [[], [], [], [degradedRow]];
+    mockHealSupersededRelease.mockResolvedValue('unresolved' as any);
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(data.healableDegraded).toBe(1);
+    expect(data.healed).toBe(0);
+  });
+
+  it('skips a degraded candidate with no configured verification URL', async () => {
+    selectResults = [[], [], [], [{ ...degradedRow, verificationUrl: null }]];
+
+    await GET(makeRequest());
+
+    expect(mockHealSupersededRelease).not.toHaveBeenCalled();
+  });
+
+  it('scopes the query to degraded, http-verified, sha-mismatch releases', async () => {
+    selectResults = [[], [], [], []];
+    await GET(makeRequest());
+
+    const flat = JSON.stringify(selectConditions.at(-1));
+    expect(flat).toContain('degraded');
+    expect(flat).toContain('does not match release head sha');
+  });
+});
+
+describe('release-health-check cron — repo identity for the main probe loop', () => {
+  it('resolves repo identity per candidate and passes it to probeAndDegrade', async () => {
+    const healthyRow = {
+      id: 'rel-healthy-1',
+      workspaceId: 'ws-1',
+      verificationStrategy: 'http',
+      deployUrl: null,
+      headSha: 'sha-current',
+      healthyAt: new Date(),
+      verificationUrl: 'https://example.com/api/version',
+    };
+    selectResults = [[healthyRow], [], [], []];
+    queryWorkspaceResult = { githubRepo: { fullName: 'org/repo', installation: { installationId: 7 } } };
+
+    await GET(makeRequest());
+
+    expect(mockProbeAndDegrade).toHaveBeenCalledTimes(1);
+    const call = mockProbeAndDegrade.mock.calls[0];
+    expect(call[3]).toEqual({ installationId: 7, fullName: 'org/repo' });
   });
 });

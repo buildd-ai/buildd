@@ -14,6 +14,11 @@ mock.module('@/lib/task-dispatch', () => ({
   dispatchNewTask: mockDispatchNewTask,
 }));
 
+const mockGithubApi = mock((_installationId: number, _path: string) => Promise.resolve({ status: 'diverged' }));
+mock.module('@/lib/github', () => ({
+  githubApi: mockGithubApi,
+}));
+
 mock.module('@buildd/core/db', () => ({ db: {} }));
 
 const schemaMock = {
@@ -37,7 +42,7 @@ mock.module('drizzle-orm', () => ({
 }));
 
 // Import AFTER mocks
-import { degradeRelease, autoFileDegradationTask, probeAndDegrade } from './release-health-watcher';
+import { degradeRelease, autoFileDegradationTask, probeAndDegrade, healSupersededRelease } from './release-health-watcher';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -121,6 +126,8 @@ function makeMockDb(opts: {
 function resetAll() {
   mockTriggerEvent.mockClear();
   mockDispatchNewTask.mockClear();
+  mockGithubApi.mockClear();
+  mockGithubApi.mockResolvedValue({ status: 'diverged' } as any);
   globalThis.fetch = undefined as any;
 }
 
@@ -267,5 +274,132 @@ describe('probeAndDegrade', () => {
 
     await probeAndDegrade(makeRelease({ headSha: 'sha-current' }), 'https://example.com/api/version', db);
     expect(secondUrl).toBe('https://example.com/api/deploy-identity');
+  });
+
+  it('does not degrade when the deployed sha is a confirmed git descendant of the release head sha (superseded by a later merge)', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-newer' }) },
+    ]);
+    mockGithubApi.mockResolvedValue({ status: 'ahead' } as any);
+    const release = makeRelease({ headSha: 'sha-old', healthyAt: new Date(Date.now() - 10 * 60_000) });
+
+    const result = await probeAndDegrade(release, 'https://example.com/health', db, {
+      installationId: 42,
+      fullName: 'org/repo',
+    });
+
+    expect(result).toBe('superseded');
+    expect(db._updateCalls).toHaveLength(0);
+    expect(mockGithubApi).toHaveBeenCalledWith(42, '/repos/org/repo/compare/sha-old...sha-newer');
+  });
+
+  it('still degrades when GitHub compare shows the deployed sha diverged from the release head sha', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-old' }) },
+    ]);
+    mockGithubApi.mockResolvedValue({ status: 'diverged' } as any);
+    const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date(Date.now() - 10 * 60_000) });
+
+    const result = await probeAndDegrade(release, 'https://example.com/health', db, {
+      installationId: 42,
+      fullName: 'org/repo',
+    });
+
+    expect(result).toBe('degraded');
+    expect(db._updateCalls).toHaveLength(1);
+  });
+
+  it('degrades without an ancestry check when no repo identity is available', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    mockFetchSequence([
+      { ok: true, status: 200 },
+      { ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-old' }) },
+    ]);
+    const release = makeRelease({ headSha: 'sha-new', healthyAt: new Date(Date.now() - 10 * 60_000) });
+
+    const result = await probeAndDegrade(release, 'https://example.com/health', db);
+
+    expect(result).toBe('degraded');
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('healSupersededRelease', () => {
+  beforeEach(resetAll);
+
+  const repoIdentity = { installationId: 42, fullName: 'org/repo' };
+
+  it('heals a degraded release back to healthy when the deployed sha now exactly matches head sha', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-current' }) } as any),
+    ) as any;
+    const release = makeRelease({ headSha: 'sha-current' });
+
+    const result = await healSupersededRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('healed');
+    expect(db._updateCalls).toHaveLength(1);
+    expect(db._updateCalls[0].setValues.state).toBe('healthy');
+    expect(db._updateCalls[0].setValues.failureReason).toBeNull();
+  });
+
+  it('heals a degraded release when GitHub compare confirms the deployed sha is a descendant of head sha', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-newer' }) } as any),
+    ) as any;
+    mockGithubApi.mockResolvedValue({ status: 'ahead' } as any);
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healSupersededRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('healed');
+    expect(db._updateCalls).toHaveLength(1);
+    expect(db._updateCalls[0].setValues.state).toBe('healthy');
+    const pusherCall = mockTriggerEvent.mock.calls[0];
+    expect(pusherCall[2]).toEqual({ releaseId: release.id, state: 'healthy' });
+  });
+
+  it('leaves the release degraded when the deployed sha is genuinely not a descendant', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ sha: 'sha-unrelated' }) } as any),
+    ) as any;
+    mockGithubApi.mockResolvedValue({ status: 'diverged' } as any);
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healSupersededRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('leaves the release degraded when repo identity is unavailable', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healSupersededRelease(release, 'https://example.com/health', db, {
+      installationId: null,
+      fullName: null,
+    });
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
+  });
+
+  it('leaves the release degraded when the deploy identity endpoint is unreachable', async () => {
+    const db = makeMockDb({ existingTasks: [{ id: 'existing' }] });
+    globalThis.fetch = mock(() => Promise.reject(new Error('ECONNREFUSED'))) as any;
+    const release = makeRelease({ headSha: 'sha-old' });
+
+    const result = await healSupersededRelease(release, 'https://example.com/health', db, repoIdentity);
+
+    expect(result).toBe('unresolved');
+    expect(db._updateCalls).toHaveLength(0);
   });
 });
