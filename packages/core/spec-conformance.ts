@@ -320,8 +320,11 @@ export function computeDerivedStatus(results: AssertionResult[]): DerivedStatus 
 
 export type DocType = 'design' | 'spec';
 
-const TERMINAL_STATUS: Record<DocType, string> = { design: 'implemented', spec: 'active' };
-const NON_TERMINAL_STATUS: Record<DocType, string[]> = {
+// Exported so the discrepancy ledger (spec-discrepancy-ledger.ts) can classify
+// direction (§8) using the exact same terminal/non-terminal sets this module
+// uses for the contradiction check — one definition, not two that can drift.
+export const TERMINAL_STATUS: Record<DocType, string> = { design: 'implemented', spec: 'active' };
+export const NON_TERMINAL_STATUS: Record<DocType, string[]> = {
   design: ['proposed', 'accepted'],
   spec: ['draft'],
 };

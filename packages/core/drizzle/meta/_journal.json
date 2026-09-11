@@ -1079,6 +1079,13 @@
       "when": 1788919027539,
       "tag": "0154_hot_otto_octavius",
       "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1789096317833,
+      "tag": "0155_quick_hitman",
+      "breakpoints": true
     }
   ]
 }
