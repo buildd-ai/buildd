@@ -91,6 +91,18 @@ an enum) to allow extension without migrations.
   clean worktree, or has a deliverable artifact, or its branch already carries
   a PR (e.g. a CI/conflict retry), completion succeeds unchanged regardless of
   the dirty-worktree flag.
+- AC-3c: GIVEN `outputRequirement = 'auto'`, `summarySource = 'fallback'` (the
+  runner's own session-end PATCH, not an agent-authored `complete_task` call —
+  see `docs/specs`'s summary-provenance note in workers.ts), no PR detected,
+  and no deliverable artifact WHEN `complete_task` is called THEN the server
+  returns a 400 with `hint: 'create_pr'` — the task is NOT completed,
+  regardless of `commitCount`/`dirtyWorktree`. A fallback summary is a stalled
+  session, never a deliberate "nothing to ship" conclusion, so it cannot rely
+  on self-reported commit/worktree stats (which a worktree that never
+  diverged from its base can misreport as "nothing happened" — see
+  `collectGitStats` in `apps/runner/src/git-operations.ts`) as the only gate.
+  GIVEN the same completion carries a PR, or `summarySource = 'agent'`,
+  completion succeeds unchanged.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`
