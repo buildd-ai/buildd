@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import {
   healthToGroup,
+  statusToGroup,
   deriveMissionHealth,
   deriveDriveState,
   deriveTaskHealthSignal,
@@ -61,6 +62,48 @@ describe('healthToGroup — status taxonomy', () => {
     for (const g of groupValues) {
       expect(GROUP_ORDER).toContain(g);
     }
+  });
+});
+
+describe('statusToGroup — stored status mapping', () => {
+  it('completed status always maps to completed group regardless of progress', () => {
+    expect(statusToGroup({ status: 'completed', isHeld: false, startAt: null, progress: 0 })).toBe('completed');
+    expect(statusToGroup({ status: 'completed', isHeld: false, startAt: null, progress: 100 })).toBe('completed');
+  });
+
+  it('archived status always maps to completed group', () => {
+    expect(statusToGroup({ status: 'archived', isHeld: false, startAt: null, progress: 50 })).toBe('completed');
+  });
+
+  it('paused status maps to scheduled group', () => {
+    expect(statusToGroup({ status: 'paused', isHeld: false, startAt: null, progress: 50 })).toBe('scheduled');
+  });
+
+  it('budget_exhausted status maps to scheduled group', () => {
+    expect(statusToGroup({ status: 'budget_exhausted', isHeld: false, startAt: null, progress: 50 })).toBe('scheduled');
+  });
+
+  it('held missions map to scheduled group regardless of status', () => {
+    expect(statusToGroup({ status: 'active', isHeld: true, startAt: null, progress: 50 })).toBe('scheduled');
+  });
+
+  it('active status with future startAt maps to scheduled group', () => {
+    const futureDate = new Date(Date.now() + 3600000).toISOString();
+    expect(statusToGroup({ status: 'active', isHeld: false, startAt: futureDate, progress: 50 })).toBe('scheduled');
+  });
+
+  it('active status with past startAt and 100% progress maps to review group', () => {
+    const pastDate = new Date(Date.now() - 3600000).toISOString();
+    expect(statusToGroup({ status: 'active', isHeld: false, startAt: pastDate, progress: 100 })).toBe('review');
+  });
+
+  it('active status with <100% progress maps to attention group', () => {
+    expect(statusToGroup({ status: 'active', isHeld: false, startAt: null, progress: 50 })).toBe('attention');
+  });
+
+  it('active mission with all tasks cancelled (progress=100) maps to review, not completed', () => {
+    // Issue #2: A mission with status=active and all remaining tasks cancelled should map to review, not completed
+    expect(statusToGroup({ status: 'active', isHeld: false, startAt: null, progress: 100 })).toBe('review');
   });
 });
 
@@ -534,8 +577,21 @@ describe('mission card presentation', () => {
       { id: 'old', title: 'Old task', startedAt: '2026-07-23T11:00:00Z', turns: 8 },
     ], new Date('2026-07-23T12:00:00Z').getTime());
     expect(result.primary?.id).toBe('old');
-    expect(result.primary?.meta).toBe('60m, 8 turns');
+    expect(result.primary?.meta).toBe('1h, 8 turns');
     expect(result.overflow).toBe(1);
+  });
+
+  it('formats durations with proper minute carrying', () => {
+    const now = new Date('2026-07-23T12:00:00Z').getTime();
+    expect(selectInFlightTasks(
+      [{ id: '1', title: 'Task', startedAt: '2026-07-23T11:59:00Z', turns: 1 }], now
+    ).primary?.meta).toBe('1m, 1 turn');
+    expect(selectInFlightTasks(
+      [{ id: '1', title: 'Task', startedAt: '2026-07-23T11:59:30Z', turns: 1 }], now
+    ).primary?.meta).toBe('1m, 1 turn');
+    expect(selectInFlightTasks(
+      [{ id: '1', title: 'Task', startedAt: '2026-07-23T10:30:00Z', turns: 1 }], now
+    ).primary?.meta).toBe('1h 30m, 1 turn');
   });
 });
 

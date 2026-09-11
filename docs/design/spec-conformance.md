@@ -9,6 +9,23 @@
 - `docs/design/worker-mount-isolation.md` — worked example: naming divergence
 - `docs/design/loop-until-verified.md` — worked example: silent no-op
 - `docs/design/cross-app-assertion-grant.md` — worked example: shipped-while-draft
+- `docs/design/task-subject-anchors.md` — prior art: durable identity via `subjectAnchor` +
+  `task_subject_claims` atomic-claim table; the discrepancy ledger's identity scheme follows
+  this precedent rather than inventing a third one
+- `docs/design/friction-dedup-serialization.md` — prior art: durable identity via
+  `frictionSignature`; the ledger's "warn, do not block" intake rule follows the same
+  reflexive-bypass lesson this doc already paid for
+- `packages/core/subject-anchor-extractor.ts`, `apps/web/src/app/api/tasks/route.ts` — the
+  exact intake shape (`extractSubjectAnchor()` + atomic dedupe before the row exists) the
+  discrepancy intake check reuses
+- `apps/web/src/lib/action-queue.ts` — the existing "waiting-on-you" queue (`ActionChip`,
+  `buildActionQueue`, `buildDecideItems`) the discrepancy queue extends; also prior art for
+  a bounded, ranked, structurally-keyed (never LLM-text-keyed) dedupe fingerprint
+  (`criteriaRearmFingerprint`)
+- `packages/core/mission-helpers.ts` (`validateGoalCriteria`) — prior art for mechanical,
+  command-exit-code closure that this design's row-closure rule aligns its wording with
+- `apps/runner/src/prompt-builder.ts` (`buildPromptWithComposition`) — the existing prompt
+  assembly point the dispatch-time injection (§11) adds one more block to
 
 ---
 
@@ -371,6 +388,393 @@ Rules:
 - CI logs all active suppressions with their expiry dates so they are visible
   in the PR check output.
 
+### 7. The Discrepancy Ledger
+
+Sections 1–6 compute a status. They do not give a mismatch an identity, so a
+finding cannot persist between runs — it is a line in a report, redrawn from
+scratch every time the checker runs. The weekly drift check has already lived
+this failure: `path-claims.md` was reported DRIFTED on 2026-08-25 and again on
+2026-08-31, the second time annotated "carried from 2026-08-25, not updated."
+Same finding, twice, with no state in between and no record of what, if
+anything, anyone did about it.
+
+**A discrepancy is a row, not a report line.** Spec text and assertion
+frontmatter stay exactly as designed above — markdown, versioned with the code
+they describe. Only the *derived gap* between a declared claim and its
+checked reality becomes persistent state, in a new table:
+
+```text
+spec_discrepancies
+  id                  uuid, pk
+  workspace_id        fk -> workspaces
+  spec_path           text   -- e.g. docs/design/worker-mount-isolation.md
+  assertion_id        text   -- see "Assertion identity" below
+  direction           spec_ahead | code_ahead | contradicted   -- §8
+  status              open | accepted | resolved               -- §9
+  first_seen_at       timestamptz
+  last_checked_at     timestamptz
+  accepted_reason     text, nullable  -- required when status = accepted
+  promoted_mission_id fk -> missions, nullable
+  evidence            jsonb   -- the exact read that produced the current verdict
+  UNIQUE (workspace_id, spec_path, assertion_id)
+```
+
+**Assertion identity.** Every assertion in the frontmatter vocabulary (§1) gets
+a new required field, `id`:
+
+```yaml
+assertions:
+  - id: mount-symbol
+    type: symbol
+    name: buildWorkerBwrapArgv
+    path: apps/runner/src/bwrap-mount-allowlist.ts
+```
+
+`id` is author-chosen, kebab-case, and stable across rewordings, renames, and
+which model last touched the doc — it identifies the *claim*, not its current
+phrasing. This is a deliberate choice against fuzzy or LLM-based matching: a
+matcher that re-decides "is this the same finding as last week?" by comparing
+prose will answer differently run to run, and a ledger whose rows can silently
+merge or split under it is a ledger nobody trusts. `(workspace_id, spec_path,
+assertion_id)` is exact and mirrors two precedents already shipped in this
+repo — `task_subject_claims`' `UNIQUE (workspace_id, key_type, key_hash)` for
+tasks, and the action queue's `criteriaRearmFingerprint`, which is deliberately
+a structured fingerprint rather than the LLM-graded failure text itself,
+because "the same failure phrases it differently every run" (see
+`action-queue.ts`'s comment on that field). Discrepancy identity follows the
+same rule for the same reason.
+
+The checker upserts with `INSERT ... ON CONFLICT (workspace_id, spec_path,
+assertion_id) DO UPDATE` on every Tier-2 CI run. Unlike `task_subject_claims`,
+no optimistic-lock `generation` column is needed: the delta gate (§4) already
+serializes runs through the single keyed `spec-conformance-last-sha` artifact,
+so there is never more than one writer racing on the same row.
+
+An assertion without an `id` fails Tier-1 pre-commit validation the same way a
+missing `path` does today — this is additive to the existing "every `path` and
+`file` field exists on disk" check, not a new tier.
+
+### 8. Direction — the Field That Makes Promotion Safe
+
+Every row carries which way the gap runs, and — this is the load-bearing part
+— **which tier is allowed to write which direction**, because the tiers differ
+in how much evidence backs a verdict.
+
+- **`code_ahead`** — the assertion **passes** but the declared status is
+  non-terminal (`proposed`/`accepted`/`draft` — the same set §2's CI failure
+  condition 2 already treats as "not yet promoted"). The code demonstrably
+  exists; the status string is what's wrong. A doc fix, not a build. Either
+  tier may write this — passing evidence needs no judgment call.
+- **`contradicted`** — the assertion **fails** but the declared status is
+  terminal (`implemented`/`active`) — i.e. exactly the Tier-2 CI failure
+  condition 1 in §2. This is deliberately NOT auto-classified as `spec_ahead`:
+  a single ripgrep-based assertion failing is exactly the signal that misled
+  the 2026-07-25 sweep on `worker-mount-isolation.md` — the symbol had moved,
+  not vanished. Tier 2 CI may only ever write `contradicted` here; it does not
+  have the search depth (alternate naming, mission/PR/migration search — the
+  weekly check's five-step protocol) to tell "renamed" from "never built."
+- **`spec_ahead`** — real unbuilt work: the spec's claim does not resolve
+  *and* the deeper search has already ruled out a rename or move. Only the
+  Tier-3 weekly cron — which already runs the five-step protocol before it is
+  allowed to say NOT-BUILT — may write this direction. CI never writes
+  `spec_ahead` directly; a CI-tier failure always lands as `contradicted`
+  first, and the cron either confirms it into `spec_ahead` or resolves it (the
+  symbol was found under alternate naming, so the row is fixed by updating the
+  assertion, not by promoting it).
+- **A row with no assertion result of any kind is not a row.** Zero-assertion
+  specs stay `unverified` (§1 table) and never enter this table at all — see
+  §16 on why that must still be visible.
+
+**The promotion rule**, stated so `promote_discrepancy` (§13) can enforce it
+mechanically rather than by convention:
+
+| Direction | May `promote_discrepancy` mint a mission? |
+|---|---|
+| `spec_ahead` | Yes — the only direction promotable without further human adjudication, and only once it carries the cron's confirmation (not a bare CI `contradicted` reclassified in place). |
+| `code_ahead` | **Never.** Promoting a doc-drift row into a build mission is precisely how the 2026-07-25 incident happened — the sweep found no unbuilt work and still generated a rebuild recommendation. The only valid actions on a `code_ahead` row are `accept` or a docs-only follow-up task. |
+| `contradicted` | Not until adjudicated. `promote_discrepancy` on a `contradicted` row is rejected; `adjudicate_discrepancy` must first flip it to `spec_ahead` or `code_ahead`. |
+
+### 9. Closure Is Mechanical
+
+A row's `status` moves `open` → `resolved` only when a **re-run of the
+checker** resolves its assertion — never because an agent, a PR description, or
+a task summary asserts completion. This is the same principle mission
+`goalCriteria` already enforces for its `command` type: the check's own exit
+code is the verdict, not a self-report (`validateGoalCriteria` in
+`mission-helpers.ts`). Concretely:
+
+- `spec_ahead` resolves when the assertion passes on a subsequent run.
+- `code_ahead` resolves when the declared status is edited to a terminal value
+  and the (already-passing) assertion is re-confirmed on the next run.
+- `contradicted` resolves once re-evaluation lands cleanly on pass+terminal or
+  fail+non-terminal — i.e. it stops contradicting, whether because someone
+  built the feature, fixed the frontmatter, or corrected the status string.
+
+`status: accepted` (via `adjudicate_discrepancy`, §13) is a parked state, not a
+closed one — an accepted row is still re-evaluated on every run and still
+auto-resolves the moment its assertion result would justify it. Accepting a
+row records "we know about this and are deferring it," not "this is fine
+forever."
+
+### 10. Intake Check
+
+`POST /api/tasks` already runs `extractSubjectAnchor()` and an atomic dedupe
+against `task_subject_claims` before the task row is created (see
+`apps/web/src/app/api/tasks/route.ts`). The discrepancy intake check is the
+same shape, at the same point: after subject-anchor extraction, before the
+task is created, match the incoming task's `pathManifest` (when supplied) and
+description against **open, `code_ahead`** rows for the workspace.
+
+Matching here is explicitly **not** identity — the ledger row's own identity
+stays exact (§7) — it is retrieval, reusing `spec_compare`'s existing
+similarity search over the same `{workspaceId}:docs` / `{workspaceId}:code`
+corpora, because "does this new task touch a spec area with a known stale
+status" is inherently a fuzzy question and pretending otherwise would just
+move the false-positive risk into the intake path instead of removing it.
+
+**Warn, do not hard-block.** A match is returned in the `POST /api/tasks`
+response body (e.g. `specWarnings: [{specPath, assertionId, direction,
+message}]`) and the task is created regardless — there is no `fileAnywayReason`
+because nothing is being blocked. This is a deliberate divergence from
+`task_subject_claims`' dedupe, which *does* block and *does* need the escape
+hatch: subject-anchor dedupe is preventing the same PR/error from spawning two
+tasks, a narrow and usually-correct match. Spec-area retrieval is much
+broader — many legitimate tasks touch a spec area no assertion happens to
+cover — and a blocking check that is wrong often gets bypassed reflexively via
+`fileAnywayReason`, which was the exact failure this repo's own friction-dedupe
+work already learned from. A routinely-bypassed gate enforces nothing; a
+warning that is sometimes irrelevant still costs nothing to ignore.
+
+### 11. Prompt Injection at Dispatch
+
+`apps/runner/src/prompt-builder.ts`'s `buildPromptWithComposition` already
+assembles the worker's prompt from role, skills, and CLAUDE.md, with several
+conditionally-included blocks (`## Workspace Instructions`, `## Git
+Workflow`). Add one more: for a dispatched task whose `pathManifest` intersects
+any `path`/`file`/`entry` field named by an **open** ledger row in this
+workspace, inject
+
+```
+## Spec Discrepancies You May Be Closing
+- docs/design/worker-mount-isolation.md — assertion `mount-symbol` (spec_ahead):
+  expects `buildWorkerMountAllowlist` at apps/runner/src/workers.ts. If you are
+  renaming or moving this symbol, update the assertion frontmatter in the same
+  PR — do not leave it pointing at code that no longer exists.
+```
+
+This reads from the ledger's already-computed open rows — it does not re-run
+the checker at dispatch time, so it costs nothing beyond one indexed lookup per
+claim. It is sourced, not re-derived, for the same reason `resolveSessionModel`
+reads a precomputed `task.context.model` instead of recomputing routing at
+dispatch: the expensive decision was already made once, upstream.
+
+This closes the loop on the spec's own Case 1: the worker who eventually
+renamed `buildWorkerMountAllowlist` to `buildWorkerBwrapArgv` discovered the
+mismatch only when Tier-2 CI failed after the PR was already written. With
+this injection, the worker opens the task already knowing the exact claim
+(`mount-symbol`, expecting that name, at that path) it is expected to either
+satisfy or update — it can amend the frontmatter in the same commit as the
+rename instead of in a second commit reacting to a red check.
+
+### 12. Surface
+
+Open discrepancies belong in the existing waiting-on-you queue
+(`apps/web/src/lib/action-queue.ts`), not a new tab — the same queue that
+already carries `MERGE`, `REVIEW`, `QUESTION`, and `DECIDE` chips. Add:
+
+- A new raw-item kind, `'discrepancy'`, alongside the existing `merge` /
+  `approve` / `answer` / `reconnect` / `decide` kinds in
+  `WaitingOnYouRawItem`, carrying `{specPath, assertionId, direction, claim,
+  firstSeenAt, promotedMissionId}`.
+- A new chip, `DISCREPANCY`, inserted into `CHIP_ORDER` immediately after
+  `DECIDE` — same tier as `DECIDE` ("the platform found something that needs
+  an owner call," not "a live worker is blocked"), but never above it.
+- Subject key `discrepancy:${specPath}:${assertionId}` — identical to the
+  ledger row's own identity (§7), following the file's existing convention
+  that a chip's dedupe key IS its subject's identity key (compare
+  `decide:${missionId}:${criteriaFingerprint}`).
+- Row actions: **promote** (`promote_discrepancy`, §13, direction-gated per
+  §8), **accept** (`adjudicate_discrepancy` with a required reason), **flip
+  direction** (`adjudicate_discrepancy`, for the `contradicted` case). A row
+  with a `promotedMissionId` shows the link instead of the promote action.
+
+**The list must be bounded, ranked, and stale rows must expire — this is not
+optional.** The Schedules page is the in-house cautionary tale: 48 rows, 87%
+pure machinery, so nobody read it and a heartbeat ran 192 times on a finished
+mission with nobody noticing. An unbounded machine-generated list is not a
+feature; it is the exact hiding place the discrepancy ledger exists to empty
+out. Concretely:
+
+- Cap the queue to the top **10** `DISCREPANCY` rows per workspace, ranked
+  `contradicted` first (needs an owner call before anything else can happen to
+  the row), then `spec_ahead`, then `code_ahead` last (lowest stakes — pure
+  doc fix); within a direction, oldest `first_seen_at` first, so a row that
+  has already survived three check-runs (the `path-claims.md` problem) always
+  outranks one that appeared this week.
+- Overflow past the cap is never silently dropped: emit a workspace-level
+  count (the `DISCREPANCY`-queue equivalent of `summariseActionQueueAge`) —
+  "N discrepancies beyond the visible top 10" — so a clean-looking queue of 10
+  cannot hide a growing backlog the way the Schedules page did.
+- `status: accepted` rows are excluded from the queue outright — accepting is
+  the action that records an owner already made the call; re-surfacing it
+  would just be the Schedules page's problem again. They remain queryable via
+  `list_discrepancies` (§13) for anyone auditing what's been deferred.
+- An `open` row does **not** expire or silently disappear past any age
+  threshold. Age is exactly the signal a human should see (per the ranking
+  above), not a reason to hide the row — that is the opposite failure from the
+  one this section is guarding against.
+
+### 13. MCP Surface
+
+- `list_discrepancies({ workspaceId?, direction?, status? })` — filtered row
+  list.
+- `get_discrepancy({ discrepancyId })` — returns the evidence read that
+  produced the current verdict (the file/symbol/route/migration actually
+  checked, and whether it passed) — never a similarity score. `spec_compare`
+  already covers "how related is this text"; this tool answers "what did the
+  checker actually read, and what did it find."
+- `adjudicate_discrepancy({ discrepancyId, action: 'accept' | 'flip_direction',
+  reason, newDirection? })` — `accept` requires `reason` (non-blank, same
+  discipline as the assertion escape hatch's `skip_reason`); `flip_direction`
+  requires `newDirection` and is the only path off `contradicted`.
+- `promote_discrepancy({ discrepancyId })` — validates direction per the §8
+  table, then mints a mission through the existing `manage_missions`
+  create path (same primitive every other mission-creating caller uses) and
+  writes `promoted_mission_id` back onto the row. The organizer decomposes the
+  resulting mission into tasks exactly as it does for any other mission — see
+  §15.
+- `spec_compare` is unchanged — it remains the exploration/retrieval tool, and
+  is what the intake check (§10) reuses for matching.
+
+### 14. Workspace Portability
+
+Nothing about symbol/route/migration resolution is buildd-specific: the
+checker resolves claims against whatever repository a workspace owns via
+`workspaces.repoUrl` (`packages/core/db/schema.ts:1790`) — that anchor already
+exists and needs no new work. What is currently buildd-hardcoded, and must be
+parameterized before another workspace gets this for free:
+
+1. **The weekly Tier-3 cron is a single hardcoded schedule row** (`ecc45c47`)
+   that exists only in the buildd workspace. Fix: creating the Tier-3 cron
+   becomes a workspace-onboarding step (`create_schedule`), one row per
+   workspace that opts in — never a single ID referenced by name.
+2. **The watch-set roots `docs/design/**` and `docs/specs/**`** are this
+   repo's own documentation layout convention (see this file's own CLAUDE.md
+   "Specs & Docs Layout" section), not a universal one. Fix: a per-workspace
+   `specsRoot` / `designRoot` config, naturally alongside the existing
+   per-workspace `watchedProjects` row (`manage_watched_projects`,
+   `packages/core/db/schema.ts:1726`, which already scopes `repo`, `roleSlug`,
+   and notes per project). Default to buildd's own paths only for the buildd
+   workspace.
+3. **The delta gate's keyed artifact, `spec-conformance-last-sha`**, must stay
+   workspace-scoped (it already is "per-repo" per §4's original design;
+   `create_artifact`'s workspace scoping gives this for free) — stated
+   explicitly here so two workspaces running Tier 2 concurrently never read or
+   overwrite each other's last-checked SHA.
+4. **`spec_discrepancies` is already workspace-scoped** (§7's schema) — no
+   additional work needed there; called out so a reader doesn't assume
+   otherwise.
+
+A new workspace gets machine-checkable spec conformance by: adopting
+SPEC-FORMAT.md-style frontmatter (or an equivalent) in its own `docs/`,
+setting its `specsRoot`/`designRoot`, and opting into the Tier-3 cron via
+`create_schedule`. No buildd-specific code changes for a new workspace to use
+this — only configuration. This is the difference between an internal
+convenience and a reason to run a codebase through buildd at all.
+
+### 15. Ownership: No New Agent Role
+
+The two enforcement points added in this revision — the intake check (§10) and
+the dispatch injection (§11) — are both existing mechanical, route-level code
+paths, not agent-authored prompts. This is a deliberate choice, not an
+omission: agent behaviour in this repo currently lives across three layers
+that must be kept in sync by hand — role system prompts, skill bodies, and
+CLAUDE.md — and PR #2050 needed to update all three together for a single
+behaviour change to land coherently. A prompt instruction telling an agent "go
+check whether a discrepancy applies" is weaker enforcement than a route-level
+check for exactly that reason: it silently stops firing the moment any one of
+those three layers drifts, and nothing signals that it has. A route-level
+check has one place to update and cannot be skipped by a role, skill, or
+CLAUDE.md revision falling out of sync.
+
+The organizer is unchanged. `promote_discrepancy` mints a mission through the
+same `manage_missions` create path any other caller uses, so the organizer
+keeps decomposing a promoted discrepancy into tasks exactly as it does for any
+other mission today — no new role, no special-cased "discrepancy work" agent.
+
+### 16. Costs, Stated Honestly
+
+- **Authoring burden.** Every assertion now needs an `id` in addition to a
+  checkable symbol/path — `docs/specs/SPEC-FORMAT.md` already found six
+  claimed symbols across four *active* specs that named nothing real. The
+  ledger inherits that same risk one level down: a badly-named symbol produces
+  a bogus `spec_ahead` row, not just a spec sitting at `unverified`.
+- **Zero-assertion specs produce no ledger row at all** — there is nothing to
+  check, so nothing can be flagged as a discrepancy. `unverified` must stay
+  **visible** anyway, or this reproduces the exact hole that let
+  `spec-conformance.md` itself sit exempt from its own drift check for over a
+  month (see below). An empty `DISCREPANCY` queue must never be read as "spec
+  conformance is fine" — it can just as easily mean "nothing has assertions
+  yet." The Tier-3 cron's per-run zero-assertion count (already produced today
+  — every recalled weekly-check outcome lists an UNVERIFIED section) is the
+  visibility mechanism; the ledger does not replace it, and must not be
+  presented as if it did.
+- **Resolving this doc's own exemption.** The weekly drift-check task template
+  has, on three runs (2026-08-10, 2026-08-17, 2026-08-31), special-cased
+  `spec-conformance.md` and `cloudflare-sandbox-runner.md` as exempt "by
+  design," separately from the ordinary `unverified` bucket every other
+  zero-assertion spec falls into. That special case was papering over "the
+  thing that would make this checkable does not exist yet" as though it were
+  an intentional, permanent design decision — it is neither. This doc has zero
+  assertions today, so its honest verdict is `unverified`, exactly like any
+  other zero-assertion spec — not a separate "by design" skip. The exemption
+  ends, not is resolved by fiat: once Implementation Slice 1 (below) ships and
+  this doc carries real assertions against its own checker/table/schema, the
+  next weekly-drift-check task template must drop this filename from any
+  exemption note and sweep it like every other design doc. Until then, the
+  correct instruction to future drift-check runs is simply: do not special-
+  case this file: report it `unverified` and move on, the same as any spec
+  with no assertions yet.
+
+---
+
+## Implementation Slices
+
+Each slice below is sized as one PR, in dependency order. None of this ships
+in the current task — this section exists so a follow-on task can be filed
+directly against a numbered slice instead of re-deriving scope from the design.
+
+1. **Assertion `id` field + checker core.** The original, still-unbuilt
+   checker (§1–§6): the six assertion types gain the required `id` field
+   (§7), and a script evaluates assertions and computes derived-vs-declared
+   status per §2. No ledger table yet — this slice is a prerequisite for every
+   later one, since nothing can be logged as a discrepancy before something
+   can evaluate an assertion.
+2. **`spec_discrepancies` table + ledger writes from Tier-2 CI.** Migration
+   adds the table (§7); the Tier-2 CI job upserts a row per
+   `(workspace, specPath, assertionId)` on every run, computing `direction`
+   per the §8 rule and `status` transitions per §9. Depends on Slice 1.
+3. **MCP surface** — `list_discrepancies`, `get_discrepancy`,
+   `adjudicate_discrepancy`, `promote_discrepancy` (§13), reading and writing
+   the Slice 2 table. `promote_discrepancy` calls the existing
+   `manage_missions` create path. Depends on Slice 2.
+4. **Intake check** at `POST /api/tasks` (§10) — warn-only match against open
+   `code_ahead` rows via `spec_compare` retrieval. Depends on Slice 2 (rows to
+   match against); independent of Slice 3.
+5. **Dispatch injection** in `prompt-builder.ts` (§11) — inject open-row
+   assertion clauses for a task's `pathManifest`. Depends on Slice 2;
+   independent of Slices 3 and 4.
+6. **Waiting-on-you surface** — the `DISCREPANCY` chip, bounded/ranked/
+   expiring queue behaviour (§12). UI actions (promote/accept/flip) call the
+   Slice 3 MCP-equivalent routes, so there is one mutation path regardless of
+   whether a human clicks a card or an agent calls the MCP tool directly.
+   Depends on Slice 3.
+7. **Tier-3 weekly cron generalization + workspace portability** (§14) —
+   parameterize `specsRoot`/`designRoot`, replace the hardcoded `ecc45c47`
+   schedule with a per-workspace `create_schedule` step. Deliberately last: it
+   is the generalization step, and only matters once Slices 1–6 are proven on
+   the buildd workspace itself.
+
 ---
 
 ## Worked Examples
@@ -545,6 +949,55 @@ needed — all assertions already pass.
 
 ---
 
+### Case 4: `path-claims.md` — durable identity across reruns
+
+**What happened:** the weekly drift check reported `path-claims.md` as
+DRIFTED (declared `Proposed`, code shipped) on 2026-08-25, and again on
+2026-08-31 — the second report annotated "carried from 2026-08-25, not
+updated." No state existed between the two runs; the second run rediscovered
+the same fact from scratch and had no way to know a human had already seen it
+once.
+
+**With the ledger:** assume `path-claims.md` carries (per Slice 1)
+
+```yaml
+assertions:
+  - id: path-claims-table
+    type: symbol
+    name: pathClaims
+    path: packages/core/db/schema.ts
+  - id: path-claims-route
+    type: route
+    method: POST
+    path: /api/path-claims
+    file: apps/web/src/app/api/path-claims/route.ts
+```
+
+On 2026-08-25, Tier-2 CI evaluates both assertions: both pass, declared status
+is `Proposed` (non-terminal) → `direction: code_ahead`. The checker upserts
+`(workspace, docs/design/path-claims.md, path-claims-table)` and
+`(..., path-claims-route)` as `status: open`, `first_seen_at: 2026-08-25`.
+
+On 2026-08-31, the same evaluation runs again: same result, same direction.
+The `ON CONFLICT` upsert updates `last_checked_at` only — `first_seen_at`
+stays `2026-08-25`, `status` stays `open`. The row is the *same row*, not a
+new report line. Anyone opening `get_discrepancy` sees it has been open for
+six days, not "just found."
+
+Two outcomes this makes possible that the report format could not:
+
+- The waiting-on-you queue (§12) ranks this row by its true age — a
+  six-day-old `code_ahead` row genuinely does outrank one that appeared
+  today, and the ranking can say so because `first_seen_at` is real state, not
+  a re-derived guess.
+- Once someone runs `adjudicate_discrepancy(accept, reason: "status text
+  fix queued")` or a doc-fix PR lands and status is promoted to `Accepted`,
+  the row resolves (§9) and never resurfaces — the September re-run of the
+  same checker sees passing assertions and a terminal status and writes
+  nothing, because there is nothing left to write.
+
+---
+
 ## Open Questions
 
 **Q: Should design docs and spec docs share a single status enum, or keep
@@ -571,9 +1024,12 @@ vocabulary is validated in practice.
 
 ## Non-Goals
 
-- **Checker implementation.** The linter, hook, and CI job are follow-on tasks
-  gated on approval of this design.
-- **Backfilling any spec's frontmatter.** Also a follow-on task.
+- **Checker, ledger, MCP surface, intake, dispatch, and UI implementation.**
+  All of it is follow-on work, gated on approval of this design and sequenced
+  as the seven numbered slices in **Implementation Slices** above — file
+  against a slice number, not against this document as a whole.
+- **Backfilling any spec's frontmatter.** Also a follow-on task, per the
+  Migration Path (§5) backfill order.
 - **Hook installation or CI wiring.** Configuration comes after the vocabulary
   is approved.
 - **Replacing `spec_compare`.** It serves a different purpose (similarity
