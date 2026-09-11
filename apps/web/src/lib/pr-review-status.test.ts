@@ -22,6 +22,7 @@ const {
   pickReviewerRole,
   firePrReviewCallback,
   REVIEW_CALLBACK_TIMEOUT_MS,
+  isApprovalSelfMergeable,
 } = await import('./pr-review-status');
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -247,5 +248,38 @@ describe('firePrReviewCallback', () => {
 
   it('bounds the delivery attempt so a hanging endpoint cannot stall the caller', () => {
     expect(REVIEW_CALLBACK_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+  });
+});
+
+// This is the one predicate answering "does this stored verdict authorise a
+// self-merge" — merge_pr's escape hatch, the check_suite CI-green retry, and
+// the reviewer approve path all call it instead of keeping their own copy.
+describe('isApprovalSelfMergeable', () => {
+  it('authorises a terminal approve at or above the threshold', () => {
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.6 }, 0.6)).toBe(true);
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.93 }, 0.6)).toBe(true);
+  });
+
+  it('defaults the threshold to 0.6 when the policy does not set one', () => {
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.6 })).toBe(true);
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.59 })).toBe(false);
+  });
+
+  it('refuses below the confidence threshold', () => {
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.59 }, 0.6)).toBe(false);
+  });
+
+  it('refuses a null or missing confidence', () => {
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: null }, 0.6)).toBe(false);
+  });
+
+  it('refuses request-changes and escalate verdicts', () => {
+    expect(isApprovalSelfMergeable({ verdict: 'request-changes', confidence: 0.9 }, 0.6)).toBe(false);
+    expect(isApprovalSelfMergeable({ verdict: 'escalate', confidence: 0.9 }, 0.6)).toBe(false);
+    expect(isApprovalSelfMergeable({ verdict: null, confidence: 0.9 }, 0.6)).toBe(false);
+  });
+
+  it('refuses a verdict already consumed by a merge', () => {
+    expect(isApprovalSelfMergeable({ verdict: 'approve', confidence: 0.9, merged: true }, 0.6)).toBe(false);
   });
 });

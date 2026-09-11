@@ -21,6 +21,7 @@ import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retr
 import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -1021,12 +1022,12 @@ export async function PUT(req: NextRequest) {
         // rails auto-threshold uses below (CI, escalateToPaths as deny paths,
         // the migration operation-class inspector).
         const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber });
-        const threshold = policy.agentReview?.maxConfidenceThreshold ?? 0.6;
         const selfMergeable =
           reviewStatus.state === 'approved' &&
-          reviewStatus.verdict === 'approve' &&
-          typeof reviewStatus.confidence === 'number' &&
-          reviewStatus.confidence >= threshold;
+          isApprovalSelfMergeable(
+            { verdict: reviewStatus.verdict, confidence: reviewStatus.confidence, merged: reviewStatus.merged },
+            policy.agentReview?.maxConfidenceThreshold,
+          );
 
         if (!selfMergeable) {
           return NextResponse.json({
