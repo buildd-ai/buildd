@@ -31,6 +31,8 @@ import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
+import { checkIntakeForDiscrepancies, type SpecWarning } from '@buildd/core/spec-discrepancy-intake';
+import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 // From `model-tier-defaults`, not `model-tier-registry`: the registry imports
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
@@ -723,6 +725,21 @@ export async function POST(req: NextRequest) {
         }
       : null;
 
+    // Spec-conformance intake check (docs/design/spec-conformance.md §10).
+    // Warn-only — matches pathManifest + description against this workspace's
+    // open code_ahead discrepancy rows. Never blocks task creation, so a
+    // retrieval failure here must not fail the request.
+    let specWarnings: SpecWarning[] = [];
+    try {
+      specWarnings = await checkIntakeForDiscrepancies(
+        workspaceId,
+        { pathManifest, description },
+        new PgVectorStore(getVoyageEmbedder(), getVoyageReranker()),
+      );
+    } catch (err) {
+      console.error('[intake] spec-discrepancy check failed:', err);
+    }
+
     const skillSlugs: string[] = Array.isArray(rawSkillSlugs) ? [...rawSkillSlugs] : [];
 
     // Resolve skill references if any slugs provided
@@ -1061,6 +1078,7 @@ export async function POST(req: NextRequest) {
       ...task,
       subjectIntakeOutcome: intake.outcome,
       ...(duplicateSuggestion ? { duplicateSuggestion } : {}),
+      ...(specWarnings.length > 0 ? { specWarnings } : {}),
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {

@@ -32,6 +32,14 @@ const mockResolveCreatorContext = mock(() =>
 const mockGetUserWorkspaceIds = mock(() => Promise.resolve([] as string[]));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 const mockDispatchNewTask = mock(() => Promise.resolve());
+// Intake check (§10) is exercised on its own pure functions/DB path in
+// packages/core/__tests__/spec-discrepancy-intake.test.ts. Mocked directly
+// here so this file's generic db mock (no `select`) doesn't have to model it,
+// and so wiring tests below control its return value directly.
+const mockCheckIntakeForDiscrepancies = mock(() => Promise.resolve([] as any[]));
+mock.module('@buildd/core/spec-discrepancy-intake', () => ({
+  checkIntakeForDiscrepancies: mockCheckIntakeForDiscrepancies,
+}));
 let resolveCriteriaEscalationCalls: Array<{ missionId: string; reason: string; actor: any }> = [];
 const mockResolveCriteriaEscalation = mock((missionId: string, reason: string, actor: any) => {
   resolveCriteriaEscalationCalls.push({ missionId, reason, actor });
@@ -394,6 +402,8 @@ describe('POST /api/tasks', () => {
     mockMissionsFindFirst.mockReset();
     mockResolveWorkspace.mockReset();
     mockAutoResolveAccountWorkspace.mockReset();
+    mockCheckIntakeForDiscrepancies.mockReset();
+    mockCheckIntakeForDiscrepancies.mockResolvedValue([]);
 
     // Default: no open friction task (miss path)
     mockTasksFindFirst.mockResolvedValue(null);
@@ -515,6 +525,79 @@ describe('POST /api/tasks', () => {
     const data = await response.json();
     expect(data.id).toBe('task-123');
     expect(data.title).toBe('Test Task');
+  });
+
+  // §10 intake check wiring: apps/web/src/app/api/tasks/route.ts calls
+  // checkIntakeForDiscrepancies and surfaces its result as `specWarnings` on
+  // the response — but never blocks creation, even on failure. The matching
+  // logic itself is covered in packages/core/__tests__/spec-discrepancy-intake.test.ts.
+  it('surfaces specWarnings on the response when the intake check finds a match', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [{ id: 'task-warned', workspaceId: 'ws-1', title: 'Touches stale spec' }]) })),
+    });
+    const warning = {
+      specPath: 'docs/design/worker-mount-isolation.md',
+      assertionId: 'mount-symbol',
+      direction: 'code_ahead',
+      message: 'stale status',
+    };
+    mockCheckIntakeForDiscrepancies.mockResolvedValue([warning]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Touches stale spec' },
+    }));
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.specWarnings).toEqual([warning]);
+  });
+
+  it('omits specWarnings from the response when the intake check finds nothing', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [{ id: 'task-clean', workspaceId: 'ws-1', title: 'Test Task' }]) })),
+    });
+    mockCheckIntakeForDiscrepancies.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task' },
+    }));
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data).not.toHaveProperty('specWarnings');
+  });
+
+  it('still creates the task when the intake check throws (warn-only, never blocks)', async () => {
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+    mockTasksInsert.mockReturnValue({
+      values: mock(() => ({ returning: mock(() => [{ id: 'task-despite-error', workspaceId: 'ws-1', title: 'Test Task' }]) })),
+    });
+    mockCheckIntakeForDiscrepancies.mockImplementation(() => {
+      throw new Error('retrieval backend unavailable');
+    });
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Test Task' },
+    }));
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.id).toBe('task-despite-error');
+    expect(data).not.toHaveProperty('specWarnings');
   });
 
   it('validates and persists loopConfig using verificationCommand fallback', async () => {

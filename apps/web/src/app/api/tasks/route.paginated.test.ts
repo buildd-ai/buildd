@@ -163,6 +163,11 @@ mock.module('@buildd/core/db/schema', () => ({
   // dynamic import chain even though the runtime value is never dereferenced by
   // the paginated GET tests.
   taskSubjectReports: {},
+  // specDiscrepancies is imported by @buildd/core/spec-discrepancy-intake (§10
+  // intake check), pulled in by ./route for POST. Not dereferenced by the
+  // paginated GET tests, but Bun's ESM mock throws a SyntaxError on the
+  // dynamic import chain without a matching export name.
+  specDiscrepancies: {},
 }));
 
 // Re-export real implementations of pure @buildd/core packages so that mocks
