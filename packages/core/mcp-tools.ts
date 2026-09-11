@@ -1155,7 +1155,12 @@ export async function handleBuilddAction(
       const result = task.result;
       if (result && (result.summary || result.prUrl || result.prNumber || result.sha)) {
         lines.push('', '## Result');
-        if (result.summary) lines.push(`**Summary:** ${result.summary}`);
+        if (result.summary) {
+          const fallbackNote = result.summarySource === 'fallback'
+            ? ' _(auto-captured last message — the agent never called complete_task with a summary; treat as unverified, not a confirmed outcome)_'
+            : '';
+          lines.push(`**Summary:** ${result.summary}${fallbackNote}`);
+        }
         if (result.prUrl || result.prNumber) {
           lines.push(`**PR:** ${result.prUrl || `#${result.prNumber}`}`);
         }
@@ -1382,7 +1387,7 @@ export async function handleBuilddAction(
           method: 'PATCH',
           body: JSON.stringify({
             status: 'completed',
-            ...(params.summary ? { summary: params.summary } : {}),
+            ...(params.summary ? { summary: params.summary, summarySource: 'agent' } : {}),
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
           }),
@@ -1433,11 +1438,20 @@ export async function handleBuilddAction(
 
             // Mirror the completed task into the KnowledgeStore (best-effort).
             const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
+            // The persisted result.summary can predate THIS call (e.g. a retry's
+            // complete_task with no summary param, reading back what an earlier
+            // worker on this task left behind). Only trust it as an outcome when
+            // it was agent-authored — a 'fallback' summary (runner's last-message
+            // capture, see apps/runner/src/workers.ts) must never be re-ingested
+            // into the KB as if it were a real result just because it happens to
+            // sit in the DB row.
+            const persistedSummaryIsAuthored = taskData?.result?.summarySource !== 'fallback';
+            const authoredPersistedSummary = persistedSummaryIsAuthored ? (taskData?.result?.summary ?? null) : null;
             const taskChunk = buildTaskCard({
               taskId,
               title: taskData?.title ?? null,
               description: taskData?.description ?? null,
-              summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+              summary: (params.summary as string) ?? authoredPersistedSummary,
               success: true,
               prUrl,
               missionId: taskData?.missionId ?? null,
@@ -1460,7 +1474,7 @@ export async function handleBuilddAction(
                 taskId,
                 workerId: (params.workerId as string) || ctx.workerId || null,
                 title: taskData?.title ?? null,
-                summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+                summary: (params.summary as string) ?? authoredPersistedSummary,
                 nextSuggestion: (params.nextSuggestion as string) ?? null,
                 success: true,
                 turns: typeof result?.turns === 'number' ? result.turns : null,

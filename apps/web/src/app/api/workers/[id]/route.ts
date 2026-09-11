@@ -588,6 +588,10 @@ export async function PATCH(
     branch,
     // Git stats
     lastCommitSha, commitCount, filesChanged, linesAdded, linesRemoved,
+    // `git status --porcelain` (tracked files only) at the worker's worktree,
+    // refreshed by the runner's periodic sync. Read by the complete_task gate
+    // below — see the 'auto' output-requirement block.
+    dirtyWorktree,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -813,6 +817,7 @@ export async function PATCH(
   if (typeof filesChanged === 'number' && (filesChanged > 0 || !(worker.filesChanged ?? 0))) updates.filesChanged = filesChanged;
   if (typeof linesAdded === 'number' && (linesAdded > 0 || !(worker.linesAdded ?? 0))) updates.linesAdded = linesAdded;
   if (typeof linesRemoved === 'number' && (linesRemoved > 0 || !(worker.linesRemoved ?? 0))) updates.linesRemoved = linesRemoved;
+  if (typeof dirtyWorktree === 'boolean') updates.dirtyWorktree = dirtyWorktree;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
     updates.waitingFor = (isSensitive && waitingFor !== null)
@@ -977,6 +982,10 @@ export async function PATCH(
 
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
+      // Same precedence as effectiveCommits: this request's own report wins,
+      // falling back to the worker row's last-synced value (kept fresh by the
+      // runner's periodic sync — see worker-sync.ts computeDirtyWorktree).
+      const effectiveDirtyWorktree = typeof dirtyWorktree === 'boolean' ? dirtyWorktree : (worker.dirtyWorktree ?? false);
       let hasPR = workerHasPR;
 
       // Resolve the workspace's GitHub repo/installation once — used both to
@@ -1108,18 +1117,22 @@ export async function PATCH(
         skipRelease = true;
       }
 
-      // auto (default): commits with neither a PR nor an artifact must not
-      // complete silently. That combination — code committed, nothing to
-      // review or merge, completion reported as done — leaves the commit
-      // stranded on the branch while the summary asserts the change landed.
-      // The GitHub auto-detect above already covers a branch whose PR was
-      // opened by a different worker row (retries/CI-fix continuations push
-      // to the same branch as an earlier attempt), so this only fires when
-      // no PR exists anywhere for the branch.
-      if (outputReq === 'auto' && effectiveCommits > 0 && !hasPR) {
+      // auto (default): commits — or, same failure shape, uncommitted edits
+      // sitting in the worktree — with neither a PR nor an artifact must not
+      // complete silently. That combination — work done, nothing to review or
+      // merge, completion reported as done — leaves the change stranded (on
+      // the branch, or never even committed) while the summary asserts it
+      // landed. The GitHub auto-detect above already covers a branch whose PR
+      // was opened by a different worker row (retries/CI-fix continuations
+      // push to the same branch as an earlier attempt), so this only fires
+      // when no PR exists anywhere for the branch.
+      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
         if (!(await hasDeliverableArtifact())) {
+          const workDescription = effectiveCommits > 0
+            ? `${effectiveCommits} commit(s) on branch`
+            : 'uncommitted changes in the worktree';
           return NextResponse.json({
-            error: `Task has ${effectiveCommits} commit(s) on branch but no pull request or artifact. Use create_pr to open one for the branch, or call complete_task with an \`error\` explaining why these commits are being intentionally discarded.`,
+            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with an \`error\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
           }, { status: 400 });
         }
@@ -2046,6 +2059,19 @@ export async function PATCH(
             commits > 0 ? `${commits} commit${commits === 1 ? '' : 's'}` : null,
           ].filter(Boolean).join(' · ');
         }
+        // Provenance: 'agent' = passed explicitly to complete_task (or synthesized
+        // by the sensitive-redaction branch above, which is structured and factual,
+        // never a stray aside); 'fallback' = the runner's own end-of-session PATCH
+        // captured the SDK's last assistant message because no complete_task call
+        // ever happened (see apps/runner/src/workers.ts). A fallback summary is
+        // frequently a conversational aside, not an outcome — downstream consumers
+        // (KB ingestion, UI) must not present it as authored. Default to 'agent' when
+        // the caller sent a summary but no source at all — both current writers (the
+        // runner's fallback PATCH and complete_task) always send it explicitly, so
+        // this only covers a caller that predates this field.
+        const summarySource: 'agent' | 'fallback' | undefined = !summary
+          ? undefined
+          : (!isSensitive && body.summarySource === 'fallback' ? 'fallback' : 'agent');
         // Extract phase timeline from milestones for result snapshot
         const finalMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
         const phases = finalMilestones
@@ -2063,6 +2089,7 @@ export async function PATCH(
 
         taskUpdate.result = {
           summary,
+          ...(summarySource && { summarySource }),
           branch: worker.branch,
           commits: commitCount ?? worker.commitCount ?? 0,
           sha: lastCommitSha ?? worker.lastCommitSha ?? undefined,

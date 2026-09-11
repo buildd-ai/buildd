@@ -107,6 +107,34 @@ describe('detectProseGate', () => {
     });
   });
 
+  describe('gate on a human decision, not a task → no match', () => {
+    it('ignores "gated on" pointing at owner approval, not a task', () => {
+      const result = detectProseGate(
+        'Follow-on implementation tasks are gated on the owner approving this spec.',
+      );
+      expect(result.phrase).toBeNull();
+    });
+
+    it('ignores "gated on approval of" with no task/PR object', () => {
+      const result = detectProseGate('Follow-on tasks gated on approval of this doc.');
+      expect(result.phrase).toBeNull();
+    });
+
+    it('ignores "depends on" pointing at a review, not a task', () => {
+      const result = detectProseGate(
+        'This step depends on stakeholder review before proceeding.',
+      );
+      expect(result.phrase).toBeNull();
+    });
+
+    it('still matches when the same sentence structure names a task ID', () => {
+      const result = detectProseGate(
+        'Follow-on implementation tasks are gated on task abc12345 merging.',
+      );
+      expect(result.phrase).not.toBeNull();
+    });
+  });
+
   describe('phrase field', () => {
     it('returns the literal matched text, not the regex pattern', () => {
       const result = detectProseGate('Start this after the spec PR merges.');
