@@ -30,7 +30,7 @@ describe('isBudgetExhaustionError', () => {
     expect(isBudgetExhaustionError('session limit reached')).toBe(true);
   });
 
-  // Regression: 5 Codex-backed workers hard-failed instead of pausing +
+  // Regression: Codex-backed workers hard-failed instead of pausing and
   // failing over, because this detector only recognised Claude's wording.
   // Codex has no redundant signal (no account/tenant budget columns) — this
   // detector is the only thing that ever writes a `backend_pauses` row for

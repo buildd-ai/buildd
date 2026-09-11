@@ -23,7 +23,7 @@ describe('isBudgetExhaustionError', () => {
     expect(isBudgetExhaustionError('session limit reached')).toBe(true);
   });
 
-  // Regression: 5 Codex-backed workers hard-failed in a 24h window because
+  // Regression: Codex-backed workers hard-failed instead of pausing, because
   // this detector only knew Claude's wording. Codex has no redundant signal
   // (no account/tenant budget columns), so a detector miss here means no
   // backend_pauses row is ever written for Codex — a silent, permanent gap,

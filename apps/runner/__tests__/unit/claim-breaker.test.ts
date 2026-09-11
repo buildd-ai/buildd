@@ -130,7 +130,7 @@ describe('classifyClaimError', () => {
     expect(classifyClaimError('econnreset')).toBeNull();
   });
 
-  // Regression: 5 Codex-backed workers hard-failed instead of tripping the
+  // Regression: Codex-backed workers hard-failed instead of tripping the
   // breaker, because this function only recognised Claude's session-limit
   // wording. Codex's own quota wall ("You've hit your usage limit ... try
   // again at <time>.") matched none of the existing branches.
