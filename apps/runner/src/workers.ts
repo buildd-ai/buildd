@@ -66,6 +66,7 @@ import { RecoveryManager } from './recovery';
 import { findConnectorFor, is401Error, is403PermissionError, shouldFireCircuitBreaker } from './connector-auth-detection';
 import { applyCommandLifecycle, emptyCommandLifecycle } from './command-lifecycle';
 import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecretRedactor } from '@buildd/core/redaction';
+import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap } from './cbm-bootstrap.js';
@@ -3798,12 +3799,13 @@ If something is missing or incomplete, describe what and fix it now.`;
         worker.error = errMsg;
         worker.hasNewActivity = true;
         worker.completedAt = Date.now();
-        const errLower = errMsg.toLowerCase();
-        // OAuth seat session caps ("You've hit your session limit") are a usage
-        // exhaustion just like a dollar budget — flag them so the server fails
-        // the task over (Codex) / holds it until reset instead of hard-failing.
-        const isBudgetError = errLower.includes('budget') || errLower.includes('out of extra usage') ||
-          errLower.includes('max budget') || errLower.includes('session limit') || errLower.includes('hit your session');
+        // OAuth seat session caps ("You've hit your session limit") and Codex
+        // quota walls ("You've hit your usage limit") are a usage exhaustion
+        // just like a dollar budget — flag them so the server fails the task
+        // over (Codex <-> Claude) / holds it until reset instead of hard-
+        // failing. Shared with the web route's isBudgetExhaustionError and the
+        // claim breaker's classifyClaimError so all three can't drift apart.
+        const isBudgetError = isBudgetExhaustionError(errMsg);
         // Steering-delivery crash: the CLI rejected a malformed spawn invocation
         // (e.g. --session-id + --resume without --fork-session). This is an infra
         // failure — must not consume a task retry attempt.
