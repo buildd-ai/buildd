@@ -56,8 +56,8 @@ ingest (clean code corpus)  →  retrieve (surface candidates)  →  JUDGE (agen
 
 ## The embedding corpus (unified workspace store)
 
-`spec_compare` reads the **unified workspace store** — the same store that `query_knowledge`
-uses. Two corpora within the workspace:
+`spec_compare` reads the **unified workspace store** — the same store that `recall`
+(scope=code|docs) queries. Two corpora within the workspace:
 
 | Corpus | Namespace | What it holds |
 |--------|-----------|--------------|
