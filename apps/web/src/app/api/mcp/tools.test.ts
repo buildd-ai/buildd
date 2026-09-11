@@ -55,6 +55,24 @@ describe('listMcpTools — token level gating', () => {
     expect(trigger).not.toContain('consolidate_knowledge');
   });
 
+  it('exposes the explain read to worker and admin, but not to trigger tokens', () => {
+    // A deterministic read over rows the caller can already see, needed by the
+    // agent standing in the stuck state — so worker level, not admin.
+    expect(actionsForLevel('worker')).toContain('explain');
+    expect(actionsForLevel('admin')).toContain('explain');
+    expect(actionsForLevel('trigger')).not.toContain('explain');
+  });
+
+  it('documents every advertised action in the params description', () => {
+    const [builddTool] = listMcpTools({ accountLevel: 'admin', isSensitive: false }) as Array<{
+      inputSchema: { properties: { params: { description: string } } };
+    }>;
+    const description = builddTool.inputSchema.properties.params.description;
+    for (const action of actionsForLevel('admin')) {
+      expect(description, `${action} must be documented`).toContain(`${action}:`);
+    }
+  });
+
   it('publishes the same action list in the schema enum and the description', () => {
     const [builddTool] = listMcpTools({ accountLevel: 'worker', isSensitive: false }) as Array<{
       inputSchema: { properties: { action: { enum: string[] } } };
