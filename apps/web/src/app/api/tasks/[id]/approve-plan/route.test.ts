@@ -397,8 +397,8 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
   it('deduplicates plan steps with existing pending/in-progress tasks', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
 
-    // Route handler and approvePlan() each fetch the planning task independently,
-    // so this must satisfy both calls, not just the first.
+    // Route handler and approvePlan() each independently fetch the task —
+    // must persist across both calls, not just the first.
     mockTasksFindFirst.mockResolvedValue({
       id: 'plan-task-1',
       mode: 'planning',
@@ -418,12 +418,37 @@ describe('POST /api/tasks/[id]/approve-plan', () => {
       workspace: { id: 'ws-1' },
     });
 
-    // findMany for dedup returns existing pending tasks with matching titles
-    mockTasksFindMany.mockResolvedValueOnce([
-      { title: 'Aggregate results' }, // Already pending, should be skipped
-      { title: 'Monitor PR review' },   // Already pending, should be skipped
-      // 'Deploy' is not pending, so it should be created
-    ]);
+    // approvePlan() issues two findMany calls: the existing-children guard
+    // (columns: { id }) and the coordination dedup query (columns include
+    // subjectAnchor). Route by shape rather than call order, since a plain
+    // mockResolvedValueOnce would bind to whichever query runs first.
+    // 'Aggregate results' and 'Monitor PR review' both classify as coordination
+    // intents ('aggregate' / 'wait'), so — like any real prior-cycle coordination
+    // task — they're matched by subjectAnchor, not by title text.
+    mockTasksFindMany.mockImplementation((args: any) => {
+      if (args?.columns?.subjectAnchor) {
+        return Promise.resolve([
+          {
+            id: 'existing-aggregate-1',
+            title: 'Aggregate results from prior cycle', // Already pending, should be skipped
+            subjectAnchor: {
+              version: 1, kind: 'mission', subjectMissionId: 'mission-1',
+              source: 'system', confidence: 'derived', coordinationIntent: 'aggregate', subjectPrNumbers: [],
+            },
+          },
+          {
+            id: 'existing-wait-1',
+            title: 'Monitor the open PR', // Already pending, should be skipped
+            subjectAnchor: {
+              version: 1, kind: 'mission', subjectMissionId: 'mission-1',
+              source: 'system', confidence: 'derived', coordinationIntent: 'wait', subjectPrNumbers: [],
+            },
+          },
+          // 'Deploy' is not a coordination step, so it should be created
+        ]);
+      }
+      return Promise.resolve([]);
+    });
 
     const request = createMockRequest();
     const response = await callHandler(POST, request, 'plan-task-1');

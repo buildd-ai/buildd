@@ -542,6 +542,31 @@ describe('deriveTaskHealthSignal', () => {
     expect(deriveTaskHealthSignal(noDepMission, [coordTask])).toBe<Health>('NOMINAL');
   });
 
+  // ── heartbeatWaitingUntil: blocked mission must never render as idle/stalled ──
+
+  it('BLOCKED while the heartbeat is deliberately waiting on a known self-resolving condition', () => {
+    const coordTask = { status: 'pending', kind: 'coordination' as const, title: 'Wait for budget reset', workers: [] };
+    expect(deriveTaskHealthSignal(
+      { ...noDepMission, heartbeatWaitingUntil: new Date(Date.now() + 60 * 60 * 1000) },
+      [coordTask],
+    )).toBe<Health>('BLOCKED');
+  });
+
+  it('not BLOCKED once the wait-until time has passed — resumes normal health assessment', () => {
+    const coordTask = { status: 'pending', kind: 'coordination' as const, title: 'Wait for budget reset', workers: [] };
+    expect(deriveTaskHealthSignal(
+      { ...noDepMission, heartbeatWaitingUntil: new Date(Date.now() - 60 * 1000) },
+      [coordTask],
+    )).toBe<Health>('NOMINAL');
+  });
+
+  it('heartbeatWaitingUntil takes priority over FAILING (a benign known wait outranks a stale failure signal)', () => {
+    expect(deriveTaskHealthSignal(
+      { ...noDepMission, heartbeatWaitingUntil: new Date(Date.now() + 60 * 60 * 1000) },
+      [makeTask('failed')],
+    )).toBe<Health>('BLOCKED');
+  });
+
   it('manual+healthy mission — MANUAL drive, NOMINAL health (distinguishable)', () => {
     const drive = deriveDriveState({ status: 'active', orchestrationMode: 'manual' });
     const health = deriveTaskHealthSignal(noDepMission, [makeTask('completed')]);

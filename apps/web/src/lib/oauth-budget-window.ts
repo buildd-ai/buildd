@@ -49,10 +49,16 @@ export interface OauthWindowMeasurement {
 /**
  * Recent exhaustion episodes across all accounts in the group, newest first.
  * Pass a single-element array for the per-account case.
+ *
+ * Filters out stale episodes: those where resetsAt is in the past. A stale
+ * episode is from a window that has already closed and re-opened, so its
+ * capacity no longer applies to the current window. Returning only fresh
+ * episodes avoids learning capacity from outdated plan sizes.
  */
 export async function loadOauthEpisodes(
   accountIds: string[],
   limit = DEFAULT_MAX_SAMPLES,
+  now = new Date(),
 ): Promise<Array<OauthEpisode & { resetsAt: Date | null }>> {
   const rows = await db.query.oauthBudgetEpisodes.findMany({
     where: inArray(oauthBudgetEpisodes.accountId, accountIds),
@@ -63,7 +69,15 @@ export async function loadOauthEpisodes(
       inputTokens: true, outputTokens: true, weightedTurns: true, weightedTokens: true,
     },
   });
-  return rows.map(r => ({
+
+  const nowMs = now.getTime();
+  const filtered = rows.filter(r => {
+    if (!r.resetsAt) return true; // Keep episodes with no reset time (data older than reset tracking)
+    const resetMs = new Date(r.resetsAt).getTime();
+    return resetMs > nowMs; // Keep only episodes whose window hasn't reset yet
+  });
+
+  return filtered.map(r => ({
     exhaustedAt: new Date(r.exhaustedAt),
     resetsAt: r.resetsAt ? new Date(r.resetsAt) : null,
     workerCount: r.workerCount,

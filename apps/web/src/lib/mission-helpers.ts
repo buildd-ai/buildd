@@ -122,6 +122,15 @@ export function deriveTaskHealthSignal(
   mission: {
     dependsOnMissionId?: string | null;
     dependencyMetAt?: Date | string | null;
+    /**
+     * Set when the heartbeat prepass is deliberately waiting on a known
+     * self-resolving condition (provider budget pause, queued reviewer/retry,
+     * loop backoff) rather than idle or stuck — read from
+     * `schedule.lastDeferralReason === 'heartbeat_waiting'` + `schedule.nextRunAt`.
+     * A benign, explained wait must render as BLOCKED, never as NOMINAL silence
+     * or (worse) STALLED, which implies the platform failed to progress it.
+     */
+    heartbeatWaitingUntil?: Date | string | null;
   },
   tasks: Array<{
     status: string;
@@ -133,6 +142,7 @@ export function deriveTaskHealthSignal(
   }>,
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
+  if (mission.heartbeatWaitingUntil && new Date(mission.heartbeatWaitingUntil).getTime() > Date.now()) return 'BLOCKED';
 
   const countable = tasks.filter(isCountableHealthTask);
 

@@ -21,10 +21,9 @@ import { maybeOpenMissionIntegrationPr } from '@/lib/mission-pr';
 import {
   isMissionIntegrationBase,
   isMissionPrTask,
-  isStackedPhaseBase,
-  missionIntegrationBase,
   shouldAnnounceBaseAdvance,
 } from '@buildd/core/mission-integration';
+import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { checkDependsOnResolved } from '@/lib/task-dependencies';
 import { resolveReleaseStrategy, resolveReleaseTrigger } from '@buildd/core/release-strategy';
 import {
@@ -632,26 +631,63 @@ async function handlePullRequestEvent(event: {
       // task PR of the mission to trunk. Loud, not absorbed — never handled
       // anywhere before this (no `base_ref_changed` / `automatic_base_change_
       // succeeded` handling existed at all).
+      //
+      // Two things changed once the other three doors started refusing. First,
+      // the trigger no longer requires the PREVIOUS base to have been the
+      // integration branch: `workers.prBaseRef` is null on every path that
+      // deliberately declines to guess it, and requiring a known-good prior
+      // value made the most common illegal shape — a PR that was never on the
+      // integration branch at all — invisible. What matters is where the PR
+      // points NOW. Second, buildd repairs rather than only reports: a webhook
+      // cannot return 400 at anyone, so the enforcement form of "refused" here
+      // is putting the base back. Reporting is what is left when it cannot.
       const retargetMissionId: string | null = retargetCandidate?.task?.missionId ?? null;
-      if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && retargetCandidate.prBaseRef && !isMissionPrTask(retargetCandidate.task)) {
+      if (rebased.length > 0 && retargetMissionId && retargetCandidate?.task && !isMissionPrTask(retargetCandidate.task) && !pr.merged) {
         const task = retargetCandidate.task;
         const mission = await db.query.missions.findFirst({
           where: eq(missions.id, retargetMissionId),
           columns: { workingBranch: true, integrationBranchEnabled: true },
         });
-        const integrationBase = missionIntegrationBase(mission);
-        const taskContext = task.context as Record<string, unknown> | null;
-        const stacked = isStackedPhaseBase({
-          contextBaseBranch: taskContext?.baseBranch as string | undefined,
-          head: pr.head?.ref ?? null,
-          mission,
-        });
-        if (
-          !stacked &&
-          integrationBase &&
-          retargetCandidate.prBaseRef === integrationBase &&
-          observedBaseRef !== integrationBase
-        ) {
+        const guard = buildMissionBaseGuard({ mission, task, head: pr.head?.ref ?? null });
+        if (guard.enforced && !guard.allows(observedBaseRef)) {
+          const integrationBase = guard.integrationBase!;
+          // A PR whose head IS the integration branch cannot be based on it —
+          // GitHub rejects head === base. That shape is its own violation
+          // (a task worker opening the mission PR's shape) and only the report
+          // applies.
+          const restorable = pr.head?.ref !== integrationBase && !!event.installation?.id;
+          let restored = false;
+          if (restorable) {
+            try {
+              await githubApi(
+                event.installation!.id,
+                `/repos/${repository.full_name}/pulls/${pr.number}`,
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ base: integrationBase }),
+                },
+              );
+              restored = true;
+              await db
+                .update(workers)
+                .set({ prBaseRef: integrationBase, updatedAt: new Date() })
+                .where(workerOwnsPr(repository.full_name, pr.number));
+              console.warn(
+                `[webhook] PR #${pr.number} (mission ${retargetMissionId}) was based on `
+                + `'${observedBaseRef}' — restored to integration branch '${integrationBase}'`,
+              );
+            } catch (err) {
+              // Typically the integration branch no longer exists (the
+              // production shape: it was deleted on merge and GitHub
+              // auto-retargeted everything that pointed at it). Nothing to
+              // restore to — fall through to the loud report.
+              console.error(
+                `[webhook] failed to restore PR #${pr.number} base to '${integrationBase}':`,
+                err,
+              );
+            }
+          }
           await reportMissionGateRetarget({
             missionId: retargetMissionId,
             taskTitle: task.title,
@@ -660,6 +696,7 @@ async function handlePullRequestEvent(event: {
             headSha: pr.head?.sha ?? observedBaseRef,
             fromBase: integrationBase,
             toBase: observedBaseRef,
+            restored,
           });
         }
       }
@@ -1288,11 +1325,14 @@ async function handlePullRequestEvent(event: {
 }
 
 /**
- * A task PR's base moved OFF its mission's integration branch (P2b) — a lost
- * review gate, reported loudly rather than absorbed. Best-effort: a failure
- * here must never fail the webhook, and the retarget itself already
- * persisted (`workers.prBaseRef`) regardless of whether this reporting
- * succeeds.
+ * A task PR is based somewhere other than its mission's integration branch
+ * (P2b) — a lost review gate, reported loudly rather than absorbed.
+ *
+ * `restored` says whether buildd already put the base back. Both outcomes are
+ * reported: a silent repair would hide the fact that something opened or moved
+ * a mission task PR onto trunk, which is the signal worth having. Best-effort —
+ * a failure here must never fail the webhook, and the observation itself
+ * already persisted (`workers.prBaseRef`) either way.
  */
 async function reportMissionGateRetarget(opts: {
   missionId: string;
@@ -1302,18 +1342,25 @@ async function reportMissionGateRetarget(opts: {
   headSha: string;
   fromBase: string;
   toBase: string;
+  restored?: boolean;
 }): Promise<void> {
-  const message =
-    `${opts.taskTitle} — PR #${opts.prNumber}'s base moved from the mission's integration ` +
-    `branch (\`${opts.fromBase}\`) to \`${opts.toBase}\`. This PR has lost its mission review ` +
-    `gate — likely GitHub auto-retargeting after the integration branch was deleted. Retarget ` +
-    `it back to \`${opts.fromBase}\` or route it through the mission PR.`;
+  const message = opts.restored
+    ? `${opts.taskTitle} — PR #${opts.prNumber} was based on \`${opts.toBase}\` instead of this ` +
+      `mission's integration branch (\`${opts.fromBase}\`). buildd retargeted it back to ` +
+      `\`${opts.fromBase}\`, so the mission review gate is intact. Worth knowing how it got ` +
+      `there: every path that opens or adopts a task PR is supposed to refuse this base.`
+    : `${opts.taskTitle} — PR #${opts.prNumber}'s base is \`${opts.toBase}\`, not the mission's ` +
+      `integration branch (\`${opts.fromBase}\`), and buildd could not restore it — the ` +
+      `integration branch has most likely been deleted. This PR has lost its mission review ` +
+      `gate. Re-point it deliberately or route it through the mission PR.`;
   try {
     await db.insert(missionNotes).values({
       missionId: opts.missionId,
       authorType: 'system',
       type: 'warning',
-      title: `PR #${opts.prNumber} lost its mission integration gate`,
+      title: opts.restored
+        ? `PR #${opts.prNumber} was restored to the mission integration branch`
+        : `PR #${opts.prNumber} lost its mission integration gate`,
       body: message,
       status: 'open',
     });
@@ -1321,7 +1368,9 @@ async function reportMissionGateRetarget(opts: {
     console.error(`[webhook] failed to record gate-retarget note for PR #${opts.prNumber}:`, err);
   }
   await notifyMissionPrReady(opts.missionId, {
-    title: `PR #${opts.prNumber} retargeted off the mission integration branch`,
+    title: opts.restored
+      ? `PR #${opts.prNumber} restored to the mission integration branch`
+      : `PR #${opts.prNumber} retargeted off the mission integration branch`,
     prUrl: opts.prUrl,
     prNumber: opts.prNumber,
     headSha: opts.headSha,
@@ -1331,8 +1380,9 @@ async function reportMissionGateRetarget(opts: {
     console.error(`[webhook] failed to notify gate-retarget for PR #${opts.prNumber}:`, err),
   );
   console.error(
-    `[webhook] PR #${opts.prNumber} (mission ${opts.missionId}) retargeted off integration ` +
-    `branch '${opts.fromBase}' onto '${opts.toBase}' — review gate lost`,
+    `[webhook] PR #${opts.prNumber} (mission ${opts.missionId}) based on '${opts.toBase}' `
+    + `instead of integration branch '${opts.fromBase}' — `
+    + (opts.restored ? 'base restored by buildd' : 'review gate lost'),
   );
 }
 

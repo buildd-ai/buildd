@@ -68,7 +68,8 @@ async function teamPressurePct(teamId: string): Promise<number | null> {
     teamId: oauthAccount.teamId ?? '',
     seatId: oauthAccount.seatId ?? null,
   });
-  const episodes = await loadOauthEpisodes(accountIds);
+  const now = new Date();
+  const episodes = await loadOauthEpisodes(accountIds, undefined, now);
   const capacity = learnOauthCapacity(episodes, { quantile: pacingConfig.quantile });
   // No exhaustion history yet: OAuth pacing is inert, exactly as in the claim
   // route. Any API-key pressure measured above still stands.
@@ -76,7 +77,7 @@ async function teamPressurePct(teamId: string): Promise<number | null> {
 
   const { usage } = await measureOauthWindow({
     accountIds,
-    now: new Date(),
+    now,
     lastResetsAt: episodes[0]?.resetsAt ?? null,
   });
 
