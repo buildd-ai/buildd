@@ -313,6 +313,68 @@ describe('POST /api/workers/heartbeat', () => {
     expect(capturedConflictSet.environment).toBeNull();
   });
 
+  it('persists runnerCommit and runnerVersion in heartbeat upsert', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            capturedConflictSet = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1, runnerCommit: '5bfaeef', runnerVersion: '0.206.0' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.runnerCommit).toBe('5bfaeef');
+    expect(capturedValues.runnerVersion).toBe('0.206.0');
+    expect(capturedConflictSet.runnerCommit).toBe('5bfaeef');
+    expect(capturedConflictSet.runnerVersion).toBe('0.206.0');
+  });
+
+  it('sets runnerCommit and runnerVersion to null when not provided (legacy runner)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock(() => Promise.resolve()),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.runnerCommit).toBeNull();
+    expect(capturedValues.runnerVersion).toBeNull();
+  });
+
   it('defaults activeWorkerCount to 0', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',

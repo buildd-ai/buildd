@@ -1652,6 +1652,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),
   sandboxProbeAt: timestamp('sandbox_probe_at', { withTimezone: true }),
+  // The runner codebase's own git commit and package version — NOT a task
+  // commit. Lets the platform tell "this instance is running pre-fix code"
+  // from a merged PR alone, instead of requiring SSH into the host.
+  runnerCommit: text('runner_commit'),
+  runnerVersion: text('runner_version'),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
