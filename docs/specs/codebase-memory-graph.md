@@ -71,10 +71,13 @@ decision point. It is pure and does not create the cache directory.
   requeues, or changes the agent's outcome. A missing binary MUST degrade, never
   block — a hard failure would have taken the whole fleet down for four weeks
   instead of quietly costing tokens.
-- **CBM-4**: `cbmCacheDir` is `/tmp/cbm-<workerId>` — per worker, never shared.
-  CBM enforces an OS-backed admission barrier over a cache root: two processes on
-  one root with different binary versions fail to admit. Per-worker scoping is
-  what makes a rolling image update safe.
+- **CBM-4**: `cbmCacheDir` is normally `/tmp/cbm-<workerId>` (per worker), but when a seed
+  exists for `(repoPath, baseRef)`, the cache is the shared host-wide directory
+  (`~/.buildd-cbm-cache`) and `skipBootstrapIndex` is set to true. Seeds are keyed
+  by a hash of `(repoPath, baseRef)` and are stored as JSON records at
+  `~/.buildd-cbm-cache/seeds/<hash>.json`. The shared cache MUST NOT be mounted
+  read-only to the sandbox: CBM's SQLite write-ahead log (WAL) sidecar files
+  require write access, and a read-only mount will hang CBM indefinitely.
 - **CBM-5**: The role opt-out is a DB fact, not a runner flag. The claim route
   reads `role.mcpServers['codebase-memory'] === false` and sets `cbmDisabled` on
   the claimed-worker payload (`claim/route.ts:2107-2112`); the runner copies it
@@ -344,9 +347,12 @@ cold-per-task model (CBM-4) is what this spec describes.
 
 ## Out of scope
 
-- **Warm-start / shared cache.** `docs/design/cbm-v2-warm-start.md` (canonical
-  version-keyed seed, 90% index-time saving) is proposed, not shipped. CBM-4's
-  per-task cold rebuild is current behaviour.
+- **Version-keyed shared cache.** A host-wide shared cache (CBM-4) is **shipped** and keyed by
+  `(repoPath, baseRef)`. `docs/design/cbm-v2-warm-start.md` proposes layering
+  CBM-version keying on top of the existing seed mechanism to support incremental
+  warm-start from a canonical DB. That versioning layer is not yet shipped; the
+  current implementation reuses whatever seed is recorded for a given base ref,
+  regardless of CBM version. A version bump does not invalidate existing seeds.
 - **Semantic and historical retrieval.** The graph answers structural questions
   only. Intent, history and prior decisions come from the knowledge tools — see
   `docs/specs/knowledge-store-retrieval.md`. The injected prompt states this

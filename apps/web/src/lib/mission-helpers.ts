@@ -47,8 +47,19 @@ export function selectInFlightTasks(tasks: InFlightTask[], now = Date.now()): {
   const task = sorted[0];
   if (!task) return { primary: null, overflow: 0 };
   const minutes = task.startedAt ? Math.max(0, Math.round((now - new Date(task.startedAt).getTime()) / 60_000)) : 0;
+
+  // Format duration with proper minute carrying: "Nm" for <60m, "NhMm" for >=60m
+  let durationStr: string;
+  if (minutes < 60) {
+    durationStr = `${minutes}m`;
+  } else {
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    durationStr = m > 0 ? `${h}h ${m}m` : `${h}h`;
+  }
+
   return {
-    primary: { ...task, meta: `${minutes}m, ${task.turns} turn${task.turns === 1 ? '' : 's'}` },
+    primary: { ...task, meta: `${durationStr}, ${task.turns} turn${task.turns === 1 ? '' : 's'}` },
     overflow: sorted.length - 1,
   };
 }
@@ -111,6 +122,15 @@ export function deriveTaskHealthSignal(
   mission: {
     dependsOnMissionId?: string | null;
     dependencyMetAt?: Date | string | null;
+    /**
+     * Set when the heartbeat prepass is deliberately waiting on a known
+     * self-resolving condition (provider budget pause, queued reviewer/retry,
+     * loop backoff) rather than idle or stuck — read from
+     * `schedule.lastDeferralReason === 'heartbeat_waiting'` + `schedule.nextRunAt`.
+     * A benign, explained wait must render as BLOCKED, never as NOMINAL silence
+     * or (worse) STALLED, which implies the platform failed to progress it.
+     */
+    heartbeatWaitingUntil?: Date | string | null;
   },
   tasks: Array<{
     status: string;
@@ -122,6 +142,7 @@ export function deriveTaskHealthSignal(
   }>,
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
+  if (mission.heartbeatWaitingUntil && new Date(mission.heartbeatWaitingUntil).getTime() > Date.now()) return 'BLOCKED';
 
   const countable = tasks.filter(isCountableHealthTask);
 
@@ -244,6 +265,42 @@ export function healthToGroup(health: MissionHealth, progress: number): MissionG
     // 100% with no agents running is genuinely stuck → attention.
     case 'idle': return progress === 100 ? 'review' : 'attention';
   }
+}
+
+/**
+ * Maps the stored status field to a mission group/tab.
+ * This respects the rule: bucket and badge = stored status.
+ * active → Active tab; paused/held/deferred → Scheduled tab; completed/archived → Completed tab.
+ */
+export function statusToGroup(opts: {
+  status: string;
+  isHeld: boolean;
+  startAt: string | null;
+  progress: number;
+}): MissionGroup {
+  if (opts.status === 'completed' || opts.status === 'archived') {
+    return 'completed';
+  }
+
+  // Paused or budget_exhausted → Scheduled tab (display as "SCHEDULED" section)
+  if (opts.status === 'paused' || opts.status === 'budget_exhausted') {
+    return 'scheduled';
+  }
+
+  // Held missions or deferred startAt → Scheduled tab
+  if (opts.isHeld) {
+    return 'scheduled';
+  }
+  if (opts.startAt && new Date(opts.startAt).getTime() > Date.now()) {
+    return 'scheduled';
+  }
+
+  // active status → Active tab (running, attention, or review depending on progress)
+  if (opts.status === 'active') {
+    return opts.progress === 100 ? 'review' : 'attention';
+  }
+
+  return 'attention';
 }
 
 export type NextRunUrgency = 'imminent' | 'soon' | 'days' | 'far';

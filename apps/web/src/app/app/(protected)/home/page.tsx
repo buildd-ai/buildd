@@ -70,6 +70,7 @@ import {
   deriveMissionHealth,
   deriveTaskHealthSignal,
   healthToGroup,
+  statusToGroup,
   formatNextRun,
   SECTION_DISPLAY,
   GROUP_ACCENT_CLASS,
@@ -655,12 +656,11 @@ export default async function HomePage({
                 : inArray(missionsTable.teamId, missionTeamIds))
             : undefined;
 
-          // Exclude archived missions: they can never be active/scheduled on Home,
-          // and they fill limit slots that should go to genuinely active missions.
+          // Exclude archived missions: they can never be active/scheduled on Home.
           const allMissions = missionsWhere ? await db.query.missions.findMany({
             where: and(missionsWhere, ne(missionsTable.status, 'archived')),
             orderBy: [desc(missionsTable.priority), desc(missionsTable.createdAt)],
-            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true },
+            columns: { id: true, title: true, description: true, initiativeId: true, status: true, orchestrationMode: true, dependsOnMissionId: true, dependencyMetAt: true, criteriaEscalatedAt: true, isHeld: true, startAt: true },
             with: {
               tasks: {
                 columns: { id: true, title: true, status: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
@@ -669,7 +669,6 @@ export default async function HomePage({
               schedule: { columns: { id: true, nextRunAt: true, lastRunAt: true, cronExpression: true, lastDeferralReason: true, lastDeferredAt: true, maxConcurrentFromSchedule: true } },
               workspace: { columns: { id: true, name: true } },
             },
-            limit: 50,
           }) : [];
 
           // Count active workers per mission
@@ -734,6 +733,9 @@ export default async function HomePage({
               : null;
 
             const rawDeferralReason = (mission.schedule as any)?.lastDeferralReason ?? null;
+            // See heartbeat-prepass.ts: recorded as `nextRunAt` while the heartbeat
+            // is deliberately waiting on a known self-resolving condition.
+            const heartbeatWaitingUntil = rawDeferralReason === 'heartbeat_waiting' ? nextRunAt : null;
 
             // Check if per-schedule concurrent cap is still exceeded; if not, clear the stale reason.
             let lastDeferralReason = rawDeferralReason;
@@ -792,14 +794,14 @@ export default async function HomePage({
               progress,
               activeWorkers,
               health,
-              group: healthToGroup(health, progress),
+              group: statusToGroup({ status: mission.status, isHeld: mission.isHeld ?? false, startAt: mission.startAt ? String(mission.startAt) : null, progress }),
               nextScanMins,
               nextRunAt: effectiveNextRunAt,
               workspaceName: (mission.workspace as any)?.name || null,
               orchestrationMode,
               status: mission.status,
               segments,
-              healthState: deriveTaskHealthSignal(mission, mission.tasks),
+              healthState: deriveTaskHealthSignal({ ...mission, heartbeatWaitingUntil }, mission.tasks),
               inFlightTasks: mission.tasks.flatMap(t => (t as any).workers.filter((w: any) => LIVE_WORKER_STATUSES.includes(w.status as any)).map((w: any) => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
               lastDeferralReason,
               lastDeferredAt: (mission.schedule as any)?.lastDeferredAt ? String((mission.schedule as any).lastDeferredAt) : null,

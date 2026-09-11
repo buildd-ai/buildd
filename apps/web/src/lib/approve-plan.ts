@@ -1,49 +1,36 @@
 import { db } from '@buildd/core/db';
 import { missions, tasks, workers, workspaces } from '@buildd/core/db/schema';
-import { desc, eq, and, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
-import type { PlanStep } from '@buildd/shared';
+import type { PlanStep, TaskSubjectAnchor } from '@buildd/shared';
+import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 
 // PlanStep is defined once in @buildd/shared (the planning contract). Re-exported
 // here for the existing internal importers (task-dependencies, mission-loop, etc.).
 export type { PlanStep } from '@buildd/shared';
 
-export interface ApprovePlanResult {
-  taskIds: string[];
+/** Non-terminal statuses a sibling coordination task might be sitting in. */
+const OPEN_TASK_STATUSES = ['pending', 'assigned', 'in_progress'] as const;
+
+export interface DroppedPlanStep {
+  ref: string;
+  reason: 'coordination_intent' | 'exact_title';
+  /** The existing task this step duplicated. Absent for an in-plan duplicate
+   * dropped before any task existed to point at (see `survivorRef`). */
+  matchedTaskId?: string;
+  /** The ref of the surviving step within THIS plan that this one duplicated. */
+  survivorRef?: string;
 }
 
-/**
- * Filter plan steps to remove duplicates of existing pending/in-progress tasks.
- * Deduplicates by exact title match within the same mission, preventing successive
- * heartbeat cycles from spawning duplicate coordination tasks.
- */
-async function filterDuplicatePlanSteps(
-  plan: PlanStep[],
-  missionId: string
-): Promise<PlanStep[]> {
-  // Fetch all pending/in-progress tasks in the mission
-  const existingPending = await db.query.tasks.findMany({
-    where: and(
-      eq(tasks.missionId, missionId),
-      inArray(tasks.status, ['pending', 'assigned', 'in_progress'])
-    ),
-    columns: { title: true },
-  });
+export interface ApprovePlanResult {
+  taskIds: string[];
+  /** Plan steps dropped as duplicates of existing or sibling coordination work — see Part 2 dedup. */
+  droppedSteps?: DroppedPlanStep[];
+}
 
-  const existingTitles = new Set(existingPending.map(t => t.title));
-
-  // Filter: keep only steps whose titles don't already exist
-  const deduped = plan.filter(step => !existingTitles.has(step.title));
-
-  if (deduped.length < plan.length) {
-    console.log(
-      `[plan-dedup] Filtered ${plan.length - deduped.length}/${plan.length} duplicate plan steps ` +
-      `for mission ${missionId}`
-    );
-  }
-
-  return deduped;
+function arraysEqual(a: number[], b: number[]): boolean {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 /**
@@ -52,10 +39,6 @@ async function filterDuplicatePlanSteps(
  * Two-pass process:
  * 1. Create all tasks with empty dependsOn (to get IDs)
  * 2. Resolve ref→ID for dependsOn and baseBranch
- *
- * Deduplication: skips plan steps that would create tasks with the same title
- * as existing pending/in-progress tasks in the same mission (from prior cycles).
- * This prevents duplicate coordination tasks from successive heartbeat cycles.
  *
  * Throws on circular dependencies or if plan was already approved.
  */
@@ -72,12 +55,6 @@ export async function approvePlan(
 
   if (!task) {
     throw new Error(`Planning task ${planningTaskId} not found`);
-  }
-
-  // Deduplicate: filter out plan steps that would create duplicate tasks
-  let dedupedPlan = plan;
-  if (task.missionId) {
-    dedupedPlan = await filterDuplicatePlanSteps(plan, task.missionId);
   }
 
   // Fetch workspace git config for branch name prediction
@@ -114,10 +91,80 @@ export async function approvePlan(
     throw new Error('Plan already approved — child tasks exist');
   }
 
-  // Validate: no circular dependencies
-  const cycle = detectCircularDeps(dedupedPlan);
+  // Validate: no circular dependencies. Checked against the FULL submitted plan
+  // — a cycle is a planner bug regardless of what dedup below ends up dropping.
+  const cycle = detectCircularDeps(plan);
   if (cycle) {
     throw new Error(`Circular dependency detected: ${cycle.join(' → ')}`);
+  }
+
+  // ── Coordination-task dedup ──────────────────────────────────────────────────
+  // Successive heartbeat cycles on a blocked mission tend to re-propose the same
+  // handful of coordination steps (wait for budget reset, monitor review, merge,
+  // aggregate) under slightly different wording each time. Dedupe those by
+  // (mission, intent, subject PR set) — read off the step's own title/description,
+  // not a live query — rather than exact title text, which catches none of them.
+  // A step whose title names no coordination intent falls back to exact-title
+  // matching, the same behaviour this dedup replaces.
+  const stepIntent = new Map<string, { intent: CoordinationIntent; prNumbers: number[] }>();
+  const droppedSteps: DroppedPlanStep[] = [];
+  let survivingPlan = plan;
+
+  if (task.missionId) {
+    const existingMissionTasks = await db.query.tasks.findMany({
+      where: and(eq(tasks.missionId, task.missionId), inArray(tasks.status, [...OPEN_TASK_STATUSES])),
+      columns: { id: true, title: true, subjectAnchor: true },
+    });
+
+    const seenKeys = new Map<string, string>(); // dedupe key -> surviving ref
+    const seenTitles = new Map<string, string>(); // exact title -> surviving ref
+    const kept: PlanStep[] = [];
+
+    for (const step of plan) {
+      const intent = classifyCoordinationIntent(step.title);
+      if (intent) {
+        const prNumbers = extractPrNumbers(`${step.title} ${step.description ?? ''}`);
+        const key = coordinationDedupeKey(intent, prNumbers);
+
+        const existingMatch = existingMissionTasks.find(t => {
+          const anchor = t.subjectAnchor as TaskSubjectAnchor | null;
+          return anchor?.kind === 'mission'
+            && anchor.coordinationIntent === intent
+            && arraysEqual(anchor.subjectPrNumbers ?? [], prNumbers);
+        });
+        if (existingMatch) {
+          droppedSteps.push({ ref: step.ref, reason: 'coordination_intent', matchedTaskId: existingMatch.id });
+          continue;
+        }
+
+        const survivorRef = seenKeys.get(key);
+        if (survivorRef) {
+          droppedSteps.push({ ref: step.ref, reason: 'coordination_intent', survivorRef });
+          continue;
+        }
+
+        seenKeys.set(key, step.ref);
+        stepIntent.set(step.ref, { intent, prNumbers });
+        kept.push(step);
+      } else {
+        const existingMatch = existingMissionTasks.find(t => t.title === step.title);
+        if (existingMatch) {
+          droppedSteps.push({ ref: step.ref, reason: 'exact_title', matchedTaskId: existingMatch.id });
+          continue;
+        }
+
+        const survivorRef = seenTitles.get(step.title);
+        if (survivorRef) {
+          droppedSteps.push({ ref: step.ref, reason: 'exact_title', survivorRef });
+          continue;
+        }
+
+        seenTitles.set(step.title, step.ref);
+        kept.push(step);
+      }
+    }
+
+    survivingPlan = kept;
   }
 
   // First pass: create all tasks with empty dependsOn to get their IDs
@@ -125,7 +172,8 @@ export async function approvePlan(
   const refToTitle: Record<string, string> = {};
   const createdTaskIds: string[] = [];
 
-  for (const step of dedupedPlan) {
+  for (const step of survivingPlan) {
+    const intentInfo = stepIntent.get(step.ref);
     const [created] = await db
       .insert(tasks)
       .values({
@@ -143,6 +191,18 @@ export async function approvePlan(
         requiredCapabilities: step.requiredCapabilities ?? [],
         outputRequirement: step.outputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto' | undefined,
         dependsOn: [], // Updated in second pass
+        ...(intentInfo ? {
+          kind: 'coordination' as const,
+          subjectAnchor: {
+            version: 1,
+            kind: 'mission',
+            subjectMissionId: task.missionId ?? undefined,
+            source: 'system',
+            confidence: 'derived',
+            coordinationIntent: intentInfo.intent,
+            subjectPrNumbers: intentInfo.prNumbers,
+          } satisfies TaskSubjectAnchor,
+        } : {}),
         context: {
           ...(step.model ? { model: step.model } : {}),
           ...(step.skillSlugs?.length ? { skillSlugs: step.skillSlugs } : {}),
@@ -159,7 +219,7 @@ export async function approvePlan(
   }
 
   // Second pass: resolve dependsOn refs and baseBranch to actual IDs/branch names
-  for (const step of dedupedPlan) {
+  for (const step of survivingPlan) {
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 
     if (step.dependsOn && step.dependsOn.length > 0) {
@@ -196,7 +256,7 @@ export async function approvePlan(
     }
   }
 
-  return { taskIds: createdTaskIds };
+  return { taskIds: createdTaskIds, ...(droppedSteps.length > 0 ? { droppedSteps } : {}) };
 }
 
 /**

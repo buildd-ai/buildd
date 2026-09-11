@@ -45,6 +45,14 @@ const mockReadPrReviewStatus = mock(() => Promise.resolve({
   mergeBlocked: null,
 }));
 
+// Mocks for the mission-integration-branch auto-review feature
+const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }) as any);
+const mockFindLiveReviewerTaskForHead = mock(() => Promise.resolve(null) as any);
+const mockDispatchNewTask = mock(() => Promise.resolve());
+const mockAppendPrActivity = mock(() => Promise.resolve());
+const mockPickReviewerRole = mock(() => ({ role: 'reviewer', source: 'policy' as const }) as any);
+const mockListWorkspaceRoles = mock(() => Promise.resolve([{ slug: 'reviewer', isRole: true }]) as any);
+
 // Mock api-auth
 mock.module('@/lib/api-auth', () => ({
   authenticateApiKey: mockAuthenticateApiKey,
@@ -100,9 +108,31 @@ mock.module('@buildd/core/db/schema', () => ({
 }));
 
 // Mock pr-review-request — the stored-verdict lookup the agent-review
-// self-merge gate consults.
+// self-merge gate consults, plus the role listing the auto-review feature uses.
 mock.module('@/lib/pr-review-request', () => ({
   readPrReviewStatus: mockReadPrReviewStatus,
+  listWorkspaceRoles: mockListWorkspaceRoles,
+}));
+
+// Mock reviewer — auto-review dedup + task creation
+mock.module('@/lib/reviewer', () => ({
+  createReviewerTask: mockCreateReviewerTask,
+  findLiveReviewerTaskForHead: mockFindLiveReviewerTaskForHead,
+}));
+
+// Mock task-dispatch — dispatching the reviewer task once created
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: mockDispatchNewTask,
+}));
+
+// Mock pr-activity-comment — sticky "reviewing" comment on the PR
+mock.module('@/lib/pr-activity-comment', () => ({
+  appendPrActivity: mockAppendPrActivity,
+}));
+
+// Mock pr-review-status — reviewer role selection
+mock.module('@/lib/pr-review-status', () => ({
+  pickReviewerRole: mockPickReviewerRole,
 }));
 
 // Import handler AFTER mocks
@@ -146,6 +176,18 @@ describe('POST /api/github/pr', () => {
     mockMissionsFindFirst.mockResolvedValue(null);
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
+    mockCreateReviewerTask.mockReset();
+    mockCreateReviewerTask.mockResolvedValue({ id: 'reviewer-task-1' });
+    mockFindLiveReviewerTaskForHead.mockReset();
+    mockFindLiveReviewerTaskForHead.mockResolvedValue(null);
+    mockDispatchNewTask.mockReset();
+    mockDispatchNewTask.mockResolvedValue(undefined);
+    mockAppendPrActivity.mockReset();
+    mockAppendPrActivity.mockResolvedValue(undefined);
+    mockPickReviewerRole.mockReset();
+    mockPickReviewerRole.mockReturnValue({ role: 'reviewer', source: 'policy' });
+    mockListWorkspaceRoles.mockReset();
+    mockListWorkspaceRoles.mockResolvedValue([{ slug: 'reviewer', isRole: true }]);
 
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
@@ -845,6 +887,185 @@ describe('POST /api/github/pr', () => {
           workerId: 'w-1', title: 'Checkout arc', head: INTEGRATION_BRANCH,
           base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
         },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    // The claimed base is a sentence about a PR buildd never opened. When the
+    // workspace has an installation we can read the PR itself, and the PR wins.
+    it('verifies the real base against GitHub instead of trusting the claim', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      // The real PR is based on trunk, whatever the caller says.
+      mockGithubApi.mockResolvedValueOnce({ number: 42, base: { ref: 'dev' } });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: INTEGRATION_BRANCH, prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain(INTEGRATION_BRANCH);
+      expect(data.error).toContain('#42');
+    });
+
+    it('adopts when GitHub confirms the base is the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, base: { ref: INTEGRATION_BRANCH } });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1', title: 'My PR', head: 'buildd/t-1-do-thing',
+          base: 'dev', prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // ── Option A′: the dedup-by-head door ───────────────────────────────────
+  //
+  // `create_pr` adopts a PR that already exists for the worker's branch and
+  // returns 200 long before the derive-don't-accept checks run. That is the
+  // exact shape of `gh pr create --base dev` followed by `create_pr`: buildd
+  // never chose the base, so it has to check the one GitHub reports.
+  describe('dedup-by-head adoption — mission-integration legality gate', () => {
+    const INTEGRATION_BRANCH = 'mission/checkout-arc-1a2b3c4d';
+    const WORKER_BRANCH = 'buildd/t-1-do-thing';
+
+    function taskWorker(overrides: Record<string, any> = {}) {
+      return {
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        branch: WORKER_BRANCH,
+        workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
+        task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
+        ...overrides,
+      };
+    }
+
+    function optedInMission(overrides: Record<string, any> = {}) {
+      mockMissionsFindFirst.mockResolvedValue({
+        workingBranch: INTEGRATION_BRANCH,
+        integrationBranchEnabled: true,
+        ...overrides,
+      });
+    }
+
+    /** An open PR already exists for the worker's branch, based on `baseRef`. */
+    function existingPrOnHead(baseRef: string | null) {
+      const pr = {
+        number: 77,
+        html_url: 'https://github.com/owner/repo/pull/77',
+        state: 'open',
+        title: 'Opened out of band',
+        base: baseRef ? { ref: baseRef, sha: 'base-sha' } : undefined,
+      };
+      mockGithubApi.mockResolvedValueOnce([pr]);   // dedup list call
+      mockGithubApi.mockResolvedValueOnce(pr);     // per-PR detail call
+    }
+
+    it('refuses to adopt a PR that already exists on the branch but targets trunk', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      existingPrOnHead('dev');
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain(INTEGRATION_BRANCH);
+      expect(data.error).toContain('#77');
+      expect(data.hint).toContain(INTEGRATION_BRANCH);
+    });
+
+    it('refuses when GitHub reports no base ref at all', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      existingPrOnHead(null);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(400);
+    });
+
+    it('adopts the existing PR when it is based on the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      existingPrOnHead(INTEGRATION_BRANCH);
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.deduplicated).toBe(true);
+      expect(data.pr.number).toBe(77);
+    });
+
+    it('is unaffected for a task with no mission', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        task: { id: 't-1', missionId: null, title: 'Do thing', taskClass: 'work', context: null },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      existingPrOnHead('dev');
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('lets the mission-PR owner adopt its own trunk-based PR', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        branch: INTEGRATION_BRANCH,
+        task: { id: 't-own', missionId: 'obj-1', title: `${MISSION_PR_TASK_PREFIX}Checkout arc`, taskClass: 'bookkeeping', context: null },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      existingPrOnHead('dev');
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Checkout arc', head: INTEGRATION_BRANCH },
       });
       const res = await POST(req);
 
@@ -1703,6 +1924,192 @@ describe('POST /api/github/pr', () => {
     expect(res.status).toBe(500);
     const data = await res.json();
     expect(data.error).toBe('GitHub API rate limit exceeded');
+  });
+
+  // ── Auto-review for task PRs into mission integration branches ──────────
+  //
+  // A manual-orchestration mission has no heartbeat loop to notice a task PR
+  // sitting open on its integration branch — this fires the review request at
+  // the moment the PR lands instead. It reuses `missionBaseGuard.enforced`
+  // (Option A′), so it only ever fires for exactly the PRs whose base was
+  // just derived to the integration branch above.
+  describe('auto-review for mission task PRs into the integration branch', () => {
+    const INTEGRATION_BRANCH = 'mission/test-mission-1a2b3c4d';
+    const WORKER_BRANCH = 'buildd/t-1-do-thing';
+    const MISSION_TASK = {
+      id: 't-1',
+      title: 'Do thing',
+      description: 'Task description',
+      backend: 'claude' as const,
+      missionId: 'mission-1',
+      pathManifest: null,
+      taskClass: 'work',
+      context: null,
+    };
+
+    function taskWorker(overrides: Record<string, any> = {}) {
+      return {
+        id: 'w-1',
+        accountId: 'account-1',
+        name: 'test-worker',
+        branch: WORKER_BRANCH,
+        workspace: WORKSPACE_OK,
+        task: MISSION_TASK,
+        ...overrides,
+      };
+    }
+
+    function optedInMission(overrides: Record<string, any> = {}) {
+      mockMissionsFindFirst.mockResolvedValue({
+        workingBranch: INTEGRATION_BRANCH,
+        integrationBranchEnabled: true,
+        ...overrides,
+      });
+    }
+
+    function noExistingPr() {
+      mockGithubApi.mockResolvedValueOnce([]);
+    }
+
+    it('requests review for a fresh task PR into the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+      expect(mockDispatchNewTask).toHaveBeenCalled();
+      const createArgs = mockCreateReviewerTask.mock.calls[0][0];
+      expect(createArgs.prNumber).toBe(42);
+      expect(createArgs.headSha).toBe('headsha');
+    });
+
+    it('does not request a review for a draft PR', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH, draft: true },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not request a review for the mission-PR owner itself', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({
+        branch: INTEGRATION_BRANCH,
+        task: { ...MISSION_TASK, title: `${MISSION_PR_TASK_PREFIX}Test mission`, taskClass: 'bookkeeping' },
+      }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Test mission',
+        base: { ref: 'dev', sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Test mission', head: INTEGRATION_BRANCH, base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not stack a second reviewer when one is already in flight', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+      mockFindLiveReviewerTaskForHead.mockResolvedValue({ id: 'existing-reviewer-task' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('requests review when adopting a prUrl already based on the integration branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({ prUrl: null, prNumber: null }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH },
+        head: { sha: 'headsha' },
+        draft: false,
+      });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workerId: 'w-1',
+          title: 'Do thing',
+          head: WORKER_BRANCH,
+          base: INTEGRATION_BRANCH,
+          prUrl: 'https://github.com/owner/repo/pull/42',
+        },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalled();
+      expect(mockDispatchNewTask).toHaveBeenCalled();
+    });
   });
 });
 

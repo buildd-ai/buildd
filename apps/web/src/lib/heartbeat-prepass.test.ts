@@ -43,7 +43,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { computeStateKey, evaluateHeartbeatPrepass, type HeartbeatMissionState } from './heartbeat-prepass';
+import { computeStateKey, evaluateHeartbeatPrepass, classifyMissionWait, type HeartbeatMissionState } from './heartbeat-prepass';
 
 function resetAll() {
   missionsFindFirstResult = null;
@@ -357,5 +357,142 @@ describe('evaluateHeartbeatPrepass', () => {
 
     const result = await evaluateHeartbeatPrepass(BASE_INPUT);
     expect(result.action).toBe('skip_complete');
+  });
+
+  // ── Wait, don't plan (skip_waiting) ──
+
+  it('returns skip_waiting when the only non-terminal task is paused on a provider budget wall', async () => {
+    const resetsAt = new Date(Date.now() + 60 * 60 * 1000);
+    tasksFindManyResult = [
+      {
+        title: 'Wait for token budget reset', mode: 'execution', status: 'pending', result: null,
+        taskClass: 'work', context: { budgetExhausted: true }, startAt: resetsAt, loopConfig: null, loopState: null,
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).toBe('skip_waiting');
+    if (result.action === 'skip_waiting') {
+      expect(result.waitUntil).toEqual(resetsAt);
+      expect(result.reason).toContain('budget');
+    }
+  });
+
+  it('creates zero tasks worth of decision (skip_waiting, not invoke_llm) while budget-paused, even with other queued attempts', async () => {
+    const resetsAt = new Date(Date.now() + 30 * 60 * 1000);
+    tasksFindManyResult = [
+      {
+        title: 'Wait for Claude session budget reset', mode: 'execution', status: 'pending', result: null,
+        taskClass: 'work', context: { budgetExhausted: true }, startAt: resetsAt, loopConfig: null, loopState: null,
+      },
+      {
+        title: '[reviewer] PR #42', mode: 'execution', status: 'pending', result: null,
+        taskClass: 'attempt', context: null, startAt: null, loopConfig: null, loopState: null,
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).toBe('skip_waiting');
+  });
+
+  it('resumes planning once the budget reset time has passed', async () => {
+    const resetsAt = new Date(Date.now() - 60 * 1000); // already in the past
+    tasksFindManyResult = [
+      {
+        title: 'Wait for token budget reset', mode: 'execution', status: 'pending', result: null,
+        taskClass: 'work', context: { budgetExhausted: true }, startAt: resetsAt, loopConfig: null, loopState: null,
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    // No longer classifiable as waiting → falls through to normal planning.
+    expect(result.action).not.toBe('skip_waiting');
+    expect(result.action).toBe('invoke_llm');
+  });
+
+  it('does not skip_waiting when any task is genuinely active (real work, not a wait)', async () => {
+    tasksFindManyResult = [
+      {
+        title: 'Wait for token budget reset', mode: 'execution', status: 'pending', result: null,
+        taskClass: 'work', context: { budgetExhausted: true }, startAt: new Date(Date.now() + 60_000), loopConfig: null, loopState: null,
+      },
+      {
+        title: 'Build feature A', mode: 'execution', status: 'in_progress', result: null,
+        taskClass: 'work', context: null, startAt: null, loopConfig: null, loopState: null,
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).not.toBe('skip_waiting');
+  });
+
+  it('checks skip_waiting before skip_complete (both could technically apply to an empty non-terminal set, but waiting wins when there IS a non-terminal task)', async () => {
+    const resetsAt = new Date(Date.now() + 60 * 60 * 1000);
+    tasksFindManyResult = [
+      { title: 'Build feature A', mode: 'execution', status: 'completed', result: null, taskClass: 'work', context: null, startAt: null, loopConfig: null, loopState: null },
+      {
+        title: 'Wait for token budget reset', mode: 'execution', status: 'pending', result: null,
+        taskClass: 'work', context: { budgetExhausted: true }, startAt: resetsAt, loopConfig: null, loopState: null,
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).toBe('skip_waiting');
+  });
+});
+
+describe('classifyMissionWait', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+
+  it('returns null when there are no non-terminal tasks', () => {
+    expect(classifyMissionWait([], now)).toBeNull();
+    expect(classifyMissionWait([
+      { status: 'completed', mode: 'execution', taskClass: 'work', context: null, startAt: null, loopConfig: null, loopState: null },
+    ], now)).toBeNull();
+  });
+
+  it('ignores the heartbeat planning task itself', () => {
+    expect(classifyMissionWait([
+      { status: 'in_progress', mode: 'planning', taskClass: 'bookkeeping', context: null, startAt: null, loopConfig: null, loopState: null },
+    ], now)).toBeNull();
+  });
+
+  it('classifies a loop task inside its backoff as waiting', () => {
+    const waitUntil = new Date(now.getTime() + 10 * 60 * 1000);
+    const result = classifyMissionWait([
+      {
+        status: 'pending', mode: 'execution', taskClass: 'work', context: null, startAt: waitUntil,
+        loopConfig: { exitCondition: { type: 'pr_checks_green' } } as any, loopState: 'condition_unmet',
+      },
+    ], now);
+    expect(result?.waitUntil).toEqual(waitUntil);
+  });
+
+  it('treats a loop task actively running (loopState=running) as real work, not a wait', () => {
+    const result = classifyMissionWait([
+      {
+        status: 'in_progress', mode: 'execution', taskClass: 'work', context: null, startAt: null,
+        loopConfig: { exitCondition: { type: 'pr_checks_green' } } as any, loopState: 'running',
+      },
+    ], now);
+    expect(result).toBeNull();
+  });
+
+  it('uses the earliest waitUntil across multiple waiting tasks', () => {
+    const soon = new Date(now.getTime() + 5 * 60 * 1000);
+    const later = new Date(now.getTime() + 60 * 60 * 1000);
+    const result = classifyMissionWait([
+      { status: 'pending', mode: 'execution', taskClass: 'work', context: { budgetExhausted: true }, startAt: later, loopConfig: null, loopState: null },
+      {
+        status: 'pending', mode: 'execution', taskClass: 'work', context: null, startAt: soon,
+        loopConfig: { exitCondition: { type: 'command' } } as any, loopState: 'condition_unmet',
+      },
+    ], now);
+    expect(result?.waitUntil).toEqual(soon);
   });
 });

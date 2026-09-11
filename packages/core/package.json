@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.206.1",
+  "version": "0.207.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -81,7 +81,7 @@
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.153.0",
+    "@openai/codex-sdk": "^0.154.0",
     "dotenv": "^17.0.0",
     "drizzle-orm": "^0.45.2",
     "server-only": "^0.0.1",
