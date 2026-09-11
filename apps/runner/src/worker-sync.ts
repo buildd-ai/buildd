@@ -356,6 +356,12 @@ export class WorkerSync {
         currentAction: worker.currentAction,
         milestones,
         localUiUrl: this.ctx.config.localUiUrl,
+        // Re-send on every tick so a workers.branch row corrupted by a prior
+        // (now-fixed, #2305) redaction bug self-heals within one sync interval
+        // instead of staying stuck until the worker is killed and restarted on
+        // a fresh branch — this local value is the actual checked-out branch,
+        // set once at startup and never itself corrupted.
+        ...(worker.branch ? { branch: worker.branch } : {}),
         ...(activeProgress.length > 0 ? { taskProgress: activeProgress } : {}),
         ...(drainedMcpCalls ? { appendMcpCalls: drainedMcpCalls } : {}),
         ...(drainedErrorTraces ? { appendErrorTraces: drainedErrorTraces } : {}),
