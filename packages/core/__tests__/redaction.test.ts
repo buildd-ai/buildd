@@ -322,6 +322,18 @@ describe('createSecretRedactor', () => {
     expect(redact(`jwt=${jwt}`)).toBe('jwt=[REDACTED:jwt]');
     expect(redact(`hex=${'a1'.repeat(24)}`)).toBe('hex=[REDACTED:credential]');
   });
+
+  it('does not false-positive on a long hyphenated git branch name', () => {
+    // Mission-branch collision fallback names (mission/<slug>-<missionId8>-w<workerId8>)
+    // are 48+ chars of lowercase letters, digits, and hyphens — the exact shape the
+    // base64-ish credential heuristic used to catch. A worker.branch value corrupted
+    // into "[REDACTED:credential]" by this false positive can never match a real head
+    // branch again (see PATCH /api/workers/[id], which runs every mutable field
+    // through this redactor before the DB write).
+    const redact = createSecretRedactor([]);
+    const branch = 'mission/spec-conformance-the-discrepancy-ledger-f02e0dc0-w961bce4e';
+    expect(redact(branch)).toBe(branch);
+  });
   it('redacts a single secret value from text', () => {
     const redact = createSecretRedactor(['bld_abc123secretvalue']);
     expect(redact('my key is bld_abc123secretvalue!')).toBe('my key is [REDACTED]!');
@@ -428,6 +440,17 @@ describe('redactSecretsInBody', () => {
     const body = { currentAction: 'Running: something', error: 'failed' };
     const result = redactSecretsInBody(body, []);
     expect(result).toEqual(body);
+  });
+
+  it('does not corrupt a worker branch field shaped like a credential', () => {
+    // Regression: PATCH /api/workers/[id] runs the whole body (including the
+    // structural `branch` field) through redactSecretsInBody before the DB
+    // write. A mission-branch collision fallback name is long enough and
+    // hyphenated enough to trip the base64-ish credential heuristic, silently
+    // replacing workers.branch with the literal string "[REDACTED:credential]".
+    const body = { branch: 'mission/spec-conformance-the-discrepancy-ledger-f02e0dc0-w961bce4e' };
+    const result = redactSecretsInBody(body, []);
+    expect(result.branch).toBe(body.branch);
   });
 
   it('returns body unchanged when no secrets appear in it', () => {
