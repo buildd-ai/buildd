@@ -1,20 +1,40 @@
 # CBM v2: Warm-Start via Version-Keyed Canonical Seed
 
 **Status:** Proposed  
+**Premise:** A non-version-keyed shared cache is **shipped** in `apps/runner/src/cbm-enforcement.ts`.
+This design proposes layering version-keying and incremental warm-start on top of that baseline.
+
 **Related:**
-- `docs/design/codebase-memory-mcp-integration.md` — v1 design (§4.2 chose per-task cold rebuild; this spec addresses that cost)
-- `apps/runner/src/cbm-bootstrap.ts` — current cold-build bootstrap implementation
-- `apps/runner/src/cbm-enforcement.ts` — activation logic (`buildCbmActivation`, `buildCbmMcpEntry`)
-- `apps/runner/src/bwrap-mount-allowlist.ts` — bwrap argv builder; `CBM_BINARY_PATH` constant
-- PR #1549 — CBM binary + cache dir added to bwrap mount allowlist
+- `docs/specs/codebase-memory-graph.md` — shipped CBM contract (includes CBM-4: shared cache keying)
+- `docs/design/codebase-memory-mcp-integration.md` — original design (§4.2 chose per-task cold rebuild)
+- `apps/runner/src/cbm-enforcement.ts` — shared-cache implementation (`buildCbmActivation`, seed record functions)
+- `apps/runner/src/cbm-bootstrap.ts` — bootstrap implementation
+- PR #1549 — CBM binary + cache dir bwrap mount allowlist
+
+---
+
+## Premise Update
+
+**A shared-cache mechanism is already shipped** in `apps/runner/src/cbm-enforcement.ts`
+(`buildCbmActivation`, §2.1-2.5). Workers reuse seeds keyed by `(repoPath, baseRef)`,
+stored at `~/.buildd-cbm-cache/seeds/`. This design **does not** replace the existing
+shared cache; it layers **version-keying** on top of it to enable incremental warm-start
+with safe cross-version handling (§1.3). The existing mechanism reuses seeds regardless
+of CBM version, which is why a version bump does not currently invalidate the cache.
 
 ---
 
 ## Problem
 
-The v1 design (§4.2 of `codebase-memory-mcp-integration.md`) gives each worker a fresh
-`CBM_CACHE_DIR=/tmp/cbm-${WORKER_ID}` and runs `index_repository` from scratch on every task.
-Measured cost on the buildd repo:
+The baseline (before the existing shared cache shipped) would have been: each worker a fresh
+`CBM_CACHE_DIR=/tmp/cbm-${WORKER_ID}` and `index_repository` from scratch on every task.
+With the existing shared cache in place, a task using a seeded base reuses the cached graph
+and skips bootstrap entirely (`skipBootstrapIndex: true`). However, the seed is not versioned;
+a CBM binary upgrade leaves the seed in place, and the new binary must be trusted to handle
+graphs from the prior version safely. This design addresses that risk by versioning the seed
+itself.
+
+Measured cost on the buildd repo for a cache miss (when no seed is available):
 
 | Environment | Wall-clock (cold, default mode) |
 |-------------|----------------------------------|
@@ -29,17 +49,21 @@ update while preserving those properties.
 
 ---
 
-## Verdict: Yes — with a 90% measured saving
+## Verdict: Proposed — adds version-keying and incremental updates to the shipped shared cache
 
 All seven spec requirements are addressed below. The short answer:
 
-- CBM v0.9.0 **does** support warm-cache incremental indexing (§4).
-- Warm build on a seeded cache: **1s** vs cold: **10s** (measured 2026-08-30, default mode, repo root).
+- **Shipped baseline**: A shared cache keyed by `(repoPath, baseRef)` exists; tasks reuse seeded
+  graphs and skip bootstrap when available. No version-keying, so binary upgrades must trust the
+  prior binary's index.
+- **This proposal adds**: Version-keyed seed indexing, so a CBM upgrade can safely rebuild the
+  canonical for its own binary version (§1.3). A version-keyed canonical is lazily built on the
+  first cold miss per `(cbm-version, repo)`.
+- CBM v0.9.0+ **does** support warm-cache incremental indexing (§4). Warm build on a seeded
+  cache: **1s** vs cold: **10s** (measured 2026-08-30).
 - Copy cost: **sub-second** for a 94 MB SQLite file on the Coder worker filesystem (§3).
-- The design seeds each worker's per-worker cache from a version-keyed canonical DB stored at a
-  stable host path; the canonical is lazily built on the first cold miss per `(cbm-version, repo)`.
-- This does **not** share a writable cache between workers. The isolation properties of §4.2 are
-  fully preserved.
+- Workers still get their own isolated cache dirs; the shared canonical is read-only during task
+  execution. The isolation properties are fully preserved (§1.3).
 
 ---
 
@@ -86,28 +110,24 @@ On a key miss the runner falls through to today's cold-build path and, after a s
 build, atomically writes the result to the canonical path (§2.3). The next worker finds the
 canonical and gets the warm path.
 
-### 1.3 Reconciliation with §4.3 (version-drift failure mode)
+### 1.3 Addressing the unversioned shared-cache risk
 
-The v1 spec's §4.3 version-drift failure mode is: worker A (v0.9.0) writes to a shared
-`CBM_CACHE_DIR`, worker B (v0.9.1) reads it, ABI mismatch causes silent corruption or an
-admission-failure.
+**Shipped baseline**: The existing shared cache (CBM-4 in the spec) is keyed only by
+`(repoPath, baseRef)`, not by CBM version. A task's seed persists across CBM binary upgrades,
+so a v0.9.0-built graph is reused unchanged by v0.9.1. The shipped mechanism trusts that
+CBM is forward-compatible with its own graph schema; this design removes that trust assumption.
 
-This design does **not** reproduce that failure mode because:
+**This proposal adds version-keying** to ensure each CBM version has its own seed slot. A
+v0.9.1 binary looks for its canonical at `.../0.9.1/...`, which does not exist yet. It
+cold-builds and writes a new canonical under the `0.9.1/` path. Workers still running v0.9.0
+continue using `.../0.9.0/...`. No cross-version DB sharing occurs.
 
-1. **The canonical DB is read-only during worker execution.** Workers copy (never modify) the
-   canonical. Each worker writes to its own isolated `CBM_CACHE_DIR=/tmp/cbm-${WORKER_ID}`,
-   exactly as before.
-
-2. **The canonical path includes the CBM version.** A v0.9.1 binary looks for its canonical at
-   `.../0.9.1/...`, which does not exist yet. It cold-builds and writes a new canonical under the
-   `0.9.1/` path. Workers still running v0.9.0 continue using `.../0.9.0/...`. No cross-version
-   DB sharing occurs.
-
-3. **The admission barrier only applies to a shared writable cache root.** Copying a DB file
-   (even one written by a different version of CBM) does not trigger the admission barrier because
-   the barrier fires when a second process tries to open the same `CBM_CACHE_DIR` concurrently.
-   Workers that copy from the canonical each get their own `CBM_CACHE_DIR` — no concurrent
-   writers on the same root.
+**Copying does not trigger the admission barrier.** The barrier fires when a second process
+tries to open the same `CBM_CACHE_DIR` concurrently (as described in CBM-4). Workers that
+copy from the canonical each get their own `CBM_CACHE_DIR` — no concurrent writers on the
+same root. Even a copy of a graph built by a different version is safe because each worker
+then runs `index_repository` on its copy to apply any incremental updates. This isolates
+the copy artifact from the binary version mismatch.
 
 ---
 
@@ -332,38 +352,34 @@ but is out of scope for this spec. A future spec could use it as an alternative 
 
 ## 5. Mount / Isolation Impact
 
-### 5.1 New bwrap mount
-
-One new `:ro` bind-mount is required when CBM is active:
-
-```
-CBM_CANONICAL_DIR (e.g., /home/coder/.cache/cbm-canonical): ro
-```
+### 5.1 No bwrap mount required
 
 The canonical dir is read by the runner **before** bwrap starts (to seed the per-worker cache
-dir), not inside the sandbox. The agent inside bwrap never sees the canonical dir. Accordingly,
-no bwrap argv change is required. The runner reads the canonical, copies it to
-`/tmp/cbm-<worker-id>/` (already mounted `:rw`), and then starts bwrap.
+dir), not inside the sandbox. The agent inside bwrap never sees or needs access to the canonical
+dir. Accordingly, **no new bwrap argv entry is required**. The runner reads the canonical,
+copies it to `/tmp/cbm-<worker-id>/` (already mounted `:rw`), and then starts bwrap.
 
-If a future design requires CBM to read the canonical from within the sandbox (e.g., for
-multi-pass seeding), add the canonical dir as `:ro` to `buildWorkerBwrapArgv`. At that point,
-add it to `BUILDD_MOUNT_ALLOWLIST_EXTRA` or as a named field in `WorkerBwrapConfig`.
+This is distinct from the existing `CBM_CACHE_DIR` mount: that is the per-worker isolation
+boundary and is already in the mount allowlist (PR #1549).
 
 **No change to `CBM_ALLOWED_ROOT`.** The canonical dir contains a pre-built SQLite database,
 not source code. `CBM_ALLOWED_ROOT` controls which directories CBM will index, not where it
-reads its own DB from. Setting `CBM_ALLOWED_ROOT=<worktreePath>` (unchanged from v1) ensures
-CBM only indexes the worker's worktree; the canonical path is not relevant to this restriction.
+reads its own DB from. Setting `CBM_ALLOWED_ROOT=<worktreePath>` (unchanged from the shipped
+baseline) ensures CBM only indexes the worker's worktree; the canonical path is not relevant
+to this restriction.
 
-### 5.2 Change summary vs PRs #1427 and #1549
+### 5.2 Bwrap mount surface is unchanged
 
-| Mount | Mode | Change vs current |
-|-------|------|--------------------|
-| `/opt/buildd/bin/codebase-memory-mcp` | `:ro` | Unchanged (PR #1549) |
-| `/tmp/cbm-${WORKER_ID}/` | `:rw` | Unchanged (PR #1549) |
-| `CBM_CANONICAL_DIR` | runner-side read only, no bwrap mount | **No bwrap change** |
+This design does not add any new bwrap mounts. The existing CBM mounts from PR #1549 remain:
 
-**Net bwrap delta: zero.** The canonical read happens in the runner process before bwrap is
-invoked. The sandbox surface is unchanged.
+| Mount | Mode | Notes |
+|-------|------|----|
+| `/opt/buildd/bin/codebase-memory-mcp` | `:ro` | CBM binary (unchanged) |
+| `/tmp/cbm-${WORKER_ID}/` | `:rw` | Per-worker cache dir (unchanged) |
+| `CBM_CANONICAL_DIR` | Not mounted | Read only by runner; copied before bwrap starts |
+
+The canonical is accessed **in the runner process** before the sandbox is invoked, so
+no mount is needed and the sandbox surface is entirely unchanged.
 
 ### 5.3 CBM_ALLOWED_ROOT scope
 

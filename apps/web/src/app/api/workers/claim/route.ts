@@ -104,6 +104,30 @@ export async function POST(req: NextRequest) {
     diagnostics: ClaimDiagnostics;
     budgetResetsAt?: string | null;
   }) => {
+    // Stamp the reason onto the task itself for an explicit single-task claim
+    // (the Pusher-triggered dispatch every new task gets within seconds of
+    // creation, and the /start "Poke" button). Without this, a task excluded
+    // here renders as an ordinary QUEUED row until queue-stall's 4h watchdog
+    // eventually names the gate — and if the gate never lets a single attempt
+    // through, that's 4h of a human guessing (the 2026-09-10 incident: the
+    // Home feed's fallback text blamed "seat contention" while the real cause,
+    // visible on no dashboard, was a claim-query predicate excluding the task
+    // outright). Best-effort and non-blocking — a failed stamp must never
+    // affect the claim response.
+    if (taskId && payload.diagnostics.reason !== 'race_lost') {
+      const stampedAt = new Date().toISOString();
+      db.update(tasks)
+        .set({
+          context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
+            lastClaimAttemptAt: stampedAt,
+            lastClaimAttemptReason: payload.diagnostics.reason,
+            ...(payload.diagnostics.deferrals ? { lastClaimAttemptDeferrals: payload.diagnostics.deferrals } : {}),
+          })}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, taskId))
+        .catch((err) => console.warn(`[claim] failed to stamp lastClaimAttempt for task ${taskId}:`, err));
+    }
     const pendingCredentialRefreshes = await resolveAccountCredentialRefreshes(account);
     return NextResponse.json({
       workers: [],
