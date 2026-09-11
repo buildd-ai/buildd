@@ -1,6 +1,34 @@
+---
+status: implemented
+assertions:
+  - id: loop-config-migration
+    type: migration
+    number: 91
+    contains: loop_config
+  - id: parse-loop-config-symbol
+    type: symbol
+    name: parseLoopConfig
+    path: packages/core/loop-config.ts
+  - id: loop-state-assigned-in-completion-route
+    type: symbol_reachable
+    symbol: loopState
+    entry: apps/web/src/app/api/workers/[id]/route.ts
+    as: assign
+  - id: workers-id-patch-route
+    type: route
+    method: PATCH
+    path: /api/workers/[id]
+    file: apps/web/src/app/api/workers/[id]/route.ts
+---
+
 # Condition-Driven Task Loops
 
-**Status:** Proposed
+**Status:** Implemented — the completion route now assigns `loopState`
+(`satisfied` / `condition_unmet` / `exhausted`) from the guarded evaluator,
+closing the silent no-op this doc originally warned about; `loopIteration`,
+`maxLoops`, and `loopHistory` are threaded through claim, cleanup,
+dependency gating (`stale-workers.ts`), the runner, MCP tools, and the UI
+(`LoopStatus.tsx`, `TaskCard.tsx`).
 **Related:** `docs/design/retry-continuity.md`,
 `docs/design/worker-pr-automerge.md`, `packages/core/db/schema.ts`,
 `packages/shared/src/types.ts`, `apps/web/src/app/api/workers/[id]/route.ts`,

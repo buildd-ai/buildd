@@ -332,6 +332,13 @@ export const NON_TERMINAL_STATUS: Record<DocType, string[]> = {
 export interface ParsedFrontmatter {
   status: string | null;
   assertions: RawAssertion[];
+  /**
+   * Part A escape hatch — mirrors `goalCriteria`'s `notMechanizableReason`
+   * (`packages/core/mission-helpers.ts`, `validateGoalCriteria`): a terminal-
+   * status doc with a genuinely un-mechanizable claim set may declare this
+   * instead of an assertion, subject to the same 10-char floor.
+   */
+  notMechanizableReason: string | null;
 }
 
 /**
@@ -352,6 +359,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter | null {
   const body = lines.slice(1, end);
 
   let status: string | null = null;
+  let notMechanizableReason: string | null = null;
   const assertions: RawAssertion[] = [];
 
   let i = 0;
@@ -374,6 +382,11 @@ export function parseFrontmatter(content: string): ParsedFrontmatter | null {
     const [, key, rest] = m;
     if (key === 'status') {
       status = unquote(rest.trim()) || null;
+      i++;
+      continue;
+    }
+    if (key === 'not_mechanizable_reason') {
+      notMechanizableReason = unquote(rest.trim()) || null;
       i++;
       continue;
     }
@@ -409,7 +422,7 @@ export function parseFrontmatter(content: string): ParsedFrontmatter | null {
     i++;
   }
 
-  return { status, assertions };
+  return { status, assertions, notMechanizableReason };
 }
 
 function unquote(v: string): string {
@@ -443,7 +456,7 @@ export function declaredStatus(content: string, frontmatter: ParsedFrontmatter |
 // ─── Contradiction (§2 CI failure conditions) ───────────────────────────────
 
 export interface Contradiction {
-  kind: 'declared-ahead-of-derived' | 'derived-ahead-of-declared';
+  kind: 'declared-ahead-of-derived' | 'derived-ahead-of-declared' | 'missing-assertions';
   message: string;
 }
 
@@ -473,6 +486,95 @@ export function checkContradiction(docType: DocType, declared: string | null, de
     };
   }
   return null;
+}
+
+// ─── Missing-assertions gate (Part A — enforce first) ──────────────────────
+
+/**
+ * Pre-existing docs that declared a terminal status with zero assertions
+ * before this gate existed. Grandfathered so landing the gate doesn't turn
+ * every PR red at once — mirrors `VERIFIED_BY_DEBT` in `scripts/check-specs.ts`
+ * exactly: this list only ever SHRINKS as real assertions are backfilled
+ * (§5 migration order), and a new doc may never be added to it. A doc that
+ * needs a permanent exemption uses `not_mechanizable_reason` instead (below),
+ * which requires a stated reason rather than silent grandfathering.
+ */
+export const MISSING_ASSERTIONS_DEBT = new Set<string>([
+  'docs/design/backend-failover-policy.md',
+  'docs/design/change-intent.md',
+  'docs/design/friction-dedup-serialization.md',
+  'docs/design/mobile-artifact-feed.md',
+  'docs/design/mobile-filter-pattern.md',
+  'docs/design/model-tiers.md',
+  'docs/design/task-classification-and-wait.md',
+  'docs/design/task-model-visibility.md',
+  'docs/design/workspace-memory-digest-arm.md',
+  'docs/specs/artifacts-and-sharing.md',
+  'docs/specs/auth-oauth-boundaries.md',
+  'docs/specs/codebase-memory-graph.md',
+  'docs/specs/codex-backend-spec.md',
+  'docs/specs/credential-isolation.md',
+  'docs/specs/human-in-the-loop-protocol.md',
+  'docs/specs/knowledge-ingest-pipeline.md',
+  'docs/specs/knowledge-store-retrieval.md',
+  'docs/specs/mcp-action-contracts.md',
+  'docs/specs/mcp-connectors-and-roles.md',
+  'docs/specs/migration-execution.md',
+  'docs/specs/mission-structure-view.md',
+  'docs/specs/mission-task-lifecycle.md',
+  'docs/specs/model-routing-and-tiers.md',
+  'docs/specs/pr-lifecycle-reconciliation.md',
+  'docs/specs/team-namespace-scoping.md',
+  'docs/specs/team-workspace-mission-onboarding.md',
+  'docs/specs/timeline-dependency-geometry.md',
+  'docs/specs/usage-and-cost-accounting.md',
+  'docs/specs/work-tracker-integration.md',
+  'docs/specs/worker-sandbox-isolation.md',
+]);
+
+const NOT_MECHANIZABLE_REASON_MIN_LENGTH = 10;
+
+/**
+ * Part A: a doc that declares a TERMINAL status (`implemented` for design,
+ * `active` for spec) must carry at least one assertion — presence only, not
+ * passing-ness; §2's existing checks already cover whether a declared
+ * assertion actually passes. Without this, a doc can claim `active` with a
+ * frontmatter block that has never been asked to prove anything, which is
+ * exactly how 108 of 110 docs got to `unverified` with nobody noticing (§16).
+ *
+ * Carve-outs, in order:
+ *   - non-terminal status (proposed/accepted/draft) — zero assertions is the
+ *     honest backlog state per §5, never a failure.
+ *   - `rawAssertionCount > 0` — an assertion under an active `skip_until`
+ *     suppression (§6) still counts as "at least one assertion declared"; this
+ *     check is about presence, not evaluated outcome, so a suppressed-only doc
+ *     is unaffected (its own §2 contradiction check separately treats it as
+ *     `unverified`, which never contradicts a terminal declared status either).
+ *   - `not_mechanizable_reason` (10+ chars) — mirrors goalCriteria's
+ *     `notMechanizableReason` escape hatch for a genuinely un-mechanizable claim.
+ *   - `MISSING_ASSERTIONS_DEBT` — pre-existing docs grandfathered in; shrinks
+ *     only, never grows.
+ */
+export function checkMissingAssertions(
+  docPath: string,
+  docType: DocType,
+  declared: string | null,
+  rawAssertionCount: number,
+  notMechanizableReason: string | null,
+): Contradiction | null {
+  if (!declared) return null;
+  if (declared !== TERMINAL_STATUS[docType]) return null;
+  if (rawAssertionCount > 0) return null;
+  if (notMechanizableReason && notMechanizableReason.trim().length >= NOT_MECHANIZABLE_REASON_MIN_LENGTH) return null;
+  if (MISSING_ASSERTIONS_DEBT.has(docPath)) return null;
+
+  return {
+    kind: 'missing-assertions',
+    message:
+      `Status declares '${declared}' but no assertions are declared (§1). Add at least one real, ` +
+      `resolvable assertion, or set not_mechanizable_reason (10+ chars) explaining why none of ` +
+      `${ASSERTION_TYPES.join(', ')} can express this doc's claims.`,
+  };
 }
 
 // ─── Doc discovery + full evaluation ────────────────────────────────────────
@@ -557,7 +659,9 @@ export function evaluateDoc(doc: DiscoveredDoc, config: ConformanceConfig, now?:
   const { valid, errors } = validateAssertions(frontmatter?.assertions ?? []);
   const results = valid.map((a) => evaluateAssertion(a, { repoRoot: config.repoRoot, migrationsDir: config.migrationsDir, now }));
   const derived = computeDerivedStatus(results);
-  const contradiction = checkContradiction(doc.docType, declared, derived);
+  const contradiction =
+    checkContradiction(doc.docType, declared, derived) ??
+    checkMissingAssertions(doc.path, doc.docType, declared, frontmatter?.assertions.length ?? 0, frontmatter?.notMechanizableReason ?? null);
 
   return {
     path: doc.path,
