@@ -1046,7 +1046,7 @@ describe('PATCH /api/tasks/[id]', () => {
         result: { summary: 'Sure, I can help with that!', prUrl: 'https://github.com/o/r/pull/1' },
       };
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx', level: 'admin' });
       mockTasksFindFirst.mockResolvedValue(mockTask);
       let updateData: any;
       mockTasksUpdate.mockReturnValue({
@@ -1071,9 +1071,31 @@ describe('PATCH /api/tasks/[id]', () => {
       expect(updateData.result.prUrl).toBe('https://github.com/o/r/pull/1');
     });
 
+    it('rejects a non-admin API key even with workspace access', async () => {
+      mockGetCurrentUser.mockResolvedValue(null);
+      // Ordinary workspace API key — accounts.level defaults to 'worker' in prod.
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx', level: 'worker' });
+      mockTasksFindFirst.mockResolvedValue({
+        id: TASK_ID,
+        status: 'completed',
+        workspaceId: 'ws-1',
+        workspace: { id: 'ws-1', teamId: 'team-1' },
+        result: { summary: 'old' },
+      });
+
+      const response = await callHandler(PATCH, createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_xxx' },
+        body: { resultSummary: 'Fixed it' },
+      }), TASK_ID);
+
+      expect(response.status).toBe(403);
+      expect((await response.json()).error).toContain('admin-level');
+    });
+
     it('rejects correcting the summary on a task that has not completed or failed', async () => {
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx', level: 'admin' });
       mockTasksFindFirst.mockResolvedValue({
         id: TASK_ID,
         status: 'pending',
@@ -1094,7 +1116,7 @@ describe('PATCH /api/tasks/[id]', () => {
 
     it('rejects an empty resultSummary', async () => {
       mockGetCurrentUser.mockResolvedValue(null);
-      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx', level: 'admin' });
       mockTasksFindFirst.mockResolvedValue({
         id: TASK_ID,
         status: 'completed',

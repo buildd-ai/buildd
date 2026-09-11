@@ -269,9 +269,15 @@ export async function PATCH(
     // Correct a completed/failed task's stored result.summary after the fact (e.g. a
     // stray assistant aside got captured, or a runner/server bug garbled it). The
     // completion PATCH in /api/workers/[id] refuses to write result once a task is
-    // terminal, so this is the only path to amend the durable record — gated to admin
-    // token level at the MCP layer (correct_task_result), not here.
+    // terminal, so this is the only path to amend the durable record. The MCP tool
+    // (correct_task_result) already gates on admin token level before calling this
+    // route, but the route is reachable directly, so it re-checks here too — an
+    // ordinary workspace API key (bld_xxx, level 'worker'/'trigger') must not be able
+    // to rewrite a completed task's audit trail just because it has workspace access.
     if (resultSummary !== undefined) {
+      if (apiAccount && apiAccount.level !== 'admin') {
+        return NextResponse.json({ error: 'Correcting a task result requires an admin-level token' }, { status: 403 });
+      }
       if (typeof resultSummary !== 'string' || resultSummary.trim() === '') {
         return NextResponse.json({ error: 'resultSummary must be a non-empty string' }, { status: 400 });
       }
