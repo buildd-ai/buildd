@@ -1,0 +1,70 @@
+# Spec Conformance Check — Tier-1/Tier-2 blocking checker, per
+# docs/design/spec-conformance.md §3.
+#
+# `scripts/check-spec-conformance.ts` (Slice 1's evaluator) existed with zero
+# CI wiring: `bun run specs:conformance` worked from a shell, but nothing
+# invoked it on a PR, so a declared-vs-derived status contradiction (§2) never
+# failed a build. §3 is explicit that CI, not the pre-commit hook, is the
+# actual enforcement point — pre-commit is bypassable by design and workers
+# commit without running hooks at all. This workflow is that enforcement
+# point: `--fail-on-contradiction` turns a contradiction into a failing
+# check on the PR that introduced it (see Case 1/3 in the design doc's
+# Worked Examples).
+#
+# Same triggers as Build & Test (build.yml) for the same reason given there:
+# an unlisted base branch means zero runs, which looks exactly like a green
+# check to anything that only looks for *failing* ones.
+#
+# Delta gate (§4): scripts/spec-conformance-delta-gate.ts reads the last
+# fully-checked commit from a keyed buildd artifact (`spec-conformance-last-sha`)
+# and skips the checker step when the diff against it touches nothing in the
+# watch set. The `check` subcommand only ever GETs — safe to run from any
+# number of concurrent PR checks. The `record` write-back runs only on push to
+# dev: a PR's tip generally isn't an ancestor of dev, and dev is the one
+# context where "last fully-checked commit" is a meaningful, serialized,
+# linear pointer. Both subcommands fail open (never skip, never error the
+# build) when WORKSPACE_ID/BUILDD_API_KEY are unavailable.
+name: Spec Conformance Check
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: ['**', main, dev, 'mission/**']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Tier-2 CI — assertion evaluation (blocking)
+    runs-on: ubuntu-latest
+    env:
+      WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+      BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Delta gate — decide whether anything watched changed
+        id: gate
+        run: bun run scripts/spec-conformance-delta-gate.ts check
+
+      - name: Run spec conformance checker
+        if: steps.gate.outputs.skip != 'true'
+        run: bun run specs:conformance -- --fail-on-contradiction
+
+      - name: Delta gate — record HEAD as last-checked (push to dev only)
+        if: always() && github.event_name == 'push'
+        run: bun run scripts/spec-conformance-delta-gate.ts record
