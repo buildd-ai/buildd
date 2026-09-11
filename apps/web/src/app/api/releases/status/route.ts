@@ -4,7 +4,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { isGitHubAppConfigured } from '@/lib/github';
 import { resolveReleaseStrategy } from '@buildd/core/release-strategy';
 import { resolveReleaseTarget } from '@/lib/release/target';
-import { releasePreflight } from '@/lib/release/dispatch';
+import { releasePreflight, deploymentOnlyPreflight } from '@/lib/release/dispatch';
 
 /**
  * Release preflight (read-only): what would ship, whether the source ref is
@@ -52,30 +52,40 @@ export async function GET(req: NextRequest) {
 
   // Choose sensible source/target refs for the compare, overridable via query.
   // Prefer the resolved strategy's fields first, then releaseConfig fields, then defaultBranch.
+  // branch_merge's source ref lives in releaseConfig.releaseBranch (the field
+  // executeRelease already merges from) — NOT releaseConfig.ref, which only
+  // ever applies to workflow_dispatch/script.
   const ref =
     sp.get('ref') ??
     (strategy?.kind === 'workflow_dispatch'
       ? strategy.ref
       : strategy?.kind === 'script'
         ? strategy.ref ?? target.releaseConfig?.ref ?? target.defaultBranch
-        : target.releaseConfig?.ref ?? target.defaultBranch);
+        : target.releaseConfig?.releaseBranch ?? target.defaultBranch);
   const prodBranch =
     sp.get('prodBranch') ??
     (strategy?.kind === 'branch_merge'
       ? strategy.prodBranch
       : target.releaseConfig?.prodBranch ?? target.defaultBranch);
 
-  if (ref === prodBranch) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: `Release config error: ref and prodBranch resolve to the same value ("${ref}") — comparing a branch to itself always shows zero commits ahead and is never a meaningful preflight`,
-      },
-      { status: 422 },
-    );
-  }
-
   try {
+    // No distinct source ref to compare (unconfigured workspace, or ref and
+    // prodBranch otherwise collapse to the same branch): a self-compare always
+    // shows zero commits ahead and is never a meaningful preflight. Report
+    // deploy-only status instead of refusing the call outright.
+    if (ref === prodBranch) {
+      const preflight = await deploymentOnlyPreflight(target.installationId, target.owner, target.name, prodBranch);
+      return NextResponse.json({
+        ok: true,
+        repo: target.repoFullName,
+        strategy: strategy?.kind ?? null,
+        configured: resolution.ok,
+        comparable: false,
+        note: `No distinct source ref configured — ref and prodBranch both resolve to "${prodBranch}". Showing deploy-only status (CI on ${prodBranch}'s HEAD); nothing to compare.`,
+        ...preflight,
+      });
+    }
+
     const preflight = await releasePreflight(target.installationId, target.owner, target.name, {
       ref,
       prodBranch,
@@ -85,6 +95,7 @@ export async function GET(req: NextRequest) {
       repo: target.repoFullName,
       strategy: strategy?.kind ?? null,
       configured: resolution.ok,
+      comparable: true,
       ...preflight,
     });
   } catch (err) {
