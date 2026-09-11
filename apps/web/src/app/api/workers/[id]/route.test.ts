@@ -4273,6 +4273,51 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockAccountsUpdate).toHaveBeenCalled();
     });
 
+    // Regression: the Codex quota wall ("You've hit your usage limit ...")
+    // matched none of the detector's substrings, so a caller reporting the
+    // raw error text without an explicit `budgetExhausted` flag hard-failed
+    // the task instead of pausing Codex + failing over.
+    it('detects the Codex quota wall from error message string alone (fallback)', async () => {
+      lastBackendPauseValues = null;
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        authType: 'oauth',
+      });
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-1',
+        status: 'running',
+        milestones: [],
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        context: {},
+        workspaceId: 'ws-1',
+        backend: 'codex',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error:
+            "You've hit your usage limit. Upgrade to Pro or try again at 5pm.",
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Recorded against Codex's own pause pool, not the Claude account flag.
+      expect(lastBackendPauseValues?.backend).toBe('codex');
+      expect(lastBackendPauseValues?.reason).toBe('budget');
+    });
+
     it('upserts tenant budget when task has tenant context', async () => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',
@@ -6447,6 +6492,41 @@ describe('PATCH /api/workers/[id]', () => {
         method: 'PATCH',
         headers: { Authorization: 'Bearer bld_test' },
         body: { status: 'failed', error: "Claude Code returned an error result: You've hit your session limit · resets 4pm (UTC)" },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('budget_limited');
+    });
+
+    // Regression: Codex's quota wall previously matched none of the detector's
+    // patterns and was classified as code_failure — a real provider quota
+    // wall counted against the task's own retry budget instead of being
+    // excluded from it.
+    it('sets exitCause=budget_limited when error matches the Codex quota-wall pattern', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null, backend: 'codex' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit. Upgrade to Pro or try again at 4pm." },
       });
       const res = await PATCH(req, { params: mockParams });
 

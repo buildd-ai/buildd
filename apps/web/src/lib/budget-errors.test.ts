@@ -30,6 +30,28 @@ describe('isBudgetExhaustionError', () => {
     expect(isBudgetExhaustionError('session limit reached')).toBe(true);
   });
 
+  // Regression: 5 Codex-backed workers hard-failed instead of pausing +
+  // failing over, because this detector only recognised Claude's wording.
+  // Codex has no redundant signal (no account/tenant budget columns) — this
+  // detector is the only thing that ever writes a `backend_pauses` row for
+  // Codex, so a miss here means no backstop at all.
+  it('detects the Codex usage/quota wall', () => {
+    expect(
+      isBudgetExhaustionError(
+        "You've hit your usage limit. Upgrade to Pro (https://openai.com/pro) visit " +
+        'https://openai.com/pro to purchase more credits or try again at 3:45pm.',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not flag prose that merely mentions a usage limit', () => {
+    // Anchored on "hit your usage limit", not the bare noun phrase — see the
+    // prior false-positive incident where a `rate.?limit` scan matched SDK
+    // changelog prose inside a file the worker read.
+    expect(isBudgetExhaustionError('The API enforces a usage limit of 100 req/min.')).toBe(false);
+    expect(isBudgetExhaustionError('See docs/usage-limit-policy.md for details.')).toBe(false);
+  });
+
   it('does not flag unrelated failures', () => {
     expect(isBudgetExhaustionError('Not logged in · Please run /login')).toBe(false);
     expect(isBudgetExhaustionError('git fatal: not a repository')).toBe(false);
@@ -213,6 +235,38 @@ describe('extractResetTime', () => {
     // now + 5h == 13:00Z exactly.
     expect(extractResetTime('session limit · resets 13:00 (UTC)', { now })?.toISOString())
       .toBe('2026-08-15T13:00:00.000Z');
+  });
+
+  // Regression: Codex's quota wall says "try again at <time>", not
+  // "resets <time> (UTC)". Before this, only the substring was recognised and
+  // not the time format, so every Codex wall fell back to the blanket
+  // SESSION_WINDOW_MS (5h) fallback in the caller — over-freezing Codex well
+  // past its actual, often much shorter, reset.
+  describe('Codex "try again at" reset clause', () => {
+    it('parses to the same Date the "resets ... (UTC)" form yields', () => {
+      const now = new Date('2026-08-15T08:24:30Z');
+      const codexError =
+        "You've hit your usage limit. Upgrade to Pro or try again at 11:10am.";
+      const claudeError =
+        "You've hit your session limit · resets 11:10am (UTC)";
+      expect(extractResetTime(codexError, { now })?.toISOString())
+        .toBe(extractResetTime(claudeError, { now })?.toISOString());
+    });
+
+    it('honours an explicit timezone on the "try again at" form', () => {
+      const now = new Date('2026-08-15T08:00:00Z');
+      expect(
+        extractResetTime('try again at 11:10am (UTC)', { now })?.toISOString(),
+      ).toBe('2026-08-15T11:10:00.000Z');
+    });
+
+    it('still returns a past Date when the stated time already elapsed', () => {
+      const now = new Date('2026-08-15T08:24:30Z');
+      // Naive rollover would give 2026-08-16T03:00Z; 3am today already passed.
+      const reset = extractResetTime('try again at 3am (UTC)', { now });
+      expect(reset?.toISOString()).toBe('2026-08-15T03:00:00.000Z');
+      expect(reset!.getTime()).toBeLessThan(now.getTime());
+    });
   });
 });
 
