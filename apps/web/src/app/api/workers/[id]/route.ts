@@ -2059,6 +2059,19 @@ export async function PATCH(
             commits > 0 ? `${commits} commit${commits === 1 ? '' : 's'}` : null,
           ].filter(Boolean).join(' · ');
         }
+        // Provenance: 'agent' = passed explicitly to complete_task (or synthesized
+        // by the sensitive-redaction branch above, which is structured and factual,
+        // never a stray aside); 'fallback' = the runner's own end-of-session PATCH
+        // captured the SDK's last assistant message because no complete_task call
+        // ever happened (see apps/runner/src/workers.ts). A fallback summary is
+        // frequently a conversational aside, not an outcome — downstream consumers
+        // (KB ingestion, UI) must not present it as authored. Default to 'agent' when
+        // the caller sent a summary but no source at all — both current writers (the
+        // runner's fallback PATCH and complete_task) always send it explicitly, so
+        // this only covers a caller that predates this field.
+        const summarySource: 'agent' | 'fallback' | undefined = !summary
+          ? undefined
+          : (!isSensitive && body.summarySource === 'fallback' ? 'fallback' : 'agent');
         // Extract phase timeline from milestones for result snapshot
         const finalMilestones = (updates.milestones ?? worker.milestones ?? []) as any[];
         const phases = finalMilestones
@@ -2076,6 +2089,7 @@ export async function PATCH(
 
         taskUpdate.result = {
           summary,
+          ...(summarySource && { summarySource }),
           branch: worker.branch,
           commits: commitCount ?? worker.commitCount ?? 0,
           sha: lastCommitSha ?? worker.lastCommitSha ?? undefined,

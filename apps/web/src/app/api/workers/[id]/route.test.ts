@@ -1861,6 +1861,111 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedTaskSet.result.lastQuestion).toBe('Which auth method?');
   });
 
+  describe('summarySource provenance', () => {
+    function setupCompletionCapture() {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        })),
+      });
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        milestones: [],
+        pendingInstructions: null,
+      });
+      return () => capturedTaskSet;
+    }
+
+    it('tags a runner fallback completion (session-end, no complete_task call) as summarySource=fallback', async () => {
+      const getCapturedTaskSet = setupCompletionCapture();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'That call wasn\'t needed — waiting for the Monitor task to notify me. Nothing more to do right now.',
+          summarySource: 'fallback',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const capturedTaskSet = getCapturedTaskSet();
+      expect(capturedTaskSet.result.summary).toContain('Nothing more to do right now');
+      expect(capturedTaskSet.result.summarySource).toBe('fallback');
+    });
+
+    it('tags an agent-authored complete_task summary as summarySource=agent', async () => {
+      const getCapturedTaskSet = setupCompletionCapture();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Fixed the off-by-one error in the pagination cursor.',
+          summarySource: 'agent',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const capturedTaskSet = getCapturedTaskSet();
+      expect(capturedTaskSet.result.summary).toBe('Fixed the off-by-one error in the pagination cursor.');
+      expect(capturedTaskSet.result.summarySource).toBe('agent');
+    });
+
+    it('defaults an unlabelled summary to summarySource=agent (backward compat with callers that predate this field)', async () => {
+      const getCapturedTaskSet = setupCompletionCapture();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Completed without a source tag.',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const capturedTaskSet = getCapturedTaskSet();
+      expect(capturedTaskSet.result.summarySource).toBe('agent');
+    });
+
+    it('omits summarySource entirely when there is no summary at all', async () => {
+      const getCapturedTaskSet = setupCompletionCapture();
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const capturedTaskSet = getCapturedTaskSet();
+      expect(capturedTaskSet.result.summary).toBeUndefined();
+      expect(capturedTaskSet.result.summarySource).toBeUndefined();
+    });
+  });
+
   it('preserves non-zero PR diff stats when runner reports zeros on completion', async () => {
     // Regression: create_pr stores real diff stats from GitHub (e.g. 807 additions).
     // If the runner then sends filesChanged:0/linesAdded:0 at completion (wrong local git

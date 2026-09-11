@@ -3681,8 +3681,13 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
-          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
-          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
+          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing).
+          // This fires only when the session ended without the agent calling complete_task itself,
+          // so the "summary" is whatever the agent happened to say last — often a conversational
+          // aside ("waiting for CI"), not an outcome. Tag it 'fallback' so downstream consumers
+          // (KB ingestion, UI) never present it as an authored result. See docs/specs — the agent's
+          // own complete_task PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
+          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage, summarySource: 'fallback' as const } : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
           // Subagent spans — terminal-only flush

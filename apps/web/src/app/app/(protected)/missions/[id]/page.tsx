@@ -1071,9 +1071,15 @@ export default async function MissionDetailPage({
         {/* Completion Summary — only for completed missions */}
         {mission.status === 'completed' && (() => {
           // Priority: orchestrator (planning) summaries first, then work tasks.
-          // Within each group, prefer non-reaper completions so the agent's own
-          // retrospective wins over the reaper's artifact extraction.
+          // Within each group, prefer non-reaper, agent-authored completions so
+          // the agent's own retrospective wins over the reaper's artifact
+          // extraction, which in turn wins over an unauthored 'fallback' summary
+          // (the runner's captured last-assistant-message — often a stray aside,
+          // never a confirmed outcome; see summarySource on TaskResult).
           const candidateTasks = allTasks.filter(t => t.status === 'completed' && (t.result as any)?.summary);
+          const isAuthored = (t: (typeof candidateTasks)[number]) =>
+            !(t.result as any)?.reaperAutoCompleted && (t.result as any)?.summarySource !== 'fallback';
+          const isReaper = (t: (typeof candidateTasks)[number]) => (t.result as any)?.reaperAutoCompleted === true;
           const planningWithSummary = candidateTasks
             .filter(t => t.mode === 'planning')
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
@@ -1081,13 +1087,16 @@ export default async function MissionDetailPage({
             .filter(t => t.mode !== 'planning')
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
           const bestTask =
-            planningWithSummary.find(t => !(t.result as any)?.reaperAutoCompleted) ??
-            workWithSummary.find(t => !(t.result as any)?.reaperAutoCompleted) ??
+            planningWithSummary.find(isAuthored) ??
+            workWithSummary.find(isAuthored) ??
+            planningWithSummary.find(isReaper) ??
+            workWithSummary.find(isReaper) ??
             planningWithSummary[0] ??
             workWithSummary[0];
           const summary = (bestTask?.result as any)?.summary as string | undefined;
           if (!summary) return null;
           const reaperAutoCompleted = (bestTask?.result as any)?.reaperAutoCompleted === true;
+          const isFallbackSummary = (bestTask?.result as any)?.summarySource === 'fallback';
           return (
             <div className="card p-4 mt-4 border-l-2 border-status-success/40">
               <div className="flex items-center gap-2 mb-2">
@@ -1097,6 +1106,11 @@ export default async function MissionDetailPage({
                 {reaperAutoCompleted && (
                   <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
                     auto-completed · reaper
+                  </span>
+                )}
+                {isFallbackSummary && (
+                  <span className="font-mono text-[9px] uppercase tracking-wide border border-text-muted/40 text-text-muted px-1 py-px shrink-0">
+                    unauthored · last message
                   </span>
                 )}
               </div>
