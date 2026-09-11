@@ -82,7 +82,7 @@ async function findVerificationTask(missionId: string, criterionIndex: number) {
 
 export type CommandCriterionResolution =
   | { kind: 'pending'; taskId: string; evidence: string }
-  | { kind: 'verdict'; verdict: 'pass' | 'fail'; taskId: string; evidence: string }
+  | { kind: 'verdict'; verdict: 'pass' | 'fail' | 'UNVERIFIED'; taskId: string; evidence: string }
   | { kind: 'unavailable'; evidence: string };
 
 /**
@@ -134,15 +134,21 @@ export async function resolveCommandCriterion(opts: {
     }
 
     const age = now - new Date(existing.updatedAt).getTime();
-    const ran = commandActuallyRan(existing.result as Record<string, unknown> | null);
-    if (sameCommand && age < COMMAND_VERDICT_TTL_MS && ran !== null) {
-      // `ran` is the recorded outcome of the command itself, not the task's
+    const run = classifyCommandRun(existing.result as Record<string, unknown> | null);
+    if (sameCommand && age < COMMAND_VERDICT_TTL_MS && run !== null) {
+      // `run` is the recorded outcome of the command itself, not the task's
       // status. A task can reach `completed` without the command ever running —
       // the stale-worker reaper re-creates a task from its context but drops
       // `loopConfig`, so the clone has no verification step at all. Trusting
       // status there would hand the criterion a pass on an agent's self-report,
       // which is the substitution this whole module exists to prevent.
-      const verdict = ran ? 'pass' : 'fail';
+      //
+      // `unresolved` (timeout / exec error) is neither: the command never
+      // demonstrably asserted anything, so it cannot be evidence the criterion
+      // is unmet. Landing it as `fail` blocks completion on an environment
+      // problem and reads as a real code defect; `UNVERIFIED` routes it through
+      // the same ungradeable-criteria escalation as any other unproducible verdict.
+      const verdict = run === 'unresolved' ? 'UNVERIFIED' : run === 'ok' ? 'pass' : 'fail';
       return {
         kind: 'verdict',
         verdict,
@@ -162,23 +168,41 @@ export async function resolveCommandCriterion(opts: {
   };
 }
 
+/** The three ways a recorded command run can resolve. See {@link classifyCommandRun}. */
+type CommandRunOutcome = 'ok' | 'failed' | 'unresolved';
+
 /**
- * Did the command actually execute? Reads the loop history the completion route
- * writes from the runner's evidence.
+ * Did the command actually execute, and if so, what did it assert? Reads the
+ * loop history the completion route writes from the runner's evidence.
  *
- * Returns true (exit 0), false (non-zero / timeout / exec error), or null when
- * there is no record of a run at all — which is NOT a verdict and must never be
- * read as one.
+ * Returns `null` when there is no record of a run at all — which is NOT a
+ * verdict and must never be read as one. Otherwise distinguishes:
+ * - `ok`: exited 0.
+ * - `failed`: ran and exited non-zero on its own assertion (a real test
+ *   failure, a lint error, etc.) — this is genuine evidence the criterion is
+ *   unmet.
+ * - `unresolved`: the runner's own evidence marks this `timeout` or
+ *   `exec_error` (see `RunnerVerificationEvidence` in loop-dispatcher.ts) —
+ *   the command never got far enough to assert anything, so it is not
+ *   evidence of anything either way. Falls back to the collapsed `satisfied`
+ *   boolean when older evidence carries no `outcome` field.
  */
-function commandActuallyRan(result: Record<string, unknown> | null): boolean | null {
+function classifyCommandRun(result: Record<string, unknown> | null): CommandRunOutcome | null {
   const history = (result?.loopHistory as Array<Record<string, unknown>> | undefined) ?? [];
   const last = history[history.length - 1];
   if (!last || typeof last.satisfied !== 'boolean') return null;
-  return last.satisfied;
+
+  const outcome = (last.evidence as Record<string, unknown> | undefined)?.outcome;
+  if (typeof outcome === 'string') {
+    if (outcome === 'ok') return 'ok';
+    if (outcome === 'timeout' || outcome === 'exec_error') return 'unresolved';
+    return 'failed';
+  }
+  return last.satisfied ? 'ok' : 'failed';
 }
 
 function verdictEvidence(
-  verdict: 'pass' | 'fail',
+  verdict: 'pass' | 'fail' | 'UNVERIFIED',
   command: string,
   result: Record<string, unknown> | null,
 ): string {
@@ -186,6 +210,9 @@ function verdictEvidence(
   const last = history[history.length - 1];
   const summary = typeof last?.summary === 'string' ? last.summary : null;
   if (verdict === 'pass') return `\`${shortCommand(command)}\` exited 0${summary ? ` (${summary})` : ''}`;
+  if (verdict === 'UNVERIFIED') {
+    return `\`${shortCommand(command)}\` could not be evaluated (environment error, not a code failure)${summary ? ` — ${summary}` : ''}`;
+  }
   return `\`${shortCommand(command)}\` did not pass${summary ? ` — ${summary}` : ''}`;
 }
 
@@ -314,7 +341,7 @@ export async function dispatchCommandCriterionTask(opts: {
 export async function handleCriteriaVerificationOutcome(
   taskId: string,
   evidence?: unknown,
-): Promise<{ applied: boolean; verdict?: 'pass' | 'fail' }> {
+): Promise<{ applied: boolean; verdict?: 'pass' | 'fail' | 'UNVERIFIED' }> {
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, taskId),
     columns: { id: true, status: true, context: true, result: true, missionId: true },
@@ -354,15 +381,20 @@ export async function handleCriteriaVerificationOutcome(
   // The verdict comes from the runner's evidence, or from the loop history the
   // completion route wrote from that evidence. With neither, the command did not
   // demonstrably run — a `completed` task proves nothing on its own (see
-  // `commandActuallyRan`), so leave the criterion unresolved rather than passing
+  // `classifyCommandRun`), so leave the criterion unresolved rather than passing
   // it on an agent's word.
+  //
+  // `timeout` / `exec_error` land as UNVERIFIED, not `fail`: the command never
+  // got far enough to assert anything, so a runner-side environment problem is
+  // not evidence the criterion is unmet. Only a real non-zero exit from the
+  // command's own assertion is.
   const ev = (evidence && typeof evidence === 'object' ? evidence as Record<string, unknown> : null);
-  const ran = commandActuallyRan(task.result as Record<string, unknown> | null);
-  let verdict: 'pass' | 'fail';
+  const ran = classifyCommandRun(task.result as Record<string, unknown> | null);
+  let verdict: 'pass' | 'fail' | 'UNVERIFIED';
   if (ev && typeof ev.outcome === 'string') {
-    verdict = ev.outcome === 'ok' ? 'pass' : 'fail';
+    verdict = ev.outcome === 'ok' ? 'pass' : ev.outcome === 'timeout' || ev.outcome === 'exec_error' ? 'UNVERIFIED' : 'fail';
   } else if (ran !== null) {
-    verdict = ran ? 'pass' : 'fail';
+    verdict = ran === 'ok' ? 'pass' : ran === 'unresolved' ? 'UNVERIFIED' : 'fail';
   } else if (task.status === 'failed' || task.status === 'cancelled') {
     // A failed task without evidence still cannot verify the criterion, but it is
     // safe to record the negative: nothing was proven.
@@ -379,7 +411,9 @@ export async function handleCriteriaVerificationOutcome(
   criterion.evidence = ev
     ? (verdict === 'pass'
         ? `\`${shortCommand(marker.command)}\` exited 0 (verification task ${task.id.slice(0, 8)})`
-        : `\`${shortCommand(marker.command)}\` failed: exit ${String(ev.exitCode ?? '?')}, outcome ${String(ev.outcome)}`)
+        : verdict === 'UNVERIFIED'
+          ? `\`${shortCommand(marker.command)}\` could not be evaluated: exit ${String(ev.exitCode ?? '?')}, outcome ${String(ev.outcome)} (environment error, not a code failure)`
+          : `\`${shortCommand(marker.command)}\` failed: exit ${String(ev.exitCode ?? '?')}, outcome ${String(ev.outcome)}`)
     : verdictEvidence(verdict, marker.command, task.result as Record<string, unknown> | null);
 
   const next: GoalCriteriaState = {

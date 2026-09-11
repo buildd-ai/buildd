@@ -243,6 +243,78 @@ describe('resolveCommandCriterion — reuse', () => {
     }
   });
 
+  it('reports UNVERIFIED — not fail — when the command could not run at all (exec_error)', async () => {
+    // Exit 127 ("command not found") means the assertion never ran, not that it
+    // came back false. Grading it `fail` blocks completion on an environment
+    // problem and reads as a real code defect that needs fixing.
+    taskFindManyRows = [{
+      id: 'verify-exec-error',
+      status: 'completed',
+      context: marker(),
+      result: {
+        loopHistory: [{
+          iteration: 0,
+          satisfied: false,
+          summary: 'Command failed (exit code 127, outcome: exec_error)',
+          evidence: { workerId: 'w1', iteration: 0, outcome: 'exec_error', exitCode: 127 },
+        }],
+      },
+      updatedAt: new Date(Date.now() - 60_000),
+    }];
+
+    const res = await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    expect(res.kind).toBe('verdict');
+    if (res.kind === 'verdict') {
+      expect(res.verdict).toBe('UNVERIFIED');
+      expect(res.evidence).toContain('could not be evaluated');
+    }
+  });
+
+  it('reports UNVERIFIED — not fail — when the command timed out', async () => {
+    taskFindManyRows = [{
+      id: 'verify-timeout',
+      status: 'completed',
+      context: marker(),
+      result: {
+        loopHistory: [{
+          iteration: 0,
+          satisfied: false,
+          summary: 'Command failed (exit code ?, outcome: timeout)',
+          evidence: { workerId: 'w1', iteration: 0, outcome: 'timeout' },
+        }],
+      },
+      updatedAt: new Date(Date.now() - 60_000),
+    }];
+
+    const res = await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    expect(res.kind).toBe('verdict');
+    if (res.kind === 'verdict') expect(res.verdict).toBe('UNVERIFIED');
+  });
+
+  it('still reads a real non-zero exit as fail when the runner evidence names outcome=failed', async () => {
+    taskFindManyRows = [{
+      id: 'verify-real-fail',
+      status: 'completed',
+      context: marker(),
+      result: {
+        loopHistory: [{
+          iteration: 0,
+          satisfied: false,
+          summary: 'Command failed (exit code 1, outcome: failed)',
+          evidence: { workerId: 'w1', iteration: 0, outcome: 'failed', exitCode: 1 },
+        }],
+      },
+      updatedAt: new Date(Date.now() - 60_000),
+    }];
+
+    const res = await resolveCommandCriterion({ missionId: 'm1', criterionIndex: 0, command: COMMAND });
+
+    expect(res.kind).toBe('verdict');
+    if (res.kind === 'verdict') expect(res.verdict).toBe('fail');
+  });
+
   it('re-runs the command once the last verdict ages past the TTL', async () => {
     taskFindManyRows = [{
       id: 'verify-stale',
@@ -394,6 +466,33 @@ describe('handleCriteriaVerificationOutcome', () => {
     const written = updateCalls[0].goalCriteriaState;
     expect(written.criteria[0].evidence).toContain('exit 1');
     expect(written.overall).toBe('fail');
+  });
+
+  it('turns an exec_error outcome into UNVERIFIED, never fail', async () => {
+    taskFindFirstRow = { id: 'verify-task-1', status: 'completed', context: marker(), result: {}, missionId: 'm1' };
+    missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
+
+    const res = await handleCriteriaVerificationOutcome('verify-task-1', {
+      workerId: 'w1', iteration: 0, conditionType: 'command', command: COMMAND, exitCode: 127, outcome: 'exec_error',
+    });
+
+    expect(res.verdict).toBe('UNVERIFIED');
+    const written = updateCalls[0].goalCriteriaState;
+    expect(written.criteria[0].verdict).toBe('UNVERIFIED');
+    expect(written.criteria[0].evidence).toContain('could not be evaluated');
+    // UNVERIFIED still folds into a non-passing overall — never silently passing.
+    expect(written.overall).not.toBe('pass');
+  });
+
+  it('turns a timeout outcome into UNVERIFIED, never fail', async () => {
+    taskFindFirstRow = { id: 'verify-task-1', status: 'failed', context: marker(), result: {}, missionId: 'm1' };
+    missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
+
+    const res = await handleCriteriaVerificationOutcome('verify-task-1', {
+      workerId: 'w1', iteration: 0, conditionType: 'command', command: COMMAND, outcome: 'timeout',
+    });
+
+    expect(res.verdict).toBe('UNVERIFIED');
   });
 
   it('falls back to the recorded loop history when the runner sent no evidence', async () => {
