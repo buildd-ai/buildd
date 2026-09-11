@@ -447,9 +447,14 @@ export interface VerdictRollup {
   status: string;
   totalMissions: number;
   allTerminal: boolean;
+  /** Failing criteria on missions that are still OPEN — see the SQL below. */
   criteriaFail: number;
   verifiedMissions: number;
   kpiOverall: string | null;
+  /** When `kpiOverall` was produced, ISO, or null when never evaluated. */
+  kpiEvaluatedAt: string | null;
+  /** When the most recent child mission reached a terminal status, ISO. */
+  lastMissionClosedAt: string | null;
   merges7d: number;
   attempts7d: number;
 }
@@ -462,6 +467,8 @@ export function emptyVerdictRollup(status = 'active'): VerdictRollup {
     criteriaFail: 0,
     verifiedMissions: 0,
     kpiOverall: null,
+    kpiEvaluatedAt: null,
+    lastMissionClosedAt: null,
     merges7d: 0,
     attempts7d: 0,
   };
@@ -490,6 +497,8 @@ export async function loadInitiativeVerdictInputs(opts: {
   const cutoff = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
 
   const criteriaOverall = sql`${missions.goalCriteriaState}->>'overall'`;
+  /** The one spelling of "this mission is closed". Reused by every aggregate. */
+  const missionOpen = sql`${missions.status} NOT IN ('completed', 'archived')`;
 
   const [missionRollups, initiativeRows, mergeRows, attemptRows] = await Promise.all([
     // Child-mission rollup. Uncapped and unfiltered by workspace. The terminal
@@ -499,9 +508,23 @@ export async function loadInitiativeVerdictInputs(opts: {
       .select({
         initiativeId: missions.initiativeId,
         totalMissions: sql<number>`COUNT(*)`,
-        openMissions: sql<number>`COUNT(*) FILTER (WHERE ${missions.status} NOT IN ('completed', 'archived'))`,
-        criteriaFail: sql<number>`COUNT(*) FILTER (WHERE ${criteriaOverall} = 'fail')`,
+        openMissions: sql<number>`COUNT(*) FILTER (WHERE ${missionOpen})`,
+        // OPEN missions only, and for the same reason `openMissions` is: this
+        // number feeds the ladder's first rung, which asks "are we losing
+        // *now*". It used to count every mission ever, so one mission that
+        // failed a criterion and then completed pinned its initiative at
+        // `losing` permanently — outranking `won_unclaimed` on an arc whose
+        // work was entirely finished. A closed mission's failure is history,
+        // not a live verdict about the arc.
+        criteriaFail: sql<number>`COUNT(*) FILTER (WHERE ${criteriaOverall} = 'fail' AND ${missionOpen})`,
+        // Deliberately NOT filtered: confidence asks whether anything ever
+        // checked the outcome, and a closed mission answers that permanently.
         verifiedMissions: sql<number>`COUNT(*) FILTER (WHERE ${criteriaOverall} IN ('pass', 'fail'))`,
+        // Dates the initiative's own KPI verdict (see `isKpiVerdictStale`).
+        // `updatedAt` is the closest thing missions store to a closed-at: the
+        // status transition writes it, and any later write only makes the
+        // staleness test stricter, never falsely stale.
+        lastMissionClosedAt: sql<string | null>`MAX(${missions.updatedAt}) FILTER (WHERE ${missions.status} IN ('completed', 'archived'))`,
       })
       .from(missions)
       .where(eq(missions.teamId, teamId))
@@ -513,6 +536,7 @@ export async function loadInitiativeVerdictInputs(opts: {
         id: initiatives.id,
         status: initiatives.status,
         kpiOverall: sql<string | null>`${initiatives.kpiState}->>'overall'`,
+        kpiEvaluatedAt: sql<string | null>`${initiatives.kpiState}->>'evaluatedAt'`,
       })
       .from(initiatives)
       .where(eq(initiatives.teamId, teamId)),
@@ -563,11 +587,14 @@ export interface MissionRollupRow {
   openMissions: number | string;
   criteriaFail: number | string;
   verifiedMissions: number | string;
+  /** `Date` from the driver, string from a fixture — both accepted. */
+  lastMissionClosedAt?: string | Date | null;
 }
 export interface InitiativeStatusRow {
   id: string;
   status: string;
   kpiOverall: string | null;
+  kpiEvaluatedAt?: string | null;
 }
 export interface MergeRow {
   initiativeId: string | null;
@@ -621,7 +648,11 @@ export function assembleVerdictRollups(input: {
   const out = new Map<string, VerdictRollup>();
 
   for (const row of input.initiativeRows) {
-    out.set(row.id, { ...emptyVerdictRollup(row.status), kpiOverall: row.kpiOverall ?? null });
+    out.set(row.id, {
+      ...emptyVerdictRollup(row.status),
+      kpiOverall: row.kpiOverall ?? null,
+      kpiEvaluatedAt: row.kpiEvaluatedAt ?? null,
+    });
   }
 
   const bucket = (key: string): VerdictRollup => {
@@ -641,6 +672,7 @@ export function assembleVerdictRollups(input: {
     rollup.allTerminal = total > 0 && open === 0;
     rollup.criteriaFail = Number(row.criteriaFail ?? 0);
     rollup.verifiedMissions = Number(row.verifiedMissions ?? 0);
+    rollup.lastMissionClosedAt = toIsoOrNull(row.lastMissionClosedAt);
   }
 
   for (const row of input.mergeRows) {
@@ -655,13 +687,55 @@ export function assembleVerdictRollups(input: {
   return out;
 }
 
+/** Driver `Date` or fixture string → ISO string, without reformatting a string. */
+function toIsoOrNull(value: string | Date | null | undefined): string | null {
+  if (value == null) return null;
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+/**
+ * Has the world moved on since the KPI verdict was taken?
+ *
+ * A KPI evaluation is a snapshot. If a child mission closed *after* it, the
+ * snapshot is not evidence about the arc as it stands — it is evidence about an
+ * arc with unfinished work in it. Counting it anyway is how a single hand-run
+ * evaluation from weeks ago keeps an otherwise-finished initiative red, which
+ * is the one state the ladder must not get wrong: `losing` outranks
+ * `won_unclaimed`, so a stale fail hides the prompt to close.
+ *
+ * Deliberately conservative — staleness must be *proven*:
+ *   - nothing closed → not stale (no event to predate);
+ *   - an undated verdict → not stale (fail closed, keep the failure);
+ *   - an unparseable date → not stale.
+ *
+ * It does NOT touch confidence. "Something checked this outcome" stays true
+ * forever; only the verdict's claim about *now* expires.
+ */
+export function isKpiVerdictStale(i: {
+  kpiEvaluatedAt: string | Date | null;
+  lastMissionClosedAt: string | Date | null;
+}): boolean {
+  const evaluated = parseMillis(i.kpiEvaluatedAt);
+  const closed = parseMillis(i.lastMissionClosedAt);
+  if (evaluated === null || closed === null) return false;
+  return evaluated < closed;
+}
+
+function parseMillis(value: string | Date | null | undefined): number | null {
+  if (value == null) return null;
+  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+}
+
 /**
  * Compose a rollup, its effort window and its pending counts into the verdict
  * pair every surface renders. The one place the three parts of this module meet.
  *
  * A failing KPI on the initiative itself counts toward `criteriaFail` alongside
  * its missions' failing criteria (§6.5) — an arc whose own KPI failed is losing
- * no matter how healthy the missions beneath it look.
+ * no matter how healthy the missions beneath it look — unless that verdict
+ * predates the last mission close, in which case it is stale (see
+ * `isKpiVerdictStale`) and says nothing about the arc as it stands.
  */
 export function deriveInitiativeVerdict(input: {
   rollup: VerdictRollup;
@@ -670,7 +744,13 @@ export function deriveInitiativeVerdict(input: {
 }): { verdict: Verdict; confidence: Confidence; tokens7d: number } {
   const { rollup, effortDays, counts } = input;
   const tokens7d = sumRecentTokens(effortDays);
-  const criteriaFail = rollup.criteriaFail + (rollup.kpiOverall === 'fail' ? 1 : 0);
+  const kpiFailIsLive =
+    rollup.kpiOverall === 'fail' &&
+    !isKpiVerdictStale({
+      kpiEvaluatedAt: rollup.kpiEvaluatedAt,
+      lastMissionClosedAt: rollup.lastMissionClosedAt,
+    });
+  const criteriaFail = rollup.criteriaFail + (kpiFailIsLive ? 1 : 0);
 
   return {
     verdict: deriveVerdict({
