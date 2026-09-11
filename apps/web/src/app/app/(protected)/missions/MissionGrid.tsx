@@ -18,6 +18,7 @@ import {
   GROUP_ORDER,
   FILTER_TO_GROUPS,
   healthToGroup,
+  statusToGroup,
   formatNextRun,
   timeAgo,
 } from '@/lib/mission-helpers';
@@ -105,7 +106,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
       running: [], attention: [], review: [], scheduled: [], paused: [], completed: [],
     };
     for (const m of missions) {
-      groups[healthToGroup(m.health, m.progress)].push(m);
+      groups[statusToGroup({ status: m.status, isHeld: m.isHeld, startAt: m.startAt, progress: m.progress })].push(m);
     }
     groups.scheduled.sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
     return groups;
@@ -123,7 +124,7 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
   // Filter missions based on current tab
   const filteredMissions = useMemo(() => {
     if (!allowedGroups) return missions;
-    return missions.filter(m => allowedGroups.includes(healthToGroup(m.health, m.progress)));
+    return missions.filter(m => allowedGroups.includes(statusToGroup({ status: m.status, isHeld: m.isHeld, startAt: m.startAt, progress: m.progress })));
   }, [missions, allowedGroups]);
 
   // Group filtered missions by workspace
@@ -178,12 +179,12 @@ export function MissionGrid({ missions }: { missions: MissionItem[] }) {
         const wsKey = bucket.workspaceName ?? '__unassigned__';
         const isExpanded = expandedOldCompletions.has(wsKey);
 
-        // Sub-group this workspace's missions by health group
+        // Sub-group this workspace's missions by status-based group
         const subGroups: Record<MissionGroup, MissionItem[]> = {
           running: [], attention: [], review: [], scheduled: [], paused: [], completed: [],
         };
         for (const m of bucket.missions) {
-          subGroups[healthToGroup(m.health, m.progress)].push(m);
+          subGroups[statusToGroup({ status: m.status, isHeld: m.isHeld, startAt: m.startAt, progress: m.progress })].push(m);
         }
         subGroups.scheduled.sort((a, b) => (a.nextScanMins ?? Infinity) - (b.nextScanMins ?? Infinity));
 
