@@ -1203,6 +1203,13 @@ export const workers = pgTable('workers', {
   filesChanged: integer('files_changed').default(0),
   linesAdded: integer('lines_added').default(0),
   linesRemoved: integer('lines_removed').default(0),
+  // Runner-reported `git status --porcelain` (tracked files only, untracked
+  // excluded) at the worktree the worker session is using. Kept fresh by the
+  // periodic sync loop so the value is current by the time complete_task is
+  // called — that call reaches the server directly from the agent's MCP tool,
+  // with no local git access of its own, so the completion gate has nothing
+  // else to read at the instant it needs to decide.
+  dirtyWorktree: boolean('dirty_worktree').default(false).notNull(),
   // Admin instructions — the delivery queue. Handed to a consuming runner on its
   // next check-in and cleared ONLY when that runner confirms it injected the text
   // (PATCH `instructionsDelivered`). Multiple queued instructions concatenate, so

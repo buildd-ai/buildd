@@ -2146,6 +2146,155 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(400);
       expect(taskUpdateCalled).toBe(false);
     });
+
+    it('refuses completion when the worktree has uncommitted changes but zero commits and no PR (auto mode)', async () => {
+      // The exact incident this gate closes: a worker edited files, never
+      // committed, never pushed — commitCount stays 0 so the commits>0 gate
+      // never fires, but the runner's periodic sync already persisted
+      // dirtyWorktree=true onto the worker row before complete_task arrived.
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+      const data = await res.json();
+      expect(data.error).toContain('uncommitted changes');
+      expect(data.hint).toBe('create_pr');
+    });
+
+    it('completes when there are zero commits, a clean worktree, and an artifact (auto mode)', async () => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'artifact-1' }]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a dirty-worktree worker whose branch already has an open PR (retry/CI-fix continuation, auto mode)', async () => {
+      // The retry/CI-fix exemption: a worker row with no prUrl of its own, on
+      // a branch whose PR was opened by an earlier worker row, must not be
+      // blocked by a dirty worktree — the GitHub auto-detect above already
+      // satisfies the gate via hasPR before the dirty check is ever reached.
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-2', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst
+        .mockResolvedValueOnce({
+          id: 'worker-2',
+          accountId: 'account-1',
+          status: 'running',
+          workspaceId: 'ws-1',
+          taskId: 'task-1',
+          branch: 'buildd/retry-branch',
+          commitCount: 1,
+          dirtyWorktree: true,
+          prUrl: null,
+          prNumber: null,
+          pendingInstructions: null,
+        })
+        .mockResolvedValueOnce({
+          id: 'worker-2',
+          branch: 'buildd/retry-branch',
+          prUrl: 'https://github.com/org/repo/pull/77',
+          prNumber: 77,
+        });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: 'repo-1' });
+      mockGithubReposFindFirst.mockResolvedValue({
+        id: 'repo-1',
+        fullName: 'org/repo',
+        installation: { installationId: 123 },
+      });
+      mockGithubApi.mockResolvedValue([
+        { html_url: 'https://github.com/org/repo/pull/77', number: 77, state: 'open' },
+      ]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.prNumber).toBe(77);
+    });
   });
 
   describe('PR auto-detection from GitHub', () => {
