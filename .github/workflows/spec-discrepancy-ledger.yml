@@ -24,6 +24,15 @@
 # the workspace row identifier out of the versioned source per "This Repo Is
 # Public" in CLAUDE.md, even though it's low-sensitivity (an internal CI
 # eval workspace id, not user data).
+#
+# Delta gate (§4): scripts/spec-conformance-delta-gate.ts reads the last
+# fully-checked commit from the same keyed buildd artifact
+# (`spec-conformance-last-sha`) that spec-conformance-check.yml writes, and
+# skips the writer step when the diff against it touches nothing in the
+# watch set. `record` runs unconditionally after the writer (`if: always()`)
+# — this workflow only ever runs on push to dev, so every invocation is
+# eligible to advance the pointer, unlike the blocking checker which also
+# runs on PRs.
 name: Spec Discrepancy Ledger
 
 on:
@@ -42,9 +51,12 @@ jobs:
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+      BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -54,7 +66,12 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Delta gate — decide whether anything watched changed
+        id: gate
+        run: bun run scripts/spec-conformance-delta-gate.ts check
+
       - name: Write spec discrepancy ledger
+        if: steps.gate.outputs.skip != 'true'
         run: |
           if [ -z "$WORKSPACE_ID" ]; then
             echo "::notice::WORKSPACE_ID repo variable not set — falling back to dry run."
@@ -62,3 +79,7 @@ jobs:
             exit 0
           fi
           bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
+
+      - name: Delta gate — record HEAD as last-checked
+        if: always()
+        run: bun run scripts/spec-conformance-delta-gate.ts record
