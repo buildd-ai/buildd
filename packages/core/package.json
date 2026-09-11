@@ -38,6 +38,7 @@
     "./task-path-inference": "./task-path-inference.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
+    "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
     "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",

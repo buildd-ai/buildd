@@ -256,7 +256,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       </div>
 
       {item.escalationReason && (
-        <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">
+        <p className="text-[12px] text-text-secondary mt-0.5 break-words">
           {item.escalationReason}
         </p>
       )}

@@ -26,6 +26,16 @@ export interface WatchedRelease {
   healthyAt: Date | null;
 }
 
+// The repo this release's workspace ships from, resolved via
+// pickWorkspaceRepoIdentity — needed to ask GitHub whether a deployed sha
+// that differs from headSha is an ancestor-descendant (supersession) rather
+// than a genuine mismatch. Either field may be null (App not installed, repo
+// unresolved); callers without both simply skip the ancestry check.
+export interface RepoIdentity {
+  installationId: number | null;
+  fullName: string | null;
+}
+
 export async function degradeRelease(
   release: WatchedRelease,
   db: DB,
@@ -127,11 +137,54 @@ async function fetchDeployedSha(verificationUrl: string): Promise<string | null>
   }
 }
 
+// A deployed sha that differs from a release's own headSha is not
+// automatically a broken deploy: main advances continuously, so a *later*
+// legitimate merge can land on top of this release's commit during the
+// watch window, and the identity endpoint will then report that newer sha.
+// GitHub's compare API tells the two cases apart: `ahead`/`identical` means
+// headSha is an ancestor of deployedSha (production moved forward, this
+// release's code is still live, just superseded) — anything else
+// (`behind`/`diverged`, or a 404 meaning headSha no longer exists on the
+// branch) means production is genuinely not running what this release
+// shipped. Returns null (no signal) on API failure — callers should not
+// treat that as a positive supersession finding.
+async function isDeployedShaDescendant(
+  installationId: number,
+  repoFullName: string,
+  baseSha: string,
+  candidateDescendantSha: string,
+): Promise<boolean | null> {
+  try {
+    const { githubApi } = await import('@/lib/github');
+    const compare = await githubApi(
+      installationId,
+      `/repos/${repoFullName}/compare/${baseSha}...${candidateDescendantSha}`,
+    );
+    const status = compare?.status as string | undefined;
+    return status === 'ahead' || status === 'identical';
+  } catch {
+    return null;
+  }
+}
+
+async function markHealthy(release: WatchedRelease, db: DB): Promise<void> {
+  await db
+    .update(releases)
+    .set({ state: 'healthy', healthyAt: new Date(), failureReason: null })
+    .where(eq(releases.id, release.id));
+
+  await triggerEvent(channels.workspace(release.workspaceId), events.RELEASE_UPDATED, {
+    releaseId: release.id,
+    state: 'healthy',
+  });
+}
+
 export async function probeAndDegrade(
   release: WatchedRelease,
   verificationUrl: string,
   db: DB,
-): Promise<'ok' | 'degraded' | 'unverified'> {
+  repoIdentity?: RepoIdentity | null,
+): Promise<'ok' | 'degraded' | 'unverified' | 'superseded'> {
   try {
     const res = await fetch(verificationUrl, {
       signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
@@ -163,10 +216,57 @@ export async function probeAndDegrade(
     Date.now() - release.healthyAt.getTime() <= SHA_GRACE_MINUTES * 60_000;
   if (withinGraceWindow) return 'unverified';
 
+  if (repoIdentity?.installationId && repoIdentity.fullName) {
+    const isSuperseded = await isDeployedShaDescendant(
+      repoIdentity.installationId,
+      repoIdentity.fullName,
+      release.headSha,
+      deployedSha,
+    );
+    if (isSuperseded === true) return 'superseded';
+  }
+
   await degradeRelease(
     release,
     db,
     `deployed sha ${deployedSha} does not match release head sha ${release.headSha}`,
   );
   return 'degraded';
+}
+
+// Re-check a release already marked `degraded` by the sha-mismatch path
+// above. A row can land there from a false positive (a newer merge landed
+// mid-watch-window, before this ancestry check existed, or before it was
+// deployed) — this heals it back to `healthy` once the currently-deployed
+// sha is confirmed to still contain headSha. Never touches a release
+// degraded for a different reason (non-2xx, network error): those describe
+// the endpoint itself failing, which a sha comparison can't exonerate.
+export async function healSupersededRelease(
+  release: WatchedRelease,
+  verificationUrl: string,
+  db: DB,
+  repoIdentity: RepoIdentity,
+): Promise<'healed' | 'unresolved'> {
+  if (!release.headSha || !repoIdentity.installationId || !repoIdentity.fullName) {
+    return 'unresolved';
+  }
+
+  const deployedSha = await fetchDeployedSha(verificationUrl);
+  if (!deployedSha) return 'unresolved';
+
+  if (deployedSha === release.headSha) {
+    await markHealthy(release, db);
+    return 'healed';
+  }
+
+  const isSuperseded = await isDeployedShaDescendant(
+    repoIdentity.installationId,
+    repoIdentity.fullName,
+    release.headSha,
+    deployedSha,
+  );
+  if (isSuperseded !== true) return 'unresolved';
+
+  await markHealthy(release, db);
+  return 'healed';
 }

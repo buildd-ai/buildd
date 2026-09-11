@@ -53,6 +53,28 @@ function computeTouchedPaths(worktreePath: string): string[] {
 }
 
 /**
+ * Does the worktree have uncommitted modifications to TRACKED files right now?
+ * Untracked (`??`) entries are excluded — a scratch file the agent hasn't
+ * decided about yet isn't the same signal as an edit sitting uncommitted.
+ *
+ * Sent on every sync tick so `workers.dirty_worktree` is current by the time
+ * complete_task reaches the server — that call arrives directly from the
+ * agent's MCP tool over HTTP, with no local git access of its own, so the
+ * completion gate can only read whatever this loop most recently reported.
+ * Fail-open (returns false on error): this is passive infrastructure, not a
+ * source of truth on its own — the runner's own terminal collectGitStats call
+ * (git-operations.ts) computes the same thing independently at session end.
+ */
+function computeDirtyWorktree(worktreePath: string): boolean {
+  try {
+    const output = execSync('git status --porcelain', { cwd: worktreePath, timeout: 5000 }).toString();
+    return output.split('\n').some(line => line.length > 0 && !line.startsWith('??'));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Worktree paths are keyed on the requested branch (see setupWorktree), not on
  * worker id — a retry on the same task computes the identical path. That means
  * a failed worker's record can outlive it in memory (pending eviction retention)
@@ -324,6 +346,10 @@ export class WorkerSync {
       const touchedPaths = worker.worktreePath && existsSync(worker.worktreePath)
         ? computeTouchedPaths(worker.worktreePath)
         : undefined;
+      // Dirty-worktree signal for the complete_task gate — see computeDirtyWorktree.
+      const dirtyWorktree = worker.worktreePath && existsSync(worker.worktreePath)
+        ? computeDirtyWorktree(worker.worktreePath)
+        : undefined;
 
       const update: Parameters<BuilddClient['updateWorker']>[1] = {
         status: worker.status === 'waiting' ? 'waiting_input' : 'running',
@@ -341,6 +367,7 @@ export class WorkerSync {
         ...(worker.pendingPaths?.length ? { pendingPaths: [...worker.pendingPaths] } : {}),
         // Observed touches from git diff — server accumulates into workers.observedTouches.
         ...(touchedPaths && touchedPaths.length > 0 ? { touchedPaths } : {}),
+        ...(dirtyWorktree !== undefined ? { dirtyWorktree } : {}),
         // This loop is the one real consumer of the human-instruction queue:
         // it injects `response.instructions` into the live session. Declaring it
         // is what stops every other PATCH (milestones, branch, status) from
