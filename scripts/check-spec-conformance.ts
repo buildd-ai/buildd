@@ -22,7 +22,7 @@
 
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { evaluateAllDocs, resolveConformanceConfig, type DocEvaluation } from '../packages/core/spec-conformance';
+import { evaluateAllDocs, resolveConformanceConfig, MISSING_ASSERTIONS_DEBT, type DocEvaluation } from '../packages/core/spec-conformance';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -76,7 +76,7 @@ function printReport(evals: DocEvaluation[]) {
   console.log(`Spec conformance — ${evals.length} docs (${config.specsRoot}, ${config.designRoot})\n`);
 
   for (const e of evals) {
-    if (e.results.length === 0 && e.validationErrors.length === 0) continue; // quiet for the common zero-assertion case
+    if (e.results.length === 0 && e.validationErrors.length === 0 && !e.contradiction) continue; // quiet for the common zero-assertion case
     const flag = e.contradiction ? ' ⚠ CONTRADICTION' : '';
     console.log(`${e.path}`);
     console.log(`  declared=${e.declaredStatus ?? '(none)'} derived=${e.derivedStatus}${flag}`);
@@ -100,4 +100,7 @@ function printReport(evals: DocEvaluation[]) {
   console.log(`Assertions:        ${totalAssertions} (${totalPass} pass, ${totalFail} fail, ${totalSuppressed} suppressed)`);
   console.log(`Validation errors: ${totalValidationErrors}`);
   console.log(`Contradictions:    ${contradictions.length}`);
+  console.log(
+    `Assertion debt:    ${MISSING_ASSERTIONS_DEBT.size} pre-existing doc(s) grandfathered past the missing-assertions gate — shrinks only, never grows (Part A)`,
+  );
 }

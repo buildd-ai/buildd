@@ -8,6 +8,23 @@ domain: releases
 surfaces: [apps/web/src/lib/migration-safety.ts, apps/web/src/lib/migration-inspector.ts, apps/web/src/lib/auto-merge.ts, packages/core/db/schema.ts]
 related: [release-flow, scheduled-task-merge-policy]
 keywords: [expand, contract, classifymigrationsql, schema drift, drizzle, escalatetopaths]
+assertions:
+  - id: classify-migration-sql
+    type: symbol
+    name: classifyMigrationSql
+    path: apps/web/src/lib/migration-safety.ts
+  - id: classify-pr-migrations
+    type: symbol
+    name: classifyPullRequestMigrations
+    path: apps/web/src/lib/migration-safety.ts
+  - id: inspect-pr-migrations
+    type: symbol
+    name: inspectPullRequestMigrations
+    path: apps/web/src/lib/migration-inspector.ts
+  - id: evaluate-auto-merge-safety
+    type: symbol
+    name: evaluateAutoMergeSafety
+    path: apps/web/src/lib/auto-merge.ts
 ---
 
 ## DB Migration Operation-Class Gate

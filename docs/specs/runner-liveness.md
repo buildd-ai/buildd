@@ -8,6 +8,24 @@ domain: runners
 surfaces: [apps/web/src/lib/stale-workers.ts, apps/web/src/app/api/workers/heartbeat/route.ts, packages/shared/src/runner-liveness.ts, packages/core/runner-health.ts]
 related: [provider-failover, mission-task-lifecycle]
 keywords: [worker_heartbeats, heartbeat_stale_ms, cleanupstaleworkers, waiting_input timeout, buildd_runner_poll_min, viewertoken]
+assertions:
+  - id: heartbeat-route
+    type: route
+    method: POST
+    path: /api/workers/heartbeat
+    file: apps/web/src/app/api/workers/heartbeat/route.ts
+  - id: cleanup-stale-workers
+    type: symbol
+    name: cleanupStaleWorkers
+    path: apps/web/src/lib/stale-workers.ts
+  - id: cleanup-stuck-waiting-input
+    type: symbol
+    name: cleanupStuckWaitingInput
+    path: apps/web/src/lib/stale-workers.ts
+  - id: record-runner-outcome
+    type: symbol
+    name: recordRunnerOutcome
+    path: packages/core/runner-health.ts
 supersedes: []
 ---
 # Runner Liveness

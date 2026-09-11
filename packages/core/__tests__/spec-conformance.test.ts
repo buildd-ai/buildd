@@ -8,6 +8,7 @@ import {
   isSuppressed,
   computeDerivedStatus,
   checkContradiction,
+  checkMissingAssertions,
   parseFrontmatter,
   extractBoldStatus,
   declaredStatus,
@@ -17,6 +18,7 @@ import {
   resolveConformanceConfig,
   computeWatchSet,
   isWatched,
+  MISSING_ASSERTIONS_DEBT,
   type RawAssertion,
   type TypedAssertion,
   type AssertionResult,
@@ -304,6 +306,57 @@ describe('checkContradiction', () => {
   });
 });
 
+// ─── checkMissingAssertions (Part A — enforce first) ───────────────────────
+
+describe('checkMissingAssertions', () => {
+  test('terminal status + zero assertions + not grandfathered → missing-assertions', () => {
+    const c = checkMissingAssertions('docs/design/brand-new.md', 'design', 'implemented', 0, null);
+    expect(c?.kind).toBe('missing-assertions');
+  });
+
+  test('terminal status (active, spec) + zero assertions → missing-assertions', () => {
+    const c = checkMissingAssertions('docs/specs/brand-new.md', 'spec', 'active', 0, null);
+    expect(c?.kind).toBe('missing-assertions');
+  });
+
+  test('non-terminal status (proposed/draft) + zero assertions → no failure (§5 honest backlog state)', () => {
+    expect(checkMissingAssertions('docs/design/x.md', 'design', 'proposed', 0, null)).toBeNull();
+    expect(checkMissingAssertions('docs/specs/x.md', 'spec', 'draft', 0, null)).toBeNull();
+  });
+
+  test('no declared status → no failure', () => {
+    expect(checkMissingAssertions('docs/design/x.md', 'design', null, 0, null)).toBeNull();
+  });
+
+  test('at least one assertion declared → no failure, even if every assertion is suppressed', () => {
+    // Presence, not evaluated outcome — a doc's own §2 contradiction check separately
+    // handles whether a suppressed-only doc's derived status contradicts declared.
+    expect(checkMissingAssertions('docs/design/x.md', 'design', 'implemented', 1, null)).toBeNull();
+  });
+
+  test('not_mechanizable_reason (10+ chars) is a valid escape hatch, mirroring goalCriteria', () => {
+    expect(
+      checkMissingAssertions('docs/design/x.md', 'design', 'implemented', 0, 'no code surface exists to assert against'),
+    ).toBeNull();
+  });
+
+  test('not_mechanizable_reason under 10 chars does not satisfy the escape hatch', () => {
+    const c = checkMissingAssertions('docs/design/x.md', 'design', 'implemented', 0, 'too short');
+    expect(c?.kind).toBe('missing-assertions');
+  });
+
+  test('a doc in MISSING_ASSERTIONS_DEBT is grandfathered past the gate', () => {
+    const [debtPath] = MISSING_ASSERTIONS_DEBT;
+    expect(debtPath).toBeDefined();
+    expect(checkMissingAssertions(debtPath!, 'design', 'implemented', 0, null)).toBeNull();
+  });
+
+  test('MISSING_ASSERTIONS_DEBT contains no doc this task already backfilled', () => {
+    expect(MISSING_ASSERTIONS_DEBT.has('docs/design/worker-mount-isolation.md')).toBe(false);
+    expect(MISSING_ASSERTIONS_DEBT.has('docs/design/path-claims.md')).toBe(false);
+  });
+});
+
 // ─── parseFrontmatter / extractBoldStatus / declaredStatus ─────────────────
 
 describe('parseFrontmatter', () => {
@@ -348,6 +401,16 @@ describe('parseFrontmatter', () => {
     });
     expect(fm?.assertions[1].skip_until).toBe('2026-08-15');
     expect(fm?.assertions[1].skip_reason).toBe('Renamed — PR pending');
+  });
+
+  test('parses not_mechanizable_reason (Part A escape hatch)', () => {
+    const fm = parseFrontmatter('---\nstatus: implemented\nnot_mechanizable_reason: "no code surface to assert against"\n---\n# Title\n');
+    expect(fm?.notMechanizableReason).toBe('no code surface to assert against');
+  });
+
+  test('not_mechanizable_reason defaults to null when absent', () => {
+    const fm = parseFrontmatter('---\nstatus: proposed\n---\n# Title\n');
+    expect(fm?.notMechanizableReason).toBeNull();
   });
 });
 
@@ -412,18 +475,46 @@ describe('portability (Part C — specsRoot/designRoot are not hardcoded)', () =
 });
 
 describe('evaluateDoc end-to-end', () => {
-  test('a spec with zero assertions resolves to unverified, fails nothing, and stays visible', () => {
-    const dir = join(root, 'zero-assertions');
+  test('a draft/proposed spec with zero assertions resolves to unverified, fails nothing, and stays visible (§5 honest backlog state)', () => {
+    const dir = join(root, 'zero-assertions-nonterminal');
     mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
     mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
-    // Declares a TERMINAL status with no assertions at all — still must not be flagged as a contradiction.
-    writeFileSync(join(dir, 'docs', 'specs', 'lonely.md'), '---\nstatus: active\n---\n# Lonely\n');
+    // Non-terminal status with no assertions at all — must not be flagged as a contradiction.
+    writeFileSync(join(dir, 'docs', 'specs', 'lonely.md'), '---\nstatus: draft\n---\n# Lonely\n');
 
     const config = resolveConformanceConfig({ repoRoot: dir });
     const [evaluation] = evaluateAllDocs(config);
 
     expect(evaluation.derivedStatus).toBe('unverified');
     expect(evaluation.results).toEqual([]);
+    expect(evaluation.contradiction).toBeNull();
+  });
+
+  test('an active spec with zero assertions and no grandfathering is a missing-assertions contradiction (Part A)', () => {
+    const dir = join(root, 'zero-assertions-terminal');
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    writeFileSync(join(dir, 'docs', 'specs', 'lonely.md'), '---\nstatus: active\n---\n# Lonely\n');
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const [evaluation] = evaluateAllDocs(config);
+
+    expect(evaluation.derivedStatus).toBe('unverified');
+    expect(evaluation.contradiction?.kind).toBe('missing-assertions');
+  });
+
+  test('an active spec with zero assertions but a stated not_mechanizable_reason is not a contradiction', () => {
+    const dir = join(root, 'zero-assertions-escape-hatch');
+    mkdirSync(join(dir, 'docs', 'specs'), { recursive: true });
+    mkdirSync(join(dir, 'docs', 'design'), { recursive: true });
+    writeFileSync(
+      join(dir, 'docs', 'specs', 'lonely.md'),
+      '---\nstatus: active\nnot_mechanizable_reason: "purely a UX copy contract, no code surface"\n---\n# Lonely\n',
+    );
+
+    const config = resolveConformanceConfig({ repoRoot: dir });
+    const [evaluation] = evaluateAllDocs(config);
+
     expect(evaluation.contradiction).toBeNull();
   });
 

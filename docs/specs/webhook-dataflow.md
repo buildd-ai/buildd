@@ -8,6 +8,20 @@ domain: integrations
 surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route.ts, apps/web/src/lib/task-dependencies.ts, apps/web/src/lib/notify.ts]
 related: [work-tracker-integration, mission-task-lifecycle, runner-liveness]
 keywords: [pusher_channel_prefix, task:unblocked, worker:command, webhookconfig, pushover, notificationpreferences]
+assertions:
+  - id: notify-team-symbol
+    type: symbol
+    name: notifyTeam
+    path: apps/web/src/lib/notify.ts
+  - id: github-webhook-route-post
+    type: route
+    method: POST
+    path: /api/github/webhook
+    file: apps/web/src/app/api/github/webhook/route.ts
+  - id: resolve-completed-task
+    type: symbol
+    name: resolveCompletedTask
+    path: apps/web/src/lib/task-dependencies.ts
 supersedes: []
 ---
 # Webhook & Realtime Dataflow
