@@ -18,6 +18,12 @@
 # writer script itself falls back to a dry run and logs classification
 # counts without writing — same posture knowledge-eval.yml uses for its own
 # DB-dependent job.
+#
+# WORKSPACE_ID is a repo variable (Settings → Actions → Variables), not a
+# literal here — same pattern as vars.TEST_MACHINE_HOST in build.yml. Keeps
+# the workspace row identifier out of the versioned source per "This Repo Is
+# Public" in CLAUDE.md, even though it's low-sensitivity (an internal CI
+# eval workspace id, not user data).
 name: Spec Discrepancy Ledger
 
 on:
@@ -35,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      WORKSPACE_ID: 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6
+      WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
 
     steps:
       - uses: actions/checkout@v7
@@ -49,4 +55,10 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Write spec discrepancy ledger
-        run: bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
+        run: |
+          if [ -z "$WORKSPACE_ID" ]; then
+            echo "::notice::WORKSPACE_ID repo variable not set — falling back to dry run."
+            bun run specs:discrepancies -- --dry-run
+            exit 0
+          fi
+          bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
