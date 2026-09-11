@@ -7,7 +7,7 @@
  * checkBwrapSupport() gave a false positive (setuid bwrap letting the probe
  * pass while Claude Code's actual invocation fails).
  *
- * Run: bun test apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts
+ * Run: bun run scripts/run-unit-tests.ts apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts
  */
 
 import { describe, test, expect, mock, beforeEach, afterEach, setDefaultTimeout } from 'bun:test';
@@ -226,6 +226,19 @@ function makeTask() {
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('bwrap runtime recovery', () => {
+  let originalDisableSandbox: string | undefined;
+
+  beforeEach(() => {
+    // Exercise mocked probes regardless of the worker's operator flag.
+    originalDisableSandbox = process.env.BUILDD_DISABLE_SANDBOX;
+    delete process.env.BUILDD_DISABLE_SANDBOX;
+  });
+
+  afterEach(() => {
+    if (originalDisableSandbox === undefined) delete process.env.BUILDD_DISABLE_SANDBOX;
+    else process.env.BUILDD_DISABLE_SANDBOX = originalDisableSandbox;
+  });
+
   let manager: InstanceType<typeof WorkerManager>;
 
   beforeEach(() => {
