@@ -395,11 +395,15 @@ export async function handleCriteriaVerificationOutcome(
     verdict = ev.outcome === 'ok' ? 'pass' : ev.outcome === 'timeout' || ev.outcome === 'exec_error' ? 'UNVERIFIED' : 'fail';
   } else if (ran !== null) {
     verdict = ran === 'ok' ? 'pass' : ran === 'unresolved' ? 'UNVERIFIED' : 'fail';
-  } else if (task.status === 'failed' || task.status === 'cancelled') {
-    // A failed task without evidence still cannot verify the criterion, but it is
-    // safe to record the negative: nothing was proven.
-    verdict = 'fail';
   } else {
+    // Neither the runner's evidence nor the loop history says the command ever
+    // ran. That holds even when the task itself reached `failed`/`cancelled` —
+    // a sandbox setup failure, an uncaught exception before the loop started,
+    // or a worker crash/heartbeat expiry all fail the *task* without the
+    // command ever demonstrably running. Grading that as `fail` would blame
+    // the code for an environment problem the command never weighed in on, so
+    // leave the criterion unresolved instead, same as a `completed` task with
+    // no proof of a run.
     console.warn(
       `[criteria-verify] verification task ${task.id} finished with no command evidence — criterion ${marker.criterionIndex} left unresolved`
     );

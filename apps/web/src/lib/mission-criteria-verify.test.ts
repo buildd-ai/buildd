@@ -501,7 +501,7 @@ describe('handleCriteriaVerificationOutcome', () => {
       id: 'verify-task-1',
       status: 'failed',
       context: marker(),
-      result: { loopHistory: [{ summary: 'Command failed (exit code 2, outcome: failed)' }] },
+      result: { loopHistory: [{ satisfied: false, summary: 'Command failed (exit code 2, outcome: failed)' }] },
       missionId: 'm1',
     };
     missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
@@ -532,6 +532,29 @@ describe('handleCriteriaVerificationOutcome', () => {
 
   it('leaves the criterion unresolved when a completed task carries no proof the command ran', async () => {
     taskFindFirstRow = { id: 'verify-task-1', status: 'completed', context: marker(), result: {}, missionId: 'm1' };
+    missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
+
+    const res = await handleCriteriaVerificationOutcome('verify-task-1');
+
+    expect(res.applied).toBe(false);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('leaves the criterion unresolved — not fail — when a failed task carries no proof the command ran', async () => {
+    // e.g. sandbox setup blew up, or the worker crashed/heartbeat-expired before
+    // the Bash loop ever started: the task is `failed`, but the command never
+    // demonstrably ran, so there is nothing to grade the criterion against.
+    taskFindFirstRow = { id: 'verify-task-1', status: 'failed', context: marker(), result: {}, missionId: 'm1' };
+    missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
+
+    const res = await handleCriteriaVerificationOutcome('verify-task-1');
+
+    expect(res.applied).toBe(false);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('leaves the criterion unresolved — not fail — when a cancelled task carries no proof the command ran', async () => {
+    taskFindFirstRow = { id: 'verify-task-1', status: 'cancelled', context: marker(), result: {}, missionId: 'm1' };
     missionRow = { id: 'm1', goalCriteria: structuredClone(CURRENT_CRITERIA), goalCriteriaState: structuredClone(STORED_STATE) };
 
     const res = await handleCriteriaVerificationOutcome('verify-task-1');
