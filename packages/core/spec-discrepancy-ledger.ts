@@ -80,6 +80,20 @@ export function canPromote(direction: Direction): direction is 'spec_ahead' {
   return direction === 'spec_ahead';
 }
 
+/**
+ * `decideLedgerWrite` only ever returns 'insert' / 'reopen' / 'refresh' /
+ * 'keep_accepted' when `classification` is a gap ('code_ahead' or
+ * 'contradicted') — never 'clean'. This guard makes that invariant a type
+ * fact at the three write call sites instead of a comment, so a `direction`
+ * column can never be written 'clean' even if type-check scope widens enough
+ * to otherwise allow it.
+ */
+export function isDirection(
+  classification: Exclude<Classification, 'skip'>
+): classification is Direction {
+  return classification !== 'clean';
+}
+
 export function assertPromotable(direction: Direction): void {
   if (!canPromote(direction)) {
     throw new Error(
@@ -198,7 +212,10 @@ export async function writeLedgerFromEvaluations(
         case 'noop':
           break;
 
-        case 'insert':
+        case 'insert': {
+          if (!isDirection(classification)) {
+            throw new Error(`invariant violated: 'insert' implies a gap classification, got 'clean'`);
+          }
           await db.insert(specDiscrepancies).values({
             workspaceId,
             specPath: evalDoc.path,
@@ -212,8 +229,12 @@ export async function writeLedgerFromEvaluations(
           summary.inserted++;
           summary.byDirection[classification]++;
           break;
+        }
 
-        case 'reopen':
+        case 'reopen': {
+          if (!isDirection(classification)) {
+            throw new Error(`invariant violated: 'reopen' implies a gap classification, got 'clean'`);
+          }
           await db
             .update(specDiscrepancies)
             .set({ direction: classification, status: 'open', firstSeenAt: now, lastCheckedAt: now, evidence })
@@ -221,9 +242,13 @@ export async function writeLedgerFromEvaluations(
           summary.reopened++;
           summary.byDirection[classification]++;
           break;
+        }
 
         case 'refresh':
-        case 'keep_accepted':
+        case 'keep_accepted': {
+          if (!isDirection(classification)) {
+            throw new Error(`invariant violated: '${action}' implies a gap classification, got 'clean'`);
+          }
           await db
             .update(specDiscrepancies)
             .set({ direction: classification, lastCheckedAt: now, evidence })
@@ -231,6 +256,7 @@ export async function writeLedgerFromEvaluations(
           summary[action === 'refresh' ? 'refreshed' : 'keptAccepted']++;
           summary.byDirection[classification]++;
           break;
+        }
 
         case 'resolve':
           await db

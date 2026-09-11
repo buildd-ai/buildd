@@ -1,0 +1,52 @@
+# Spec Discrepancy Ledger — Tier-2 CI writer, per docs/design/spec-conformance.md §7 Part B.
+#
+# Runs packages/core/scripts/write-spec-discrepancies.ts against the buildd
+# workspace's own spec/design docs on every push to dev, upserting
+# spec_discrepancies rows per the §8 direction rule and §9 closure rule.
+#
+# Deliberately unconditional (no path filter): §4's delta gate is explicit
+# that the watch set must include code-surface paths, not just doc paths —
+# `worker-mount-isolation.md` drifted with zero changes under docs/design/,
+# only a symbol rename in application code. A static path filter here would
+# reproduce exactly that miss. §4's actual optimization (skip the run when
+# a keyed buildd artifact shows the watch-set intersection is empty) is not
+# implemented yet — checks are ripgrep/filesystem-based with no LLM calls,
+# so running unconditionally on every push is correct, just not maximally
+# cheap. Tracked as a follow-up, not blocking here.
+#
+# Secret guard: needs DATABASE_URL. Absent (fork / unconfigured repo), the
+# writer script itself falls back to a dry run and logs classification
+# counts without writing — same posture knowledge-eval.yml uses for its own
+# DB-dependent job.
+name: Spec Discrepancy Ledger
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: spec-discrepancy-ledger-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    name: Tier-2 CI — write spec_discrepancies
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WORKSPACE_ID: 57ffc0e4-1c4e-44b3-be63-6ef6cc8f1be6
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Write spec discrepancy ledger
+        run: bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
