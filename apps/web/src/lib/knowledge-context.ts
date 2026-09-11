@@ -122,7 +122,7 @@ async function buildCorporaHint(
     }
 
     if (parts.length === 0) return '';
-    return `knowledge: ${parts.join(' · ')} — query_knowledge before diagnosing`;
+    return `knowledge: ${parts.join(' · ')} — recall before diagnosing`;
   } catch {
     return '';
   }
