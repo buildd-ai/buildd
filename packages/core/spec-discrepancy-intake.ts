@@ -77,10 +77,10 @@ function candidatePaths(row: OpenCodeAheadRow): string[] {
  * mission, so it is excluded the same way `shouldSerializeByManifest` excludes
  * it from dependency inference.
  */
-export function matchRowsByPathManifest(
+export function matchRowsByPathManifest<T extends OpenCodeAheadRow>(
   pathManifest: string[] | null | undefined,
-  rows: OpenCodeAheadRow[]
-): OpenCodeAheadRow[] {
+  rows: T[]
+): T[] {
   if (!pathManifest || pathManifest.length === 0 || isAdvisoryManifest(pathManifest)) return [];
   return rows.filter((row) => pathsOverlap(pathManifest, candidatePaths(row)));
 }

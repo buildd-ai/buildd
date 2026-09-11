@@ -50,6 +50,7 @@ import {
   attachExternalContextProviders,
   attachKnowledgeContext,
   attachSubjectPriorWork,
+  attachDiscrepancyContext,
 } from './context-injection';
 import {
   attachClaudeCredentials,
@@ -1657,12 +1658,13 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
 
-  // Prompt-context injection. ORDER IS THE CONTRACT: these three append to the
+  // Prompt-context injection. ORDER IS THE CONTRACT: these four append to the
   // same resolvedContextProviders rail and the runner concatenates it in order.
   // See ./context-injection.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
   await attachKnowledgeContext(claimedWorkers, filteredTasks);
   await attachSubjectPriorWork(claimedWorkers, filteredTasks);
+  await attachDiscrepancyContext(claimedWorkers, filteredTasks);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
   for (const cw of claimedWorkers) {
