@@ -1668,8 +1668,11 @@ export async function handleBuilddAction(
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
         : `Mergeable: unknown (${pr.mergeableState ?? 'computing'})`;
 
+      const generatedNote = pr.generatedFiles > 0
+        ? ` (+${pr.generatedAdditions + pr.generatedDeletions} generated across ${pr.generatedFiles} file(s), excluded)`
+        : '';
       const statsLine = pr.additions !== null
-        ? `Diff: +${pr.additions}/-${pr.deletions} across ${pr.changedFiles} file(s)`
+        ? `Diff: +${pr.additions}/-${pr.deletions} across ${pr.changedFiles} file(s) reviewable${generatedNote}`
         : '';
 
       const bodyPreview = pr.body
