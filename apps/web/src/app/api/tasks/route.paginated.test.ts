@@ -180,6 +180,7 @@ mock.module('@buildd/core/mission-helpers', () => ({ deriveMissionHealth: mock((
 mock.module('@buildd/core/task-category', () => ({ classifyTask: mock(() => null) }));
 mock.module('@buildd/shared', () => ({ TaskCategory: {} }));
 mock.module('@buildd/core/report-ops', () => ({ reportOps: mock(() => Promise.resolve(true)) }));
+mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 
 // Import AFTER mocks
 const { GET } = await import('./route');
