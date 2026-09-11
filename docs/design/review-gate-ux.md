@@ -1,3 +1,25 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "merge-pr"
+    type: "route"
+    method: "POST"
+    path: "/api/prs/[prNumber]/merge"
+    file: "apps/web/src/app/api/prs/[prNumber]/merge/route.ts"
+  - id: "task-summary"
+    type: "route"
+    method: "GET"
+    path: "/api/tasks/[id]/summary"
+    file: "apps/web/src/app/api/tasks/[id]/summary/route.ts"
+  - id: "resolve-dependents"
+    type: "symbol"
+    name: "checkDependsOnResolved"
+    path: "apps/web/src/lib/task-dependencies.ts"
+  - id: "reviewer-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/reviewer-gate.test.ts"
+---
 # Review Gate UX — Design Spec
 
 > **Status:** Proposed — awaiting Max's approval before any implementation begins.

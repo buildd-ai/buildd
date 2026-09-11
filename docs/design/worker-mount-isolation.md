@@ -1,3 +1,23 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "worker-bind-argv"
+    type: "symbol"
+    name: "buildWorkerBwrapArgv"
+    path: "apps/runner/src/bwrap-mount-allowlist.ts"
+  - id: "mount-allowlist-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts"
+  - id: "namespace-recovery-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts"
+  - id: "worker-builds-mount-boundary"
+    type: "symbol_reachable"
+    symbol: "buildWorkerBwrapArgv"
+    entry: "apps/runner/src/workers.ts"
+    as: "read"
+---
 # bwrap Bind-Allowlist Worker Isolation
 
 **Status:** Implemented — phase 1 only (allowlist is opt-in via `BUILDD_SANDBOX_MOUNT_ALLOWLIST`, default off)

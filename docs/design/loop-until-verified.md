@@ -1,3 +1,25 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "loop-parser"
+    type: "symbol"
+    name: "parseLoopConfig"
+    path: "packages/core/loop-config.ts"
+  - id: "exit-condition-evaluator"
+    type: "symbol"
+    name: "evaluateExitCondition"
+    path: "apps/web/src/lib/loop-dispatcher.ts"
+  - id: "completion-dispatches-loop"
+    type: "symbol_reachable"
+    symbol: "dispatchLoopIteration"
+    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    as: "read"
+  - id: "loop-state-migration"
+    type: "migration"
+    number: "0091"
+    contains: "loop_state"
+---
 # Condition-Driven Task Loops
 
 **Status:** Proposed

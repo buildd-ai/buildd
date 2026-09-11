@@ -1,3 +1,19 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "task-class-derivation"
+    type: "symbol"
+    name: "deriveTaskType"
+    path: "packages/core/mission-helpers.ts"
+  - id: "deliverable-predicate"
+    type: "symbol"
+    name: "isDeliverableTask"
+    path: "packages/core/mission-helpers.ts"
+  - id: "task-class-invariants"
+    type: "test_file"
+    path: "packages/core/__tests__/task-class-invariants.test.ts"
+---
 # Task Classification and Wait Primitive
 
 **Status:** Implemented — Part A only (`tasks.task_class` and its read sites shipped in #1730; the wait half is not built)

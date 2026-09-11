@@ -1,3 +1,27 @@
+---
+status: draft
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "public-jwks"
+    type: "route"
+    method: "GET"
+    path: "/api/.well-known/jwks.json"
+    file: "apps/web/src/app/api/.well-known/jwks.json/route.ts"
+  - id: "mint-assertion"
+    type: "route"
+    method: "POST"
+    path: "/api/connectors/[id]/assertion"
+    file: "apps/web/src/app/api/connectors/[id]/assertion/route.ts"
+  - id: "rotate-signing-keys"
+    type: "route"
+    method: "GET"
+    path: "/api/cron/jwks-rotation"
+    file: "apps/web/src/app/api/cron/jwks-rotation/route.ts"
+  - id: "signing-key-migration"
+    type: "migration"
+    number: "0079"
+    contains: "assertion_audience"
+---
 # Cross-App Assertion Grant (SPEC)
 
 > **Status: draft — awaiting approval.**

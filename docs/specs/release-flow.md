@@ -9,6 +9,26 @@ surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "trigger-release"
+    type: "route"
+    method: "POST"
+    path: "/api/releases/trigger"
+    file: "apps/web/src/app/api/releases/trigger/route.ts"
+  - id: "release-status"
+    type: "route"
+    method: "GET"
+    path: "/api/releases/status"
+    file: "apps/web/src/app/api/releases/status/route.ts"
+  - id: "release-execution"
+    type: "symbol"
+    name: "executeRelease"
+    path: "apps/web/src/lib/release-executor.ts"
+  - id: "release-strategy"
+    type: "symbol"
+    name: "resolveReleaseStrategy"
+    path: "packages/core/release-strategy.ts"
 ---
 # Release Flow
 

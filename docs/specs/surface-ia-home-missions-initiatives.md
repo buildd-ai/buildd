@@ -9,6 +9,18 @@ surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presen
 related: [mission-task-lifecycle, timeline-dependency-geometry, release-flow]
 keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline, integration branch, value invariant]
 supersedes: [missions-tab-triage]
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "initiative-archetype"
+    type: "symbol"
+    name: "detectArchetype"
+    path: "packages/core/release-archetype.ts"
+  - id: "initiative-pulse-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/initiative-pulse.test.ts"
+  - id: "verdict-presentation-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/verdict-presentation.test.ts"
 ---
 
 # Surface IA — Home, Missions, Initiatives

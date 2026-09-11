@@ -10,6 +10,20 @@ related: [db-migration-gates, release-flow]
 verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts]
 keywords: [__drizzle_migrations, planMigrations, high-water mark, _journal.json, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "migration-plan"
+    type: "symbol"
+    name: "planMigrations"
+    path: "packages/core/db/migrate-plan.ts"
+  - id: "migrator-uses-plan"
+    type: "symbol_reachable"
+    symbol: "planMigrations"
+    entry: "packages/core/db/migrate.ts"
+    as: "read"
+  - id: "migration-plan-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/migrate-plan.test.ts"
 ---
 # DB Migration Execution
 

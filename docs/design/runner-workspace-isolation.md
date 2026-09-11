@@ -1,3 +1,20 @@
+---
+status: partially
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "isolated-workspace-root"
+    type: "symbol"
+    name: "isolatedWorkspacePath"
+    path: "apps/runner/src/isolation-paths.ts"
+  - id: "isolated-claude-home"
+    type: "symbol"
+    name: "isolatedClaudeConfigDirPath"
+    path: "apps/runner/src/isolation-paths.ts"
+  - id: "isolated-codex-home"
+    type: "symbol"
+    name: "stableCodexHomeIsolatedPath"
+    path: "apps/runner/src/isolation-paths.ts"
+---
 # Runner Workspace Isolation
 
 **Status:** Partially Implemented — Tier 1 Option A + Tier 3 Option B shipped (2026-07-21)

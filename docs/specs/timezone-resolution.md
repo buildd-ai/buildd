@@ -10,6 +10,20 @@ verified_by: [packages/core/__tests__/timezone.test.ts, apps/web/src/lib/team-ti
 related: [webhook-dataflow, external-cron-triggers, team-namespace-scoping]
 keywords: [IANA, users.timezone, teams.timezone, task_schedules.timezone, activeHoursTimezone, Intl, UTC]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "timezone-resolution"
+    type: "symbol"
+    name: "resolveTimezone"
+    path: "packages/core/timezone.ts"
+  - id: "record-user-timezone"
+    type: "route"
+    method: "PUT"
+    path: "/api/me/timezone"
+    file: "apps/web/src/app/api/me/timezone/route.ts"
+  - id: "timezone-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/timezone.test.ts"
 ---
 # Timezone Resolution
 

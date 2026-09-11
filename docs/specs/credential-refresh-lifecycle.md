@@ -10,6 +10,20 @@ related: [credential-isolation, auth-oauth-boundaries, codex-backend-spec]
 keywords: [invalid_grant, refresh token rotation, credential_leases, rotation_started_at, refresh_locked_at, BUILDD_ALLOW_CONTROL_PLANE_REFRESH, nudge task, single-use refresh token]
 verified_by: [apps/web/src/app/api/runner/credential-refresh/route.test.ts, apps/web/src/app/api/cron/codex-token-refresh/route.test.ts, apps/runner/__tests__/unit/credential-refresh.test.ts, apps/runner/__tests__/unit/broker.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "refresh-credential"
+    type: "route"
+    method: "POST"
+    path: "/api/runner/credential-refresh"
+    file: "apps/web/src/app/api/runner/credential-refresh/route.ts"
+  - id: "broker-token-fetch"
+    type: "symbol"
+    name: "fetchTokenFromBroker"
+    path: "apps/runner/src/broker.ts"
+  - id: "refresh-lease-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/runner/credential-refresh/route.test.ts"
 ---
 
 # Credential Refresh Lifecycle

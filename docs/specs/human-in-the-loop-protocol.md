@@ -10,6 +10,21 @@ related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts]
 keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner]
 verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "respond-to-worker"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/respond"
+    file: "apps/web/src/app/api/workers/[id]/respond/route.ts"
+  - id: "instruct-worker"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/[id]/instruct"
+    file: "apps/web/src/app/api/workers/[id]/instruct/route.ts"
+  - id: "durable-answer-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/[id]/respond/route.test.ts"
 ---
 # Human-in-the-Loop Protocol
 

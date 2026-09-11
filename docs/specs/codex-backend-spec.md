@@ -9,6 +9,19 @@ surfaces: [apps/runner/src/backends/codex-backend.ts, apps/runner/src/backends/c
 related: [provider-failover, credential-isolation, runner-liveness]
 keywords: [mapcodexeventtosdkmessages, agents.md, codex_home, resumethreadid, model_reasoning_effort, sandboxmode]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "codex-backend"
+    type: "symbol"
+    name: "CodexBackend"
+    path: "apps/runner/src/backends/codex-backend.ts"
+  - id: "codex-event-adapter"
+    type: "symbol"
+    name: "mapCodexEventToSdkMessages"
+    path: "apps/runner/src/backends/codex-events.ts"
+  - id: "codex-event-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/backends/codex-events.test.ts"
 ---
 
 # Codex backend — behavioral spec

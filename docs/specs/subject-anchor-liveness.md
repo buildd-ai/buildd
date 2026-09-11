@@ -9,6 +9,18 @@ surfaces: [apps/web/src/lib/subject-gate-contract.ts, apps/web/src/app/api/worke
 related: [mission-task-lifecycle, timeline-dependency-geometry]
 keywords: [subjectAnchor, subjectPrNumber, reconciled, fail open, derived confidence, BYPASS_SUBJECT_GATE_KEY]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "subject-dead-predicate"
+    type: "symbol"
+    name: "isSubjectDead"
+    path: "apps/web/src/lib/subject-gate-contract.ts"
+  - id: "subject-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/claim/subject-gate.test.ts"
+  - id: "subject-contract-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/subject-gate-contract.test.ts"
 ---
 
 ## Subject Anchor Liveness

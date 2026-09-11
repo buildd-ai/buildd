@@ -1,3 +1,24 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "select-failover"
+    type: "symbol"
+    name: "pickFailoverBackend"
+    path: "packages/core/backend-policy.ts"
+  - id: "manual-provider-switch"
+    type: "route"
+    method: "POST"
+    path: "/api/tasks/[id]/reassign"
+    file: "apps/web/src/app/api/tasks/[id]/reassign/route.ts"
+  - id: "backend-policy-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/backend-policy.test.ts"
+  - id: "failure-classification-contract"
+    type: "symbol"
+    name: "classifyFailure"
+    path: "packages/core/failure-classification.ts"
+---
 # Backend Failover Policy
 
 **Status:** Implemented

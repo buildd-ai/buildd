@@ -1,3 +1,18 @@
+---
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "migration-plan"
+    type: "symbol"
+    name: "planMigrations"
+    path: "packages/core/db/migrate-plan.ts"
+  - id: "missing-schema-classifier"
+    type: "symbol"
+    name: "classifyMissingSchemaObjects"
+    path: "packages/core/db/migrate-drift.ts"
+  - id: "production-build-migrates"
+    type: "test_file"
+    path: "packages/core/__tests__/prod-build-runs-migrations.test.ts"
+---
 # Migration Doctrine
 
 ## Motivation: 2026-07-10 Outage

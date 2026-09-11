@@ -9,6 +9,21 @@ surfaces: [apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/con
 related: [credential-isolation, mcp-action-contracts, external-cron-triggers]
 keywords: [connectorrefs, mcp_connector_credential, connector_shares, needsreconnect, mcpservers, requiredenvvars]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "create-connector"
+    type: "route"
+    method: "POST"
+    path: "/api/connectors"
+    file: "apps/web/src/app/api/connectors/route.ts"
+  - id: "connector-status"
+    type: "symbol"
+    name: "deriveConnectorStatus"
+    path: "apps/web/src/lib/connector-status.ts"
+  - id: "refresh-connector-credential"
+    type: "symbol"
+    name: "refreshMcpConnectorCredential"
+    path: "apps/web/src/lib/mcp-connector-refresh.ts"
 ---
 # MCP Connectors & Roles (unified model)
 

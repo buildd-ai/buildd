@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "canonical-seed"
+    type: "symbol"
+    name: "seedFromCanonical"
+    path: "apps/runner/src/cbm-bootstrap.ts"
+  - id: "canonical-db-name"
+    type: "symbol"
+    name: "deriveCbmDbName"
+    path: "apps/runner/src/cbm-bootstrap.ts"
+  - id: "canonical-seed-called"
+    type: "symbol_reachable"
+    symbol: "seedFromCanonical"
+    entry: "apps/runner/src/cbm-bootstrap.ts"
+    as: "read"
+---
 # CBM v2: Warm-Start via Version-Keyed Canonical Seed
 
 **Status:** Proposed  

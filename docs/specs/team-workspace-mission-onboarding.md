@@ -9,6 +9,23 @@ surfaces: [apps/web/src/app/app/(protected)/workspaces/new/page.tsx, apps/web/sr
 related: [surface-ia-home-missions-initiatives, team-namespace-scoping, mission-task-lifecycle]
 keywords: [create-repo, githubinstallationid, githubrepoid, repo picker, new workspace form, personal team]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "create-workspace"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces"
+    file: "apps/web/src/app/api/workspaces/route.ts"
+  - id: "create-repository"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/create-repo"
+    file: "apps/web/src/app/api/workspaces/[id]/create-repo/route.ts"
+  - id: "create-mission"
+    type: "route"
+    method: "POST"
+    path: "/api/missions"
+    file: "apps/web/src/app/api/missions/route.ts"
 ---
 # Team → Workspace → Mission Onboarding
 

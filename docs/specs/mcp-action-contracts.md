@@ -10,6 +10,21 @@ related: [auth-oauth-boundaries, knowledge-store-retrieval, mcp-connectors-and-r
 keywords: [iserror, triggeractions, workeractions, register_skill, streamable http, http 405, request_pr_review, get_pr_review, adopted pr, waitfor]
 verified_by: [apps/web/src/app/api/mcp/tools.test.ts, apps/web/src/app/api/mcp/route.tool-gating.test.ts, packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts, packages/core/__tests__/mcp-tools-write-fence.test.ts, packages/core/__tests__/mcp-tools-workspace-guard.test.ts, packages/core/__tests__/mcp-tools-pr-review.test.ts, apps/web/src/app/api/github/pr/review/route.test.ts, apps/web/src/lib/pr-review-status.test.ts, apps/web/src/lib/pr-review-callback.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mcp-transport"
+    type: "route"
+    method: "POST"
+    path: "/api/mcp"
+    file: "apps/web/src/app/api/mcp/route.ts"
+  - id: "request-pr-review"
+    type: "route"
+    method: "POST"
+    path: "/api/github/pr/review"
+    file: "apps/web/src/app/api/github/pr/review/route.ts"
+  - id: "action-privilege-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/mcp-tools-admin-gated-actions.test.ts"
 ---
 # MCP Action Contracts
 

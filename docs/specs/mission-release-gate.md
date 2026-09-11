@@ -9,6 +9,22 @@ surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-rele
 related: [mission-task-lifecycle, release-flow, pr-lifecycle-reconciliation]
 keywords: [on_mission_complete, canCompleteMission, findMissionPrOwner, released criterion, integration branch, dev to main, workflow_run skipped, self-referential guard, integration_pr_unmerged]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "completion-gate"
+    type: "symbol"
+    name: "canCompleteMission"
+    path: "apps/web/src/lib/mission-completion.ts"
+  - id: "completion-reads-integration-pr"
+    type: "symbol_reachable"
+    symbol: "findMissionPrOwner"
+    entry: "apps/web/src/lib/mission-completion.ts"
+    as: "read"
+  - id: "released-criterion"
+    type: "symbol_reachable"
+    symbol: "released"
+    entry: "packages/core/mission-helpers.ts"
+    as: "read"
 ---
 
 # Mission Release Gate

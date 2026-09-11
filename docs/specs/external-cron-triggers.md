@@ -9,6 +9,19 @@ surfaces: [cron-manifest.json, scripts/sync-crons.ts, apps/web/src/app/api/cron/
 related: [mission-task-lifecycle, scheduled-task-merge-policy, runner-liveness]
 keywords: [cron-job.org, cron_secret, cronjob_api_key, vercel crons, nextrunat, cron:sync]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "schedule-tick"
+    type: "route"
+    method: "GET"
+    path: "/api/cron/schedules"
+    file: "apps/web/src/app/api/cron/schedules/route.ts"
+  - id: "cron-trigger-coverage"
+    type: "test_file"
+    path: "scripts/cron-coverage.test.ts"
+  - id: "cron-sync-tests"
+    type: "test_file"
+    path: "scripts/sync-crons.test.ts"
 ---
 # External Cron Triggers
 

@@ -10,6 +10,25 @@ related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, m
 keywords: [rfc 7591, dynamic client registration, rfc 9728, resource_metadata, jwks, kid, es256, hs256, code_challenge, signing_key, assertion grant]
 verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "oauth-token"
+    type: "route"
+    method: "POST"
+    path: "/api/oauth/token"
+    file: "apps/web/src/app/api/oauth/token/route.ts"
+  - id: "jwks-public-keys"
+    type: "route"
+    method: "GET"
+    path: "/api/.well-known/jwks.json"
+    file: "apps/web/src/app/api/.well-known/jwks.json/route.ts"
+  - id: "assertion-signing"
+    type: "symbol"
+    name: "signAssertion"
+    path: "apps/web/src/lib/signing-keys.ts"
+  - id: "oauth-token-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/oauth/token/route.test.ts"
 ---
 # OAuth Provider & Signing Keys
 

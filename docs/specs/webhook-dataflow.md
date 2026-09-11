@@ -9,6 +9,24 @@ surfaces: [apps/web/src/lib/pusher.ts, apps/web/src/app/api/github/webhook/route
 related: [work-tracker-integration, mission-task-lifecycle, runner-liveness]
 keywords: [pusher_channel_prefix, task:unblocked, worker:command, webhookconfig, pushover, notificationpreferences]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "github-webhook"
+    type: "route"
+    method: "POST"
+    path: "/api/github/webhook"
+    file: "apps/web/src/app/api/github/webhook/route.ts"
+  - id: "pusher-event"
+    type: "symbol"
+    name: "triggerEvent"
+    path: "apps/web/src/lib/pusher.ts"
+  - id: "team-notification"
+    type: "symbol"
+    name: "notifyTeam"
+    path: "apps/web/src/lib/notify.ts"
+  - id: "webhook-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/github/webhook/route.test.ts"
 ---
 # Webhook & Realtime Dataflow
 

@@ -9,6 +9,24 @@ surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts
 related: [codex-backend-spec, credential-isolation, runner-liveness]
 keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, oauth budget]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "pick-failover-backend"
+    type: "symbol"
+    name: "pickFailoverBackend"
+    path: "packages/core/backend-policy.ts"
+  - id: "resolve-failover-backend"
+    type: "symbol"
+    name: "resolveFailoverBackend"
+    path: "apps/web/src/lib/backend-failover.ts"
+  - id: "backend-policy-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/backend-policy.test.ts"
+  - id: "worker-completion-selects-failover"
+    type: "symbol_reachable"
+    symbol: "resolveFailoverBackend"
+    entry: "apps/web/src/app/api/workers/[id]/route.ts"
+    as: "read"
 ---
 # Provider Failover
 

@@ -1,3 +1,23 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "merge-policy-resolution"
+    type: "symbol"
+    name: "resolvePolicy"
+    path: "apps/web/src/lib/merge-policy.ts"
+  - id: "auto-merge-safety"
+    type: "symbol"
+    name: "evaluateAutoMergeSafety"
+    path: "apps/web/src/lib/auto-merge.ts"
+  - id: "reviewer-task"
+    type: "symbol"
+    name: "createReviewerTask"
+    path: "apps/web/src/lib/reviewer.ts"
+  - id: "reviewer-policy-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/reviewer.test.ts"
+---
 # Merge Policy Primitive — Design Spec
 
 > **Status:** Proposed — awaiting approval before any implementation begins.

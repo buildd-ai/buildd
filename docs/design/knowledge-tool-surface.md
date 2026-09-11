@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "recall-handler"
+    type: "symbol_reachable"
+    symbol: "handleRecallAction"
+    entry: "apps/web/src/app/api/mcp/route.ts"
+    as: "read"
+  - id: "learn-handler"
+    type: "symbol_reachable"
+    symbol: "handleLearnAction"
+    entry: "apps/web/src/app/api/mcp/route.ts"
+    as: "read"
+  - id: "knowledge-tool-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/mcp/tools.test.ts"
+---
 # Knowledge Tool Surface: `recall` / `learn`
 
 **Status:** Proposed
