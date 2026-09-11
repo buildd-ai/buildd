@@ -50,6 +50,8 @@ import {
 const WORKSPACE_SUBJECT_LIMIT = 12;
 /** Cap on base-side merges examined for a conflicted PR. */
 const BASE_SIDE_LIMIT = 40;
+/** Cap on active missions scanned per workspace answer — mirrors the orphan-tasks cap below. */
+const MISSION_SCAN_LIMIT = 200;
 
 // ─── Shared loading ───────────────────────────────────────────────────────────
 
@@ -606,6 +608,12 @@ export async function explainWorkspace(workspaceId: string): Promise<ExplainResu
   const activeMissions = await db.query.missions.findMany({
     where: and(eq(missions.workspaceId, workspaceId), eq(missions.status, 'active')),
     columns: { id: true },
+    // Same scan cap as the orphan-tasks query below — without it, a workspace
+    // with many active missions fans out one explainMission() call (several
+    // queries each) per mission before the WORKSPACE_SUBJECT_LIMIT ranking cut
+    // ever applies, so the bound on subjects RETURNED did nothing to bound the
+    // work PERFORMED to produce them.
+    limit: MISSION_SCAN_LIMIT,
   });
 
   const orphanTasks = await db.query.tasks.findMany({
@@ -632,10 +640,11 @@ export async function explainWorkspace(workspaceId: string): Promise<ExplainResu
 
   const ranked = rankGatedSubjects(answers).slice(0, WORKSPACE_SUBJECT_LIMIT);
   const gatedTotal = answers.filter(a => a.waitingOn !== null).length;
-  if (gatedTotal > ranked.length) {
+  if (gatedTotal > ranked.length || activeMissions.length === MISSION_SCAN_LIMIT) {
     // No silent caps: say what was dropped rather than implying full coverage.
     console.info(
-      `[explain] workspace ${workspaceId}: ${gatedTotal} gated subjects, returning top ${ranked.length}`,
+      `[explain] workspace ${workspaceId}: ${gatedTotal} gated subjects, returning top ${ranked.length}` +
+        (activeMissions.length === MISSION_SCAN_LIMIT ? ` (mission scan hit the ${MISSION_SCAN_LIMIT} cap)` : ''),
     );
   }
 
