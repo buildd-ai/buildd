@@ -36,6 +36,7 @@ import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
@@ -3375,7 +3376,7 @@ async function handleReviewerOutcomeIfNeeded(
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
   if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
-    await postPrReview({
+    const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
       prNumber,
@@ -3384,9 +3385,36 @@ async function handleReviewerOutcomeIfNeeded(
       body: effectiveVerdict === 'approve'
         ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
         : `Changes requested by buildd reviewer: ${output.feedback ?? output.summary}`,
-    }).catch((err) => {
-      console.warn(`[reviewer] could not post GitHub review for PR #${prNumber}:`, err);
-    });
+    }).catch((err) => ({
+      posted: false as const,
+      reason: err instanceof Error ? err.message : 'unknown error',
+    }));
+    // postPrReview never throws on a GitHub-side failure — it resolves
+    // `{ posted: false, reason }` — so a plain `.catch` on the call above only
+    // ever fires for a genuinely unexpected rejection. Without checking
+    // `posted` here, a real post failure (bad token, deleted PR, API outage)
+    // resolved successfully and silently: buildd's own store had the verdict
+    // but GitHub never showed a review at all, with nothing in the logs to
+    // say so.
+    if (
+      !reviewPostResult.posted &&
+      reviewPostResult.reason !== 'a matching review already exists for this commit'
+    ) {
+      console.error(
+        `[reviewer] failed to post GitHub review for PR #${prNumber}: ${reviewPostResult.reason}`,
+      );
+      if (missionId) {
+        await db.insert(missionNotes).values({
+          missionId,
+          taskId: originalTaskId,
+          authorType: 'system',
+          type: 'warning',
+          title: `Reviewer verdict could not be posted to GitHub for PR #${prNumber}`,
+          body: `buildd recorded a ${effectiveVerdict} verdict, but posting it to GitHub as a review failed: ${reviewPostResult.reason ?? 'unknown error'}`,
+          status: 'open',
+        });
+      }
+    }
   }
 
   switch (effectiveVerdict) {
@@ -3447,7 +3475,7 @@ async function handleReviewerOutcomeIfNeeded(
         workspaceId,
       });
 
-      await tryAutoMergeWorkerPr({
+      const boundMergeResult = await tryAutoMergeWorkerPr({
         installationId,
         repoFullName,
         prNumber,
@@ -3467,6 +3495,38 @@ async function handleReviewerOutcomeIfNeeded(
           }),
         },
       });
+
+      // The bound above only ever authorises landing in a quarantined mission
+      // integration branch — an ordinary PR based on trunk is refused there
+      // by design. Under tier=agent-review the arrival of THIS approve is the
+      // only event that will ever re-check the stored verdict for such a PR
+      // (check_suite already fired, possibly before the review finished), so
+      // it is the trigger for the SAME unbounded self-merge authorisation the
+      // check_suite CI-green retry and merge_pr's escape hatch use —
+      // `isApprovalSelfMergeable`, the one definition of "does this verdict
+      // clear the confidence bar" all three call sites share.
+      if (
+        !boundMergeResult.merged &&
+        approvePolicy?.tier === 'agent-review' &&
+        isApprovalSelfMergeable(
+          { verdict: 'approve', confidence: output.confidence, merged: false },
+          approvePolicy.agentReview?.maxConfidenceThreshold,
+        )
+      ) {
+        const selfMergeResult = await tryAutoMergeWorkerPr({
+          installationId,
+          repoFullName,
+          prNumber,
+          headSha,
+          worker: { id: originalWorker.id, taskId: originalWorker.taskId },
+          policy: approvePolicy,
+        });
+        if (!selfMergeResult.merged) {
+          console.log(
+            `[reviewer] approve for PR #${prNumber} did not self-merge: ${selfMergeResult.reason}`,
+          );
+        }
+      }
       break;
     }
 

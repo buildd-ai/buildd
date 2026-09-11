@@ -364,7 +364,7 @@ mock.module('@/lib/mission-release', () => ({
 }));
 
 // Phase 2: reviewer outcome mocks
-const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
+const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve({ merged: false }));
 const mockEscalateReviewerExhaustion = mock(() => Promise.resolve());
 mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
@@ -5103,7 +5103,7 @@ describe('PATCH /api/workers/[id]', () => {
 
       mockInsertConflictDoNothingResult = 'row';
       mockTryAutoMergeWorkerPr.mockReset();
-      mockTryAutoMergeWorkerPr.mockResolvedValue(undefined);
+      mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false });
       mockEscalateReviewerExhaustion.mockReset();
       mockEscalateReviewerExhaustion.mockResolvedValue(undefined);
       mockNotify.mockReset();
@@ -5267,6 +5267,125 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    // postPrReview never throws on a GitHub-side failure — it resolves
+    // `{ posted: false, reason }` — so a bare `.catch` on the call never sees
+    // it. Before this, that resolved failure was checked nowhere: buildd's
+    // own store had the verdict, GitHub showed no review at all, and nothing
+    // said so.
+    it('approve: a GitHub review-post failure that resolves (not throws) is surfaced, not swallowed', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockPostPrReview.mockResolvedValue({ posted: false, reason: 'resource not accessible by integration' });
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const note = missionNoteInserts.find((n) => n.type === 'warning');
+      expect(note).toBeDefined();
+      expect(note.body).toContain('resource not accessible by integration');
+      // A posting failure is surfaced, not treated as a merge blocker.
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    it('approve: the idempotent duplicate-review skip is not treated as a posting failure', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockPostPrReview.mockResolvedValue({ posted: false, reason: 'a matching review already exists for this commit' });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(missionNoteInserts.find((n) => n.type === 'warning')).toBeUndefined();
+    });
+
+    // ── Self-merge fallback: the approve arriving after CI already went green ──
+    //
+    // The bounded call above only ever authorises landing in a quarantined
+    // mission integration branch. An ordinary PR based on trunk is refused
+    // there by design, and check_suite already fired (possibly before the
+    // review finished) so nothing else will ever re-check this verdict. These
+    // tests pin the fallback: the SAME unbounded self-merge authorisation the
+    // check_suite retry and merge_pr's escape hatch use, triggered by the
+    // approve arriving, gated to tier=agent-review only.
+    describe('approve: unbounded self-merge fallback', () => {
+      function agentReviewWorkspace(agentReview: Record<string, unknown> = { reviewerRole: 'reviewer' }) {
+        mockWorkspacesFindFirst.mockResolvedValue({
+          id: 'ws-1',
+          gitConfig: { mergePolicy: { tier: 'agent-review', agentReview } },
+        });
+      }
+
+      it('regression: approve arriving after the last check_suite event still reaches merged (not open)', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 });
+        mockTryAutoMergeWorkerPr
+          .mockResolvedValueOnce({ merged: false, reason: 'base ref is not the mission integration branch' })
+          .mockResolvedValueOnce({ merged: true });
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(2);
+        expect(mockTryAutoMergeWorkerPr.mock.calls[0][0]).toHaveProperty('bound');
+        expect(mockTryAutoMergeWorkerPr.mock.calls[1][0]).not.toHaveProperty('bound');
+        expect(mockTryAutoMergeWorkerPr.mock.calls[1][0]).toMatchObject({ prNumber: 42, headSha: 'abc123' });
+      });
+
+      it('does not retry once the bounded merge already landed', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace();
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: true });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('a dirty PR does not self-merge, and the bounded call already left a trace naming the reason', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 });
+        mockTryAutoMergeWorkerPr
+          .mockResolvedValueOnce({ merged: false, reason: 'base ref is not the mission integration branch' })
+          .mockResolvedValueOnce({ merged: false, reason: 'PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch' });
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(2);
+      });
+
+      it('below the confidence threshold: does not attempt the unbounded fallback', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.95 });
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
+
+        // makeReviewerPatchRequest defaults confidence to 0.9, below 0.95.
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('tier=human: does not attempt the unbounded fallback', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { mergePolicy: { tier: 'human' } } });
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('tier=auto-threshold (bound refused): does not attempt the unbounded fallback', async () => {
+        // The default setupReviewerTaskCompletion workspace resolves to
+        // auto-threshold — the fallback is gated to agent-review only,
+        // since an auto-threshold PR already merges unattended via the
+        // check_suite CI-green path.
+        setupReviewerTaskCompletion('approve');
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('approve: bounds the merge to the PR base ref, passing the workspace trunk branches', async () => {
