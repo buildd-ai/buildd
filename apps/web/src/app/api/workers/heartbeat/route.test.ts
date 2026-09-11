@@ -375,6 +375,64 @@ describe('POST /api/workers/heartbeat', () => {
     expect(capturedValues.runnerVersion).toBeNull();
   });
 
+  it('does not overwrite a stored runnerCommit when a later heartbeat omits it (update-conflict path)', async () => {
+    // A degraded runner (its `git rev-parse HEAD` disk read failed) omits
+    // runnerCommit entirely. The upsert must leave the column out of the
+    // conflict `set` so Postgres keeps whatever good value is already stored,
+    // rather than nulling it out on every subsequent heartbeat.
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect('runnerCommit' in capturedConflictSet).toBe(false);
+  });
+
+  it('does not overwrite a stored runnerVersion when a later heartbeat omits it (update-conflict path)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue({ viewerToken: 'existing-token' });
+
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock(() => ({
+        onConflictDoUpdate: mock((opts: any) => {
+          capturedConflictSet = opts.set;
+          return Promise.resolve();
+        }),
+      })),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', activeWorkerCount: 1 },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect('runnerVersion' in capturedConflictSet).toBe(false);
+  });
+
   it('defaults activeWorkerCount to 0', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
