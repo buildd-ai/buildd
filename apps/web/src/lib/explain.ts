@@ -50,6 +50,34 @@ import {
 const WORKSPACE_SUBJECT_LIMIT = 12;
 /** Cap on base-side merges examined for a conflicted PR. */
 const BASE_SIDE_LIMIT = 40;
+/**
+ * Cap on concurrent `explainMission`/`explainTask` calls during workspace
+ * fan-out. Each call is several DB round trips, so unbounded `Promise.all`
+ * over up to 200 missions/tasks would spike Neon HTTP-driver fan-out; a
+ * sequential loop, the other extreme, made a single busy workspace's
+ * `GET /api/explain` call slow. This bounds both.
+ */
+const WORKSPACE_FANOUT_CONCURRENCY = 8;
+
+/**
+ * Runs `fn` over `items` with at most `limit` in flight at once. Results are
+ * returned in input order regardless of completion order.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (let i = next++; i < items.length; i = next++) {
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
 
 // ─── Shared loading ───────────────────────────────────────────────────────────
 
@@ -620,15 +648,16 @@ export async function explainWorkspace(workspaceId: string): Promise<ExplainResu
     .filter(t => !t.missionId && t.taskClass !== 'attempt')
     .map(t => t.id);
 
-  const answers: ExplainAnswer[] = [];
-  for (const m of activeMissions) {
-    const result = await explainMission(m.id);
-    if (result?.subjects[0]) answers.push(result.subjects[0]);
-  }
-  for (const taskId of missionLessIds) {
-    const result = await explainTask(taskId);
-    if (result?.subjects[0]) answers.push(result.subjects[0]);
-  }
+  // One bounded fan-out across missions and mission-less tasks together, so the
+  // concurrency cap holds across both rather than doubling at the boundary.
+  const fanoutItems: Array<{ kind: 'mission' | 'task'; id: string }> = [
+    ...activeMissions.map(m => ({ kind: 'mission' as const, id: m.id })),
+    ...missionLessIds.map(id => ({ kind: 'task' as const, id })),
+  ];
+  const results = await mapWithConcurrency(fanoutItems, WORKSPACE_FANOUT_CONCURRENCY, item =>
+    item.kind === 'mission' ? explainMission(item.id) : explainTask(item.id),
+  );
+  const answers: ExplainAnswer[] = results.flatMap(r => (r?.subjects[0] ? [r.subjects[0]] : []));
 
   const ranked = rankGatedSubjects(answers).slice(0, WORKSPACE_SUBJECT_LIMIT);
   const gatedTotal = answers.filter(a => a.waitingOn !== null).length;
