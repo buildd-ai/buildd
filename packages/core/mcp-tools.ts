@@ -200,6 +200,7 @@ export const adminActions = [
   'trigger_release',
   'release_status',
   'send_agent_message',
+  'correct_task_result',
   'consolidate_knowledge',
   'memory_delete',
 ] as const;
@@ -391,6 +392,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task_messages: '{ taskId (required) } — returns the instruction history (human→agent messages + agent responses) for the task\'s active or most recent worker. Available to trigger/worker/admin tokens.',
     send_agent_message: '{ taskId (required), message (required), priority? ("urgent" — also pushed over Pusher for immediate delivery, otherwise queued for the next check-in) } — deliver a mid-flight steering message to the running agent. Delivery is confirmed by the agent, not by this call: get_task_messages marks anything unconfirmed as UNDELIVERED. Use this (not update_task) to redirect work in progress; update_task changes do not reach an active worker. 401 means token lacks admin level. [admin]',
     spec_compare: '{ feature (required — feature/term to check, e.g. "objectives", "codex backend"), topK? (default 5, max 20) } — spec-drift tool. Retrieves CODE vs DOC evidence from the unified workspace store ({workspaceId}:code and {workspaceId}:docs) for one feature and returns both sides for YOU to judge (implemented / documented-not-built / shipped-not-documented / contradicted). Scores surface candidates; they do not decide — read the snippets. No verdict is computed server-side.',
+    correct_task_result: '{ taskId (required), summary (required) } — amend a completed or failed task\'s stored result.summary after the fact (e.g. a stray assistant aside got captured, or a bug garbled it). Only summary can be corrected; other result fields (PR/commit stats etc.) are untouched. The prior summary is preserved as result.previousSummary and the correction is stamped with result.summaryCorrectedAt so the durable record shows it was amended, not silently rewritten. Fails on a task that has not yet completed or failed — there is nothing to correct yet. 401 means token lacks admin level. [admin]',
     consolidate_knowledge: '{ op (required: find_duplicates|find_decayed|archive), corpora? (find ops — find_duplicates defaults to [memory,task], find_decayed to [task,artifact]), threshold? (cosine floor, default 0.92), limit?, halfLifeMultiple? (find_decayed age gate as multiple of corpus half-life, default 6), corpus? + sourceIds? (required for archive), reason? (audit marker) } — knowledge consolidation: surface near-duplicate chunk pairs for human review, find zero-hit decayed chunks, or archive a batch (is_current=false — audit-recoverable). Merge memory duplicates by calling learn with a supersedes param (preferred over archive for soft-deletion). 401 means token lacks admin level. [admin]',
     memory_delete: '{ id (required) } — permanently remove a memory entry from the memory service and drop it from the knowledge store vector index. Compliance operation — prefer supersedes on save/update for soft-deletion instead. [admin]',
   };
@@ -1863,6 +1865,27 @@ export async function handleBuilddAction(
       }
 
       return text(`Task updated: "${updated.title}" (ID: ${updated.id})\nStatus: ${updated.status}\nPriority: ${updated.priority}${backendInfo}${loopInfo}${workerNote}`);
+    }
+
+    case 'correct_task_result': {
+      requireFullUuid(params.taskId, 'taskId');
+      if (typeof params.summary !== 'string' || params.summary.trim() === '') {
+        throw new Error('summary is required and must be a non-empty string');
+      }
+
+      const correctedBy = ctx.workerId ? `worker:${ctx.workerId}` : 'admin_token';
+      const updated = await api(`/api/tasks/${params.taskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ resultSummary: params.summary, correctedBy }),
+      });
+
+      const previous = updated.result?.previousSummary;
+      return text(
+        `Result summary corrected for task "${updated.title}" (ID: ${updated.id}).\n`
+        + `New summary: ${updated.result?.summary}\n`
+        + (previous ? `Previous summary: ${previous}\n` : '')
+        + `Corrected at: ${updated.result?.summaryCorrectedAt}`,
+      );
     }
 
     case 'create_task': {

@@ -538,6 +538,12 @@ export interface TaskResult {
   reaperAutoCompleted?: boolean;
   /** Reaper audit trail moved here so result.summary carries the outcome, not forensics. See spec B.5. */
   reaperForensics?: string;
+  /** The summary this replaced, when an admin corrected it after completion. See correct_task_result. */
+  previousSummary?: string;
+  /** ISO timestamp of the last admin correction to `summary`. */
+  summaryCorrectedAt?: string;
+  /** Identifier of the caller that made the correction (worker id or token label). */
+  correctedBy?: string;
   /**
    * Provenance of `summary`. 'agent' = the agent explicitly passed it to
    * complete_task. 'fallback' = the runner derived it from the SDK's last
