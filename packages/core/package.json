@@ -45,6 +45,7 @@
     "./external-links": "./external-links.ts",
     "./spec-conformance": "./spec-conformance.ts",
     "./spec-discrepancy-intake": "./spec-discrepancy-intake.ts",
+    "./spec-discrepancy-dispatch": "./spec-discrepancy-dispatch.ts",
     "./release-strategy": "./release-strategy.ts",
     "./branch-strategy": "./branch-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts",

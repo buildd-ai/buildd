@@ -22,6 +22,7 @@ import { selectExecCluster } from '@buildd/core/retrieval-clusters';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { componentTablePaths, extractExcerptPaths } from '@buildd/core/friction-manifest';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
+import { findDispatchDiscrepancyBlock } from '@buildd/core/spec-discrepancy-dispatch';
 import { buildSubjectPriorWork } from './subject-prior-work';
 
 /** The claim-candidate rows these blocks look tasks up in. */
@@ -244,5 +245,34 @@ export async function attachSubjectPriorWork(
     if (!priorWork) continue;
 
     appendContextBlock(cw, priorWork);
+  }
+}
+
+/**
+ * Discrepancy-ledger dispatch injection (§11 of docs/design/spec-conformance.md).
+ *
+ * For a claimed task whose `pathManifest` intersects an open ledger row's spec
+ * doc or resolved code path, surface the exact claim the worker is expected to
+ * either satisfy or update. Sourced from the ledger's already-computed rows —
+ * see spec-discrepancy-dispatch.ts for why this never re-runs the checker at
+ * claim time. Best-effort: a failure attaches nothing and the claim still
+ * succeeds, same as the other two injections on this rail.
+ */
+export async function attachDiscrepancyContext(
+  claimedWorkers: ClaimTasksResponse['workers'],
+  claimedTasks: readonly ClaimedTask[],
+): Promise<void> {
+  for (const cw of claimedWorkers) {
+    const task = claimedTasks.find(t => t.id === cw.taskId);
+    if (!task) continue;
+    const pathManifest = Array.isArray((task as any).pathManifest) ? (task as any).pathManifest as string[] : null;
+
+    const block = await findDispatchDiscrepancyBlock({ workspaceId: task.workspaceId, pathManifest }).catch(err => {
+      console.warn('[claim] discrepancy dispatch injection failed:', err);
+      return null;
+    });
+    if (!block) continue;
+
+    appendContextBlock(cw, block);
   }
 }

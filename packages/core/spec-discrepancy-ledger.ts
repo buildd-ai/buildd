@@ -90,7 +90,7 @@ export function canPromote(direction: Direction): direction is 'spec_ahead' {
  */
 export function isDirection(
   classification: Exclude<Classification, 'skip'>
-): classification is Direction {
+): classification is Exclude<Classification, 'skip' | 'clean'> {
   return classification !== 'clean';
 }
 
