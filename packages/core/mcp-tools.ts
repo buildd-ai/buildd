@@ -353,7 +353,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. 401 means token lacks admin level. [admin]',
-    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
+    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
@@ -2229,6 +2229,9 @@ export async function handleBuilddAction(
       const minutesAgo = typeof params.minutesAgo === 'number' ? params.minutesAgo : null;
       const nameContains = typeof params.nameContains === 'string' ? params.nameContains.toLowerCase() : null;
       const filterCutoff = minutesAgo !== null ? Date.now() - minutesAgo * 60_000 : null;
+      const scheduleType = typeof params.type === 'string' ? params.type : 'all';
+
+      const isHeartbeat = (s: any): boolean => s.taskTemplate?.context?.heartbeat === true;
 
       const matchesFilters = (s: any): boolean => {
         if (filterCutoff !== null) {
@@ -2236,6 +2239,8 @@ export async function handleBuilddAction(
           if (!Number.isFinite(last) || last < filterCutoff) return false;
         }
         if (nameContains && !s.name.toLowerCase().includes(nameContains)) return false;
+        if (scheduleType === 'heartbeat' && !isHeartbeat(s)) return false;
+        if (scheduleType === 'workspace' && isHeartbeat(s)) return false;
         return true;
       };
 
@@ -2256,7 +2261,7 @@ export async function handleBuilddAction(
         const schedules = (data.schedules || []).filter(matchesFilters);
 
         if (schedules.length === 0) {
-          if (minutesAgo !== null || nameContains) return text('No schedules matched the filter.');
+          if (minutesAgo !== null || nameContains || scheduleType !== 'all') return text('No schedules matched the filter.');
           return text('No schedules configured for this workspace.');
         }
 
@@ -2278,7 +2283,7 @@ export async function handleBuilddAction(
       }
 
       if (allSchedules.length === 0) {
-        if (minutesAgo !== null || nameContains) return text('No schedules matched the filter across any workspace.');
+        if (minutesAgo !== null || nameContains || scheduleType !== 'all') return text('No schedules matched the filter across any workspace.');
         return text('No schedules configured across any workspace.');
       }
 
