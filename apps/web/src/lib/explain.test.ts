@@ -5,6 +5,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 let missionRow: Row | null = null;
+/** Multi-mission fixture for workspace fan-out tests; takes precedence over `missionRow` when set. */
+let missionRows: Row[] = [];
 let taskRows: Row[] = [];
 let workerRows: Row[] = [];
 let completionDecision: Row = { ok: true, code: 'ok', reason: 'clear' };
@@ -19,6 +21,9 @@ const mockTasksFindMany = mock(async (args: Row) => {
   if (where.field === 'id' && where.type === 'inArray') {
     return taskRows.filter(t => (where.value as string[]).includes(t.id));
   }
+  if (where.field === 'missionId') {
+    return taskRows.filter(t => t.missionId === where.value);
+  }
   return taskRows;
 });
 
@@ -27,8 +32,14 @@ const mockTasksFindFirst = mock(async (args: Row) => {
   return taskRows.find(t => t.id === where.value) ?? undefined;
 });
 
-const mockMissionsFindFirst = mock(async () => missionRow ?? undefined);
-const mockMissionsFindMany = mock(async () => (missionRow ? [missionRow] : []));
+const mockMissionsFindFirst = mock(async (args: Row) => {
+  const where = args?.where ?? {};
+  if (missionRows.length > 0) return missionRows.find(m => m.id === where.value) ?? undefined;
+  return missionRow ?? undefined;
+});
+const mockMissionsFindMany = mock(async () =>
+  missionRows.length > 0 ? missionRows : (missionRow ? [missionRow] : []),
+);
 const mockWorkersFindMany = mock(async () => workerRows);
 
 mock.module('@buildd/core/db', () => ({
@@ -57,7 +68,18 @@ mock.module('drizzle-orm', () => ({
   desc: (field: string) => ({ type: 'desc', field }),
 }));
 
-const mockCanCompleteMission = mock(async () => completionDecision);
+// Tracks in-flight overlap so the fan-out concurrency test can observe that
+// multiple missions' `canCompleteMission` calls are in flight at once, rather
+// than asserting on wall-clock time (flaky under CI scheduling jitter).
+let inFlightCanCompleteMission = 0;
+let maxInFlightCanCompleteMission = 0;
+const mockCanCompleteMission = mock(async () => {
+  inFlightCanCompleteMission++;
+  maxInFlightCanCompleteMission = Math.max(maxInFlightCanCompleteMission, inFlightCanCompleteMission);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  inFlightCanCompleteMission--;
+  return completionDecision;
+});
 mock.module('@/lib/mission-completion', () => ({ canCompleteMission: mockCanCompleteMission }));
 
 const mockEvaluateMissionWorkState = mock(async () => workStateResult);
@@ -113,10 +135,13 @@ function worker(over: Partial<Row> = {}): Row {
 
 beforeEach(() => {
   missionRow = null;
+  missionRows = [];
   taskRows = [];
   workerRows = [];
   completionDecision = { ok: true, code: 'ok', reason: 'clear' };
   workStateResult = null;
+  inFlightCanCompleteMission = 0;
+  maxInFlightCanCompleteMission = 0;
   mockCanCompleteMission.mockClear();
   mockEvaluateMissionWorkState.mockClear();
 });
@@ -380,5 +405,24 @@ describe('explainWorkspace', () => {
     const result = await explainWorkspace('ws-1');
     expect(result.subjects).toEqual([]);
     expect(result.quiet).toBe(result.considered);
+  });
+
+  it('fans out across missions concurrently rather than one at a time', async () => {
+    missionRows = Array.from({ length: 5 }, (_, i) => ({
+      id: `mission-${i}`,
+      title: `Mission ${i}`,
+      workspaceId: 'ws-1',
+      status: 'active',
+      schedule: null,
+    }));
+    taskRows = missionRows.map((m, i) =>
+      task({ id: `task-${i}`, missionId: m.id, status: 'completed' }),
+    );
+
+    await explainWorkspace('ws-1');
+
+    // A sequential `for...await` loop would never have more than one
+    // `canCompleteMission` call in flight at once.
+    expect(maxInFlightCanCompleteMission).toBeGreaterThan(1);
   });
 });
