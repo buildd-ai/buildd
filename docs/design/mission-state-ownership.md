@@ -1,6 +1,6 @@
 # Mission State Ownership
 
-**Status:** Accessor implemented (`apps/web/src/lib/mission-state-view.ts`); panel adoption still pending — see "Implementation status" at the bottom.
+**Status:** Accessor implemented (`apps/web/src/lib/mission-state-view.ts`); panel adoption still pending — see "Implementation status" at the bottom. The `explain` MCP read consumes the accessor and its contract is documented in "The `explain` MCP contract" below.
 **Related:**
 - `apps/web/src/lib/mission-helpers.ts` — `deriveMissionDisplayState()` (line 137), `getMissionStateChip()` (line 165), `deriveTaskHealthSignal()` (line 95), `deriveDriveState()` (line 46)
 - `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` — state assembly at lines 308–362; `criteriaBlockingReason` at lines 335–351; `allTasksCount` at line 293
@@ -501,3 +501,262 @@ module docstring and covered by tests:
 Q1 is resolved as the proposal leaned: an unmet dependency outranks `running`.
 Q3 is resolved by labelling the task-aggregate stall chip **IDLE**, leaving the
 word "stalled" to `MissionHealth`'s scheduling axis.
+
+---
+
+## The `explain` MCP contract
+
+This section documents `GET /api/explain` and the `explain` MCP action
+(`apps/web/src/lib/explain.ts`, `explain-because.ts`, `explain-types.ts`,
+`packages/core/mcp-tools.ts`) against what shipped, not the plan that preceded
+it. It was written after the fact — the read that follows is of the merged
+code, not a proposal.
+
+`explain` answers one question — "what state is this subject in, what is it
+waiting on, and what is the evidence?" — for one of four scopes (`task` /
+`mission` / `workspace` / `pr`), in one shared response shape
+(`ExplainResult` → `ExplainAnswer[]`). `state` and `waitingOn` are read
+straight off `MissionStateView` (above); this section covers the three things
+`MissionStateView` does not have: the `because[]` evidence chain, the
+workspace ranking, and the not-found shapes.
+
+### 1. `because[]`: element schema and ref kinds
+
+Each element is a `CausalLink`:
+
+```typescript
+interface CausalLink {
+  order: number;           // 1-based; the chain reads cause → effect
+  claim: string;            // one line of evidence, in prose
+  derivedFrom: ExplainSource; // the row or derivation this was read from
+  refs: ExplainRefs;        // hard references — not parsed out of `claim`
+}
+```
+
+`ExplainRefs` is the hard-reference bag every link carries a subset of:
+
+| Field | Ref kind | Populated by |
+|---|---|---|
+| `taskId`, `parentTaskId` | task id | any task-scoped link |
+| `missionId` | mission id | mission-scoped and dependency links |
+| `workspaceId` | workspace id | every link (via `BecauseSubjectRefs.workspaceId`) |
+| `prNumber`, `prUrl` | PR identity | merge and conflict links |
+| `branch`, `baseRef` | git ref names | conflict links |
+| `commitSha` | commit SHA | `openedBaseSha` and merge `headSha` on conflict links |
+| `criterion` | criterion label | `criterion_failing` / `criterion_unverified` links |
+| `errorSignature` | error signature | `task_failed` links, when the worker recorded one |
+| `paths` | repo-relative file paths | conflict links naming the overlapping file set |
+
+There is no ref kind for a bare error message or free-form text — a link
+either carries one of the refs above or it carries none (e.g. the closing
+"state is X" link, and the `human_decision` link, which points at
+`missions.criteriaEscalatedAt` rather than a row with its own id).
+
+### 2. The `derivedFrom` vocabulary — closed at one layer, free text at another
+
+`ExplainSource` is declared as:
+
+```typescript
+export type ExplainSource = MissionStateSource | (string & {});
+```
+
+`(string & {})` is the "branded string" trick: it does not restrict the value
+to `MissionStateSource` at all — any string type-checks. So the honest answer
+is **two vocabularies, not one**:
+
+**Closed (9 values).** `ExplainAnswer.state`'s provenance, `waitingOn`'s, and
+`nextAction`'s are always exactly one of `MissionStateSource`: `mission.status`
+| `mission.startMode` | `mission.criteriaEscalatedAt` | `workers.live` |
+`deriveTaskHealthSignal` | `deriveCriteriaGatePresentation` |
+`canCompleteMission` | `classifyMissionWait` | `evaluateMissionWorkState`.
+These three fields are set once, straight from `MissionStateView.derivedFrom`,
+and every value the factory can produce is in that union — the type is closed
+even though `ExplainSource` itself isn't.
+
+**Free text (per-link).** Every `CausalLink.derivedFrom` inside `because[]` —
+and therefore `ExplainProvenance.because`, which is just
+`[...new Set(because.map(b => b.derivedFrom))]` — is an ad hoc string authored
+at each `link(...)` call site in `explain-because.ts`. In practice the call
+sites draw from a small, enumerable set, but nothing enforces it:
+
+- `missions.dependsOnMissionId`
+- `tasks.status + workers.status`
+- `tasks.status + tasks.result.errorType`
+- `workers.mergedAt`
+- `missions.goalCriteriaState`
+- `missions.criteriaEscalatedAt + missionNotes`
+- `classifyMissionWait`
+- any `MissionStateSource` value (the closing link reuses `view.derivedFrom.kind`)
+- four conflict-chain templates parameterized by `TouchSource` (`observedTouches`
+  | `pathManifest` | `observedTouches+pathManifest` | `undeclared`), e.g.
+  `` `workers.observedTouches ∪ tasks.pathManifest (${touchSource})` ``
+- `workers.mergedAt (merges into this base recorded since the PR opened — a
+  floor, not a rev-list)`
+- `workers.observedTouches ∪ tasks.pathManifest (no intersection)`
+- `workers.prLifecycleStatus + workers.conflictDetectedAt`
+- `tasks.parentTaskId + tasks.taskClass (attachAttempts)` (the fixed value for
+  `ExplainProvenance.history`)
+
+Two of these bake a data value into the string itself (the `TouchSource`
+parameter, and the base-SHA prefix in the floor-count link) rather than
+carrying it as a structured ref. A consumer that wants to branch on "was this
+computed from `observedTouches` or `pathManifest`?" today has to substring-match
+the label.
+
+**Proposed closed set, if this is worth tightening:** promote the per-link
+vocabulary above to a real union (`CausalLinkSource = MissionStateSource | 'missions.dependsOnMissionId' | 'tasks.status + workers.status' | ...`)
+so a new call site that invents a fresh string is a type error, and lift
+`TouchSource` out of the label into a `refs.touchSource` field so the two
+concerns — human-readable provenance and machine-checkable provenance — stop
+sharing one string. Not done here: the task was to describe what shipped, and
+what shipped is free text with a stable, small set of actual values.
+
+### 3. Workspace-scope ranking rule
+
+Implemented as `WAITING_ON_RANK` + `rankGatedSubjects` in `explain-types.ts`.
+Fixed priority by `waitingOn.kind`, most-actionable first:
+
+```
+task_failed (0) > human_decision (1) > dependency (2) > merge (3)
+  > criterion_failing (4) > task (5) > criterion_unverified (6)
+  > self_resolving_wait (7)
+```
+
+Ties (same `kind`) break on `subject.label`, alphabetically — for stability
+across calls, not for any semantic meaning. `self_resolving_wait` ranks last
+deliberately: it resolves without anyone acting, so ranking it above a failed
+task would reproduce the "everything shouted with equal confidence" failure
+this whole line of work exists to fix, one level up.
+
+Subjects considered are **active missions plus the workspace's mission-less
+tasks** — a task that belongs to a mission is already represented through that
+mission's chain, so it is not listed a second time as its own subject.
+
+**Bound, in two different senses.** The `subjects` array returned is bounded
+at `WORKSPACE_SUBJECT_LIMIT` (12), applied after ranking — a large workspace
+never returns "everything," and `considered` / `quiet` on the result report
+the true totals so the cap is visible, not silent. Before this task, the *work
+performed* to reach that ranking was **not** symmetrically bounded: the
+mission-less-tasks query already capped its scan at 200 rows, but the active-
+missions query had no `limit` at all, so a workspace with hundreds of active
+missions would call `explainMission()` — itself several sequential queries —
+once per mission before the 12-subject cut ever applied. Fixed in this task:
+`activeMissions` now caps at `MISSION_SCAN_LIMIT` (200), mirroring the tasks
+query, with the same "no silent caps" log line firing when the cap is hit.
+
+Left as a follow-up, not fixed here (filed as a task): the fan-out itself is
+sequential (`for (const m of activeMissions) { await explainMission(m.id) }`),
+not parallel. Bounding the *count* doesn't bound the *latency* — 200
+sequential multi-query mission reads is still a slow request. Parallelizing
+that loop is a real design decision (it changes the DB connection/query load
+shape under concurrency), not a one-line bug fix, so it's out of scope here.
+
+### 4. What `explain` returns when the accessor cannot answer
+
+Every not-found and ambiguous case returns an explicit shape — none of the
+paths checked for this task return a silent empty:
+
+| Situation | Shape returned |
+|---|---|
+| `taskId` doesn't exist, or exists outside the caller's team | `404 { error: 'Task not found or not in your team' }` |
+| `missionId` doesn't exist, or exists outside the caller's team | `404 { error: 'Mission not found or not in your team' }` |
+| `prNumber` matches no worker | `404 { error: 'PR not found' }` (from `resolveWorkerByPrNumber`) |
+| `prNumber` matches workers in more than one workspace, no `workspaceId` given | `409 { error: '...pass workspaceId to disambiguate', candidates: [...workspaceIds] }` |
+| `prNumber` resolves to a worker with no `taskId` | `404 { error: 'PR #N has no task attached — nothing to explain.' }` |
+| more than one of `taskId`/`missionId`/`workspaceId`/`prNumber` supplied | `400 { error: 'Pass exactly one subject — received ...' }` |
+| mission exists but has zero tasks | **Not an error.** `explainMission` returns a normal `ExplainAnswer` — `deriveTaskHealthSignal` sees an empty task list and reports `NOMINAL`, and (absent any other signal) the mission resolves to `kind: 'idle'`, `waitingOn: null`, with a one-link `because[]` reading "State is idle: no source reports anything outstanding." |
+| workspace has zero gated subjects | **Not an error.** `{ scope: 'workspace', subjects: [], considered: N, quiet: N }` |
+
+None of these degrade to `null`/`undefined`/an empty 200 body without an
+`error` key. The one place worth flagging rather than treating as settled: a
+mission with no tasks reaching `idle` depends on every intermediate rule in
+`deriveMissionStateView`'s chain declining to fire (no dependency, no held
+gate, no criteria configured, etc.) — it is the *absence* of every other
+signal, not a dedicated "empty mission" case, so a future rule inserted
+earlier in the chain could change what an empty mission reports without
+anyone touching this path directly.
+
+### 5. Two things checked and found to be as documented, not bugs
+
+**Tone on a refused-but-not-failing criterion is deliberately capped below
+`error`.** The top-of-file module note says tone "comes straight from
+`deriveCriteriaGatePresentation`." Read literally against the code, that's not
+quite true: `deriveCriteriaGatePresentation` reports `tone: 'error'` for
+*any* `state: 'refused'` gate, including one that's refused only because
+criteria are unverified (never actually failing). `deriveMissionStateView`
+does not propagate that tone as-is — it re-derives `criterion_unverified`'s
+tone as `refused ? 'warning' : 'neutral'`, holding `error` in reserve for a
+criterion that is actually `criterion_failing`. This is intentional and
+covered by a test (`mission-state-view.test.ts`, "becomes newsworthy only once
+completion was refused over it," asserting `tone === 'warning'` for exactly
+this case) — the design choice is "unverified is never as loud as failing,
+even when both are refused," which is a real severity ranking, just not the
+literal "straight from" the comment claims. Left as-is; the comment overstates
+its own mechanism but the behavior is correct and tested.
+
+**The commits-behind-base floor label survives to the response.** The
+conflict chain's first link carries `derivedFrom: 'workers.mergedAt (merges
+into this base recorded since the PR opened — a floor, not a rev-list)'` —
+that full string is returned verbatim inside `because[]`, not summarized or
+dropped. (`ConflictExplanation.commitsBehindBase`, the numeric count computed
+alongside it, is *not* surfaced anywhere in `ExplainAnswer` — only the labeled
+prose form reaches the response. There is no bare integer floating around
+without its caveat.) Covered by
+`explain.test.ts`, "labels the commits-behind count as a floor, not a
+rev-list."
+
+### 6. Determinism
+
+`explain` never evaluates criteria, calls a model, or attempts a merge, on any
+scope including the workspace fan-out:
+
+- `canCompleteMission` is always called with `evaluateCriteria: false` — the
+  block that would dispatch verification (`mission-completion.ts`, gated on
+  `if (evaluateCriteria)`) is unreachable from this module.
+- `deriveCriteriaGatePresentation`, `classifyMissionWait`, and
+  `evaluateMissionWorkState` are pure reads over already-loaded rows; none of
+  the three performs I/O beyond the `db.query` calls `explain.ts` itself
+  triggers.
+- The conflicted-PR chain (`buildConflictBecause`) reads
+  `workers.observedTouches` / `tasks.pathManifest` / `workers.mergedAt` and
+  computes `intersectPaths` over them in memory. No git command, no GitHub
+  API call, no merge attempt.
+- `explainWorkspace` reuses `explainMission` / `explainTask` per subject, so
+  the same guarantee holds at every fan-out level — there is no separate,
+  less-careful code path for the workspace scope.
+
+### 7. `intersectPaths` — coverage and honest limits
+
+`packages/core/path-overlap.ts`'s `intersectPaths(a, b)`:
+
+- **Empty or missing manifest on either side → `[]`.** `touchSetOf` maps a
+  `null` `pathManifest`/`observedTouches` to `touches: []` before
+  `intersectPaths` ever runs, and the function itself short-circuits to `[]`
+  when either input array is empty. An undeclared scope never manufactures a
+  conflicting path.
+- **The repo-wide sentinel (`'**'`) is filtered out, not treated as
+  overlapping everything.** Unlike `pathsOverlap` (used for claim-time
+  serialization, where `'**'` deliberately means "could touch anything"),
+  `intersectPaths` strips it from both sides first — reporting the sentinel as
+  a "conflicting path" would name a file nobody touched.
+- **Directory-vs-file overlap is handled** via the same prefix rule as
+  `pathsOverlap` (`pb.startsWith(pa + '/') || pa.startsWith(pb + '/')`, after
+  stripping trailing separators).
+- **Renames are not handled, and nothing claims they are.** The touch sets are
+  static path lists from `workers.observedTouches` / `tasks.pathManifest`; a
+  file renamed between when a base-side PR merged and when the subject PR's
+  touches were recorded won't match by string equality, so a real conflict
+  through a rename can go unreported. This is a data-availability limit of
+  "diff two path lists," not a bug in `intersectPaths` itself — and the
+  caller never overclaims: when no path in either set intersects,
+  `buildConflictBecause` says "no stored touch set... overlaps" rather than
+  "no conflict," and when the subject's own scope is undeclared it says so
+  explicitly instead of running the comparison at all.
+
+### 8. `MissionStateViewBrand` — sole producer confirmed
+
+`grep` across `apps/web/src` and `packages/core` for `as MissionStateView` or
+`MissionStateViewBrand` outside `mission-state-view.ts` itself returns
+nothing. `deriveMissionStateView` is the only function that returns the brand
+key, tests construct views by calling it (never by casting a literal), and no
+helper re-opens the type with an `as` escape hatch.
