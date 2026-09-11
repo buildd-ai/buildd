@@ -71,6 +71,7 @@ import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
 import { runCbmBootstrap } from './cbm-bootstrap.js';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
+import { getCurrentCommit as getRunnerCommit, PKG_VERSION as RUNNER_VERSION } from './updater';
 import {
   buildWorkerBwrapArgv,
   createBwrapSpawn,
@@ -807,7 +808,7 @@ export class WorkerManager {
         .map(w => w.id);
       const probeAt = getBwrapProbeAt();
       const sandboxEnabled = probeAt !== null ? isBwrapSupported() : null;
-      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds);
+      const { viewerToken, pendingTaskCount, latestCommit } = await this.buildd.sendHeartbeat(this.config.localUiUrl, activeCount, this.environment, getRedactionCounts(), sandboxEnabled, probeAt, activeWorkerIds, getRunnerCommit(), RUNNER_VERSION);
       if (viewerToken) {
         this.viewerToken = viewerToken;
       }

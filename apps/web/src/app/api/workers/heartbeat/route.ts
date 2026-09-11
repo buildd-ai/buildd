@@ -36,6 +36,8 @@ export async function POST(req: NextRequest) {
       sandboxEnabled = null,
       sandboxProbeAt = null,
       activeWorkerIds,
+      runnerCommit = null,
+      runnerVersion = null,
     } = body;
 
     if (!localUiUrl) {
@@ -74,6 +76,8 @@ export async function POST(req: NextRequest) {
         environment: environment || null,
         sandboxEnabled: sandboxEnabled as boolean | null,
         sandboxProbeAt: sandboxProbeDate,
+        runnerCommit: runnerCommit as string | null,
+        runnerVersion: runnerVersion as string | null,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -83,6 +87,8 @@ export async function POST(req: NextRequest) {
           activeWorkerCount,
           environment: environment || null,
           ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
+          runnerCommit: runnerCommit as string | null,
+          runnerVersion: runnerVersion as string | null,
           lastHeartbeatAt: now,
           updatedAt: now,
         },

@@ -207,6 +207,8 @@ export async function GET(req: NextRequest) {
           workspaceIds: overlapping,
           workspaceNames: overlapping.map(id => workspaceNameMap.get(id) || 'Unknown'),
           environment: hb.environment || null,
+          runnerCommit: hb.runnerCommit || null,
+          runnerVersion: hb.runnerVersion || null,
           lastUpdated: hb.lastHeartbeatAt,
         };
       })

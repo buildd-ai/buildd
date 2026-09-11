@@ -39,6 +39,19 @@ systematic — without ever blocking the normal claim path.
   stable for the runner instance's lifetime).
 - `workspaceIds` on `worker_heartbeats` is deprecated and always written as `[]`;
   workspace association is resolved on demand by `GET /api/workers/active`.
+- Each heartbeat MAY carry `runnerCommit` (the runner codebase's own `git
+  rev-parse HEAD`, read fresh from disk each beat) and `runnerVersion`
+  (`package.json` version, read once at process start) — the runner's own
+  build identity, not a task's commit. Persisted verbatim to
+  `worker_heartbeats.runner_commit` / `.runner_version` and surfaced on
+  `GET /api/workers/active`. This is how a runner instance still serving
+  pre-fix code becomes distinguishable from one running a merged fix, without
+  SSH access to the host: before this field existed, a runner's actual
+  deployed commit was observable only via its own local, unauthenticated-off-box
+  `/api/version` endpoint (`apps/runner/src/index.ts`), which nothing on the
+  platform side ever polled. Both fields are `null` for a runner older than
+  this change (it simply omits them from the POST body) — treat `null` as
+  "unknown", not "on an old commit".
 
 **Acceptance criteria**:
 - AC-1: WHEN `POST /api/workers/heartbeat` is called without `localUiUrl` THEN
@@ -48,10 +61,20 @@ systematic — without ever blocking the normal claim path.
   `localUiUrl`.
 - AC-3: WHEN a valid heartbeat is received THEN `lastHeartbeatAt` is updated to
   `NOW()` in `worker_heartbeats`.
+- AC-17: WHEN a heartbeat carries `runnerCommit`/`runnerVersion` THEN both are
+  persisted verbatim to `worker_heartbeats` and returned by
+  `GET /api/workers/active`.
+- AC-18: WHEN a heartbeat omits `runnerCommit`/`runnerVersion` (legacy runner)
+  THEN both are stored as `null`, not left holding a stale prior value.
 
 **Code surface**:
 - Route: `apps/web/src/app/api/workers/heartbeat/route.ts`
 - Schema: `packages/core/db/schema.ts` — `workerHeartbeats` table
+- Runner send site: `apps/runner/src/workers.ts` (`sendHeartbeat`),
+  `apps/runner/src/buildd.ts` (`BuilddClient.sendHeartbeat`)
+- Runner commit/version source: `apps/runner/src/updater.ts` (`getCurrentCommit`,
+  `PKG_VERSION`)
+- Dashboard surface: `apps/web/src/app/api/workers/active/route.ts`
 
 ---
 

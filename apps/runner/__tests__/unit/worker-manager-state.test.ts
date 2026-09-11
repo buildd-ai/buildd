@@ -712,6 +712,13 @@ describe('WorkerManager — state transitions', () => {
       // startFromClaim must call sendHeartbeat as its first action so the
       // stale-workers cron can't flag a freshly-started worker dead.
       expect(mockSendHeartbeat.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      // The real call site must pass this runner's own build identity
+      // (runnerCommit, runnerVersion — the last two positional args) so a
+      // pre-fix runner is distinguishable from a fixed one without SSH.
+      const call = mockSendHeartbeat.mock.calls[0];
+      expect(typeof call[8]).toBe('string');
+      expect(call[8].length).toBeGreaterThan(0);
     });
   });
 });

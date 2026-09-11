@@ -313,6 +313,74 @@ describe('POST /api/workers/heartbeat', () => {
     expect(capturedConflictSet.environment).toBeNull();
   });
 
+  it('persists runnerCommit and runnerVersion when provided', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            capturedConflictSet = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766', runnerCommit: 'abc1234', runnerVersion: '1.2.3' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.runnerCommit).toBe('abc1234');
+    expect(capturedValues.runnerVersion).toBe('1.2.3');
+    expect(capturedConflictSet.runnerCommit).toBe('abc1234');
+    expect(capturedConflictSet.runnerVersion).toBe('1.2.3');
+  });
+
+  it('stores runnerCommit and runnerVersion as null when omitted (legacy runner)', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+    });
+    mockHeartbeatsFindFirst.mockResolvedValue(null);
+
+    let capturedValues: any = null;
+    let capturedConflictSet: any = null;
+    mockHeartbeatsInsert.mockReturnValue({
+      values: mock((vals: any) => {
+        capturedValues = vals;
+        return {
+          onConflictDoUpdate: mock((opts: any) => {
+            capturedConflictSet = opts.set;
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { localUiUrl: 'http://localhost:8766' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    expect(capturedValues.runnerCommit).toBeNull();
+    expect(capturedValues.runnerVersion).toBeNull();
+    expect(capturedConflictSet.runnerCommit).toBeNull();
+    expect(capturedConflictSet.runnerVersion).toBeNull();
+  });
+
   it('defaults activeWorkerCount to 0', async () => {
     mockAuthenticateApiKey.mockResolvedValue({
       id: 'account-1',
