@@ -276,7 +276,15 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
-  { pattern: /\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
+  // Standard base64 alphabet only (+ / =) — deliberately excludes `-` and `_`.
+  // Those two chars are also every kebab_case/snake-case identifier's word
+  // separator, and this codebase mints plenty of long ones (mission branch
+  // names like `mission/<slug>-<missionId8>-w<workerId8>` easily clear 48
+  // chars of lowercase letters, digits, and hyphens). Base64url secrets that
+  // use `-`/`_` still get caught by the more specific patterns above (JWT,
+  // sk-, bld/dsp/ghp/xox tokens) or by an exact-value match in
+  // createSecretRedactor's `secrets` list.
+  { pattern: /\b(?=[A-Za-z0-9+/=]{48,}\b)(?=[A-Za-z0-9+/=]*[A-Za-z])(?=[A-Za-z0-9+/=]*\d)[A-Za-z0-9+/=]{48,}\b/g, replacement: '[REDACTED:credential]' },
 ];
 
 /**
