@@ -1,6 +1,6 @@
 # Mission State Ownership
 
-**Status:** Proposed
+**Status:** Accessor implemented (`apps/web/src/lib/mission-state-view.ts`); panel adoption still pending — see "Implementation status" at the bottom.
 **Related:**
 - `apps/web/src/lib/mission-helpers.ts` — `deriveMissionDisplayState()` (line 137), `getMissionStateChip()` (line 165), `deriveTaskHealthSignal()` (line 95), `deriveDriveState()` (line 46)
 - `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` — state assembly at lines 308–362; `criteriaBlockingReason` at lines 335–351; `allTasksCount` at line 293
@@ -446,3 +446,58 @@ Today (post-PR #1948): header shows AUTO, above-fold banner shows "BLOCKED." The
 5. **Update `CondensedTimeline` props** — replace `criteriaBlockingReason: string | null` with `state: MissionStateView`; use `state.criteriaBlockingReason` for the guard.
 6. **Fix `allTasksCount` predicate** — interim: `taskClass === 'work'`; final: `countByTier(...).work` once task-tier-presentation Task A lands.
 7. **Tests** — `deriveMissionStateView()`: BLOCKED health → `displayState === 'blocked'`; STALLED health → `displayState === 'stalled'`; BLOCKED with activeAgents > 0 → still `'blocked'`; criteriaUnverified with failing items → `waitingOn.kind === 'criterion_failing'`; criteriaUnverified without failing → `waitingOn.kind === 'criterion_unverified'`; terminal status → `waitingOn === null`.
+
+---
+
+## Implementation status
+
+`deriveMissionStateView` and `WaitingOnDescriptor` ship in
+`apps/web/src/lib/mission-state-view.ts`, with `MissionDisplayState` extended by
+`'blocked'` and `'stalled'` per §3. Panel adoption (§4) is **not** done — the
+mission detail page still calls `deriveMissionDisplayState`, so nothing on
+screen has changed yet. That migration is the UI follow-up; the accessor's
+signature was shaped so those panels adopt it without altering their props.
+
+The first consumer is not a panel but the `explain` MCP read
+(`apps/web/src/lib/explain.ts`, `GET /api/explain`), which answers the same
+question for a task, a mission, a workspace or a PR.
+
+### Deltas from the proposal above
+
+Three things changed once the accessor had to consume all five existing
+derivations rather than only health + criteria. The proposal is otherwise
+implemented as written.
+
+**1. The shape is a discriminated union, not a record with a nullable field.**
+§1 proposed `waitingOn: WaitingOnDescriptor | null` on one record type. That
+makes "blocked rendering as idle" a *runtime* mistake — a panel can still test
+a field and get it wrong. The shipped type splits the union: `waitingOn: null`
+exists only on the `complete` / `idle` / `running` variants, and every gated
+variant carries a non-null descriptor. A renderer must narrow to a quiet
+variant to say "nothing to do", which it cannot do while the mission is gated.
+That is the §Enforcement row upgraded from argued to code-level.
+
+**2. `MissionStateKind` is a separate axis from `MissionDisplayState`.** The
+proposal reused the display-state union for both the chip and the state
+question. They answer different things: the chip is presentation (and is kept,
+as `displayState`, precisely so panels adopt the view unchanged), while `kind`
+is the state. `kind` adds `waiting`, `awaiting_merge` and `awaiting_decision`,
+which the chip vocabulary has no room for.
+
+**3. Two precedence rulings the proposal left open.** Both are stated in the
+module docstring and covered by tests:
+
+- **Criteria never produce `blocked`.** `canCompleteMission` returns
+  `criteria_failed` / `criteria_unverified` as refusals, while
+  `deriveCriteriaGatePresentation` states that an unverified *or failing*
+  criterion "must never render as BLOCKED". A criteria refusal yields
+  `awaiting_verification`, and its tone escalates `neutral → warning → error`
+  with the gate's own state — so Q2's "unverified criterion on a young mission"
+  is quiet by construction rather than by a caller remembering to be quiet.
+- **A benign wait outranks a stall.** When `deriveTaskHealthSignal` says
+  `STALLED` and `classifyMissionWait` says "resumes at T", the wait wins. The
+  two are opposite claims and only one is actionable.
+
+Q1 is resolved as the proposal leaned: an unmet dependency outranks `running`.
+Q3 is resolved by labelling the task-aggregate stall chip **IDLE**, leaving the
+word "stalled" to `MissionHealth`'s scheduling axis.
