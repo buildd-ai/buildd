@@ -179,6 +179,11 @@ export class BuilddClient {
     filesChanged?: number;
     linesAdded?: number;
     linesRemoved?: number;
+    // `git status --porcelain` (tracked files only) found something at the
+    // worktree. Kept current by the periodic sync so complete_task — which
+    // reaches the server directly from the agent's MCP tool, with no local
+    // git access — has a fresh value to gate on.
+    dirtyWorktree?: boolean;
     // Token usage
     inputTokens?: number;
     outputTokens?: number;

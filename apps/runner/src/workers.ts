@@ -3420,7 +3420,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
         sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
         // Mirrors the sibling non-abort branch's local 'waiting' state — the
         // session is gone here, but 'waiting' + no live session is already a
         // recognized local state elsewhere in this file.
@@ -3475,7 +3475,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Budget exceeded - report as error with specific message
         sessionLog(worker.id, 'error', 'budget_exceeded', 'maxBudgetUsd limit hit', worker.taskId);
         this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
         worker.status = 'error';
         worker.error = 'Budget limit exceeded';
         worker.currentAction = 'Budget exceeded';
@@ -3526,7 +3526,7 @@ If something is missing or incomplete, describe what and fix it now.`;
         // A clean completion proves the credential works — reset the auth-failure
         // backoff so claims resume at full cadence.
         this.consecutiveAuthFailures = 0;
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length);
+        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
 
         // B (write-back): After a successful OAuth Codex session, the CLI may have
         // silently refreshed the tokens. Read the auth.json we left in place
@@ -3681,8 +3681,13 @@ If something is missing or incomplete, describe what and fix it now.`;
           ...(outputTokens && { outputTokens }),
           // Include structured output if the SDK returned validated JSON
           ...(structuredOutput ? { structuredOutput } : {}),
-          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing)
-          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage } : {}),
+          // Use last_assistant_message from Stop hook as summary (cleaner than transcript parsing).
+          // This fires only when the session ended without the agent calling complete_task itself,
+          // so the "summary" is whatever the agent happened to say last — often a conversational
+          // aside ("waiting for CI"), not an outcome. Tag it 'fallback' so downstream consumers
+          // (KB ingestion, UI) never present it as an authored result. See docs/specs — the agent's
+          // own complete_task PATCH (packages/core/mcp-tools.ts) tags 'agent' and wins first-writer.
+          ...(worker.lastAssistantMessage ? { summary: worker.lastAssistantMessage, summarySource: 'fallback' as const } : {}),
           // Loop verification evidence (only present for command exit condition)
           ...(verificationEvidence ? { verificationEvidence } : {}),
           // Subagent spans — terminal-only flush

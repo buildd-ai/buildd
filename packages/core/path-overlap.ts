@@ -119,6 +119,42 @@ export function pathsOverlap(a: string[], b: string[]): boolean {
 }
 
 /**
+ * The paths two touch sets actually share — the same exact/prefix rule
+ * `pathsOverlap` answers yes/no with, returning the evidence instead.
+ *
+ * Used by the `explain` read to name WHICH files two branches collide on, so a
+ * conflicted PR reports "these three files, touched by that merged PR" rather
+ * than "conflicts with base". The repo-wide sentinel is deliberately NOT
+ * expanded here: `['**']` means "scope undeclared", and reporting it as a
+ * conflicting path would name a file nobody touched.
+ *
+ * Returns entries from `a`, deduplicated, in `a`'s order.
+ */
+export function intersectPaths(a: string[], b: string[]): string[] {
+  if (a.length === 0 || b.length === 0) return [];
+
+  const na = a.filter(p => p !== REPO_WIDE_SENTINEL).map(stripTrailingSep);
+  const nb = b.filter(p => p !== REPO_WIDE_SENTINEL).map(stripTrailingSep);
+  if (na.length === 0 || nb.length === 0) return [];
+
+  const setB = new Set(nb);
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const pa of na) {
+    if (seen.has(pa)) continue;
+    const hit =
+      setB.has(pa) ||
+      nb.some(pb => pb.startsWith(pa + '/') || pa.startsWith(pb + '/'));
+    if (hit) {
+      seen.add(pa);
+      out.push(pa);
+    }
+  }
+  return out;
+}
+
+/**
  * Authoring-time predicate: should an auto-inferred `dependsOn` edge be stored
  * between two tasks based on their path manifests?
  *

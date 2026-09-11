@@ -165,6 +165,9 @@ export const workerActions = [
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events', 'get_error_traces',
+  // Deterministic read over rows the caller can already see. Worker level, not
+  // admin: the agent that needs "why is this stuck?" is the one standing in it.
+  'explain',
   'list_artifact_templates',
   'suggest_schedule_update',
   'post_note',
@@ -373,6 +376,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
     emit_event: '{ workerId?, type (required), label (required), metadata? } — workerId auto-resolved from context if omitted',
     query_events: '{ workerId?, type? } — workerId auto-resolved from context if omitted',
+    explain: '{ taskId? | missionId? | workspaceId? | prNumber? (exactly ONE subject; workspaceId may also accompany prNumber to disambiguate a number that exists in several repos) } — deterministic read: what state a subject is in, what it is waiting on, and the evidence. Returns `state` + `waitingOn` from the one shared mission-state accessor, an ORDERED `because[]` causal chain whose elements carry hard refs (taskId, prNumber, commit SHA, criterion label, error signature, conflicting file paths), `history[]` with retries/review passes collapsed under their parent task, `nextAction` (or explicit null), and `derivedFrom` naming which row or derivation produced each field. Workspace scope returns only the subjects that are waiting on something, ranked — not a dump. A conflicted PR reports the merges into its base since it opened, the files they touched, and which of those this branch touches too. No model is called and no merge is attempted: read the evidence and narrate it yourself.',
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
@@ -1149,7 +1153,12 @@ export async function handleBuilddAction(
       const result = task.result;
       if (result && (result.summary || result.prUrl || result.prNumber || result.sha)) {
         lines.push('', '## Result');
-        if (result.summary) lines.push(`**Summary:** ${result.summary}`);
+        if (result.summary) {
+          const fallbackNote = result.summarySource === 'fallback'
+            ? ' _(auto-captured last message — the agent never called complete_task with a summary; treat as unverified, not a confirmed outcome)_'
+            : '';
+          lines.push(`**Summary:** ${result.summary}${fallbackNote}`);
+        }
         if (result.prUrl || result.prNumber) {
           lines.push(`**PR:** ${result.prUrl || `#${result.prNumber}`}`);
         }
@@ -1376,7 +1385,7 @@ export async function handleBuilddAction(
           method: 'PATCH',
           body: JSON.stringify({
             status: 'completed',
-            ...(params.summary ? { summary: params.summary } : {}),
+            ...(params.summary ? { summary: params.summary, summarySource: 'agent' } : {}),
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
           }),
@@ -1427,11 +1436,20 @@ export async function handleBuilddAction(
 
             // Mirror the completed task into the KnowledgeStore (best-effort).
             const prUrl = taskData?.prUrl || taskData?.result?.prUrl || workerData?.prUrl || null;
+            // The persisted result.summary can predate THIS call (e.g. a retry's
+            // complete_task with no summary param, reading back what an earlier
+            // worker on this task left behind). Only trust it as an outcome when
+            // it was agent-authored — a 'fallback' summary (runner's last-message
+            // capture, see apps/runner/src/workers.ts) must never be re-ingested
+            // into the KB as if it were a real result just because it happens to
+            // sit in the DB row.
+            const persistedSummaryIsAuthored = taskData?.result?.summarySource !== 'fallback';
+            const authoredPersistedSummary = persistedSummaryIsAuthored ? (taskData?.result?.summary ?? null) : null;
             const taskChunk = buildTaskCard({
               taskId,
               title: taskData?.title ?? null,
               description: taskData?.description ?? null,
-              summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+              summary: (params.summary as string) ?? authoredPersistedSummary,
               success: true,
               prUrl,
               missionId: taskData?.missionId ?? null,
@@ -1454,7 +1472,7 @@ export async function handleBuilddAction(
                 taskId,
                 workerId: (params.workerId as string) || ctx.workerId || null,
                 title: taskData?.title ?? null,
-                summary: (params.summary as string) ?? taskData?.result?.summary ?? null,
+                summary: (params.summary as string) ?? authoredPersistedSummary,
                 nextSuggestion: (params.nextSuggestion as string) ?? null,
                 success: true,
                 turns: typeof result?.turns === 'number' ? result.turns : null,
@@ -3018,6 +3036,33 @@ export async function handleBuilddAction(
       ).join('\n');
 
       return text(`${filtered.length} event(s):\n\n${summary}`);
+    }
+
+    case 'explain': {
+      // Scoping is not re-implemented here: GET /api/explain derives the team
+      // from the caller's bearer token and 404s any subject outside it, so this
+      // handler cannot widen its own visibility. It also resolves a prNumber
+      // through the same `resolveWorkerByPrNumber` that `get_pr` uses.
+      const parts: string[] = [];
+      if (params.taskId) parts.push(`taskId=${encodeURIComponent(String(params.taskId))}`);
+      if (params.missionId) parts.push(`missionId=${encodeURIComponent(String(params.missionId))}`);
+      if (params.prNumber != null) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
+      if (params.workspaceId) {
+        const wsId = await resolveWorkspaceId(api, String(params.workspaceId), ctx);
+        if (!wsId) {
+          return errorResult(`Could not resolve workspace "${params.workspaceId}". Pass a workspace UUID.`);
+        }
+        parts.push(`workspaceId=${encodeURIComponent(wsId)}`);
+      }
+      if (parts.length === 0) {
+        return errorResult('Pass exactly one of taskId, missionId, workspaceId or prNumber.');
+      }
+
+      const data = await api(`/api/explain?${parts.join('&')}`);
+      // Returned verbatim as JSON. `explain` is evidence, not a report: any
+      // prose rendering here would be this tool narrating, which is exactly the
+      // job it leaves to the caller.
+      return text(JSON.stringify(data, null, 2));
     }
 
     case 'get_error_traces': {
