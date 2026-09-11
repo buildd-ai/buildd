@@ -410,8 +410,12 @@ clears — so the queue restarts itself.
   `limiter` names the binding metric.
 
 **Code surface**:
-- Detection/parsing: `apps/web/src/lib/budget-errors.ts`
-  (`isBudgetExhaustionError`, `extractResetTime`, `SESSION_WINDOW_MS`)
+- Detection: `packages/core/budget-error-classifier.ts` (`isBudgetExhaustionError`,
+  `BUDGET_EXHAUSTION_PATTERNS`) — the canonical pattern list, shared by the web
+  route and the runner's claim breaker / worker-error reporting so the three
+  call sites cannot drift into inconsistent per-provider wording.
+- Reset-time parsing: `apps/web/src/lib/budget-errors.ts` (re-exports
+  `isBudgetExhaustionError`; owns `extractResetTime`, `SESSION_WINDOW_MS`)
 - Wall handling: `apps/web/src/app/api/workers/[id]/route.ts:640-925`
 - Learner: `packages/core/oauth-budget.ts` (`learnOauthCapacity`,
   `oauthBudgetPressure`, `inferWindowStart`, `summarizeWindowUsage`,

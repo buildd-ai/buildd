@@ -383,6 +383,21 @@ describe('explainWorkspace', () => {
     expect(result.quiet).toBeGreaterThanOrEqual(0);
   });
 
+  it('caps the active-missions scan so the fan-out cannot be unbounded', async () => {
+    missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
+    taskRows = [];
+
+    await explainWorkspace('ws-1');
+
+    // The only findMany caller on `missions` — explainMission's own dependency
+    // lookup goes through findFirst. A missing limit here means a workspace
+    // with hundreds of active missions fans out one explainMission() call
+    // (several queries each) per mission before the subject-ranking cut ever
+    // applies, unbounded by the same 200-row cap the tasks query below has.
+    const [args] = mockMissionsFindMany.mock.calls.at(-1) as unknown as [Row];
+    expect(args.limit).toBe(200);
+  });
+
   it('returns an empty subject list when nothing is blocked', async () => {
     missionRow = { id: 'mission-1', title: 'Build auth', workspaceId: 'ws-1', status: 'active', schedule: null };
     taskRows = [task({ id: 'task-done', status: 'completed' })];

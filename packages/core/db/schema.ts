@@ -538,6 +538,12 @@ export interface TaskResult {
   reaperAutoCompleted?: boolean;
   /** Reaper audit trail moved here so result.summary carries the outcome, not forensics. See spec B.5. */
   reaperForensics?: string;
+  /** The summary this replaced, when an admin corrected it after completion. See correct_task_result. */
+  previousSummary?: string;
+  /** ISO timestamp of the last admin correction to `summary`. */
+  summaryCorrectedAt?: string;
+  /** Identifier of the caller that made the correction (worker id or token label). */
+  correctedBy?: string;
   /**
    * Provenance of `summary`. 'agent' = the agent explicitly passed it to
    * complete_task. 'fallback' = the runner derived it from the SDK's last
@@ -1113,6 +1119,39 @@ export const taskSubjectClaims = pgTable('task_subject_claims', {
   activeClaimIdx: uniqueIndex('task_subject_claims_active_unique')
     .on(t.workspaceId, t.keyType, t.keyHash)
     .where(sql`${t.state} = 'active'`),
+}));
+
+// The discrepancy ledger — docs/design/spec-conformance.md §7. A row is the
+// derived GAP between a spec's declared status and what the checker actually
+// found, not a re-derived report line: identity is the exact
+// (workspace, spec_path, assertion_id) triple, never a fuzzy match on the
+// assertion's prose, so the same finding across runs updates one row instead
+// of manufacturing a new one each time (the `path-claims.md` failure §7
+// documents — DRIFTED twice with no state carried between the two reports).
+export const specDiscrepancies = pgTable('spec_discrepancies', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  specPath: text('spec_path').notNull(),
+  assertionId: text('assertion_id').notNull(),
+  // §8: which way the gap runs. code_ahead/contradicted may be written by
+  // Tier-2 CI; spec_ahead is written only by the Tier-3 cron (slice 7) after
+  // its deeper search rules out a rename — CI never writes it directly.
+  direction: text('direction').notNull().$type<'spec_ahead' | 'code_ahead' | 'contradicted'>(),
+  // §9: open -> accepted is a parked, not closed, state; -> resolved happens
+  // only when a re-run's assertion result lands cleanly, never by self-report.
+  status: text('status').notNull().default('open').$type<'open' | 'accepted' | 'resolved'>(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).defaultNow().notNull(),
+  lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }).defaultNow().notNull(),
+  // Required when status = accepted (same discipline as the assertion escape
+  // hatch's skip_reason) — enforced by the adjudication path, not here.
+  acceptedReason: text('accepted_reason'),
+  promotedMissionId: uuid('promoted_mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // The exact read that produced the current verdict — never a similarity score.
+  evidence: jsonb('evidence').$type<Record<string, unknown>>(),
+}, (t) => ({
+  workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
+  // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
+  identityUnique: uniqueIndex('spec_discrepancies_identity_unique').on(t.workspaceId, t.specPath, t.assertionId),
 }));
 
 export const workers = pgTable('workers', {
@@ -2194,6 +2233,7 @@ export const workspacesRelations = relations(workspaces, ({ one, many }) => ({
   githubRepo: one(githubRepos, { fields: [workspaces.githubRepoId], references: [githubRepos.id] }),
   githubInstallation: one(githubInstallations, { fields: [workspaces.githubInstallationId], references: [githubInstallations.id] }),
   connectorWorkspaces: many(connectorWorkspaces),
+  specDiscrepancies: many(specDiscrepancies),
 }));
 
 export const tasksRelations = relations(tasks, ({ one, many }) => ({
@@ -2220,6 +2260,11 @@ export const taskSubjectReportsRelations = relations(taskSubjectReports, ({ one 
 export const taskSubjectClaimsRelations = relations(taskSubjectClaims, ({ one }) => ({
   workspace: one(workspaces, { fields: [taskSubjectClaims.workspaceId], references: [workspaces.id] }),
   canonicalTask: one(tasks, { fields: [taskSubjectClaims.canonicalTaskId], references: [tasks.id] }),
+}));
+
+export const specDiscrepanciesRelations = relations(specDiscrepancies, ({ one }) => ({
+  workspace: one(workspaces, { fields: [specDiscrepancies.workspaceId], references: [workspaces.id] }),
+  promotedMission: one(missions, { fields: [specDiscrepancies.promotedMissionId], references: [missions.id] }),
 }));
 
 export const workersRelations = relations(workers, ({ one, many }) => ({
@@ -2776,6 +2821,9 @@ export type TaskSubjectReport = typeof taskSubjectReports.$inferSelect;
 export type NewTaskSubjectReport = typeof taskSubjectReports.$inferInsert;
 export type TaskSubjectClaim = typeof taskSubjectClaims.$inferSelect;
 export type NewTaskSubjectClaim = typeof taskSubjectClaims.$inferInsert;
+
+export type SpecDiscrepancy = typeof specDiscrepancies.$inferSelect;
+export type NewSpecDiscrepancy = typeof specDiscrepancies.$inferInsert;
 
 // Dark-check detection: tracks required CI checks that consistently report
 // 'skipped', signalling a misconfigured gate that silently bypasses CI.
