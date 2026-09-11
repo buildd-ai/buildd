@@ -100,7 +100,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Draft (4)
 
-- [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-10
+- [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-11
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-10
   For a mission with an integration base, canCompleteMission, the on_mission_complete release trigger, and the goal-criteria evaluator MUST all treat production release as the single, shared definition of mission "done".
