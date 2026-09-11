@@ -8,6 +8,7 @@ import {
   decideLedgerWrite,
   canPromote,
   assertPromotable,
+  isDirection,
   writeLedgerFromEvaluations,
   summarizeClassifications,
   type Direction,
@@ -130,6 +131,19 @@ describe('promotion gate', () => {
 
   test('assertPromotable allows spec_ahead', () => {
     expect(() => assertPromotable('spec_ahead')).not.toThrow();
+  });
+});
+
+// ─── isDirection (narrows the gap classifications the write call sites use) ─
+
+describe('isDirection', () => {
+  test('true for the two classifications decideLedgerWrite pairs with a gap action', () => {
+    expect(isDirection('code_ahead')).toBe(true);
+    expect(isDirection('contradicted')).toBe(true);
+  });
+
+  test('false for clean — decideLedgerWrite never returns insert/reopen/refresh/keep_accepted for it', () => {
+    expect(isDirection('clean')).toBe(false);
   });
 });
 
