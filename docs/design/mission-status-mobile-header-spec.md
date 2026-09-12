@@ -1,3 +1,19 @@
+---
+status: normative
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mission-health-groups"
+    type: "symbol"
+    name: "healthToGroup"
+    path: "apps/web/src/lib/mission-helpers.ts"
+  - id: "filter-group-map"
+    type: "symbol"
+    name: "FILTER_TO_GROUPS"
+    path: "apps/web/src/lib/mission-helpers.ts"
+  - id: "mobile-header-tests"
+    type: "test_file"
+    path: "apps/web/src/components/MobilePageHeader.test.tsx"
+---
 # Spec — Mission Status Taxonomy & Mobile List-Page Header Layout
 
 **Status**: Normative — all implementations must conform  

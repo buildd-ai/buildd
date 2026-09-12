@@ -1,3 +1,26 @@
+---
+status: approved
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "migration-precheck"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/migrate/precheck"
+    file: "apps/web/src/app/api/workspaces/[id]/migrate/precheck/route.ts"
+  - id: "migration-execute"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/migrate/execute"
+    file: "apps/web/src/app/api/workspaces/[id]/migrate/execute/route.ts"
+  - id: "migration-repair"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/migrate/repair"
+    file: "apps/web/src/app/api/workspaces/[id]/migrate/repair/route.ts"
+  - id: "migration-execute-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workspaces/[id]/migrate/execute/route.test.ts"
+---
 # Workspace Migration — Design Spec
 
 > **Status:** Approved — implementation in progress (BT-1…BT-16).

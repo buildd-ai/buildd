@@ -1,3 +1,19 @@
+---
+status: partially
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "worktree-base-resolution"
+    type: "symbol"
+    name: "resolveWorktreeBase"
+    path: "apps/runner/src/worktree-utils.ts"
+  - id: "ci-retry-task"
+    type: "symbol"
+    name: "buildCIRetryTask"
+    path: "apps/web/src/lib/ci-retry.ts"
+  - id: "retry-worktree-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/worktree-utils.test.ts"
+---
 # Retry Continuity Design Spec
 
 > **Status:** partially shipped — §§1–5 describe the original design. §8 (added later) documents the

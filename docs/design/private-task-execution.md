@@ -1,3 +1,16 @@
+---
+status: spec
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "visibility-filter"
+    type: "symbol"
+    name: "visibilityFilter"
+    path: "apps/web/src/lib/task-visibility.ts"
+  - id: "oauth-client-owner"
+    type: "config_key"
+    key: "ownerClientId"
+    file: "packages/core/db/schema.ts"
+---
 # Private Task Execution
 
 **Status:** Spec (audit + design) — no implementation yet  

@@ -1,3 +1,20 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "tiered-count"
+    type: "symbol"
+    name: "countByTier"
+    path: "packages/core/task-count.ts"
+  - id: "tiered-count-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/task-count.test.ts"
+  - id: "mission-api-tier-counts"
+    type: "symbol_reachable"
+    symbol: "tierCounts"
+    entry: "apps/web/src/app/api/missions/[id]/route.ts"
+    as: "read"
+---
 # Task Tier Presentation Contract
 
 **Status:** Proposed

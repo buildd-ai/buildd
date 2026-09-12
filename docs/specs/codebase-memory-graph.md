@@ -10,6 +10,24 @@ related: [mcp-connectors-and-roles, codex-backend-spec, worker-sandbox-isolation
 keywords: [codebase-memory, codebase-memory-mcp, CBM, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm]
 verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "cbm-activation"
+    type: "symbol"
+    name: "buildCbmActivation"
+    path: "apps/runner/src/cbm-enforcement.ts"
+  - id: "cbm-bootstrap"
+    type: "symbol"
+    name: "runCbmBootstrap"
+    path: "apps/runner/src/cbm-bootstrap.ts"
+  - id: "cbm-activation-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/cbm-enforcement.test.ts"
+  - id: "worker-activates-cbm"
+    type: "symbol_reachable"
+    symbol: "buildCbmActivation"
+    entry: "apps/runner/src/workers.ts"
+    as: "read"
 ---
 # Codebase Memory Graph
 

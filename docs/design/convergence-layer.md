@@ -1,3 +1,23 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "auto-merge-safety"
+    type: "symbol"
+    name: "evaluateAutoMergeSafety"
+    path: "apps/web/src/lib/auto-merge.ts"
+  - id: "green-ci-policy"
+    type: "config_key"
+    key: "enforceGreenCI"
+    file: "packages/shared/src/types.ts"
+  - id: "merge-order-edges"
+    type: "config_key"
+    key: "mergeAfter"
+    file: "packages/shared/src/types.ts"
+  - id: "migration-journal-guard"
+    type: "test_file"
+    path: "packages/core/__tests__/migration-journal-ordering.test.ts"
+---
 # Convergence Layer: Audit and Spec
 
 **Status:** Proposed  

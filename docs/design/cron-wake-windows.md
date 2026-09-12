@@ -1,3 +1,19 @@
+---
+status: accepted
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "redis-due-gate"
+    type: "symbol"
+    name: "decideDueGate"
+    path: "apps/web/src/lib/cron-due-queue.ts"
+  - id: "due-queue-gate"
+    type: "symbol"
+    name: "gateOnDueQueue"
+    path: "apps/web/src/lib/cron-due-queue.ts"
+  - id: "due-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/cron-due-queue.test.ts"
+---
 # Cron Wake Windows and Redis-Gated Ticks
 
 **Status:** Accepted

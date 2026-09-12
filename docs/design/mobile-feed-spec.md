@@ -1,3 +1,19 @@
+---
+status: reference
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "status-chip"
+    type: "symbol"
+    name: "StatusChip"
+    path: "apps/web/src/components/StatusChip.tsx"
+  - id: "task-card"
+    type: "symbol"
+    name: "TaskCard"
+    path: "apps/web/src/components/TaskCard.tsx"
+  - id: "mobile-header-tests"
+    type: "test_file"
+    path: "apps/web/src/components/MobilePageHeader.test.tsx"
+---
 # Design Spec — Buildd App (Brutalist / Editorial direction)
 
 **Status**: Reference spec — build against this, confirm parity when done

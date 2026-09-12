@@ -1,3 +1,19 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "digest-arm-assignment"
+    type: "symbol"
+    name: "assignMemoryDigestArm"
+    path: "apps/runner/src/memory-digest-policy.ts"
+  - id: "composition-record"
+    type: "symbol"
+    name: "buildPromptCompositionRecord"
+    path: "apps/runner/src/memory-digest-policy.ts"
+  - id: "digest-policy-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/memory-digest-policy.test.ts"
+---
 # Task-Scoped Workspace Memory (experiment arm)
 
 **Status:** Implemented — `task_scoped` arm and the composition record ship with this doc; enrolment defaults to nobody.

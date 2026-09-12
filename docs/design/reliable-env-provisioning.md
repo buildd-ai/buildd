@@ -1,3 +1,19 @@
+---
+status: phases
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "environment-verifier"
+    type: "symbol"
+    name: "runEnvVerify"
+    path: "apps/runner/src/env-verify.ts"
+  - id: "provision-gate"
+    type: "symbol"
+    name: "runProvisionGate"
+    path: "apps/runner/src/env-verify.ts"
+  - id: "environment-verifier-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/env-verify.test.ts"
+---
 # Reliable Environment Provisioning
 
 **Status:** Phases 1–4 shipped (2026-07-18) — verifier core + `buildd env verify` CLI + auto-detection, the runner provision gate, the CI bootstrappability check, and the secret contract (`env.required` validated against the injected worker env). Design complete; see open questions for follow-ups.

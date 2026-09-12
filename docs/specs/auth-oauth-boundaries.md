@@ -9,6 +9,20 @@ surfaces: [apps/web/src/lib/api-auth.ts, apps/web/src/app/api/workers/claim/rout
 related: [mcp-action-contracts, credential-isolation, team-namespace-scoping]
 keywords: [bld_ api key, authtype, maxconcurrentsessions, budgetexhaustedat, device code, pkce]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "authenticate-api-key"
+    type: "symbol"
+    name: "authenticateApiKey"
+    path: "apps/web/src/lib/api-auth.ts"
+  - id: "claim-worker"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/claim"
+    file: "apps/web/src/app/api/workers/claim/route.ts"
+  - id: "claim-auth-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/claim/route.test.ts"
 ---
 # Auth & OAuth Boundaries
 

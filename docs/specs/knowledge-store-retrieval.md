@@ -9,6 +9,20 @@ surfaces: [packages/core/knowledge-store/pg-vector-store.ts, packages/core/knowl
 related: [mcp-action-contracts, mission-task-lifecycle]
 keywords: [knowledge_chunks, rrf, bm25, voyage-code-3, query_knowledge, spec_compare]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "vector-store"
+    type: "symbol"
+    name: "PgVectorStore"
+    path: "packages/core/knowledge-store/pg-vector-store.ts"
+  - id: "rank-fusion"
+    type: "symbol"
+    name: "reciprocalRankFusion"
+    path: "packages/core/knowledge-store/pg-vector-store.ts"
+  - id: "file-ingestion"
+    type: "symbol"
+    name: "ingestFiles"
+    path: "packages/core/knowledge-store/ingest.ts"
 ---
 # Knowledge Store & Retrieval
 

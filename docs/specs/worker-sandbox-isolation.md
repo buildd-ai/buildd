@@ -10,6 +10,24 @@ related: [credential-isolation, codex-backend-spec, codebase-memory-graph, runne
 keywords: [bwrap, bubblewrap, BUILDD_DISABLE_SANDBOX, BUILDD_SANDBOX_MOUNT_ALLOWLIST, BUILDD_MOUNT_ALLOWLIST_EXTRA, sandbox_mount_gap, bwrap_namespace_denied, unprivileged_userns_clone, tmpfs, mount allowlist]
 verified_by: [apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts, apps/runner/__tests__/unit/backends/codex-sandbox-bwrap.test.ts, apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "bwrap-argv"
+    type: "symbol"
+    name: "buildWorkerBwrapArgv"
+    path: "apps/runner/src/bwrap-mount-allowlist.ts"
+  - id: "mount-isolation-probe"
+    type: "symbol"
+    name: "checkBwrapMountIsolationSupport"
+    path: "apps/runner/src/env-scan.ts"
+  - id: "mount-boundary-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts"
+  - id: "worker-builds-mount-boundary"
+    type: "symbol_reachable"
+    symbol: "buildWorkerBwrapArgv"
+    entry: "apps/runner/src/workers.ts"
+    as: "read"
 ---
 
 ## Worker Sandbox Isolation

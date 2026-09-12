@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "workspace-release-config"
+    type: "route"
+    method: "PATCH"
+    path: "/api/workspaces/[id]/config"
+    file: "apps/web/src/app/api/workspaces/[id]/config/route.ts"
+  - id: "mission-release-trigger"
+    type: "symbol"
+    name: "fireMissionReleaseIfComplete"
+    path: "apps/web/src/lib/mission-release.ts"
+  - id: "release-section"
+    type: "symbol"
+    name: "ReleaseSection"
+    path: "apps/web/src/app/app/(protected)/workspaces/[id]/config/ReleaseSection.tsx"
+---
 # Release Management UI — Design Spec
 
 > **Status:** Proposed — awaiting Max approval before implementation.

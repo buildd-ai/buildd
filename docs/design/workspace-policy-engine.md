@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "workspace-policies"
+    type: "symbol"
+    name: "workspacePolicies"
+    path: "packages/core/db/schema.ts"
+  - id: "structured-question-decision"
+    type: "config_key"
+    key: "decisionRecord"
+    file: "packages/shared/src/types.ts"
+  - id: "policy-management-action"
+    type: "symbol_reachable"
+    symbol: "manage_workspace_policies"
+    entry: "packages/core/mcp-tools.ts"
+    as: "read"
+---
 # Workspace Policy Engine
 
 **Status:** Proposed

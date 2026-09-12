@@ -9,6 +9,19 @@ surfaces: [apps/web/src/lib/team-access.ts, apps/web/src/app/app/(protected)/lay
 related: [team-workspace-mission-onboarding, surface-ia-home-missions-initiatives]
 keywords: [buildd-team cookie, active team, getuserteamids, teamid filter, teamswitcher]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "active-team-resolution"
+    type: "symbol"
+    name: "resolveActiveTeamId"
+    path: "apps/web/src/lib/team-access.ts"
+  - id: "user-team-set"
+    type: "symbol"
+    name: "getUserTeamIds"
+    path: "apps/web/src/lib/team-access.ts"
+  - id: "team-access-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/team-access.test.ts"
 ---
 # Team Namespace Scoping
 

@@ -1,3 +1,16 @@
+---
+status: authoritative
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "personal-settings-page"
+    type: "symbol"
+    name: "YouPage"
+    path: "apps/web/src/app/app/(protected)/you/page.tsx"
+  - id: "workspace-settings-page"
+    type: "symbol"
+    name: "WorkspaceConfigPage"
+    path: "apps/web/src/app/app/(protected)/workspaces/[id]/config/page.tsx"
+---
 # Settings IA Refactor (SPEC)
 
 > **Status: authoritative design spec.** This is the plan of record for the
