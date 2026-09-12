@@ -22,7 +22,15 @@ import {
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
 import { buildRetryContinuitySection } from './worktree-utils';
 import { PusherManager } from './pusher-manager';
-import { authContextOf, classifyClaimError, isAuthError, ContextBreaker } from './claim-breaker';
+import {
+  authContextOf,
+  classifyClaimError,
+  isAuthError,
+  nextContextWake,
+  pausedContextFor,
+  ContextBreaker,
+  DEFAULT_AUTH_CONTEXT,
+} from './claim-breaker';
 import { createKnowledgeIngestPoller, type KnowledgeIngestPoller } from './knowledge-ingest';
 import { CredentialCache, authBackoffMs } from './credential-cache';
 import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, credentialBroker } from './broker';
@@ -511,6 +519,8 @@ export class WorkerManager {
   // One-shot timer that wakes the runner to poll the moment an exhausted OAuth
   // budget resets, instead of waiting up to a full hour for the fallback poll.
   private budgetResumeTimer?: Timer;
+  /** Target instant of `budgetResumeTimer`, so a later wake cannot displace an earlier one. */
+  private budgetResumeAtMs?: number;
   private viewerToken?: string;
   private dirtyWorkers = new Set<string>();
   private dirtyForDisk = new Set<string>();
@@ -742,6 +752,13 @@ export class WorkerManager {
         pausedUntil: this.claimsPaused ? this.claimsPausedUntil : null,
         consecutiveQuickFailures: this.consecutiveQuickFailures,
       },
+      // Per-auth-context pauses, keyed `account:<backend>` /
+      // `tenant:<id>:<backend>` → expiry ms. Reported alongside the global flag
+      // because the two are independent: the global breaker can read `paused:
+      // false` while every claim for one context is walled, and a debug surface
+      // that only shows the global flag answers "healthy" with false authority.
+      // snapshot() prunes expired keys, so anything listed here is live.
+      contextBreaker: this.contextBreaker.snapshot(),
       adaptiveTimeout: {
         currentMs: this.adaptiveStaleTimeout,
         recentCycleTimes: cycleTimes,
@@ -1066,7 +1083,7 @@ export class WorkerManager {
         // — the budget-reset re-queue deliberately emits `task:updated`, which the
         // Pusher subscriber ignores, so there is no realtime nudge. That left work
         // stalled for up to an hour after the budget was back (2026-07-11 incident).
-        this.scheduleBudgetResume(budgetResetsAt);
+        this.scheduleResumeAt(new Date(budgetResetsAt).getTime(), 'account budget reset');
       }
 
       if (claimed.length === 0) {
@@ -1115,8 +1132,15 @@ export class WorkerManager {
       if (errMsg.includes('429') && (errMsg.includes('budget exhausted') || errMsg.includes('Budget exhausted'))) {
         const pauseMs = 60 * 60 * 1000;
         const untilMs = Date.now() + pauseMs;
-        this.contextBreaker.pause('account', untilMs);
-        console.warn('[WorkerManager] Server: OAuth budget exhausted — pausing account claims ~60 min');
+        // No task is in scope here — this is the cross-backend poll, so there
+        // is nothing to read a backend off. Pause the CLAUDE key only: the
+        // account-level budget columns this 429 reflects are the Claude OAuth
+        // seat pool, which apps/web/src/lib/backend-failover.ts folds in as a
+        // `claude` pause (legacyClaudePauseResetsAt). Walling Codex from here
+        // would be precisely the cross-provider conflation this key fixes.
+        this.contextBreaker.pause('account:claude', untilMs);
+        this.scheduleContextWake();
+        console.warn('[WorkerManager] Server: OAuth budget exhausted — pausing account:claude claims ~60 min');
         this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: 'Server: OAuth budget exhausted (account)' });
       } else {
         console.error('Failed to claim pending tasks:', err);
@@ -1189,40 +1213,64 @@ export class WorkerManager {
   }
 
   /**
-   * Schedule a one-shot poll for the moment an exhausted OAuth budget resets.
+   * Schedule a one-shot poll for the moment a pause is expected to lift.
    *
-   * The server clears the exhaustion flag lazily on the next claim, and the
-   * budget-reset re-queue emits `task:updated` (not `task:assigned`) to avoid a
-   * realtime re-fire storm — so nothing wakes the runner at reset time. This
-   * timer closes that gap: it fires just after `budgetResetsAt`, at which point
-   * the claim clears the flag and picks up the tasks that were held.
+   * Two callers, same shape. (a) An exhausted account OAuth budget: the server
+   * clears the exhaustion flag lazily on the next claim, and the budget-reset
+   * re-queue emits `task:updated` (not `task:assigned`) to avoid a realtime
+   * re-fire storm — so nothing wakes the runner at reset time. (b) A per-context
+   * breaker pause: the Pusher nudge that would have restarted the work is
+   * discarded while paused, so again nothing wakes the runner. Either way
+   * recovery would otherwise wait for the hourly fallback poll.
    *
-   * Idempotent (reschedules on each report) and self-healing: if the budget is
-   * somehow still blocked when it fires, the server returns `budgetResetsAt`
-   * again and this reschedules.
+   * Idempotent (reschedules on each report, keeping the earliest wake) and
+   * self-healing: if the pause is somehow still in force when it fires, the
+   * caller reports it again and this reschedules.
    */
-  private scheduleBudgetResume(budgetResetsAt: string) {
-    const resetMs = new Date(budgetResetsAt).getTime();
-    if (Number.isNaN(resetMs)) return;
-    // Small buffer so we land after the reset boundary the server checks.
-    const delayMs = Math.max(0, resetMs - Date.now()) + 5_000;
+  private scheduleResumeAt(atMs: number, reason: string) {
+    if (!Number.isFinite(atMs)) return;
+    // Small buffer so we land after the boundary the server/breaker checks.
+    const fireAtMs = atMs + 5_000;
+    const delayMs = Math.max(0, fireAtMs - Date.now());
     // Guard against a bad/implausible reset time scheduling a useless far-future
     // timer; the hourly fallback poll still covers anything beyond this.
     const MAX_DELAY_MS = 6 * 60 * 60 * 1000;
     if (delayMs > MAX_DELAY_MS) return;
+    // Idempotent: one timer, always armed for the EARLIEST outstanding wake, so
+    // a later reason (e.g. an 11h Codex wall) cannot push out an imminent one.
+    // A wake that fires too early is harmless — the poll re-reports and this
+    // reschedules.
+    if (this.budgetResumeTimer && this.budgetResumeAtMs !== undefined && this.budgetResumeAtMs <= fireAtMs) return;
     if (this.budgetResumeTimer) clearTimeout(this.budgetResumeTimer);
+    this.budgetResumeAtMs = fireAtMs;
     this.budgetResumeTimer = setTimeout(() => {
       this.budgetResumeTimer = undefined;
+      this.budgetResumeAtMs = undefined;
       const active = Array.from(this.workers.values()).filter(
         w => w.status === 'working' || w.status === 'stale'
       ).length;
       if (active < this.config.maxConcurrent) {
-        console.log('[WorkerManager] Budget reset reached — polling for held tasks');
+        console.log(`[WorkerManager] Resume wake (${reason}) — polling for held tasks`);
         this.claimPendingTasks().catch(() => {});
       }
+      // Re-arm for whatever context pause is still in force behind this one.
+      this.scheduleContextWake();
     }, delayMs);
     // Don't let this timer alone keep the process alive.
     (this.budgetResumeTimer as any)?.unref?.();
+  }
+
+  /**
+   * Arm the resume timer for the soonest context pause still in force.
+   *
+   * Without this a context pause had no wake-up at all: the nudge that would
+   * have restarted work is discarded while paused, and `task:updated` is
+   * ignored by the Pusher subscriber — so recovery waited for the hourly
+   * fallback poll. Safe to call on every pause; scheduleResumeAt is idempotent.
+   */
+  private scheduleContextWake(): void {
+    const wakeAt = nextContextWake(this.contextBreaker.snapshot());
+    if (wakeAt !== null) this.scheduleResumeAt(wakeAt, 'context pause expiry');
   }
 
   /**
@@ -1249,7 +1297,7 @@ export class WorkerManager {
     }
 
     // Pause the affected auth context so sibling contexts keep claiming.
-    const ctx = this.workerAuthContexts.get(workerId) ?? 'account';
+    const ctx = this.workerAuthContexts.get(workerId) ?? DEFAULT_AUTH_CONTEXT;
 
     this.consecutiveAuthFailures++;
     const backoff = authBackoffMs(this.consecutiveAuthFailures);
@@ -1267,11 +1315,17 @@ export class WorkerManager {
   async claimAndStart(task: BuilddTask): Promise<LocalWorker | null> {
     // Scoped breaker: if this task's auth context is paused (e.g. account OAuth
     // quota exhausted), skip without re-claiming — tenant tasks can still run.
-    const ctx = authContextOf(task);
-    if (this.contextBreaker.isPaused(ctx)) {
-      const until = this.contextBreaker.pausedUntil(ctx);
-      console.log(`[WorkerManager] Context ${ctx} paused (until ${until ? new Date(until).toISOString() : 'unknown'}) — skipping Pusher assignment for task ${task.id}`);
+    // pausedContextFor fails toward claiming when the payload carries no
+    // `backend` (a server predating that field), so an unkeyable nudge is
+    // attempted rather than silently dropped.
+    const pausedCtx = pausedContextFor(this.contextBreaker, task);
+    if (pausedCtx) {
+      const until = pausedCtx.until;
+      console.log(`[WorkerManager] Context ${pausedCtx.key} paused (until ${until ? new Date(until).toISOString() : 'unknown'}) — skipping Pusher assignment for task ${task.id}`);
       claimLog({ event: 'claim_empty', slotsRequested: 1, workersClaimed: 0, taskId: task.id, diagnosticReason: 'context_paused' });
+      // The discarded nudge was the only thing that would have restarted this
+      // work; make sure something wakes us when the pause lifts.
+      this.scheduleContextWake();
       return null;
     }
 
@@ -4110,8 +4164,9 @@ If something is missing or incomplete, describe what and fix it now.`;
           const pauseMs = pauseReason.pauseMs;
           const untilMs = Date.now() + pauseMs;
           if (pauseReason.scope === 'context') {
-            const ctx = this.workerAuthContexts.get(worker.id) ?? 'account';
+            const ctx = this.workerAuthContexts.get(worker.id) ?? DEFAULT_AUTH_CONTEXT;
             this.contextBreaker.pause(ctx, untilMs);
+            this.scheduleContextWake();
             console.warn(`[WorkerManager] ${pauseReason.label} [${ctx}] — pausing ${ctx} claims ~${Math.round(pauseMs / 60_000)} min`);
             sessionLog(worker.id, 'warn', 'circuit_breaker', `${pauseReason.label} [${ctx}]: pausing ~${Math.round(pauseMs / 60_000)} min`, worker.taskId);
             this.emit({ type: 'circuit_breaker', paused: true, pausedUntil: untilMs, reason: `${pauseReason.label} (${ctx})` });
@@ -5309,6 +5364,7 @@ If something is missing or incomplete, describe what and fix it now.`;
       clearInterval(this.envScanInterval);
     }
     if (this.budgetResumeTimer) {
+      this.budgetResumeAtMs = undefined;
       clearTimeout(this.budgetResumeTimer);
     }
     // Unsubscribe from all Pusher channels and disconnect
