@@ -6,7 +6,12 @@ import {
   derivePendingCounts,
   noPendingCounts,
 } from '@/lib/initiative-pulse';
-import type { Confidence } from '@/lib/verdict-presentation';
+import {
+  deriveCriteriaGatePresentation,
+  type CriteriaGatePresentation,
+  type CriterionVerdict,
+} from '@buildd/core/mission-helpers';
+import type { Confidence, Verdict } from '@/lib/verdict-presentation';
 import type { EffortDay, PendingCounts, PulseMission } from '@/lib/initiative-pulse';
 
 /**
@@ -212,4 +217,86 @@ export function verdictEvidenceAnchor(i: {
 }): string | null {
   if (i.confidence !== 'unverified') return null;
   return i.kpiCount > 0 ? KPI_ANCHOR : null;
+}
+
+/**
+ * The lifecycle transition the page offers, or null when there is none.
+ *
+ * `won_unclaimed`'s label is literally "Ready to close" and for a long time
+ * there was nothing on this page that could close anything: the verdict named
+ * an action the UI did not implement, so every finished arc stayed `active`
+ * forever and the badge became noise. This is the missing half.
+ *
+ * Mirrors the mission pattern in `missions/[id]/MissionSettings.tsx` — complete
+ * while open, archive once completed, nothing after that — rather than
+ * inventing a second lifecycle vocabulary. `nextStatus` is constrained to what
+ * `PATCH /api/initiatives/[id]` already validates, so no API change is needed.
+ */
+export interface CloseAffordance {
+  nextStatus: 'completed' | 'archived';
+  label: string;
+  /** Copy for the in-flight button state. */
+  pendingLabel: string;
+  /**
+   * True only on the rung that says the work is done and the close is the one
+   * thing missing. Everywhere else the control is available but subordinate —
+   * closing a struggling arc is a legitimate call, just not the suggested one.
+   */
+  prominent: boolean;
+}
+
+export function closeAffordance(i: { status: string; verdict: Verdict }): CloseAffordance | null {
+  // Already closed and filed away: there is no further state to offer.
+  if (i.status === 'archived') return null;
+
+  if (i.status === 'completed') {
+    return {
+      nextStatus: 'archived',
+      label: 'Archive initiative',
+      pendingLabel: 'Archiving…',
+      prominent: false,
+    };
+  }
+
+  return {
+    nextStatus: 'completed',
+    label: 'Complete initiative',
+    pendingLabel: 'Completing…',
+    prominent: i.verdict === 'won_unclaimed',
+  };
+}
+
+/**
+ * The KPI completion-gate chip, or null when it is not newsworthy.
+ *
+ * `completionAttempted` is hard-wired to **false** and that is the truthful
+ * value: nothing in the platform attempts to auto-complete an initiative, so
+ * `deriveCriteriaGatePresentation`'s `refused` state — "the platform tried to
+ * close this and the gate held it open" — describes an event that never
+ * happened. This page used to pass `true`, which made "Completion refused" the
+ * only reachable non-pass label and put an accusation on arcs whose KPIs had
+ * simply never been evaluated.
+ *
+ * Flip it to a real signal (not a constant) when an initiative auto-close or
+ * KPI evaluator actually exists — `autoVerify` promises one today but nothing
+ * implements it.
+ */
+export function initiativeKpiGate(i: {
+  kpiCount: number;
+  kpiState: { overall?: string | null; kpis?: unknown } | null;
+  /** The gate is only on the table once every child mission is done. */
+  allMissionsDone: boolean;
+}): CriteriaGatePresentation | null {
+  if (i.kpiCount === 0 || !i.allMissionsDone) return null;
+
+  const gate = deriveCriteriaGatePresentation({
+    criteriaCount: i.kpiCount,
+    overall: (i.kpiState?.overall as CriterionVerdict | null | undefined) ?? null,
+    items: i.kpiState?.kpis as Parameters<typeof deriveCriteriaGatePresentation>[0]['items'],
+    completionAttempted: false,
+  });
+
+  // A clear gate is not news — the verdict chip already carries the good outcome.
+  if (!gate || gate.state === 'clear') return null;
+  return gate;
 }

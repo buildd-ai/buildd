@@ -168,6 +168,20 @@ describe('buildConflictBecause — a dirty PR names its cause', () => {
     expect(result.links[result.links.length - 1].derivedFrom).toContain('workers.prLifecycleStatus');
   });
 
+  it('carries touchSource as a structured ref, not baked into the label', () => {
+    const result = buildConflictBecause(subject, baseSide);
+
+    const subjectTouchLink = result.links.find(l => l.derivedFrom === 'workers.observedTouches ∪ tasks.pathManifest');
+    expect(subjectTouchLink).toBeDefined();
+    expect(subjectTouchLink!.refs.touchSource).toBe('observedTouches+pathManifest');
+
+    const devSideTouchLink = result.links.find(
+      l => l.derivedFrom === 'workers.mergedAt + workers.observedTouches ∪ tasks.pathManifest',
+    );
+    expect(devSideTouchLink).toBeDefined();
+    expect(devSideTouchLink!.refs.touchSource).toBe('observedTouches');
+  });
+
   it('says so when the branch declared no scope, instead of guessing paths', () => {
     const result = buildConflictBecause(
       { ...subject, touches: [], touchSource: 'undeclared' },

@@ -45,8 +45,8 @@ export const AUTO_EVAL_DEBOUNCE_MS = 30 * 1000;
 export const ON_COMPLETION_NOTE_TITLE = 'Goal criteria evaluated (on-completion)';
 export const ON_DEMAND_NOTE_TITLE = 'Goal criteria evaluated (on-demand)';
 
-type EvidenceTask = { id: string; title: string | null; summary: string | undefined };
-type EvidenceArtifact = { id: string; title: string | null; type: string; contentSnippet: string | null };
+type EvidenceTask = { id: string; title: string | null; summary: string | undefined; at: Date | null };
+type EvidenceArtifact = { id: string; title: string | null; type: string; contentSnippet: string | null; at: Date | null };
 
 interface LLMCriterionInput { index: number; text: string }
 interface LLMCriterionVerdict {
@@ -84,6 +84,15 @@ export function criterionText(criterion: GoalCriterion): string {
  * an API key is, which is what lets a team route judgments through OpenRouter by
  * editing a tier row.
  */
+/** `3d ago` / `today` — cheap enough that evidence never needs a raw ISO timestamp in-prompt. */
+function relativeAge(at: Date | null): string {
+  if (!at) return 'age unknown';
+  const days = Math.floor((Date.now() - at.getTime()) / 86_400_000);
+  if (days <= 0) return 'today';
+  if (days === 1) return '1d ago';
+  return `${days}d ago`;
+}
+
 async function judgeWithLLM(
   inputs: LLMCriterionInput[],
   missionTitle: string,
@@ -92,12 +101,14 @@ async function judgeWithLLM(
   evidenceArtifacts: EvidenceArtifact[],
   scope: { teamId: string; workspaceId?: string | null },
 ): Promise<{ verdicts: LLMCriterionVerdict[]; error?: InferenceError }> {
+  // Newest first (see the sort at the call site) — the ordering itself is a
+  // recency signal, reinforced by the explicit age label on each item.
   const taskEvidence = completedTasks.map(t =>
-    `[task:${t.id.slice(0, 8)}] "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
+    `[task:${t.id.slice(0, 8)}] (${relativeAge(t.at)}) "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
   ).join('\n\n');
 
   const artifactEvidence = evidenceArtifacts.map(a =>
-    `[artifact:${a.id.slice(0, 8)}] "${a.title ?? '(untitled)'}" (${a.type})${a.contentSnippet ? `\nContent snippet:\n${a.contentSnippet}` : ''}`,
+    `[artifact:${a.id.slice(0, 8)}] (${relativeAge(a.at)}) "${a.title ?? '(untitled)'}" (${a.type})${a.contentSnippet ? `\nContent snippet:\n${a.contentSnippet}` : ''}`,
   ).join('\n\n');
 
   const criteriaList = inputs.map((c, i) => `${i + 1}. index=${c.index}: ${c.text}`).join('\n');
@@ -107,6 +118,9 @@ async function judgeWithLLM(
 Be evidence-grounded: only return "pass" if evidence directly supports the criterion being satisfied.
 Return "UNVERIFIED" when evidence is ambiguous or absent — not "fail".
 Return "fail" only when evidence clearly contradicts the criterion.
+Evidence is listed newest-first with its age. Nothing marks an older item as superseded, so when two
+items address the same claim and disagree, trust the more recent one — an audit or gap report written
+before a later item resolved it is not still true just because it exists.
 Respond ONLY with a JSON object — no prose, no markdown fences.`;
 
   const userPrompt = `## Mission: ${missionTitle}
@@ -115,7 +129,7 @@ ${missionDescription ? `Description: ${missionDescription}\n` : ''}
 ## Criteria to evaluate (${inputs.length}):
 ${criteriaList}
 
-## Evidence
+## Evidence (newest first)
 
 ### Completed tasks (${completedTasks.length}):
 ${taskEvidence || '(none)'}
@@ -127,6 +141,7 @@ ${!hasEvidence ? '⚠️  No evidence available. Return UNVERIFIED for all crite
 ## Instructions
 For each criterion above, determine whether the evidence shows it is met, not met, or unverifiable.
 Cite the specific evidence item (use the [task:XXXXXXXX] or [artifact:XXXXXXXX] ref from above).
+When evidence conflicts, prefer the more recent item — check the age shown next to each one.
 
 Respond with exactly this JSON shape:
 {
@@ -231,7 +246,7 @@ export async function evaluateCriteriaNow(
     where: eq(tasks.missionId, missionId),
     columns: {
       id: true, status: true, kind: true, title: true, mode: true,
-      taskClass: true, creationSource: true, category: true, result: true,
+      taskClass: true, creationSource: true, category: true, result: true, createdAt: true,
     },
   });
 
@@ -254,7 +269,7 @@ export async function evaluateCriteriaNow(
 
   const missionArtifacts = await db.query.artifacts.findMany({
     where: eq(artifacts.missionId, missionId),
-    columns: { id: true, key: true, type: true, title: true, content: true },
+    columns: { id: true, key: true, type: true, title: true, content: true, updatedAt: true },
   });
 
   // ── Mechanical evaluation (always re-run: it is one query, never a snapshot) ─
@@ -388,20 +403,31 @@ export async function evaluateCriteriaNow(
 
     const toJudge = inlineLlmEligible.filter(c => !carried.has(c.index));
 
+    // Newest first. A grader has no other signal for which of two artifacts
+    // addressing the same claim is current — an audit written before a fix
+    // landed carries no marker saying a later item supersedes it. Ordering by
+    // recency, plus the prompt instruction below, is the cheapest available
+    // proxy: prefer what was produced most recently over what an old snapshot
+    // still says.
     const completedTasks: EvidenceTask[] = missionTasks
       .filter(t => t.status === 'completed')
       .map(t => ({
         id: t.id,
         title: t.title,
         summary: (t.result as any)?.summary as string | undefined,
-      }));
+        at: t.createdAt ?? null,
+      }))
+      .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
 
-    const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts.map(a => ({
-      id: a.id,
-      title: a.title,
-      type: a.type,
-      contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
-    }));
+    const evidenceArtifacts: EvidenceArtifact[] = missionArtifacts
+      .map(a => ({
+        id: a.id,
+        title: a.title,
+        type: a.type,
+        contentSnippet: a.content ? a.content.substring(0, ARTIFACT_CONTENT_LIMIT) : null,
+        at: a.updatedAt ?? null,
+      }))
+      .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
 
     // Two ways to grade prose, tried in this order.
     //

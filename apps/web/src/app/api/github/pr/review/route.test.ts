@@ -134,7 +134,18 @@ beforeEach(() => {
   mockAuthenticateApiKey.mockReset();
   mockAuthenticateApiKey.mockReturnValue(ACCOUNT);
   mockGithubApi.mockReset();
-  mockGithubApi.mockReturnValue(Promise.resolve(OPEN_PR));
+  // Default: the PR itself, except the per-file breakdown fetchSplitPrStats
+  // uses to split reviewable vs generated lines before an adopted worker's
+  // diff stats are recorded.
+  mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+    if (typeof path === 'string' && path.includes('/files')) {
+      return Promise.resolve([
+        { filename: 'apps/web/src/lib/spinner.ts', additions: 40, deletions: 0 },
+        { filename: 'apps/web/src/lib/spinner.test.ts', additions: 0, deletions: 3 },
+      ]);
+    }
+    return Promise.resolve(OPEN_PR);
+  });
   mockGetTeamWorkspaceIds.mockReset();
   mockGetTeamWorkspaceIds.mockReturnValue(['ws-1']);
   mockResolveWorkspace.mockReset();

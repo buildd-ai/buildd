@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.207.0",
+  "version": "0.208.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -65,6 +65,7 @@
     "./friction-manifest": "./friction-manifest.ts",
     "./failure-friction-signature": "./failure-friction-signature.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
+    "./budget-error-classifier": "./budget-error-classifier.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
     "./timezone": "./timezone.ts",

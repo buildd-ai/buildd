@@ -10,9 +10,20 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 
 const INSTALL_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const BRANCH = process.env.BUILDD_BRANCH || 'main';
+
+// Read once at module load from package.json (updated by release script + CI).
+// Shared by index.ts (local console/API display) and workers.ts (heartbeat
+// payload) so both report the same value without a circular import between them.
+export const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
 
 /** Returns the current HEAD commit SHA of the local installation. */
 export function getCurrentCommit(): string | null {

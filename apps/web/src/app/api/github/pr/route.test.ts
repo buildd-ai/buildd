@@ -1392,6 +1392,10 @@ describe('POST /api/github/pr', () => {
       deletions: 12,
       changed_files: 5,
     });
+    // Third call: per-file breakdown for the reviewable/generated split.
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'apps/web/src/lib/foo.ts', additions: 807, deletions: 12 },
+    ]);
 
     const req = createMockRequest({
       headers: { Authorization: 'Bearer bld_test' },
@@ -1405,8 +1409,9 @@ describe('POST /api/github/pr', () => {
     expect(data.deduplicated).toBe(true);
     expect(data.pr.number).toBe(42);
     expect(data.pr.url).toBe('https://github.com/owner/repo/pull/42');
-    // Should have called githubApi twice: list check + individual PR fetch for stats
-    expect(mockGithubApi).toHaveBeenCalledTimes(2);
+    // Should have called githubApi three times: list check + individual PR
+    // fetch for stats + per-file breakdown for the reviewable/generated split.
+    expect(mockGithubApi).toHaveBeenCalledTimes(3);
   });
 
   it('stores diff stats from GitHub response when creating PR', async () => {
@@ -1429,6 +1434,11 @@ describe('POST /api/github/pr', () => {
       deletions: 23,
       changed_files: 14,
     });
+    // Third call: per-file breakdown for the reviewable/generated split.
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'apps/web/src/lib/foo.ts', additions: 807, deletions: 0 },
+      { filename: 'apps/web/src/lib/foo.test.ts', additions: 0, deletions: 23 },
+    ]);
 
     let capturedSetData: any = null;
     const mockWhere = mock(() => Promise.resolve());
@@ -1448,7 +1458,7 @@ describe('POST /api/github/pr', () => {
     expect(capturedSetData).not.toBeNull();
     expect(capturedSetData.linesAdded).toBe(807);
     expect(capturedSetData.linesRemoved).toBe(23);
-    expect(capturedSetData.filesChanged).toBe(14);
+    expect(capturedSetData.filesChanged).toBe(2);
   });
 
   it('stores diff stats from GitHub response when deduplicating via existing PR', async () => {
@@ -1469,6 +1479,11 @@ describe('POST /api/github/pr', () => {
       number: 55, html_url: 'https://github.com/owner/repo/pull/55', state: 'open', title: 'Existing',
       additions: 150, deletions: 8, changed_files: 3,
     });
+    // Third call: per-file breakdown for the reviewable/generated split.
+    mockGithubApi.mockResolvedValueOnce([
+      { filename: 'apps/web/src/lib/foo.ts', additions: 150, deletions: 0 },
+      { filename: 'apps/web/src/lib/foo.test.ts', additions: 0, deletions: 8 },
+    ]);
 
     let capturedSetData: any = null;
     const mockWhere = mock(() => Promise.resolve());
@@ -1486,7 +1501,7 @@ describe('POST /api/github/pr', () => {
 
     expect(capturedSetData.linesAdded).toBe(150);
     expect(capturedSetData.linesRemoved).toBe(8);
-    expect(capturedSetData.filesChanged).toBe(3);
+    expect(capturedSetData.filesChanged).toBe(2);
   });
 
   it('deduplicates when a sibling worker on the same task already has a PR', async () => {
