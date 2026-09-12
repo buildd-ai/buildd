@@ -23,17 +23,25 @@ type CardState =
   | 'merged'
   | 'error'
   | 'conflict_dispatched'
-  | 'conflict_exhausted';
+  | 'conflict_exhausted'
+  | 're_reviewing'
+  | 're_review_dispatched';
 
 /**
  * Escalation card for REVIEW-chip items on the Home page.
  *
- * An `escalate` verdict names a concrete recommendation and a reason to stop
- * — not "merge anyway". So the primary action is agreeing with the reviewer
- * (Apply), a secondary action lets the human correct it before it's applied,
- * and merging past the escalation is demoted to a text link that still
- * requires a confirm tap. See the "Escalation card: Apply / Apply-with-
- * corrections / Merge-anyway" decision note for the full spec.
+ * The CTA set is derived from server state exactly like the rendered text is
+ * (see docs/specs/action-queue-card-state.md I-1, extended to cover the CTA
+ * set as well as the copy): Apply / Apply-with-corrections only exist when
+ * `item.recommendation` names a concrete next step — an `escalate` verdict,
+ * the one case that can actually be applied. With no recommendation there is
+ * nothing to apply, so Merge (routed through the same human-override path as
+ * "Merge anyway") is the primary action instead. A reviewer that approved
+ * under an approve-only gate (`item.verdictSummary` set) just needs that
+ * merge; anything else with no recommendation — the reviewer task failed or
+ * was cancelled, retries were exhausted, or no reviewer task exists at all —
+ * additionally offers Re-review, since nothing re-dispatches on its own from
+ * a terminal state.
  */
 export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [state, setState] = useState<CardState>('idle');
@@ -41,6 +49,10 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [correctionsText, setCorrectionsText] = useState('');
   const [appliedTaskId, setAppliedTaskId] = useState<string | null>(null);
   const [conflictRetryTaskId, setConflictRetryTaskId] = useState<string | null>(null);
+
+  const hasRecommendation = Boolean(item.recommendation);
+  const isApproved = !hasRecommendation && Boolean(item.verdictSummary);
+  const noVerdict = !hasRecommendation && !item.verdictSummary;
 
   const handleApply = async (corrections?: string) => {
     setState('applying');
@@ -101,6 +113,28 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
     }
   };
 
+  const handleReReview = async () => {
+    setState('re_reviewing');
+    try {
+      const res = await fetch(`/api/prs/${item.prNumber}/re-review`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ workspaceId: item.workspaceId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErrorMsg(data.error || 'Could not dispatch a new review');
+        setState('error');
+        return;
+      }
+      setState('re_review_dispatched');
+    } catch {
+      setErrorMsg('Network error');
+      setState('error');
+    }
+  };
+
   return (
     <div className="border-l-2 border-status-error bg-status-error/5 rounded-r-[10px] px-4 py-3">
       {/* Header row: chip label + timestamp */}
@@ -141,7 +175,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
 
       {item.prNumber != null && (
         <>
-          {state === 'idle' && (
+          {state === 'idle' && hasRecommendation && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <div className="flex items-center gap-2">
                 <button
@@ -163,6 +197,32 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               >
                 Merge anyway
               </button>
+            </div>
+          )}
+
+          {/* No recommendation exists — nothing to Apply, by construction (see
+              the module doc above). Merge is the primary action; a terminal
+              state with no verdict at all (reviewer task failed/cancelled,
+              retries exhausted, or no reviewer task exists) also gets
+              Re-review, since nothing re-dispatches on its own. */}
+          {state === 'idle' && !hasRecommendation && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setState('confirming_override')}
+                  className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
+                >
+                  Merge
+                </button>
+                {noVerdict && (
+                  <button
+                    onClick={handleReReview}
+                    className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
+                  >
+                    Re-review
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -230,7 +290,13 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
 
           {state === 'confirming_override' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-text-secondary min-w-0">Merge despite escalation?</span>
+              <span className="text-[11px] text-text-secondary min-w-0">
+                {hasRecommendation
+                  ? 'Merge despite escalation?'
+                  : isApproved
+                    ? 'Merge this approved PR?'
+                    : 'Merge without a reviewer verdict?'}
+              </span>
               <div className="flex items-center gap-2 flex-shrink-0">
                 <button
                   onClick={() => setState('idle')}
@@ -273,6 +339,22 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               >
                 Retry
               </button>
+            </div>
+          )}
+
+          {state === 're_reviewing' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+              <Spinner size="xs" className="text-status-success" aria-label="Dispatching review" />
+              <span className="text-[12px] text-text-muted">Dispatching a new review…</span>
+            </div>
+          )}
+
+          {state === 're_review_dispatched' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5 text-[12px] font-medium text-status-success">
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+              Re-review dispatched
             </div>
           )}
 
