@@ -1,6 +1,7 @@
 import type { RoleConfig } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
+import type { BashCommandCounts } from './bash-classify.js';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -272,6 +273,14 @@ export interface LocalWorker {
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
   // Superset of the CBM counters above — flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
+  /**
+   * Bash sub-classification (see bash-classify.ts). The histogram above can
+   * only ever show a single bar for `Bash` — by far the most-called tool — so
+   * every shell-run `grep` / `rg` / VCS content search was invisible to any
+   * rollup, including to the Read/Grep/Glob counters above. Bucket counts plus
+   * coarse search-pattern shapes only; no command or pattern text is retained.
+   */
+  bashCommandCounts?: BashCommandCounts;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -398,6 +407,12 @@ export interface ResultMeta {
    * that called no tools; consumers must treat absence as "unknown", not zero.
    */
   toolCounts?: Record<string, number>;
+  /**
+   * What the session's Bash calls were FOR: bucket counts plus coarse
+   * search-pattern shapes (see bash-classify.ts). Absent when the worker made
+   * no Bash call or predates the classifier — absence is "unknown", not zero.
+   */
+  bashCommandCounts?: BashCommandCounts;
 }
 
 // Loop exit condition (spec §1)
