@@ -2201,7 +2201,7 @@ async function handleWorkflowRunEvent(event: {
 
   // Advance the releases row state — runs for ALL workflow_run events regardless
   // of whether a task carries this runId (the two lookups are independent).
-  await advanceReleaseStateFromWorkflowRun(run);
+  await advanceReleaseStateFromWorkflowRun(run, event.installation?.id);
 
   if (!matchingTask) return;
 
@@ -2230,6 +2230,26 @@ async function handleWorkflowRunEvent(event: {
   }
 }
 
+// Re-fetch a workflow run directly from the GitHub API, returning its current
+// conclusion (or undefined if the fetch itself fails — distinct from `null`,
+// which means the run genuinely has no conclusion yet). Used to arbitrate a
+// second, contradictory `workflow_run.completed` delivery for a run whose
+// first delivery already resolved the release row — see the call site.
+async function fetchLiveWorkflowRunConclusion(
+  installationId: number | undefined,
+  repoFullName: string,
+  runId: number,
+): Promise<string | null | undefined> {
+  if (!installationId) return undefined;
+  try {
+    const data = await githubApi(installationId, `/repos/${repoFullName}/actions/runs/${runId}`);
+    return (data?.conclusion ?? null) as string | null;
+  } catch (err) {
+    console.error(`[webhook:workflow_run] live refetch failed for run ${runId}:`, err);
+    return undefined;
+  }
+}
+
 /**
  * When a workflow_run completes, find the releases row tracking that run
  * (matched by run_url = html_url) and advance its state:
@@ -2238,14 +2258,17 @@ async function handleWorkflowRunEvent(event: {
  *
  * Emits a Pusher event so the UI refreshes in realtime.
  */
-async function advanceReleaseStateFromWorkflowRun(run: {
-  id: number;
-  name: string;
-  conclusion: string | null;
-  html_url: string;
-  head_sha: string;
-  repository: { full_name: string };
-}): Promise<void> {
+async function advanceReleaseStateFromWorkflowRun(
+  run: {
+    id: number;
+    name: string;
+    conclusion: string | null;
+    html_url: string;
+    head_sha: string;
+    repository: { full_name: string };
+  },
+  installationId?: number,
+): Promise<void> {
   const newState = mapWorkflowConclusionToReleaseState(run.conclusion);
   if (!newState) return;
 
@@ -2287,6 +2310,28 @@ async function advanceReleaseStateFromWorkflowRun(run: {
 
   // Don't regress from a terminal state.
   if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
+
+  // GitHub can deliver two `workflow_run.completed` events for the identical
+  // run with different reported conclusions — observed for a release job that
+  // calls out to a reusable workflow via `uses:`, where the outer run's
+  // completed event fires once per inner conclusion before it settles. A run
+  // that's actually done doesn't change conclusion, so if this row already
+  // advanced to 'deploying' from a prior success delivery for this exact run
+  // (matched by run URL, not the head-sha fallback), a second delivery that
+  // disagrees is the same known inconsistency, not new information. Re-fetch
+  // the run live and trust that over the webhook payload — mirrors the
+  // reconciliation pattern in pr-reconcile.ts for PR state — rather than
+  // regressing an already-successful release to failed on a stale signal.
+  if (matchingRelease.state === 'deploying' && newState !== 'deploying' && byUrl[0]) {
+    const liveConclusion = await fetchLiveWorkflowRunConclusion(installationId, run.repository.full_name, run.id);
+    if (liveConclusion !== 'failure') {
+      console.log(
+        `[webhook:workflow_run] Ignoring conflicting conclusion=${run.conclusion} for release ${matchingRelease.id} — ` +
+          `run ${run.id} already resolved success (live check: ${liveConclusion ?? 'unavailable'})`,
+      );
+      return;
+    }
+  }
 
   const updateFields: Record<string, unknown> = { state: newState };
   if (!matchingRelease.runUrl) updateFields.runUrl = run.html_url;
