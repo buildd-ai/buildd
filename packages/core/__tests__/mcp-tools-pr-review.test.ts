@@ -174,6 +174,37 @@ describe('get_pr_review', () => {
     expect(text).toContain('terminal');
   });
 
+  it('surfaces a terminal approve that never made it to GitHub as a review', async () => {
+    const { api } = recordingApi({
+      '/api/github/pr/review': {
+        ok: true,
+        prNumber: 42,
+        timedOut: false,
+        autoMergeExpected: true,
+        status: {
+          state: 'approved',
+          terminal: true,
+          verdict: 'approve',
+          confidence: 0.92,
+          summary: 'Scoped and tested.',
+          merged: false,
+          prState: 'open',
+          postedToGithub: false,
+          postError: 'commit_id must be a valid commit within this pull request',
+        },
+      },
+    });
+
+    const result = await handleBuilddAction(api, 'get_pr_review', { prNumber: 42 }, context());
+
+    const text = (result.content[0] as { text: string }).text;
+    expect(text).toContain('approved');
+    // The whole point: buildd's own terminal verdict must not read as "done"
+    // when GitHub itself shows no review at all — branch protection can't see it.
+    expect(text).toContain('NOT posted');
+    expect(text).toContain('commit_id must be a valid commit within this pull request');
+  });
+
   it('forwards waitFor and waitSeconds so a caller can block in one call', async () => {
     const { api, calls } = recordingApi({
       '/api/github/pr/review': {

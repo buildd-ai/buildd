@@ -197,6 +197,62 @@ describe('buildActionQueue', () => {
   });
 });
 
+describe('buildActionQueue — reviewer verdict visibility', () => {
+  // Regression: a terminal approve whose head has since advanced (a dispatched
+  // conflict retry) must still surface the verdict on the card — it must never
+  // read as unreviewed just because a retry is (or was) in flight.
+  it('carries the stored reviewer verdict through onto a RESOLVING card', () => {
+    const result = buildActionQueue([], [
+      escalationItem({
+        policyTier: 'agent-review',
+        conflictRetryTaskId: 'retry-1',
+        conflictRetryIteration: 1,
+        conflictRetryStatus: 'in_progress',
+        reviewerVerdict: {
+          verdict: 'approve',
+          confidence: 0.92,
+          summary: 'All defects fixed and tested.',
+          approvedSha: 'abc123',
+          postedToGithub: true,
+        },
+      }),
+    ]);
+    expect(result[0].chip).toBe('RESOLVING');
+    expect(result[0].conflictRetryStatus).toBe('in_progress');
+    expect(result[0].reviewerVerdict).toEqual({
+      verdict: 'approve',
+      confidence: 0.92,
+      summary: 'All defects fixed and tested.',
+      approvedSha: 'abc123',
+      postedToGithub: true,
+    });
+  });
+
+  it('carries approvalStale through onto a REVIEW card when head has moved past the approved SHA', () => {
+    const result = buildActionQueue([], [
+      escalationItem({
+        policyTier: 'agent-review',
+        reviewerVerdict: {
+          verdict: 'approve',
+          confidence: 0.92,
+          summary: 'All defects fixed and tested.',
+          approvedSha: 'abc123',
+          postedToGithub: true,
+        },
+        approvalStale: { approvedSha: 'abc123', commitsSince: 3 },
+      }),
+    ]);
+    expect(result[0].chip).toBe('REVIEW');
+    expect(result[0].approvalStale).toEqual({ approvedSha: 'abc123', commitsSince: 3 });
+  });
+
+  it('omits reviewerVerdict/approvalStale when the caller does not supply them', () => {
+    const result = buildActionQueue([], [escalationItem({ policyTier: 'agent-review' })]);
+    expect(result[0].reviewerVerdict).toBeUndefined();
+    expect(result[0].approvalStale).toBeUndefined();
+  });
+});
+
 // ── partitionEscalations ────────────────────────────────────────────────────
 
 function baseResolved(overrides?: Partial<ResolvedEscalationItem>): ResolvedEscalationItem {

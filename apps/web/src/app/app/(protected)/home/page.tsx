@@ -16,6 +16,7 @@ import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, buildDecideItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { derivePrReviewStatus } from '@/lib/pr-review-status';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
 import { resolveActionCardContext } from '@/lib/action-card-context';
@@ -23,7 +24,7 @@ import { isActionableChip } from '@/lib/action-queue';
 import { resolveCiGate } from '@/lib/ci-gate';
 import { DEFAULT_MAX_CI_RETRIES } from '@/lib/ci-retry';
 import type { CiGate, PrLifecycle } from '@/lib/ci-gate';
-import type { ResolvedEscalationItem, WaitingOnYouRawItem } from '@/lib/action-queue';
+import type { ResolvedEscalationItem, WaitingOnYouRawItem, ReviewerVerdictSummary, ApprovalStaleness } from '@/lib/action-queue';
 import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
@@ -43,6 +44,7 @@ import { InterruptReviewButton } from './InterruptReviewButton';
 import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
+import { ReviewerVerdictBanner } from '@/components/ReviewerVerdictBanner';
 import { AgentHandledCard } from '@/components/AgentHandledCard';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
@@ -246,6 +248,9 @@ export default async function HomePage({
     waitingMinutes: number | null;
     conflictRetryTaskId: string | null;
     conflictRetryIteration: number | null;
+    conflictRetryStatus: string | null;
+    reviewerVerdict: ReviewerVerdictSummary | null;
+    approvalStale: ApprovalStaleness | null;
     /** Freshness inputs — buildActionQueue refuses a merge CTA on stale state. */
     prLifecycleStatus: string | null;
     prOpenedAt: Date | null;
@@ -970,6 +975,7 @@ export default async function HomePage({
             // it falls to the human. parentTaskId is a real column (set at
             // createReviewerTask), so this is a direct join, not a context scan.
             const latestReviewerTaskByOrigId = new Map<string, {
+              id: string;
               status: string;
               hasLiveWorker: boolean;
               createdAt: Date;
@@ -977,6 +983,7 @@ export default async function HomePage({
               reviewerWorkerId: string | null;
               reviewerStartedAt: Date | null;
               context: Record<string, unknown> | null;
+              result: unknown;
               startAt: Date | null;
               mission: { status: string } | null;
             }>();
@@ -986,7 +993,7 @@ export default async function HomePage({
                   inArray(tasks.parentTaskId, openTaskIds),
                   eq(tasks.category, 'review'),
                 ),
-                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, startAt: true },
+                columns: { id: true, parentTaskId: true, status: true, roleSlug: true, createdAt: true, context: true, result: true, startAt: true },
                 with: {
                   mission: { columns: { status: true } },
                   workers: {
@@ -1002,6 +1009,7 @@ export default async function HomePage({
                 if (!rt.parentTaskId || latestReviewerTaskByOrigId.has(rt.parentTaskId)) continue;
                 const liveWorker = (rt as any).workers?.[0];
                 latestReviewerTaskByOrigId.set(rt.parentTaskId, {
+                  id: rt.id,
                   status: rt.status,
                   hasLiveWorker: !!liveWorker,
                   createdAt: rt.createdAt,
@@ -1009,10 +1017,27 @@ export default async function HomePage({
                   reviewerWorkerId: liveWorker?.id ?? null,
                   reviewerStartedAt: liveWorker?.startedAt ?? null,
                   context: rt.context,
+                  result: rt.result,
                   startAt: rt.startAt,
                   mission: rt.mission,
                 });
               }
+            }
+            // ─────────────────────────────────────────────────────────────────
+
+            // ── Reviewer verdict (BT-X) ─────────────────────────────────────────
+            // Reuses the SAME derivation `get_pr_review` uses (`derivePrReviewStatus`)
+            // rather than inventing a second status vocabulary for this surface —
+            // this is a verdict's one true shape, whether read via the API or
+            // rendered on a card. Keyed by the ORIGINAL task id, exactly like
+            // `latestReviewerTaskByOrigId` — unaffected by a same-branch conflict
+            // retry, which never creates its own reviewer task.
+            const reviewerVerdictMap = new Map<string, ReturnType<typeof derivePrReviewStatus>>();
+            for (const [origTaskId, rt] of latestReviewerTaskByOrigId) {
+              reviewerVerdictMap.set(origTaskId, derivePrReviewStatus({
+                reviewTask: { id: rt.id, status: rt.status, result: rt.result, context: rt.context },
+                worker: null,
+              }));
             }
             // ─────────────────────────────────────────────────────────────────
 
@@ -1099,7 +1124,7 @@ export default async function HomePage({
             // ── Conflict retry lease detection ──────────────────────────────────
             // While a conflict-retry task is live for a PR, the card renders as
             // RESOLVING rather than asking the human to merge.
-            const conflictRetryMap = new Map<string, { taskId: string; iteration: number }>();
+            const conflictRetryMap = new Map<string, { taskId: string; iteration: number; status: string }>();
             if (openPrWorkers.length > 0) {
               const conflictRetryTasks = await db.query.tasks.findMany({
                 where: and(
@@ -1108,14 +1133,55 @@ export default async function HomePage({
                   isNotNull(tasks.conflictRetryPrNumber),
                   inArray(tasks.status, ['pending', 'assigned', 'in_progress']),
                 ),
-                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true },
+                columns: { id: true, workspaceId: true, conflictRetryPrNumber: true, context: true, status: true },
               });
               for (const t of conflictRetryTasks) {
                 if (t.conflictRetryPrNumber == null) continue;
                 const key = `${t.workspaceId}:${t.conflictRetryPrNumber}`;
                 const ctx = (t.context ?? {}) as Record<string, unknown>;
                 const iteration = typeof ctx.conflictIteration === 'number' ? ctx.conflictIteration : 1;
-                conflictRetryMap.set(key, { taskId: t.id, iteration });
+                conflictRetryMap.set(key, { taskId: t.id, iteration, status: t.status });
+              }
+            }
+            // ───────────────────────────────────────────────────────────────────
+
+            // ── Approval staleness ──────────────────────────────────────────────
+            // A conflict retry dispatched right after an approve pushes commits
+            // onto the SAME branch that was just reviewed — the approval is still
+            // real evidence, but it no longer describes the PR's current head.
+            // Detected via the retry's own `conflictRetryHeadSha` (the head it was
+            // dispatched against) matching the verdict's `approvedSha`; "commits
+            // since" comes cheaply from that retry's own worker.commitCount rather
+            // than a live GitHub compare call.
+            const approvalStaleMap = new Map<string, { approvedSha: string; commitsSince: number | null }>();
+            {
+              const approvedTaskIds = [...reviewerVerdictMap.entries()]
+                .filter(([, v]) => v.verdict === 'approve' && v.approvedSha)
+                .map(([taskId]) => taskId);
+              const approvedPrKeys = openPrWorkers
+                .filter(w => w.taskId && approvedTaskIds.includes(w.taskId) && w.prNumber != null)
+                .map(w => ({ taskId: w.taskId as string, workspaceId: w.workspaceId, prNumber: w.prNumber as number }));
+              if (approvedPrKeys.length > 0) {
+                const retriesAfterApproval = await db.query.tasks.findMany({
+                  where: and(
+                    inArray(tasks.workspaceId, wsIds),
+                    inArray(tasks.conflictRetryPrNumber, approvedPrKeys.map(k => k.prNumber)),
+                    isNotNull(tasks.conflictRetryHeadSha),
+                  ),
+                  columns: { workspaceId: true, conflictRetryPrNumber: true, conflictRetryHeadSha: true },
+                  with: { workers: { columns: { commitCount: true }, limit: 1 } },
+                });
+                for (const { taskId, workspaceId, prNumber } of approvedPrKeys) {
+                  const approvedSha = reviewerVerdictMap.get(taskId)?.approvedSha;
+                  if (!approvedSha) continue;
+                  const retry = retriesAfterApproval.find(t =>
+                    t.workspaceId === workspaceId && t.conflictRetryPrNumber === prNumber && t.conflictRetryHeadSha === approvedSha,
+                  );
+                  if (retry) {
+                    const commitsSince = (retry as any).workers?.[0]?.commitCount ?? null;
+                    approvalStaleMap.set(taskId, { approvedSha, commitsSince });
+                  }
+                }
               }
             }
             // ───────────────────────────────────────────────────────────────────
@@ -1292,6 +1358,7 @@ export default async function HomePage({
                   : gate?.reason && policy.tier !== 'human' ? 'agent_flagged'
                   : 'pending_human';
                 const conflictRetry = w.prNumber != null ? conflictRetryMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
+                const reviewerVerdict = w.taskId ? reviewerVerdictMap.get(w.taskId) : undefined;
                 const deadZoneInfo = deadZoneExhaustedMap.get(w.id);
                 const ciAttempts = w.prNumber != null ? ciAttemptMap.get(`${w.workspaceId}:${w.prNumber}`) : undefined;
                 const ciGate = resolveCiGate({
@@ -1328,6 +1395,20 @@ export default async function HomePage({
                   waitingMinutes,
                   conflictRetryTaskId: conflictRetry?.taskId ?? null,
                   conflictRetryIteration: conflictRetry?.iteration ?? null,
+                  conflictRetryStatus: conflictRetry?.status ?? null,
+                  // The verdict itself — present regardless of chip, so a live or
+                  // just-finished conflict retry never hides the approval that
+                  // preceded it (see the "Reviewer verdict" block above).
+                  reviewerVerdict: reviewerVerdict?.verdict
+                    ? {
+                        verdict: reviewerVerdict.verdict as 'approve' | 'request-changes' | 'escalate',
+                        confidence: reviewerVerdict.confidence,
+                        summary: reviewerVerdict.summary,
+                        approvedSha: reviewerVerdict.approvedSha,
+                        postedToGithub: reviewerVerdict.postedToGithub,
+                      }
+                    : null,
+                  approvalStale: w.taskId ? (approvalStaleMap.get(w.taskId) ?? null) : null,
                   deadZoneExhausted: !!deadZoneInfo,
                   deadZoneLastRetryTaskId: deadZoneInfo?.lastRetryTaskId ?? null,
                   // Read from persisted columns only (I-9): the sweep owns all
@@ -1972,6 +2053,11 @@ export default async function HomePage({
                                   PR #{item.prNumber} ↗
                                 </a>
                               )}
+                              {/* A live retry is fixing a conflict on an ALREADY-
+                                  reviewed PR in most cases — the approval that
+                                  triggered this retry must stay visible, not
+                                  disappear behind "resolving conflicts". */}
+                              <ReviewerVerdictBanner verdict={item.reviewerVerdict} stale={item.approvalStale} />
                             </div>
                           </div>
                         </div>

@@ -1,10 +1,12 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import Spinner from './Spinner';
 import { AgentRecommendation } from './AgentRecommendation';
+import { ReviewerVerdictBanner } from './ReviewerVerdictBanner';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 
@@ -12,18 +14,32 @@ interface WaitingOnYouReviewCardProps {
   item: ActionQueueItem;
 }
 
+// Everything here is transient client-only UI for the moment of a click —
+// what happens AFTER a dispatch (conflict resolution in progress, merged,
+// retries exhausted) is never decided here. Home already re-renders this
+// card's `item` prop from live server state on every relevant event
+// (HomeAutoRefresh subscribes to the workspace's Pusher channel), and once
+// that happens the chip itself usually changes (REVIEW → RESOLVING, or the
+// item disappears once merged) — so a stale local state that outlives its
+// click would either show the wrong thing forever or never even get the
+// chance to, once the parent swaps in a different branch. `optimistic` below
+// exists only to cover the gap between "the fetch resolved" and "the next
+// server-derived props arrived", and is cleared unconditionally the moment
+// new props land.
 type CardState =
   | 'idle'
   | 'corrections_open'
   | 'applying'
-  | 'applied'
   | 'apply_error'
   | 'confirming_override'
   | 'merging'
-  | 'merged'
-  | 'error'
-  | 'conflict_dispatched'
-  | 'conflict_exhausted';
+  | 'error';
+
+type Optimistic =
+  | { kind: 'applied'; taskId: string | null }
+  | { kind: 'conflict_dispatched'; taskId: string | null }
+  | { kind: 'conflict_exhausted' }
+  | { kind: 'merged' };
 
 /**
  * Escalation card for REVIEW-chip items on the Home page.
@@ -34,13 +50,30 @@ type CardState =
  * and merging past the escalation is demoted to a text link that still
  * requires a confirm tap. See the "Escalation card: Apply / Apply-with-
  * corrections / Merge-anyway" decision note for the full spec.
+ *
+ * An `approve` verdict — reached automatically or via a forced re-review —
+ * renders via `ReviewerVerdictBanner` regardless of `state`/`optimistic`: the
+ * verdict is server truth (`item.reviewerVerdict`), not something a click can
+ * ever invalidate.
  */
 export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
+  const router = useRouter();
   const [state, setState] = useState<CardState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
   const [correctionsText, setCorrectionsText] = useState('');
-  const [appliedTaskId, setAppliedTaskId] = useState<string | null>(null);
-  const [conflictRetryTaskId, setConflictRetryTaskId] = useState<string | null>(null);
+  const [optimistic, setOptimistic] = useState<Optimistic | null>(null);
+
+  // The moment fresh server props land, whatever `optimistic` was covering is
+  // either already reflected in `item` or superseded by it — it must never
+  // outlive the click that produced it. (See the module doc above: this is
+  // the "never trust local state past the click" rule made mechanical.)
+  // `state` itself is untouched here — 'corrections_open'/'confirming_override'
+  // are in-progress human input, not a claim about what happened server-side,
+  // and a background refresh (any open tab gets these via HomeAutoRefresh)
+  // must not wipe text the human is mid-typing.
+  useEffect(() => {
+    setOptimistic(null);
+  }, [item]);
 
   const handleApply = async (corrections?: string) => {
     setState('applying');
@@ -57,8 +90,8 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
         setState('apply_error');
         return;
       }
-      setAppliedTaskId(data.taskId ?? null);
-      setState('applied');
+      setOptimistic({ kind: 'applied', taskId: data.taskId ?? null });
+      router.refresh();
     } catch {
       setErrorMsg('Network error');
       setState('apply_error');
@@ -81,20 +114,21 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         if (data.conflictRetryDispatched) {
-          setConflictRetryTaskId(data.conflictRetryTaskId ?? null);
-          setState('conflict_dispatched');
+          setOptimistic({ kind: 'conflict_dispatched', taskId: data.conflictRetryTaskId ?? null });
+          router.refresh();
           return;
         }
         if (data.conflictExhausted) {
-          setState('conflict_exhausted');
+          setOptimistic({ kind: 'conflict_exhausted' });
+          router.refresh();
           return;
         }
         setErrorMsg(data.error || 'Merge failed');
         setState('error');
         return;
       }
-      setState('merged');
-      setTimeout(() => setState('idle'), 3000);
+      setOptimistic({ kind: 'merged' });
+      router.refresh();
     } catch {
       setErrorMsg('Network error');
       setState('error');
@@ -138,69 +172,13 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
         <p className="text-[12px] text-text-secondary mt-0.5 line-clamp-2">{item.escalationReason}</p>
       )}
       <AgentRecommendation recommendation={item.recommendation} />
+      {/* Server truth, not click state — see the module doc above. Renders in
+          every branch below, including while a conflict retry is in flight. */}
+      <ReviewerVerdictBanner verdict={item.reviewerVerdict} stale={item.approvalStale} />
 
       {item.prNumber != null && (
         <>
-          {state === 'idle' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleApply(undefined)}
-                  className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
-                >
-                  Apply
-                </button>
-                <button
-                  onClick={() => setState('corrections_open')}
-                  className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
-                >
-                  Apply with corrections
-                </button>
-              </div>
-              <button
-                onClick={() => setState('confirming_override')}
-                className="mt-1.5 text-[11px] text-text-muted hover:text-text-secondary underline"
-              >
-                Merge anyway
-              </button>
-            </div>
-          )}
-
-          {state === 'corrections_open' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <textarea
-                autoFocus
-                value={correctionsText}
-                onChange={(e) => setCorrectionsText(e.target.value)}
-                placeholder="What should the agent do instead? (the reviewer's recommendation is still passed along as context)"
-                className="w-full text-[12px] text-text-primary bg-surface-primary border border-border-default rounded p-2 min-h-[72px] resize-y"
-              />
-              <div className="flex items-center gap-2 mt-1.5">
-                <button
-                  onClick={() => { setCorrectionsText(''); setState('idle'); }}
-                  className="text-[12px] font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => handleApply(correctionsText.trim() || undefined)}
-                  disabled={correctionsText.trim().length === 0}
-                  className="text-[12px] font-medium text-white bg-accent hover:bg-accent/90 disabled:opacity-50 transition-colors px-2.5 py-0.5 rounded"
-                >
-                  Apply with corrections
-                </button>
-              </div>
-            </div>
-          )}
-
-          {state === 'applying' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
-              <Spinner size="xs" className="text-status-success" aria-label="Applying" />
-              <span className="text-[12px] text-text-muted">Applying…</span>
-            </div>
-          )}
-
-          {state === 'applied' && (
+          {optimistic?.kind === 'applied' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <div className="flex items-center gap-1.5 text-[12px] font-medium text-status-success">
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -208,84 +186,24 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                 </svg>
                 Fix task dispatched
               </div>
-              {appliedTaskId && (
-                <Link href={`/app/tasks/${appliedTaskId}`} className="text-[12px] font-medium text-primary hover:underline">
+              {optimistic.taskId && (
+                <Link href={`/app/tasks/${optimistic.taskId}`} className="text-[12px] font-medium text-primary hover:underline">
                   View task
                 </Link>
               )}
             </div>
           )}
 
-          {state === 'apply_error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
-              <button
-                onClick={() => setState('idle')}
-                className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-
-          {state === 'confirming_override' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-text-secondary min-w-0">Merge despite escalation?</span>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <button
-                  onClick={() => setState('idle')}
-                  className="text-[12px] font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleMergeAnyway}
-                  className="text-[12px] font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
-                >
-                  Confirm Merge
-                </button>
-              </div>
-            </div>
-          )}
-
-          {state === 'merging' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
-              <Spinner size="xs" className="text-status-success" aria-label="Merging" />
-              <span className="text-[12px] text-text-muted">Merging…</span>
-            </div>
-          )}
-
-          {state === 'merged' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1 text-[12px] font-medium text-status-success">
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M20 6L9 17l-5-5" />
-              </svg>
-              Merged
-            </div>
-          )}
-
-          {state === 'error' && (
-            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
-              <button
-                onClick={() => setState('idle')}
-                className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
-              >
-                Retry
-              </button>
-            </div>
-          )}
-
-          {state === 'conflict_dispatched' && (
+          {optimistic?.kind === 'conflict_dispatched' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <div className="flex items-center gap-1.5 mb-1.5">
                 <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
                 <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
               </div>
               <div className="flex items-center gap-3">
-                {conflictRetryTaskId && (
+                {optimistic.taskId && (
                   <Link
-                    href={`/app/tasks/${conflictRetryTaskId}`}
+                    href={`/app/tasks/${optimistic.taskId}`}
                     className="text-[12px] font-medium text-primary hover:underline"
                   >
                     View task
@@ -305,7 +223,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
             </div>
           )}
 
-          {state === 'conflict_exhausted' && (
+          {optimistic?.kind === 'conflict_exhausted' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <p className="text-[11px] text-status-error mb-1.5">
                 Conflict resolution retries exhausted. Manual action required.
@@ -332,6 +250,125 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                   </a>
                 )}
               </div>
+            </div>
+          )}
+
+          {optimistic?.kind === 'merged' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1 text-[12px] font-medium text-status-success">
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M20 6L9 17l-5-5" />
+              </svg>
+              Merged
+            </div>
+          )}
+
+          {!optimistic && state === 'idle' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleApply(undefined)}
+                  className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={() => setState('corrections_open')}
+                  className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
+                >
+                  Apply with corrections
+                </button>
+              </div>
+              <button
+                onClick={() => setState('confirming_override')}
+                className="mt-1.5 text-[11px] text-text-muted hover:text-text-secondary underline"
+              >
+                Merge anyway
+              </button>
+            </div>
+          )}
+
+          {!optimistic && state === 'corrections_open' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+              <textarea
+                autoFocus
+                value={correctionsText}
+                onChange={(e) => setCorrectionsText(e.target.value)}
+                placeholder="What should the agent do instead? (the reviewer's recommendation is still passed along as context)"
+                className="w-full text-[12px] text-text-primary bg-surface-primary border border-border-default rounded p-2 min-h-[72px] resize-y"
+              />
+              <div className="flex items-center gap-2 mt-1.5">
+                <button
+                  onClick={() => { setCorrectionsText(''); setState('idle'); }}
+                  className="text-[12px] font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleApply(correctionsText.trim() || undefined)}
+                  disabled={correctionsText.trim().length === 0}
+                  className="text-[12px] font-medium text-white bg-accent hover:bg-accent/90 disabled:opacity-50 transition-colors px-2.5 py-0.5 rounded"
+                >
+                  Apply with corrections
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!optimistic && state === 'applying' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+              <Spinner size="xs" className="text-status-success" aria-label="Applying" />
+              <span className="text-[12px] text-text-muted">Applying…</span>
+            </div>
+          )}
+
+          {!optimistic && state === 'apply_error' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
+              <button
+                onClick={() => setState('idle')}
+                className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {!optimistic && state === 'confirming_override' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-text-secondary min-w-0">Merge despite escalation?</span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setState('idle')}
+                  className="text-[12px] font-medium text-text-muted hover:text-text-secondary transition-colors px-2 py-0.5 border border-border-default rounded"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleMergeAnyway}
+                  className="text-[12px] font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
+                >
+                  Confirm Merge
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!optimistic && state === 'merging' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
+              <Spinner size="xs" className="text-status-success" aria-label="Merging" />
+              <span className="text-[12px] text-text-muted">Merging…</span>
+            </div>
+          )}
+
+          {!optimistic && state === 'error' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
+              <button
+                onClick={() => setState('idle')}
+                className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
+              >
+                Retry
+              </button>
             </div>
           )}
         </>

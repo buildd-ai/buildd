@@ -119,6 +119,58 @@ describe('derivePrReviewStatus — review progress', () => {
   });
 });
 
+describe('derivePrReviewStatus — GitHub post visibility', () => {
+  it('exposes the reviewed commit as approvedSha, independent of whether it posted', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'completed',
+        result: verdictResult('approve'),
+        context: { prNumber: 42, headSha: 'abc123' },
+      }),
+    });
+    expect(status.approvedSha).toBe('abc123');
+  });
+
+  it('reports postedToGithub null before a post has been attempted', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({ status: 'completed', result: verdictResult('approve') }),
+    });
+    expect(status.postedToGithub).toBeNull();
+    expect(status.postError).toBeNull();
+  });
+
+  it('surfaces a failed GitHub post — the terminal verdict must not read as "posted" when it was not', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'completed',
+        result: verdictResult('approve'),
+        context: {
+          prNumber: 42,
+          headSha: 'abc123',
+          githubReviewPosted: false,
+          githubReviewPostError: 'commit_id must be a valid commit within this pull request',
+        },
+      }),
+    });
+    expect(status.state).toBe('approved');
+    expect(status.terminal).toBe(true);
+    expect(status.postedToGithub).toBe(false);
+    expect(status.postError).toBe('commit_id must be a valid commit within this pull request');
+  });
+
+  it('reports a successful post', () => {
+    const status = derivePrReviewStatus({
+      reviewTask: reviewTask({
+        status: 'completed',
+        result: verdictResult('approve'),
+        context: { prNumber: 42, headSha: 'abc123', githubReviewPosted: true },
+      }),
+    });
+    expect(status.postedToGithub).toBe(true);
+    expect(status.postError).toBeNull();
+  });
+});
+
 describe('derivePrReviewStatus — PR outcome', () => {
   it('reports the merge state from the worker that owns the PR', () => {
     const status = derivePrReviewStatus({

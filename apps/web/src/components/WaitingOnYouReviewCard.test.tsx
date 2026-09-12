@@ -1,7 +1,14 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { WaitingOnYouReviewCard } from './WaitingOnYouReviewCard';
 import type { ActionQueueItem } from '@/lib/action-queue';
+
+mock.module('next/navigation', () => ({
+  usePathname: () => '/app/home',
+  useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {} }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+const { WaitingOnYouReviewCard } = await import('./WaitingOnYouReviewCard');
 
 function item(partial: Partial<ActionQueueItem> = {}): ActionQueueItem {
   return {
@@ -56,6 +63,75 @@ describe('WaitingOnYouReviewCard recommendation', () => {
     );
     expect(html).not.toContain('Agent recommends');
     expect(html).not.toContain('No handoff recommendation');
+  });
+});
+
+describe('WaitingOnYouReviewCard reviewer verdict', () => {
+  // Regression: a terminal approve whose head has since advanced (a dispatched
+  // conflict retry) must still be visible on the card — never blank, never
+  // reading as unreviewed.
+  it('renders the stored verdict — reviewer, confidence, summary, and the approved SHA', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          reviewerVerdict: {
+            verdict: 'approve',
+            confidence: 0.92,
+            summary: 'All defects fixed and tested.',
+            approvedSha: 'abc1234567',
+            postedToGithub: true,
+          },
+        })}
+      />,
+    );
+    expect(html).toContain('Approved');
+    expect(html).toContain('0.92');
+    expect(html).toContain('All defects fixed and tested.');
+    expect(html).toContain('abc1234');
+  });
+
+  it('renders the staleness qualifier when the head has moved past the approved SHA', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          reviewerVerdict: {
+            verdict: 'approve',
+            confidence: 0.92,
+            summary: 'All defects fixed and tested.',
+            approvedSha: 'abc1234567',
+            postedToGithub: true,
+          },
+          approvalStale: { approvedSha: 'abc1234567', commitsSince: 2 },
+        })}
+      />,
+    );
+    // Must not read as unreviewed: the approval is still shown, qualified.
+    expect(html).toContain('Approved');
+    expect(html).toContain('2 commits since');
+  });
+
+  it('flags a verdict that never made it to GitHub', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          reviewerVerdict: {
+            verdict: 'approve',
+            confidence: 0.92,
+            summary: 'All defects fixed and tested.',
+            approvedSha: 'abc1234567',
+            postedToGithub: false,
+          },
+        })}
+      />,
+    );
+    expect(html).toContain('not posted to GitHub');
+  });
+
+  it('renders nothing extra when there is no stored verdict', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard item={item({ escalationReason: 'Touches auth' })} />,
+    );
+    expect(html).not.toContain('approved at');
   });
 });
 

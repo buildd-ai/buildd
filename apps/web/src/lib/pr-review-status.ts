@@ -57,6 +57,22 @@ export interface PrReviewStatus {
   merged: boolean;
   /** Set when an approved PR will not be merged by buildd. */
   mergeBlocked: 'awaiting_human' | null;
+  /**
+   * The commit SHA the verdict was actually recorded against — `ctx.headSha`,
+   * frozen at reviewer-task dispatch time. Compare against the PR's current
+   * head to tell a caller the verdict is stale (more commits landed since).
+   */
+  approvedSha: string | null;
+  /**
+   * Whether the verdict was successfully posted to GitHub as a real review.
+   * `null` before a post has been attempted (or for a non-terminal verdict);
+   * `false` means buildd's own store has the verdict but GitHub does not —
+   * see `githubReviewPosted`/`githubReviewPostError` written by the reviewer-
+   * outcome handler in `apps/web/src/app/api/workers/[id]/route.ts`.
+   */
+  postedToGithub: boolean | null;
+  /** Why the GitHub post failed, when `postedToGithub === false`. */
+  postError: string | null;
 }
 
 interface DeriveInput {
@@ -162,6 +178,9 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     prState,
     merged,
     mergeBlocked,
+    approvedSha: stringOrNull(ctx.headSha),
+    postedToGithub: typeof ctx.githubReviewPosted === 'boolean' ? ctx.githubReviewPosted : null,
+    postError: stringOrNull(ctx.githubReviewPostError),
   };
 }
 

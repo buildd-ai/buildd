@@ -5415,6 +5415,50 @@ describe('PATCH /api/workers/[id]', () => {
       });
     });
 
+    it('approve: head advanced past the reviewed commit before this handler ran — posts against the CURRENT head, exactly once', async () => {
+      // ctx.headSha ('abc123') is frozen at reviewer-task dispatch time. Model a
+      // push that landed on the branch while the reviewer was running: the PR's
+      // actual current head ('def456') is no longer what the reviewer reviewed.
+      setupReviewerTaskCompletion('approve');
+      mockGithubApi.mockImplementation((_installId: number, path: string) => {
+        if (typeof path === 'string' && /\/pulls\/\d+\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1, status: 'modified' }]);
+        }
+        if (typeof path === 'string' && /\/pulls\/\d+$/.test(path)) {
+          return Promise.resolve({ number: 42, head: { sha: 'def456' } });
+        }
+        return Promise.resolve([]);
+      });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({
+        prNumber: 42,
+        headSha: 'def456',
+        repoFullName: 'org/repo',
+        event: 'APPROVE',
+      });
+    });
+
+    it('approve: falls back to the dispatch-time SHA when the PR cannot be re-fetched', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockGithubApi.mockImplementation((_installId: number, path: string) => {
+        if (typeof path === 'string' && /\/pulls\/\d+\/files/.test(path)) {
+          return Promise.resolve([{ filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1, status: 'modified' }]);
+        }
+        if (typeof path === 'string' && /\/pulls\/\d+$/.test(path)) {
+          return Promise.reject(new Error('502 Bad Gateway'));
+        }
+        return Promise.resolve([]);
+      });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(mockPostPrReview).toHaveBeenCalledTimes(1);
+      expect(mockPostPrReview.mock.calls[0][0]).toMatchObject({ headSha: 'abc123' });
+    });
+
     it('request-changes: posts exactly one GitHub REQUEST_CHANGES review for the verdict', async () => {
       setupReviewerTaskCompletion('request-changes');
 

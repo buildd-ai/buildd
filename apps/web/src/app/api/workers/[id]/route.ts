@@ -3440,11 +3440,29 @@ async function handleReviewerOutcomeIfNeeded(
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
   if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
+    // ctx.headSha is frozen at reviewer-task DISPATCH time. Any push that lands
+    // on the branch between dispatch and this verdict — including a same-branch
+    // conflict-resolution retry this very approval can go on to trigger below —
+    // leaves it stale. Posting a review pinned to a commit GitHub no longer
+    // considers part of the PR fails outright; re-deriving the SHA here, the
+    // same way the file list above is re-derived and for the same reason,
+    // means the post targets a commit that is still guaranteed to be part of
+    // the PR's history.
+    let postHeadSha = headSha;
+    try {
+      const prNow = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      if (typeof prNow?.head?.sha === 'string' && prNow.head.sha) {
+        postHeadSha = prNow.head.sha;
+      }
+    } catch (err) {
+      console.warn(`[reviewer] Could not re-fetch PR #${prNumber} head at verdict time — posting against the dispatch-time SHA:`, err);
+    }
+
     const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
       prNumber,
-      headSha,
+      headSha: postHeadSha,
       event: effectiveVerdict === 'approve' ? 'APPROVE' : 'REQUEST_CHANGES',
       body: effectiveVerdict === 'approve'
         ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
@@ -3453,6 +3471,26 @@ async function handleReviewerOutcomeIfNeeded(
       posted: false as const,
       reason: err instanceof Error ? err.message : 'unknown error',
     }));
+
+    // Record the post outcome on the reviewer task's OWN row, unconditionally —
+    // not gated on missionId. The verdict itself (tasks.result.structuredOutput)
+    // is already terminal for get_pr_review the instant the worker's completion
+    // PATCH lands, independently of whether this post ever runs; without this,
+    // a mission-less task's failed post had nowhere to go but a console.error
+    // nobody reads, so buildd kept reporting "approved" forever while GitHub
+    // showed no review at all. The idempotent duplicate-skip counts as posted —
+    // a matching review already exists on GitHub, which is the outcome this
+    // flag exists to confirm.
+    const effectivelyPosted = reviewPostResult.posted
+      || reviewPostResult.reason === 'a matching review already exists for this commit';
+    await db.update(tasks).set({
+      context: sql`COALESCE(${tasks.context}, '{}'::jsonb) || ${JSON.stringify({
+        githubReviewPosted: effectivelyPosted,
+        githubReviewPostedSha: effectivelyPosted ? postHeadSha : null,
+        githubReviewPostError: effectivelyPosted ? null : (reviewPostResult.reason ?? 'unknown error'),
+      })}::jsonb`,
+    }).where(eq(tasks.id, reviewerTaskId));
+
     // postPrReview never throws on a GitHub-side failure — it resolves
     // `{ posted: false, reason }` — so a plain `.catch` on the call above only
     // ever fires for a genuinely unexpected rejection. Without checking

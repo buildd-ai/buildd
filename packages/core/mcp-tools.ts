@@ -1791,6 +1791,9 @@ export async function handleBuilddAction(
           : null,
         `PR: ${s.prState}${s.merged ? ' (merged)' : ''}`,
         s.mergeBlocked === 'awaiting_human' ? 'Approved, but the merge policy leaves the merge to a human.' : null,
+        s.postedToGithub === false
+          ? `GitHub review: NOT posted — recorded here only (${s.postError ?? 'unknown error'}). Branch protection cannot see this verdict.`
+          : null,
         data.timedOut && !s.terminal
           ? `The wait elapsed and the review is still ${s.state} — call again to keep waiting.`
           : null,

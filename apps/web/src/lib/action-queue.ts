@@ -120,6 +120,28 @@ export interface WaitingOnYouRawItem {
   recommendation?: string | null;
 }
 
+/** A stored reviewer verdict — same shape `derivePrReviewStatus` produces, so
+ * this surface never invents a second status vocabulary for "what the
+ * reviewer said". */
+export interface ReviewerVerdictSummary {
+  verdict: 'approve' | 'request-changes' | 'escalate';
+  confidence: number | null;
+  summary: string | null;
+  /** The commit SHA the verdict was recorded against. */
+  approvedSha: string | null;
+  /** Whether the verdict made it to GitHub as a real review. Null = not yet attempted. */
+  postedToGithub: boolean | null;
+}
+
+/** Set when a conflict-resolution retry pushed commits AFTER an approval was
+ * recorded — the approval is still valid evidence, but it no longer describes
+ * the PR's current head. */
+export interface ApprovalStaleness {
+  approvedSha: string;
+  /** Commits pushed since, when cheaply known (the retry's own commit count). Null = unknown count, but still stale. */
+  commitsSince: number | null;
+}
+
 export interface EscalationRawItem {
   workerId: string;
   taskId: string;
@@ -130,6 +152,12 @@ export interface EscalationRawItem {
   prUrl: string | null;
   policyTier: string;
   escalationReason: string | null;
+  /** The reviewer's stored verdict for this PR, regardless of chip/lease state. */
+  reviewerVerdict?: ReviewerVerdictSummary | null;
+  /** Set when a conflict retry advanced the head past what was approved. */
+  approvalStale?: ApprovalStaleness | null;
+  /** Status of the live conflict-retry task, when `conflictRetryTaskId` is set. */
+  conflictRetryStatus?: string | null;
   /** Mission the PR's task belongs to — drives the card's arc context line. */
   missionId?: string | null;
   missionTitle?: string | null;
@@ -203,6 +231,13 @@ export interface ActionQueueItem {
   /** Set when chip === 'RESOLVING' — the task actively resolving merge conflicts. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
+  /** Status of the live conflict-retry task (e.g. 'pending' | 'assigned' | 'in_progress'). */
+  conflictRetryStatus?: string | null;
+  /** The reviewer's stored verdict for this PR — present on REVIEW and RESOLVING
+   * chips alike, so an in-flight retry never hides the approval that preceded it. */
+  reviewerVerdict?: ReviewerVerdictSummary | null;
+  /** Set when a conflict retry advanced the head past what was approved. */
+  approvalStale?: ApprovalStaleness | null;
   /** Set when chip === 'BLOCKED' — retries exhausted, human decision required. */
   deadZoneExhausted?: boolean;
   /** Link target for the BLOCKED card's primary CTA. */
@@ -420,8 +455,11 @@ export function buildActionQueue(
         : item.recommendation ?? null,
       conflictRetryTaskId: item.conflictRetryTaskId ?? undefined,
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
+      conflictRetryStatus: item.conflictRetryStatus ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
+      reviewerVerdict: item.reviewerVerdict ?? undefined,
+      approvalStale: item.approvalStale ?? undefined,
     });
   }
 

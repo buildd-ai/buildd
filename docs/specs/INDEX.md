@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (31)
+## Active (32)
 
 ### auth (4)
 
@@ -72,8 +72,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (5)
+### surfaces (6)
 
+- [Action Queue Card State](./action-queue-card-state.md) · @max — verified 2026-09-12
+  An action card on Home's "Waiting on You" queue MUST render from server state (the PR, the stored reviewer verdict, and any dispatched task's live status), never from state a click set and the server never confirmed.
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
