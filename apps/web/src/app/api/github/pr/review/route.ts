@@ -16,6 +16,7 @@ import { db } from '@buildd/core/db';
 import { tasks, workers, workspaces, missions, githubRepos } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
+import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
@@ -271,6 +272,12 @@ export async function POST(req: NextRequest) {
 
     if (!adoptedTask?.id) return bad('Could not adopt the PR (task insert failed)', 500);
 
+    // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a
+    // migration snapshot must not inflate the number shown on task/PR cards.
+    const adoptSplit = typeof pr.additions === 'number'
+      ? await fetchSplitPrStats(repo.installationId, repo.fullName, prNumber)
+      : null;
+
     const [adoptedWorker] = await db
       .insert(workers)
       .values({
@@ -291,9 +298,9 @@ export async function POST(req: NextRequest) {
         // safe (unknown degrades to the existing gate) but means an adopted PR
         // never gets the integration-branch treatment even when it targets one.
         ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
-        ...(typeof pr.additions === 'number' ? { linesAdded: pr.additions } : {}),
-        ...(typeof pr.deletions === 'number' ? { linesRemoved: pr.deletions } : {}),
-        ...(typeof pr.changed_files === 'number' ? { filesChanged: pr.changed_files } : {}),
+        ...(adoptSplit ? { linesAdded: adoptSplit.reviewable.additions } : {}),
+        ...(adoptSplit ? { linesRemoved: adoptSplit.reviewable.deletions } : {}),
+        ...(adoptSplit ? { filesChanged: adoptSplit.reviewable.files } : {}),
       })
       .returning({ id: workers.id });
 

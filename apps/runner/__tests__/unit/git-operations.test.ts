@@ -594,6 +594,26 @@ describe('collectGitStats', () => {
     expect(stats.linesRemoved).toBe(2);
   });
 
+  test('excludes generated Drizzle snapshot/journal paths from the reported diff', async () => {
+    // Same shape as the real diff that got a PR closed and fully re-implemented
+    // over an "unexplained" +10962 line count — the bulk was the migration
+    // snapshot Drizzle emits with every migration. This is the worker's own
+    // self-reported stat (used before a PR exists), so it must exclude the
+    // same generated paths the GitHub-derived surfaces do.
+    numstatOutput = [
+      '5\t0\tpackages/core/db/schema.ts',
+      '2\t0\tpackages/core/drizzle/0157_noisy_marauders.sql',
+      '10657\t0\tpackages/core/drizzle/meta/0157_snapshot.json',
+      '7\t0\tpackages/core/drizzle/meta/_journal.json',
+    ].join('\n');
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.filesChanged).toBe(2);
+    expect(stats.linesAdded).toBe(7);
+    expect(stats.linesRemoved).toBe(0);
+  });
+
   test('falls back to the dev/main/master search when no base ref is known', async () => {
     await collectGitStats('/worktree', 'worker-1', 0, undefined);
 

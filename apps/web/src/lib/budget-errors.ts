@@ -1,16 +1,25 @@
 // Detection + parsing for agent usage/budget exhaustion.
 //
-// Two distinct exhaustion modes surface here as worker error strings:
+// Three distinct exhaustion modes surface here as worker error strings:
 //   1. API-key pay-per-token budgets ("budget limit exceeded", "max budget",
 //      "error_max_budget_usd", "out of extra usage").
 //   2. OAuth seat session caps — the Claude Agent SDK throws
 //      "Claude Code returned an error result: You've hit your session limit ·
 //      resets 3am (UTC)". Once the seat session is capped the token is also
 //      invalidated, so every subsequent claim fails with "Not logged in".
+//   3. Codex's usage/quota wall — "You've hit your usage limit. Upgrade to
+//      Pro ... or try again at 3:45pm." Unlike Claude, Codex has no
+//      redundant signal (no account/tenant budget columns) — this detector
+//      is the *only* thing that writes a `backend_pauses` row for Codex, so
+//      missing this string means no backstop at all, not just a slower one.
 //
-// Both must be recognised as exhaustion so the worker route flags the account
-// budget (stopping the claim route from re-handing Claude tasks that would
-// instantly fail) and re-queues the task — optionally failing over to Codex.
+// All three must be recognised as exhaustion so the worker route flags the
+// right provider pool (stopping the claim route from re-handing tasks that
+// would instantly fail) and re-queues the task — optionally failing over to
+// the other provider. The detection substrings live in
+// @buildd/core/budget-error-classifier so the web route, the runner's claim
+// breaker, and the runner's worker-error reporting share one list instead of
+// three hand-maintained copies.
 
 /**
  * Length of an OAuth seat session window. Doubles as the fallback freeze
@@ -24,14 +33,14 @@ export const SESSION_WINDOW_MS = 5 * 60 * 60 * 1000;
 const UTC_ZONE_LABELS = new Set(['utc', 'gmt', 'z', 'utc+0', 'gmt+0', 'utc+00', 'gmt+00']);
 
 /**
- * Matches the reset clause inside a session-limit error, e.g.
- * "… · resets 11:10am (UTC)" or "… · resets 3am (UTC)".
+ * Matches the reset clause inside a session-limit or quota-wall error, e.g.
+ * "… · resets 11:10am (UTC)" (Claude) or "… or try again at 3:45pm." (Codex).
  *
  * The time and the (optional) timezone are captured separately so the timezone
  * can actually be honoured — an earlier version captured it and dropped it,
  * which would have read a non-UTC reset as UTC.
  */
-const RESET_CLAUSE = /resets\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?/i;
+const RESET_CLAUSE = /(?:resets|try again at)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:\(([^)]+)\))?/i;
 
 /** Matches a bare time: "3am", "11:10am", "23:45", "9". */
 const TIME_OF_DAY = /^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/;
@@ -49,22 +58,13 @@ export interface ParseResetTimeOptions {
 }
 
 /**
- * True when a worker error indicates the agent ran out of usage (dollar budget
- * or OAuth session cap) rather than failing on the task itself.
+ * True when a worker error indicates the agent ran out of usage (dollar
+ * budget, OAuth session cap, or a Codex-style quota wall) rather than failing
+ * on the task itself. Re-exported for call sites that already import it from
+ * here — the canonical pattern list lives in
+ * @buildd/core/budget-error-classifier so the runner shares it too.
  */
-export function isBudgetExhaustionError(error?: string | null): boolean {
-  if (!error) return false;
-  const lower = error.toLowerCase();
-  return (
-    lower.includes('budget limit exceeded') ||
-    lower.includes('out of extra usage') ||
-    lower.includes('error_max_budget_usd') ||
-    lower.includes('max budget') ||
-    // OAuth seat session cap (e.g. "You've hit your session limit · resets 3am (UTC)")
-    lower.includes('session limit') ||
-    lower.includes('hit your session')
-  );
-}
+export { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 
 /**
  * Parse a reset time like "5pm", "11:10am" or "23:45" into the next UTC Date at

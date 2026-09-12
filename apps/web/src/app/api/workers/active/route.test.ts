@@ -311,6 +311,78 @@ describe('GET /api/workers/active', () => {
     expect(data.activeLocalUis[0].environment).toBeNull();
   });
 
+  it('includes runnerCommit and runnerVersion in response when present', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+    ]);
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      {
+        localUiUrl: 'http://localhost:8766',
+        viewerToken: 'token-1',
+        accountId: 'account-1',
+        maxConcurrentWorkers: 3,
+        activeWorkerCount: 1,
+        workspaceIds: ['ws-1'],
+        environment: null,
+        runnerCommit: '5bfaeef',
+        runnerVersion: '0.206.0',
+        lastHeartbeatAt: new Date(),
+        account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+      },
+    ]);
+
+    const req = createMockRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.activeLocalUis[0].runnerCommit).toBe('5bfaeef');
+    expect(data.activeLocalUis[0].runnerVersion).toBe('0.206.0');
+  });
+
+  it('returns null runnerCommit/runnerVersion when not set on heartbeat (legacy runner)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindMany
+      .mockResolvedValueOnce([{ id: 'ws-1', name: 'Test WS' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    mockGetAccountWorkspacePermissions.mockResolvedValue([
+      { workspaceId: 'ws-1', canClaim: true, canCreate: false },
+    ]);
+
+    mockHeartbeatsFindMany.mockResolvedValue([
+      {
+        localUiUrl: 'http://localhost:8766',
+        viewerToken: 'token-1',
+        accountId: 'account-1',
+        maxConcurrentWorkers: 3,
+        activeWorkerCount: 0,
+        workspaceIds: ['ws-1'],
+        environment: null,
+        runnerCommit: null,
+        runnerVersion: null,
+        lastHeartbeatAt: new Date(),
+        account: { id: 'account-1', name: 'Runner', maxConcurrentWorkers: 3 },
+      },
+    ]);
+
+    const req = createMockRequest();
+    const res = await GET(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.activeLocalUis[0].runnerCommit).toBeNull();
+    expect(data.activeLocalUis[0].runnerVersion).toBeNull();
+  });
+
   it('supports API key auth', async () => {
     mockGetCurrentUser.mockResolvedValue(null);
     mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });

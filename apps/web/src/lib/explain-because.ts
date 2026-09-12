@@ -16,14 +16,16 @@
  * authoritative rows. The KnowledgeStore entity graph is a retrieval-expansion
  * index for `recall` and is never a source here.
  */
-import type { CausalLink, ExplainRefs, ExplainSource } from './explain-types';
+import type { CausalLink, ExplainRefs, TouchSource } from './explain-types';
 import { orderChain } from './explain-types';
 import { intersectPaths } from '@buildd/core/path-overlap';
 import type { MissionStateView, WaitingOnDescriptor } from './mission-state-view';
 
+export type { TouchSource } from './explain-types';
+
 type Link = Omit<CausalLink, 'order'>;
 
-function link(claim: string, derivedFrom: ExplainSource, refs: ExplainRefs = {}): Link {
+function link(claim: string, derivedFrom: CausalLink['derivedFrom'], refs: ExplainRefs = {}): Link {
   return { claim, derivedFrom, refs };
 }
 
@@ -179,9 +181,6 @@ function causeLinksFor(
 
 // ─── Conflicted-PR chain ──────────────────────────────────────────────────────
 
-/** How a branch's touch set was determined. Reported so a floor is not read as a total. */
-export type TouchSource = 'observedTouches' | 'pathManifest' | 'observedTouches+pathManifest' | 'undeclared';
-
 export interface ConflictSubject {
   prNumber: number;
   taskId: string | null;
@@ -281,8 +280,8 @@ export function buildConflictBecause(
     links.push(
       link(
         `PR #${subject.prNumber} touches ${conflictingPaths.length} of those file(s): ${conflictingPaths.join(', ')}.`,
-        `workers.observedTouches ∪ tasks.pathManifest (${subject.touchSource})`,
-        { ...refs, paths: conflictingPaths },
+        'workers.observedTouches ∪ tasks.pathManifest',
+        { ...refs, paths: conflictingPaths, touchSource: subject.touchSource },
       ),
     );
     for (const { merge, paths } of overlapping) {
@@ -290,7 +289,7 @@ export function buildConflictBecause(
         link(
           `PR #${merge.prNumber ?? '?'}${merge.title ? ` ("${merge.title}")` : ''} merged into \`${baseLabel}\`` +
             `${merge.mergedAt ? ` at ${merge.mergedAt}` : ''} and touched ${paths.join(', ')}.`,
-          `workers.mergedAt + workers.observedTouches ∪ tasks.pathManifest (${merge.touchSource})`,
+          'workers.mergedAt + workers.observedTouches ∪ tasks.pathManifest',
           {
             ...(merge.prNumber != null ? { prNumber: merge.prNumber } : {}),
             ...(merge.taskId ? { taskId: merge.taskId } : {}),
@@ -298,6 +297,7 @@ export function buildConflictBecause(
             ...(merge.headSha ? { commitSha: merge.headSha } : {}),
             ...(subject.baseRef ? { baseRef: subject.baseRef } : {}),
             paths,
+            touchSource: merge.touchSource,
           },
         ),
       );

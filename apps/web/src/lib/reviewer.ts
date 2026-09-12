@@ -15,6 +15,7 @@ import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
 import type { MergePolicy } from '@buildd/shared';
+import { isGeneratedPath, splitDiffStats, formatDiffStats } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { reviewerTitle } from './task-title';
@@ -493,12 +494,17 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
     }
 
     if (files.length > 0) {
-      const totalAdded = files.reduce((s, f) => s + (f.additions || 0), 0);
-      const totalDeleted = files.reduce((s, f) => s + (f.deletions || 0), 0);
+      // Generated files (e.g. Drizzle snapshot JSON) stay in the list — a
+      // reviewer needs to know they exist and were touched — but are marked
+      // rather than counted toward the diff-size figure a human reads first.
+      // See packages/shared/src/generated-paths.ts.
+      const stats = formatDiffStats(splitDiffStats(files));
       const fileLines = files
-        .map((f) => `  - ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`)
+        .map((f) => `  - ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]${
+          isGeneratedPath(f.filename) ? ' [generated — do not review]' : ''
+        }`)
         .join('\n');
-      diffSummary = `## PR Files Changed (+${totalAdded}/-${totalDeleted})\n\n${fileLines}`;
+      diffSummary = `## PR Files Changed (${stats})\n\n${fileLines}`;
     }
   } catch (err) {
     console.warn(`[reviewer] Failed to fetch PR files for #${prNumber}:`, err);

@@ -4,7 +4,7 @@ import type { CheckRun } from './dispatch';
 const mockGithubApi = mock(async (_installationId: number, _path: string, _options?: RequestInit) => ({}) as any);
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 
-const { classifyCheckRuns, dispatchWorkflowRelease } = await import('./dispatch');
+const { classifyCheckRuns, dispatchWorkflowRelease, deploymentOnlyPreflight } = await import('./dispatch');
 
 const run = (over: Partial<CheckRun> = {}): CheckRun => ({
   name: 'build',
@@ -100,5 +100,39 @@ describe('dispatchWorkflowRelease', () => {
     expect(result.runId).toBeUndefined();
     expect(result.runUrl).toBeUndefined();
     expect(result.runsUrl).toContain('release.yml');
+  });
+});
+
+describe('deploymentOnlyPreflight', () => {
+  it('reports CI on prodBranch HEAD directly, without comparing to any source ref', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async (_id: number, path: string) => {
+      if (path.includes('/git/ref/heads/main')) return { object: { sha: 'deadbeef' } };
+      if (path.includes('/commits/deadbeef/check-runs')) {
+        return { check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] };
+      }
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    const result = await deploymentOnlyPreflight(1, 'o', 'r', 'main');
+
+    expect(result.ref).toBe('main');
+    expect(result.prodBranch).toBe('main');
+    expect(result.aheadBy).toBe(0);
+    expect(result.shippableCommits).toEqual([]);
+    expect(result.refHeadSha).toBe('deadbeef');
+    expect(result.ciState).toBe('passing');
+  });
+
+  it('leaves ciState unknown when the branch ref cannot be resolved', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi.mockImplementation(async () => {
+      throw new Error('404');
+    });
+
+    const result = await deploymentOnlyPreflight(1, 'o', 'r', 'main');
+
+    expect(result.refHeadSha).toBeUndefined();
+    expect(result.ciState).toBe('unknown');
   });
 });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 /**
  * Guard for the one-time orphaned-schedule backfill
- * (drizzle/0156_backfill_orphaned_mission_schedules.sql,
+ * (drizzle/0158_backfill_orphaned_mission_schedules.sql,
  * docs/reports/mission-heartbeat-schedule-lifecycle-audit.md §2).
  *
  * There is no live-Postgres harness in the unit suite (no pg-mem/pglite
@@ -16,16 +16,16 @@ import { join } from 'node:path';
  * that is stuck active with no completion path but is still legitimately
  * open — masking that bug instead of fixing it (see audit §3).
  *
- * Renumbered from 0155 to 0156 when a concurrent session's migration (0155:
- * add workers.dirty_worktree, PR #2264) landed on dev first — see the
- * schema-change skill on journal index collisions.
+ * Renumbered 0155 -> 0156 -> 0158 as concurrent sessions' migrations (0155:
+ * add workers.dirty_worktree, PR #2264; then 0156/0157 on dev) landed first —
+ * see the schema-change skill on journal index collisions.
  */
 
 const MIGRATION_PATH = join(
   import.meta.dir,
   '..',
   'drizzle',
-  '0156_backfill_orphaned_mission_schedules.sql',
+  '0158_backfill_orphaned_mission_schedules.sql',
 );
 
 function migrationSql(): string {
@@ -38,7 +38,7 @@ function statusFilterValues(sql: string): string[] {
   return match[1]!.split(',').map((v) => v.trim().replace(/^'|'$/g, ''));
 }
 
-describe('0156 backfill: mission-status scope', () => {
+describe('0158 backfill: mission-status scope', () => {
   it('only targets terminal statuses, not active or budget_exhausted', () => {
     const values = statusFilterValues(migrationSql());
     expect(new Set(values)).toEqual(new Set(['completed', 'archived']));
@@ -66,7 +66,7 @@ describe('0156 backfill: mission-status scope', () => {
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
 
     const entries = [...journal.entries].sort((a, b) => a.idx - b.idx);
-    const ours = entries.find((e) => e.tag === '0156_backfill_orphaned_mission_schedules');
+    const ours = entries.find((e) => e.tag === '0158_backfill_orphaned_mission_schedules');
     expect(ours).toBeDefined();
 
     const priorMax = Math.max(...entries.filter((e) => e.idx < ours!.idx).map((e) => e.when));

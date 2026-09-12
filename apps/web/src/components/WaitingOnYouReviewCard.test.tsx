@@ -58,3 +58,37 @@ describe('WaitingOnYouReviewCard recommendation', () => {
     expect(html).not.toContain('No handoff recommendation');
   });
 });
+
+describe('WaitingOnYouReviewCard action hierarchy', () => {
+  it('offers Apply / Apply with corrections / Merge anyway, with Apply as the filled primary action', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({ escalationReason: 'Touches schema.ts', recommendation: 'Guard the null-overwrite.' })}
+      />,
+    );
+    expect(html).toContain('>Apply<');
+    expect(html).toContain('Apply with corrections');
+    expect(html).toContain('Merge anyway');
+    // Apply is the filled/primary button (bg-accent); Merge anyway is a bare text link.
+    const applyIdx = html.indexOf('>Apply<');
+    const mergeAnywayIdx = html.indexOf('Merge anyway');
+    expect(applyIdx).toBeGreaterThan(-1);
+    expect(mergeAnywayIdx).toBeGreaterThan(applyIdx);
+  });
+
+  it('renders no "Merge" as a bare/primary button — merge is demoted', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard item={item({ escalationReason: 'Touches schema.ts' })} />,
+    );
+    // The old bare "Merge" primary CTA must not exist; only "Merge anyway" as a link.
+    expect(html).not.toMatch(/>\s*Merge\s*<\/button>/);
+  });
+
+  it('renders no action row when the card has no PR (nothing to apply to or merge)', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard item={item({ prNumber: undefined })} />,
+    );
+    expect(html).not.toContain('Apply with corrections');
+    expect(html).not.toContain('Merge anyway');
+  });
+});

@@ -62,6 +62,7 @@ import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -520,13 +521,12 @@ async function handleCheckSuiteEvent(event: GitHubCheckSuiteEvent) {
           // so retry the merge here instead of leaving it to a poller that
           // does not exist.
           const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber: pr.number });
-          const threshold = policy.agentReview?.maxConfidenceThreshold ?? 0.6;
           const hasUnconsumedApprove =
             reviewStatus.state === 'approved' &&
-            reviewStatus.verdict === 'approve' &&
-            !reviewStatus.merged &&
-            typeof reviewStatus.confidence === 'number' &&
-            reviewStatus.confidence >= threshold;
+            isApprovalSelfMergeable(
+              { verdict: reviewStatus.verdict, confidence: reviewStatus.confidence, merged: reviewStatus.merged },
+              policy.agentReview?.maxConfidenceThreshold,
+            );
 
           if (!hasUnconsumedApprove) {
             console.log(`PR #${pr.number} on ${repository.full_name} awaiting agent review — deferring merge`);

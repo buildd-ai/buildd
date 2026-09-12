@@ -15,6 +15,9 @@ import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource } from '
 
 export type ExplainScope = 'task' | 'mission' | 'workspace' | 'pr';
 
+/** How a branch's touch set was determined. Reported so a floor is not read as a total. */
+export type TouchSource = 'observedTouches' | 'pathManifest' | 'observedTouches+pathManifest' | 'undeclared';
+
 /** Hard references. Anything a reader can look up; never a summary. */
 export interface ExplainRefs {
   taskId?: string;
@@ -30,6 +33,8 @@ export interface ExplainRefs {
   errorSignature?: string;
   /** Repo-relative file paths, e.g. the set two branches collide on. */
   paths?: string[];
+  /** How `paths` was determined, when a link names a touch set. */
+  touchSource?: TouchSource;
 }
 
 /**
@@ -39,13 +44,40 @@ export interface ExplainRefs {
  */
 export type ExplainSource = MissionStateSource | (string & {});
 
+/**
+ * The closed vocabulary of row/derivation names a `CausalLink` inside
+ * `because[]` may cite. Every `link(...)` call site in `explain-because.ts`
+ * must use one of these — a new site inventing an unlisted string is a type
+ * error, unlike `ExplainSource`'s branded-string escape hatch. Data that
+ * varies per call (e.g. which touch source produced a link) belongs in
+ * `refs`, not interpolated into the label — see `ExplainRefs.touchSource`.
+ */
+export type CausalLinkSource =
+  | 'missions.dependsOnMissionId'
+  | 'tasks.status + workers.status'
+  | 'tasks.status + tasks.result.errorType'
+  | 'workers.mergedAt'
+  | 'missions.goalCriteriaState'
+  | 'missions.criteriaEscalatedAt + missionNotes'
+  | 'classifyMissionWait'
+  | 'workers.mergedAt (merges into this base recorded since the PR opened — a floor, not a rev-list)'
+  | 'tasks.pathManifest (repo-wide sentinel) + workers.observedTouches (empty)'
+  | 'workers.observedTouches ∪ tasks.pathManifest'
+  | 'workers.mergedAt + workers.observedTouches ∪ tasks.pathManifest'
+  | 'workers.observedTouches ∪ tasks.pathManifest (no intersection)'
+  | 'workers.prLifecycleStatus + workers.conflictDetectedAt';
+
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */
   order: number;
   /** One line of evidence. */
   claim: string;
-  /** The row or derivation this link was read from. */
-  derivedFrom: ExplainSource;
+  /**
+   * The row or derivation this link was read from. The chain's closing link
+   * reuses the state accessor's own source (`MissionStateSource`); every
+   * other link cites the closed per-link vocabulary (`CausalLinkSource`).
+   */
+  derivedFrom: MissionStateSource | CausalLinkSource;
   refs: ExplainRefs;
 }
 
@@ -81,7 +113,7 @@ export interface ExplainSubject {
 export interface ExplainProvenance {
   state: ExplainSource;
   waitingOn: ExplainSource | null;
-  because: ExplainSource[] ;
+  because: Array<MissionStateSource | CausalLinkSource>;
   history: ExplainSource | null;
   nextAction: ExplainSource | null;
 }

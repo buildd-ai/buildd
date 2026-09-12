@@ -13,6 +13,7 @@
  */
 
 import type { BuilddTask } from './types';
+import { CODEX_USAGE_LIMIT_PATTERN } from '@buildd/core/budget-error-classifier';
 
 export type BreakerScope = 'global' | 'context';
 
@@ -80,6 +81,21 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
     const label = resetMatch
       ? `Session limit hit (resets ${resetMatch[1]} ${resetMatch[2]})`
       : 'Session limit hit';
+    return { label, pauseMs, scope: 'context' };
+  }
+
+  // Codex quota wall: "You've hit your usage limit. Upgrade to Pro (...) or
+  // try again at 3:45pm." Anchored on the same CODEX_USAGE_LIMIT_PATTERN the
+  // web route's isBudgetExhaustionError checks, so this branch cannot drift
+  // out of sync with what actually flags the account/backend as exhausted.
+  // Checked before generic rate-limit patterns for the same reason as the
+  // session-limit case above: this is an exhaustion event with a known reset
+  // time, not a transient 429.
+  if (err.includes(CODEX_USAGE_LIMIT_PATTERN)) {
+    const resetMatch = err.match(/try again at\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)/i);
+    const hourToken = resetMatch?.[1]?.replace(/:\d{2}/, '') ?? null; // strip :MM if present
+    const pauseMs = hourToken ? parseResetDelay(hourToken) : 5 * 60 * 60 * 1000;
+    const label = resetMatch ? `Usage limit hit (try again ${resetMatch[1]})` : 'Usage limit hit';
     return { label, pauseMs, scope: 'context' };
   }
 
