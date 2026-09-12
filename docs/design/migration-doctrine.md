@@ -102,6 +102,12 @@ The gate therefore resolves the snapshot through the chain rather than by filena
   removed by past renumbering leaves a tip behind. Several exist and have been harmless for
   a long time; failing on them would block every release to re-litigate settled history.
 
+`drizzle-kit` itself detects the fork and refuses to generate — but then calls
+`process.exit(0)`, so every caller sees success while nothing was generated. That is
+patched at the root (`patches/drizzle-kit@<version>.patch`, exit 0 → exit 1). The patch is
+keyed to an exact version, so a drizzle-kit bump silently drops it; a unit test asserts the
+patched version still matches the lockfile.
+
 **To repair a fork:** rebuild the highest-numbered snapshot as a true child of its sibling —
 the sibling's content plus its own delta, keeping its own `id`, with `prevId` set to the
 sibling's `id`. Do **not** delete it and re-run `db:generate`: that re-derives migrations

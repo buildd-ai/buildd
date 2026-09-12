@@ -2,12 +2,12 @@
 title: DB Migration Execution
 status: active
 owner: max
-last_verified: 2026-09-11
+last_verified: 2026-09-12
 summary: Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
 domain: releases
 surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/db/migrate-drift.ts, scripts/check-schema-drift.ts]
 related: [db-migration-gates, release-flow]
-verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts, packages/core/__tests__/migrate-drift.test.ts]
+verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts, packages/core/__tests__/migrate-drift.test.ts, packages/core/__tests__/drizzle-kit-patch.test.ts]
 keywords: [__drizzle_migrations, planMigrations, high-water mark, _journal.json, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
 supersedes: []
 ---
@@ -160,10 +160,18 @@ directions reached production:
   journal is only what the ref carries, so the two legitimately differ by the
   migrations that were renumbered or that predate a rebuilt journal. Side by side
   the two numbers read as production running migrations we do not know about.
-- The CI migration check MUST assert on `bun db:generate`'s OUTPUT, not its exit
-  code. drizzle-kit prints `Error: ... is a collision.` on a forked chain and
-  exits 0, and a failed generate writes nothing — indistinguishable from "no
-  changes needed" to `git status --porcelain drizzle/`.
+- `drizzle-kit` MUST be patched so that aborting on a forked or malformed
+  snapshot chain exits non-zero (`patches/drizzle-kit@<version>.patch`).
+  Upstream calls `process.exit(0)` after refusing to generate, and a generate
+  that aborts writes nothing — indistinguishable from "no changes needed" to
+  `git status --porcelain drizzle/`. Because `patchedDependencies` is keyed by
+  exact version, a drizzle-kit bump silently orphans the patch, so the pinned
+  version MUST be asserted against the lockfile's resolved version.
+- The CI migration check MUST additionally assert on `bun db:generate`'s OUTPUT,
+  not only its exit code. The patch covers the collision/malformed branch; the
+  "snapshot is not of the latest version" branch still exits 0 and reports via
+  `console.log` rather than as an error. The check MUST echo the captured output
+  before asserting, so a failure is diagnosable from the log.
 - The applied-migration count MUST be read from `drizzle.__drizzle_migrations`
   with a fallback to `public.__drizzle_migrations`. Querying only `public`
   throws and reports 0, which is indistinguishable from "no migration ever ran"
@@ -263,7 +271,8 @@ directions reached production:
 | `classifyExtraSchemaObjects` (creator tracing) | `packages/core/db/migrate-drift.ts:344-400` |
 | `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts:419-445` |
 | `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml:313-345` |
-| "migrations are up to date" PR check (asserts on output, not exit code) | `.github/workflows/build.yml:84-110` |
+| "migrations are up to date" PR check (asserts on exit code AND output) | `.github/workflows/build.yml:84-120` |
+| drizzle-kit abort-exits-0 patch | `patches/drizzle-kit@0.31.10.patch` |
 | preview-branch migrate | `.github/workflows/build.yml:409-411` |
 | deploy ordering (`db:migrate && next build`) | `apps/web/package.json:7` |
 | `migrations:lint` | `package.json:42` |

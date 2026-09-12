@@ -1,0 +1,39 @@
+diff --git a/bin.cjs b/bin.cjs
+index 07274ea6f53fd54a129b3d338892feda6e995cff..2b124783d27169b0b44f053778b77e62430c494f 100755
+--- a/bin.cjs
++++ b/bin.cjs
+@@ -8225,7 +8225,7 @@ var init_utils2 = __esm({
+       }
+       const abort = report.malformed.length || collisionEntries.length > 0;
+       if (abort) {
+-        process.exit(0);
++        process.exit(1);
+       }
+       return { snapshots, journal };
+     };
+diff --git a/utils.js b/utils.js
+index ec7b14e053325abe003efbcb43f8af5328d5f78e..4ea18bd0112bd6431905ac2d82b3b9edd8fe48e7 100644
+--- a/utils.js
++++ b/utils.js
+@@ -6300,7 +6300,7 @@ var prepareMigrationFolder = (outFolder = "drizzle", dialect4) => {
+   }
+   const abort = report.malformed.length || collisionEntries.length > 0;
+   if (abort) {
+-    process.exit(0);
++    process.exit(1);
+   }
+   return { snapshots, journal };
+ };
+diff --git a/utils.mjs b/utils.mjs
+index 3ad20c85c2c230ce4894f08c22429c057c368496..610ea863101e8950bc94a7814864ea7fd506f64d 100644
+--- a/utils.mjs
++++ b/utils.mjs
+@@ -6276,7 +6276,7 @@ var prepareMigrationFolder = (outFolder = "drizzle", dialect4) => {
+   }
+   const abort = report.malformed.length || collisionEntries.length > 0;
+   if (abort) {
+-    process.exit(0);
++    process.exit(1);
+   }
+   return { snapshots, journal };
+ };

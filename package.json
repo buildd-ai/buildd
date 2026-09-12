@@ -63,5 +63,8 @@
     "playwright": "^1.45.0",
     "typescript": "^6.0.0",
     "ws": "^8.19.0"
+  },
+  "patchedDependencies": {
+    "drizzle-kit@0.31.10": "patches/drizzle-kit@0.31.10.patch"
   }
 }
