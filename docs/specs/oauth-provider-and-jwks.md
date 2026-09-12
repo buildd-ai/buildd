@@ -9,6 +9,25 @@ surfaces: [apps/web/src/app/api/oauth/token/route.ts, apps/web/src/lib/signing-k
 related: [auth-oauth-boundaries, credential-isolation, external-cron-triggers, mcp-action-contracts]
 keywords: [rfc 7591, dynamic client registration, rfc 9728, resource_metadata, jwks, kid, es256, hs256, code_challenge, signing_key, assertion grant]
 verified_by: [apps/web/src/lib/oauth/tokens.test.ts, apps/web/src/app/api/oauth/authorize/route.test.ts, apps/web/src/app/api/oauth/token/route.test.ts, apps/web/src/app/api/cron/jwks-rotation/route.test.ts, apps/web/src/app/api/connectors/[id]/assertion/route.test.ts, apps/web/src/lib/signing-key-windows.test.ts, apps/web/src/app/api/well-known-jwks-route.test.ts, apps/web/src/app/well-known-oauth-authorization-server-route.test.ts]
+assertions:
+  - id: jwks-route-get
+    type: route
+    method: GET
+    path: /api/.well-known/jwks.json
+    file: apps/web/src/app/api/.well-known/jwks.json/route.ts
+  - id: oauth-token-route-post
+    type: route
+    method: POST
+    path: /api/oauth/token
+    file: apps/web/src/app/api/oauth/token/route.ts
+  - id: get-active-signing-key
+    type: symbol
+    name: getActiveSigningKey
+    path: apps/web/src/lib/signing-keys.ts
+  - id: get-all-public-keys
+    type: symbol
+    name: getAllPublicKeys
+    path: apps/web/src/lib/signing-keys.ts
 supersedes: []
 ---
 # OAuth Provider & Signing Keys

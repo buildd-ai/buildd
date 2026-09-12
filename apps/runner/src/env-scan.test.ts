@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { execSync } from 'child_process';
 import { readFileSync } from 'fs';
 
@@ -19,6 +19,19 @@ mock.module('fs', () => ({
 import { scanEnvironment, checkBrowserCapability, checkBwrapSupport, type ScanConfig } from './env-scan';
 
 describe('checkBwrapSupport', () => {
+  let originalDisableSandbox: string | undefined;
+
+  beforeEach(() => {
+    // Exercise mocked probes regardless of the worker's operator flag.
+    originalDisableSandbox = process.env.BUILDD_DISABLE_SANDBOX;
+    delete process.env.BUILDD_DISABLE_SANDBOX;
+  });
+
+  afterEach(() => {
+    if (originalDisableSandbox === undefined) delete process.env.BUILDD_DISABLE_SANDBOX;
+    else process.env.BUILDD_DISABLE_SANDBOX = originalDisableSandbox;
+  });
+
   beforeEach(() => {
     mockExecSync.mockReset();
   });

@@ -1,0 +1,85 @@
+# Spec Discrepancy Ledger — Tier-2 CI writer, per docs/design/spec-conformance.md §7 Part B.
+#
+# Runs packages/core/scripts/write-spec-discrepancies.ts against the buildd
+# workspace's own spec/design docs on every push to dev, upserting
+# spec_discrepancies rows per the §8 direction rule and §9 closure rule.
+#
+# Deliberately unconditional (no path filter): §4's delta gate is explicit
+# that the watch set must include code-surface paths, not just doc paths —
+# `worker-mount-isolation.md` drifted with zero changes under docs/design/,
+# only a symbol rename in application code. A static path filter here would
+# reproduce exactly that miss. §4's actual optimization (skip the run when
+# a keyed buildd artifact shows the watch-set intersection is empty) is not
+# implemented yet — checks are ripgrep/filesystem-based with no LLM calls,
+# so running unconditionally on every push is correct, just not maximally
+# cheap. Tracked as a follow-up, not blocking here.
+#
+# Secret guard: needs DATABASE_URL. Absent (fork / unconfigured repo), the
+# writer script itself falls back to a dry run and logs classification
+# counts without writing — same posture knowledge-eval.yml uses for its own
+# DB-dependent job.
+#
+# WORKSPACE_ID is a repo variable (Settings → Actions → Variables), not a
+# literal here — same pattern as vars.TEST_MACHINE_HOST in build.yml. Keeps
+# the workspace row identifier out of the versioned source per "This Repo Is
+# Public" in CLAUDE.md, even though it's low-sensitivity (an internal CI
+# eval workspace id, not user data).
+#
+# Delta gate (§4): scripts/spec-conformance-delta-gate.ts reads the last
+# fully-checked commit from the same keyed buildd artifact
+# (`spec-conformance-last-sha`) that spec-conformance-check.yml writes, and
+# skips the writer step when the diff against it touches nothing in the
+# watch set. `record` runs unconditionally after the writer (`if: always()`)
+# — this workflow only ever runs on push to dev, so every invocation is
+# eligible to advance the pointer, unlike the blocking checker which also
+# runs on PRs.
+name: Spec Discrepancy Ledger
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: spec-discrepancy-ledger-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ledger:
+    name: Tier-2 CI — write spec_discrepancies
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      WORKSPACE_ID: ${{ vars.WORKSPACE_ID }}
+      BUILDD_API_KEY: ${{ secrets.BUILDD_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Delta gate — decide whether anything watched changed
+        id: gate
+        run: bun run scripts/spec-conformance-delta-gate.ts check
+
+      - name: Write spec discrepancy ledger
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          if [ -z "$WORKSPACE_ID" ]; then
+            echo "::notice::WORKSPACE_ID repo variable not set — falling back to dry run."
+            bun run specs:discrepancies -- --dry-run
+            exit 0
+          fi
+          bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
+
+      - name: Delta gate — record HEAD as last-checked
+        if: always()
+        run: bun run scripts/spec-conformance-delta-gate.ts record

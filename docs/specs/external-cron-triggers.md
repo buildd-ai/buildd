@@ -8,6 +8,27 @@ domain: integrations
 surfaces: [cron-manifest.json, scripts/sync-crons.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/cron-cadence.ts]
 related: [mission-task-lifecycle, scheduled-task-merge-policy, runner-liveness]
 keywords: [cron-job.org, cron_secret, cronjob_api_key, vercel crons, nextrunat, cron:sync]
+assertions:
+  - id: schedules-route-get
+    type: route
+    method: GET
+    path: /api/cron/schedules
+    file: apps/web/src/app/api/cron/schedules/route.ts
+  - id: sync-crons-build-job
+    type: symbol
+    name: buildJob
+    path: scripts/sync-crons.ts
+  - id: sync-crons-signature
+    type: symbol
+    name: signature
+    path: scripts/sync-crons.ts
+  - id: cron-secret-config
+    type: config_key
+    key: CRON_SECRET
+    file: apps/web/src/lib/cron-run.ts
+  - id: sync-crons-test
+    type: test_file
+    path: scripts/sync-crons.test.ts
 supersedes: []
 ---
 # External Cron Triggers

@@ -775,6 +775,50 @@ directly against a numbered slice instead of re-deriving scope from the design.
    is the generalization step, and only matters once Slices 1–6 are proven on
    the buildd workspace itself.
 
+**The missing-assertions gate is not its own numbered slice either.** Once Slice
+1 shipped, the corpus sat at 108 of 110 docs `unverified` with nothing pushing
+back: §2's contradiction checks only ever compare a declared status against a
+*derived* one, and a doc with zero assertions derives `unverified` — which both
+CI failure conditions in §2 explicitly exempt. A doc could therefore declare
+`implemented` (design) or `active` (spec) — the terminal, "this describes
+reality" claim — while carrying a frontmatter block that had never been asked
+to prove anything, and nothing said so. `checkMissingAssertions` in
+`packages/core/spec-conformance.ts` closes that gap: a terminal-status doc with
+zero declared assertions (presence, not passing-ness — an assertion under an
+active §6 suppression still counts) is now a CI failure, with the same shape of
+escape hatch mission `goalCriteria` already uses for its prose-graded
+`description` type (`validateGoalCriteria` in `mission-helpers.ts`) — a
+`not_mechanizable_reason` frontmatter field, 10+ characters, for a doc whose
+claims genuinely cannot be expressed in the six-type vocabulary. Landing the
+gate against a 108-doc backlog needed one more thing an outcome-only CI check
+doesn't: `MISSING_ASSERTIONS_DEBT`, a grandfather set mirroring
+`VERIFIED_BY_DEBT` in `scripts/check-specs.ts` exactly — every doc that violated
+the gate the day it shipped is seeded in, so merging it didn't turn every
+future PR red; the set only ever shrinks as real assertions land, and a new doc
+may never be added to it.
+
+**CI wiring is not its own numbered slice.** Two gaps surfaced only once
+Slice 2 was being wired: the Slice-1 checker (`scripts/check-spec-conformance.ts`)
+had no GitHub Actions invocation at all, so §3's claim that "CI is the
+enforcement point" was untrue in practice; and §4's delta gate — a keyed
+buildd artifact recording the last fully-checked commit, used to skip a run
+when nothing in the watch set changed — was unimplemented, so every Tier-2
+job ran unconditionally. Both landed together, outside the slice numbering
+above: a `Spec Conformance Check` workflow runs the Slice-1 checker with
+`--fail-on-contradiction` on every PR and on push to `dev`, gated by
+`scripts/spec-conformance-delta-gate.ts` (`computeWatchSet`/`isWatched` in
+`packages/core/spec-conformance.ts` implement the watch set itself). The
+gate's write-back runs only from push-to-`dev`, since a PR's tip is not
+generally an ancestor of `dev` and the "last fully-checked commit" pointer
+only means something against a single serialized, linear history; the `check`
+half is read-only and safe to run from any number of concurrent PR checks
+against that same trunk-recorded pointer. Recording the artifact needed a
+write path the platform didn't have: every existing artifact-create route
+requires an owning mission, initiative, or worker, but this marker must
+outlive any of those, so `POST /api/workspaces/[id]/artifacts` (workspace-scoped,
+upserting on the existing `(workspaceId, key)` unique index) was added
+alongside it.
+
 ---
 
 ## Worked Examples

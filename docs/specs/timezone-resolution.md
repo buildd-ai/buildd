@@ -9,6 +9,23 @@ surfaces: [packages/core/timezone.ts, apps/web/src/lib/team-timezone.ts, apps/we
 verified_by: [packages/core/__tests__/timezone.test.ts, apps/web/src/lib/team-timezone.test.ts, apps/web/src/app/api/me/timezone/route.test.ts, apps/web/src/lib/pr-activity-comment.test.ts, apps/web/src/app/api/teams/[id]/route.test.ts, apps/web/src/app/api/missions/[id]/route.test.ts, packages/core/__tests__/mcp-tools-create-schedule-timezone.test.ts]
 related: [webhook-dataflow, external-cron-triggers, team-namespace-scoping]
 keywords: [IANA, users.timezone, teams.timezone, task_schedules.timezone, activeHoursTimezone, Intl, UTC]
+assertions:
+  - id: is-valid-timezone
+    type: symbol
+    name: isValidTimezone
+    path: packages/core/timezone.ts
+  - id: resolve-timezone
+    type: symbol
+    name: resolveTimezone
+    path: packages/core/timezone.ts
+  - id: me-timezone-route-put
+    type: route
+    method: PUT
+    path: /api/me/timezone
+    file: apps/web/src/app/api/me/timezone/route.ts
+  - id: timezone-test
+    type: test_file
+    path: packages/core/__tests__/timezone.test.ts
 supersedes: []
 ---
 # Timezone Resolution
