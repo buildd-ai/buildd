@@ -12,6 +12,7 @@ const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'review-task-1' 
 const mockDispatchNewTask = mock(() => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'updated' } as any));
 const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
+const mockResolveReReviewPlan = mock(() => Promise.resolve({ kind: 'full' as const }));
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/pr-resolve', () => ({ resolveOpenWorkerForUser: mockResolveOpenWorkerForUser }));
@@ -22,6 +23,7 @@ mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewerTas
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
+mock.module('@/lib/pr-re-review', () => ({ resolveReReviewPlan: mockResolveReReviewPlan }));
 
 const WORKSPACES_TABLE = { __name: 'workspaces' };
 const MISSIONS_TABLE = { __name: 'missions' };
@@ -96,6 +98,8 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     mockDispatchNewTask.mockReset();
     mockAppendPrActivity.mockReset();
     mockSupersedeAncestorEscalations.mockReset();
+    mockResolveReReviewPlan.mockReset();
+    mockResolveReReviewPlan.mockResolvedValue({ kind: 'full' as const });
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -171,6 +175,49 @@ describe('POST /api/prs/[prNumber]/re-review', () => {
     expect(mockAppendPrActivity).not.toHaveBeenCalled();
     // Still closes a stale escalation note even when a live review already owns the PR.
     expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+  });
+
+  it('dispatches a DELTA review with the prior verdict when one exists at a different SHA', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    const priorVerdict = {
+      headSha: 'old-sha',
+      verdict: 'approve' as const,
+      confidence: 0.9,
+      summary: 'Looks good',
+      feedback: null,
+      escalationReason: null,
+    };
+    mockResolveReReviewPlan.mockResolvedValue({ kind: 'delta' as const, priorVerdict });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+
+    expect(mockResolveReReviewPlan).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      prNumber: 42,
+      currentHeadSha: 'abc123',
+    });
+    expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+    const created = mockCreateReviewerTask.mock.calls[0][0] as any;
+    expect(created.priorVerdict).toEqual(priorVerdict);
+
+    // The PR activity entry says this was a delta, not a full re-read.
+    const activity = mockAppendPrActivity.mock.calls[0][0] as any;
+    expect(activity.entry.detail).toContain('delta re-review');
+  });
+
+  it('returns the in-flight review instead of stacking a second one', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    mockResolveReReviewPlan.mockResolvedValue({ kind: 'in_flight' as const, reviewTaskId: 'live-review-1' });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ ok: true, alreadyRequested: true, reviewTaskId: 'live-review-1' });
+    expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 
   it('returns 400 when the workspace has no reviewer role available', async () => {

@@ -28,6 +28,7 @@ import { listWorkspaceRoles } from '@/lib/pr-review-request';
 import { pickReviewerRole } from '@/lib/pr-review-status';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
+import { resolveReReviewPlan } from '@/lib/pr-re-review';
 
 export async function POST(
   req: NextRequest,
@@ -115,6 +116,20 @@ export async function POST(
     return NextResponse.json({ error: picked.error ?? 'No reviewer role available' }, { status: 400 });
   }
 
+  // Delta re-review is the mechanism: a terminal verdict at a different SHA
+  // gets a reviewer sent only the delta plus its own prior verdict, instead
+  // of re-reading the whole PR from zero. `in_flight` means a reviewer is
+  // already working this PR — the existing one-reviewer-per-PR guard, not a
+  // second dispatch.
+  const plan = await resolveReReviewPlan({
+    workspaceId: worker.workspaceId,
+    prNumber,
+    currentHeadSha: headSha,
+  });
+  if (plan.kind === 'in_flight') {
+    return NextResponse.json({ ok: true, alreadyRequested: true, reviewTaskId: plan.reviewTaskId });
+  }
+
   const reviewerTask = await createReviewerTask({
     workspaceId: worker.workspaceId,
     originalTaskId: originalTask.id,
@@ -135,6 +150,7 @@ export async function POST(
     installationId,
     repoFullName,
     policyConfig: (workspace as any).gitConfig?.policyConfig,
+    ...(plan.kind === 'delta' ? { priorVerdict: plan.priorVerdict } : {}),
   });
 
   if (!reviewerTask?.id) {
@@ -159,7 +175,9 @@ export async function POST(
       prNumber,
       entry: {
         kind: 'reviewing',
-        detail: `reviewer role \`${picked.role}\` — re-review requested by ${user.email}`,
+        detail: plan.kind === 'delta'
+          ? `reviewer role \`${picked.role}\` — delta re-review requested by ${user.email} (since ${plan.priorVerdict.headSha.slice(0, 7)})`
+          : `reviewer role \`${picked.role}\` — re-review requested by ${user.email}`,
       },
       workspaceId: worker.workspaceId,
     });
