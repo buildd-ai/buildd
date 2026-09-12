@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findDuplicateScheduleIds, type ScheduleCronKey } from './schedule-health';
+import { findDuplicateScheduleIds, isScheduleErrorLive, type ScheduleCronKey } from './schedule-health';
 
 function row(overrides: Partial<ScheduleCronKey> & { id: string }): ScheduleCronKey {
   return {
@@ -44,5 +44,23 @@ describe('findDuplicateScheduleIds', () => {
 
   test('empty input yields empty set', () => {
     expect(findDuplicateScheduleIds([]).size).toBe(0);
+  });
+});
+
+describe('isScheduleErrorLive', () => {
+  test('an enabled schedule with a lastError is live', () => {
+    expect(isScheduleErrorLive({ enabled: true, lastError: 'boom' })).toBe(true);
+  });
+
+  test('a disabled schedule with a lastError is NOT live — it cannot self-clear', () => {
+    expect(isScheduleErrorLive({ enabled: false, lastError: 'boom' })).toBe(false);
+  });
+
+  test('an enabled schedule with no lastError is not live', () => {
+    expect(isScheduleErrorLive({ enabled: true, lastError: null })).toBe(false);
+  });
+
+  test('a disabled schedule with no lastError is not live', () => {
+    expect(isScheduleErrorLive({ enabled: false, lastError: null })).toBe(false);
   });
 });

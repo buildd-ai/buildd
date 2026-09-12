@@ -1132,7 +1132,20 @@ export async function PATCH(
       // was opened by a different worker row (retries/CI-fix continuations
       // push to the same branch as an earlier attempt), so this only fires
       // when no PR exists anywhere for the branch.
-      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
+      //
+      // A fallback-provenance summary (body.summarySource === 'fallback', see
+      // #2270) gates independently of commits/dirtyWorktree. It means the SDK
+      // session ended without the agent ever calling complete_task, so the
+      // "summary" is the runner's own last-assistant-message capture, not a
+      // decision the agent made — a stalled session, not a conclusion. A
+      // genuine "nothing to ship" outcome is something the agent states
+      // deliberately (summarySource='agent'); commitCount/dirtyWorktree alone
+      // are also exactly the signals a worktree that never diverged from its
+      // base can misreport as "nothing happened" (see collectGitStats in
+      // apps/runner/src/git-operations.ts), so they must not be the only gate
+      // for this outcome.
+      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
+      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
         // A coordination/conflict-resolution task legitimately ships nothing on
         // its own branch — its deliverable is action taken against OTHER PRs
         // (a merge, a dispatched release). merge_pr stamps mergedAt on the
@@ -1149,7 +1162,9 @@ export async function PATCH(
         if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
-            : 'uncommitted changes in the worktree';
+            : effectiveDirtyWorktree
+              ? 'uncommitted changes in the worktree'
+              : 'no confirmed outcome — the session ended without the agent calling complete_task';
           return NextResponse.json({
             error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',

@@ -1581,18 +1581,11 @@ export class WorkerManager {
         // codebase-memory seed is keyed on (repoPath, baseRef) — re-deriving it
         // there could disagree with the ref the worktree really uses.
         worker.worktreeBaseRef = setupResult.base;
-        // When the resume branch was honored, the worktree's git branch differs
-        // from the task's own branch.  Update worker.branch so pushes target the
-        // right ref and create_pr finds the existing open PR.
-        if (setupResult.branch !== claimedWorker.branch) {
-          console.log(`[Worker ${worker.id}] Resumed on branch ${setupResult.branch} (task branch: ${claimedWorker.branch})`);
-          worker.branch = setupResult.branch;
-          // Persist so reviewer/CI retry dispatch reads the correct branch from
-          // the DB when building the next retry's resumeBranch context.
-          this.buildd.updateWorker(worker.id, { branch: setupResult.branch }).catch(err =>
-            console.error(`[Worker ${worker.id}] Failed to persist resume branch:`, err)
-          );
-        }
+        // Resume and shared-branch collision recovery can both change the ref.
+        // The server must acknowledge this actual branch before the agent starts
+        // (see startWithPersistedBranch below), since create_pr derives its head
+        // from workers.branch rather than the claim-time prediction.
+        worker.branch = setupResult.branch;
         // Fallback warning: resume branch was missing/diverged — make it visible
         // rather than silently starting fresh.
         if (setupResult.fallback) {
@@ -1628,8 +1621,34 @@ export class WorkerManager {
     // is fully assembled — so env.required is checked against the values the agent
     // will actually see, not raw process.env. It still runs before the budget loop.
 
+    // A lost branch PATCH used to leave the agent working on a different ref
+    // from the server, making every legitimate create_pr attempt fail. Keep
+    // this in the session-start error boundary so rejection also cleans up the
+    // worktree and reports failure instead of launching an unusable session.
+    const startWithPersistedBranch = async () => {
+      if (worker.branch && worker.branch !== claimedWorker.branch) {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const response = await this.buildd.updateWorker(worker.id, { branch: worker.branch }) as
+            { branch?: string; abort?: boolean; conflict?: boolean; retryable?: boolean; reason?: string } | null;
+          if (response?.abort) {
+            throw new Error(`Checkout branch update aborted: ${response.reason || 'worker terminated'}`);
+          }
+          if (response?.conflict || response?.retryable) {
+            if (response.retryable && attempt < 3) continue;
+            throw new Error('Checkout branch could not be persisted due to a worker update conflict');
+          }
+          if (response?.branch !== worker.branch) {
+            throw new Error('Server did not acknowledge the actual checkout branch; refusing to start with a stale worker branch');
+          }
+          break;
+        }
+        storeSaveWorker(worker);
+      }
+      await this.startSession(worker, sessionCwd, fullTask);
+    };
+
     // Start SDK session (async, runs in background)
-    this.startSession(worker, sessionCwd, fullTask).catch(err => {
+    startWithPersistedBranch().catch(err => {
       console.error(`[Worker ${worker.id}] Session failed to start:`, err);
 
       // Critical: notify server that session failed to start

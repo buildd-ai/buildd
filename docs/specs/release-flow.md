@@ -8,6 +8,25 @@ domain: releases
 surfaces: [apps/web/src/lib/release-executor.ts, packages/core/release-strategy.ts, apps/web/src/app/api/releases/trigger/route.ts, apps/web/src/app/api/releases/status/route.ts]
 related: [db-migration-gates, webhook-dataflow]
 keywords: [trigger_release, release_status, workflow_dispatch, branch_merge, prodbranch, releaseresult]
+assertions:
+  - id: trigger-release-route
+    type: route
+    method: POST
+    path: /api/releases/trigger
+    file: apps/web/src/app/api/releases/trigger/route.ts
+  - id: release-status-route
+    type: route
+    method: GET
+    path: /api/releases/status
+    file: apps/web/src/app/api/releases/status/route.ts
+  - id: resolve-release-strategy
+    type: symbol
+    name: resolveReleaseStrategy
+    path: packages/core/release-strategy.ts
+  - id: effective-strategy
+    type: symbol
+    name: effectiveStrategy
+    path: packages/core/release-strategy.ts
 supersedes: []
 ---
 # Release Flow

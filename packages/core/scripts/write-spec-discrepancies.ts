@@ -4,9 +4,10 @@
  *
  * Runs Slice 1's checker (`evaluateAllDocs`) and upserts `spec_discrepancies`
  * rows per the §8 direction rule and §9 closure rule (spec-discrepancy-ledger.ts
- * has both). No CI workflow wiring yet — same incremental posture Slice 1 left
- * `scripts/check-spec-conformance.ts` in — this is the writer the wiring will
- * eventually invoke.
+ * has both). Wired into CI at .github/workflows/spec-discrepancy-ledger.yml,
+ * which runs this on every push to dev. `scripts/check-spec-conformance.ts`
+ * (Slice 1's checker entry point) remains unwired — that gap predates this
+ * slice and is tracked separately.
  *
  * Usage:
  *   bun run packages/core/scripts/write-spec-discrepancies.ts --workspace-id <uuid>

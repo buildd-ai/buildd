@@ -104,12 +104,24 @@ an enum) to allow extension without migrations.
   clean worktree, or has a deliverable artifact, or its branch already carries
   a PR (e.g. a CI/conflict retry), completion succeeds unchanged regardless of
   the dirty-worktree flag.
-- AC-3c: GIVEN `outputRequirement = 'auto'`, no PR of the worker's own, and a
+- AC-3c: GIVEN `outputRequirement = 'auto'`, `summarySource = 'fallback'` (the
+  runner's own session-end PATCH, not an agent-authored `complete_task` call —
+  see `docs/specs`'s summary-provenance note in workers.ts), no PR detected,
+  and no deliverable artifact WHEN `complete_task` is called THEN the server
+  returns a 400 with `hint: 'create_pr'` — the task is NOT completed,
+  regardless of `commitCount`/`dirtyWorktree`. A fallback summary is a stalled
+  session, never a deliberate "nothing to ship" conclusion, so it cannot rely
+  on self-reported commit/worktree stats (which a worktree that never
+  diverged from its base can misreport as "nothing happened" — see
+  `collectGitStats` in `apps/runner/src/git-operations.ts`) as the only gate.
+  GIVEN the same completion carries a PR, or `summarySource = 'agent'`,
+  completion succeeds unchanged.
+- AC-3d: GIVEN `outputRequirement = 'auto'`, no PR of the worker's own, and a
   dirty worktree or commits WHEN `workers.mergedAt` is already set (a prior
   `merge_pr` call GitHub-confirmed a merge, of any PR) AND `complete_task` is
   called THEN completion succeeds — a verified cross-branch deliverable
   satisfies the gate without a PR of the worker's own.
-- AC-3d: GIVEN the same otherwise-refusing shape as AC-3a/AC-3b WHEN
+- AC-3e: GIVEN the same otherwise-refusing shape as AC-3a/AC-3b WHEN
   `complete_task` is called with a non-empty `discardEdits` reason THEN
   completion succeeds and the reason is written to
   `tasks.result.discardedEdits` — an explicit discard is a success, not the

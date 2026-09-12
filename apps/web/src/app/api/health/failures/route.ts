@@ -5,12 +5,13 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import {
   getFailureAnalytics,
+  getFailureSignatureFamily,
   normalizeErrorSignature,
   parseFailureWindow,
   FAILURE_WINDOWS,
 } from '@/lib/failure-analytics';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
-import type { FailureAnalytics, FailureSignatureLookup } from '@buildd/shared';
+import type { FailureAnalytics, FailureSignatureFamily, FailureSignatureLookup } from '@buildd/shared';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -18,6 +19,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const MAX_LOOKUP_INPUT = 4000;
 /** The echoed query is context for the caller, not data — keep it short. */
 const MAX_ECHOED_QUERY = 300;
+/** A prefix longer than the max normalized signature (200 chars) can never match anything. */
+const MAX_PREFIX_INPUT = 200;
 
 /**
  * Resolve one raw error string against the window's signature clusters.
@@ -71,8 +74,14 @@ function lookupSignature(analytics: FailureAnalytics, rawError: string): Failure
  *                 carries a `lookup` block answering "is this already a known
  *                 failure pattern?" for that one string. Blank values are
  *                 treated as absent. Read-only, like the rest of this route.
+ *   errorPrefix — optional literal prefix (e.g. "needs_input:"). When present,
+ *                 the response also carries a `family` block aggregating every
+ *                 signature that starts with the prefix — for an error family
+ *                 whose free-text tail makes each occurrence its own singleton
+ *                 signature and invisible to both the overview and `error=`.
+ *                 Blank values are treated as absent.
  *
- * Response: { analytics: FailureAnalytics, lookup?: FailureSignatureLookup }
+ * Response: { analytics: FailureAnalytics, lookup?: FailureSignatureLookup, family?: FailureSignatureFamily }
  */
 export async function GET(req: NextRequest) {
   try {
@@ -125,12 +134,20 @@ export async function GET(req: NextRequest) {
 
     const analytics = await getFailureAnalytics(scopedWsIds, window);
 
-    // Lookup runs AFTER scoping, so it can only ever match the caller's own
-    // failures — there is no path that resolves a signature outside the team.
+    // Both lookup and family aggregation run AFTER scoping, so they can only
+    // ever match the caller's own failures — there is no path that resolves a
+    // signature outside the team.
     const rawError = searchParams.get('error');
     const lookupInput = rawError?.trim() ? rawError : null;
-    if (lookupInput) {
-      return NextResponse.json({ analytics, lookup: lookupSignature(analytics, lookupInput) });
+
+    const rawPrefix = searchParams.get('errorPrefix');
+    const prefixInput = rawPrefix?.trim() ? rawPrefix.trim().slice(0, MAX_PREFIX_INPUT) : null;
+
+    if (lookupInput || prefixInput) {
+      const body: { analytics: FailureAnalytics; lookup?: FailureSignatureLookup; family?: FailureSignatureFamily } = { analytics };
+      if (lookupInput) body.lookup = lookupSignature(analytics, lookupInput);
+      if (prefixInput) body.family = await getFailureSignatureFamily(scopedWsIds, window, prefixInput);
+      return NextResponse.json(body);
     }
 
     return NextResponse.json({ analytics });

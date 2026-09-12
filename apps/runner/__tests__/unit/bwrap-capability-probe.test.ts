@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 
 /**
  * The bwrap capability probe, and the capability the runner advertises from it.
@@ -14,9 +14,8 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
  * One boolean carrying the strictest requirement reported the sandbox
  * unavailable on hosts where the mount allowlist would have worked.
  *
- * NOTE: apps/runner/src/env-scan.test.ts covers the same module but is NOT
- * collected by scripts/run-unit-tests.ts (UNIT_TEST_ROOTS omits
- * apps/runner/src/), so probe behaviour that must be enforced lives here.
+ * apps/runner/src/env-scan.test.ts also covers this module; both files are
+ * collected by scripts/run-unit-tests.ts and run in isolated processes.
  */
 
 const mockExecSync = mock((_cmd: string) => Buffer.from(''));
@@ -44,6 +43,19 @@ function netNamespaceRefused() {
 }
 
 describe('checkBwrapMountIsolationSupport', () => {
+  let originalDisableSandbox: string | undefined;
+
+  beforeEach(() => {
+    // Exercise mocked probes regardless of the worker's operator flag.
+    originalDisableSandbox = process.env.BUILDD_DISABLE_SANDBOX;
+    delete process.env.BUILDD_DISABLE_SANDBOX;
+  });
+
+  afterEach(() => {
+    if (originalDisableSandbox === undefined) delete process.env.BUILDD_DISABLE_SANDBOX;
+    else process.env.BUILDD_DISABLE_SANDBOX = originalDisableSandbox;
+  });
+
   beforeEach(() => {
     mockExecSync.mockReset();
     mockExecSync.mockImplementation(() => Buffer.from('ok\n'));

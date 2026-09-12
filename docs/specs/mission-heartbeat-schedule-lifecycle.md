@@ -2,7 +2,7 @@
 title: Mission Heartbeat Schedule Lifecycle
 status: draft
 owner: max
-last_verified: 2026-09-10
+last_verified: 2026-09-11
 summary: A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-archive.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/app/api/missions/[id]/route.ts]
@@ -122,14 +122,17 @@ completes to fire that trigger via the existing task-completion-driven path
 - AC-4: [GIVEN a `task_schedules` row with `enabled=false`] WHEN it is
   rendered on Health, the Schedules page, or mission detail THEN its
   `lastError` (if any) MUST NOT be rendered as an active/current warning —
-  it can only be from before the row was disabled. *(NOT IMPLEMENTED — see
+  it can only be from before the row was disabled. *(Implemented —
+  `isScheduleErrorLive` in `apps/web/src/lib/schedule-health.ts`, gating
+  `HealthClient.tsx`, `SchedulesUnified.tsx`, and `ScheduleList.tsx`; see
   slice 4.)*
 - AC-5: [GIVEN the Schedules page's existing `type` classification
   (`heartbeat` / `cron-mission` / `workspace-schedule`)] WHEN the page loads
   with no explicit filter THEN heartbeat-type rows are grouped separately
   from user-owned rows by default, matching Health's existing collapsed
   subgroup — not merged into one flat list requiring a manual filter click.
-  *(NOT IMPLEMENTED — see slice 3.)*
+  *(Implemented — collapsed heartbeat group in `SchedulesUnified.tsx`; see
+  slice 3.)*
 
 ## Code surface
 

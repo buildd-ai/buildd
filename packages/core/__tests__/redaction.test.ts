@@ -306,7 +306,7 @@ describe('PII_PATTERNS', () => {
 
 // ── createSecretRedactor ──────────────────────────────────────────────────────
 
-import { createSecretRedactor, redactSecretsInBody } from '../redaction';
+import { createSecretRedactor, redactSecretsInBody, SECRET_SCAN_FIELDS } from '../redaction';
 
 describe('createSecretRedactor', () => {
   it('preserves the registered secret label', () => {
@@ -321,6 +321,16 @@ describe('createSecretRedactor', () => {
     expect(redact('token=sk-proj-abcdefghijklmnopqrstuvwxyz123456')).toBe('token=[REDACTED:token]');
     expect(redact(`jwt=${jwt}`)).toBe('jwt=[REDACTED:jwt]');
     expect(redact(`hex=${'a1'.repeat(24)}`)).toBe('hex=[REDACTED:credential]');
+  });
+
+  it('redacts a base64url-shaped credential using -/_ (full alphabet, no field scoping here)', () => {
+    // createSecretRedactor operates on raw text with no notion of "structural
+    // field" — callers use it only on text they already know is free-form
+    // (milestone labels, tool-call log lines). Field-scoped protection for
+    // arbitrary bodies lives in redactSecretsInBody / SECRET_SCAN_FIELDS below.
+    const redact = createSecretRedactor([]);
+    const token = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0-u1V2w3X4';
+    expect(redact(`token: ${token}`)).toBe('token: [REDACTED:credential]');
   });
   it('redacts a single secret value from text', () => {
     const redact = createSecretRedactor(['bld_abc123secretvalue']);
@@ -377,6 +387,19 @@ describe('createSecretRedactor', () => {
   });
 });
 
+// ── SECRET_SCAN_FIELDS export ─────────────────────────────────────────────────
+
+describe('SECRET_SCAN_FIELDS', () => {
+  it('includes free-text fields but excludes known structural identifiers', () => {
+    for (const f of ['message', 'summary', 'error', 'currentAction', 'output', 'command', 'text']) {
+      expect(SECRET_SCAN_FIELDS.has(f)).toBe(true);
+    }
+    for (const f of ['branch', 'lastCommitSha', 'id', 'workerId', 'status', 'connectorId']) {
+      expect(SECRET_SCAN_FIELDS.has(f)).toBe(false);
+    }
+  });
+});
+
 // ── redactSecretsInBody ───────────────────────────────────────────────────────
 
 describe('redactSecretsInBody', () => {
@@ -428,6 +451,50 @@ describe('redactSecretsInBody', () => {
     const body = { currentAction: 'Running: something', error: 'failed' };
     const result = redactSecretsInBody(body, []);
     expect(result).toEqual(body);
+  });
+
+  it('does not corrupt a worker branch field shaped like a credential', () => {
+    // Regression: PATCH /api/workers/[id] runs the whole body (including the
+    // structural `branch` field) through redactSecretsInBody before the DB
+    // write. A mission-branch collision fallback name is long enough and
+    // hyphenated enough to trip the base64-ish credential heuristic, silently
+    // replacing workers.branch with the literal string "[REDACTED:credential]".
+    const body = { branch: 'mission/spec-conformance-the-discrepancy-ledger-f02e0dc0-w961bce4e' };
+    const result = redactSecretsInBody(body, []);
+    expect(result.branch).toBe(body.branch);
+  });
+
+  it('still redacts an unregistered base64url-shaped credential pasted into a free-text field', () => {
+    // Follow-up to the PR #2305 fix above: narrowing the base64-ish pattern's
+    // character class to dodge branch names also silently dropped coverage for
+    // real base64url secrets (using -/_) that aren't JWT/sk-/prefixed-token
+    // shaped and aren't in the known-secrets list. Field scoping (this test)
+    // is what protects `branch`, not the character class — so the pattern can
+    // safely cover the full alphabet again.
+    const token = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0-u1V2w3X4';
+    const body = { summary: `refresh_token: ${token}` };
+    const result = redactSecretsInBody(body, []);
+    expect(result.summary).toBe('refresh_token: [REDACTED:credential]');
+  });
+
+  it('does not run pattern-based scanning on a structural field even when it looks credential-shaped', () => {
+    // Same token as above, but under a field name that isn't on
+    // SECRET_SCAN_FIELDS — must survive untouched, proving the guarantee is
+    // field-scoped rather than incidental to the pattern's character class.
+    const token = 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8s9T0-u1V2w3X4';
+    const body = { connectorId: token };
+    const result = redactSecretsInBody(body, []);
+    expect(result.connectorId).toBe(token);
+  });
+
+  it('does not corrupt a structural lastCommitSha even if it were a 64-char SHA-256', () => {
+    // hex48 matches any 48+ char pure-hex run. A future SHA-256 lastCommitSha
+    // would trip it exactly like the branch name tripped the base64-ish
+    // pattern. Field scoping protects this pre-emptively.
+    const sha256Shaped = 'f'.repeat(64);
+    const body = { lastCommitSha: sha256Shaped };
+    const result = redactSecretsInBody(body, []);
+    expect(result.lastCommitSha).toBe(sha256Shaped);
   });
 
   it('returns body unchanged when no secrets appear in it', () => {

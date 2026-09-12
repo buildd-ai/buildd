@@ -1,3 +1,22 @@
+---
+status: implemented
+assertions:
+  - id: mount-argv-symbol
+    type: symbol
+    name: buildWorkerBwrapArgv
+    path: apps/runner/src/bwrap-mount-allowlist.ts
+  - id: mount-argv-reachable
+    type: symbol_reachable
+    symbol: buildWorkerBwrapArgv
+    entry: apps/runner/src/workers.ts
+  - id: disable-sandbox-flag
+    type: config_key
+    key: BUILDD_DISABLE_SANDBOX
+    file: apps/runner/src/bwrap-mount-allowlist.ts
+  - id: bwrap-runtime-recovery-tests
+    type: test_file
+    path: apps/runner/__tests__/unit/bwrap-runtime-recovery.test.ts
+---
 # bwrap Bind-Allowlist Worker Isolation
 
 **Status:** Implemented — phase 1 only (allowlist is opt-in via `BUILDD_SANDBOX_MOUNT_ALLOWLIST`, default off)

@@ -31,6 +31,7 @@ import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
+import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
 // From `model-tier-defaults`, not `model-tier-registry`: the registry imports
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
@@ -1057,10 +1058,20 @@ export async function POST(req: NextRequest) {
       }).catch(err => console.error('[task-create] mission-feed failed:', err));
     }
 
+    // Intake check (§10) — warn, never block. A retrieval failure here must
+    // never fail task creation, which has already committed by this point.
+    let specWarnings: Awaited<ReturnType<typeof findIntakeWarnings>> = [];
+    try {
+      specWarnings = await findIntakeWarnings({ workspaceId, description, pathManifest });
+    } catch (err) {
+      console.error('[task-create] spec discrepancy intake check failed:', err);
+    }
+
     return NextResponse.json({
       ...task,
       subjectIntakeOutcome: intake.outcome,
       ...(duplicateSuggestion ? { duplicateSuggestion } : {}),
+      ...(specWarnings.length > 0 ? { specWarnings } : {}),
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
