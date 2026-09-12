@@ -423,7 +423,7 @@ clears — so the queue restarts itself.
 - Measurement: `apps/web/src/lib/oauth-budget-window.ts`
 - Claim diagnostics: `apps/web/src/app/api/workers/claim/route.ts:1767-1830`
 - Runner resume: `apps/runner/src/workers.ts:1027-1062`
-  (`scheduleBudgetResume`)
+  (`scheduleResumeAt`, also used for per-context breaker wake-ups)
 - Readout: `apps/web/src/app/api/accounts/me/route.ts:21-73` (`budgetPacing`)
 - Schema: `packages/core/db/schema.ts:2035-2061` (`oauthBudgetEpisodes`),
   `:1980-1990` (`tenantBudgets`), `:128-129` (account flags)
