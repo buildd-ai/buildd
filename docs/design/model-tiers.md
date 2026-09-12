@@ -1,3 +1,24 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "tier-registry-resolution"
+    type: "symbol"
+    name: "resolveTierEntry"
+    path: "packages/core/model-tier-registry.ts"
+  - id: "model-routing"
+    type: "symbol"
+    name: "resolveEffectiveModel"
+    path: "packages/core/model-router.ts"
+  - id: "tier-registry-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/model-tier-registry.test.ts"
+  - id: "claim-resolves-model"
+    type: "symbol_reachable"
+    symbol: "resolveEffectiveModel"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+    as: "read"
+---
 # Model Tiers — Premium / Standard / Budget
 
 **Status:** Implemented

@@ -10,6 +10,19 @@ related: [auth-oauth-boundaries, provider-failover, mission-task-lifecycle, runn
 keywords: [cost_usd, input_tokens, monthly_cost_usd, oauth_budget_episodes, dailyBudgetPct, budget_exhausted, race_lost, estimateCostUsd, maxCostPerDay, costBudgetUsd]
 verified_by: [apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/lib/usage-stats.test.ts, packages/core/__tests__/oauth-budget.test.ts, packages/core/__tests__/budget-alerts.test.ts, apps/runner/__tests__/unit/usage-aggregate.test.ts, apps/runner/__tests__/unit/worker-manager-lifecycle.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "usage-statistics"
+    type: "symbol"
+    name: "computeUsageStats"
+    path: "apps/web/src/lib/usage-stats.ts"
+  - id: "usage-aggregation"
+    type: "symbol"
+    name: "aggregateUsage"
+    path: "apps/runner/src/usage-aggregate.ts"
+  - id: "usage-accounting-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/usage-stats.test.ts"
 ---
 # Usage & Cost Accounting
 

@@ -9,6 +9,20 @@ surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-arch
 related: [mission-task-lifecycle]
 keywords: [heartbeat, taskschedule, scheduleid, isheartbeat, orchestrationmode, held, archivestaledonemissions, completemissionifverified, dormancy, evaluation log]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "archive-mission"
+    type: "symbol"
+    name: "archiveStaleDoneMissions"
+    path: "apps/web/src/lib/mission-archive.ts"
+  - id: "archive-retires-schedules"
+    type: "symbol_reachable"
+    symbol: "taskSchedules"
+    entry: "apps/web/src/lib/mission-archive.ts"
+    as: "read"
+  - id: "mission-archive-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-archive.test.ts"
 ---
 # Mission Heartbeat Schedule Lifecycle
 

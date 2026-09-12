@@ -1,3 +1,19 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "auto-merge-safety"
+    type: "symbol"
+    name: "evaluateAutoMergeSafety"
+    path: "apps/web/src/lib/auto-merge.ts"
+  - id: "auto-merge-worker-pr"
+    type: "symbol"
+    name: "tryAutoMergeWorkerPr"
+    path: "apps/web/src/lib/auto-merge.ts"
+  - id: "webhook-auto-merge-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/github/webhook/route.test.ts"
+---
 # Worker PR Auto-Merge — Design Spec
 
 > **Status:** Proposed — awaiting approval before any implementation begins.

@@ -1,3 +1,20 @@
+---
+status: partially
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "execution-cluster-selection"
+    type: "symbol"
+    name: "selectExecCluster"
+    path: "packages/core/retrieval-clusters.ts"
+  - id: "context-assembly"
+    type: "symbol"
+    name: "ContextAssembly"
+    path: "packages/core/retrieval-clusters.ts"
+  - id: "durable-context-assembly-table"
+    type: "config_key"
+    key: "assembly_id"
+    file: "packages/core/db/schema.ts"
+---
 # Mission Context Clusters — situational, observable, measurable retrieval
 
 **Status:** Partially implemented — `tool-infra-error-v1` and the assembly

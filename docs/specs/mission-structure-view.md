@@ -10,6 +10,24 @@ verified_by: [apps/web/src/lib/structure-layout.test.ts]
 related: [timeline-dependency-geometry, missions-tab-triage, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [dag, graph, structure view, canvas, topology, layout, dependency, blocked, stranded, contention edge]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "structure-layout"
+    type: "symbol"
+    name: "computeStructureLayout"
+    path: "apps/web/src/lib/structure-layout.ts"
+  - id: "shared-chain-detection"
+    type: "symbol"
+    name: "identifyChains"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "structure-layout-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/structure-layout.test.ts"
+  - id: "view-computes-layout"
+    type: "symbol_reachable"
+    symbol: "computeStructureLayout"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx"
+    as: "read"
 ---
 
 # Mission Structure View

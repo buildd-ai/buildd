@@ -9,6 +9,24 @@ surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
 keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "claim-task"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/claim"
+    file: "apps/web/src/app/api/workers/claim/route.ts"
+  - id: "completion-gate"
+    type: "symbol"
+    name: "canCompleteMission"
+    path: "apps/web/src/lib/mission-completion.ts"
+  - id: "criteria-evaluation"
+    type: "symbol"
+    name: "evaluateGoalCriteria"
+    path: "packages/core/mission-helpers.ts"
+  - id: "completion-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-completion.test.ts"
 ---
 # Mission and Task Lifecycle
 

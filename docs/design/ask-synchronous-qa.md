@@ -1,3 +1,17 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "synchronous-ask"
+    type: "route"
+    method: "POST"
+    path: "/api/ask"
+    file: "apps/web/src/app/api/ask/route.ts"
+  - id: "ask-records"
+    type: "symbol"
+    name: "asks"
+    path: "packages/core/db/schema.ts"
+---
 # `ask`: Synchronous Read-Only Q&A
 
 **Status:** Proposed

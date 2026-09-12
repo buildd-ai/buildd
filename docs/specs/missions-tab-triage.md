@@ -9,6 +9,21 @@ surfaces: [apps/web/src/app/api/initiatives/effort/route.ts, packages/core/missi
 related: [surface-ia-home-missions-initiatives, mission-task-lifecycle]
 keywords: [effortday, initiativetriagerow, sparklinebar, awaitingverification, __unassigned__, computeinitiativeprogress]
 superseded_by: surface-ia-home-missions-initiatives
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "initiative-effort"
+    type: "route"
+    method: "GET"
+    path: "/api/initiatives/effort"
+    file: "apps/web/src/app/api/initiatives/effort/route.ts"
+  - id: "initiative-progress"
+    type: "symbol"
+    name: "computeInitiativeProgress"
+    path: "packages/core/mission-helpers.ts"
+  - id: "effort-sparkline"
+    type: "symbol"
+    name: "SparklineBar"
+    path: "apps/web/src/components/SparklineBar.tsx"
 ---
 
 # Missions Tab — Initiative Triage Surface

@@ -1,3 +1,22 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "codex-device-start"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/codex-credential/device/start"
+    file: "apps/web/src/app/api/workspaces/[id]/codex-credential/device/start/route.ts"
+  - id: "codex-device-poll"
+    type: "route"
+    method: "POST"
+    path: "/api/workspaces/[id]/codex-credential/device/poll"
+    file: "apps/web/src/app/api/workspaces/[id]/codex-credential/device/poll/route.ts"
+  - id: "device-auth-client"
+    type: "symbol"
+    name: "startCodexDeviceAuth"
+    path: "apps/web/src/lib/codex-device-auth.ts"
+---
 # In-UI OAuth Device-Code Login for Agent Backends
 
 **Status:** Proposed (Codex device-code flow prototyped; see Implementation status)
