@@ -1,7 +1,7 @@
 # Task-Scoped Workspace Memory (experiment arm)
 
 **Status:** Implemented — `task_scoped` arm and the composition record ship with this doc; enrolment defaults to nobody.
-**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts`, `apps/runner/src/workers.ts`, `docs/design/mission-context-clusters.md`, `docs/design/retrieval-policy-evaluation.md`
+**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts`, `apps/runner/src/workers.ts`, `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts` (guards the control against mid-flight change), `packages/core/db/schema.ts` → `worker_prompt_composition_events`, `docs/design/mission-context-clusters.md`, `docs/design/retrieval-policy-evaluation.md`
 
 ## Problem
 
@@ -164,29 +164,40 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
   untouched in both arms.
 - **Retrieval-side changes.** Nothing here alters what `getCompactObservations`
   or `searchObservations` return; this is purely about what reaches the prompt.
-- **A durable analysis rail.** See below.
+- **A durable analysis rail.** Out of scope when this was written. It has since
+  shipped — see "Where the record durably lands" below.
+
+## Resolved
+
+**Where the record durably lands.** `worker_prompt_composition_events`
+(`packages/core/db/schema.ts`, migrations `0152_rainy_miek.sql` and
+`0153_greedy_mad_thinker.sql`). One row per prompt build, queryable, with
+`policy_version` and `arm` indexed together so a cohort can be selected without
+a scan.
+
+The path: the runner appends each record to a per-worker buffer
+(`appendPromptCompositionEvent`), `worker-sync.ts` drains the buffer onto the
+next `PATCH /api/workers/[id]`, and the route inserts the rows. The insert is
+`onConflictDoNothing` against a unique index on `(worker_id, build_index)`, so a
+retried sync re-sends the same buffer without duplicating rows — which is why
+`build_index` is threaded through explicitly rather than reset per build.
+
+It landed as an event table rather than columns on `workers` for the reason
+predicted here: the record is per prompt build and a looped or bwrap-retried task
+builds several, so columns would silently keep only the last one.
+
+Two columns are deliberately NULLable — `task_match_derived_by` and `backend`.
+A row written by a runner predating either field is genuinely unknown, and
+defaulting it would encode an inference as data: it would pool a Codex row into
+the Claude cohort, or make a stopword hit indistinguishable from a declared-path
+hit. Filter those rows out rather than imputing them.
+
+The two older sinks — the per-worker session log (pruned after 48 hours) and
+runner stdout — still exist and are still worth grepping for
+`[prompt-composition]` to confirm the arm fires at all. Neither is the analysis
+source any more.
 
 ## Open questions
-
-**Where the record durably lands.** Today it goes to the per-worker session log,
-pruned after 48 hours, and to runner stdout.
-
-Stdout is the longer-lived of the two but not by design. The reference
-deployment's launcher redirects the runner into an append-mode file under the
-container's `/tmp`, wrapped in a restart loop, so the file does survive the
-`exit 75` update restart and does accumulate days of history. It is still not a
-rail: it is unrotated and grows without bound, it is container-local so it dies
-with the container rather than with the process, and it is a text log with no
-query path — you grep it by hand over SSH.
-
-So the arm can be *run*, and a recent window can be *read by hand*. Neither is
-enough to attribute a multi-day rework chain to an arm. A durable rail is a
-precondition for trusting any result, and it should be a small server-side event
-rather than a column on `workers`: the record is per prompt build, and a looped
-task builds several, so a column would silently keep only the last one.
-
-Treat both existing sinks as debugging aids — good for confirming the arm fires
-at all, not for analysis.
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
 out negative would leave open whether a *smaller but non-empty* digest is better

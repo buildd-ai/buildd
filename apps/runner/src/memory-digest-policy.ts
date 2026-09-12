@@ -69,6 +69,13 @@ export type MemoryDigestArm = 'full' | 'task_scoped';
  * Bumped pre-emptively, before the release that ships those two PRs. The arm is
  * already enrolled, so waiting until after would leave rows straddling a change
  * to their own definition — the one thing the version exists to prevent.
+ *
+ * This obligation is enforced, not merely documented:
+ * apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts pins a
+ * content fingerprint of every surface that decides what memory reaches a
+ * prompt, keyed to this constant. Change one without bumping here and CI fails.
+ * That test exists because it already happened once — a retrieval improvement
+ * landed mid-enrolment with no bump, and nothing anywhere noticed.
  */
 export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v4';
 
