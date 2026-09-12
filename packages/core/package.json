@@ -66,6 +66,7 @@
     "./failure-friction-signature": "./failure-friction-signature.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
     "./budget-error-classifier": "./budget-error-classifier.ts",
+    "./reset-time": "./reset-time.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
     "./timezone": "./timezone.ts",

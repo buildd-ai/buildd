@@ -13,7 +13,16 @@
  */
 
 import type { BuilddTask } from './types';
-import { CODEX_USAGE_LIMIT_PATTERN } from '@buildd/core/budget-error-classifier';
+import {
+  CLAUDE_SESSION_LIMIT_PATTERN,
+  CODEX_USAGE_LIMIT_PATTERN,
+} from '@buildd/core/budget-error-classifier';
+import {
+  clampPauseToQuotedReset,
+  matchResetClause,
+  resetDelayMsFrom,
+  type ResetClause,
+} from '@buildd/core/reset-time';
 
 export type BreakerScope = 'global' | 'context';
 
@@ -56,17 +65,76 @@ export function isAuthError(text: string): boolean {
 }
 
 /**
+ * Freeze to serve when a provider announced exhaustion but quoted no reset
+ * time we could read (no clause at all, or a timezone we refuse to guess at).
+ *
+ * Named and visible on purpose: its predecessor was `parseResetDelay`'s hidden
+ * 1-hour return for unparseable input, which a caller could not tell apart
+ * from a provider that really did say "one hour".
+ */
+const NO_READABLE_RESET_PAUSE_MS = 5 * 60 * 60 * 1000;
+
+/** Render a reset clause the way the provider wrote it, for labels and logs. */
+function quoted(clause: ResetClause): string {
+  return clause.timezone ? `${clause.time} ${clause.timezone}` : clause.time;
+}
+
+/**
+ * Pause until the reset the error text quoted, or `NO_READABLE_RESET_PAUSE_MS`
+ * when there is no readable reset — logging the fallback so an unparsed clause
+ * is visible in the runner log rather than silently indistinguishable from a
+ * real duration.
+ */
+function pauseUntilQuotedReset(err: string, now: Date, kind: string): number {
+  const derived = resetDelayMsFrom(err, { now });
+  if (derived !== null) return derived;
+  const clause = matchResetClause(err);
+  console.warn(
+    `[claim-breaker] ${kind}: no readable reset time` +
+      (clause ? ` (could not interpret "${quoted(clause)}")` : ' (none quoted)') +
+      ` — falling back to ${Math.round(NO_READABLE_RESET_PAUSE_MS / 60_000)} min`,
+  );
+  return NO_READABLE_RESET_PAUSE_MS;
+}
+
+/**
  * Classify a worker error for circuit-breaker routing.
  * Returns null if the error is worker-specific (no breaker action).
  *
- * `err` must be lowercased by the caller.
+ * `err` must be lowercased by the caller. `now` is injectable so pause
+ * durations are testable to the millisecond — the reset-time bug this signature
+ * change came out of survived because its tests could only assert positivity.
  */
-export function classifyClaimError(err: string): ClaimErrorClassification | null {
-  const quotaMatch = err.match(/out of extra usage.*resets\s+(\d{1,2}(?:am|pm)?)\s*\((\w+)\)/i);
-  if (quotaMatch) {
+export function classifyClaimError(
+  err: string,
+  now: Date = new Date(),
+): ClaimErrorClassification | null {
+  const result = classifyExhaustion(err, now);
+  if (!result) return null;
+
+  // Invariant: no pause may outlast the reset instant the provider's own text
+  // quoted — including the flat per-branch defaults below, which never look at
+  // the reset clause. See `clampPauseToQuotedReset`.
+  const { pauseMs, clampedFromMs } = clampPauseToQuotedReset(err, result.pauseMs, { now });
+  if (clampedFromMs !== null) {
+    console.warn(
+      `[claim-breaker] ${result.label}: a ${Math.round(clampedFromMs / 60_000)} min pause would ` +
+        `outlast the reset the provider quoted — clamped to ${Math.round(pauseMs / 60_000)} min`,
+    );
+  }
+  return { ...result, pauseMs };
+}
+
+function classifyExhaustion(err: string, now: Date): ClaimErrorClassification | null {
+  // Dollar-budget exhaustion with a stated reset: "you're out of extra usage ·
+  // resets 11:20am (UTC)". Keyed on the phrase alone, not on a reset clause —
+  // the old regex demanded an hours-only clause in the same match, so a reset
+  // carrying minutes classified as nothing at all and no breaker tripped.
+  if (err.includes('out of extra usage')) {
+    const clause = matchResetClause(err);
     return {
-      label: `Quota exhausted (resets ${quotaMatch[1]} ${quotaMatch[2]})`,
-      pauseMs: parseResetDelay(quotaMatch[1]),
+      label: clause ? `Quota exhausted (resets ${quoted(clause)})` : 'Quota exhausted',
+      pauseMs: pauseUntilQuotedReset(err, now, 'Quota exhausted'),
       scope: 'context',
     };
   }
@@ -74,14 +142,13 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
   // OAuth seat session cap: "You've hit your session limit · resets 8:40pm (UTC)"
   // Must be checked BEFORE generic rate-limit patterns — 'session limit' is an
   // exhaustion event with a known reset time, not a transient 429.
-  if (err.includes('session limit') || err.includes('hit your session')) {
-    const resetMatch = err.match(/resets\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)\s*\((\w+)\)/i);
-    const hourToken = resetMatch?.[1]?.replace(/:\d{2}/, '') ?? null; // strip :MM if present
-    const pauseMs = hourToken ? parseResetDelay(hourToken) : 5 * 60 * 60 * 1000;
-    const label = resetMatch
-      ? `Session limit hit (resets ${resetMatch[1]} ${resetMatch[2]})`
-      : 'Session limit hit';
-    return { label, pauseMs, scope: 'context' };
+  if (err.includes('session limit') || err.includes(CLAUDE_SESSION_LIMIT_PATTERN)) {
+    const clause = matchResetClause(err);
+    return {
+      label: clause ? `Session limit hit (resets ${quoted(clause)})` : 'Session limit hit',
+      pauseMs: pauseUntilQuotedReset(err, now, 'Session limit hit'),
+      scope: 'context',
+    };
   }
 
   // Codex quota wall: "You've hit your usage limit. Upgrade to Pro (...) or
@@ -92,11 +159,12 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
   // session-limit case above: this is an exhaustion event with a known reset
   // time, not a transient 429.
   if (err.includes(CODEX_USAGE_LIMIT_PATTERN)) {
-    const resetMatch = err.match(/try again at\s+(\d{1,2}(?::\d{2})?(?:am|pm)?)/i);
-    const hourToken = resetMatch?.[1]?.replace(/:\d{2}/, '') ?? null; // strip :MM if present
-    const pauseMs = hourToken ? parseResetDelay(hourToken) : 5 * 60 * 60 * 1000;
-    const label = resetMatch ? `Usage limit hit (try again ${resetMatch[1]})` : 'Usage limit hit';
-    return { label, pauseMs, scope: 'context' };
+    const clause = matchResetClause(err);
+    return {
+      label: clause ? `Usage limit hit (try again ${quoted(clause)})` : 'Usage limit hit',
+      pauseMs: pauseUntilQuotedReset(err, now, 'Usage limit hit'),
+      scope: 'context',
+    };
   }
 
   if (err.includes('oauth budget exhausted') || (err.includes('429') && err.includes('budget exhausted'))) {
@@ -125,23 +193,17 @@ export function classifyClaimError(err: string): ClaimErrorClassification | null
   return null;
 }
 
-/** Parse a reset time like "5pm" or "2am" into ms from now (assumes UTC). */
+/**
+ * Parse a bare reset time like "5pm", "2am" or "10:58 pm" into ms from now.
+ *
+ * @deprecated Thin wrapper over `resetDelayMsFrom`, kept for existing callers
+ * and tests that hand it a pre-extracted time token. Pass the whole error text
+ * to `resetDelayMsFrom` instead: it reads the provider's wording itself, honours
+ * minutes and a spaced meridiem, and returns null — rather than a guess — when
+ * there is nothing readable. The 1-hour return here is that old guess.
+ */
 export function parseResetDelay(timeStr: string, now: Date = new Date()): number {
-  const hourMatch = timeStr.match(/^(\d{1,2})(am|pm)?$/i);
-  if (!hourMatch) return 60 * 60 * 1000;
-
-  let hour = parseInt(hourMatch[1], 10);
-  const ampm = hourMatch[2]?.toLowerCase();
-  if (ampm === 'pm' && hour < 12) hour += 12;
-  if (ampm === 'am' && hour === 12) hour = 0;
-
-  const target = new Date(now);
-  target.setUTCHours(hour, 0, 0, 0);
-  if (target.getTime() <= now.getTime()) {
-    target.setUTCDate(target.getUTCDate() + 1);
-  }
-
-  return Math.max(5 * 60 * 1000, Math.min(target.getTime() - now.getTime(), 24 * 60 * 60 * 1000));
+  return resetDelayMsFrom(`resets ${timeStr}`, { now }) ?? 60 * 60 * 1000;
 }
 
 /**
