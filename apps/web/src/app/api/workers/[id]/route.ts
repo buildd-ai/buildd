@@ -30,7 +30,7 @@ import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
-import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
+import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
@@ -986,6 +986,20 @@ export async function PATCH(
     // can intermittently emit "missing FROM-clause entry for table workers".
     const outputReq = terminalTaskRow[0]?.outputRequirement ?? 'auto';
 
+    // A reviewer task (createReviewerTask, apps/web/src/lib/reviewer.ts) never
+    // opens a PR or produces an artifact of its own — its deliverable is
+    // structuredOutput.verdict, consumed by handleReviewerOutcomeIfNeeded. The
+    // `auto` gate's PR/artifact/fallback-summary check below was written for
+    // ordinary coding tasks and has no concept of a verdict, so it 400'd every
+    // reviewer session that ended without an agent-authored `complete_task`
+    // (summarySource: 'fallback') even though that is the review contract's
+    // OWN failure mode, already handled downstream by the review-contract
+    // guard (requeue once, then fail with a recorded reason — see
+    // reviewContractViolation below). Gate reviewer tasks on their own
+    // contract instead of skipping the check outright.
+    const isReviewerTask = terminalTaskRow[0]?.category === 'review'
+      && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
+
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       // Same precedence as effectiveCommits: this request's own report wins,
@@ -1102,8 +1116,28 @@ export async function PATCH(
         }
       }
 
+      // Standing ask from the outputRequirement-rejection bug: a gate-rejected
+      // completion used to discard the agent's summary/structuredOutput with
+      // zero persistence — a 60-turn run's only record was a 400 in the
+      // runner's logs. Write what the agent actually sent onto this worker
+      // row before refusing it; each rejection is its own worker row, so
+      // there is nothing to reconcile against a later, successful attempt.
+      const persistRejectedCompletionPayload = async (reason: string) => {
+        await db.update(workers).set({
+          rejectedCompletionPayload: {
+            reason,
+            summary: isSensitive ? null : (typeof body.summary === 'string' ? body.summary.slice(0, 5000) : null),
+            structuredOutput: isSensitive ? null : (body.structuredOutput ?? null),
+            summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+            rejectedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date(),
+        }).where(eq(workers.id, id));
+      };
+
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR) {
+        await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
           hint: 'create_pr',
@@ -1113,6 +1147,7 @@ export async function PATCH(
       // artifact_required: require PR or artifact (regardless of commits)
       if (outputReq === 'artifact_required' && !hasPR) {
         if (!(await hasDeliverableArtifact())) {
+          await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
             error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',
             hint: 'create_pr or create_artifact',
@@ -1145,7 +1180,7 @@ export async function PATCH(
       // apps/runner/src/git-operations.ts), so they must not be the only gate
       // for this outcome.
       const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
-      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
+      if (outputReq === 'auto' && !isReviewerTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
         // A coordination/conflict-resolution task legitimately ships nothing on
         // its own branch — its deliverable is action taken against OTHER PRs
         // (a merge, a dispatched release). merge_pr stamps mergedAt on the
@@ -1165,6 +1200,7 @@ export async function PATCH(
             : effectiveDirtyWorktree
               ? 'uncommitted changes in the worktree'
               : 'no confirmed outcome — the session ended without the agent calling complete_task';
+          await persistRejectedCompletionPayload('auto');
           return NextResponse.json({
             error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
@@ -2053,6 +2089,22 @@ export async function PATCH(
               'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
               'and return the verdict as structuredOutput.',
           };
+        } else {
+          // Retries exhausted and the reviewer contract is dead for this PR.
+          // A reviewer task is dispatched only on the webhook's `opened`
+          // action (see reviewer.ts), so nothing re-reviews this PR/head SHA
+          // outside this task — a silent permanent failure here strands the
+          // PR unreviewed forever, with only `get_pr_review` reporting
+          // `review_failed`/terminal to anyone who happens to poll. Escalate
+          // the same way an iteration-exhausted request-changes loop does.
+          await escalateReviewContractFailure({
+            taskId: worker.taskId as string,
+            repoFullName: String(reviewTaskCtx.repoFullName ?? ''),
+            prNumber: Number(reviewTaskCtx.prNumber ?? 0),
+            headSha: String(reviewTaskCtx.headSha ?? ''),
+          }).catch((err) => console.error(
+            `[review-contract-enforcement] escalation failed for task ${worker.taskId}:`, err,
+          ));
         }
       }
 
@@ -2077,6 +2129,14 @@ export async function PATCH(
           result: {
             error: 'Review task completed without structuredOutput.verdict — the verdict was returned as prose and dropped. Review will be redone.',
             errorType: 'review_contract_violation',
+            // Standing ask from the outputRequirement-rejection bug: a
+            // rejected completion must not discard what the agent actually
+            // sent. Redacted like every other prose field for a sensitive
+            // workspace.
+            rejectedSummary: isSensitive
+              ? null
+              : (typeof body.summary === 'string' ? body.summary.slice(0, 5000) : null),
+            rejectedStructuredOutput: isSensitive ? null : (body.structuredOutput ?? null),
           },
         } : status === 'failed' ? {
           // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
@@ -2592,7 +2652,13 @@ export async function PATCH(
         });
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
-          const isDone = status === 'completed';
+          // A contract violation (planning/review) reports `status:'completed'`
+          // in the request body — that's what the agent claimed — but the task
+          // was overridden to failed/requeued above. Using the raw body status
+          // here reported a permanently-failed review-contract violation as
+          // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
+          // already applies this same correction).
+          const isDone = status === 'completed' && !contractViolation;
           if (shouldAutoRetry) {
             // Broadcast the task as available for any worker to claim
             await triggerEvent(

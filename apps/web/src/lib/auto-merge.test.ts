@@ -83,7 +83,7 @@ mock.module('@/lib/conflict-retry', () => ({
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
 }));
 
-import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion } from './auto-merge';
+import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -588,6 +588,88 @@ describe('escalateReviewerExhaustion', () => {
   it('Pushover URL points to the buildd task page', async () => {
     mockUpdateReturns = [[{ id: TASK_ID }]];
     await escalateReviewerExhaustion(TASK_ID, REPO, PR_NUMBER, HEAD_SHA, MAX_ITERATIONS, null);
+    const url = (mockNotify.mock.calls[0][0] as any).url as string;
+    expect(url).toContain(`/app/tasks/${TASK_ID}`);
+  });
+});
+
+// ── escalateReviewContractFailure ─────────────────────────────────────────────
+
+describe('escalateReviewContractFailure', () => {
+  const TASK_ID = 'task-rev-789';
+  const REPO = 'acme/my-app';
+  const PR_NUMBER = 101;
+  const HEAD_SHA = 'beef1234567890abcdef';
+
+  const baseTask = {
+    id: TASK_ID,
+    missionId: null as string | null,
+    title: '[reviewer] feat: add search',
+    context: {},
+  };
+
+  beforeEach(() => {
+    mockNotify.mockReset();
+    capturedInsertValues = [];
+    mockUpdateReturns = [];
+    mockFindFirst = mock(() => baseTask);
+  });
+
+  it('returns early without firing Pushover when task is not found', async () => {
+    mockFindFirst = mock(() => null);
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('fires Pushover on first call when CAS succeeds', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    const call = mockNotify.mock.calls[0][0] as any;
+    expect(call.app).toBe('tasks');
+    expect(call.title).toContain(`PR #${PR_NUMBER}`);
+    expect(call.message).toContain('[reviewer] feat: add search');
+  });
+
+  it('does NOT fire Pushover when CAS returns empty (already escalated for this task)', async () => {
+    mockUpdateReturns = [[]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: exactly one Pushover across three concurrent observations', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }], [], []];
+    await Promise.all([
+      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
+      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
+      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
+    ]);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('inserts a reviewer_escalated note when task has a missionId', async () => {
+    mockFindFirst = mock(() => ({ ...baseTask, missionId: 'mission-xyz' }));
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(capturedInsertValues).toHaveLength(1);
+    expect(capturedInsertValues[0].type).toBe('reviewer_escalated');
+    expect(capturedInsertValues[0].missionId).toBe('mission-xyz');
+    expect(capturedInsertValues[0].taskId).toBe(TASK_ID);
+    expect(capturedInsertValues[0].status).toBe('open');
+    expect(capturedInsertValues[0].title).toContain(`PR #${PR_NUMBER}`);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires Pushover but inserts NO note when task has no missionId', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(capturedInsertValues).toHaveLength(0);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pushover URL points to the buildd task page', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
     const url = (mockNotify.mock.calls[0][0] as any).url as string;
     expect(url).toContain(`/app/tasks/${TASK_ID}`);
   });

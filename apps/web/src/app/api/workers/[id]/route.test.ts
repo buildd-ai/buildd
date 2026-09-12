@@ -367,9 +367,11 @@ mock.module('@/lib/mission-release', () => ({
 // Phase 2: reviewer outcome mocks
 const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve({ merged: false }));
 const mockEscalateReviewerExhaustion = mock(() => Promise.resolve());
+const mockEscalateReviewContractFailure = mock(() => Promise.resolve());
 mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
   escalateReviewerExhaustion: mockEscalateReviewerExhaustion,
+  escalateReviewContractFailure: mockEscalateReviewContractFailure,
 }));
 
 // Own the merge-policy resolution for this file. Other test files (e.g.
@@ -5293,6 +5295,8 @@ describe('PATCH /api/workers/[id]', () => {
       mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false });
       mockEscalateReviewerExhaustion.mockReset();
       mockEscalateReviewerExhaustion.mockResolvedValue(undefined);
+      mockEscalateReviewContractFailure.mockReset();
+      mockEscalateReviewContractFailure.mockResolvedValue(undefined);
       mockNotify.mockReset();
       mockDispatchNewTask.mockReset();
       mockDispatchNewTask.mockResolvedValue(undefined);
@@ -5808,6 +5812,166 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
+    // createReviewerTask never sets outputRequirement, so a reviewer task runs
+    // under the schema default ('auto') — not the 'none' most fixtures above
+    // use to dodge the PR/artifact gate. A reviewer session that ends without
+    // the agent calling complete_task (summarySource: 'fallback') has zero
+    // commits, no dirty worktree, and — structurally — no PR/artifact of its
+    // own. Before the fix, the 'auto' gate 400'd this outright, short-circuiting
+    // before the review-contract guard ever got a chance to requeue/escalate it.
+    it("outputRequirement='auto': a fallback-summary reviewer completion is NOT 400'd — it reaches the review-contract guard instead", async () => {
+      setupReviewerTaskCompletion('approve');
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'auto',
+        }),
+      );
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'reviewer-task-1',
+        turns: 3,
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      // Not a 400 — the auto gate's PR/artifact check does not apply to a
+      // reviewer task at all.
+      expect(res.status).toBe(200);
+      // No verdict was ever produced, so the review-contract guard requeues it
+      // (first offence) rather than recording a silent, unreviewed "completed".
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect((requeue?.context as any)?.reviewContractRetryCount).toBe(1);
+    });
+
+    it("outputRequirement='auto': same fallback-summary reviewer completion with retries exhausted escalates instead of 400-ing into a dead end", async () => {
+      setupReviewerTaskCompletion('approve');
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+            reviewContractRetryCount: 1,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'auto',
+        }),
+      );
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'reviewer-task-1',
+        turns: 3,
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failing = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failing).toBeDefined();
+      expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+      expect(mockEscalateReviewContractFailure).toHaveBeenCalledTimes(1);
+    });
+
+    // A non-review task must still refuse a fallback-summary completion with
+    // no PR/artifact under 'auto' — the exemption above is scoped to
+    // category='review' + context.reviewerFor and must not weaken this path.
+    it("outputRequirement='auto': a non-review task with a fallback summary and no PR/artifact is still 400'd unchanged", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', category: 'feature', context: {} });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('no confirmed outcome');
+    });
+
     // A reviewer task is only dispatched on pull_request action='opened', so a
     // review that ends without a usable verdict is never redone by the platform.
     // First offence therefore requeues the same task (it re-reads the PR and
@@ -5888,6 +6052,33 @@ describe('PATCH /api/workers/[id]', () => {
       const failing = taskSetCalls.find((u: any) => u.status === 'failed');
       expect(failing).toBeDefined();
       expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+      // The agent's actual payload must survive the override — this is the
+      // review-path fix for the outputRequirement-rejection payload-discard bug.
+      expect((failing?.result as any)?.rejectedSummary).toBe('Verdict: APPROVE (confidence 0.90).');
+      // Retries are exhausted (reviewContractRetryCount already 1) — nothing will
+      // ever re-review this PR outside the webhook's `opened` trigger, so the
+      // permanent failure must escalate rather than vanish.
+      expect(mockEscalateReviewContractFailure).toHaveBeenCalledTimes(1);
+      expect(mockEscalateReviewContractFailure.mock.calls[0][0]).toMatchObject({
+        taskId: 'reviewer-task-1',
+        repoFullName: 'org/repo',
+        prNumber: 42,
+        headSha: 'abc123',
+      });
+    });
+
+    it('does NOT escalate on the first contract violation — only once retries are exhausted', async () => {
+      setupReviewerTaskCompletion('approve');
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
     });
 
     // Regression: the override flips an incoming `completed` to `failed` long
