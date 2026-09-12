@@ -17,12 +17,17 @@ const mockCheckAndUnblockDependentMissions = mock(() => Promise.resolve());
 const mockGithubApi = mock(() => Promise.resolve({}) as any);
 const mockTasksFindMany = mock(() => Promise.resolve([]) as any);
 const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
+const mockInsertValues = mock((_table: any, _v: any) => Promise.resolve());
+const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'updated' } as any));
+const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserWorkspaceIds: mockGetUserWorkspaceIds }));
 mock.module('@/lib/github', () => ({ mergePullRequest: mockMergePullRequest, githubApi: mockGithubApi }));
 mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: mockCheckDependsOnResolved }));
 mock.module('@/lib/mission-dependency', () => ({ checkAndUnblockDependentMissions: mockCheckAndUnblockDependentMissions }));
+mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
+mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
@@ -38,6 +43,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst },
     },
     update: mockWorkersUpdate,
+    insert: (table: any) => ({ values: (v: any) => mockInsertValues(table, v) }),
   },
 }));
 
@@ -59,6 +65,7 @@ mock.module('@buildd/core/db/schema', () => ({
     id: 'id',
   },
   workspaces: { id: 'id', name: 'name', repo: 'repo' },
+  missionNotes: { __name: 'missionNotes' },
 }));
 
 import { POST } from './route';
@@ -372,5 +379,95 @@ describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P
     expect(mockGithubApi).not.toHaveBeenCalledWith(
       expect.anything(), expect.stringContaining('/git/refs/heads/'), expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+});
+
+// ── "Merge anyway" — override recorded only on a successful merge ──────────
+describe('POST /api/prs/[prNumber]/merge — override (Merge anyway)', () => {
+  const workerWithMission = {
+    ...openWorker,
+    task: { id: 't-1', missionId: 'mission-1', status: 'completed' },
+  };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockTriggerEvent.mockReset();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({});
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockInsertValues.mockReset();
+    mockInsertValues.mockResolvedValue(undefined);
+    mockAppendPrActivity.mockReset();
+    mockAppendPrActivity.mockResolvedValue({ action: 'updated' } as any);
+    mockSupersedeAncestorEscalations.mockReset();
+    mockSupersedeAncestorEscalations.mockResolvedValue(undefined as any);
+    const updateWhere = mock(() => Promise.resolve());
+    const updateSet = mock(() => ({ where: updateWhere }));
+    mockWorkersUpdate.mockReturnValue({ set: updateSet });
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+  });
+
+  it('records the override note, PR activity, and supersession once the merge succeeds', async () => {
+    mockWorkersFindMany.mockResolvedValue([workerWithMission]);
+    const [req, ctx] = makeRequest('42', { override: true, escalationReason: 'Touches packages/core/db/schema.ts' });
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+    expect(mockAppendPrActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prNumber: 42,
+        entry: expect.objectContaining({
+          kind: 'human_override_merge',
+          detail: expect.stringContaining('Touches packages/core/db/schema.ts'),
+        }),
+      }),
+    );
+    const noteCall = mockInsertValues.mock.calls.find(([, v]) => v?.type === 'decision');
+    expect(noteCall?.[1]).toEqual(
+      expect.objectContaining({
+        missionId: 'mission-1',
+        taskId: 't-1',
+        authorType: 'user',
+        actorLabel: 'max@example.com',
+        title: expect.stringContaining('human override'),
+        body: expect.stringContaining('Touches packages/core/db/schema.ts'),
+      }),
+    );
+  });
+
+  it('does not record anything when the merge itself fails (still red/conflicted)', async () => {
+    mockWorkersFindMany.mockResolvedValue([workerWithMission]);
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Method Not Allowed' });
+    const [req, ctx] = makeRequest('42', { override: true, escalationReason: 'Touches packages/core/db/schema.ts' });
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(422);
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+    expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+  });
+
+  it('does not touch the audit trail on a plain merge (no override flag)', async () => {
+    mockWorkersFindMany.mockResolvedValue([workerWithMission]);
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockAppendPrActivity).not.toHaveBeenCalled();
+    expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
   });
 });

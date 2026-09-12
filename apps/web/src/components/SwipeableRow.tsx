@@ -211,6 +211,21 @@ function undoMessage(action: SwipeAction): string {
   }
 }
 
+/**
+ * Hours for the `/api/action-queue/snooze` POST body. Only the gate-card
+ * snoozes (MERGE/REVIEW) are backed by that endpoint today — `null` means
+ * "no server-side meaning yet", not "unsupported", and callers fall back to
+ * the pre-existing client-local-only behavior for those actions.
+ */
+export function snoozeDurationHours(action: SwipeAction): number | null {
+  switch (action) {
+    case 'snooze-24h': return 24;
+    case 'snooze-3d': return 72;
+    case 'snooze-7d': return 168;
+    case 'snooze-notification': return null;
+  }
+}
+
 // ─── Undo context ─────────────────────────────────────────────────────────────
 
 interface SwipeContextValue {
@@ -287,6 +302,13 @@ export interface SwipeableRowProps {
   taskTitle: string;
   prUrl?: string | null;
   taskId?: string;
+  /**
+   * The action queue's own dedupe key (`ActionQueueItem.subjectKey`). When
+   * present, a snooze action persists server-side via
+   * `/api/action-queue/snooze` instead of only hiding the row locally — see
+   * `snoozeDurationHours`.
+   */
+  subjectKey?: string;
   children: ReactNode;
   className?: string;
   /** Called for menu actions that require external handling (e.g. navigation). */
@@ -298,6 +320,7 @@ export function SwipeableRow({
   taskTitle,
   prUrl,
   taskId,
+  subjectKey,
   children,
   className = '',
   onMenuAction,
@@ -370,7 +393,24 @@ export function SwipeableRow({
         case 'snooze-notification': {
           setDismissed(true);
           springBack();
-          registerUndo(undoMessage(action as SwipeAction), () => setDismissed(false));
+          const hours = snoozeDurationHours(action as SwipeAction);
+          if (subjectKey && hours) {
+            fetch('/api/action-queue/snooze', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ subjectKey, hours }),
+            }).catch(() => setDismissed(false));
+            registerUndo(undoMessage(action as SwipeAction), () => {
+              setDismissed(false);
+              fetch('/api/action-queue/snooze', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ subjectKey }),
+              });
+            });
+          } else {
+            registerUndo(undoMessage(action as SwipeAction), () => setDismissed(false));
+          }
           break;
         }
         case 'file-anyway': {
@@ -411,7 +451,7 @@ export function SwipeableRow({
           springBack();
       }
     },
-    [springBack, registerUndo, taskId, onMenuAction],
+    [springBack, registerUndo, taskId, subjectKey, onMenuAction],
   );
 
   // ── Pointer event handlers ───────────────────────────────────────────────

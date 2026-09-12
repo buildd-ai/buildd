@@ -12,14 +12,6 @@ const OTHER_MISSION_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const mockGetCurrentUser = mock(() => null as any);
 const mockAccountsFindFirst = mock(() => null as any);
 const mockTasksFindFirst = mock(() => null as any);
-const mockReturning = mock(() => Promise.resolve([{ id: TASK_ID }]));
-const mockTasksUpdate = mock(() => ({
-  set: mock(() => ({
-    where: mock(() => ({
-      returning: mockReturning,
-    })),
-  })),
-}));
 const mockInsert = mock(() => ({
   values: mock(() => Promise.resolve([])),
 }));
@@ -27,6 +19,7 @@ const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
 const mockVerifyAccountWorkspaceAccess = mock(() => Promise.resolve(true));
 
 // path-claim module mocks
+const mockAppendPathManifest = mock(async (_taskId: string, paths: string[]) => paths);
 const mockCheckPathClaimConflict = mock(async () => null as any);
 const mockInsertClaims = mock(async () => [] as string[]);
 const mockRegisterWaiter = mock(async () => ({ registered: true }));
@@ -54,12 +47,12 @@ mock.module('@buildd/core/db', () => ({
         findFirst: mockTasksFindFirst,
       },
     },
-    update: mockTasksUpdate,
     insert: mockInsert,
   },
 }));
 
 mock.module('@buildd/core/path-claim', () => ({
+  appendPathManifest: mockAppendPathManifest,
   checkPathClaimConflict: mockCheckPathClaimConflict,
   insertClaims: mockInsertClaims,
   registerWaiter: mockRegisterWaiter,
@@ -97,8 +90,7 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     mockTasksFindFirst.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
     mockVerifyAccountWorkspaceAccess.mockReset();
-    mockTasksUpdate.mockReset();
-    mockReturning.mockReset();
+    mockAppendPathManifest.mockReset();
     mockInsert.mockReset();
     mockCheckPathClaimConflict.mockReset();
     mockInsertClaims.mockReset();
@@ -108,16 +100,9 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     mockAccountsFindFirst.mockResolvedValue({ id: 'acc-1' });
     mockVerifyAccountWorkspaceAccess.mockResolvedValue(true);
     mockCheckPathClaimConflict.mockResolvedValue(null); // no conflict
+    mockAppendPathManifest.mockImplementation(async (_taskId: string, paths: string[]) => paths);
     mockInsertClaims.mockResolvedValue(['src/new.ts']);
     mockRegisterWaiter.mockResolvedValue({ registered: true });
-    mockReturning.mockResolvedValue([{ id: TASK_ID }]);
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => ({
-          returning: mockReturning,
-        })),
-      })),
-    });
     mockInsert.mockReturnValue({
       values: mock(() => Promise.resolve([])),
     });
@@ -200,6 +185,7 @@ describe('POST /api/tasks/[id]/path-claim', () => {
 
   it('claims unclaimed paths and extends pathManifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/existing.ts'] }));
+    mockAppendPathManifest.mockResolvedValue(['src/existing.ts', 'src/new.ts']);
 
     const req = makeRequest(TASK_ID, { paths: ['src/new.ts'] });
     const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
@@ -243,46 +229,28 @@ describe('POST /api/tasks/[id]/path-claim', () => {
     expect(body.pathManifest).toEqual(['src/new.ts']);
   });
 
-  it('retries and succeeds when CAS update conflicts on first attempt', async () => {
-    mockReturning
-      .mockResolvedValueOnce([])       // attempt 0: lost the race
-      .mockResolvedValueOnce([{ id: TASK_ID }]); // attempt 1: wins
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ pathManifest: null }))   // initial read
-      .mockResolvedValueOnce(makeActiveTask({ pathManifest: null }));  // re-read after CAS fail
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => ({
-          returning: mockReturning,
-        })),
-      })),
-    });
+  // Regression: check_path_claim used to CAS tasks.pathManifest with a fixed
+  // 3-attempt retry loop. Under bursty concurrent calls for the same task it
+  // could exhaust those retries and return a bare "Concurrent update
+  // conflict" 409 — indistinguishable from a real blocker to the caller, and
+  // with no blockingTaskId to act on. appendPathManifest replaced the CAS
+  // with a single atomic statement, so there is no retry loop left to test:
+  // this asserts the route calls it exactly once and trusts its result.
+  it('extends the manifest via a single call with no CAS retry loop', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: null }));
+    mockAppendPathManifest.mockResolvedValue(['src/new.ts']);
 
     const req = makeRequest(TASK_ID, { paths: ['src/new.ts'] });
     const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
+
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.claimed).toBe(true);
-  });
-
-  it('returns 409 after all retries exhausted on concurrent modification', async () => {
-    mockReturning.mockResolvedValue([]);
-    mockTasksFindFirst
-      .mockResolvedValueOnce(makeActiveTask({ pathManifest: null }))
-      .mockResolvedValue(makeActiveTask({ pathManifest: null }));
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => ({
-          returning: mockReturning,
-        })),
-      })),
-    });
-
-    const req = makeRequest(TASK_ID, { paths: ['src/new.ts'] });
-    const res = await POST(req, { params: Promise.resolve({ id: TASK_ID }) });
-    expect(res.status).toBe(409);
-    const body = await res.json();
-    expect(body.error).toContain('Concurrent');
+    expect(body.pathManifest).toEqual(['src/new.ts']);
+    expect(mockAppendPathManifest).toHaveBeenCalledTimes(1);
+    expect(mockAppendPathManifest).toHaveBeenCalledWith(TASK_ID, ['src/new.ts']);
+    // Only one read of the task — no re-read-and-retry cycle.
+    expect(mockTasksFindFirst).toHaveBeenCalledTimes(1);
   });
 
   // ── Conflict / waiter registration ─────────────────────────────────────────

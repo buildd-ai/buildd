@@ -61,7 +61,7 @@ Report progress: POST ${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}
  * 5. Fallback: Pusher TASK_ASSIGNED (connected local workers)
  */
 export async function dispatchNewTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null; backend?: string | null },
   workspace: {
     id?: string;
     name?: string;
@@ -131,7 +131,7 @@ export async function dispatchNewTask(
  * the task already exists in the dashboard and re-emitting that event is noisy.
  */
 export async function dispatchUnblockedTask(
-  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
+  task: { id: string; title: string; description: string | null; workspaceId: string; mode?: string; priority?: number; missionId?: string | null; backend?: string | null },
   workspace: {
     id?: string;
     name?: string;
@@ -170,7 +170,7 @@ export async function dispatchUnblockedTask(
  * neither dashboard consumers (they call router.refresh()) nor runners (they
  * fetch the full task from the claim API) need it in the Pusher event. */
 export function buildTaskPayload(
-  task: { id: string; title: string; workspaceId: string; mode?: string; priority?: number; missionId?: string | null },
+  task: { id: string; title: string; workspaceId: string; mode?: string; priority?: number; missionId?: string | null; backend?: string | null },
   workspace: { name?: string; repo?: string | null },
 ) {
   return {
@@ -179,6 +179,12 @@ export function buildTaskPayload(
     workspaceId: task.workspaceId,
     mode: task.mode,
     priority: task.priority,
+    // Which agent backend this task runs on. The runner keys its per-context
+    // claim breaker on `<scope>:<backend>`, so without this field every nudge
+    // is evaluated against the Claude key and a nudge for a walled backend is
+    // either wrongly dropped or wrongly attempted. One short string — well
+    // inside the 10KB Pusher payload budget.
+    ...(task.backend && { backend: task.backend }),
     // Include missionId so dashboard can filter events per mission
     ...(task.missionId && { missionId: task.missionId }),
     // Include workspace info so runners can resolve workspace path before claiming

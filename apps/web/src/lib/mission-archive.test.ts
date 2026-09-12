@@ -1,8 +1,46 @@
-import { describe, expect, it } from 'bun:test';
-import { selectMissionsToArchive, type ArchiveCandidate } from './mission-archive';
+import { describe, expect, it, mock, beforeEach } from 'bun:test';
+import type { ArchiveCandidate } from './mission-archive';
 
 const NOW = new Date('2026-07-05T12:00:00Z');
 const HOURS = 60 * 60 * 1000;
+
+let findManyResult: any[] = [];
+const mockFindMany = mock(() => Promise.resolve(findManyResult));
+const deleteWhereCalls: any[] = [];
+const updateSetCalls: any[] = [];
+const updateWhereCalls: any[] = [];
+
+mock.module('@buildd/core/db', () => ({
+  db: {
+    query: { missions: { findMany: mockFindMany } },
+    delete: mock(() => ({
+      where: mock((cond: any) => {
+        deleteWhereCalls.push(cond);
+        return Promise.resolve();
+      }),
+    })),
+    update: mock(() => ({
+      set: mock((vals: any) => {
+        updateSetCalls.push(vals);
+        return {
+          where: mock((cond: any) => {
+            updateWhereCalls.push(cond);
+            return Promise.resolve();
+          }),
+        };
+      }),
+    })),
+  },
+}));
+
+const realDrizzleOrm: any = await import('drizzle-orm');
+mock.module('drizzle-orm', () => ({
+  ...realDrizzleOrm,
+  eq: (field: any, value: any) => ({ type: 'eq', field, value }),
+  inArray: (field: any, values: any) => ({ type: 'inArray', field, values }),
+}));
+
+const { selectMissionsToArchive, archiveStaleDoneMissions } = await import('./mission-archive');
 
 function candidate(overrides: Partial<ArchiveCandidate> = {}): ArchiveCandidate {
   return {
@@ -91,5 +129,66 @@ describe('selectMissionsToArchive', () => {
 
   it('archives a mission that states no criteria (regression guard)', () => {
     expect(selectMissionsToArchive([candidate({ criteriaCount: 0, criteriaOverall: null })], NOW)).toEqual(['m1']);
+  });
+});
+
+function dbRow(overrides: Record<string, any> = {}) {
+  return {
+    id: 'm1',
+    status: 'active',
+    updatedAt: new Date(NOW.getTime() - 30 * HOURS),
+    scheduleId: 'sched-1',
+    goalCriteria: [],
+    goalCriteriaState: null,
+    schedule: { enabled: false },
+    tasks: [{ status: 'completed', updatedAt: new Date(NOW.getTime() - 30 * HOURS) }],
+    ...overrides,
+  };
+}
+
+// ── Regression: archiveStaleDoneMissions must not orphan the schedule row ──
+//
+// This raw-db.update path bypassed the PATCH route's "explicit terminal status
+// deletes the schedule" fix (apps/web/src/app/api/missions/[id]/route.ts) because
+// it never routed through it — it only ever writes status='archived' directly.
+// Its own selector only ever picks missions whose schedule is already disabled,
+// so the leftover row sat there forever: disabled, never deleted.
+describe('archiveStaleDoneMissions', () => {
+  beforeEach(() => {
+    findManyResult = [];
+    deleteWhereCalls.length = 0;
+    updateSetCalls.length = 0;
+    updateWhereCalls.length = 0;
+  });
+
+  it('deletes the task_schedules row and nulls scheduleId for a mission it archives', async () => {
+    findManyResult = [dbRow()];
+
+    const ids = await archiveStaleDoneMissions(NOW);
+
+    expect(ids).toEqual(['m1']);
+    expect(deleteWhereCalls).toHaveLength(1);
+    expect(deleteWhereCalls[0]).toMatchObject({ type: 'inArray', values: ['sched-1'] });
+    expect(updateSetCalls[0]).toMatchObject({ status: 'archived', scheduleId: null });
+  });
+
+  it('does not touch task_schedules when no mission is selected for archiving', async () => {
+    findManyResult = [dbRow({ updatedAt: NOW })]; // recent activity -> not stale
+
+    const ids = await archiveStaleDoneMissions(NOW);
+
+    expect(ids).toEqual([]);
+    expect(deleteWhereCalls).toEqual([]);
+    expect(updateSetCalls).toEqual([]);
+  });
+
+  it('skips the schedule delete (but still nulls scheduleId) when the archived mission has none', async () => {
+    findManyResult = [dbRow({ scheduleId: null, schedule: null })];
+
+    const ids = await archiveStaleDoneMissions(NOW);
+
+    expect(ids).toEqual(['m1']);
+    expect(deleteWhereCalls).toEqual([]);
+    expect(updateSetCalls[0]).toMatchObject({ status: 'archived', scheduleId: null });
   });
 });

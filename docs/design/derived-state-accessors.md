@@ -1,3 +1,19 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "pr-terminal-accessor"
+    type: "symbol"
+    name: "isPrTerminal"
+    path: "apps/web/src/lib/task-presentation.ts"
+  - id: "pr-refresh-seam"
+    type: "symbol"
+    name: "refreshStaleWorkersForWorkspaces"
+    path: "apps/web/src/lib/pr-state-refresh.ts"
+  - id: "task-read-refresh-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/tasks/page.test.ts"
+---
 # Derived-State Accessors: Single-Accessor Contract
 
 **Status:** Proposed

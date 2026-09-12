@@ -1,3 +1,22 @@
+---
+status: partially
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "inference-client"
+    type: "symbol"
+    name: "inferenceCall"
+    path: "packages/core/inference-client.ts"
+  - id: "criteria-use-inference-client"
+    type: "symbol_reachable"
+    symbol: "inferenceCall"
+    entry: "apps/web/src/lib/mission-criteria-eval.ts"
+    as: "read"
+  - id: "visual-judge-uses-inference-client"
+    type: "symbol_reachable"
+    symbol: "inferenceCall"
+    entry: "apps/web/src/app/api/qa/judge/route.ts"
+    as: "read"
+---
 # Inference Calls as a First-Class Primitive
 
 **Status:** Partially implemented — Step 1 (the client) and Step 3 (the judge) are done; see "Implementation status" below.

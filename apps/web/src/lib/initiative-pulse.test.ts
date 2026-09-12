@@ -28,6 +28,7 @@ import {
   deriveVerdict,
   deriveConfidence,
   deriveInitiativeVerdict,
+  isKpiVerdictStale,
   assembleVerdictRollups,
   emptyVerdictRollup,
   sumRecentTokens,
@@ -573,6 +574,73 @@ describe('assembleVerdictRollups', () => {
   it('returns an empty map for a team with no initiatives and no motion', () => {
     expect(assembleVerdictRollups(base).size).toBe(0);
   });
+
+  it('carries the two timestamps the KPI staleness rule needs', () => {
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [
+        { id: 'init-1', status: 'active', kpiOverall: 'fail', kpiEvaluatedAt: '2026-08-01T00:00:00Z' },
+      ],
+      missionRollups: [
+        {
+          initiativeId: 'init-1',
+          totalMissions: '2',
+          openMissions: '0',
+          criteriaFail: '0',
+          verifiedMissions: '2',
+          lastMissionClosedAt: '2026-08-10T00:00:00Z',
+        },
+      ],
+    });
+
+    expect(out.get('init-1')!.kpiEvaluatedAt).toBe('2026-08-01T00:00:00Z');
+    expect(out.get('init-1')!.lastMissionClosedAt).toBe('2026-08-10T00:00:00Z');
+  });
+
+  it('defaults both timestamps to null when the rows omit them', () => {
+    const out = assembleVerdictRollups({
+      ...base,
+      initiativeRows: [{ id: 'init-1', status: 'active', kpiOverall: null }],
+      missionRollups: [
+        { initiativeId: 'init-1', totalMissions: '1', openMissions: '1', criteriaFail: '0', verifiedMissions: '0' },
+      ],
+    });
+
+    expect(out.get('init-1')!.kpiEvaluatedAt).toBeNull();
+    expect(out.get('init-1')!.lastMissionClosedAt).toBeNull();
+  });
+});
+
+describe('isKpiVerdictStale', () => {
+  it('calls a KPI verdict stale once a mission closed after it was evaluated', () => {
+    expect(
+      isKpiVerdictStale({
+        kpiEvaluatedAt: '2026-08-01T00:00:00Z',
+        lastMissionClosedAt: '2026-08-10T00:00:00Z',
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps a verdict evaluated after the last close', () => {
+    expect(
+      isKpiVerdictStale({
+        kpiEvaluatedAt: '2026-08-10T00:00:00Z',
+        lastMissionClosedAt: '2026-08-01T00:00:00Z',
+      }),
+    ).toBe(false);
+  });
+
+  it('is not stale when nothing has closed, or when the verdict is undated', () => {
+    // No close means no event the evaluation could predate.
+    expect(isKpiVerdictStale({ kpiEvaluatedAt: '2026-08-01T00:00:00Z', lastMissionClosedAt: null })).toBe(false);
+    // An undated verdict is discounted by nothing — fail closed, keep the fail.
+    expect(isKpiVerdictStale({ kpiEvaluatedAt: null, lastMissionClosedAt: '2026-08-10T00:00:00Z' })).toBe(false);
+    expect(isKpiVerdictStale({ kpiEvaluatedAt: null, lastMissionClosedAt: null })).toBe(false);
+  });
+
+  it('ignores an unparseable timestamp rather than inventing staleness', () => {
+    expect(isKpiVerdictStale({ kpiEvaluatedAt: 'not-a-date', lastMissionClosedAt: '2026-08-10T00:00:00Z' })).toBe(false);
+  });
 });
 
 describe('deriveInitiativeVerdict', () => {
@@ -589,6 +657,70 @@ describe('deriveInitiativeVerdict', () => {
     // Merging steadily, but the arc's own KPI failed — that is losing.
     expect(out.verdict).toBe('losing');
     expect(out.confidence).toBe('verified');
+  });
+
+  it('does not fold a KPI fail that predates the last mission close', () => {
+    // The stale-badge case: a KPI evaluated by hand weeks ago, then every
+    // mission finished. The old verdict is not evidence about now, so the arc
+    // must reach the rung below — "ready to close" — instead of reading red.
+    const rollup = {
+      ...emptyVerdictRollup('active'),
+      totalMissions: 2,
+      allTerminal: true,
+      kpiOverall: 'fail',
+      kpiEvaluatedAt: '2026-07-01T00:00:00Z',
+      lastMissionClosedAt: '2026-08-14T00:00:00Z',
+    };
+
+    const out = deriveInitiativeVerdict({
+      rollup,
+      effortDays: zeroEffortWindow({ today: TODAY }),
+      counts,
+    });
+
+    expect(out.verdict).toBe('won_unclaimed');
+    // Confidence is untouched: something *did* check this outcome, once. The
+    // staleness rule discounts the verdict's currency, not the fact of a check.
+    expect(out.confidence).toBe('verified');
+  });
+
+  it('still folds a KPI fail evaluated after the last mission closed', () => {
+    const rollup = {
+      ...emptyVerdictRollup('active'),
+      totalMissions: 2,
+      allTerminal: true,
+      kpiOverall: 'fail',
+      kpiEvaluatedAt: '2026-08-15T00:00:00Z',
+      lastMissionClosedAt: '2026-08-14T00:00:00Z',
+    };
+
+    expect(
+      deriveInitiativeVerdict({ rollup, effortDays: zeroEffortWindow({ today: TODAY }), counts }).verdict,
+    ).toBe('losing');
+  });
+
+  it('keeps an undated KPI fail as a failure — staleness must be proven, not assumed', () => {
+    const rollup = {
+      ...emptyVerdictRollup('active'),
+      totalMissions: 2,
+      allTerminal: true,
+      kpiOverall: 'fail',
+      lastMissionClosedAt: '2026-08-14T00:00:00Z',
+    };
+
+    expect(
+      deriveInitiativeVerdict({ rollup, effortDays: zeroEffortWindow({ today: TODAY }), counts }).verdict,
+    ).toBe('losing');
+  });
+
+  it('reads an all-terminal active arc with no live failure as ready to close', () => {
+    // The state the close affordance exists for: nothing open, nothing failing,
+    // and the only thing missing is a human closing it.
+    const rollup = { ...emptyVerdictRollup('active'), totalMissions: 3, allTerminal: true, verifiedMissions: 3 };
+
+    expect(
+      deriveInitiativeVerdict({ rollup, effortDays: zeroEffortWindow({ today: TODAY }), counts }).verdict,
+    ).toBe('won_unclaimed');
   });
 
   it('derives tokens7d from the last 7 window entries and reports it as evidence', () => {

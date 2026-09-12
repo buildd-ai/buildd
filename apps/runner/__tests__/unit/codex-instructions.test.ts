@@ -10,6 +10,7 @@ import {
   BUILDD_AGENTS_END,
   DONE_SENTINEL,
 } from '../../src/codex-instructions';
+import { buildCbmGuidanceBody } from '../../src/cbm-enforcement';
 
 // Use fs/promises throughout: the sync `fs` exports (notably rmSync) trip a Bun
 // aggregate-run module-loading quirk; fs/promises is unaffected and is also what
@@ -90,6 +91,36 @@ describe('buildCodexInstructionDoc', () => {
     const doc = buildCodexInstructionDoc({ skillBundles: [] });
     expect(doc.trim().length).toBeGreaterThan(0);
     expect(doc).toContain(DONE_SENTINEL);
+  });
+
+  test('carries the codebase-graph guidance when CBM is mounted for this task', () => {
+    // AGENTS.md is Codex's only standing-instruction channel: no systemPrompt
+    // seam, and (through the SDK) no hook seam either. CBM was mounted but
+    // unmentioned on Claude once, and every worker then ignored it.
+    const doc = buildCodexInstructionDoc({
+      skillBundles: [],
+      cbmGuidance: buildCbmGuidanceBody({ dialect: 'codex' }),
+    });
+    expect(doc).toContain('# Codebase graph (codebase-memory)');
+    expect(doc).toContain('make a graph call your FIRST navigation step');
+    expect(doc).toContain('mcp__codebase-memory__get_architecture');
+    // Codex has no Read/Grep/Glob tools — naming them would describe tools it
+    // does not have, the same class of error as describing an absent server.
+    expect(doc).not.toContain('Read/Grep/Glob');
+  });
+
+  test('omits the graph section entirely when CBM is not mounted', () => {
+    const doc = buildCodexInstructionDoc({ skillBundles: [] });
+    expect(doc).not.toContain('Codebase graph');
+    expect(doc).not.toContain('codebase-memory');
+  });
+
+  test('the graph section precedes the Completion contract', () => {
+    const doc = buildCodexInstructionDoc({
+      skillBundles: [],
+      cbmGuidance: buildCbmGuidanceBody({ dialect: 'codex' }),
+    });
+    expect(doc.indexOf('# Codebase graph')).toBeLessThan(doc.indexOf('# Completion'));
   });
 });
 

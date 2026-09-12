@@ -1,3 +1,21 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "release-strategy"
+    type: "symbol"
+    name: "resolveReleaseStrategy"
+    path: "packages/core/release-strategy.ts"
+  - id: "release-executor"
+    type: "symbol"
+    name: "executeRelease"
+    path: "apps/web/src/lib/release-executor.ts"
+  - id: "workflow-run-dispatch"
+    type: "symbol_reachable"
+    symbol: "handleWorkflowRunEvent"
+    entry: "apps/web/src/app/api/github/webhook/route.ts"
+    as: "read"
+---
 # Release Handoff Workflow — Design Spec
 
 > **Status:** Implemented — Phase 1 (resolveReleaseStrategy) and Phase 2 (handleWorkflowRunEvent webhook loop + release-handoff.yml) both deployed. Open gap: pending_ci tasks do not auto-complete when CI on the release PR resolves (no check_suite.completed handler that matches by release PR number).

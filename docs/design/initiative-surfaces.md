@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "initiative-list"
+    type: "route"
+    method: "GET"
+    path: "/api/initiatives"
+    file: "apps/web/src/app/api/initiatives/route.ts"
+  - id: "initiative-progress"
+    type: "symbol"
+    name: "computeInitiativeProgress"
+    path: "packages/core/mission-helpers.ts"
+  - id: "initiative-segments"
+    type: "symbol"
+    name: "computeInitiativeSegments"
+    path: "packages/core/mission-helpers.ts"
+---
 # Initiative Surfaces
 
 **Status:** Proposed

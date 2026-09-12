@@ -58,6 +58,8 @@ export type PrActivityKind =
   | 'ci_exhausted'
   | 'changes_pushed'
   | 'review_superseded_by_merge'
+  | 'human_applied_recommendation'
+  | 'human_override_merge'
   | 'merged'
   | 'closed_unmerged';
 
@@ -145,6 +147,18 @@ const PRESENTATION: Record<PrActivityKind, Presentation> = {
     working: false,
     label: 'Review superseded — merged by a human',
     status: 'A human merged this PR before the reviewer got to it. The pending review was cancelled.',
+  },
+  human_applied_recommendation: {
+    icon: '🛠️',
+    working: true,
+    label: 'Applying reviewer recommendation',
+    status: 'A human applied the reviewer\'s escalated recommendation — buildd is pushing fixes to this branch.',
+  },
+  human_override_merge: {
+    icon: '⚠️',
+    working: false,
+    label: 'Merged despite escalation — human override',
+    status: 'A human merged this PR anyway, overriding the reviewer\'s escalation.',
   },
   // The PR's own close is always the last word: whatever buildd was mid-flight
   // on (review passed, waiting on checks, fixing CI) is over once the PR is

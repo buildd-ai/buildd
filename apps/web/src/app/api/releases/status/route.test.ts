@@ -40,6 +40,14 @@ const mockReleasePreflight = mock(() => ({
   shippableCommits: [],
   openReleasePr: null,
 }) as any);
+const mockDeploymentOnlyPreflight = mock(() => ({
+  ref: 'main',
+  prodBranch: 'main',
+  aheadBy: 0,
+  shippableCommits: [],
+  ciState: 'passing',
+  failingChecks: [],
+}) as any);
 
 mock.module('@/lib/auth-helpers', () => ({
   getCurrentUser: mockGetCurrentUser,
@@ -65,6 +73,7 @@ mock.module('@buildd/core/release-strategy', () => ({
 
 mock.module('@/lib/release/dispatch', () => ({
   releasePreflight: mockReleasePreflight,
+  deploymentOnlyPreflight: mockDeploymentOnlyPreflight,
   // Include other dispatch exports so this mock is complete when trigger/route.test.ts
   // runs in the same Bun worker (Bun may share module caches across test files).
   dispatchWorkflowRelease: mock(async () => ({ dispatched: true, workflowFile: '', ref: '', inputs: {}, runsUrl: '' })),
@@ -179,8 +188,11 @@ describe('GET /api/releases/status', () => {
     expect(capturedArgs[3]).toEqual({ ref: 'dev', prodBranch: 'main' });
   });
 
-  it('returns 422 when ref and prodBranch resolve to the same value', async () => {
-    // Guard: comparing a branch to itself is always zero and misleads the preflight.
+  it('falls back to deploy-only status (not 422) when ref and prodBranch resolve to the same value', async () => {
+    // Regression: an unconfigured workspace (releaseConfig: null) resolves both
+    // ref and prodBranch to defaultBranch. Comparing a branch to itself is always
+    // zero and misleads the preflight, but the endpoint must stay queryable —
+    // it degrades to a deploy-only status instead of refusing outright.
     mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
     mockResolveReleaseTarget.mockImplementationOnce(() => ({
       ok: true,
@@ -199,13 +211,57 @@ describe('GET /api/releases/status', () => {
       reason: 'not_configured',
       message: 'no strategy',
     }));
+    mockDeploymentOnlyPreflight.mockClear();
     const { GET } = await import('./route');
-    // No releaseConfig → ref=dev, prodBranch=dev → same → 422.
+    // No releaseConfig → ref=dev, prodBranch=dev → same → deploy-only fallback, not 422.
     const res = await GET(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
-    expect(res.status).toBe(422);
+    expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.ok).toBe(false);
-    expect(body.error).toMatch(/same value/i);
+    expect(body.ok).toBe(true);
+    expect(body.comparable).toBe(false);
+    expect(body.note).toMatch(/no distinct source ref/i);
+    expect(mockDeploymentOnlyPreflight).toHaveBeenCalledWith(12345, 'buildd-ai', 'buildd', 'dev');
+  });
+
+  it('resolves branch_merge ref from releaseConfig.releaseBranch, not releaseConfig.ref', async () => {
+    // Regression: branch_merge's source-ref field is releaseBranch (the field
+    // executeRelease already reads) — releaseConfig.ref only ever applies to
+    // workflow_dispatch/script. Before the fix this always fell through to
+    // defaultBranch, colliding with prodBranch and 422ing every time.
+    mockAuthenticateApiKey.mockImplementation(() => ({ id: 'acc-1', level: 'admin' }));
+    mockResolveReleaseTarget.mockImplementationOnce(() => ({
+      ok: true,
+      target: {
+        workspaceId: 'ws-1',
+        owner: 'buildd-ai',
+        name: 'dispatch-family',
+        repoFullName: 'buildd-ai/dispatch-family',
+        installationId: 12345,
+        releaseConfig: {
+          enabled: true,
+          strategy: 'branch_merge',
+          prodBranch: 'main',
+          releaseBranch: 'dev',
+        },
+        defaultBranch: 'main',
+      },
+    }));
+    mockResolveReleaseStrategy.mockImplementationOnce(() => ({
+      ok: true,
+      strategy: { kind: 'branch_merge', prodBranch: 'main', releaseBranch: 'dev' },
+    }));
+    let capturedArgs: any;
+    mockReleasePreflight.mockImplementationOnce((...args: any[]) => {
+      capturedArgs = args;
+      return { aheadBy: 2, ciState: 'passing', shippableCommits: [], openReleasePr: null };
+    });
+    const { GET } = await import('./route');
+    const res = await GET(makeRequest('bld_adminkey', { workspaceId: 'ws-1' }));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.comparable).toBe(true);
+    expect(capturedArgs[3]).toEqual({ ref: 'dev', prodBranch: 'main' });
   });
 
   it('returns 400 (not 500) when workspaceId is a name instead of a UUID', async () => {

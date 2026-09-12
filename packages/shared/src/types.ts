@@ -1683,9 +1683,42 @@ export interface FailureSignatureLookup {
   exhaustive: boolean;
 }
 
+/**
+ * Aggregate rollup across every failure signature sharing a literal prefix.
+ *
+ * Built for a family of errors that differ only in embedded free text (e.g.
+ * `needs_input: <question>`, `Sandbox mount gap: "<quoted text>"`) — each
+ * variant normalizes to its own singleton signature, so none individually
+ * rank into the top-N `FailureAnalytics.signatures` list and the family's
+ * true size is invisible to both the overview and an exact-match lookup.
+ */
+export interface FailureSignatureFamily {
+  /** The literal prefix the caller searched for. */
+  prefix: string;
+  /** True when at least one signature in the window starts with the prefix. */
+  known: boolean;
+  /** Total failed workers across every signature in the family. */
+  count: number;
+  /** How many distinct normalized signatures share this prefix. */
+  distinctSignatures: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  /** How many family occurrences never did any billable work. */
+  diedEarlyCount: number;
+  exitCauses: FailureExitCauseBucket[];
+  /** A task ID from the family, for drill-down. Null when unknown. */
+  exampleTaskId: string | null;
+  /** Dedupe key derived from the prefix — shared by every occurrence in the family. */
+  frictionSignature: string;
+  /** Up to 5 most common distinct signatures in the family, for spot-checking the match. */
+  topSignatures: { signature: string; count: number }[];
+}
+
 /** Response body of GET /api/health/failures. */
 export interface FailureAnalyticsResponse {
   analytics: FailureAnalytics;
   /** Present only when the request carried an `error` param. */
   lookup?: FailureSignatureLookup;
+  /** Present only when the request carried an `errorPrefix` param. */
+  family?: FailureSignatureFamily;
 }

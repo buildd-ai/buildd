@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { stripTaskTitlePrefixes, reviewerTitle, reviewerRetryTitle } from './task-title';
+import { stripTaskTitlePrefixes, reviewerTitle, reviewerRetryTitle, applyRecommendationTitle } from './task-title';
 
 describe('stripTaskTitlePrefixes', () => {
   it('returns a plain title unchanged', () => {
@@ -51,5 +51,25 @@ describe('reviewerTitle / reviewerRetryTitle — no stacking', () => {
     t = reviewerRetryTitle(1, t);
     t = reviewerTitle(1470, t);
     expect(t).toBe('[reviewer] PR #1470: Narrow the rule');
+  });
+});
+
+describe('applyRecommendationTitle — no stacking', () => {
+  it('wraps a plain title with exactly one prefix', () => {
+    expect(applyRecommendationTitle('Narrow the rule')).toBe('[apply recommendation] Narrow the rule');
+  });
+
+  it('does NOT stack on an already-reviewer title', () => {
+    expect(applyRecommendationTitle('[reviewer] PR #1469: Narrow the rule')).toBe('[apply recommendation] Narrow the rule');
+  });
+
+  it('is stripped back to the plain title by stripTaskTitlePrefixes', () => {
+    expect(stripTaskTitlePrefixes('[apply recommendation] Narrow the rule')).toBe('Narrow the rule');
+  });
+
+  it('does not stack when applied twice', () => {
+    let t = applyRecommendationTitle('Narrow the rule');
+    t = applyRecommendationTitle(t);
+    expect(t).toBe('[apply recommendation] Narrow the rule');
   });
 });

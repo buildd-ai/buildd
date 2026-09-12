@@ -1,3 +1,19 @@
+---
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "workspace-skills-table"
+    type: "symbol"
+    name: "workspaceSkills"
+    path: "packages/core/db/schema.ts"
+  - id: "team-role-list"
+    type: "route"
+    method: "GET"
+    path: "/api/roles"
+    file: "apps/web/src/app/api/roles/route.ts"
+  - id: "role-scope-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/roles/route.test.ts"
+---
 # Roles Scoping Model
 
 ## Overview

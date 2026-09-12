@@ -399,8 +399,16 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     promptParts.push('## Output Requirement\nThis task **requires you to create an artifact** as a deliverable. Use `buildd` action: create_artifact before completing the task.');
   } else if (outputReq === 'none') {
     promptParts.push('## Output Requirement\nThis task has **no output requirement**. Complete with a summary — no commits, PRs, or artifacts needed unless the work calls for it.');
+  } else {
+    // 'auto' (the default). Announce the obligation up front — this used to
+    // surface only as a 400 on the final complete_task call, after the work
+    // was already spent.
+    promptParts.push(
+      '## Output Requirement\n' +
+      'This task has no fixed output requirement, but if you finish with commits or uncommitted changes in the worktree, you must do ONE of: open a PR (`create_pr`) for the branch; create an artifact recording the deliverable; or call `complete_task` with `discardEdits` stating why those edits are intentionally being thrown away. ' +
+      'A coordination task whose deliverable is action taken against OTHER PRs (merging one via `merge_pr`, or dispatching a release) satisfies this automatically — it does not need a PR of its own.'
+    );
   }
-  // 'auto' — no explicit section needed, default behavior is fine
 
   // Inject aggregation context: embed child task results directly so the agent
   // doesn't need to fetch them via MCP (aggregator tasks run in bare temp dirs)

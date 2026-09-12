@@ -36,6 +36,16 @@ export async function POST(req: NextRequest) {
       sandboxEnabled = null,
       sandboxProbeAt = null,
       activeWorkerIds,
+      runnerCommit = null,
+      runnerVersion = null,
+      /**
+       * The branch this runner tracks (its `BUILDD_BRANCH`). Passed through
+       * unvalidated on purpose: the allowlist lives in the version cache so a
+       * second caller cannot forget it, and an unlisted value falls back to the
+       * cache's default. Absent from older runners, which keeps today's
+       * behaviour for them.
+       */
+      branch = undefined,
     } = body;
 
     if (!localUiUrl) {
@@ -74,6 +84,8 @@ export async function POST(req: NextRequest) {
         environment: environment || null,
         sandboxEnabled: sandboxEnabled as boolean | null,
         sandboxProbeAt: sandboxProbeDate,
+        runnerCommit: runnerCommit as string | null,
+        runnerVersion: runnerVersion as string | null,
         lastHeartbeatAt: now,
       })
       .onConflictDoUpdate({
@@ -83,6 +95,8 @@ export async function POST(req: NextRequest) {
           activeWorkerCount,
           environment: environment || null,
           ...(sandboxProbeDate !== null ? { sandboxEnabled: sandboxEnabled as boolean | null, sandboxProbeAt: sandboxProbeDate } : {}),
+          ...(runnerCommit !== null ? { runnerCommit: runnerCommit as string | null } : {}),
+          ...(runnerVersion !== null ? { runnerVersion: runnerVersion as string | null } : {}),
           lastHeartbeatAt: now,
           updatedAt: now,
         },
@@ -123,10 +137,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Include latest commit SHA for auto-update checks (best-effort)
+    // Include latest commit SHA for auto-update checks (best-effort).
+    //
+    // Resolved against the runner's OWN tracked branch. Answering with another
+    // branch's head advertises a commit the runner cannot reach: it resets to
+    // `origin/<its branch>`, lands nowhere near the advertised SHA, and stays
+    // "behind" forever.
     let latestCommit: string | undefined;
     try {
-      const version = await getLatestVersion();
+      const version = await getLatestVersion(branch);
       latestCommit = version.latestCommit;
     } catch {
       // Non-fatal — version check is optional

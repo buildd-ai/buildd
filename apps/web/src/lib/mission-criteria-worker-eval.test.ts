@@ -431,6 +431,85 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     expect(saved.overall).not.toBe('pass');
   });
 
+  it('downgrades a command criterion\'s fail to UNVERIFIED when evidence shows the command never ran', async () => {
+    // The model was told to grade this UNVERIFIED, but a model that still
+    // reasons "non-zero exit -> fail" should not get the last word: exit 127
+    // ("command not found") is not the assertion coming back false.
+    taskFindFirstResult = {
+      id: 'eval-task-1', status: 'completed', context: workerEvalContext, result: null, missionId: 'm1',
+    };
+    missionFindFirstByIdRow = {
+      id: 'm1',
+      goalCriteria: baseMissionGoalCriteria,
+      goalCriteriaState: JSON.parse(JSON.stringify(baseCriteriaState)),
+    };
+
+    const structuredOutput = {
+      criteriaVerdicts: [
+        { index: 0, verdict: 'pass', evidence: 'Docs confirm the behaviour' },
+        { index: 1, verdict: 'fail', evidence: 'Exit code 127: command not found' },
+      ],
+    };
+
+    await handleCriteriaWorkerEvalOutcome('eval-task-1', structuredOutput);
+
+    const saved = updateCalls[0].goalCriteriaState;
+    const c1 = saved.criteria.find((c: any) => c.index === 1);
+    expect(c1.verdict).toBe('UNVERIFIED');
+    expect(c1.evidence).toContain('corrected to UNVERIFIED');
+  });
+
+  it('leaves a genuine command failure as fail', async () => {
+    taskFindFirstResult = {
+      id: 'eval-task-1', status: 'completed', context: workerEvalContext, result: null, missionId: 'm1',
+    };
+    missionFindFirstByIdRow = {
+      id: 'm1',
+      goalCriteria: baseMissionGoalCriteria,
+      goalCriteriaState: JSON.parse(JSON.stringify(baseCriteriaState)),
+    };
+
+    const structuredOutput = {
+      criteriaVerdicts: [
+        { index: 0, verdict: 'pass', evidence: 'Docs confirm the behaviour' },
+        { index: 1, verdict: 'fail', evidence: 'Exit code 1: 3 tests failed' },
+      ],
+    };
+
+    await handleCriteriaWorkerEvalOutcome('eval-task-1', structuredOutput);
+
+    const saved = updateCalls[0].goalCriteriaState;
+    const c1 = saved.criteria.find((c: any) => c.index === 1);
+    expect(c1.verdict).toBe('fail');
+  });
+
+  it('does not downgrade a failing prose criterion that happens to mention "permission denied"', async () => {
+    // The exec-error backstop is scoped to command criteria only — a prose
+    // criterion failing because the repo shows a permission bug is describing
+    // its own evidence, not reporting its own execution.
+    taskFindFirstResult = {
+      id: 'eval-task-1', status: 'completed', context: workerEvalContext, result: null, missionId: 'm1',
+    };
+    missionFindFirstByIdRow = {
+      id: 'm1',
+      goalCriteria: baseMissionGoalCriteria,
+      goalCriteriaState: JSON.parse(JSON.stringify(baseCriteriaState)),
+    };
+
+    const structuredOutput = {
+      criteriaVerdicts: [
+        { index: 0, verdict: 'fail', evidence: 'The endpoint still returns permission denied for valid users' },
+        { index: 1, verdict: 'pass', evidence: 'Exit code 0' },
+      ],
+    };
+
+    await handleCriteriaWorkerEvalOutcome('eval-task-1', structuredOutput);
+
+    const saved = updateCalls[0].goalCriteriaState;
+    const c0 = saved.criteria.find((c: any) => c.index === 0);
+    expect(c0.verdict).toBe('fail');
+  });
+
   it('discards verdict when criterion was edited (fingerprint mismatch)', async () => {
     const staleContext = {
       criteriaWorkerEval: {

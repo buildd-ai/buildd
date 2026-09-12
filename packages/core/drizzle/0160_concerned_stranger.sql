@@ -1,0 +1,1 @@
+ALTER TABLE "workers" ADD COLUMN "rejected_completion_payload" jsonb;

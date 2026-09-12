@@ -6,6 +6,7 @@ import {
   getMenuActions,
   nextFocusIdx,
   isInteractiveTarget,
+  snoozeDurationHours,
   SwipeableRow,
   MENU_BTN_WIDTH,
   REVEAL_WIDTH_PX,
@@ -148,6 +149,20 @@ describe('getTrailingAction', () => {
 
   it('running-task → null (no swipe action)', () => {
     expect(getTrailingAction('running-task')).toBeNull();
+  });
+});
+
+// ─── Snooze persistence duration mapping ──────────────────────────────────────
+
+describe('snoozeDurationHours', () => {
+  it('maps snooze-24h/3d/7d to their /api/action-queue/snooze POST duration', () => {
+    expect(snoozeDurationHours('snooze-24h')).toBe(24);
+    expect(snoozeDurationHours('snooze-3d')).toBe(72);
+    expect(snoozeDurationHours('snooze-7d')).toBe(168);
+  });
+
+  it('returns null for snooze-notification — not backed by the endpoint yet', () => {
+    expect(snoozeDurationHours('snooze-notification')).toBeNull();
   });
 });
 
@@ -304,6 +319,17 @@ describe('SwipeableRow rendering', () => {
     expect(html).toContain('data-trailing-action');
     // Label is sr-only for accessibility; visual indicator is an SVG icon
     expect(html).toContain('Snooze');
+  });
+
+  it('accepts a subjectKey prop for gate-card without changing rendered markup', () => {
+    // subjectKey (ActionQueueItem.subjectKey) is plumbed through so a snooze
+    // persists via /api/action-queue/snooze — it carries no visual weight.
+    const html = renderToStaticMarkup(
+      <SwipeableRow cardType="gate-card" taskTitle="Test" subjectKey="pr:https://github.com/x/y/pull/1">
+        <div>card</div>
+      </SwipeableRow>,
+    );
+    expect(html).toContain('data-trailing-action');
   });
 
   it('does not render trailing action for running-task', () => {

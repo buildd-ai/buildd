@@ -1,3 +1,21 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "friction-intake"
+    type: "route"
+    method: "POST"
+    path: "/api/tasks"
+    file: "apps/web/src/app/api/tasks/route.ts"
+  - id: "infer-friction-manifest"
+    type: "symbol"
+    name: "inferFrictionManifest"
+    path: "packages/core/friction-manifest.ts"
+  - id: "serialize-manifests"
+    type: "symbol"
+    name: "shouldSerializeByManifest"
+    path: "packages/core/path-overlap.ts"
+---
 # Friction Task Dedup + Manifest Inference
 
 **Status:** Implemented

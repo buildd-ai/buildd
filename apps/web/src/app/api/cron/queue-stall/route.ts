@@ -82,6 +82,10 @@ import {
 } from '@/lib/dep-gate-contract';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
+// The fleet-level second pass (?scope=fleet-idle). Deliberately a separate
+// module: it shares no code path with the gate ladder and must not be able to
+// reach one.
+import { detectFleetIdle } from './fleet-idle';
 
 export const maxDuration = 60;
 
@@ -445,7 +449,42 @@ async function resolveStallGate(
   };
 }
 
+/**
+ * Two passes, one route, two cadences.
+ *
+ *   (default)          — the per-task gate ladder above. Hourly, DAYTIME only,
+ *                        because it HTTP-probes every connector a role needs.
+ *   ?scope=fleet-idle  — the fleet-level detector in ./fleet-idle.ts. Hourly,
+ *                        all 24 hours, because it is pure indexed aggregates
+ *                        and the outage it catches happens overnight.
+ *
+ * They share this route because it already owns the question, the auth, the
+ * notification path and the test harness — but they must NEVER be folded into
+ * one pass. The gate ladder's network cost is exactly why its schedule has a
+ * nightly gap, and importing that cost here would re-open the gap the
+ * fleet-idle pass exists to close.
+ *
+ * The `withCronRun` job slug carries the scope suffix (same convention as
+ * `pr-reconcile:merge-state`) so the two cadences stay separate health
+ * signals: averaging a 24h pass and a 17h pass into one `cron_runs` trend
+ * makes both unreadable.
+ *
+ * An unrecognised scope falls through to the gate pass, which is the safe
+ * default — a typo in the scheduler costs a duplicate gate run, not silence.
+ */
 export async function POST(req: NextRequest) {
+  if (req.nextUrl.searchParams.get('scope') === 'fleet-idle') {
+    return withCronRun('queue-stall:fleet-idle', req, async report => {
+      const result = await detectFleetIdle();
+      report({
+        processed: result.accountsChecked,
+        changed: result.alarms,
+        errors: 0,
+        result: result as unknown as Record<string, unknown>,
+      });
+      return NextResponse.json(result);
+    });
+  }
   return withCronRun('queue-stall', req, report => runCronJob(req, report));
 }
 

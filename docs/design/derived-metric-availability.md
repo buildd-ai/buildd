@@ -1,3 +1,23 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "derived-metric-type"
+    type: "symbol"
+    name: "DerivedMetric"
+    path: "packages/core/derived-metric.ts"
+  - id: "unavailable-result"
+    type: "symbol"
+    name: "derivedUnavailable"
+    path: "packages/core/derived-metric.ts"
+  - id: "mission-progress-metric"
+    type: "symbol"
+    name: "deriveMissionProgressMetric"
+    path: "packages/core/mission-helpers.ts"
+  - id: "derived-metric-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/derived-metric.test.ts"
+---
 # DerivedMetric Availability Contract
 
 **Status:** Proposed

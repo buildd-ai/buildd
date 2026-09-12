@@ -19,8 +19,10 @@ import {
 } from '@/lib/change-intent';
 import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retry';
 import { escalateConflictExhaustion, evaluateAutoMergeSafety } from '@/lib/auto-merge';
+import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -444,15 +446,21 @@ export async function POST(req: NextRequest) {
           return NextResponse.json(dedupRefusal, { status: 400 });
         }
 
+        // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a
+        // migration snapshot must not inflate the number shown on task/PR cards.
+        const dedupSplit = typeof prDetail.additions === 'number'
+          ? await fetchSplitPrStats(repo.installation.installationId, repo.fullName, existing.number)
+          : null;
+
         // Update worker with the existing PR info and diff stats
         await db
           .update(workers)
           .set({
             prUrl: existing.html_url,
             prNumber: existing.number,
-            ...(typeof prDetail.additions === 'number' ? { linesAdded: prDetail.additions } : {}),
-            ...(typeof prDetail.deletions === 'number' ? { linesRemoved: prDetail.deletions } : {}),
-            ...(typeof prDetail.changed_files === 'number' ? { filesChanged: prDetail.changed_files } : {}),
+            ...(dedupSplit ? { linesAdded: dedupSplit.reviewable.additions } : {}),
+            ...(dedupSplit ? { linesRemoved: dedupSplit.reviewable.deletions } : {}),
+            ...(dedupSplit ? { filesChanged: dedupSplit.reviewable.files } : {}),
             // Backfill base SHA if not yet recorded — needed by base-rewrite detector
             ...(typeof prDetail.base?.sha === 'string' && !worker.prOpenedBaseSha
               ? { prOpenedBaseSha: prDetail.base.sha }
@@ -638,15 +646,21 @@ export async function POST(req: NextRequest) {
       }
     );
 
+    // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a
+    // migration snapshot must not inflate the number shown on task/PR cards.
+    const createSplit = typeof prData.additions === 'number'
+      ? await fetchSplitPrStats(repo.installation.installationId, repo.fullName, prData.number)
+      : null;
+
     // Update worker with PR info and diff stats from GitHub's response
     await db
       .update(workers)
       .set({
         prUrl: prData.html_url,
         prNumber: prData.number,
-        ...(typeof prData.additions === 'number' ? { linesAdded: prData.additions } : {}),
-        ...(typeof prData.deletions === 'number' ? { linesRemoved: prData.deletions } : {}),
-        ...(typeof prData.changed_files === 'number' ? { filesChanged: prData.changed_files } : {}),
+        ...(createSplit ? { linesAdded: createSplit.reviewable.additions } : {}),
+        ...(createSplit ? { linesRemoved: createSplit.reviewable.deletions } : {}),
+        ...(createSplit ? { filesChanged: createSplit.reviewable.files } : {}),
         // Base branch SHA at PR open time — used by the base-history-rewrite detector
         ...(typeof prData.base?.sha === 'string' ? { prOpenedBaseSha: prData.base.sha } : {}),
         // Base REF as GitHub resolved it — deliberately GitHub's value, not the
@@ -1021,12 +1035,12 @@ export async function PUT(req: NextRequest) {
         // rails auto-threshold uses below (CI, escalateToPaths as deny paths,
         // the migration operation-class inspector).
         const reviewStatus = await readPrReviewStatus({ workspaceId: workspace.id, prNumber });
-        const threshold = policy.agentReview?.maxConfidenceThreshold ?? 0.6;
         const selfMergeable =
           reviewStatus.state === 'approved' &&
-          reviewStatus.verdict === 'approve' &&
-          typeof reviewStatus.confidence === 'number' &&
-          reviewStatus.confidence >= threshold;
+          isApprovalSelfMergeable(
+            { verdict: reviewStatus.verdict, confidence: reviewStatus.confidence, merged: reviewStatus.merged },
+            policy.agentReview?.maxConfidenceThreshold,
+          );
 
         if (!selfMergeable) {
           return NextResponse.json({
@@ -1337,6 +1351,14 @@ export async function GET(req: NextRequest) {
       ? (worker.mergedAt instanceof Date ? worker.mergedAt.toISOString() : String(worker.mergedAt))
       : null;
 
+    // Per-file breakdown so a Drizzle snapshot can't read as the diff size.
+    // `additions`/`deletions`/`changedFiles` below are the reviewable figures;
+    // `generatedAdditions`/`generatedDeletions`/`generatedFiles` carry the rest
+    // so it stays visible rather than silently disappearing from the response.
+    const splitStats = typeof pr.additions === 'number'
+      ? await fetchSplitPrStats(installationId, fullName, prNumber)
+      : null;
+
     return NextResponse.json({
       ok: true,
       pr: {
@@ -1349,9 +1371,12 @@ export async function GET(req: NextRequest) {
         mergeableState: canonicalState === 'open' ? (pr.mergeable_state ?? null) : null,
         headSha: headSha ?? worker.lastCommitSha ?? null,
         baseRef: pr.base?.ref ?? null,
-        additions: pr.additions ?? null,
-        deletions: pr.deletions ?? null,
-        changedFiles: pr.changed_files ?? null,
+        additions: splitStats ? splitStats.reviewable.additions : (pr.additions ?? null),
+        deletions: splitStats ? splitStats.reviewable.deletions : (pr.deletions ?? null),
+        changedFiles: splitStats ? splitStats.reviewable.files : (pr.changed_files ?? null),
+        generatedAdditions: splitStats?.generated.additions ?? 0,
+        generatedDeletions: splitStats?.generated.deletions ?? 0,
+        generatedFiles: splitStats?.generated.files ?? 0,
         mergedAt: canonicalState === 'merged' ? (pr.merged_at ?? dbMergedAt) : null,
         mergeCommitSha: canonicalState === 'merged' ? (pr.merge_commit_sha ?? null) : null,
         mergedBy: canonicalState === 'merged' ? (pr.merged_by?.login ?? null) : null,

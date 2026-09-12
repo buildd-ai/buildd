@@ -1,3 +1,20 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mcp-consumer-transport"
+    type: "route"
+    method: "POST"
+    path: "/api/mcp"
+    file: "apps/web/src/app/api/mcp/route.ts"
+  - id: "consumer-skill-resource"
+    type: "config_key"
+    key: "buildd-mcp-consumer"
+    file: "apps/web/src/app/api/mcp/route.ts"
+  - id: "tracked-skill-catalog-tests"
+    type: "test_file"
+    path: "scripts/skills-listed.test.ts"
+---
 # Split the MCP `instructions` block into a orientation stub + a consumer skill
 
 **Status:** Proposed

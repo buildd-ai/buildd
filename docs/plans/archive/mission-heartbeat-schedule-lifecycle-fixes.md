@@ -1,5 +1,9 @@
 # Mission Heartbeat Schedule Lifecycle — Implementation Slices
 
+**Status:** ✅ Shipped. Slice 1 (#2275), slice 2 (#2277), slice 5 (#2282), and
+slices 3+4 (this PR) are all merged — AC-1 through AC-5 in
+`docs/specs/mission-heartbeat-schedule-lifecycle.md` are implemented. Archived.
+
 Point-in-time rollout plan. Not a contract — see
 `docs/specs/mission-heartbeat-schedule-lifecycle.md` for the invariants these
 slices satisfy, and `docs/reports/mission-heartbeat-schedule-lifecycle-audit.md`

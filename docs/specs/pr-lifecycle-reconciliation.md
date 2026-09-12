@@ -10,6 +10,19 @@ related: [runner-liveness, mission-task-lifecycle]
 keywords: [ci, prLifecycleStatus, ci_green, ci_failed, ci_running, webhook, reconcile]
 verified_by: [apps/web/src/lib/pr-state-refresh.test.ts, apps/web/src/lib/pr-presentation.test.ts, apps/web/src/app/api/github/webhook/route.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "refresh-stale-prs"
+    type: "symbol"
+    name: "refreshStaleWorkers"
+    path: "apps/web/src/lib/pr-state-refresh.ts"
+  - id: "derive-pr-lifecycle"
+    type: "symbol"
+    name: "derivePrLifecycle"
+    path: "apps/web/src/lib/pr-presentation.ts"
+  - id: "pr-reconciliation-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/pr-state-refresh.test.ts"
 ---
 
 ## Invariants

@@ -220,20 +220,23 @@ describe('hasCommitDrift', () => {
   });
 });
 
+// The third argument is reachability, and it is REQUIRED so that a new call
+// site cannot silently default to "reachable". These cases all pass `true`;
+// the unreachable cases live in update-target-reachability.test.ts.
 describe('shouldShowUpdateAvailable', () => {
   test('true when the changelog has entries', () => {
-    expect(shouldShowUpdateAvailable(['abc1234 fix: something'], true)).toBe(true);
+    expect(shouldShowUpdateAvailable(['abc1234 fix: something'], true, true)).toBe(true);
   });
 
   test('false when the changelog is empty and reliable (genuinely no runner changes)', () => {
-    expect(shouldShowUpdateAvailable([], true)).toBe(false);
+    expect(shouldShowUpdateAvailable([], true, true)).toBe(false);
   });
 
   test('true when the changelog is empty but unreliable (shallow-clone artifact)', () => {
-    expect(shouldShowUpdateAvailable([], false)).toBe(true);
+    expect(shouldShowUpdateAvailable([], false, true)).toBe(true);
   });
 
   test('true when entries are present even if flagged unreliable', () => {
-    expect(shouldShowUpdateAvailable(['abc1234 fix: something'], false)).toBe(true);
+    expect(shouldShowUpdateAvailable(['abc1234 fix: something'], false, true)).toBe(true);
   });
 });

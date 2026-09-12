@@ -8,11 +8,17 @@
 import { describe, test, expect } from 'bun:test';
 import {
   buildCbmActivation,
+  buildCbmCodexStdioServer,
+  buildCbmGuidanceBody,
   buildCbmMcpEntry,
+  buildCbmSystemPromptBlock,
   ensureCbmRuntimeDir,
+  isCbmCodexEnabled,
   resolveCbmOutcome,
   CBM_BLOCKED_TOOLS,
+  CBM_BLOCKED_TOOL_NAMES,
   CBM_ALLOWED_TOOLS,
+  CBM_SERVER_NAME,
   CBM_TOOL_SURFACE,
   applyCbmToolBlocklist,
   deriveCbmBlockedTools,
@@ -51,9 +57,23 @@ describe('buildCbmActivation', () => {
     expect(result.cbmCacheDir).toBeUndefined();
   });
 
-  test('skips for Codex tasks', () => {
+  test('enforces for a repo-backed Codex task (graph reaches Codex via config.toml)', () => {
     const result = buildCbmActivation({ ...BASE, isCodexTask: true });
+    expect(result.enforced).toBe(true);
+    expect(result.cbmBinaryPath).toBe(CBM_BINARY_PATH);
+    expect(result.disableReason).toBeUndefined();
+  });
+
+  test('skips Codex tasks when CBM-for-Codex is switched off', () => {
+    const result = buildCbmActivation({ ...BASE, isCodexTask: true, codexSupported: false });
     expect(result.enforced).toBe(false);
+    expect(result.disableReason).toBe('codex_task');
+  });
+
+  test('BUILDD_CBM_CODEX is default-on, off only at exactly "0"', () => {
+    expect(isCbmCodexEnabled({})).toBe(true);
+    expect(isCbmCodexEnabled({ BUILDD_CBM_CODEX: '1' })).toBe(true);
+    expect(isCbmCodexEnabled({ BUILDD_CBM_CODEX: '0' })).toBe(false);
   });
 
   test('skips when role has opted out (cbmRoleDisabled)', () => {
@@ -64,6 +84,36 @@ describe('buildCbmActivation', () => {
   test('skips when binary is not on host (old image, silent degradation)', () => {
     const result = buildCbmActivation({ ...BASE, pathExists: binaryAbsent });
     expect(result.enforced).toBe(false);
+  });
+
+  test('a Codex task with no worktree reports no_worktree, not codex_task', () => {
+    // The caller used to re-derive this label with isCodexTask first, so every
+    // skip on a Codex task read `codex_task`. That reason is filed as a by-design
+    // skip, so real breakage (binary_absent) disappeared from the fallback rate.
+    const result = buildCbmActivation({ ...BASE, isCodexTask: true, worktreePath: undefined });
+    expect(result.enforced).toBe(false);
+    expect(result.disableReason).toBe('no_worktree');
+  });
+
+  test('a Codex task with an opted-out role reports role_opt_out', () => {
+    const result = buildCbmActivation({ ...BASE, isCodexTask: true, cbmRoleDisabled: true });
+    expect(result.disableReason).toBe('role_opt_out');
+  });
+
+  test('a Codex task on a host without the binary reports binary_absent', () => {
+    const result = buildCbmActivation({ ...BASE, isCodexTask: true, pathExists: binaryAbsent });
+    expect(result.disableReason).toBe('binary_absent');
+  });
+
+  test('every skip carries exactly one reason and an enforced activation carries none', () => {
+    const reasons = [
+      buildCbmActivation({ ...BASE, worktreePath: undefined }).disableReason,
+      buildCbmActivation({ ...BASE, cbmRoleDisabled: true }).disableReason,
+      buildCbmActivation({ ...BASE, isCodexTask: true, codexSupported: false }).disableReason,
+      buildCbmActivation({ ...BASE, pathExists: binaryAbsent }).disableReason,
+    ];
+    expect(reasons).toEqual(['no_worktree', 'role_opt_out', 'codex_task', 'binary_absent']);
+    expect(buildCbmActivation(BASE).disableReason).toBeUndefined();
   });
 
   test('cache dir is scoped per worker id (no shared-state collision)', () => {
@@ -152,6 +202,93 @@ describe('buildCbmMcpEntry', () => {
     const entry2 = buildCbmMcpEntry('/repo/.buildd-worktrees/other-branch', '/tmp/cbm-xyz');
     expect(entry2.env.CBM_ALLOWED_ROOT).toBe('/repo/.buildd-worktrees/other-branch');
     expect(entry2.env.CBM_CACHE_DIR).toBe('/tmp/cbm-xyz');
+  });
+});
+
+describe('buildCbmCodexStdioServer', () => {
+  const server = buildCbmCodexStdioServer('/repo/.buildd-worktrees/branch-x', '/tmp/cbm-abc-123');
+
+  test('mounts the same binary under the same server name as the Claude path', () => {
+    expect(server.name).toBe(CBM_SERVER_NAME);
+    expect(server.command).toBe(CBM_BINARY_PATH);
+    expect(server.args).toEqual(['mcp']);
+  });
+
+  test('carries byte-identical env to the Claude entry (same cache, same graph)', () => {
+    // A different cache dir here would mean the bootstrap warms one graph and the
+    // Codex worker queries another — a cold "already indexed" claim.
+    const claudeEntry = buildCbmMcpEntry('/repo/.buildd-worktrees/branch-x', '/tmp/cbm-abc-123');
+    expect(server.env).toEqual(claudeEntry.env);
+  });
+
+  test('withholds the destructive tools, from the same classification as Claude', () => {
+    expect(server.disabledTools).toEqual([...CBM_BLOCKED_TOOL_NAMES]);
+    expect(server.disabledTools).toContain('delete_project');
+    // Bare names: Codex's per-server `disabled_tools` is not MCP-prefixed.
+    expect(server.disabledTools.some(t => t.startsWith('mcp__'))).toBe(false);
+  });
+
+  test('honours an explicit runtime dir', () => {
+    const s = buildCbmCodexStdioServer('/w', '/tmp/cbm-x', '/tmp/cbm-x/custom-run');
+    expect(s.env.CBM_RUNTIME_DIR).toBe('/tmp/cbm-x/custom-run');
+  });
+});
+
+describe('buildCbmGuidanceBody (shared by both backends)', () => {
+  test('keeps the ordered, procedural framing in both dialects', () => {
+    // The capability-list version of this text measurably did not work; the
+    // ordering ("FIRST navigation step", then the tool-per-question list, then
+    // the accelerator-not-a-gate release) is the part that did.
+    for (const dialect of ['claude', 'codex'] as const) {
+      const body = buildCbmGuidanceBody({ dialect });
+      expect(body).toContain('make a graph call your FIRST navigation step');
+      const order = [
+        'mcp__codebase-memory__get_architecture',
+        'mcp__codebase-memory__trace_path',
+        'mcp__codebase-memory__search_graph',
+        'mcp__codebase-memory__search_code',
+      ].map(t => body.indexOf(t));
+      expect(order.every(i => i > 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(body).toContain('accelerator, never a gate');
+      expect(body).toContain('structural questions ONLY');
+    }
+  });
+
+  test('names only tools the backend actually has', () => {
+    // Telling Codex to fall back to Read/Grep/Glob names tools it does not have —
+    // the same class of lie as describing a server that is not mounted.
+    const claude = buildCbmGuidanceBody({ dialect: 'claude' });
+    const codex = buildCbmGuidanceBody({ dialect: 'codex' });
+    expect(claude).toContain('Read/Grep/Glob');
+    expect(codex).not.toContain('Read/Grep/Glob');
+    expect(codex).toContain('`rg`');
+  });
+
+  test('the Claude wording is unchanged by the split into dialects', () => {
+    // The Claude text is the version that measurably moved graph usage. Sharing a
+    // body with Codex must not reword it, so the three phrasings that carry the
+    // procedure are pinned verbatim.
+    const claude = buildCbmGuidanceBody({ dialect: 'claude' });
+    expect(claude).toContain('before any Read/Grep/Glob sweep. One call is usually enough to know where to look:');
+    expect(claude).toContain('Then use Read/Grep/Glob to read what the graph located');
+    expect(claude).toContain('A Grep-and-Read sweep that a single graph query would have answered');
+    expect(buildCbmGuidanceBody({ dialect: 'claude', sharedBaseIndex: true }))
+      .toContain('trust it for structure, and Read the file for current content');
+  });
+
+  test('warns about base-clone staleness in shared-cache mode, in both dialects', () => {
+    for (const dialect of ['claude', 'codex'] as const) {
+      const body = buildCbmGuidanceBody({ dialect, sharedBaseIndex: true, project: 'proj-x' });
+      expect(body).toContain('proj-x');
+      expect(body).toContain('maps the base checkout, not your branch');
+    }
+  });
+
+  test('the Claude system-prompt block is the shared body under a heading', () => {
+    const block = buildCbmSystemPromptBlock({ project: 'proj-x' });
+    expect(block.startsWith('## Codebase graph (codebase-memory)\n')).toBe(true);
+    expect(block).toContain(buildCbmGuidanceBody({ dialect: 'claude', project: 'proj-x' }));
   });
 });
 

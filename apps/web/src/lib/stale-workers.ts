@@ -350,6 +350,77 @@ export function logLeaseShadowDisagreements(input: {
   return { agreed: false };
 }
 
+/**
+ * The never-started arm of the reaper, widened from one account to the whole
+ * owning team.
+ *
+ * INVARIANT: every orphaned never-started worker row must be reachable by the
+ * team that owns it.
+ *
+ * The claim route mints a worker row at `status = 'idle'` with `started_at`
+ * unset, then hands it to the runner. If that runner dies in between, the row
+ * rots — and the claim insert's `NOT EXISTS (... status IN ('idle','running',
+ * 'starting','waiting_input'))` duplicate guard makes the task unclaimable
+ * while it sits there. Under the old account-scoped idle rule the only actor
+ * allowed to clear it was the account whose runner had just died, so the task
+ * was blocked permanently rather than for IDLE_STALE_THRESHOLD_MS, and the row
+ * also pinned a concurrency seat on that account.
+ *
+ * Why this arm is safe to cross the account boundary when the plain idle rule
+ * is not: `started_at IS NULL` means no runner ever began a session for this
+ * row. There is no live process to interrupt — the only thing being deleted is
+ * bookkeeping. `classifyStaleExit` books it `never_started` and
+ * `consumesRetryAttempt('never_started') === false`, so a cross-account reap
+ * cannot charge another team member's task with a failure either.
+ *
+ * The team is resolved by a correlated sub-select rather than a separate
+ * `accounts.findFirst`: `cleanupStaleWorkers` runs on the claim hot path
+ * (POST /api/workers/claim calls it before looking for candidate tasks), and a
+ * serial extra round-trip there is paid on every runner poll.
+ */
+export function neverStartedTeamScope(accountId: string, idleStaleThreshold: Date) {
+  return sql`${workers.accountId} IN (
+      SELECT sibling.id FROM ${accounts} sibling
+      WHERE sibling.team_id = (
+        SELECT owner.team_id FROM ${accounts} owner WHERE owner.id = ${accountId}
+      )
+    )
+    AND ${workers.status} = 'idle'
+    AND ${workers.startedAt} IS NULL
+    AND ${workers.updatedAt} < ${idleStaleThreshold}`;
+}
+
+/**
+ * Worker scope for the heartbeat-expiry rule. Deliberately account-scoped —
+ * do NOT widen this to the team.
+ *
+ * Widening it is unsafe in both directions. Widen only this query and account
+ * A's offline runner starts failing account B's live, working workers, because
+ * the `freshHeartbeat` lookup that gates it is keyed on one account. Widen the
+ * freshness lookup to match and the gate only fires when every runner in the
+ * team is offline — a gate that can never fire in practice, which is worse than
+ * no gate because it reads as protection.
+ *
+ * Unlike the never-started arm there is no `started_at IS NULL` narrowing here:
+ * this rule kills workers in any live status, including ones mid-session.
+ * Exported so the scope test can assert it was not touched.
+ */
+export function heartbeatOrphanScope(accountId: string, heartbeatCutoff: Date) {
+  return and(
+    eq(workers.accountId, accountId),
+    inArray(workers.status, [...LIVE_WORKER_STATUSES]),
+    lt(workers.updatedAt, heartbeatCutoff),
+  );
+}
+
+/** Freshness lookup gating {@link heartbeatOrphanScope}. Must stay account-keyed — see above. */
+export function heartbeatFreshnessScope(accountId: string, heartbeatCutoff: Date) {
+  return and(
+    eq(workerHeartbeats.accountId, accountId),
+    gt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
+  );
+}
+
 export async function cleanupStaleWorkers(accountId: string) {
   // 1. Auto-expire stale workers:
   //    - 'running'/'starting': no update for WORKER_STALE_REAP_MS (runner hard
@@ -373,17 +444,33 @@ export async function cleanupStaleWorkers(accountId: string) {
   const silentStartThreshold = new Date(Date.now() - SILENT_START_THRESHOLD_MS);
 
   const staleWorkers = await db.query.workers.findMany({
-    where: and(
-      eq(workers.accountId, accountId),
-      or(
-        and(inArray(workers.status, ['running', 'starting']), lt(workers.updatedAt, staleThreshold)),
-        and(eq(workers.status, 'idle'), lt(workers.updatedAt, idleStaleThreshold)),
-        // Silent-start rule, expressed in SQL so the shorter clock is applied by
-        // the DB rather than by post-filtering the generic stale window.
-        // costUsd is never written on this path (only the terminal PATCH prices a
-        // worker) so it alone can't discriminate "dead" from "spent real tokens
-        // but wasn't priced yet" — inputTokens/outputTokens are live-synced by the
-        // runner's periodic progress reports and close that gap.
+    // Each arm carries its own account scope explicitly rather than sharing one
+    // hoisted `eq(workers.accountId, accountId)`, so the scoping of every
+    // individual rule is readable at the rule — which matters now that exactly
+    // one of them (the never-started arm) is deliberately team-scoped and the
+    // rest are deliberately not.
+    where: or(
+      // Generic staleness: a worker that did real work, then went quiet.
+      and(
+        eq(workers.accountId, accountId),
+        inArray(workers.status, ['running', 'starting']),
+        lt(workers.updatedAt, staleThreshold),
+      ),
+      // Plain idle rule. Account-scoped, and NOT narrowed by `started_at IS
+      // NULL` — which is precisely why it cannot be widened to the team.
+      and(
+        eq(workers.accountId, accountId),
+        eq(workers.status, 'idle'),
+        lt(workers.updatedAt, idleStaleThreshold),
+      ),
+      // Silent-start rule, expressed in SQL so the shorter clock is applied by
+      // the DB rather than by post-filtering the generic stale window.
+      // costUsd is never written on this path (only the terminal PATCH prices a
+      // worker) so it alone can't discriminate "dead" from "spent real tokens
+      // but wasn't priced yet" — inputTokens/outputTokens are live-synced by the
+      // runner's periodic progress reports and close that gap.
+      and(
+        eq(workers.accountId, accountId),
         sql`${workers.status} IN ('running', 'starting')
             AND ${workers.startedAt} IS NOT NULL
             AND COALESCE(${workers.turns}, 0) <= ${SILENT_START_MAX_TURNS}
@@ -392,12 +479,18 @@ export async function cleanupStaleWorkers(accountId: string) {
             AND COALESCE(${workers.outputTokens}, 0) = 0
             AND ${workers.updatedAt} < ${silentStartThreshold}`,
       ),
+      // The one team-scoped arm, strictly narrower than the idle rule above.
+      neverStartedTeamScope(accountId, idleStaleThreshold),
     ),
     columns: {
       id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
       // Needed to tell a never-started row and a silent session apart from a
       // worker that did real work before going offline.
       status: true, startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,
+      // The batch can now span accounts within the team, so the seat decrement
+      // has to be grouped by each row's OWN account rather than charged to the
+      // cleaning account. Without this column that grouping is impossible.
+      accountId: true,
       // Shadow-mode only: compared against the legacy verdict, never acted on.
       leaseExpiresAt: true,
     },
@@ -477,18 +570,43 @@ export async function cleanupStaleWorkers(accountId: string) {
 
     const neverStartedCount = byCause.get('never_started')?.ids.length ?? 0;
     if (neverStartedCount > 0) {
+      // "cleaned by" not "for": this arm is team-scoped, so some of these rows
+      // may belong to a sibling account whose runner died holding them.
+      const foreign = staleWorkers.filter(
+        w => !w.startedAt && w.accountId && w.accountId !== accountId,
+      ).length;
       console.warn(
-        `[stale-workers] Reaped ${neverStartedCount} worker row(s) no runner ever started for account ${accountId} — over-claim, not an infra failure`,
+        `[stale-workers] Reaped ${neverStartedCount} worker row(s) no runner ever started, cleaned by account ${accountId}` +
+        (foreign > 0 ? ` (${foreign} belonging to sibling account(s) in the same team)` : '') +
+        ' — over-claim, not an infra failure',
       );
     }
 
     // Release concurrency seats for OAuth accounts. activeSessions is incremented at
     // claim time and must be decremented whenever a live worker reaches a terminal state.
     // The WHERE filter on authType is a no-op for non-OAuth accounts so this is safe for all.
-    await db
-      .update(accounts)
-      .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${staleWorkers.length}, 0)` })
-      .where(and(eq(accounts.id, accountId), eq(accounts.authType, 'oauth')));
+    //
+    // Grouped by each reaped row's OWN accountId, not by the cleaning account.
+    // The never-started arm is team-scoped, so this batch can contain a sibling
+    // account's row — decrementing the cleaning account for it would be a
+    // silent seat leak in both directions at once: the cleaning account gets
+    // credited a seat it never held (and can over-claim past
+    // maxConcurrentSessions), while the account that actually held the seat
+    // never gets it back. Same grouping as cleanupStuckWaitingInput below.
+    // Rows with a null accountId (the FK is ON DELETE SET NULL) hold no seat on
+    // any account and are skipped rather than charged to whoever is cleaning.
+    const staleCountByAccount = new Map<string, number>();
+    for (const w of staleWorkers) {
+      if (w.accountId) {
+        staleCountByAccount.set(w.accountId, (staleCountByAccount.get(w.accountId) ?? 0) + 1);
+      }
+    }
+    for (const [accId, count] of staleCountByAccount) {
+      await db
+        .update(accounts)
+        .set({ activeSessions: sql`GREATEST(${accounts.activeSessions} - ${count}, 0)` })
+        .where(and(eq(accounts.id, accId), eq(accounts.authType, 'oauth')));
+    }
 
     if (staleTaskIds.length > 0) {
       // Fetch workspace IDs before updating, for dependency resolution
@@ -527,20 +645,15 @@ export async function cleanupStaleWorkers(accountId: string) {
   const heartbeatCutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
 
   const freshHeartbeat = await db.query.workerHeartbeats.findFirst({
-    where: and(
-      eq(workerHeartbeats.accountId, accountId),
-      gt(workerHeartbeats.lastHeartbeatAt, heartbeatCutoff),
-    ),
+    where: heartbeatFreshnessScope(accountId, heartbeatCutoff),
     columns: { id: true },
   });
 
   if (!freshHeartbeat) {
     const orphanedByHeartbeat = await db.query.workers.findMany({
-      where: and(
-        eq(workers.accountId, accountId),
-        inArray(workers.status, [...LIVE_WORKER_STATUSES]),
-        lt(workers.updatedAt, heartbeatCutoff),
-      ),
+      // Account-scoped on purpose — NOT widened to the team. See
+      // heartbeatOrphanScope for why widening it is unsafe either way.
+      where: heartbeatOrphanScope(accountId, heartbeatCutoff),
       columns: {
         id: true, taskId: true, prUrl: true, prNumber: true, commitCount: true, branch: true, error: true,
         startedAt: true, turns: true, costUsd: true, inputTokens: true, outputTokens: true,

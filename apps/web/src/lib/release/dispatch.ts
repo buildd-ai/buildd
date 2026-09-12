@@ -193,3 +193,49 @@ export async function releasePreflight(
 
   return out;
 }
+
+// Deploy-only preflight: used when there's no distinct source ref to compare
+// against prod (an unconfigured branch_merge workspace, or ref/prodBranch
+// collapsing to the same branch). A self-compare always shows zero commits
+// ahead and no PR ever has head==base, so instead of that meaningless
+// comparison this reports CI state on prodBranch's own HEAD directly.
+export async function deploymentOnlyPreflight(
+  installationId: number,
+  owner: string,
+  name: string,
+  prodBranch: string,
+): Promise<ReleasePreflight> {
+  const out: ReleasePreflight = {
+    ref: prodBranch,
+    prodBranch,
+    aheadBy: 0,
+    shippableCommits: [],
+    ciState: 'unknown',
+    failingChecks: [],
+  };
+
+  try {
+    const refObj = await githubApi(installationId, `/repos/${owner}/${name}/git/ref/heads/${prodBranch}`);
+    out.refHeadSha = refObj?.object?.sha as string | undefined;
+    out.previousSha = out.refHeadSha;
+  } catch {
+    // ref lookup can fail if the branch is missing — leave ciState unknown.
+  }
+
+  if (out.refHeadSha) {
+    try {
+      const checks = await githubApi(
+        installationId,
+        `/repos/${owner}/${name}/commits/${out.refHeadSha}/check-runs?per_page=100`,
+      );
+      const runs: CheckRun[] = checks?.check_runs ?? [];
+      const classified = classifyCheckRuns(runs);
+      out.ciState = classified.ciState;
+      out.failingChecks = classified.failingChecks;
+    } catch {
+      out.ciState = 'unknown';
+    }
+  }
+
+  return out;
+}

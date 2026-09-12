@@ -1,3 +1,19 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "reviewer-patch"
+    type: "symbol"
+    name: "renderReviewerPatch"
+    path: "apps/web/src/lib/reviewer-patch.ts"
+  - id: "reviewer-patch-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/reviewer-patch.test.ts"
+  - id: "request-changes-verifier"
+    type: "config_key"
+    key: "request-changes"
+    file: "apps/web/src/lib/reviewer-verify.ts"
+---
 # Reviewer Evidence and Verification
 
 **Status:** Proposed

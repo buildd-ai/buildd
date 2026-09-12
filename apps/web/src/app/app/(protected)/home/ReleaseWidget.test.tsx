@@ -14,6 +14,7 @@ function item(overrides: Partial<ReleaseReadinessItem> = {}): ReleaseReadinessIt
     baselineSource: 'healthy',
     ciState: 'passing',
     latestReleaseId: 'rel-1',
+    commitsAheadAtDispatch: null,
     ...overrides,
   };
 }
@@ -43,5 +44,27 @@ describe('ReleaseWidget — release action button', () => {
   it('renders nothing when queue is empty (widget hidden)', () => {
     const html = renderToStaticMarkup(<ReleaseWidget items={[item({ queueDepth: val(0) })]} />);
     expect(html).toBe('');
+  });
+
+  it('shows the Release button when CI is unknown — a failed dispatch or a stale reading must not withhold the CTA', () => {
+    const html = renderToStaticMarkup(<ReleaseWidget items={[item({ ciState: 'unknown' })]} />);
+    expect(html).toMatch(/<button[^>]*>Release<\/button>/);
+    expect(html).not.toContain('CI failing');
+  });
+
+  it('renders an error state instead of a large number when queue depth grossly diverges from the last dispatch snapshot', () => {
+    const html = renderToStaticMarkup(
+      <ReleaseWidget items={[item({ queueDepth: val(859), commitsAheadAtDispatch: 4 })]} />,
+    );
+    expect(html).not.toContain('859 unshipped');
+    expect(html).toContain("doesn&#x27;t reconcile");
+  });
+
+  it('does not flag a small, plausible disagreement between queue depth and the dispatch snapshot', () => {
+    const html = renderToStaticMarkup(
+      <ReleaseWidget items={[item({ queueDepth: val(24), commitsAheadAtDispatch: 17 })]} />,
+    );
+    expect(html).toContain('24 unshipped');
+    expect(html).not.toContain("doesn&#x27;t reconcile");
   });
 });

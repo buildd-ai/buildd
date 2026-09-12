@@ -10,6 +10,24 @@ related: [provider-failover, mcp-connectors-and-roles, usage-and-cost-accounting
 verified_by: [packages/core/__tests__/model-router.test.ts, packages/core/__tests__/model-tier-registry.test.ts, apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/models/route.test.ts, packages/core/__tests__/routing-analytics.test.ts]
 keywords: [model_tier_registry, predicted_model, model_aliases, system_cache, task_outcomes, downshift, role floor, routing_paused, catalogComplete]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "effective-model"
+    type: "symbol"
+    name: "resolveEffectiveModel"
+    path: "packages/core/model-router.ts"
+  - id: "resolve-tier-entry"
+    type: "symbol"
+    name: "resolveTierEntry"
+    path: "packages/core/model-tier-registry.ts"
+  - id: "model-routing-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/model-router.test.ts"
+  - id: "claim-resolves-model"
+    type: "symbol_reachable"
+    symbol: "resolveEffectiveModel"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+    as: "read"
 ---
 # Model Routing and Tiers
 

@@ -345,16 +345,17 @@ describe('checkMissingAssertions', () => {
     expect(c?.kind).toBe('missing-assertions');
   });
 
-  test('a doc in MISSING_ASSERTIONS_DEBT is grandfathered past the gate', () => {
-    const [debtPath] = MISSING_ASSERTIONS_DEBT;
-    expect(debtPath).toBeDefined();
-    expect(checkMissingAssertions(debtPath!, 'design', 'implemented', 0, null)).toBeNull();
+  test('backfilled terminal docs cannot silently lose all assertions', () => {
+    expect(MISSING_ASSERTIONS_DEBT.size).toBe(0);
+    for (const [path, docType, status] of [
+      ['docs/design/backend-failover-policy.md', 'design', 'implemented'],
+      ['docs/specs/mission-task-lifecycle.md', 'spec', 'active'],
+      ['docs/specs/team-namespace-scoping.md', 'spec', 'active'],
+    ] as const) {
+      expect(checkMissingAssertions(path, docType, status, 0, null)?.kind).toBe('missing-assertions');
+    }
   });
 
-  test('MISSING_ASSERTIONS_DEBT contains no doc this task already backfilled', () => {
-    expect(MISSING_ASSERTIONS_DEBT.has('docs/design/worker-mount-isolation.md')).toBe(false);
-    expect(MISSING_ASSERTIONS_DEBT.has('docs/design/path-claims.md')).toBe(false);
-  });
 });
 
 // ─── parseFrontmatter / extractBoldStatus / declaredStatus ─────────────────

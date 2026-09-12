@@ -18,7 +18,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers } from '@buildd/core/db/schema';
 import { and, eq, ne, inArray } from 'drizzle-orm';
-import { isGeneratedPath } from '@buildd/shared';
+import { splitDiffStats, type SplitDiffStats } from '@buildd/shared';
 
 export const DEFAULT_SUPERSESSION_DRIFT_RATIO = 10;
 
@@ -102,6 +102,30 @@ export async function fetchLivePrStats(
 }
 
 /**
+ * Fetch a PR's per-file diff stats from GitHub, split into reviewable vs
+ * generated buckets (see `splitDiffStats`). The single fetch point other
+ * surfaces build on so a migration snapshot's line count is visible but never
+ * silently folded into a "real" diff size.
+ *
+ * Returns null on failure — treat as no-signal.
+ */
+export async function fetchSplitPrStats(
+  installationId: number,
+  repoFullName: string,
+  prNumber: number,
+): Promise<SplitDiffStats | null> {
+  try {
+    const { githubApi } = await import('@/lib/github');
+    const files: Array<{ filename: string; additions: number; deletions: number }> =
+      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
+    if (!Array.isArray(files)) return null;
+    return splitDiffStats(files);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch live PR diff stats from GitHub, excluding generated paths.
  *
  * Uses the per-file breakdown (up to 300 files) to strip generated artifacts
@@ -115,21 +139,13 @@ export async function fetchEffectivePrStats(
   repoFullName: string,
   prNumber: number,
 ): Promise<DiffStats | null> {
-  try {
-    const { githubApi } = await import('@/lib/github');
-    const files: Array<{ filename: string; additions: number; deletions: number }> =
-      await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`);
-    if (!Array.isArray(files)) return null;
-
-    const sourceFiles = files.filter((f) => !isGeneratedPath(f.filename));
-    return {
-      filesChanged: sourceFiles.length,
-      linesAdded: sourceFiles.reduce((s, f) => s + (f.additions || 0), 0),
-      linesRemoved: sourceFiles.reduce((s, f) => s + (f.deletions || 0), 0),
-    };
-  } catch {
-    return null;
-  }
+  const split = await fetchSplitPrStats(installationId, repoFullName, prNumber);
+  if (!split) return null;
+  return {
+    filesChanged: split.reviewable.files,
+    linesAdded: split.reviewable.additions,
+    linesRemoved: split.reviewable.deletions,
+  };
 }
 
 /**

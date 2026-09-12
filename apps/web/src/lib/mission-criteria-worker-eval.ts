@@ -242,8 +242,14 @@ ${commandCriteria.length > 0 ? `### Command criteria (${commandCriteria.length})
 For each command criterion:
 1. Run the command exactly as written using Bash.
 2. Observe the exit code and any relevant output.
-3. \`pass\` if it exits 0; \`fail\` if it exits non-zero or errors; \`UNVERIFIED\` if you cannot run it.
-4. In \`evidence\`, state the exit code and any key output line.
+3. \`pass\` if it exits 0.
+4. \`fail\` ONLY if the command ran and its own assertion came back false (e.g. tests ran and reported
+   failures). This means the criterion is genuinely not met.
+5. \`UNVERIFIED\` if the command could not be evaluated at all: exit code 126 or 127, "command not
+   found", "permission denied", a timeout, a missing dependency, or any other environment error that
+   prevented the command from actually running. An unrunnable command proves nothing about the
+   criterion either way — it is NOT evidence of failure, so never grade it \`fail\`.
+6. In \`evidence\`, state the exit code and any key output line.
 
 ` : ''}${proseCriteria.length > 0 ? `### Prose criteria (${proseCriteria.length})
 For each prose criterion:
@@ -321,6 +327,30 @@ interface ParsedVerdict {
   verdict: CriterionVerdict;
   evidence: string;
   evidenceRef?: GoalCriteriaEvidenceRef;
+}
+
+/**
+ * Evidence phrases that mean the command never actually ran — a missing
+ * binary (127), a permission error (126), a timeout, or some other
+ * environment failure. None of these are an assertion coming back false, so
+ * none of them are evidence the criterion is unmet.
+ *
+ * A model instructed to grade this UNVERIFIED still sometimes reasons "it
+ * exited non-zero, so fail" — this is the backstop for exactly that case,
+ * checked against the same evidence text the model itself wrote.
+ */
+const EXEC_ERROR_EVIDENCE_PATTERN =
+  /\bexit(?:ed)?\s*(?:code\s*)?12[67]\b|command not found|no such file or directory|permission denied|\btimed?\s*out\b|\btimeout\b|\bexec_error\b/i;
+
+/**
+ * Downgrade a command criterion's `fail` to `UNVERIFIED` when the evidence
+ * shows the command could not run, rather than ran and asserted false. Only
+ * command criteria are checked: a prose criterion failing "permission denied"
+ * is describing what it found in the repo, not reporting its own execution.
+ */
+function correctExecutionErrorVerdict(type: string, verdict: CriterionVerdict, evidence: string): CriterionVerdict {
+  if (type !== 'command' || verdict !== 'fail') return verdict;
+  return EXEC_ERROR_EVIDENCE_PATTERN.test(evidence) ? 'UNVERIFIED' : verdict;
 }
 
 function parseVerdicts(structuredOutput: unknown): ParsedVerdict[] {
@@ -415,8 +445,13 @@ export async function handleCriteriaWorkerEvalOutcome(
       return;
     }
 
-    cs.verdict = v.verdict;
-    cs.evidence = v.evidence || `Graded ${v.verdict} by worker evaluator ${task.id.slice(0, 8)}`;
+    const evidence = v.evidence || `Graded ${v.verdict} by worker evaluator ${task.id.slice(0, 8)}`;
+    const correctedVerdict = correctExecutionErrorVerdict(String(currentAtIndex?.type ?? cs.type), v.verdict, evidence);
+
+    cs.verdict = correctedVerdict;
+    cs.evidence = correctedVerdict === v.verdict
+      ? evidence
+      : `${evidence} — corrected to UNVERIFIED: the command could not run (environment error), which is not evidence the criterion is unmet`;
     cs.workerTaskId = task.id;
     if (v.evidenceRef) cs.evidenceRefs = [v.evidenceRef];
     applied = true;

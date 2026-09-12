@@ -9,6 +9,20 @@ surfaces: [apps/web/src/lib/work-tracker.ts, apps/web/src/app/api/github/webhook
 related: [webhook-dataflow, mcp-connectors-and-roles, mission-task-lifecycle]
 keywords: [worktrackerconfig, externalissueid, externalissueurl, postlinearcompletioncomment, github_app_not_installed, inbound issue webhook]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "provider-completion-dispatch"
+    type: "symbol"
+    name: "postWorkTrackerCompletionUpdate"
+    path: "apps/web/src/lib/work-tracker.ts"
+  - id: "linear-inbound-webhook"
+    type: "route"
+    method: "POST"
+    path: "/api/webhooks/linear/[workspaceId]"
+    file: "apps/web/src/app/api/webhooks/linear/[workspaceId]/route.ts"
+  - id: "tracker-dispatch-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/work-tracker.test.ts"
 ---
 # Work-tracker integration
 

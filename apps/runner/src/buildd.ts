@@ -4,6 +4,7 @@ import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
+import { TRACKED_BRANCH } from './updater';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -568,8 +569,29 @@ export class BuilddClient {
      * updatedAt staleness rule for those workers.
      */
     activeWorkerIds?: string[],
+    /**
+     * This runner codebase's own git commit and package version — NOT a task
+     * commit. Lets the platform tell a stale-code runner from a merged fix
+     * alone, instead of requiring SSH into the host to curl its local
+     * /api/version endpoint.
+     */
+    runnerCommit?: string | null,
+    runnerVersion?: string | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number }> {
-    const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
+    const payload: Record<string, unknown> = {
+      localUiUrl,
+      activeWorkerCount,
+      environment,
+      /**
+       * The branch this install tracks. The server resolves `latestCommit`
+       * against it, because every update path here resets to
+       * `origin/${TRACKED_BRANCH}` — so any other branch's head is a commit
+       * this runner can never reach, and answering with one makes the runner
+       * permanently and unfixably "behind". Sourced from the same constant the
+       * updater uses so the two can never disagree.
+       */
+      branch: TRACKED_BRANCH,
+    };
     if (activeWorkerIds) {
       // Sent even when empty: an empty list is a meaningful assertion ("I own no
       // live workers"), distinct from an old runner that never reports ids.
@@ -582,6 +604,8 @@ export class BuilddClient {
       payload.sandboxEnabled = sandboxEnabled;
       payload.sandboxProbeAt = sandboxProbeAt;
     }
+    if (runnerCommit) payload.runnerCommit = runnerCommit;
+    if (runnerVersion) payload.runnerVersion = runnerVersion;
     const data = await this.fetch('/api/workers/heartbeat', {
       method: 'POST',
       body: JSON.stringify(payload),

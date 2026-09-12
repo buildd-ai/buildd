@@ -577,10 +577,24 @@ export interface CbmMetrics {
    * 'skipped_warm' means no index was needed because a shared seeded cache already
    * held this repo's graph. Distinct from 'ok' on purpose: lumping them together
    * makes the warm-start path invisible, so you cannot tell a fleet that is
-   * serving 0s starts from one that is paying ~20s per task.
+   * serving 0s starts from one that is paying a full index per task.
+   *
+   * 'backgrounded' means the build overran the startup wait budget and was handed
+   * off rather than aborted — the session started without a graph and the graph
+   * arrives mid-session. Kept separate from both 'ok' and 'failed' because it is
+   * neither: see backgroundIndexLanded for what the build actually did.
    */
-  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
+  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   bootstrapFailReason?: string;
+  /**
+   * Whether a backgrounded build finished successfully before the session ended.
+   * Only set when bootstrapResult='backgrounded'.
+   *
+   * The load-bearing field for judging the hand-off. Reclassifying overrunning
+   * builds out of 'failed' improves the index-build failure rate by definition;
+   * this is the number that says whether it improved anything real.
+   */
+  backgroundIndexLanded?: boolean;
   /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
   toolCalls: Record<string, number>;
   /** Total CBM MCP tool calls across all CBM tools. */
@@ -591,6 +605,30 @@ export interface CbmMetrics {
   grepCount: number;
   /** Glob tool call count for this task. */
   globCount: number;
+}
+
+/**
+ * What a session's `Bash` calls were FOR, as counts.
+ *
+ * Written by the runner's classifier (`apps/runner/src/bash-classify.ts`,
+ * which owns the bucket definitions and the pipeline/chain dominance rule).
+ * Bash is the most-called tool and `toolCounts` records it as one opaque bar,
+ * so a shell `grep`/`rg`/VCS content search was indistinguishable from a build
+ * or a `cat` — and invisible to the Read/Grep/Glob counters in `cbm`, which
+ * only see the file-access TOOLS.
+ *
+ * Counts only, bounded at a few hundred bytes per worker. `searchShapes` is a
+ * coarse shape of the search pattern (bare identifier / regex / quoted phrase
+ * with spaces / path-glob), never the pattern text: a search term can carry a
+ * secret or a customer identifier, so no command or pattern text is stored.
+ */
+export interface BashCommandCounts {
+  /** Bash calls classified — equals the `Bash` entry of `toolCounts`. */
+  total: number;
+  /** Calls per intent bucket (`code_search`, `file_find`, `test`, …). Sparse. */
+  buckets: Record<string, number>;
+  /** Pattern shapes for the `code_search` bucket only. Sparse. */
+  searchShapes: Record<string, number>;
 }
 
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
@@ -621,6 +659,12 @@ export interface ResultMeta {
    * `apps/web/src/lib/usage-stats.ts`, which reports tool coverage explicitly.
    */
   toolCounts?: Record<string, number>;
+  /**
+   * Decomposition of the `Bash` entry of `toolCounts` into intent buckets, plus
+   * coarse search-pattern shapes. Absent on workers that predate the classifier
+   * or made no Bash call — absence is "unknown", not zero.
+   */
+  bashCommandCounts?: BashCommandCounts;
 }
 
 export const workspaces = pgTable('workspaces', {
@@ -1283,6 +1327,14 @@ export const workers = pgTable('workers', {
   supportsInstructionAck: boolean('supports_instruction_ack').default(false).notNull(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
+  // What the agent actually sent on a completion the outputRequirement gate
+  // refused (400) — summary/structuredOutput/resultMeta, verbatim. Without
+  // this, a rejected `complete_task` call (e.g. a 60-turn review with no PR/
+  // artifact) discarded the agent's payload entirely; a human investigating
+  // the failure had nothing to read. Written right before the gate's 400
+  // response, never cleared — each rejection is a distinct worker row, so
+  // there is nothing later to go stale against.
+  rejectedCompletionPayload: jsonb('rejected_completion_payload').$type<Record<string, unknown> | null>(),
   // MCP tool call log - appended by runner during execution
   mcpCalls: jsonb('mcp_calls').default([]).$type<Array<{
     server: string;
@@ -1652,6 +1704,11 @@ export const workerHeartbeats = pgTable('worker_heartbeats', {
   environment: jsonb('environment').$type<WorkerEnvironment>(),
   sandboxEnabled: boolean('sandbox_enabled'),
   sandboxProbeAt: timestamp('sandbox_probe_at', { withTimezone: true }),
+  // The runner codebase's own git commit and package version — NOT a task
+  // commit. Lets the platform tell "this instance is running pre-fix code"
+  // from a merged PR alone, instead of requiring SSH into the host.
+  runnerCommit: text('runner_commit'),
+  runnerVersion: text('runner_version'),
   lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -2411,6 +2468,31 @@ export const userFeedback = pgTable('user_feedback', {
 export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
   user: one(users, { fields: [userFeedback.userId], references: [users.id] }),
   team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
+}));
+
+// Per-user snooze on a Home/Activity action-queue gate card (MERGE/REVIEW).
+// Keyed on the item's subjectKey (see lib/action-queue.ts's ActionQueueItem)
+// rather than a PR or task id, since that's the same dedupe key the queue
+// itself already uses and survives whichever raw source (escalation vs.
+// waitingOnYou) produced the row. snoozedUntil is re-checked against `now` on
+// every queue build (lib/action-queue.ts buildActionQueue) — never trusted as
+// a standing flag — so an expired snooze silently stops applying.
+export const actionQueueSnoozes = pgTable('action_queue_snoozes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  subjectKey: text('subject_key').notNull(),
+  snoozedUntil: timestamp('snoozed_until', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userSubjectIdx: uniqueIndex('action_queue_snoozes_user_subject_idx').on(t.userId, t.subjectKey),
+  teamIdx: index('action_queue_snoozes_team_idx').on(t.teamId),
+}));
+
+export const actionQueueSnoozesRelations = relations(actionQueueSnoozes, ({ one }) => ({
+  user: one(users, { fields: [actionQueueSnoozes.userId], references: [users.id] }),
+  team: one(teams, { fields: [actionQueueSnoozes.teamId], references: [teams.id] }),
 }));
 
 // System cache — generic key-value store for cached data (model lists, etc.)

@@ -1,3 +1,19 @@
+---
+status: partially
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "timeline-day-bands"
+    type: "symbol"
+    name: "deriveDayBands"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "gate-chip-collapse"
+    type: "symbol"
+    name: "gateChipCollapsed"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "timeline-density-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/condensed-timeline.test.ts"
+---
 # Mobile Decision Flow — Design Spec
 
 **Status:** Partially Implemented — I-7, I-8, I-11, I-13–I-16 shipped (condensed timeline default-open hierarchy, SegmentStrip in disclosure rows, gate-chip collapse, density tiers, bookkeeping footer, verdict collapse, wave banding). I-1–I-6, I-9, I-10, I-12 pending (initiative grouping, live-state card collapse, gesture grammar).  
