@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "connector-routing-gate"
@@ -18,7 +18,7 @@ assertions:
 ---
 # Connector Availability: Degrade, Don't Block
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/app/api/workers/claim/route.ts` — connector pre-filter (lines 480–636) and injection block (lines 1791–2029)
 - `apps/web/src/app/api/workers/claim/connector-gate.ts` — `checkConnectorRouting`

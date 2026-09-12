@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "workspace-release-config"

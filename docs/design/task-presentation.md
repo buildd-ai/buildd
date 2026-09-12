@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "task-phase"
@@ -16,7 +16,7 @@ assertions:
 ---
 # Unified Task Presentation
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `apps/web/src/lib/task-timestamps.ts` (PR #1163), Knowledge Layer Elevation mission, `docs/design/mission-state-progress.md`
 
 ---

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "path-claim-api"
@@ -23,7 +23,7 @@ assertions:
 ---
 # Path Claims as a Coordination Primitive
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/path-claim/route.ts` (PR #1774 — current implementation)
 - `apps/web/src/app/api/mcp/route.ts` (`check_path_claim` tool block)

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "recall-handler"
@@ -18,7 +18,7 @@ assertions:
 ---
 # Knowledge Tool Surface: `recall` / `learn`
 
-**Status:** Proposed
+**Status:** Implemented
 **Supersedes:** `buildd_memory` (8-action dispatch tool)
 **Related:** `docs/design/knowledge-graph-retrieval.md`, Knowledge Layer Elevation mission
 
