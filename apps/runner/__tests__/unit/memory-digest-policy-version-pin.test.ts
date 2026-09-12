@@ -41,8 +41,8 @@ const REPO_ROOT = join(import.meta.dir, '../../../..');
  * The pinned pair. The version and the fingerprints live in one object because
  * they are one fact: "this is what the arms mean at memory-digest-v4".
  *
- * To re-pin: run this test, copy the `Received` block it prints into
- * `PINNED.surfaces`, and change `PINNED.policyVersion` to match the new
+ * To re-pin: run this test. Its failure prints a paste-ready `surfaces:` block
+ * — drop that in below, and set `policyVersion` to the new
  * `MEMORY_DIGEST_POLICY_VERSION`. Do both in the SAME commit as the behaviour
  * change — a re-pin without a bump is the exact contamination this guards.
  */
