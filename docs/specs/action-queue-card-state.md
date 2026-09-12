@@ -9,6 +9,32 @@ surfaces: [apps/web/src/lib/action-queue.ts, apps/web/src/components/WaitingOnYo
 related: [surface-ia-home-missions-initiatives, pr-lifecycle-reconciliation]
 keywords: [WaitingOnYouReviewCard, WaitingOnYouMergeCard, conflict_dispatched, reviewerVerdict, approvalStale, optimistic UI, router.refresh, HomeAutoRefresh, stale local state]
 verified_by: [apps/web/src/components/WaitingOnYouReviewCard.test.tsx, apps/web/src/lib/action-queue.test.ts, apps/web/src/lib/pr-review-status.test.ts]
+assertions:
+  - id: reviewer-verdict-banner
+    type: symbol
+    name: ReviewerVerdictBanner
+    path: apps/web/src/components/ReviewerVerdictBanner.tsx
+  - id: derive-pr-review-status
+    type: symbol
+    name: derivePrReviewStatus
+    path: apps/web/src/lib/pr-review-status.ts
+  - id: build-action-queue
+    type: symbol
+    name: buildActionQueue
+    path: apps/web/src/lib/action-queue.ts
+  - id: reviewer-verdict-banner-reachable
+    type: symbol_reachable
+    symbol: ReviewerVerdictBanner
+    entry: apps/web/src/components/WaitingOnYouReviewCard.tsx
+  - id: card-test
+    type: test_file
+    path: apps/web/src/components/WaitingOnYouReviewCard.test.tsx
+  - id: action-queue-test
+    type: test_file
+    path: apps/web/src/lib/action-queue.test.ts
+  - id: pr-review-status-test
+    type: test_file
+    path: apps/web/src/lib/pr-review-status.test.ts
 supersedes: []
 ---
 
