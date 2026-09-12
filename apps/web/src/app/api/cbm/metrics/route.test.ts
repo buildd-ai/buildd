@@ -456,6 +456,11 @@ describe('GET /api/cbm/metrics', () => {
       // shared seeded cache built nothing, so counting it as an attempt would
       // dilute the failure rate of the tasks that did build an index.
       skippedWarm: 0, warmStartRate: null,
+      // A build handed off at the startup wait budget IS an attempt (a build ran)
+      // but is not a failure, so it gets its own bucket next to the failure rate
+      // — and its landing rate, which is what says the hand-off delivered a graph
+      // rather than just moved rows out of `failed`.
+      backgrounded: 0, backgroundedRate: null, backgroundLanded: 0, backgroundLandedRate: null,
       unreported: 0, failReasons: {},
     });
     expect(body.cbmActive.byOutcome).toEqual({});

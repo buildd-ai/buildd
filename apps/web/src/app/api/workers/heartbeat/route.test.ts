@@ -574,4 +574,61 @@ describe('POST /api/workers/heartbeat', () => {
       expect(data.leasesRenewed).toBe(0);
     });
   });
+
+  describe('tracked-branch resolution', () => {
+    function authed() {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', maxConcurrentWorkers: 3 });
+      mockAccountWorkspacesFindMany.mockResolvedValue([]);
+      mockWorkspacesFindMany.mockResolvedValue([]);
+      mockHeartbeatsFindFirst.mockResolvedValue(null);
+    }
+
+    // The server used to resolve a single hardcoded ref and hand it to every
+    // runner as `latestCommit`. A runner tracking a different branch was told
+    // to update to a commit that is not an ancestor of the branch it resets to,
+    // so it could never stop being "behind".
+    it('resolves the branch the runner reports', async () => {
+      authed();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', branch: 'main' },
+      }));
+
+      expect(res.status).toBe(200);
+      const calls = mockGetLatestVersion.mock.calls as unknown as any[][];
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe('main');
+    });
+
+    it('keeps today behaviour when the runner reports no branch (legacy runner)', async () => {
+      authed();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766' },
+      }));
+
+      expect(res.status).toBe(200);
+      const calls = mockGetLatestVersion.mock.calls as unknown as any[][];
+      expect(calls).toHaveLength(1);
+      // Undefined, not a guessed branch: the version cache owns the default.
+      expect(calls[0][0]).toBeUndefined();
+    });
+
+    it('passes a non-string branch straight through for the version cache to reject', async () => {
+      // Validation lives in one place (the version cache allowlist) so a second
+      // caller cannot forget it. The route must not pre-sanitise or pre-default.
+      authed();
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { localUiUrl: 'http://localhost:8766', branch: 42 },
+      }));
+
+      expect(res.status).toBe(200);
+      const calls = mockGetLatestVersion.mock.calls as unknown as any[][];
+      expect(calls[0][0]).toBe(42);
+    });
+  });
 });

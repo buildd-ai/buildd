@@ -11,7 +11,9 @@ import { credentialBroker } from './broker';
 import { createWorkspaceResolver, parseProjectRoots, normalizeGitUrl, getGitRemote } from './workspace';
 import { Outbox } from './outbox';
 import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrackedChanges, hasCommitDrift, shouldShowUpdateAvailable, isUpdateStuck,
-  buildHealthProbeSpawn, hasAutoUpdateBudget, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION } from './updater';
+  buildHealthProbeSpawn, AUTO_UPDATE_RETRY_LIMIT, PKG_VERSION,
+  isUpdateTargetReachable, isNoProgressUpdate, canAttemptAutoUpdate, isAutoUpdateDisabled,
+  reapChild, withTimeout, TRACKED_BRANCH } from './updater';
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
@@ -22,7 +24,8 @@ const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
 const CONFIG_FILE = process.env.BUILDD_CONFIG || join(BUILDD_DIR, 'config.json');
 const REPOS_CACHE_FILE = join(BUILDD_DIR, 'repos-cache.json');
 const BROWSER_OPEN_FILE = join(BUILDD_DIR, '.last-browser-open');
-const BRANCH = process.env.BUILDD_BRANCH || 'main';
+// Single source of truth, shared with the heartbeat payload — see updater.ts.
+const BRANCH = TRACKED_BRANCH;
 
 // --doctor: run diagnostics and exit
 if (process.argv.includes('--doctor')) {
@@ -524,6 +527,31 @@ const updateState: UpdateState = {
   updatingSince: null,
 };
 
+/**
+ * Targets this process has already proven it cannot make progress on — either
+ * unreachable from the tracked branch, or reached without HEAD moving.
+ *
+ * In-process and keyed on the SHA, because a plain retry counter cannot hold
+ * the line: `hasAutoUpdateBudget` re-arms on every change of the advertised
+ * commit by design, and the advertised commit follows a moving branch.
+ *
+ * Cleared only when something real has happened: an operator hitting a manual
+ * update endpoint, or the commit actually moving — which within one process can
+ * only happen via a restart, and a restart starts from an empty set anyway.
+ * Nothing else may clear it, or the loop it prevents comes back.
+ */
+const skippedUpdateTargets = new Set<string>();
+
+/**
+ * Give up on `sha` and stop advertising it. Called on every not-a-success exit
+ * from an update attempt, so the next tick does not simply try again.
+ */
+function abandonUpdateTarget(sha: string | null): void {
+  if (sha) skippedUpdateTargets.add(sha);
+  updateState.updateAvailable = false;
+  updateState.changelog = [];
+}
+
 // Kick off async commit resolution (non-blocking)
 initCurrentCommit().then(() => {
   updateState.currentCommit = getCurrentCommit();
@@ -580,11 +608,35 @@ async function getCachedModels(): Promise<{ id: string; name: string }[]> {
   return models;
 }
 
+/** Head of the branch this install tracks, as of the last fetch. */
+async function getTrackedBranchHead(): Promise<string | null> {
+  try { return await gitAsync(['rev-parse', `origin/${BRANCH}`], BUILDD_DIR, 10_000); } catch { return null; }
+}
+
 async function setLatestCommit(sha: string) {
   if (updateState.latestCommit === sha) return;
   updateState.latestCommit = sha;
   const wasAvailable = updateState.updateAvailable;
   if (checkForUpdate(updateState.currentCommit, sha)) {
+    // Reachability FIRST. The server may advertise a commit on a branch this
+    // install does not track, and no number of `git reset --hard
+    // origin/$BRANCH` will ever land on it. Refusing here — rather than only
+    // at apply time — is what keeps an old or misconfigured server from
+    // starting the loop at all. See isUpdateTargetReachable.
+    await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000).catch(() => {});
+    const branchHead = await getTrackedBranchHead();
+    const reachable = isUpdateTargetReachable(sha, branchHead, updateState.currentCommit);
+    if (!reachable) {
+      // Logged once per advertised SHA (this function early-returns on a repeat).
+      console.error(
+        `[update] refusing advertised commit ${sha.slice(0, 7)}: it is not the head of the tracked branch ` +
+        `'${BRANCH}' (origin/${BRANCH} is ${branchHead?.slice(0, 7) ?? 'unknown'}), so this runner cannot reach it. ` +
+        'Not advertising an update. Check that the server resolves this runner\'s branch.',
+      );
+      abandonUpdateTarget(sha);
+      return;
+    }
+
     // Fetch changelog for release notes
     let changelogReliable = true;
     if (updateState.currentCommit) {
@@ -595,7 +647,7 @@ async function setLatestCommit(sha: string) {
     // Only skip empty releases when we can trust the changelog was actually
     // empty — see shouldShowUpdateAvailable for why an unreliable (shallow
     // clone) empty result must not be read as "no changes".
-    updateState.updateAvailable = shouldShowUpdateAvailable(updateState.changelog, changelogReliable);
+    updateState.updateAvailable = shouldShowUpdateAvailable(updateState.changelog, changelogReliable, reachable);
     if (updateState.updateAvailable && !wasAvailable) {
       console.log(`Update available: ${updateState.currentCommit?.slice(0, 7)} → ${sha.slice(0, 7)} (${updateState.changelog.length} changes)`);
       broadcast({
@@ -720,10 +772,39 @@ let pendingTreeSyncRestart = false;
 const HEALTH_PROBE_TIMEOUT_MS = 30_000;
 
 /**
+ * Hard ceiling on the WHOLE probe call, teardown included.
+ *
+ * `runHealthProbe` gates `updateState.updating`, and an unbounded await anywhere
+ * inside it wedges that flag — which silences both the auto-updater and the
+ * drift check until a watchdog notices ten minutes later. Every individual step
+ * is bounded below; this is the backstop that makes "can never wedge" a
+ * property of the function rather than a property of its current body.
+ */
+const HEALTH_PROBE_CEILING_MS = HEALTH_PROBE_TIMEOUT_MS + 30_000;
+
+/**
  * Boot the code currently on disk on a spare port and see whether it serves
- * /health — the gate that decides whether restarting into it is safe. The
- * launcher restarts on ANY exit code, so shipping a build that dies on boot
- * means a 5-second crash loop; that is what this prevents.
+ * /health — the gate that decides whether restarting into it is safe.
+ *
+ * **There is no single launcher, so do not reason from one.** Two ship
+ * simultaneously and they disagree on exactly the case that matters here:
+ *
+ *   - The CLI launcher (`apps/runner/install.sh`), used by self-installed and
+ *     third-party runners, loops on exit code 75 and only 75
+ *     (`if [ "$EXIT_CODE" -ne 75 ]; then exit $EXIT_CODE; fi`). A build that
+ *     dies on boot therefore takes that runner OFFLINE and leaves it down
+ *     until a human notices.
+ *   - The Coder-template launcher (`launch-buildd.sh`, generated by the
+ *     workspace Terraform template — NOT in this repo, so grepping here will
+ *     not find it) restarts on ANY exit code after a 5s sleep. A build that
+ *     dies on boot crash-loops there instead. Confirmed empirically: SIGKILL
+ *     to the main runner (exit 137, not 75) was followed by a new PID.
+ *
+ * An earlier comment here asserted the second behaviour universally; a later
+ * edit asserted the first universally. Both were wrong. The probe is worth its
+ * cost under either: an unbootable build is either a permanently-dead runner or
+ * a 5s crash-loop, and no other pre-restart check can tell whether the new
+ * module graph even loads.
  *
  * Returns the child's own output on failure. It was previously piped and never
  * read, which discarded the one thing that would have explained the failure —
@@ -734,6 +815,19 @@ const HEALTH_PROBE_TIMEOUT_MS = 30_000;
  * the launcher's, and why the probe is pointed away from the live server.
  */
 async function runHealthProbe(): Promise<{ ok: boolean; detail: string }> {
+  return withTimeout(
+    runHealthProbeInner(),
+    HEALTH_PROBE_CEILING_MS,
+    {
+      ok: false,
+      detail:
+        `the health probe did not finish within ${Math.round(HEALTH_PROBE_CEILING_MS / 1000)}s ` +
+        '(including teardown) — treating the update as failed rather than holding the updating flag',
+    },
+  );
+}
+
+async function runHealthProbeInner(): Promise<{ ok: boolean; detail: string }> {
   const probePort = PORT + 1;
   const probeHome = join(BUILDD_DIR, '.health-probe');
   try { mkdirSync(probeHome, { recursive: true }); } catch { /* the probe tolerates a missing home */ }
@@ -769,11 +863,39 @@ async function runHealthProbe(): Promise<{ ok: boolean; detail: string }> {
     }
   }
 
-  try { proc.kill(); } catch { /* already gone */ }
-  await proc.exited.catch(() => undefined);
+  // Bounded teardown, escalating SIGTERM -> SIGKILL. A plain
+  // `proc.kill(); await proc.exited;` is what leaked a probe per attempt: the
+  // runner installs a SIGTERM handler that never exits (see reapChild's doc
+  // comment), so the signal was handled and the unbounded await never
+  // returned. Consistent with the `bun install` children below, which are all
+  // killed on a timer rather than awaited indefinitely.
+  const reaped = await reapChild(proc);
+  if (!reaped.exited) {
+    // SIGKILL is uncatchable, so this should be unreachable; if it is not, the
+    // one thing we must not do is restart into a build we cannot vouch for.
+    console.error(`[health-probe] child pid ${proc.pid} survived SIGKILL — refusing to treat this probe as a pass`);
+    return { ok: false, detail: `the probe child (pid ${proc.pid}) could not be terminated` };
+  }
+  if (reaped.escalated) {
+    console.warn(`[health-probe] child pid ${proc.pid} ignored SIGTERM and needed SIGKILL`);
+  }
 
+  // Belt and braces: if anything still answers on the probe port after
+  // teardown, a previous probe is still alive and this probe's verdict may not
+  // even be about the code we just installed. Fail rather than restart into a
+  // half-torn-down state.
+  const stillListening = await fetch(`http://localhost:${probePort}/health`, { signal: AbortSignal.timeout(2000) })
+    .then(() => true)
+    .catch(() => false);
+  if (stillListening) {
+    console.error(`[health-probe] port ${probePort} still answering after teardown — a leaked probe is alive; failing this attempt`);
+    return { ok: false, detail: `probe port ${probePort} still answering after teardown (leaked probe process)` };
+  }
+
+  // Bounded even on the success path: the pipe readers must not be left
+  // attached to a process nobody is waiting on.
+  const [out, err] = await withTimeout(collected, 2_000, ['', ''] as [string, string]);
   if (ok) return { ok: true, detail: '' };
-  const [out, err] = await collected;
   const tail = `${err}\n${out}`.split('\n').map(l => l.trim()).filter(Boolean).slice(-8).join(' | ');
   return { ok: false, detail: tail ? `${reason} — child output: ${tail}` : reason };
 }
@@ -1037,6 +1159,11 @@ const server = DEBUG_MODE ? Bun.serve({
       // Ensure we're on main branch (switch if needed)
       const branch = await getCurrentBranch();
 
+      // An operator asking for an update explicitly clears the skip latch: the
+      // manual endpoint is how a human-driven deploy overrides a runner that
+      // has given up on a target.
+      skippedUpdateTargets.clear();
+
       setUpdating(true);
       const prevCommit = updateState.currentCommit;
       broadcast({ type: 'update_started' });
@@ -1051,14 +1178,38 @@ const server = DEBUG_MODE ? Bun.serve({
 
         // Install dependencies
         const installProc = Bun.spawn(['bun', 'install'], { cwd: BUILDD_DIR, stdout: 'pipe', stderr: 'pipe' });
+        const installTimeout = setTimeout(() => { try { installProc.kill(); } catch { /* ignore */ } }, 120_000);
         const installExit = await installProc.exited;
+        clearTimeout(installTimeout);
         if (installExit !== 0) {
           throw new Error('bun install failed');
         }
 
-        // Read new commit
+        // Read the on-disk commit. Note this deliberately does NOT touch
+        // updateState.currentCommit, which means "the commit this process
+        // loaded" — the drift check compares the two, and moving it here would
+        // make the rollback path below look like external drift.
         await initCurrentCommit();
         const newCommit = getCurrentCommit();
+
+        // Same no-progress guard as the idle path. This endpoint resets to
+        // origin/$BRANCH too, so it has exactly the same failure mode: a reset
+        // that lands where we already were, reported as a successful update and
+        // followed by a pointless restart.
+        if (isNoProgressUpdate(prevCommit, newCommit)) {
+          const detail =
+            `the reset did not move HEAD (still ${newCommit?.slice(0, 7) ?? 'unknown'}) — origin/${BRANCH} ` +
+            'is already checked out, so there is nothing to update to';
+          console.error(`Update FAILED — ${detail}. Not restarting: a no-op update is not a success.`);
+          abandonUpdateTarget(updateState.latestCommit);
+          setUpdating(false);
+          broadcast({ type: 'update_failed', error: `Update made no progress — ${detail}` });
+          return Response.json({
+            error: 'Update made no progress — the commit did not move',
+            detail,
+            currentCommit: newCommit?.slice(0, 7),
+          }, { status: 409, headers: corsHeaders });
+        }
 
         // Health check: boot the new code on a spare port and verify it serves
         // /health before restarting into it.
@@ -2244,7 +2395,19 @@ const server = DEBUG_MODE ? Bun.serve({
       setUpdating(true);
       broadcast({ type: 'update_progress', status: 'updating' });
 
+      skippedUpdateTargets.clear();
       const result = applyUpdate();
+
+      if (result.success && isNoProgressUpdate(result.previousCommit ?? null, result.newCommit ?? null)) {
+        // applyUpdate reports success for a reset that changed nothing. Restarting
+        // on that is the unbounded loop — see isNoProgressUpdate.
+        const detail = `the reset did not move HEAD (still ${result.newCommit?.slice(0, 7) ?? 'unknown'})`;
+        console.error(`Update FAILED — ${detail}. Not restarting: a no-op update is not a success.`);
+        abandonUpdateTarget(updateState.latestCommit);
+        setUpdating(false);
+        broadcast({ type: 'update_progress', status: 'error', error: `no progress — ${detail}` });
+        return Response.json({ success: false, error: `Update made no progress — ${detail}` }, { status: 409, headers: corsHeaders });
+      }
 
       if (result.success) {
         broadcast({ type: 'update_progress', status: 'restarting' });
@@ -2602,6 +2765,13 @@ function getActiveWorkerCount(): number {
   ).length;
 }
 
+if (isAutoUpdateDisabled()) {
+  console.log(
+    '[update] BUILDD_DISABLE_AUTO_UPDATE is set — the idle self-updater is OFF. ' +
+    'Manual /api/update and the commit-drift restart still work.',
+  );
+}
+
 setInterval(async () => {
   const activeCount = getActiveWorkerCount();
 
@@ -2645,26 +2815,36 @@ setInterval(async () => {
     pendingTreeSyncRestart = false;
   }
 
-  // Auto-update when: update available, not already updating, idle long enough,
-  // and this target commit still has attempts left.
+  // Auto-update when: the operator has not disabled it, an update is available,
+  // we are not already updating, the runner has been idle long enough, and this
+  // target still has attempts left AND has not already been abandoned.
+  //
+  // The skip latch is the part that makes the retry cap real. It used to be
+  // reachable only through a throwing failure: a no-op reset counted as a
+  // success, restarted the process, and re-initialised the per-process counter
+  // — so the loop had no bound at all beyond the idle delay.
   if (
     updateState.updateAvailable &&
     !updateState.updating &&
-    updateState.lastIdleAt &&
-    Date.now() - updateState.lastIdleAt >= IDLE_UPDATE_DELAY_MS &&
-    hasAutoUpdateBudget(
-      updateState.autoUpdateRetries,
-      updateState.autoUpdateRetriesCommit,
-      updateState.latestCommit,
-    )
+    !isAutoUpdateDisabled() &&
+    canAttemptAutoUpdate({
+      target: updateState.latestCommit,
+      skipped: skippedUpdateTargets,
+      retriesSpent: updateState.autoUpdateRetries,
+      spentAgainstCommit: updateState.autoUpdateRetriesCommit,
+      lastIdleAt: updateState.lastIdleAt,
+      now: Date.now(),
+      idleDelayMs: IDLE_UPDATE_DELAY_MS,
+    })
   ) {
+    const target = updateState.latestCommit;
     // A new target gets a fresh budget. Previously the counter was only reset
     // on the updateAvailable false -> true edge, which a runner that is already
     // stale never crosses — so three failures wedged auto-update until a manual
     // restart.
-    if (updateState.autoUpdateRetriesCommit !== updateState.latestCommit) {
+    if (updateState.autoUpdateRetriesCommit !== target) {
       updateState.autoUpdateRetries = 0;
-      updateState.autoUpdateRetriesCommit = updateState.latestCommit;
+      updateState.autoUpdateRetriesCommit = target;
     }
     console.log(`Auto-updating after ${Math.round(IDLE_UPDATE_DELAY_MS / 60000)}min idle... (attempt ${updateState.autoUpdateRetries + 1}/${AUTO_UPDATE_RETRY_LIMIT})`);
     setUpdating(true);
@@ -2673,8 +2853,31 @@ setInterval(async () => {
     const prevBranch = await getCurrentBranch();
     broadcast({ type: 'update_started' });
 
+    // `updating` gates both this block and the drift check, so it MUST be
+    // cleared on every exit path that does not restart. That is this
+    // try/finally — not the watchdog, which only limits the damage of a wedge
+    // rather than preventing one.
+    let restartScheduled = false;
     try {
       await gitAsync(['fetch', 'origin', BRANCH], BUILDD_DIR, 30_000);
+
+      // Reachability, re-checked against the freshly-fetched ref and BEFORE
+      // anything destructive. `setLatestCommit` already refused unreachable
+      // targets, but the branch head moves between then and now, and this is
+      // the check that stands between an unreachable target and a `git reset
+      // --hard`. An unreachable target is abandoned, not retried: retrying is
+      // the loop.
+      const branchHead = await getTrackedBranchHead();
+      if (!isUpdateTargetReachable(target, branchHead, prevCommit)) {
+        const detail =
+          `target ${target?.slice(0, 7) ?? 'unknown'} is not the head of the tracked branch '${BRANCH}' ` +
+          `(origin/${BRANCH} is ${branchHead?.slice(0, 7) ?? 'unknown'}, HEAD is ${prevCommit?.slice(0, 7) ?? 'unknown'})`;
+        console.error(`Auto-update refused — ${detail}. This runner cannot reach that commit; abandoning it instead of retrying.`);
+        abandonUpdateTarget(target);
+        broadcast({ type: 'update_failed', error: `Auto-update refused — ${detail}` });
+        return;
+      }
+
       if (prevBranch !== BRANCH) {
         await gitAsync(['checkout', '-f', BRANCH], BUILDD_DIR, 10_000);
       }
@@ -2688,9 +2891,29 @@ setInterval(async () => {
       }
       await initCurrentCommit();
 
-      // Gate the restart on the new build actually booting. The launcher
-      // restarts on any exit code, so a build that dies on boot would crash-loop
-      // every 5s.
+      // The no-progress guard, BEFORE the health probe: if the tree did not
+      // move there is nothing new to boot, and booting the same code to justify
+      // a restart into the same code is the whole defect. `Auto-updated to
+      // <the same commit>` is now impossible to log.
+      const newCommit = getCurrentCommit();
+      if (isNoProgressUpdate(prevCommit, newCommit)) {
+        const detail =
+          `the reset did not move HEAD (still ${newCommit?.slice(0, 7) ?? 'unknown'}) while target was ` +
+          `${target?.slice(0, 7) ?? 'unknown'}`;
+        console.error(
+          `Auto-update FAILED — ${detail}. A no-op update is not a success: not restarting, and abandoning this target ` +
+          'so it is never retried (a restart would reset the retry budget and loop).',
+        );
+        abandonUpdateTarget(target);
+        broadcast({ type: 'update_failed', error: `Auto-update made no progress — ${detail}` });
+        return;
+      }
+
+      // Gate the restart on the new build actually booting. Exiting 75 into a
+      // build that cannot boot is bad under both launchers, differently: the
+      // CLI launcher takes the runner offline for good, the Coder-template
+      // launcher crash-loops it every 5s. See runHealthProbe's doc comment —
+      // neither launcher's behaviour is the universal one.
       const health = await runHealthProbe();
 
       if (!health.ok && prevCommit) {
@@ -2705,7 +2928,6 @@ setInterval(async () => {
         await rb.exited;
         clearTimeout(rbTimeout);
         await initCurrentCommit();
-        setUpdating(false);
         broadcast({ type: 'update_failed', error: `Auto-update health check failed — rolled back: ${health.detail}` });
         return;
       }
@@ -2713,15 +2935,14 @@ setInterval(async () => {
         // Nothing to roll back to, so the tree keeps the new code and the
         // running process keeps its old modules. The drift check restarts us.
         console.error(`Auto-update health check failed and no previous commit is known: ${health.detail}`);
-        setUpdating(false);
         broadcast({ type: 'update_failed', error: health.detail });
         return;
       }
 
-      const newCommit = getCurrentCommit();
-      console.log(`Auto-updated to ${newCommit?.slice(0, 7)}`);
+      console.log(`Auto-updated ${prevCommit?.slice(0, 7)} → ${newCommit?.slice(0, 7)}`);
       broadcast({ type: 'update_complete', newCommit: newCommit?.slice(0, 7) });
 
+      restartScheduled = true;
       scheduleGracefulRestart('idle auto-update');
     } catch (err: any) {
       if (prevCommit) {
@@ -2734,12 +2955,15 @@ setInterval(async () => {
           await initCurrentCommit();
         } catch { /* best effort */ }
       }
-      setUpdating(false);
       console.error('Auto-update failed:', err.message);
       if (updateState.autoUpdateRetries >= AUTO_UPDATE_RETRY_LIMIT) {
-        console.error(`Auto-update retries exhausted for ${updateState.latestCommit?.slice(0, 7) ?? 'unknown'} — will not retry until a newer commit is published`);
+        console.error(`Auto-update retries exhausted for ${target?.slice(0, 7) ?? 'unknown'} — will not retry until a newer commit is published`);
       }
       broadcast({ type: 'update_failed', error: err.message });
+    } finally {
+      // scheduleGracefulRestart sets `updating` itself and exits the process;
+      // clearing it here would race that. Every other path clears it.
+      if (!restartScheduled) setUpdating(false);
     }
   }
 }, 60_000); // Check every 60 seconds

@@ -32,12 +32,54 @@ export interface ClaimErrorClassification {
   scope: BreakerScope;
 }
 
-/** Auth context a task runs under. Failures pause claims for this context. */
-export function authContextOf(task: Pick<BuilddTask, 'context'> | null | undefined): string {
+/** Agent backend a task runs on. */
+export type TaskBackend = 'claude' | 'codex';
+
+/**
+ * Backend assumed when a task does not declare one. Matches the
+ * `task.backend || 'claude'` default used throughout workers.ts — the runner
+ * must not invent a different one here or the key it pauses would not be the
+ * key it later checks.
+ */
+export const DEFAULT_BACKEND: TaskBackend = 'claude';
+
+/**
+ * Every backend an auth context can be walled for independently. Keep in sync
+ * with AgentBackend in @buildd/core/backend-policy; only used to enumerate keys
+ * when a task's backend is unknown.
+ */
+export const CONTEXT_BACKENDS: readonly TaskBackend[] = ['claude', 'codex'];
+
+/** Context key used when a worker's auth context is no longer known. */
+export const DEFAULT_AUTH_CONTEXT = `account:${DEFAULT_BACKEND}`;
+
+type ContextualTask = Pick<BuilddTask, 'context' | 'backend'> | null | undefined;
+
+/**
+ * Credential scope a task runs under, without the backend suffix: the account's
+ * own credentials, or a specific tenant's. Tenant id leads so tenant isolation
+ * is decided before anything else.
+ */
+export function authScopeOf(task: ContextualTask): string {
   const ctx = (task?.context ?? null) as Record<string, unknown> | null;
   const tenantCtx = (ctx?.tenantContext as { tenantId?: string } | undefined) ?? null;
   const tenantId = tenantCtx?.tenantId;
   return tenantId ? `tenant:${tenantId}` : 'account';
+}
+
+/**
+ * Auth context a task runs under. Failures pause claims for this context.
+ *
+ * Keyed `account:<backend>` / `tenant:<id>:<backend>`. The backend suffix is
+ * load-bearing: providers exhaust independently, so a Codex usage wall must not
+ * pause the Claude-backend tasks checked against the same account. The server
+ * already models pauses per backend (`backend_pauses` +
+ * apps/web/src/lib/backend-failover.ts); this keeps the runner consistent with
+ * it instead of conflating the two providers into one key.
+ */
+export function authContextOf(task: ContextualTask): string {
+  const backend = (task?.backend || DEFAULT_BACKEND) as TaskBackend;
+  return `${authScopeOf(task)}:${backend}`;
 }
 
 /**
@@ -238,7 +280,65 @@ export class ContextBreaker {
     this.paused.delete(ctx);
   }
 
-  snapshot(): Record<string, number> {
+  /**
+   * Currently-paused contexts and their expiry.
+   *
+   * Prunes expired entries first: this feeds the debug surface, and a stale key
+   * there would report a pause that no longer exists — a false signal of
+   * exactly the kind that made the original incident hard to read.
+   */
+  snapshot(now: number = Date.now()): Record<string, number> {
+    for (const [ctx, until] of this.paused) {
+      if (now >= until) this.paused.delete(ctx);
+    }
     return Object.fromEntries(this.paused);
   }
+}
+
+/**
+ * Earliest future pause expiry in a breaker snapshot, or null when nothing is
+ * paused. Pure so the wake-up scheduling can be tested without timers.
+ */
+export function nextContextWake(
+  snapshot: Record<string, number>,
+  now: number = Date.now(),
+): number | null {
+  let earliest: number | null = null;
+  for (const until of Object.values(snapshot)) {
+    if (until <= now) continue;
+    if (earliest === null || until < earliest) earliest = until;
+  }
+  return earliest;
+}
+
+/**
+ * Should the nudge path drop this task because its auth context is walled?
+ * Returns the offending key (and when it lifts) if so, else null.
+ *
+ * Fails TOWARD claiming when the backend is unknown — a Pusher payload from a
+ * server predating the `backend` field. Dropping a nudge we cannot key would
+ * silently discard work, which is the defect being fixed; attempting it costs
+ * at most one worker row, and the resulting failure re-trips the breaker. So an
+ * unknown backend is only skipped when EVERY backend for the scope is walled.
+ */
+export function pausedContextFor(
+  breaker: ContextBreaker,
+  task: ContextualTask,
+  now: number = Date.now(),
+): { key: string; until: number | null } | null {
+  const scope = authScopeOf(task);
+  const backend = task?.backend;
+
+  if (backend) {
+    const key = `${scope}:${backend}`;
+    return breaker.isPaused(key, now) ? { key, until: breaker.pausedUntil(key) } : null;
+  }
+
+  const keys = CONTEXT_BACKENDS.map(b => `${scope}:${b}`);
+  if (!keys.every(k => breaker.isPaused(k, now))) return null;
+  const untils = keys
+    .map(k => breaker.pausedUntil(k))
+    .filter((n): n is number => n !== null);
+  // Report the soonest recovery of the walled set, not the longest wall.
+  return { key: `${scope}:*`, until: untils.length > 0 ? Math.min(...untils) : null };
 }

@@ -269,6 +269,70 @@ describe('completion payload carries the metrics built at completion time', () =
   });
 });
 
+// ─── Bash sub-classification travels with the same payload ───────────────────
+
+/**
+ * `toolCounts.Bash` is a single opaque bar over the most-called tool, so the
+ * share of a session that is code search was unknowable. The classifier
+ * (bash-classify.ts) is unit-tested on its own; what is asserted here is the
+ * WIRING — that a real session's Bash calls are classified as they stream in
+ * and that the counts reach the completion PATCH, with no command text.
+ */
+describe('bash command classification reaches the server', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  beforeEach(resetAll);
+  afterEach(() => { manager?.destroy(); });
+
+  test('classifies every Bash call and ships the counts in resultMeta', async () => {
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'tool_use', id: 'b-1', name: 'Bash', input: { command: 'grep -rn recordToolCall apps/runner/src' } },
+            { type: 'tool_use', id: 'b-2', name: 'Bash', input: { command: 'cat package.json | grep name' } },
+            { type: 'tool_use', id: 'b-3', name: 'Bash', input: { command: 'ps aux | grep bun' } },
+            { type: 'tool_use', id: 'b-4', name: 'Read', input: { file_path: '/tmp/x.ts' } },
+          ],
+        },
+      },
+      successResult(),
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-bash-1');
+
+    const meta = completionCall()!.payload.resultMeta as any;
+    expect(meta.toolCounts.Bash).toBe(3);
+    expect(meta.bashCommandCounts.total).toBe(3);
+    // Two real searches; `ps aux | grep bun` is a process filter, not a search.
+    expect(meta.bashCommandCounts.buckets.code_search).toBe(2);
+    expect(meta.bashCommandCounts.buckets.other).toBe(1);
+    expect(meta.bashCommandCounts.searchShapes.identifier).toBe(2);
+    // The searched text never leaves the runner.
+    expect(JSON.stringify(meta.bashCommandCounts)).not.toContain('recordToolCall');
+  });
+
+  test('omits bashCommandCounts when the session ran no Bash call', async () => {
+    mockMessages = [
+      { type: 'system', subtype: 'init', session_id: 'sess-1', model: 'claude-sonnet-4-6' },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'r-1', name: 'Read', input: { file_path: '/tmp/x.ts' } }] },
+      },
+      successResult(),
+    ];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-bash-2');
+
+    const meta = completionCall()!.payload.resultMeta as any;
+    expect(meta.toolCounts.Read).toBe(1);
+    // Absence must stay distinguishable from "ran Bash, none of it was search".
+    expect(meta.bashCommandCounts).toBeUndefined();
+  });
+});
+
 // ─── Defect 1: the server already terminalised the worker ────────────────────
 
 describe('terminal metrics after a server-side completion', () => {

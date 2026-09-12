@@ -138,6 +138,13 @@ export interface EscalationRawItem {
   ciGate?: CiGate | null;
   /** Reviewer's recommended next step, when it escalated to a human. */
   recommendation?: string | null;
+  /**
+   * An open `reviewer_approved` note's summary — set only when the reviewer
+   * approved under an approve-only gate and is waiting on a human merge.
+   * Distinguishes "approved, nothing to apply" from "no verdict at all" for a
+   * REVIEW-chip card, since both leave `recommendation` null.
+   */
+  verdictSummary?: string | null;
   /** Set when an agent is actively resolving conflicts for this PR. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
@@ -200,6 +207,8 @@ export interface ActionQueueItem {
    * being asked to decide something an agent already failed at.
    */
   recommendation?: string | null;
+  /** See {@link EscalationRawItem.verdictSummary} — carried through unchanged. */
+  verdictSummary?: string | null;
   /** Set when chip === 'RESOLVING' — the task actively resolving merge conflicts. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
@@ -254,6 +263,17 @@ const MERGE_CTA_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>(['MERGE', '
 export interface BuildActionQueueOptions {
   /** Injected for deterministic tests. Defaults to now. */
   now?: Date;
+  /**
+   * subjectKeys the requesting user currently has an active (unexpired) snooze
+   * on — see `action_queue_snoozes` in schema.ts. Dropped from the built queue
+   * entirely rather than flagged, so a snoozed MERGE/REVIEW gate card behaves
+   * exactly like one that never escalated. Callers must have already filtered
+   * this set to `snoozedUntil > now`; buildActionQueue does not re-check it —
+   * the freshness invariant this file otherwise enforces (see header comment)
+   * is about re-deriving subject state (open/merged/CI), not about re-running
+   * an expiry check the caller already ran a moment earlier.
+   */
+  snoozedSubjectKeys?: ReadonlySet<string>;
 }
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
@@ -418,6 +438,7 @@ export function buildActionQueue(
       recommendation: ciGate?.kind === 'blocked'
         ? ciGate.recommendation
         : item.recommendation ?? null,
+      verdictSummary: item.verdictSummary ?? null,
       conflictRetryTaskId: item.conflictRetryTaskId ?? undefined,
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
@@ -521,7 +542,10 @@ export function buildActionQueue(
     }
   }
 
-  return [...map.values()].sort((a, b) => {
+  const snoozed = options.snoozedSubjectKeys;
+  return [...map.values()]
+    .filter((item) => !snoozed?.has(item.subjectKey))
+    .sort((a, b) => {
     const chipDiff = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
     if (chipDiff !== 0) return chipDiff;
     // Within MERGE: most impactful (unblocks more tasks) first, then arc-linked
