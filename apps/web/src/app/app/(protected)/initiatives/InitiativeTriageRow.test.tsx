@@ -131,4 +131,21 @@ describe('InitiativeTriageRow', () => {
     );
     expect(html).toContain('aria-label="Hide dormant initiative"');
   });
+
+  // The swipe panel used to mount at width 0, where flex min-content sizing
+  // still painted it over the right-hand side of every dormant row.
+  it('does not mount the swipe-reveal panel until a swipe starts', () => {
+    const html = renderToStaticMarkup(
+      <InitiativeTriageRow pulse={pulse({ verdict: 'dormant' })} onDismiss={() => {}} />,
+    );
+    expect(html).not.toContain('Hidden from this list');
+    expect(html).not.toContain('bg-status-warning');
+  });
+
+  // A single-line row truncated the title to a few characters on a phone.
+  it('gives the title the full row width below sm, and wraps instead of clipping', () => {
+    const html = renderToStaticMarkup(<InitiativeTriageRow pulse={pulse()} />);
+    expect(html).toContain('col-span-2 sm:col-span-1');
+    expect(html).toMatch(/line-clamp-2 sm:truncate[^"]*"[^>]*>Test Initiative/);
+  });
 });
