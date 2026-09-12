@@ -1,7 +1,7 @@
 import { db } from '@buildd/core/db';
 import { workers, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
-import { getTeamWorkspaceIds } from '@/lib/team-access';
+import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { getTeamWorkspaceIds, getUserWorkspaceIds } from '@/lib/team-access';
 
 /**
  * Resolve a worker by PR number across the account's accessible workspaces.
@@ -70,6 +70,76 @@ export async function resolveWorkerByPrNumber(
 
   if (matchingWorkers.length === 0) {
     return { error: 'PR not found', status: 404 };
+  }
+
+  const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
+  if (distinctWorkspaceIds.size > 1) {
+    return {
+      error: `PR #${prNumber} exists in multiple workspaces — pass workspaceId to disambiguate`,
+      status: 409,
+      candidates: [...distinctWorkspaceIds],
+    };
+  }
+
+  return matchingWorkers[0];
+}
+
+/**
+ * Resolve a still-open (unmerged) worker by PR number, scoped to a web-session
+ * user's accessible workspaces — the auth model `/api/prs/[prNumber]/merge`
+ * and `/api/prs/[prNumber]/apply-recommendation` both run under (session
+ * cookie, `getUserWorkspaceIds`), distinct from `resolveWorkerByPrNumber`
+ * above (account/teamId, MCP callers). Same workspaceId-disambiguation and
+ * ambiguous-PR handling as that resolver; kept separate rather than
+ * parameterizing one function over two different workspace-id sources.
+ */
+export async function resolveOpenWorkerForUser(
+  userId: string,
+  prNumber: number,
+  workspaceId: string | null | undefined,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Promise<{ error: string; status: number; candidates?: string[] } | Record<string, any>> {
+  const wsIds = await getUserWorkspaceIds(userId);
+  if (wsIds.length === 0) {
+    return { error: 'No workspaces found', status: 403 };
+  }
+
+  let narrowedWsId: string | null = null;
+  if (workspaceId) {
+    if (wsIds.includes(workspaceId)) {
+      narrowedWsId = workspaceId;
+    } else {
+      const allWs = await db.query.workspaces.findMany({
+        where: inArray(workspaces.id, wsIds),
+        columns: { id: true, name: true, repo: true },
+      });
+      const lower = workspaceId.toLowerCase();
+      const match = allWs.find(ws =>
+        ws.name.toLowerCase() === lower ||
+        ws.repo?.toLowerCase() === lower ||
+        ws.repo?.toLowerCase().endsWith('/' + lower)
+      );
+      if (match) narrowedWsId = match.id;
+    }
+    if (!narrowedWsId) {
+      return { error: `Workspace "${workspaceId}" not found or not accessible`, status: 403 };
+    }
+  }
+
+  const searchIds = narrowedWsId ? [narrowedWsId] : wsIds;
+
+  const matchingWorkers = await db.query.workers.findMany({
+    where: and(
+      inArray(workers.workspaceId, searchIds),
+      eq(workers.prNumber, prNumber),
+      isNotNull(workers.prUrl),
+      isNull(workers.mergedAt),
+    ),
+    with: { task: true },
+  });
+
+  if (matchingWorkers.length === 0) {
+    return { error: 'PR not found or already merged', status: 404 };
   }
 
   const distinctWorkspaceIds = new Set(matchingWorkers.map((w) => w.workspaceId));
