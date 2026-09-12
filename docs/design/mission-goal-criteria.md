@@ -5,9 +5,9 @@ superseded_on: 2026-08-29
 superseded_reason: Described criteria as advisory metadata evaluated as a side effect of completion. The shipped contract inverts that — completion requests a verdict and the verdict gates completion (PR #1901).
 assertions:
   - id: goal-criteria-column
-    type: symbol
-    name: goalCriteria
-    path: packages/core/db/schema.ts
+    type: config_key
+    key: goalCriteria
+    file: packages/core/db/schema.ts
   - id: goal-criterion-type
     type: symbol
     name: GoalCriterion
@@ -22,9 +22,9 @@ assertions:
     path: /api/missions/[id]/evaluate
     file: apps/web/src/app/api/missions/[id]/evaluate/route.ts
   - id: kpis-column
-    type: symbol
-    name: kpis
-    path: packages/core/db/schema.ts
+    type: config_key
+    key: kpis
+    file: packages/core/db/schema.ts
   - id: initiative-kpi-type
     type: symbol
     name: InitiativeKPI

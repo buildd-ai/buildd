@@ -4,7 +4,7 @@ status: implemented
 assertions:
   - id: "select-failover"
     type: "symbol"
-    name: "pickFailoverBackend"
+    name: "resolveFailover"
     path: "packages/core/backend-policy.ts"
   - id: "manual-provider-switch"
     type: "route"

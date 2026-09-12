@@ -4,22 +4,20 @@
 
 ## Coverage and priority
 
-The original corpus contained 110 documents, of which 108 lacked assertions. The current corpus contains 112 documents. This change preserves the 14 assertion blocks already added upstream and the two original blocks, and recovers the previously authored backfill for 93 additional documents (290 assertions). The retired chat integration note is explicitly annotated as historical and assertion-free.
+The original and current corpus contains 110 documents. This backfill preserves the 14 upstream assertion blocks and the two original blocks, and adds 290 assertions across 93 additional documents. All 30 original missing-assertions debt entries carry assertions and are removed from the exemption set. A regression test checks that formerly grandfathered terminal documents cannot silently lose their assertions. The retired chat integration note is explicitly historical and assertion-free; every other document in the original corpus now has assertions.
 
-The backfill follows §5: implemented/active contracts first, then route-bearing designs and migration claims, with consumer-reference assertions last. The recovered terminal-status tier covers 32 documents (104 passing assertions, one failure). The remaining 61 newly asserted documents contribute 148 passes and 37 failures. All 30 original missing-assertions debt entries now carry assertions and are removed from the exemption set; a regression test ensures backfilled terminal documents cannot silently lose their assertions.
+The newly asserted terminal-status tier covers 32 documents (103 passing assertions, two failures). The remaining 61 newly asserted documents contribute 147 passes and 38 failures. Two pre-existing schema-field assertions are corrected to literal-key checks: `goalCriteria` and `kpis` are table properties, not standalone exports. Their stable IDs are preserved.
 
-No implementation status was promoted to make the checker green. Legacy prose status words were carried into frontmatter where needed for parsing. Unknown status vocabulary is still visible in the table below and remains excluded from ledger classification.
+No status was promoted and no suppression was added to make the checker green. Legacy prose status words were carried into frontmatter for parsing; unrecognized vocabulary remains visible below and is excluded from ledger classification.
 
 | Checker-derived state | Documents |
 | --- | ---: |
 | `implemented` | 84 |
 | `partial` | 16 |
 | `failing` | 9 |
-| `unverified` | 3 |
+| `unverified` | 1 |
 
-Assertions: **362** — **319 pass**, **40 fail**, **3 suppressed**. Validation errors: **0**. Document-level status contradictions: **24**.
-
-Three documents remain unverified: the retired `chat-integrations.md` note, plus `experiment-lifecycle.md` and `self-host-only-subscription-auth.md`, which were added after the original backfill corpus and are outside this recovery's scope. Every non-retired document from the original corpus now has assertions.
+Assertions: **362** — **319 pass**, **40 fail**, **3 suppressed**. Validation errors: **0**. Document-level status contradictions: **23** (22 derived-ahead-of-declared, one declared-ahead-of-derived).
 
 ## Ledger dry run
 
@@ -27,25 +25,26 @@ Three documents remain unverified: the retired `chat-integrations.md` note, plus
 
 | Classification | Assertions |
 | --- | ---: |
-| `code_ahead` | 97 |
-| `contradicted` | 1 |
+| `code_ahead` | 96 |
+| `contradicted` | 2 |
 | `clean` | 194 |
 | `skip` | 70 |
 
-On an empty ledger this would insert 98 rows. This is a dry-run projection, not persisted data. No ledger writes were performed. Tier 2 does not produce `spec_ahead`: a failed static lookup cannot distinguish unbuilt work from renamed or moved code.
+On an empty ledger this projects 98 rows. No database writes were performed. A passing assertion under a recognized nonterminal declaration produces `code_ahead` even when another assertion in the same document fails. This is a structural finding, not proof the whole proposal shipped. Failures under nonterminal declarations are expected work in progress (`clean`); suppressed assertions and unrecognized or retired statuses are `skip`. Tier 2 cannot establish `spec_ahead` because a failed lookup alone cannot distinguish missing work from renamed code.
 
-A passing assertion under a recognized nonterminal declaration produces `code_ahead`, even when another assertion in that document fails. That identifies a passing structural claim, not proof that the entire proposal shipped. Failures under nonterminal declarations are expected work in progress (`clean`); suppressed assertions and unrecognized or retired statuses are `skip`. Document-level contradictions and assertion-level classifications therefore have different totals.
+## Review findings and limits
 
-## Findings and limits
+- The implemented backend failover design names `classifyFailure` in `packages/core/failure-classification.ts` and `resolveFailover` in `packages/core/backend-policy.ts`. Both exact claims fail. The web failure classifier has a different taxonomy, and `pickFailoverBackend` selects an available backend without the proposed failure-class policy or attempt budget. Neither is a substitute for the promised symbol. Both missing claims remain visible under the original declaration.
+- The team namespace helper `resolveActiveTeamId` really exists at the exact path proposed in the spec, despite the stale “New shared helper, e.g.” prose. Its membership and fallback logic is implemented. Other sections explicitly retain unfinished navigation and creation-default requirements; the passing helper assertions do not certify those sections.
+- Work-tracker assertions cover the shipped provider dispatcher, Linear inbound route, and dispatcher tests. The document's provider interface and inbound requirements can be checked independently; structural passes do not certify every idempotency or authorization invariant.
+- Mission lifecycle assertions cover the actual claim endpoint, completion predicate, criteria evaluator, and completion tests. They deliberately make no claim that four static checks exhaust this broad contract.
+- The draft heartbeat spec's archive-time schedule-retirement assertion fails on this checkout: `archiveStaleDoneMissions` updates missions without touching `taskSchedules`. This matches its explicit NOT IMPLEMENTED section.
+- Proposed/draft documents with wholly passing structural claims retain their status: the 22 derived-ahead document findings are review signals, not automatic promotions. Their exact passing targets are recorded in the per-document output of the checker.
+- Scheduled merge-policy propagation, the released criterion, MCP `start_task`, synchronous `ask`, and discrepancy promotion retain checks on the promised action, field, or route. Failures remain findings rather than being replaced with nearby symbols.
+- `retry-continuity.md` explicitly names the absent `worktree-utils.test.ts`; that records a stale test-file claim, not proof the behavior is absent.
+- The unified IA and inference proposals contain amendments withdrawing earlier requirements. Their assertions follow those amendments rather than resurrecting withdrawn work.
 
-- The implemented backend failover design explicitly names `packages/core/failure-classification.ts`, which does not resolve. A similarly named web helper has a different taxonomy; substituting it would conceal the discrepancy. This is the one terminal-status contradiction and requires adjudication.
-- Scheduled merge-policy propagation, the released criterion, MCP `start_task`, synchronous `ask`, and discrepancy promotion retain assertions on the precise promised action, field, or route. Their failures are findings, not reasons to invent alternative targets.
-- The archive-time schedule-retirement assertion now passes against `mission-archive.ts`; the earlier backfill snapshot's failure is obsolete.
-- `retry-continuity.md` explicitly names an absent `worktree-utils.test.ts`; retaining that literal reference records a stale test claim without claiming the behavior is absent.
-- The two original failures in `mission-goal-criteria.md` misuse export assertions for table fields (`goalCriteria`, `kpis`). They predate this backfill and do not prove those columns are absent. Existing assertion IDs and suppressions are preserved.
-- The unified IA proposal withdraws a separate override table; the inference proposal withdraws migration of the dead classifier. Assertions follow those amendments rather than resurrecting withdrawn work.
-
-The checker verifies structural claims only. `route` checks a file's method export, `symbol` checks an exported identifier, `symbol_reachable` checks text at a named consumer, and `config_key` checks a literal occurrence. `test_file` checks presence, not test execution; migrations check committed SQL, not application to a database. Passing all selected assertions does not establish authorization behavior, visual parity, complete prose coverage, deployment, or resolution of every gap already described in the document.
+The checker verifies structural claims only. `route` checks a file's method export, `symbol` checks an exported identifier, `symbol_reachable` checks text at a named consumer, and `config_key` checks a literal occurrence. `test_file` checks existence, not execution; migrations check committed SQL, not database application. Passing the selected assertions does not establish full prose coverage, deployment, visual parity, or correct runtime authorization.
 
 ## Reproduce
 
@@ -54,15 +53,14 @@ bun run specs:check
 bun run specs:lint
 bun run specs:conformance
 bun run specs:conformance --json
+bun run specs:conformance --fail-on-contradiction
 bun run specs:discrepancies --dry-run
 bun run test
 bun run type-check
-cd apps/web && bunx next build
+cd apps/web && bun run build:only
 ```
 
-Validation: the full isolated suite passed 762 of 763 files on its initial run. The sole failure was an installed dependency missing the committed Drizzle patch; `bun install --frozen-lockfile` followed by the failed file passed. Type checks and the direct Next build passed. The strict CI invocation (`--fail-on-contradiction`) intentionally reports the 24 discovered status contradictions; this backfill does not suppress or relabel them to force a green audit.
-
-The standard `bun run build` migration pre-step requires a database connection unavailable in worker sandboxes. The direct Next build checks application compilation without running database migrations. Spec lint reports zero errors with existing coverage warnings.
+The full isolated suite passes all 739 test files. Type checks and the direct Next application build pass. Spec checks report zero errors with existing coverage warnings. The strict conformance invocation exits 1 on the 23 documented contradictions; this is not a clean strict audit. The normal checker exits 0 and reports every finding. The direct Next build avoids the database migration pre-step, which requires credentials unavailable in worker sandboxes.
 
 ## Per-document results
 
@@ -71,7 +69,7 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 | Document | Declared | Checker derived | Pass / fail / suppressed |
 | --- | --- | --- | ---: |
 | [design/ask-synchronous-qa.md](../design/ask-synchronous-qa.md) | `proposed` | `failing` | 0 / 2 / 0 |
-| [design/backend-failover-policy.md](../design/backend-failover-policy.md) | `implemented` | `partial` | 3 / 1 / 0 |
+| [design/backend-failover-policy.md](../design/backend-failover-policy.md) | `implemented` | `partial` | 2 / 2 / 0 |
 | [design/buildd-mcp-consumer-skill.md](../design/buildd-mcp-consumer-skill.md) | `proposed` | `implemented` | 3 / 0 / 0 |
 | [design/cancellation-must-resolve.md](../design/cancellation-must-resolve.md) | `proposed` | `partial` | 1 / 2 / 0 |
 | [design/cbm-v2-warm-start.md](../design/cbm-v2-warm-start.md) | `proposed` | `failing` | 0 / 3 / 0 |
@@ -89,7 +87,6 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 | [design/derived-metric-availability.md](../design/derived-metric-availability.md) | `proposed` | `implemented` | 4 / 0 / 0 |
 | [design/derived-state-accessors.md](../design/derived-state-accessors.md) | `proposed` | `partial` | 2 / 1 / 0 |
 | [design/docs-spec-sync-binding.md](../design/docs-spec-sync-binding.md) | `proposed` | `failing` | 0 / 2 / 0 |
-| [design/experiment-lifecycle.md](../design/experiment-lifecycle.md) | `proposed` | `unverified` | 0 / 0 / 0 |
 | [design/friction-dedup-serialization.md](../design/friction-dedup-serialization.md) | `implemented` | `implemented` | 3 / 0 / 0 |
 | [design/generic-mcp-connectors.md](../design/generic-mcp-connectors.md) | `draft` | `implemented` | 4 / 0 / 0 |
 | [design/github-comment-mentions.md](../design/github-comment-mentions.md) | `proposed` | `partial` | 1 / 1 / 0 |
@@ -105,7 +102,7 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 | [design/migration-doctrine.md](../design/migration-doctrine.md) | `—` | `implemented` | 3 / 0 / 0 |
 | [design/mission-context-clusters.md](../design/mission-context-clusters.md) | `partially` | `partial` | 2 / 1 / 0 |
 | [design/mission-delivery-arc.md](../design/mission-delivery-arc.md) | `accepted` | `implemented` | 3 / 0 / 0 |
-| [design/mission-goal-criteria.md](../design/mission-goal-criteria.md) | `superseded` | `partial` | 5 / 2 / 0 |
+| [design/mission-goal-criteria.md](../design/mission-goal-criteria.md) | `superseded` | `implemented` | 7 / 0 / 0 |
 | [design/mission-state-ownership.md](../design/mission-state-ownership.md) | `accessor` | `implemented` | 3 / 0 / 0 |
 | [design/mission-state-progress.md](../design/mission-state-progress.md) | `proposed` | `implemented` | 3 / 0 / 0 |
 | [design/mission-status-mobile-header-spec.md](../design/mission-status-mobile-header-spec.md) | `normative` | `implemented` | 3 / 0 / 0 |
@@ -127,7 +124,6 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 | [design/roles-scoping.md](../design/roles-scoping.md) | `—` | `implemented` | 3 / 0 / 0 |
 | [design/runner-oauth-broker.md](../design/runner-oauth-broker.md) | `proposed` | `partial` | 4 / 0 / 3 |
 | [design/runner-workspace-isolation.md](../design/runner-workspace-isolation.md) | `partially` | `implemented` | 3 / 0 / 0 |
-| [design/self-host-only-subscription-auth.md](../design/self-host-only-subscription-auth.md) | `proposed` | `unverified` | 0 / 0 / 0 |
 | [design/settings-ia-refactor.md](../design/settings-ia-refactor.md) | `authoritative` | `implemented` | 2 / 0 / 0 |
 | [design/spec-conformance.md](../design/spec-conformance.md) | `proposed` | `partial` | 4 / 1 / 0 |
 | [design/status-reconciliation.md](../design/status-reconciliation.md) | `proposed` | `implemented` | 3 / 0 / 0 |
@@ -160,7 +156,7 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 | [specs/mcp-action-contracts.md](../specs/mcp-action-contracts.md) | `active` | `implemented` | 3 / 0 / 0 |
 | [specs/mcp-connectors-and-roles.md](../specs/mcp-connectors-and-roles.md) | `active` | `implemented` | 3 / 0 / 0 |
 | [specs/migration-execution.md](../specs/migration-execution.md) | `active` | `implemented` | 3 / 0 / 0 |
-| [specs/mission-heartbeat-schedule-lifecycle.md](../specs/mission-heartbeat-schedule-lifecycle.md) | `draft` | `implemented` | 3 / 0 / 0 |
+| [specs/mission-heartbeat-schedule-lifecycle.md](../specs/mission-heartbeat-schedule-lifecycle.md) | `draft` | `partial` | 2 / 1 / 0 |
 | [specs/mission-release-gate.md](../specs/mission-release-gate.md) | `draft` | `partial` | 2 / 1 / 0 |
 | [specs/mission-structure-view.md](../specs/mission-structure-view.md) | `active` | `implemented` | 4 / 0 / 0 |
 | [specs/mission-task-lifecycle.md](../specs/mission-task-lifecycle.md) | `active` | `implemented` | 4 / 0 / 0 |
@@ -185,12 +181,13 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 
 ## Failed assertion output
 
-These are static checker results; none alone establishes a `spec_ahead` verdict.
+These static lookup failures do not alone establish a `spec_ahead` verdict.
 
 | Document | Assertion ID | Checker detail |
 | --- | --- | --- |
 | `docs/design/ask-synchronous-qa.md` | `synchronous-ask` | route file not found: apps/web/src/app/api/ask/route.ts |
 | `docs/design/ask-synchronous-qa.md` | `ask-records` | no exported "asks" found in packages/core/db/schema.ts |
+| `docs/design/backend-failover-policy.md` | `select-failover` | no exported "resolveFailover" found in packages/core/backend-policy.ts |
 | `docs/design/backend-failover-policy.md` | `failure-classification-contract` | file not found: packages/core/failure-classification.ts |
 | `docs/design/cancellation-must-resolve.md` | `cancel-disposition` | no read of "dependentDisposition" found in apps/web/src/app/api/tasks/[id]/route.ts |
 | `docs/design/cancellation-must-resolve.md` | `hard-edge-gate` | no read of "hardDependsOn" found in apps/web/src/app/api/workers/claim/deps-gate.ts |
@@ -212,8 +209,6 @@ These are static checker results; none alone establishes a `spec_ahead` verdict.
 | `docs/design/inference-calls-primitive.md` | `visual-judge-uses-inference-client` | no read of "inferenceCall" found in apps/web/src/app/api/qa/judge/route.ts |
 | `docs/design/mcp-start-task.md` | `mcp-start-action` | no read of "start_task" found in packages/core/mcp-tools.ts |
 | `docs/design/mission-context-clusters.md` | `durable-context-assembly-table` | "assembly_id" not found in packages/core/db/schema.ts |
-| `docs/design/mission-goal-criteria.md` | `goal-criteria-column` | no exported "goalCriteria" found in packages/core/db/schema.ts |
-| `docs/design/mission-goal-criteria.md` | `kpis-column` | no exported "kpis" found in packages/core/db/schema.ts |
 | `docs/design/private-task-execution.md` | `visibility-filter` | file not found: apps/web/src/lib/task-visibility.ts |
 | `docs/design/private-task-execution.md` | `oauth-client-owner` | "ownerClientId" not found in packages/core/db/schema.ts |
 | `docs/design/retry-continuity.md` | `retry-worktree-tests` | apps/runner/__tests__/unit/worktree-utils.test.ts does not exist |
@@ -227,5 +222,6 @@ These are static checker results; none alone establishes a `spec_ahead` verdict.
 | `docs/design/workspace-policy-engine.md` | `workspace-policies` | no exported "workspacePolicies" found in packages/core/db/schema.ts |
 | `docs/design/workspace-policy-engine.md` | `structured-question-decision` | "decisionRecord" not found in packages/shared/src/types.ts |
 | `docs/design/workspace-policy-engine.md` | `policy-management-action` | no read of "manage_workspace_policies" found in packages/core/mcp-tools.ts |
+| `docs/specs/mission-heartbeat-schedule-lifecycle.md` | `archive-retires-schedules` | no read of "taskSchedules" found in apps/web/src/lib/mission-archive.ts |
 | `docs/specs/mission-release-gate.md` | `released-criterion` | no read of "released" found in packages/core/mission-helpers.ts |
 | `docs/specs/scheduled-task-merge-policy.md` | `schedule-copies-merge-policy` | no read of "mergePolicy" found in apps/web/src/app/api/cron/schedules/route.ts |
