@@ -547,10 +547,28 @@ export interface CbmGuidanceOpts {
   dialect?: 'claude' | 'codex';
 }
 
-/** How each backend reads files when it is not using the graph. */
+/**
+ * How each backend reads files when it is not using the graph.
+ *
+ * Three slots rather than one because the body uses the phrase three ways
+ * ("before any X", "then use X to read", "an X that a graph query would have
+ * answered") and English does not let one noun serve all three. The `claude`
+ * column reproduces the previous wording EXACTLY — that text is the version that
+ * measurably moved graph usage, so it is not a place to improve the prose.
+ */
 const FILE_SWEEP_DIALECT = {
-  claude: { inline: 'Read/Grep/Glob', sweep: 'A Grep-and-Read sweep' },
-  codex: { inline: '`rg`/`grep`/`cat` shell sweep', sweep: 'An `rg`-and-`cat` sweep' },
+  claude: {
+    before: 'Read/Grep/Glob sweep',
+    use: 'Read/Grep/Glob',
+    sweep: 'A Grep-and-Read sweep',
+    readVerb: 'Read',
+  },
+  codex: {
+    before: '`rg`/`grep`/`cat` sweep',
+    use: '`rg`/`grep`/`cat`',
+    sweep: 'An `rg`-and-`cat` sweep',
+    readVerb: 'read',
+  },
 } as const;
 
 /**
@@ -582,7 +600,7 @@ export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
     ? [
         'This repo is already indexed in the `codebase-memory` MCP server as project `'
           + (opts.project ?? 'unknown') + '` — the graph is warm before your first turn, with no indexing to wait for.',
-        'It maps the base checkout, not your branch: trust it for structure, and read the file for current content'
+        `It maps the base checkout, not your branch: trust it for structure, and ${dialect.readVerb} the file for current content`
           + ' — especially anything you have edited this session.',
       ]
     : ['This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.'];
@@ -590,13 +608,13 @@ export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
     ...opening,
     '',
     'When a task touches existing code you have not read yet, make a graph call your FIRST navigation step,',
-    `before any ${dialect.inline}. One call is usually enough to know where to look:`,
+    `before any ${dialect.before}. One call is usually enough to know where to look:`,
     '- orienting in an unfamiliar area, or "how is this laid out?" -> mcp__codebase-memory__get_architecture',
     '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path',
     '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph',
     '- locating a symbol before reading it -> mcp__codebase-memory__search_code, then get_code_snippet',
     '',
-    `Then use ${dialect.inline} to read what the graph located, for non-code files, for a greenfield file that`,
+    `Then use ${dialect.use} to read what the graph located, for non-code files, for a greenfield file that`,
     'does not exist yet, and whenever the graph returns nothing useful — it is an accelerator, never a gate.',
     `${dialect.sweep} that a single graph query would have answered is the specific waste to avoid.`,
     'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.',

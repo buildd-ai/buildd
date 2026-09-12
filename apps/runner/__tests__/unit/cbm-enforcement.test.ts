@@ -265,6 +265,18 @@ describe('buildCbmGuidanceBody (shared by both backends)', () => {
     expect(codex).toContain('`rg`');
   });
 
+  test('the Claude wording is unchanged by the split into dialects', () => {
+    // The Claude text is the version that measurably moved graph usage. Sharing a
+    // body with Codex must not reword it, so the three phrasings that carry the
+    // procedure are pinned verbatim.
+    const claude = buildCbmGuidanceBody({ dialect: 'claude' });
+    expect(claude).toContain('before any Read/Grep/Glob sweep. One call is usually enough to know where to look:');
+    expect(claude).toContain('Then use Read/Grep/Glob to read what the graph located');
+    expect(claude).toContain('A Grep-and-Read sweep that a single graph query would have answered');
+    expect(buildCbmGuidanceBody({ dialect: 'claude', sharedBaseIndex: true }))
+      .toContain('trust it for structure, and Read the file for current content');
+  });
+
   test('warns about base-clone staleness in shared-cache mode, in both dialects', () => {
     for (const dialect of ['claude', 'codex'] as const) {
       const body = buildCbmGuidanceBody({ dialect, sharedBaseIndex: true, project: 'proj-x' });
