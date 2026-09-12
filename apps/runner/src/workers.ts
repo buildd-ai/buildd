@@ -29,6 +29,7 @@ import { notifyBrokerCredentials, fetchTokenFromBroker, getBrokerSocketPath, cre
 import { saveWorker as storeSaveWorker, loadAllWorkers, loadWorker as storeLoadWorker, deleteWorker as storeDeleteWorker } from './worker-store';
 import { aggregateUsage, extractResultUsage } from './usage-aggregate';
 import { recordToolCall } from './tool-metrics';
+import { recordBashCommand, emptyBashCommandCounts } from './bash-classify';
 import { extractBuilddAction } from './action-events';
 import { scanEnvironment, checkMcpPreFlight, checkBwrapSupport, checkBwrapMountIsolationSupport } from './env-scan';
 import { buildReadJailDeniedPrefixes } from './read-jail.js';
@@ -1475,6 +1476,7 @@ export class WorkerManager {
       checkpointEvents: new Set<CheckpointEventType>(),
       pendingMcpCalls: [],
       toolCounts: {},
+      bashCommandCounts: emptyBashCommandCounts(),
       phaseText: null,
       phaseStart: null,
       phaseToolCount: 0,
@@ -3615,10 +3617,19 @@ If something is missing or incomplete, describe what and fix it now.`;
         // Tool histogram: attach the full per-tool-name counts. Unlike cbm this
         // ships regardless of CBM activation; skipped entirely when no tool ran
         // so a provision-failed worker doesn't get a resultMeta shell it never earned.
+        // The Bash sub-classification rides the same object: a bucket histogram
+        // is only useful next to the tool histogram it decomposes. Omitted when
+        // the session made no Bash call, so absence stays distinguishable from
+        // "made Bash calls, none of them searches".
         const toolCounts = worker.toolCounts ?? {};
-        if (Object.keys(toolCounts).length > 0) {
+        const bashCommandCounts = worker.bashCommandCounts;
+        const measured = {
+          ...(Object.keys(toolCounts).length > 0 ? { toolCounts } : {}),
+          ...(bashCommandCounts && bashCommandCounts.total > 0 ? { bashCommandCounts } : {}),
+        };
+        if (Object.keys(measured).length > 0) {
           if (worker.resultMeta) {
-            worker.resultMeta.toolCounts = toolCounts;
+            Object.assign(worker.resultMeta, measured);
           } else {
             worker.resultMeta = {
               stopReason: null,
@@ -3626,7 +3637,7 @@ If something is missing or incomplete, describe what and fix it now.`;
               durationApiMs: 0,
               numTurns: 0,
               modelUsage: {},
-              toolCounts,
+              ...measured,
             };
           }
         }
@@ -4376,6 +4387,19 @@ If something is missing or incomplete, describe what and fix it now.`;
           // is the complete histogram the usage rollups read.
           if (!worker.toolCounts) worker.toolCounts = {};
           recordToolCall(worker.toolCounts, toolName);
+
+          // Bash sub-classification (bash-classify.ts). `Bash` is the single
+          // most-called tool, and the histogram above records it as one opaque
+          // bar — so a shell content search counted as "Bash" while the same
+          // work done through the Grep TOOL counted as file access. That made
+          // the search share of a session unknowable and the file-access
+          // counters below an undercount of their own denominator. Buckets and
+          // coarse pattern shapes only: the command string is classified and
+          // discarded, never stored.
+          if (toolName === 'Bash') {
+            if (!worker.bashCommandCounts) worker.bashCommandCounts = emptyBashCommandCounts();
+            recordBashCommand(worker.bashCommandCounts, (input as { command?: unknown })?.command);
+          }
 
           // Per-call event for the buildd MCP tool's decomposed action (see
           // action-events.ts). The tool histogram above can only ever show one

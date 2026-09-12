@@ -593,6 +593,30 @@ export interface CbmMetrics {
   globCount: number;
 }
 
+/**
+ * What a session's `Bash` calls were FOR, as counts.
+ *
+ * Written by the runner's classifier (`apps/runner/src/bash-classify.ts`,
+ * which owns the bucket definitions and the pipeline/chain dominance rule).
+ * Bash is the most-called tool and `toolCounts` records it as one opaque bar,
+ * so a shell `grep`/`rg`/VCS content search was indistinguishable from a build
+ * or a `cat` — and invisible to the Read/Grep/Glob counters in `cbm`, which
+ * only see the file-access TOOLS.
+ *
+ * Counts only, bounded at a few hundred bytes per worker. `searchShapes` is a
+ * coarse shape of the search pattern (bare identifier / regex / quoted phrase
+ * with spaces / path-glob), never the pattern text: a search term can carry a
+ * secret or a customer identifier, so no command or pattern text is stored.
+ */
+export interface BashCommandCounts {
+  /** Bash calls classified — equals the `Bash` entry of `toolCounts`. */
+  total: number;
+  /** Calls per intent bucket (`code_search`, `file_find`, `test`, …). Sparse. */
+  buckets: Record<string, number>;
+  /** Pattern shapes for the `code_search` bucket only. Sparse. */
+  searchShapes: Record<string, number>;
+}
+
 // SDK result metadata - captured from SDKResultSuccess/SDKResultError
 export interface ResultMeta {
   stopReason: string | null;
@@ -621,6 +645,12 @@ export interface ResultMeta {
    * `apps/web/src/lib/usage-stats.ts`, which reports tool coverage explicitly.
    */
   toolCounts?: Record<string, number>;
+  /**
+   * Decomposition of the `Bash` entry of `toolCounts` into intent buckets, plus
+   * coarse search-pattern shapes. Absent on workers that predate the classifier
+   * or made no Bash call — absence is "unknown", not zero.
+   */
+  bashCommandCounts?: BashCommandCounts;
 }
 
 export const workspaces = pgTable('workspaces', {
