@@ -866,6 +866,7 @@ export function buildCbmMetrics(worker: {
   cbmDisableReason?: CbmMetrics['disableReason'];
   cbmBootstrapResult?: CbmMetrics['bootstrapResult'];
   cbmBootstrapFailReason?: string;
+  cbmBackgroundIndexLanded?: boolean;
   cbmSharedCache?: boolean;
   cbmSeedRefresh?: SeedRefreshOutcome;
   cbmToolCounts?: Record<string, number>;
@@ -879,6 +880,11 @@ export function buildCbmMetrics(worker: {
     ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
     ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
     ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
+    // Emitted including `false`, and only for the backgrounded case: "the build
+    // was handed off and never landed" is the finding this exists to surface, so
+    // it must be a value in the row rather than an absent key.
+    ...(worker.cbmBootstrapResult === 'backgrounded'
+      && { backgroundIndexLanded: !!worker.cbmBackgroundIndexLanded }),
     // Always emitted, including false: "this task did NOT get the seed" is the
     // finding, so it has to be a value in the row and not an absent key.
     sharedCache: !!worker.cbmSharedCache,

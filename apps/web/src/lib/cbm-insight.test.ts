@@ -95,6 +95,43 @@ describe('summarizeCbm — warm starts', () => {
     expect(s.indexFailureRate).toBeCloseTo(1 / 3, 5);
   });
 
+  // A build that overran the startup wait budget is handed off, not aborted.
+  // These pin the accounting, because reclassifying overruns out of `failed`
+  // improves the failure rate by definition — the claim only means something if
+  // the backgrounded bucket and its landing rate are visible next to it.
+  it('counts a backgrounded build as an attempt but not as a failure', () => {
+    const rows = [
+      ...Array.from({ length: 5 }, () => row({ bootstrapResult: 'ok' })),
+      ...Array.from({ length: 4 }, () =>
+        row({ bootstrapResult: 'backgrounded', backgroundIndexLanded: true })),
+      row({ bootstrapResult: 'failed', bootstrapFailReason: 'process exited with code 1' }),
+    ];
+    const s = summarize(rows);
+    expect(s.indexAttempted).toBe(10);
+    expect(s.indexFailed).toBe(1);
+    expect(s.indexFailureRate).toBeCloseTo(0.1, 5);
+    expect(s.indexBackgrounded).toBe(4);
+    expect(s.indexBackgroundedRate).toBeCloseTo(0.4, 5);
+  });
+
+  it('reports how often a backgrounded build actually landed', () => {
+    const rows = [
+      ...Array.from({ length: 3 }, () =>
+        row({ bootstrapResult: 'backgrounded', backgroundIndexLanded: true })),
+      row({ bootstrapResult: 'backgrounded', backgroundIndexLanded: false }),
+    ];
+    const s = summarize(rows);
+    expect(s.indexBackgrounded).toBe(4);
+    expect(s.backgroundIndexLandedRate).toBeCloseTo(0.75, 5);
+  });
+
+  it('reports a null landing rate rather than 0% when nothing was backgrounded', () => {
+    const s = summarize(Array.from({ length: 3 }, () => row({ bootstrapResult: 'ok' })));
+    expect(s.indexBackgrounded).toBe(0);
+    // null, not 0 — "never happened" must not render as "never landed".
+    expect(s.backgroundIndexLandedRate).toBeNull();
+  });
+
   it('surfaces the dominant index failure reason', () => {
     const rows = [
       ...Array.from({ length: 3 }, () =>

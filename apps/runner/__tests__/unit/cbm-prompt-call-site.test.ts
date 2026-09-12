@@ -20,6 +20,7 @@ import type { LocalUIConfig } from '../../src/types';
 // The real module, captured before mock.module swaps the registry entry: the
 // prompt text under test must be the production text, not a stub.
 import * as realCbm from '../../src/cbm-enforcement';
+import * as realBootstrap from '../../src/cbm-bootstrap';
 
 const HEADING = '## Codebase graph (codebase-memory)';
 
@@ -185,7 +186,12 @@ mock.module('../../src/cbm-enforcement', () => ({
   ensureCbmRuntimeDir: (_cache: string, explicit?: string) => explicit ?? '/tmp/cbm-runtime',
 }));
 
+// Spread the real module and override only the one function that would spawn an
+// indexer. A stub that enumerates exports instead fails the WHOLE file at parse
+// time the moment the module gains one ("Export named 'x' not found in module"),
+// which is a CI break in a file that has nothing to do with the new export.
 mock.module('../../src/cbm-bootstrap.js', () => ({
+  ...realBootstrap,
   runCbmBootstrap: async () => ({ ok: true, durationMs: 1 }),
 }));
 

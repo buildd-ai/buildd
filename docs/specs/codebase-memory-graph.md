@@ -2,7 +2,7 @@
 title: Codebase Memory Graph
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-09-11
 summary: Codebase Memory MUST be mounted for every repo-backed Claude task whose binary is present, MUST degrade silently through exactly four named reasons, and MUST never fail a task because indexing failed.
 domain: runners
 surfaces: [apps/runner/src/cbm-enforcement.ts, apps/runner/src/cbm-bootstrap.ts, packages/core/cbm-health.ts, apps/web/src/app/api/cbm/metrics/route.ts]
@@ -110,16 +110,42 @@ agent does not spend turn one on infrastructure.
   `codebase-memory-mcp cli index_repository --repo-path <worktree>`. The path MUST
   travel as the **value of the `--repo-path` flag**, never as a bare trailing
   positional. No `--mode` is passed; CBM's default applies.
-- **CBM-7**: The build is abandoned after `CBM_INDEX_TIMEOUT_MS` (30 000 ms). On
-  timeout the child is `SIGTERM`ed and the partial cache dir is removed.
+- **CBM-7**: `CBM_INDEX_WAIT_MS` (60 000 ms, overridable per host by
+  `BUILDD_CBM_INDEX_WAIT_MS`) bounds **how long startup waits**, not how long the
+  build may run. When it expires the build is **handed off, never aborted**: no
+  signal is sent to the indexer, the cache dir is left intact, and the session
+  starts immediately. The graph then appears in the agent's already-connected MCP
+  session when the build publishes.
+  Rationale, so this is not re-"fixed" back into a kill: CBM has no server-side
+  request timeout, so a client-side abort only ever terminated a build that was
+  still making progress — and CBM indexes into `<project>.db.stage.*` and renames
+  it into place at the end, so an aborted build leaves **no queryable `.db` at
+  all**. There is no partial index to salvage and nothing was gained by removing
+  the cache dir. A budget expiry is therefore a hand-off, and only a genuine
+  non-zero exit still discards the cache dir.
+- **CBM-7a**: A handed-off build MUST be terminable and MUST be terminated at
+  session teardown (`stopBackgroundCbmIndex`), **before** the per-worker cache dir
+  is removed — otherwise the indexer writes into a deleted directory and holds
+  CPU the next task's build needs. A teardown kill MUST NOT be recorded as a
+  failed build.
 - **CBM-8**: `runCbmBootstrap` **resolves, never rejects**. Non-zero exit, spawn
-  error, and timeout all produce `{ ok: false, reason }`. The session then starts
-  with `codebase-memory` **still mounted** but without a warm cache; the injected
-  system prompt tells the agent to call `index_repository` once if a query reports
-  the project is not indexed. Indexing failure MUST NOT fail the task.
-- Outcome is recorded either way: `bootstrapResult: 'ok' | 'failed'` plus
-  `bootstrapFailReason`, and a milestone (`graph_index_success durationMs=…` or
-  `graph_index_failed reason=…`) so the failure is scannable per task.
+  error, and wait-budget expiry all produce `{ ok: false, reason }`, the last
+  distinguished by `backgrounded: true`. The session starts with `codebase-memory`
+  **still mounted**; the injected system prompt tells the agent to call
+  `index_repository` once if a query reports the project is not indexed. Neither
+  indexing failure nor indexing slowness MUST fail the task.
+- Outcome is recorded in every case:
+  `bootstrapResult: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm'` plus
+  `bootstrapFailReason`, and a milestone (`graph_index_success durationMs=…`,
+  `graph_index_backgrounded …`, or `graph_index_failed reason=…`) so the per-task
+  outcome is scannable.
+- **CBM-7b** (honesty guard): `'backgrounded'` MUST NOT be folded into either
+  `'ok'` or `'failed'`. It counts as an index **attempt** in
+  `indexBuild.attempted`, so reclassifying overrunning builds cannot improve
+  `indexBuild.failureRate` by arithmetic alone, and `backgroundIndexLanded` — set
+  from the build's real exit, reported via `onLateCompletion` — is what says the
+  hand-off delivered a graph. `backgroundLandedRate` is `null`, never `0`, when
+  nothing was backgrounded.
 
 **Acceptance criteria**:
 - AC-5: WHEN `runCbmBootstrap` spawns THEN its argv is exactly
@@ -128,11 +154,23 @@ agent does not spend turn one on infrastructure.
 - AC-6 (failure path): GIVEN the index process exits with code 1 WHEN the promise
   settles THEN it resolves `{ ok: false, reason: 'process exited with code 1' }`
   and does not throw.
-- AC-7 (failure path): GIVEN the index process never exits WHEN `timeoutMs`
-  elapses THEN the result is `{ ok: false, reason: 'timeout after <n>ms' }`, the
-  child was killed, and the worker's `cbmOutcome` stays `'enforced'`.
+- AC-7 (hand-off path): GIVEN the index process has not exited WHEN the wait
+  budget elapses THEN the result is `{ ok: false, backgrounded: true }`, **no
+  signal was sent to the child**, the cache dir and everything in it still
+  exists, and the worker's `cbmOutcome` stays `'enforced'`.
+- AC-7a: GIVEN a handed-off build WHEN it later exits 0 THEN `onLateCompletion`
+  fires with `ok: true` and `backgroundIndexLanded` becomes true; WHEN it later
+  exits non-zero THEN `onLateCompletion` fires with `ok: false` and
+  `backgroundIndexLanded` stays false.
+- AC-7b: GIVEN a handed-off build WHEN `stopBackgroundCbmIndex(workerId)` is
+  called THEN the child receives `SIGTERM`, the call reports that it stopped
+  something, a second call reports that there was nothing to stop, and
+  `onLateCompletion` does **not** fire.
 - AC-8 (failure path): GIVEN spawn emits `error` with `ENOENT` WHEN the promise
   settles THEN `reason` contains `ENOENT`.
+- AC-8a: GIVEN `BUILDD_CBM_INDEX_WAIT_MS` is unset, empty, non-numeric, or
+  non-positive THEN the wait budget is `CBM_INDEX_WAIT_MS`; a budget of `0` is
+  never honoured, because it would background every build on the fleet.
 
 ## 3. Server wiring and sandbox scope
 
@@ -312,9 +350,10 @@ cold-per-task model (CBM-4) is what this spec describes.
 - **Activation** — `apps/runner/src/cbm-enforcement.ts`: `buildCbmActivation` (:70),
   the four-gate expression (:75), cache-dir naming (:80), `buildCbmMcpEntry` (:88),
   `CBM_BLOCKED_TOOLS` (:23), `CBM_ALLOWED_TOOLS` (:33, documentation only).
-- **Bootstrap** — `apps/runner/src/cbm-bootstrap.ts`: `CBM_INDEX_TIMEOUT_MS` (:14),
-  `resolveCbmEnv` (:26), `runCbmBootstrap` (:75), argv (:93), timeout + partial-cache
-  removal (:100-106), non-zero-exit path (:115-126).
+- **Bootstrap** — `apps/runner/src/cbm-bootstrap.ts`: `CBM_INDEX_WAIT_MS` (:30),
+  `resolveCbmIndexWaitMs` (:40), `resolveCbmEnv` (:60), `stopBackgroundCbmIndex`
+  (:145), `discardCache` — non-zero exit only (:168), `runCbmBootstrap` (:202),
+  wait-budget hand-off (:235), late-completion reporting (:269).
 - **Sandbox** — `apps/runner/src/bwrap-mount-allowlist.ts`: `CBM_BINARY_PATH` (:14),
   CBM mounts (:115-116), the drop-missing-mount filter (:118-122), `--tmpfs /tmp` (:128).
 - **Session wiring** — `apps/runner/src/workers.ts`: `cbmDisabled` propagation (:1350),

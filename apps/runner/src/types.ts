@@ -247,8 +247,17 @@ export interface LocalWorker {
   // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
   cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
-  cbmBootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
+  cbmBootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   cbmBootstrapFailReason?: string;
+  /**
+   * Whether a backgrounded index build finished successfully before the session
+   * ended. Only meaningful with cbmBootstrapResult='backgrounded'.
+   *
+   * This is the field that keeps the hand-off honest: without it, every
+   * overrunning build reads as 'backgrounded' and nothing distinguishes "the
+   * graph arrived a few turns in" from "the graph never arrived".
+   */
+  cbmBackgroundIndexLanded?: boolean;
   /**
    * Whether this session ran on the host-wide seeded graph rather than indexing
    * its own. Lived only in a local in startSession before, so it never reached
@@ -360,8 +369,13 @@ export interface CbmMetrics {
    * per-task index ran at all — the two extra members were written to the column
    * for weeks while this type still claimed 'ok' | 'failed'.
    */
-  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
+  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   bootstrapFailReason?: string;
+  /**
+   * Whether a backgrounded build landed before the session ended. Only set with
+   * bootstrapResult='backgrounded'.
+   */
+  backgroundIndexLanded?: boolean;
   /** Whether the session ran on the host-wide seeded graph. Always emitted. */
   sharedCache: boolean;
   /** Why the out-of-band seed refresh did or did not spawn for this repo. */

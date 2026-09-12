@@ -44,6 +44,34 @@ describe('buildCbmMetrics — shared-seed visibility', () => {
   test('still returns undefined when CBM never activated', () => {
     expect(buildCbmMetrics({})).toBeUndefined();
   });
+
+  // A build that overran the startup wait budget is handed off, not aborted, so
+  // 'backgrounded' is neither 'ok' nor 'failed'. The landing flag is the whole
+  // point: without it every handed-off build reads the same whether the graph
+  // arrived mid-session or never arrived, and the index-build failure rate would
+  // improve purely by moving rows out of 'failed'.
+  test('emits backgroundIndexLanded=false rather than omitting it on a backgrounded build', () => {
+    const m = buildCbmMetrics({ cbmOutcome: 'enforced', cbmBootstrapResult: 'backgrounded' })!;
+    expect(m.bootstrapResult).toBe('backgrounded');
+    expect(m.backgroundIndexLanded).toBe(false);
+    expect(Object.keys(m)).toContain('backgroundIndexLanded');
+  });
+
+  test('emits backgroundIndexLanded=true when the handed-off build landed', () => {
+    const m = buildCbmMetrics({
+      cbmOutcome: 'enforced',
+      cbmBootstrapResult: 'backgrounded',
+      cbmBackgroundIndexLanded: true,
+    })!;
+    expect(m.backgroundIndexLanded).toBe(true);
+  });
+
+  test('omits backgroundIndexLanded when nothing was backgrounded', () => {
+    // Reporting `false` on an 'ok' build would put every successful index into
+    // the "did not land" bucket of any query that keys on the field.
+    const m = buildCbmMetrics({ cbmOutcome: 'enforced', cbmBootstrapResult: 'ok' })!;
+    expect(Object.keys(m)).not.toContain('backgroundIndexLanded');
+  });
 });
 
 // Pure helper: simulates what workers.ts does when a CBM or file-access tool call arrives.
