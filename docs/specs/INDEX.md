@@ -61,7 +61,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ### runners (5)
 
-- [Codebase Memory Graph](./codebase-memory-graph.md) · @max — verified 2026-09-11
+- [Codebase Memory Graph](./codebase-memory-graph.md) · @max — verified 2026-09-12
   Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through four named reasons, and MUST never fail a task.
 - [Codex Backend Behavioral Spec](./codex-backend-spec.md) · @max — verified 2026-09-11
   The Codex worker backend MUST drive the shared worker loop by mapping Codex thread events into Claude-shaped SDK messages, emitting exactly one complete and one aggregate result per run, and resuming by thread id.

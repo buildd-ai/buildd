@@ -2,13 +2,13 @@
 title: Codebase Memory Graph
 status: active
 owner: max
-last_verified: 2026-09-11
+last_verified: 2026-09-12
 summary: Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through four named reasons, and MUST never fail a task.
 domain: runners
 surfaces: [apps/runner/src/cbm-enforcement.ts, apps/runner/src/cbm-bootstrap.ts, apps/runner/src/codex-auth.ts, apps/web/src/lib/cbm-insight.ts]
 related: [mcp-connectors-and-roles, codex-backend-spec, worker-sandbox-isolation, knowledge-store-retrieval]
-keywords: [codebase-memory, codebase-memory-mcp, CBM, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, codex_task, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm, BUILDD_CBM_CODEX]
-verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts]
+keywords: [codebase-memory, codebase-memory-mcp, CBM, CBM_VERSION, grep-steering, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, codex_task, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm, BUILDD_CBM_CODEX]
+verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts, scripts/verify-cbm-grep-steering.test.ts]
 supersedes: []
 ---
 # Codebase Memory Graph
@@ -243,6 +243,21 @@ agent does not spend turn one on infrastructure.
   different granularities: the per-role DB opt-out (CBM-5, no restart, no deploy)
   and `BUILDD_CBM_CODEX=0` on a runner (fleet-wide, needs a restart). Only the
   second produces `disableReason: 'codex_task'`.
+- **CBM-30** (vendor steering is a second layer, not decoration): The pinned
+  binary MUST advertise, in the `tools/list` descriptions of `search_graph` and
+  `trace_path`, that the tool is to be used **instead of** grep/glob. That text is
+  buildd's second, independent grep steering — delivered at tool-selection time,
+  and the only steering a session gets where CBM is mounted by a role connector or
+  a project `.mcp.json`, since CBM-12 suppresses our prompt block and not the
+  mount. Upstream removed it as collateral in a token-reduction pass, so a bump
+  can delete it with no diff on our side. Enforced as a **property, not a version
+  ceiling** — any version that keeps the steering passes:
+  `scripts/verify-cbm-grep-steering.ts` runs a real `tools/list` handshake against
+  the pinned build in `worker-image.yml` and fails closed on a missing binary, a
+  timed-out handshake, an empty tool list or an empty description. Matching is
+  deliberately coarse (a displacement phrase near a grep-family word, not the
+  vendor's sentence) so rewording does not fail the gate; the rule and its
+  tolerance are documented in that script's header.
 
 **Acceptance criteria**:
 - AC-9: WHEN the stdio server entry is built THEN `command` is `CBM_BINARY_PATH`,
@@ -269,6 +284,16 @@ agent does not spend turn one on infrastructure.
   THEN it contains a `# Codebase graph (codebase-memory)` section carrying the
   shared body, positioned before `# Completion`, and naming no Read/Grep/Glob
   tool; GIVEN CBM is not mounted THEN the document does not mention the server.
+- AC-15b: GIVEN an advertised tool list in which `search_graph` and `trace_path`
+  each name a grep-family tool in a displacement construction WHEN
+  `evaluateCbmSteering` runs THEN it passes, for any wording; GIVEN the steering
+  sentence removed from either description, OR a grep mention with no displacement
+  phrase, OR an empty tool list, OR a required tool absent, OR an empty
+  description THEN it fails and names the tool that lost the steering.
+- AC-15c (failure path): GIVEN no readable binary — `CBM_BINARY` absent from disk,
+  a process that exits before answering, or a handshake that does not complete
+  inside the budget — WHEN `scripts/verify-cbm-grep-steering.ts` runs THEN it
+  exits non-zero. An unmeasured property MUST NOT read as a satisfied one.
 
 ## 4. Per-task observability
 
@@ -435,7 +460,12 @@ cold-per-task model (CBM-4) is what this spec describes.
   `CBM_SHA256_AMD64`, `CBM_SHA256_ARM64`, sha256 verify, `--version` smoke check);
   `apps/runner/install.sh:375-417` (the same pin for Coder workspaces, which is
   what actually provisions running hosts).
+- **Pin gates** — `scripts/verify-cbm-pin.sh` (six digests vs the upstream
+  release) and `scripts/verify-cbm-grep-steering.ts` (`CBM_STEERING_REQUIREMENTS`,
+  `findSteeringSignals`, `evaluateCbmSteering`, `listAdvertisedTools`), both run by
+  `.github/workflows/worker-image.yml`.
 - **Tests** — `apps/runner/__tests__/unit/cbm-enforcement.test.ts`,
+  `scripts/verify-cbm-grep-steering.test.ts`,
   `apps/runner/__tests__/unit/cbm-bootstrap.test.ts`,
   `apps/runner/__tests__/unit/cbm-observability.test.ts`,
   `apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts`,
@@ -465,8 +495,11 @@ cold-per-task model (CBM-4) is what this spec describes.
 - **Connector-mounted `codebase-memory`.** A role may wire the server itself; only
   CBM-12 (no double-mount) and CBM-13 (blocked tools) bind that path. The
   `legacy_mcp_json` outcome that would label it is unreachable (see gaps).
-- **Choosing the pinned version.** This spec requires the pin to be consistent and
-  checksum-verified, not that any particular version is current.
+- **Choosing the pinned version.** This spec requires the pin to be consistent,
+  checksum-verified and steering-preserving (CBM-30), not that any particular
+  version is current. There is deliberately **no version ceiling**: bump freely,
+  and if the new build dropped the vendor-side grep steering the gate fails and
+  names what was lost, turning a silent regression into a decision.
 
 ## Verification gaps
 

@@ -381,6 +381,12 @@ fi
 # apps/runner/__tests__/unit/cbm-version-pin.test.ts, and checked against the
 # upstream release by scripts/verify-cbm-pin.sh in CI).
 #
+# A bump needs no remembered side conditions. The one property worth keeping —
+# the graph tools' own descriptions telling the agent to use them instead of
+# grep, which an upstream token-reduction pass deleted — is asserted against the
+# pinned build by scripts/verify-cbm-grep-steering.ts in worker-image.yml, so a
+# version that dropped it fails CI instead of degrading tool routing quietly.
+#
 # Every step is explicitly guarded rather than relying on `set -e`: this function
 # is called from an `if !` test, and POSIX/bash ignore errexit inside a condition,
 # including within a subshell that has its own `set -e`. Depending on errexit here
