@@ -33,6 +33,7 @@
     "backfill:seat-ids": "bun run scripts/backfill-seat-ids.ts",
     "seed:cue-connector": "cd packages/core && bun scripts/seed-cue-connector.ts",
     "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts",
+    "readout:memory-digest": "bun run packages/core/scripts/memory-digest-readout.ts",
     "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts",
     "screenshot": "bun run scripts/qa/capture.ts",
     "screenshot:app": "bash scripts/qa/shoot.sh",

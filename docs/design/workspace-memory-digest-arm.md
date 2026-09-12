@@ -169,6 +169,47 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
 
 ## Resolved
 
+**How the result gets read.** `packages/core/memory-digest-readout.ts` (pure
+arithmetic), `packages/core/memory-digest-readout-source.ts` (the three
+queries), `packages/core/scripts/memory-digest-readout.ts` (`bun run
+readout:memory-digest`) and `/api/cron/memory-digest-readout` (daily,
+notifies only on a terminal verdict). One importable function computes the
+readout, so the CLI, the cron route and any future page or MCP action cannot
+disagree about what the experiment says.
+
+Five analysis rules are enforced structurally rather than documented, because
+the first analysis of this experiment was hand-pasted SQL and was contaminated:
+
+1. **The cohort is split at a boundary derived from the rows** — the first
+   appearance of `task_match_derived_by = 'inferred_paths'`, the retrieval
+   change that landed mid-enrolment without a policy-version bump. The date is
+   never a constant in the code. Tasks whose builds straddle it are excluded and
+   counted, as are mixed-arm and foreign-version tasks.
+2. **`called_recall` is reported per era, and no pooled figure exists.** Its
+   apparent effect lives almost entirely pre-boundary and all but vanishes
+   after it, so a pooled number measures the boundary and not the arm. There is
+   no code path that produces one.
+3. **Primary outcomes are the continuous process metrics** — prompt bytes,
+   memory share, file-read calls, shell calls, turns, duration. Failure rate is
+   a catastrophe guardrail and is labelled as one.
+4. **Effect sizes carry intervals**, plus a covariate-balance check on
+   `task_match_derived_by`, which is arm-independent by construction and
+   therefore a legitimate balance check rather than an outcome.
+5. **"Not yet conclusive" is a first-class verdict**, reported with an explicit
+   power position against a design MDE fixed up front (never re-derived from the
+   observed effect, which would make the threshold chase the noise).
+
+Two failure modes of the readout itself are closed the same way. An empty
+cohort or an underivable boundary is `indeterminate`, and the cron route reports
+it as an error rather than as health — a readout that reports a clean bill over
+an empty set is worse than no readout. And every binary outcome carries a
+coverage figure, because `called_recall` was initially sourced from
+`worker_action_events`, which records the bare action name off the `buildd` MCP
+call and therefore has never contained a `recall` row: the metric read 0% in
+both arms, in both eras, which is indistinguishable from a null result. It is
+read off `resultMeta.toolCounts['mcp__buildd__recall']` instead, and a
+zero-coverage outcome now says so in capitals.
+
 **Where the record durably lands.** `worker_prompt_composition_events`
 (`packages/core/db/schema.ts`, migrations `0152_rainy_miek.sql` and
 `0153_greedy_mad_thinker.sql`). One row per prompt build, queryable, with
