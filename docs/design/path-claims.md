@@ -1,6 +1,30 @@
+---
+status: implemented
+assertions:
+  - id: paths-overlap-symbol
+    type: symbol
+    name: pathsOverlap
+    path: packages/core/path-overlap.ts
+  - id: should-serialize-by-manifest-symbol
+    type: symbol
+    name: shouldSerializeByManifest
+    path: packages/core/path-overlap.ts
+  - id: find-blocking-pr-symbol
+    type: symbol
+    name: findBlockingPr
+    path: packages/core/path-overlap.ts
+  - id: path-claim-route
+    type: route
+    method: POST
+    path: /api/tasks/[id]/path-claim
+    file: apps/web/src/app/api/tasks/[id]/path-claim/route.ts
+  - id: path-overlap-tests
+    type: test_file
+    path: packages/core/__tests__/path-overlap.test.ts
+---
 # Path Claims as a Coordination Primitive
 
-**Status:** Implemented
+**Status:** Implemented — Phase 1 only (scope fix; `check_path_claim` holds via `tasks.pathManifest`). The `path_claims` table (§2a) exists in the schema but `check_path_claim` does not yet write to it — Phases 2–4 (release triggers, waiter queue, worker-to-worker messaging) remain proposed, not built.
 **Related:**
 `apps/web/src/app/api/tasks/[id]/path-claim/route.ts`,
 `apps/web/src/app/api/mcp/route.ts` (check_path_claim tool, lines 297–325 / 595–718),

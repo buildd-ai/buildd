@@ -661,7 +661,7 @@ describe('buildReviewerContext — patch evidence flag', () => {
     expect(off).not.toContain('__new hunk__');
     expect(off).not.toContain('## PR Diff');
     // The filename list is still exactly what it was.
-    expect(off).toContain('## PR Files Changed (+2/-1)');
+    expect(off).toContain('## PR Files Changed (+2/-1 reviewable)');
     expect(off).toContain('  - apps/web/src/lib/foo.ts (+2/-1) [modified]');
 
     // And the seam the patch splices into is byte-identical to the pre-feature
@@ -684,7 +684,7 @@ describe('buildReviewerContext — patch evidence flag', () => {
 
     // Additive, not a replacement: scope and completeness are judged against
     // the filename list, and the patch may be short a file the budget dropped.
-    expect(on).toContain('## PR Files Changed (+2/-1)');
+    expect(on).toContain('## PR Files Changed (+2/-1 reviewable)');
   });
 
   it('honours a per-workspace token budget', async () => {
@@ -747,6 +747,63 @@ describe('buildReviewerContext — patch evidence flag', () => {
       policyConfig: { ...POLICY, reviewerPatchEvidence: true },
     });
     expect(on).not.toContain('Could not fetch file list');
+  });
+});
+
+describe('buildReviewerContext — generated paths are marked, not dropped', () => {
+  // Real file list from PR #2297 (a heartbeat fix + a one-column migration):
+  // 14 hand-written files at +355/-13, plus the Drizzle snapshot + journal
+  // Drizzle emits with every migration at +10664/-0. This is the fixture the
+  // "diff-size signals must subtract generated paths" fix is pinned against —
+  // before this fix the header read `(+11019/-13)` across all 16 files with no
+  // indication that 10664 of those lines were a generated snapshot.
+  const PR_2297_FILES = [
+    { filename: 'apps/runner/__tests__/unit/buildd-heartbeat-runner-version.test.ts', status: 'added', additions: 86, deletions: 0 },
+    { filename: 'apps/runner/__tests__/unit/worker-manager-state.test.ts', status: 'modified', additions: 11, deletions: 0 },
+    { filename: 'apps/runner/src/buildd.ts', status: 'modified', additions: 10, deletions: 0 },
+    { filename: 'apps/runner/src/index.ts', status: 'modified', additions: 1, deletions: 9 },
+    { filename: 'apps/runner/src/updater.ts', status: 'modified', additions: 11, deletions: 0 },
+    { filename: 'apps/runner/src/workers.ts', status: 'modified', additions: 2, deletions: 1 },
+    { filename: 'apps/web/src/app/api/workers/active/route.test.ts', status: 'modified', additions: 72, deletions: 0 },
+    { filename: 'apps/web/src/app/api/workers/active/route.ts', status: 'modified', additions: 2, deletions: 0 },
+    { filename: 'apps/web/src/app/api/workers/heartbeat/route.test.ts', status: 'modified', additions: 120, deletions: 0 },
+    { filename: 'apps/web/src/app/api/workers/heartbeat/route.ts', status: 'modified', additions: 6, deletions: 0 },
+    { filename: 'docs/specs/INDEX.md', status: 'modified', additions: 1, deletions: 1 },
+    { filename: 'docs/specs/runner-liveness.md', status: 'modified', additions: 26, deletions: 2 },
+    { filename: 'packages/core/db/schema.ts', status: 'modified', additions: 5, deletions: 0 },
+    { filename: 'packages/core/drizzle/0157_noisy_marauders.sql', status: 'added', additions: 2, deletions: 0 },
+    { filename: 'packages/core/drizzle/meta/0157_snapshot.json', status: 'added', additions: 10657, deletions: 0 },
+    { filename: 'packages/core/drizzle/meta/_journal.json', status: 'modified', additions: 7, deletions: 0 },
+  ];
+
+  const BASE_2297 = {
+    originalTaskId: 'original-2297',
+    originalTask: {
+      title: 'Fix a heartbeat upsert bug plus a one-column migration',
+      description: 'Guard against nulling a good value; add a column',
+      pathManifest: null,
+    },
+    prNumber: 2297,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/2297',
+    headSha: 'sha2297',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prFiles: PR_2297_FILES,
+    policyConfig: { preset: 'balanced' as const, riskClasses: [] },
+  };
+
+  it('reports reviewable and generated totals separately, in the header', async () => {
+    const ctx = await buildReviewerContext(BASE_2297);
+    expect(ctx).toContain('## PR Files Changed (+355/-13 reviewable (+10664 generated))');
+  });
+
+  it('marks the snapshot and journal as generated instead of omitting them', async () => {
+    const ctx = await buildReviewerContext(BASE_2297);
+    expect(ctx).toContain('  - packages/core/drizzle/meta/0157_snapshot.json (+10657/-0) [added] [generated — do not review]');
+    expect(ctx).toContain('  - packages/core/drizzle/meta/_journal.json (+7/-0) [modified] [generated — do not review]');
+    // The migration .sql itself is the reviewable artifact — never marked generated.
+    expect(ctx).toContain('  - packages/core/drizzle/0157_noisy_marauders.sql (+2/-0) [added]\n');
+    expect(ctx).not.toContain('packages/core/drizzle/0157_noisy_marauders.sql (+2/-0) [added] [generated');
   });
 });
 

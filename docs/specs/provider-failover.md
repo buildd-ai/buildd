@@ -8,6 +8,22 @@ domain: runners
 surfaces: [packages/core/backend-policy.ts, apps/web/src/lib/backend-failover.ts, apps/web/src/app/api/workers/claim/route.ts, apps/web/src/app/api/workers/[id]/route.ts]
 related: [codex-backend-spec, credential-isolation, runner-liveness]
 keywords: [backend_pauses, budget_exhausted_at, failoverpriority, rate limit, openrouter, oauth budget]
+assertions:
+  - id: backend-registry
+    type: symbol
+    name: BACKEND_REGISTRY
+    path: packages/core/backend-policy.ts
+  - id: pick-failover-backend
+    type: symbol
+    name: pickFailoverBackend
+    path: packages/core/backend-policy.ts
+  - id: failover-candidates
+    type: symbol
+    name: failoverCandidates
+    path: packages/core/backend-policy.ts
+  - id: backend-policy-test
+    type: test_file
+    path: packages/core/__tests__/backend-policy.test.ts
 supersedes: []
 ---
 # Provider Failover

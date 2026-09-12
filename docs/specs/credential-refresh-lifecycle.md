@@ -9,6 +9,23 @@ surfaces: [apps/web/src/app/api/runner/credential-refresh/route.ts, apps/runner/
 related: [credential-isolation, auth-oauth-boundaries, codex-backend-spec]
 keywords: [invalid_grant, refresh token rotation, credential_leases, rotation_started_at, refresh_locked_at, BUILDD_ALLOW_CONTROL_PLANE_REFRESH, nudge task, single-use refresh token]
 verified_by: [apps/web/src/app/api/runner/credential-refresh/route.test.ts, apps/web/src/app/api/cron/codex-token-refresh/route.test.ts, apps/runner/__tests__/unit/credential-refresh.test.ts, apps/runner/__tests__/unit/broker.test.ts]
+assertions:
+  - id: credential-refresh-route-post
+    type: route
+    method: POST
+    path: /api/runner/credential-refresh
+    file: apps/web/src/app/api/runner/credential-refresh/route.ts
+  - id: codex-token-refresh-route-get
+    type: route
+    method: GET
+    path: /api/cron/codex-token-refresh
+    file: apps/web/src/app/api/cron/codex-token-refresh/route.ts
+  - id: credential-refresh-route-test
+    type: test_file
+    path: apps/web/src/app/api/runner/credential-refresh/route.test.ts
+  - id: broker-test
+    type: test_file
+    path: apps/runner/__tests__/unit/broker.test.ts
 supersedes: []
 ---
 

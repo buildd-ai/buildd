@@ -71,9 +71,61 @@ function timeAgo(date: Date | string): string {
 }
 
 /**
- * Query recent mission notes and build context sections for planning prompts.
+ * Render the goal-criteria completion gate: current per-criterion verdict, read
+ * fresh from `mission.goalCriteriaState` on every call.
+ *
+ * The one place this renders — shared by planning mode and heartbeat mode — so
+ * a heartbeat cycle sees the SAME live verdict a planning cycle would, rather
+ * than having to infer criteria status from an older decision note in the
+ * mission feed. Mission 04449d1d's ~40-cycle stall included a heartbeat that
+ * spent 22h repeating a prior agent's stale "no ANTHROPIC_API_KEY" diagnosis
+ * because nothing in its prompt re-asserted the live state to contradict it.
  */
-async function buildNotesContext(missionId: string): Promise<string[]> {
+function renderGoalCriteriaSection(
+  goalCriteria: Array<Record<string, unknown>>,
+  goalCriteriaState:
+    | { overall?: string; evaluatedAt?: string; criteria?: Array<{ index: number; verdict: string; label?: string; type?: string; evidence?: string }> }
+    | null
+    | undefined,
+): string[] {
+  if (goalCriteria.length === 0) return [];
+  const verdictByIndex = new Map((goalCriteriaState?.criteria ?? []).map(c => [c.index, c]));
+  const parts: string[] = [
+    `\n## Goal criteria — the completion gate (${goalCriteria.length})`,
+    `This mission CANNOT be completed until every criterion below passes. ` +
+      `Current overall verdict: **${goalCriteriaState?.overall ?? 'not yet evaluated'}**` +
+      `${goalCriteriaState?.evaluatedAt ? ` as of ${timeAgo(goalCriteriaState.evaluatedAt)}` : ''}. ` +
+      `An unevaluated criterion is not a pass. This is the LIVE verdict — it overrides anything ` +
+      `said about criteria status in older notes below; do not restate a prior cycle's diagnosis ` +
+      `without checking it against this section first.`,
+  ];
+  for (let i = 0; i < goalCriteria.length; i++) {
+    const c = goalCriteria[i];
+    const label = (c.label as string) ?? (c.description as string) ?? (c.command as string) ?? (c.type as string);
+    const st = verdictByIndex.get(i);
+    parts.push(`- [${st?.verdict ?? 'not evaluated'}] ${label}${st?.evidence ? ` — ${st.evidence}` : ''}`);
+  }
+  parts.push(
+    `Prefer work that moves these to pass. If a criterion is wrong or unmeasurable, ` +
+      `say so via post_note rather than proposing completion repeatedly.`
+  );
+  return parts;
+}
+
+/** Loose match for a decision note that is describing goal-criteria status. */
+const CRITERIA_DECISION_PATTERN = /goal.?criteria|criteri(?:a|on)\b|NOT_EVALUATED|UNVERIFIED\b|ANTHROPIC_API_KEY/i;
+
+/**
+ * Query recent mission notes and build context sections for planning prompts.
+ *
+ * `criteriaEvaluatedAt` lets this drop decision notes that were describing
+ * goal-criteria status as of a strictly older evaluation — a live re-evaluation
+ * has happened since, so the note's diagnosis is provably stale rather than
+ * merely old. Restating it (e.g. "criteria NOT_EVALUATED because no
+ * ANTHROPIC_API_KEY") after grading has since produced real verdicts is exactly
+ * the failure mode this guards: the next cycle should re-check, not repeat.
+ */
+async function buildNotesContext(missionId: string, criteriaEvaluatedAt?: string | Date | null): Promise<string[]> {
   const recentNotes = await db.query.missionNotes.findMany({
     where: eq(missionNotes.missionId, missionId),
     orderBy: [desc(missionNotes.createdAt)],
@@ -88,7 +140,17 @@ async function buildNotesContext(missionId: string): Promise<string[]> {
   const openQuestions = recentNotes.filter(n => n.type === 'question' && n.status === 'open');
   const answeredQuestions = recentNotes.filter(n => n.type === 'question' && n.status === 'answered');
   const replies = recentNotes.filter(n => n.type === 'reply' && n.authorType === 'user');
-  const decisions = recentNotes.filter(n => n.type === 'decision');
+  const evaluatedAtMs = criteriaEvaluatedAt ? new Date(criteriaEvaluatedAt).getTime() : null;
+  const decisions = recentNotes.filter(n => {
+    if (n.type !== 'decision') return false;
+    // A criteria diagnosis older than the last live evaluation is superseded by
+    // definition — grading has run again since this note was written. Notes
+    // unrelated to criteria, and criteria notes newer than the last evaluation,
+    // still render normally.
+    const describesCriteria = CRITERIA_DECISION_PATTERN.test(`${n.title} ${n.body ?? ''}`);
+    if (!describesCriteria || evaluatedAtMs === null) return true;
+    return new Date(n.createdAt).getTime() >= evaluatedAtMs;
+  });
 
   if (userGuidance.length > 0) {
     parts.push('\n## User Guidance');
@@ -412,6 +474,8 @@ export async function buildMissionContext(missionId: string, templateContext?: R
       workspaceId: mission.workspaceId,
       teamId: mission.teamId,
       sensitive: heartbeatSensitive,
+      goalCriteria: mission.goalCriteria,
+      goalCriteriaState: mission.goalCriteriaState,
     });
   }
 
@@ -559,28 +623,10 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   // completion, gets refused, and has no idea what it is being measured against —
   // the difference between a gate and an argument.
   const goalCriteria = Array.isArray(mission.goalCriteria) ? mission.goalCriteria as Array<Record<string, unknown>> : [];
-  if (goalCriteria.length > 0) {
-    const criteriaState = mission.goalCriteriaState as
-      | { overall?: string; criteria?: Array<{ index: number; verdict: string; label?: string; type?: string; evidence?: string }> }
-      | null;
-    const verdictByIndex = new Map((criteriaState?.criteria ?? []).map(c => [c.index, c]));
-    descParts.push(
-      `\n## Goal criteria — the completion gate (${goalCriteria.length})\n` +
-      `This mission CANNOT be completed until every criterion below passes. ` +
-      `Current overall verdict: **${criteriaState?.overall ?? 'not yet evaluated'}**. ` +
-      `An unevaluated criterion is not a pass.`
-    );
-    for (let i = 0; i < goalCriteria.length; i++) {
-      const c = goalCriteria[i];
-      const label = (c.label as string) ?? (c.description as string) ?? (c.command as string) ?? (c.type as string);
-      const st = verdictByIndex.get(i);
-      descParts.push(`- [${st?.verdict ?? 'not evaluated'}] ${label}${st?.evidence ? ` — ${st.evidence}` : ''}`);
-    }
-    descParts.push(
-      `Prefer work that moves these to pass. If a criterion is wrong or unmeasurable, ` +
-      `say so via post_note rather than proposing completion repeatedly.`
-    );
-  }
+  const criteriaState = mission.goalCriteriaState as
+    | { overall?: string; evaluatedAt?: string; criteria?: Array<{ index: number; verdict: string; label?: string; type?: string; evidence?: string }> }
+    | null;
+  descParts.push(...renderGoalCriteriaSection(goalCriteria, criteriaState));
 
   // Re-armed by a blocked verdict. This cycle exists BECAUSE the gate refused —
   // every deliverable is terminal and the mission cannot close, so the only
@@ -932,7 +978,7 @@ export async function buildMissionContext(missionId: string, templateContext?: R
   }
 
   // Mission feed notes (user guidance, questions, decisions)
-  const notesParts = await buildNotesContext(missionId);
+  const notesParts = await buildNotesContext(missionId, criteriaState?.evaluatedAt ?? null);
   descParts.push(...notesParts);
 
   // Dynamic orchestrator hints (static instructions are in the Organizer role content)
@@ -1054,7 +1100,13 @@ async function buildHeartbeatContext(mission: {
   workspaceId?: string | null;
   teamId?: string | null;
   sensitive?: boolean;
+  goalCriteria?: unknown;
+  goalCriteriaState?: unknown;
 }) {
+  const goalCriteria = Array.isArray(mission.goalCriteria) ? mission.goalCriteria as Array<Record<string, unknown>> : [];
+  const criteriaState = mission.goalCriteriaState as
+    | { overall?: string; evaluatedAt?: string; criteria?: Array<{ index: number; verdict: string; label?: string; type?: string; evidence?: string }> }
+    | null;
   // Query mission state in parallel
   const [priorHeartbeats, completedTasks, activeTasks, failedTasks, missionArtifacts, tasksWithPRs] = await Promise.all([
     // Last 3 heartbeat results
@@ -1147,6 +1199,12 @@ async function buildHeartbeatContext(mission: {
   descParts.push(`## Heartbeat: ${mission.title}`);
   if (mission.description) descParts.push(mission.description);
 
+  // Goal criteria — the completion gate. A heartbeat that never sees this has
+  // no live signal to check a stale decision note against, which is how a
+  // 22h-old "no ANTHROPIC_API_KEY" diagnosis kept getting repeated verbatim
+  // after grading had already produced real verdicts.
+  descParts.push(...renderGoalCriteriaSection(goalCriteria, criteriaState));
+
   // Phase assessment — the most important section
   descParts.push(`\n## Mission Phase: ${phase.phase.toUpperCase()}`);
   descParts.push(phase.reason);
@@ -1173,7 +1231,7 @@ async function buildHeartbeatContext(mission: {
   descParts.push(mission.heartbeatChecklist || '(no checklist configured)');
 
   // Mission feed notes (user guidance, questions, decisions)
-  const notesParts = await buildNotesContext(mission.id);
+  const notesParts = await buildNotesContext(mission.id, criteriaState?.evaluatedAt ?? null);
   descParts.push(...notesParts);
 
   // Protocol — action-oriented, not passive

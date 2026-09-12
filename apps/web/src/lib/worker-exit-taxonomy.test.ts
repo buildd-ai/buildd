@@ -36,8 +36,43 @@ describe('classifyReportedFailure', () => {
     expect(consumesRetryAttempt(cause)).toBe(false);
   });
 
+  // Regression: the sequential-backend deferral ("Deferred: ...") is concurrency
+  // control working as designed — the task is re-queued untouched and was never
+  // attempted. It used to be detected only AFTER classification had already run,
+  // so it fell through to code_failure and was charged a retry attempt.
+  it('classifies an unmet precondition as condition_unmet and does not charge a retry', () => {
+    const cause = classifyReportedFailure({
+      budgetLimited: false,
+      sandboxMountGap: false,
+      conditionUnmet: true,
+    });
+    expect(cause).toBe('condition_unmet');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+
+  // The new input must not steal precedence from the causes that actually
+  // diagnose the failure — a deferral report that also carries a budget,
+  // sandbox, steering or concurrency signal is filed under that signal.
+  it('keeps budget/sandbox/steering/concurrency ahead of conditionUnmet', () => {
+    expect(classifyReportedFailure({
+      budgetLimited: true, sandboxMountGap: false, conditionUnmet: true,
+    })).toBe('budget_limited');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: true, conditionUnmet: true,
+    })).toBe('sandbox_mount_gap');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: false, steeringDelivery: true, conditionUnmet: true,
+    })).toBe('infra_failure');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: false, concurrencyConflict: true, conditionUnmet: true,
+    })).toBe('infra_failure');
+  });
+
   it('defaults to code_failure', () => {
     expect(classifyReportedFailure({ budgetLimited: false, sandboxMountGap: false })).toBe('code_failure');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: false, conditionUnmet: false,
+    })).toBe('code_failure');
   });
 });
 

@@ -13,3 +13,57 @@ export const GENERATED_PATH_PREFIXES: readonly string[] = [
 export function isGeneratedPath(filename: string): boolean {
   return GENERATED_PATH_PREFIXES.some((prefix) => filename.startsWith(prefix));
 }
+
+export interface DiffFileStat {
+  filename: string;
+  additions: number;
+  deletions: number;
+}
+
+export interface DiffStatsBucket {
+  files: number;
+  additions: number;
+  deletions: number;
+}
+
+export interface SplitDiffStats {
+  /** The part of the diff a human/reviewer should actually read. */
+  reviewable: DiffStatsBucket;
+  /** Tooling-generated files (e.g. Drizzle snapshots) — excluded from size signals. */
+  generated: DiffStatsBucket;
+}
+
+/**
+ * Partition a per-file diff stat list into reviewable vs generated buckets.
+ * This is the one place that turns `isGeneratedPath` into totals — a surface
+ * that reports a diff size (get_pr, the reviewer prompt, worker progress
+ * stats) should go through this rather than re-summing `files` with its own
+ * filter. (auto-merge's size gate excludes lockfiles too, a second axis this
+ * helper doesn't model, so it filters `files` directly with `isGeneratedPath`
+ * before summing — still the one path-classification source, just not this
+ * summing helper.)
+ */
+export function splitDiffStats(files: readonly DiffFileStat[]): SplitDiffStats {
+  const reviewable: DiffStatsBucket = { files: 0, additions: 0, deletions: 0 };
+  const generated: DiffStatsBucket = { files: 0, additions: 0, deletions: 0 };
+  for (const f of files) {
+    const bucket = isGeneratedPath(f.filename) ? generated : reviewable;
+    bucket.files += 1;
+    bucket.additions += f.additions || 0;
+    bucket.deletions += f.deletions || 0;
+  }
+  return { reviewable, generated };
+}
+
+/**
+ * Render a diff-size summary that keeps generated bulk visible instead of
+ * hiding it — the goal is that a large number stops being alarming, not that
+ * it stops being reported: `+297/-13 reviewable (+10665 generated)`.
+ */
+export function formatDiffStats(split: SplitDiffStats): string {
+  const { reviewable, generated } = split;
+  const base = `+${reviewable.additions}/-${reviewable.deletions} reviewable`;
+  if (generated.files === 0) return base;
+  const generatedLines = generated.additions + generated.deletions;
+  return `${base} (+${generatedLines} generated)`;
+}

@@ -1,6 +1,38 @@
+---
+status: implemented
+assertions:
+  - id: jwks-endpoint-route
+    type: route
+    method: GET
+    path: /api/.well-known/jwks.json
+    file: apps/web/src/app/api/.well-known/jwks.json/route.ts
+  - id: assertion-mint-route
+    type: route
+    method: POST
+    path: /api/connectors/[id]/assertion
+    file: apps/web/src/app/api/connectors/[id]/assertion/route.ts
+  - id: jwks-rotation-cron-route
+    type: route
+    method: GET
+    path: /api/cron/jwks-rotation
+    file: apps/web/src/app/api/cron/jwks-rotation/route.ts
+  - id: connectors-assertion-audience-migration
+    type: migration
+    number: 79
+    contains: assertion_audience
+---
+
 # Cross-App Assertion Grant (SPEC)
 
-> **Status: draft — awaiting approval.**
+> **Status: Implemented.** All routes (JWKS endpoint, assertion mint, rotation
+> cron), migration 0079's `assertion_audience`/`assertion_token_endpoint`
+> columns, the `authMode: 'assertion'` connector enum value, the
+> `signing_key` `SecretPurpose`, the runner exchange flow
+> (`apps/runner/src/workers.ts`), and the OAuth AS metadata `jwks_uri` are
+> live. The claim-route injection described in §E.3 lives in
+> `apps/web/src/app/api/workers/claim/mcp-connector-injection.ts` rather than
+> inline in `claim/route.ts` — a naming drift from this doc's "Claim route
+> code surface" note, not a missing feature.
 >
 > **Scope:** Full design for buildd-signed assertion auth enabling workers to
 > authenticate against buildd-owned MCP servers (Cue at `cue.buildd.dev`,

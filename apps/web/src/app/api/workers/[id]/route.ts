@@ -593,6 +593,11 @@ export async function PATCH(
     // refreshed by the runner's periodic sync. Read by the complete_task gate
     // below — see the 'auto' output-requirement block.
     dirtyWorktree,
+    // Explicit complete_task acknowledgement that worktree edits (commits or
+    // uncommitted changes) are being intentionally thrown away — a first-class
+    // success exit for the 'auto' output-requirement gate below, distinct from
+    // the `error` param (which marks the task failed).
+    discardEdits,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -1127,16 +1132,47 @@ export async function PATCH(
       // was opened by a different worker row (retries/CI-fix continuations
       // push to the same branch as an earlier attempt), so this only fires
       // when no PR exists anywhere for the branch.
-      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
-        if (!(await hasDeliverableArtifact())) {
+      //
+      // A fallback-provenance summary (body.summarySource === 'fallback', see
+      // #2270) gates independently of commits/dirtyWorktree. It means the SDK
+      // session ended without the agent ever calling complete_task, so the
+      // "summary" is the runner's own last-assistant-message capture, not a
+      // decision the agent made — a stalled session, not a conclusion. A
+      // genuine "nothing to ship" outcome is something the agent states
+      // deliberately (summarySource='agent'); commitCount/dirtyWorktree alone
+      // are also exactly the signals a worktree that never diverged from its
+      // base can misreport as "nothing happened" (see collectGitStats in
+      // apps/runner/src/git-operations.ts), so they must not be the only gate
+      // for this outcome.
+      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
+      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
+        // A coordination/conflict-resolution task legitimately ships nothing on
+        // its own branch — its deliverable is action taken against OTHER PRs
+        // (a merge, a dispatched release). merge_pr stamps mergedAt on the
+        // CALLING worker's row on a GitHub-confirmed merge regardless of whose
+        // PR was actually merged (see the PUT handler in
+        // apps/web/src/app/api/github/pr/route.ts), so a worker with no PR of
+        // its own that still has mergedAt set has a real, verified
+        // cross-branch deliverable — not a self-reported claim in the summary.
+        const hasCrossBranchDeliverable = !!worker.mergedAt;
+        // Explicit, auditable acknowledgement that these edits are scratch and
+        // meant to be thrown away — a legitimate success, not the failure
+        // shape `error` produces.
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
-            : 'uncommitted changes in the worktree';
+            : effectiveDirtyWorktree
+              ? 'uncommitted changes in the worktree'
+              : 'no confirmed outcome — the session ended without the agent calling complete_task';
           return NextResponse.json({
-            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with an \`error\` explaining why these edits are being intentionally discarded.`,
+            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
           }, { status: 400 });
         }
+        // Neither satisfier put anything on this worker's own branch — a
+        // branch-merge release would find nothing of this worker's own to ship.
+        if ((hasCrossBranchDeliverable || discardReason) && !hasPR) skipRelease = true;
       }
     }
   }
@@ -1181,20 +1217,27 @@ export async function PATCH(
   const isSandboxMountGap = body.sandboxMountGap === true;
   const isSteeringDelivery = body.steeringDelivery === true;
   const isConcurrencyConflict = body.concurrencyConflict === true || isConcurrencyConflictError(error);
+  // Codex sequential-enforcement deferral: the runner allows only one active
+  // Codex worker per workspace and reports extras as failed with a "Deferred:"
+  // error. These aren't real failures — re-queue the task so it's retried once
+  // the active Codex worker frees, instead of marking it permanently failed.
+  // (Matters most under budget failover, which funnels tasks onto Codex.)
+  //
+  // This has to be decided BEFORE the classification below, not after it: the
+  // predicate used to live below the classify call, so a deferred worker —
+  // concurrency control working exactly as designed — was booked as
+  // `code_failure`, which consumesRetryAttempt() charges. Enough deferrals in a
+  // row and a task that was never actually attempted is permanently failed.
+  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
       steeringDelivery: isSteeringDelivery,
       concurrencyConflict: isConcurrencyConflict,
+      conditionUnmet: isCodexDeferral,
     });
   }
-  // Codex sequential-enforcement deferral: the runner allows only one active
-  // Codex worker per workspace and reports extras as failed with a "Deferred:"
-  // error. These aren't real failures — re-queue the task so it's retried once
-  // the active Codex worker frees, instead of marking it permanently failed.
-  // (Matters most under budget failover, which funnels tasks onto Codex.)
-  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
   // Held = task goes back to pending and is NOT treated as a real failure
   // (no failure notification, no task-status overwrite below).
   let isBudgetReset = false;
@@ -1945,6 +1988,14 @@ export async function PATCH(
         // Also mark the worker row failed so UI shows the correct terminal state.
         updates.status = 'failed';
         updates.error = 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created';
+        // The classification block above only runs for a *reported* terminal
+        // failure, so a completed→failed override arrives here with exitCause
+        // still unset. NULL is chargeable (consumesRetryAttempt treats it as
+        // an unclassified failure) but it is also indistinguishable from a
+        // genuinely unclassified one, so state the cause instead of inheriting
+        // the default by accident: not returning the contract's output is the
+        // agent's own failure, so it is a code_failure and it should be charged.
+        updates.exitCause = 'code_failure';
       }
 
       // Review contract guard: a reviewer verdict only reaches
@@ -1983,6 +2034,12 @@ export async function PATCH(
         // This worker's review is discarded either way.
         updates.status = 'failed';
         updates.error = 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+        // Same override-after-classification shape as the planning guard: state
+        // the cause rather than leaving exitCause NULL. Writing the verdict as
+        // prose is the agent's own contract violation, so it stays chargeable —
+        // the requeue above has its own separate budget
+        // (MAX_REVIEW_CONTRACT_RETRIES) and does not rely on this being exempt.
+        updates.exitCause = 'code_failure';
         if (willRequeue) {
           // Piggyback on the shouldAutoRetry machinery to reset the task to pending
           // (same pattern as the loop requeue above).
@@ -2105,6 +2162,13 @@ export async function PATCH(
           ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
           // Artifact protocol: hint for the orchestrator on what to consider next
           ...(body.nextSuggestion && typeof body.nextSuggestion === 'string' && { nextSuggestion: body.nextSuggestion }),
+          // Auditable record of the explicit discard acknowledgement (see the
+          // 'auto' output-requirement gate above) — same sensitive treatment
+          // as `summary`: a workspace flagged sensitive gets a structured
+          // marker instead of the agent's raw prose reason.
+          ...(typeof discardEdits === 'string' && discardEdits.trim() && {
+            discardedEdits: isSensitive ? 'edits discarded' : discardEdits.trim(),
+          }),
         };
 
         // Snapshot unique MCP servers into task result

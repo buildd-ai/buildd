@@ -2,13 +2,13 @@
 title: DB Migration Execution
 status: active
 owner: max
-last_verified: 2026-08-30
+last_verified: 2026-09-11
 summary: Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
 domain: releases
-surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/drizzle/meta/_journal.json, scripts/check-schema-drift.ts]
+surfaces: [packages/core/db/migrate.ts, packages/core/db/migrate-plan.ts, packages/core/db/migrate-drift.ts, scripts/check-schema-drift.ts]
 related: [db-migration-gates, release-flow]
-verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts]
-keywords: [__drizzle_migrations, planMigrations, high-water mark, _journal.json, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill]
+verified_by: [packages/core/__tests__/migrate-plan.test.ts, packages/core/__tests__/migration-journal.test.ts, packages/core/__tests__/migration-journal-ordering.test.ts, packages/core/__tests__/migrate-drift.test.ts]
+keywords: [__drizzle_migrations, planMigrations, high-water mark, _journal.json, last_migration_number, schema drift, 42703, backfill, toRun, toBackfill, forked snapshot chain, prevId, snapshot gap, resolveSnapshotSelection]
 supersedes: []
 ---
 # DB Migration Execution
@@ -125,15 +125,45 @@ directions reached production:
 
 ### Drift gate (pre-promote, release PRs only)
 
-- The gate compares production's `information_schema.columns` against the newest
-  `packages/core/drizzle/meta/*_snapshot.json`. It is read-only.
+- The gate compares production's `information_schema.columns` against the
+  **chain tip** of `packages/core/drizzle/meta/*_snapshot.json`. It is read-only.
+- The snapshot MUST be resolved through the `prevId` chain, never by filename
+  sort alone. Snapshots form a linked list; two concurrent `db:generate` runs
+  fork it into siblings that each hold only part of the schema, and git conflicts
+  on neither the `.sql` nor the `.json`.
+- A fork **at the chain tip** MUST produce NO drift verdict. The gate MUST exit
+  with a code distinct from the drift code (`2` = cannot verify, `1` = drift),
+  name the siblings and their shared parent, and state that production is not
+  implicated. In this state the gate cannot distinguish "production was
+  hand-edited" from "I am reading the wrong branch of history", and only one of
+  those is an emergency, so it MUST NOT assert either.
+- A dangling older snapshot (successor removed by past renumbering) MUST be
+  reported and MUST NOT be fatal. Several exist; failing on them would block
+  every release to re-litigate settled history.
 - A column or table present in the **snapshot but absent from the DB** MUST
   pass, logged `[pending]`. Migrations run at deploy, which is *after* this
   check, so a pending forward migration is the normal state of a release PR and
   must not block it.
-- A column or table present in the **DB but absent from the snapshot** MUST fail
-  with `EXTRA in DB` / `EXTRA TABLE` and exit 1. Untracked manual DDL is the
-  only fatal condition.
+- A column or table present in the **DB but absent from the snapshot** MUST be
+  traced to a creating migration before any verdict, symmetrically with the
+  missing-object path:
+  - a migration drops it and has not run → `[pending]`, exit 0.
+  - a journal migration creates it and `__drizzle_migrations` records that
+    migration as applied → `[snapshot gap]`, exit 0. The object is tracked and
+    applied; the resolved snapshot simply does not cover it.
+  - no journal migration creates it → MUST fail with `EXTRA in DB` and the drift
+    exit code. This is the ONLY fatal extra-object condition, and the only one
+    that may be phrased as untracked manual DDL.
+- The applied-migration count MUST be reported as a reconciliation (applied from
+  this ref's journal + historical rows outside it), not printed beside the
+  journal length. The tracking table is append-only apply history while the
+  journal is only what the ref carries, so the two legitimately differ by the
+  migrations that were renumbered or that predate a rebuilt journal. Side by side
+  the two numbers read as production running migrations we do not know about.
+- The CI migration check MUST assert on `bun db:generate`'s OUTPUT, not its exit
+  code. drizzle-kit prints `Error: ... is a collision.` on a forked chain and
+  exits 0, and a failed generate writes nothing — indistinguishable from "no
+  changes needed" to `git status --porcelain drizzle/`.
 - The applied-migration count MUST be read from `drizzle.__drizzle_migrations`
   with a fallback to `public.__drizzle_migrations`. Querying only `public`
   throws and reports 0, which is indistinguishable from "no migration ever ran"
@@ -187,9 +217,20 @@ directions reached production:
   GIVEN no `Authorization` header THEN it returns 401 `Invalid API key` and
   performs no UPDATE.
 - AC-12 (failure path): GIVEN production has column `tasks.hotfix_note` that the
-  newest snapshot does not declare WHEN `scripts/check-schema-drift.ts` runs
-  THEN it prints `EXTRA in DB    : tasks.hotfix_note  ← untracked manual DDL`
+  resolved snapshot does not declare AND no migration in the journal creates it
+  WHEN `scripts/check-schema-drift.ts` runs THEN it prints
+  `EXTRA in DB    : tasks.hotfix_note — no migration in the journal creates it  ← untracked manual DDL`
   and exits 1.
+- AC-12b: GIVEN production has a table the resolved snapshot does not declare
+  BUT a journal migration creates it and `__drizzle_migrations` records that
+  migration as applied WHEN the gate runs THEN it logs `[snapshot gap]` naming
+  that migration and exits 0 — it MUST NOT report drift.
+- AC-12c (cannot-verify path): GIVEN two snapshots record the same `prevId` and
+  one of them is the highest-numbered WHEN the gate runs THEN it emits no drift
+  verdict, names both siblings and the shared parent, states that production is
+  not implicated, and exits 2 — not 1.
+- AC-12d: GIVEN a snapshot whose successor was removed by past renumbering WHEN
+  the gate runs THEN it notes the dangling snapshot and proceeds to a verdict.
 - AC-13: GIVEN the newest snapshot declares a column that production does not
   have yet WHEN `check-schema-drift.ts` runs THEN it logs
   `[pending] Column '<table>.<col>' not in DB yet` and exits 0.
@@ -215,10 +256,14 @@ directions reached production:
 | slot reservation (atomic UPDATE+RETURNING) | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:54-61` |
 | slot auth / 404 / zero-pad | `apps/web/src/app/api/workspaces/[id]/migration-slot/route.ts:35-38,63-68` |
 | agent-facing reserve-then-generate flow | `apps/web/src/lib/default-roles.ts:212-227` |
-| drift gate: pending vs. fatal classification | `scripts/check-schema-drift.ts:131-167` |
-| drift gate: tracking-count schema fallback | `scripts/check-schema-drift.ts:113-124` |
-| `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml:141-190` |
-| "migrations are up to date" PR check | `.github/workflows/build.yml:66-78` |
+| drift gate: snapshot resolution + fork refusal | `scripts/check-schema-drift.ts:136-186` |
+| drift gate: tracking-count schema fallback | `scripts/check-schema-drift.ts:244-270` |
+| drift gate: exit codes (drift vs cannot-verify) | `scripts/check-schema-drift.ts:69-70` |
+| `loadSnapshotMetas`, `resolveSnapshotSelection` | `packages/core/db/migrate-drift.ts:259-311` |
+| `classifyExtraSchemaObjects` (creator tracing) | `packages/core/db/migrate-drift.ts:344-400` |
+| `reconcileAppliedCount` | `packages/core/db/migrate-drift.ts:419-445` |
+| `Schema Drift / check-prod` job (step-level gate) | `.github/workflows/build.yml:313-345` |
+| "migrations are up to date" PR check (asserts on output, not exit code) | `.github/workflows/build.yml:84-110` |
 | preview-branch migrate | `.github/workflows/build.yml:409-411` |
 | deploy ordering (`db:migrate && next build`) | `apps/web/package.json:7` |
 | `migrations:lint` | `package.json:42` |

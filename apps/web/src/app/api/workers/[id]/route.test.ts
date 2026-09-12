@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
+import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -1888,6 +1889,11 @@ describe('PATCH /api/workers/[id]', () => {
         milestones: [],
         pendingInstructions: null,
       });
+      // These tests are about summarySource tagging, not deliverable gating —
+      // outputRequirement: 'none' skips the gate entirely so a bare fallback
+      // summary with no PR/artifact (the exact session-end shape under test)
+      // isn't refused for an unrelated reason.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
       return () => capturedTaskSet;
     }
 
@@ -2153,6 +2159,94 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
     });
 
+    it('refuses completion when the summary is fallback-provenance and there is no PR/artifact, even with zero commits (auto mode)', async () => {
+      // The exact shape of the false-completion incident: a session ended
+      // without the agent calling complete_task (summarySource='fallback'),
+      // commitCount/dirtyWorktree both read 0 (a worktree that never diverged
+      // from its base reports no work), and no PR or artifact exists. A
+      // fallback summary is never a deliberate "nothing to ship" conclusion —
+      // it must not be trusted the way a real agent-authored summary is.
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here and wait for direction.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+      const data = await res.json();
+      expect(data.error).toContain('no confirmed outcome');
+      expect(data.hint).toBe('create_pr');
+    });
+
+    it('completes normally with a fallback summary when a PR exists (auto mode)', async () => {
+      // The fallback-summary check must not override the normal hasPR
+      // satisfier — a session that ends right after create_pr but before the
+      // agent calls complete_task itself is a legitimate completion.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 3,
+        dirtyWorktree: false,
+        prUrl: 'https://github.com/org/repo/pull/55',
+        prNumber: 55,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Session ended after PR was opened.', summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
     it('completes normally when commits belong to a pre-existing PR opened by an earlier worker on the same branch (auto mode)', async () => {
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
@@ -2399,6 +2493,99 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedTaskSet?.result?.prNumber).toBe(77);
+    });
+
+    it('completes a dirty-worktree worker with no PR that merged a sibling PR during its run (cross-branch deliverable)', async () => {
+      // A conflict-resolution/coordination task ships nothing on its own
+      // branch by design — its deliverable is a merge_pr call against a
+      // sibling PR. That call stamps mergedAt on THIS worker's row on a
+      // GitHub-confirmed merge (apps/web/src/app/api/github/pr/route.ts PUT
+      // handler), regardless of whose PR was merged, so mergedAt is a real,
+      // verified signal rather than a self-reported claim.
+      const updatedWorker = { id: 'worker-3', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-3',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: new Date('2026-09-10T00:00:00Z'),
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a dirty-worktree worker with no PR and an explicit discardEdits acknowledgement, recording the reason', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-4', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-4',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', discardEdits: 'scratch notes from conflict investigation, no longer needed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.discardedEdits).toBe('scratch notes from conflict investigation, no longer needed');
     });
   });
 
@@ -5703,6 +5890,44 @@ describe('PATCH /api/workers/[id]', () => {
       expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
     });
 
+    // Regression: the override flips an incoming `completed` to `failed` long
+    // after the exit-cause classification block has run — and that block only
+    // fires for a *reported* terminal failure. So the worker row was written
+    // with exitCause NULL. NULL is chargeable, so the retry accounting happened
+    // to be right, but only by accident: it is indistinguishable from a genuinely
+    // unclassified failure, which makes every taxonomy report on these rows a
+    // guess. State the cause explicitly instead.
+    it('records an explicit exitCause on a review-contract override rather than leaving it NULL', async () => {
+      setupReviewerTaskCompletion('approve');
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden).toBeDefined();
+      expect(overridden.exitCause).not.toBeUndefined();
+      expect(overridden.exitCause).not.toBeNull();
+      // A dropped verdict is the agent's own contract violation, so it stays
+      // chargeable — the guard's own requeue budget governs the retry, not this.
+      expect(overridden.exitCause).toBe('code_failure');
+      expect(consumesRetryAttempt(overridden.exitCause)).toBe(true);
+    });
+
     it('structuredOutput without a verdict key: also treated as a contract violation', async () => {
       setupReviewerTaskCompletion('approve');
       const taskSetCalls: any[] = [];
@@ -6682,6 +6907,82 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSet.exitCause).toBe('code_failure');
+    });
+
+    // Regression: the sequential-backend deferral report is the runner saying
+    // "another worker of this backend already holds the workspace" — the task is
+    // put straight back to pending and never attempted. The predicate used to be
+    // evaluated AFTER exitCause had been written, so the row was stamped
+    // code_failure, which consumesRetryAttempt() charges: enough deferrals in a
+    // row and the retry cap permanently fails a task nothing ever ran.
+    it('sets exitCause=condition_unmet for a Deferred: failure, and does not charge a retry', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Deferred: another Codex worker is already active in this workspace' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('condition_unmet');
+      expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(false);
+    });
+
+    // The deferral is a scheduling decision, not a diagnosis: when the same
+    // report also carries a real budget signal, the budget cause still wins.
+    it('keeps budget_limited ahead of the deferral predicate', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null,
+        outputRequirement: 'none', context: null,
+        workspace: { teamId: 'team-1', name: 'ws' }, backend: 'codex',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Deferred: another Codex worker is already active in this workspace', budgetExhausted: true },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('budget_limited');
     });
 
     it('sets exitCause=sandbox_mount_gap when sandboxMountGap flag is true', async () => {
@@ -8252,6 +8553,54 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     expect(failedUpdate.result.error).not.toContain('runner did not request outputFormat');
     // Still has to say what was actually observed, so the failure stays diagnosable.
     expect(failedUpdate.result.error.toLowerCase()).toContain('structuredoutput');
+  });
+
+  // Same NULL-exitCause hole as the review-contract override: this guard also
+  // runs after the classification block, which only fires for a reported
+  // failure. An overridden worker must still say why it failed.
+  it('records an explicit exitCause on a planning-contract override rather than leaving it NULL', async () => {
+    const workerSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        workerSetCalls.push(u);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-planning-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{ outputRequirement: 'auto', missionId: null, scheduleId: null, mode: 'planning' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'I thought about the mission and here is my plan in prose.' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+    expect(overridden).toBeDefined();
+    expect(overridden.exitCause).not.toBeUndefined();
+    expect(overridden.exitCause).not.toBeNull();
+    expect(overridden.exitCause).toBe('code_failure');
   });
 
   // Regression: an orchestrator/heartbeat cycle whose task row never got

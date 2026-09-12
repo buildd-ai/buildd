@@ -8,6 +8,28 @@ domain: tasks
 surfaces: [apps/web/src/lib/subject-gate-contract.ts, apps/web/src/app/api/workers/claim/subject-gate.ts, apps/web/src/lib/subject-sweep.ts]
 related: [mission-task-lifecycle, timeline-dependency-geometry]
 keywords: [subjectAnchor, subjectPrNumber, reconciled, fail open, derived confidence, BYPASS_SUBJECT_GATE_KEY]
+assertions:
+  - id: is-binding-subject-anchor
+    type: symbol
+    name: isBindingSubjectAnchor
+    path: apps/web/src/lib/subject-gate-contract.ts
+  - id: is-subject-dead
+    type: symbol
+    name: isSubjectDead
+    path: apps/web/src/lib/subject-gate-contract.ts
+  - id: has-subject-gate-bypass
+    type: symbol
+    name: hasSubjectGateBypass
+    path: apps/web/src/lib/subject-gate-contract.ts
+  - id: sweep-subject-anchored-tasks
+    type: symbol
+    name: sweepSubjectAnchoredTasks
+    path: apps/web/src/lib/subject-sweep.ts
+  - id: claim-route-post
+    type: route
+    method: POST
+    path: /api/workers/claim
+    file: apps/web/src/app/api/workers/claim/route.ts
 supersedes: []
 ---
 

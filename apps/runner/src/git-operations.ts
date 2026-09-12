@@ -7,6 +7,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import { join } from 'path';
 import { resolveWorktreeBase, clearResumeContext, parseWorktreeList, BranchFetchResult } from './worktree-utils';
+import { isGeneratedPath } from '@buildd/shared';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -614,11 +615,48 @@ export async function collectGitStats(
   const opts = { cwd, timeout: 5000, encoding: 'utf-8' as const };
   const stats: Record<string, number | string | boolean | undefined> = {};
 
+  // Resolve the ref this worktree's own commits are measured against.
+  // Prefer the ref this worktree was actually cut from; a branch cut from a
+  // mission integration branch must compare against THAT branch, not
+  // dev/main/master — comparing against dev there reports the integration
+  // branch's whole accumulated history as this worker's own, even when this
+  // worker made zero commits of its own. Shared by the lastCommitSha trust
+  // check below and the diff, which must agree on the same base.
+  let mergeBase = '';
+  if (baseRef) {
+    try {
+      const result = execSync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts).trim();
+      if (result) mergeBase = result;
+    } catch {}
+  }
+  if (!mergeBase) {
+    for (const candidate of ['origin/dev', 'origin/main', 'origin/master']) {
+      try {
+        const result = execSync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts).trim();
+        if (result) { mergeBase = result; break; }
+      } catch {}
+    }
+  }
+
   try {
-    stats.lastCommitSha = execSync('git rev-parse HEAD', opts).trim();
+    const head = execSync('git rev-parse HEAD', opts).trim();
+    // A SHA equal to the resolved merge-base is the BASE's own tip, not a
+    // commit this worker made — the base moves as sibling branches/missions
+    // merge into it, so a worktree that never diverged from its base (zero
+    // real commits) would otherwise report the base's latest merge as if it
+    // were "this worker's last commit". Only report it once HEAD is
+    // confirmed ahead of the base; with no base to compare against at all,
+    // report what we have rather than withhold it silently.
+    if (head && (!mergeBase || head !== mergeBase)) {
+      stats.lastCommitSha = head;
+    }
   } catch {}
   try {
-    // Count commits on this branch vs the ref it was actually cut from.
+    // Count commits on this branch vs the ref it was actually cut from. Kept
+    // independent of `mergeBase` above (which anchors the diff and the SHA
+    // trust check to a fixed candidate order): this resolves the base via
+    // the worktree's own upstream when baseRef is absent, which for a plain
+    // trunk-cut branch is the more precise comparison ref.
     let compareRef = baseRef;
     if (!compareRef) {
       const defaultBranch = execSync('git rev-parse --abbrev-ref HEAD@{upstream}', opts).trim().replace(/^origin\//, '') || 'main';
@@ -631,39 +669,31 @@ export async function collectGitStats(
     if (fallbackCommitCount !== undefined) stats.commitCount = fallbackCommitCount;
   }
   try {
-    // Compute full PR diff: find the merge-base with the base branch so we capture all
-    // commits on this branch, not just the last commit (HEAD~1 only shows the final commit).
-    // Prefer the ref this worktree was actually cut from; a branch cut from a mission
-    // integration branch must diff against THAT branch, not dev/main/master — diffing
-    // against dev there reports the integration branch's whole accumulated diff as this
-    // worker's own, even when this worker made zero commits of its own.
-    let mergeBase = '';
-    if (baseRef) {
-      try {
-        const result = execSync(`git merge-base HEAD ${baseRef} 2>/dev/null`, opts).trim();
-        if (result) mergeBase = result;
-      } catch {}
-    }
-    if (!mergeBase) {
-      for (const candidate of ['origin/dev', 'origin/main', 'origin/master']) {
-        try {
-          const result = execSync(`git merge-base HEAD ${candidate} 2>/dev/null`, opts).trim();
-          if (result) { mergeBase = result; break; }
-        } catch {}
+    // Compute full PR diff against the resolved merge-base so we capture all
+    // commits on this branch, not just the last commit. A diff with no
+    // resolvable base is not reported: the previous `HEAD~1` fallback showed
+    // the parent of whatever HEAD happens to be — on a worktree with zero
+    // commits of its own that parent is an unrelated ancestor (possibly
+    // another task's already-merged work), not this worker's diff.
+    if (mergeBase) {
+      const numstat = execSync(`git diff --numstat ${mergeBase} 2>/dev/null || true`, opts).trim();
+      let added = 0, removed = 0, files = 0;
+      if (numstat) {
+        for (const line of numstat.split('\n')) {
+          const [a, r, ...fileParts] = line.split('\t');
+          // Skip files generated by tooling (e.g. Drizzle snapshot JSON) — this
+          // self-reported diff is what task/PR cards render before a PR exists,
+          // and a migration snapshot must not read as the diff size there either.
+          // See packages/shared/src/generated-paths.ts.
+          if (a !== '-' && !isGeneratedPath(fileParts.join('\t'))) {
+            added += parseInt(a, 10) || 0; removed += parseInt(r, 10) || 0; files++;
+          }
+        }
       }
+      stats.filesChanged = files;
+      stats.linesAdded = added;
+      stats.linesRemoved = removed;
     }
-    const diffTarget = mergeBase || 'HEAD~1';
-    const numstat = execSync(`git diff --numstat ${diffTarget} 2>/dev/null || true`, opts).trim();
-    let added = 0, removed = 0, files = 0;
-    if (numstat) {
-      for (const line of numstat.split('\n')) {
-        const [a, r] = line.split('\t');
-        if (a !== '-') { added += parseInt(a, 10) || 0; removed += parseInt(r, 10) || 0; files++; }
-      }
-    }
-    stats.filesChanged = files;
-    stats.linesAdded = added;
-    stats.linesRemoved = removed;
   } catch {}
   try {
     // Tracked-file modifications only — an untracked (`??`) entry is not

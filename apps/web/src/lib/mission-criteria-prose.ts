@@ -101,8 +101,8 @@ export interface ProseCriterionInput {
 }
 
 export interface ProseEvidence {
-  tasks: Array<{ id: string; title: string | null; summary: string | undefined }>;
-  artifacts: Array<{ id: string; title: string | null; type: string; contentSnippet: string | null }>;
+  tasks: Array<{ id: string; title: string | null; summary: string | undefined; at?: Date | null }>;
+  artifacts: Array<{ id: string; title: string | null; type: string; contentSnippet: string | null; at?: Date | null }>;
 }
 
 export type ProseCriteriaResolution =
@@ -251,17 +251,27 @@ export async function resolveProseCriteria(opts: {
   };
 }
 
+/** `3d ago` / `today` — cheap enough that evidence never needs a raw ISO timestamp in-prompt. */
+function relativeAge(at: Date | null | undefined): string {
+  if (!at) return 'age unknown';
+  const days = Math.floor((Date.now() - new Date(at).getTime()) / 86_400_000);
+  if (days <= 0) return 'today';
+  if (days === 1) return '1d ago';
+  return `${days}d ago`;
+}
+
 function buildEvaluatorPrompt(
   mission: { title: string; description: string | null },
   criteria: ProseCriterionInput[],
   evidence: ProseEvidence,
 ): string {
+  // Caller sorts newest-first; the age label reinforces what the ordering already implies.
   const taskEvidence = evidence.tasks.map(t =>
-    `[task:${t.id.slice(0, 8)}] "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
+    `[task:${t.id.slice(0, 8)}] (${relativeAge(t.at)}) "${t.title ?? '(untitled)'}"${t.summary ? `\nSummary: ${t.summary}` : ' (no summary)'}`,
   ).join('\n\n');
 
   const artifactEvidence = evidence.artifacts.map(a =>
-    `[artifact:${a.id.slice(0, 8)}] "${a.title ?? '(untitled)'}" (${a.type})${a.contentSnippet ? `\nContent:\n${a.contentSnippet}` : ''}`,
+    `[artifact:${a.id.slice(0, 8)}] (${relativeAge(a.at)}) "${a.title ?? '(untitled)'}" (${a.type})${a.contentSnippet ? `\nContent:\n${a.contentSnippet}` : ''}`,
   ).join('\n\n');
 
   const hasEvidence = evidence.tasks.length > 0 || evidence.artifacts.length > 0;
@@ -278,10 +288,10 @@ tasks, do NOT fix anything you notice. Read the evidence, decide, return verdict
 ### Criteria to grade (${criteria.length})
 ${criteriaList}
 
-### Evidence — completed tasks (${evidence.tasks.length})
+### Evidence — completed tasks, newest first (${evidence.tasks.length})
 ${taskEvidence || '(none)'}
 
-### Evidence — artifacts (${evidence.artifacts.length})
+### Evidence — artifacts, newest first (${evidence.artifacts.length})
 ${artifactEvidence || '(none)'}
 ${hasEvidence ? '' : '\n⚠️ There is no evidence to read. Return UNVERIFIED for every criterion.\n'}
 ### How to grade
@@ -291,6 +301,10 @@ ${hasEvidence ? '' : '\n⚠️ There is no evidence to read. Return UNVERIFIED f
   honest answer far more often than \`pass\`; a criterion you cannot check from the
   evidence above is not satisfied, and guessing \`pass\` completes a mission that
   nobody verified.
+- Nothing marks an older item as superseded. When two items address the same claim
+  and disagree, trust the more recent one (age is shown next to each item) — an
+  audit or gap report written before a later item resolved it is not still true
+  just because it exists.
 
 You may read the repository to check a claim. You may not act on what you find.
 

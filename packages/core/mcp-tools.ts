@@ -13,6 +13,7 @@ import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import type {
   FailureAnalytics,
+  FailureSignatureFamily,
   FailureSignatureLookup,
   FailureSignatureRow,
   FailureWindow,
@@ -339,7 +340,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
-    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
+    complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
@@ -357,7 +358,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. 401 means token lacks admin level. [admin]',
-    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
+    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
@@ -371,7 +372,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose graded by an LLM — it needs a model reachable at the moment a verdict is owed, so it silently degrades to NOT_EVALUATED (which never counts as a pass) and therefore REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
-    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy, "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
+    manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
     manage_watched_projects: '{ action: "list" | "create" | "update" | "delete" | "run", workspaceId? (required for list/create), projectId? (required for update/delete/run), repo?, enabled?, vercelProjectId?, inFlightWindowMin?, prodGraceMin?, roleSlug?, pushoverApp? ("tasks"|"alerts"), releasePrFilter? ({ base?, label?, titlePrefix? }), notes? } — manage project health watcher rows. The watcher fires a buildd task + Pushover alert when CI breaks on release PRs or Vercel prod is unhealthy. Vercel checks require vercelProjectId. "run" forces an immediate check on one row (handy for testing). [admin]',
     trigger_release: '{ workspaceId? OR repo? (owner/name — one is required), ref?, workflowFile?, inputs? (string-valued workflow inputs), force? (folded into inputs.force) } — trigger a release. The workspace\'s releaseConfig.strategy decides what happens; buildd no longer assumes dev→main. For "workflow_dispatch" workspaces this dispatches the repo\'s release workflow and READS THE RUN BACK (returns runId/runStatus/runUrl when resolvable, else runsUrl). NOTE: dispatching a workflow typically OPENS the release PR — it does not itself deploy; prod ships only when that PR passes CI and merges, and force bypasses BOTH the empty-commit check in the workflow itself AND buildd\'s own in-flight dedup guard for this headSha (without force, a repeat call for a commit already dispatched returns the existing release without re-dispatching — reported as "not dispatched", not as success). "branch_merge" workspaces release automatically on task completion (not via this trigger). For an unconfigured workspace, pass workflowFile + ref explicitly. Call release_status first to fire informed. Uses the buildd GitHub App installation token. [admin]',
     release_status: '{ workspaceId? OR repo? (owner/name — one is required), ref?, prodBranch? } — read-only release preflight: what would ship (commits on ref ahead of prodBranch), whether the source ref\'s CI is passing/failing/pending, and whether a release PR is already open. Use before trigger_release to decide if releasing is safe right now. [admin]',
@@ -381,7 +382,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
-    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -465,6 +466,8 @@ const FAILURE_SIGNATURES_MAX = 15;
 const FAILURE_SIGNATURE_LINE_MAX = 120;
 /** Only the first line of an error is ever normalized, so this is generous. */
 const FAILURE_LOOKUP_INPUT_MAX = 1000;
+/** A prefix longer than the max normalized signature (200 chars) can never match anything. */
+const FAILURE_PREFIX_INPUT_MAX = 200;
 
 function truncateTo(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -501,6 +504,43 @@ function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWind
   lines.push(`New failure — no match for this signature in the last ${window} (${failedInWindow} failure(s) in the window).${caveat}`);
   lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
   lines.push(`Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`);
+  return lines.join('\n');
+}
+
+/**
+ * Rollup for a family of failures sharing a literal signature prefix.
+ *
+ * For an error family whose free-text tail makes each occurrence its own
+ * singleton signature (e.g. `needs_input: <question>`), this is the only way
+ * to see the family's true size — no single occurrence ranks into the top-N
+ * signature list on its own, so `formatFailureOverview` would never show it.
+ */
+function formatFailureFamily(family: FailureSignatureFamily, window: FailureWindow): string {
+  const lines: string[] = [];
+  const nextCall = `context: { frictionSignature: "${family.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
+
+  if (!family.known) {
+    lines.push(`No failure signature starts with "${truncateTo(family.prefix, 200)}" in the last ${window}.`);
+    lines.push(`Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`);
+    return lines.join('\n');
+  }
+
+  lines.push(`Signature family "${truncateTo(family.prefix, 200)}" — ${family.count} occurrence(s) across ${family.distinctSignatures} distinct signature(s) in the last ${window}.`);
+  const detail = [
+    `first seen ${family.firstSeen}`,
+    `last seen ${family.lastSeen}`,
+    `died early ${family.diedEarlyCount}/${family.count}`,
+  ];
+  if (family.exitCauses.length > 0) detail.push(`exit causes: ${family.exitCauses.join(', ')}`);
+  lines.push(detail.join(' · '));
+  if (family.exampleTaskId) lines.push(`example task: ${family.exampleTaskId}`);
+  if (family.topSignatures.length > 0) {
+    lines.push('Top variants:');
+    family.topSignatures.forEach(s => {
+      lines.push(`  ${s.count}× ${truncateTo(s.signature, FAILURE_SIGNATURE_LINE_MAX)}`);
+    });
+  }
+  lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
   return lines.join('\n');
 }
 
@@ -1390,6 +1430,7 @@ export async function handleBuilddAction(
             ...(params.summary ? { summary: params.summary, summarySource: 'agent' } : {}),
             ...(params.structuredOutput ? { structuredOutput: params.structuredOutput } : {}),
             ...(params.nextSuggestion ? { nextSuggestion: params.nextSuggestion } : {}),
+            ...(params.discardEdits ? { discardEdits: params.discardEdits } : {}),
           }),
         });
       } catch (err: unknown) {
@@ -1668,8 +1709,11 @@ export async function handleBuilddAction(
         : pr.mergeable === false ? `Mergeable: no (${pr.mergeableState ?? 'blocked'})`
         : `Mergeable: unknown (${pr.mergeableState ?? 'computing'})`;
 
+      const generatedNote = pr.generatedFiles > 0
+        ? ` (+${pr.generatedAdditions + pr.generatedDeletions} generated across ${pr.generatedFiles} file(s), excluded)`
+        : '';
       const statsLine = pr.additions !== null
-        ? `Diff: +${pr.additions}/-${pr.deletions} across ${pr.changedFiles} file(s)`
+        ? `Diff: +${pr.additions}/-${pr.deletions} across ${pr.changedFiles} file(s) reviewable${generatedNote}`
         : '';
 
       const bodyPreview = pr.body
@@ -2270,6 +2314,9 @@ export async function handleBuilddAction(
       const minutesAgo = typeof params.minutesAgo === 'number' ? params.minutesAgo : null;
       const nameContains = typeof params.nameContains === 'string' ? params.nameContains.toLowerCase() : null;
       const filterCutoff = minutesAgo !== null ? Date.now() - minutesAgo * 60_000 : null;
+      const scheduleType = typeof params.type === 'string' ? params.type : 'all';
+
+      const isHeartbeat = (s: any): boolean => s.taskTemplate?.context?.heartbeat === true;
 
       const matchesFilters = (s: any): boolean => {
         if (filterCutoff !== null) {
@@ -2277,6 +2324,8 @@ export async function handleBuilddAction(
           if (!Number.isFinite(last) || last < filterCutoff) return false;
         }
         if (nameContains && !s.name.toLowerCase().includes(nameContains)) return false;
+        if (scheduleType === 'heartbeat' && !isHeartbeat(s)) return false;
+        if (scheduleType === 'workspace' && isHeartbeat(s)) return false;
         return true;
       };
 
@@ -2297,7 +2346,7 @@ export async function handleBuilddAction(
         const schedules = (data.schedules || []).filter(matchesFilters);
 
         if (schedules.length === 0) {
-          if (minutesAgo !== null || nameContains) return text('No schedules matched the filter.');
+          if (minutesAgo !== null || nameContains || scheduleType !== 'all') return text('No schedules matched the filter.');
           return text('No schedules configured for this workspace.');
         }
 
@@ -2319,7 +2368,7 @@ export async function handleBuilddAction(
       }
 
       if (allSchedules.length === 0) {
-        if (minutesAgo !== null || nameContains) return text('No schedules matched the filter across any workspace.');
+        if (minutesAgo !== null || nameContains || scheduleType !== 'all') return text('No schedules matched the filter across any workspace.');
         return text('No schedules configured across any workspace.');
       }
 
@@ -3339,10 +3388,14 @@ export async function handleBuilddAction(
       // The route only ever normalizes the first line, so a long trace adds URL
       // length and nothing else.
       const rawError = typeof params.error === 'string' && params.error.trim() ? params.error : null;
+      const rawErrorPrefix = typeof params.errorPrefix === 'string' && params.errorPrefix.trim()
+        ? params.errorPrefix.trim()
+        : null;
 
       const qs = [`window=${window}`];
       if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
       if (rawError) qs.push(`error=${encodeURIComponent(rawError.slice(0, FAILURE_LOOKUP_INPUT_MAX))}`);
+      if (rawErrorPrefix) qs.push(`errorPrefix=${encodeURIComponent(rawErrorPrefix.slice(0, FAILURE_PREFIX_INPUT_MAX))}`);
 
       const data = await api(`/api/health/failures?${qs.join('&')}`);
       const analytics = data?.analytics as FailureAnalytics | undefined;
@@ -3350,6 +3403,9 @@ export async function handleBuilddAction(
 
       const lookup = data?.lookup as FailureSignatureLookup | undefined;
       if (lookup) return text(formatFailureLookup(lookup, window, analytics.totals.failed));
+
+      const family = data?.family as FailureSignatureFamily | undefined;
+      if (family) return text(formatFailureFamily(family, window));
 
       return text(formatFailureOverview(analytics, limit));
     }

@@ -122,6 +122,7 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   missions: { id: 'id' },
 }));
+mock.module('@buildd/core/spec-discrepancy-intake', () => ({ findIntakeWarnings: mock(() => Promise.resolve([])) }));
 
 // Must import AFTER mocks
 import { POST } from './route';

@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { missions } from '@buildd/core/db/schema';
+import { missions, taskSchedules } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 
 /**
@@ -52,7 +52,7 @@ export function selectMissionsToArchive(
 export async function archiveStaleDoneMissions(now = new Date()): Promise<string[]> {
   const candidates = await db.query.missions.findMany({
     where: eq(missions.status, 'active'),
-    columns: { id: true, status: true, updatedAt: true, goalCriteria: true, goalCriteriaState: true },
+    columns: { id: true, status: true, updatedAt: true, scheduleId: true, goalCriteria: true, goalCriteriaState: true },
     with: {
       schedule: { columns: { enabled: true } },
       tasks: { columns: { status: true, updatedAt: true } },
@@ -73,9 +73,21 @@ export async function archiveStaleDoneMissions(now = new Date()): Promise<string
   );
 
   if (ids.length > 0) {
+    // Heartbeat schedules are owned by their mission — delete when the mission
+    // is done. Mirrors the explicit-PATCH terminal-status path in
+    // apps/web/src/app/api/missions/[id]/route.ts, which this raw db.update
+    // otherwise bypasses (that's how the orphaned rows this fixes happened).
+    const scheduleIds = candidates
+      .filter((m: any) => ids.includes(m.id) && m.scheduleId)
+      .map((m: any) => m.scheduleId as string);
+
+    if (scheduleIds.length > 0) {
+      await db.delete(taskSchedules).where(inArray(taskSchedules.id, scheduleIds));
+    }
+
     await db
       .update(missions)
-      .set({ status: 'archived', updatedAt: now })
+      .set({ status: 'archived', updatedAt: now, scheduleId: null })
       .where(inArray(missions.id, ids));
   }
 

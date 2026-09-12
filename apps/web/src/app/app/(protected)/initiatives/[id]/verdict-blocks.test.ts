@@ -37,6 +37,8 @@ import {
   latestWorkerPerTask,
   verdictEvidenceAnchor,
   missionContributions,
+  closeAffordance,
+  initiativeKpiGate,
   DETAIL_SPARKLINE_WIDTH,
   DETAIL_SPARKLINE_HEIGHT,
   MISSIONS_ANCHOR,
@@ -256,5 +258,108 @@ describe('verdictEvidenceAnchor (§5.1 — unverified links to the fix)', () => 
 
   it('offers no link when the verdict is already verified', () => {
     expect(verdictEvidenceAnchor({ confidence: 'verified', kpiCount: 3 })).toBeNull();
+  });
+});
+
+describe('closeAffordance (§6.5 — "Ready to close" must be closeable)', () => {
+  it('offers Complete initiative prominently on the rung that says the work is done', () => {
+    const a = closeAffordance({ status: 'active', verdict: 'won_unclaimed' });
+
+    expect(a).not.toBeNull();
+    expect(a!.nextStatus).toBe('completed');
+    expect(a!.label).toBe('Complete initiative');
+    // The verdict label is literally "Ready to close"; the control that closes
+    // it is the page's primary action at that point, not a footnote.
+    expect(a!.prominent).toBe(true);
+  });
+
+  it('still offers the control on an open arc that is not ready, only quietly', () => {
+    for (const verdict of ['winning', 'grinding', 'losing', 'stuck', 'dormant', 'empty'] as const) {
+      const a = closeAffordance({ status: 'active', verdict });
+      expect(a).not.toBeNull();
+      expect(a!.nextStatus).toBe('completed');
+      // Closing a struggling arc is a call the operator is allowed to make, so
+      // the control exists — it just does not compete with the work.
+      expect(a!.prominent).toBe(false);
+    }
+  });
+
+  it('offers the same completion on a paused arc', () => {
+    const a = closeAffordance({ status: 'paused', verdict: 'dormant' });
+    expect(a!.nextStatus).toBe('completed');
+    expect(a!.prominent).toBe(false);
+  });
+
+  it('offers Archive once the arc is completed, mirroring the mission pattern', () => {
+    const a = closeAffordance({ status: 'completed', verdict: 'dormant' });
+
+    expect(a!.nextStatus).toBe('archived');
+    expect(a!.label).toBe('Archive initiative');
+    expect(a!.prominent).toBe(false);
+  });
+
+  it('offers nothing on an archived arc — there is no further state', () => {
+    expect(closeAffordance({ status: 'archived', verdict: 'dormant' })).toBeNull();
+  });
+
+  it('only ever proposes a status the PATCH route accepts', () => {
+    // `/api/initiatives/[id]` validates against exactly this set; a control
+    // proposing anything else is a button that 400s.
+    const routeStatuses = ['active', 'paused', 'completed', 'archived'];
+    for (const status of routeStatuses) {
+      const a = closeAffordance({ status, verdict: 'won_unclaimed' });
+      if (a) expect(routeStatuses).toContain(a.nextStatus);
+    }
+  });
+});
+
+describe('initiativeKpiGate (the chip must not assert an attempt nobody made)', () => {
+  const failingState = {
+    overall: 'fail' as const,
+    kpis: [{ index: 0, name: 'adoption', verdict: 'fail' as const }],
+  };
+
+  it('reads a failing KPI as "Criteria failing", never "Completion refused"', () => {
+    const gate = initiativeKpiGate({ kpiCount: 1, kpiState: failingState, allMissionsDone: true });
+
+    // `completionAttempted` separates "nothing evaluated yet" from "the platform
+    // tried to close this and the gate held it open". Nothing auto-closes an
+    // initiative, so the refusal wording claims an event that never happened.
+    expect(gate!.state).toBe('failing');
+    expect(gate!.label).toBe('Criteria failing');
+    expect(gate!.tone).toBe('warning');
+  });
+
+  it('reads a never-evaluated KPI as "Not yet verified"', () => {
+    const gate = initiativeKpiGate({ kpiCount: 2, kpiState: null, allMissionsDone: true });
+
+    expect(gate!.state).toBe('unverified');
+    expect(gate!.label).toBe('Not yet verified');
+  });
+
+  it('never reaches the refused state from any KPI verdict', () => {
+    for (const overall of [null, 'fail', 'UNVERIFIED', 'PENDING', 'NOT_EVALUATED'] as const) {
+      const gate = initiativeKpiGate({
+        kpiCount: 1,
+        kpiState: overall === null ? null : { overall, kpis: [{ index: 0, name: 'k', verdict: overall }] },
+        allMissionsDone: true,
+      });
+      expect(gate?.state).not.toBe('refused');
+    }
+  });
+
+  it('renders nothing until completion is actually on the table', () => {
+    expect(initiativeKpiGate({ kpiCount: 2, kpiState: failingState, allMissionsDone: false })).toBeNull();
+    expect(initiativeKpiGate({ kpiCount: 0, kpiState: failingState, allMissionsDone: true })).toBeNull();
+  });
+
+  it('renders nothing when the gate is clear — a passing KPI is not news', () => {
+    expect(
+      initiativeKpiGate({
+        kpiCount: 1,
+        kpiState: { overall: 'pass', kpis: [{ index: 0, name: 'k', verdict: 'pass' }] },
+        allMissionsDone: true,
+      }),
+    ).toBeNull();
   });
 });
