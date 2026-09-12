@@ -348,6 +348,25 @@ describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('refuses to merge the mission PR while a sibling task has not opened a PR at all', async () => {
+    // Same widened gate, third call site. A mission whose remaining work exists
+    // only as unclaimed tasks used to pass here — the human saw a green mission
+    // PR, merged it, and the integration branch went with it.
+    mockTasksFindMany.mockResolvedValue([
+      { id: 't-2', title: 'Task 2', status: 'pending', mode: 'execution', taskClass: 'work' },
+    ]);
+    mockWorkersFindMany.mockResolvedValueOnce([missionPrWorker]).mockResolvedValueOnce([]);
+
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toContain('Task 2');
+    expect(body.error).toContain('pending');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
   it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
     mockTasksFindMany.mockResolvedValue([
       { id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' },

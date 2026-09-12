@@ -430,6 +430,35 @@ stored — it is derived on read from the state of associated tasks via
   owner task (`MISSION_PR_TASK_PREFIX`, whose base IS trunk by design), a
   stacked-plan phase (`isStackedPhaseBase`), a mission with no integration base,
   and a task with no mission.
+- **The mission PR MUST NOT merge while the mission's work is unfinished.**
+  Merging it deletes the integration branch deliberately
+  (`finalizeMissionPrMerge`), so the gate in front of that merge
+  (`guardMissionPrMerge`, shared by all three merge call sites) asks whether the
+  mission's work is finished — NOT merely whether any task PR is open. It MUST
+  refuse while any deliverable task of the mission is in a non-terminal state
+  (`pending` / `assigned` / `in_progress`) and has not landed a PR, as well as
+  while a deliverable PR is open, and the refusal MUST name what holds it.
+  Bookkeeping rows (including the mission-PR owner itself, which would make the
+  gate self-referential), `attempt` rows (reviewer / CI-retry / conflict-retry),
+  planning rows and cancelled tasks MUST NOT hold the gate — cancelling is a
+  decision that the work will not happen, not an absence of one.
+- **A task whose integration base no longer exists MUST still be able to
+  deliver.** When a mission task's PR is created and the mission's integration
+  branch is absent from the remote, buildd MUST re-cut that branch from trunk
+  and proceed, so the mission keeps reaching trunk through one merge per round
+  of work (a second mission PR, which `openMissionIntegrationPr` already
+  supports by design). Only when the branch can neither be found nor created
+  MAY the PR fall back to trunk. Either outcome MUST be recorded as a mission
+  note; neither may be silent, and neither may leave the worker with no way to
+  open its PR. Existence MUST be read live from GitHub (`GET
+  /repos/{repo}/git/ref/heads/{branch}`), never from a local remote-tracking
+  ref, which reports a deleted branch as present until something prunes it.
+- **The prompt and the guard MUST read the same source for the delivery base.**
+  One function — `resolveTaskPrBase` in `packages/core/mission-integration.ts` —
+  answers "what base does this task's PR take", and both the runner's Git
+  Workflow prompt block and the `create_pr` derivation MUST call it. A worker
+  cannot tell a wrong instruction from a wrong refusal from inside its sandbox,
+  so a divergence there is unrecoverable without a human.
 - `missions.primaryPrNumber`/`primaryPrUrl` MUST only ever be claimed by a PR
   whose base ref is a trunk branch of the workspace (`gitConfig.targetBranch`,
   `gitConfig.defaultBranch`, or the repo default). A PR based on the mission
@@ -461,6 +490,22 @@ stored — it is derived on read from the state of associated tasks via
   registration with a base ref of the workspace trunk and `primaryPrNumber`
   still null THEN the slot is claimed.
 
+- AC-11u: GIVEN an opted-in mission with zero open task PRs and one deliverable
+  task still `pending` WHEN the mission PR merge is attempted at any of the
+  three merge call sites THEN it is refused, naming that task and its status;
+  GIVEN the same mission with that task `cancelled` THEN the merge proceeds.
+- AC-11v: GIVEN an opted-in mission whose only non-terminal rows are
+  bookkeeping, `attempt` or planning tasks WHEN the mission PR merge is
+  attempted THEN it proceeds.
+- AC-11w: GIVEN a task whose mission has an integration base that is absent
+  from the remote WHEN `create_pr` runs THEN the branch is re-cut from trunk,
+  a mission note records it, and the PR opens against the integration branch;
+  GIVEN the branch cannot be created either THEN the PR opens against trunk, a
+  mission note records the breach, and the call does NOT fail.
+- AC-11x: GIVEN any task WHEN the runner builds its Git Workflow prompt and
+  `create_pr` derives the PR base THEN both report the same base, because both
+  call `resolveTaskPrBase` with the same mission and task.
+
 **Code surface**:
 - Mission helpers: `packages/core/mission-helpers.ts` — `isDeliverableTask()`
 - Mission context: `apps/web/src/lib/mission-context.ts`
@@ -476,7 +521,16 @@ stored — it is derived on read from the state of associated tasks via
   `openMissionIntegrationPr` creates the `bookkeeping` task and worker row that
   own it, so every worker-keyed merge surface can see and merge it
 - Option A′ predicates: `packages/core/mission-integration.ts` —
-  `missionIntegrationBase`, `isMissionIntegrationBase`
+  `missionIntegrationBase`, `isMissionIntegrationBase`, `resolveTaskPrBase`
+  (the one delivery-base answer, called by both the guard and the prompt)
+- Mission-PR merge gate + branch lifecycle: `apps/web/src/lib/mission-pr.ts` —
+  `evaluateMissionWorkState`, `guardMissionPrMerge`, `finalizeMissionPrMerge`
+- Integration-branch existence + re-cut:
+  `apps/web/src/lib/mission-integration-branch.ts` —
+  `ensureMissionIntegrationBranch`, `ensureIntegrationBaseForTaskPr`
+- Delivery-base prompt block: `apps/runner/src/prompt-builder.ts` (Git Workflow
+  section), fed the mission's integration fields by
+  `apps/web/src/app/api/workers/claim/route.ts`
 - Seeded planner rules for both shapes: `apps/web/src/lib/default-roles.ts`
   (Organizer, "Sequencing Rules")
 - Schema: `packages/core/db/schema.ts` — `missions` table
