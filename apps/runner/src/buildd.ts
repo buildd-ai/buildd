@@ -4,6 +4,7 @@ import type { Outbox } from './outbox';
 import type { WorkspaceSkill, WorkerEnvironment, ClaimDiagnostics } from '@buildd/shared';
 import { BuilddTransport } from '@buildd/core/buildd-transport';
 import { createRedactionInterceptor } from '@buildd/core/redaction';
+import { TRACKED_BRANCH } from './updater';
 
 /**
  * Timestamp (ms) of the last time the runner received ANY HTTP response from the
@@ -577,7 +578,20 @@ export class BuilddClient {
     runnerCommit?: string | null,
     runnerVersion?: string | null,
   ): Promise<{ viewerToken?: string; pendingTaskCount?: number; latestCommit?: string; leasesRenewed?: number }> {
-    const payload: Record<string, unknown> = { localUiUrl, activeWorkerCount, environment };
+    const payload: Record<string, unknown> = {
+      localUiUrl,
+      activeWorkerCount,
+      environment,
+      /**
+       * The branch this install tracks. The server resolves `latestCommit`
+       * against it, because every update path here resets to
+       * `origin/${TRACKED_BRANCH}` — so any other branch's head is a commit
+       * this runner can never reach, and answering with one makes the runner
+       * permanently and unfixably "behind". Sourced from the same constant the
+       * updater uses so the two can never disagree.
+       */
+      branch: TRACKED_BRANCH,
+    };
     if (activeWorkerIds) {
       // Sent even when empty: an empty list is a meaningful assertion ("I own no
       // live workers"), distinct from an old runner that never reports ids.
