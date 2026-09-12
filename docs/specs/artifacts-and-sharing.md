@@ -10,6 +10,30 @@ related: [mcp-action-contracts, team-namespace-scoping, mission-task-lifecycle, 
 keywords: [sharetoken, visibility public, presigned put, r2, artifacts_share_token_idx, http 413, dataclass sensitive, upsert by key]
 verified_by: [apps/web/src/app/api/artifacts/[artifactId]/share/route.test.ts, apps/web/src/app/api/share/[token]/route.test.ts, apps/web/src/app/api/artifacts/[artifactId]/route.test.ts, apps/web/src/app/api/artifacts/upload-url/route.test.ts, apps/web/src/app/api/workers/[id]/artifacts/route.test.ts, apps/web/src/app/api/missions/[id]/artifacts/route.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "publish-artifact"
+    type: "route"
+    method: "POST"
+    path: "/api/artifacts/[artifactId]/share"
+    file: "apps/web/src/app/api/artifacts/[artifactId]/share/route.ts"
+  - id: "revoke-artifact"
+    type: "route"
+    method: "DELETE"
+    path: "/api/artifacts/[artifactId]/share"
+    file: "apps/web/src/app/api/artifacts/[artifactId]/share/route.ts"
+  - id: "read-public-artifact"
+    type: "route"
+    method: "GET"
+    path: "/api/share/[token]"
+    file: "apps/web/src/app/api/share/[token]/route.ts"
+  - id: "owned-storage-key"
+    type: "symbol"
+    name: "isOwnedStorageKey"
+    path: "apps/web/src/lib/storage-keys.ts"
+  - id: "public-read-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/share/[token]/route.test.ts"
 ---
 # Artifacts and Sharing
 

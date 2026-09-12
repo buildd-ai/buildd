@@ -9,6 +9,20 @@ surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules
 related: [db-migration-gates, external-cron-triggers, mission-task-lifecycle]
 keywords: [merge_policy, auto-threshold, resolvepolicy, taskscheduletemplate, maxlines, changelog schedule]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "resolve-merge-policy"
+    type: "symbol"
+    name: "resolvePolicy"
+    path: "apps/web/src/lib/merge-policy.ts"
+  - id: "schedule-copies-merge-policy"
+    type: "symbol_reachable"
+    symbol: "mergePolicy"
+    entry: "apps/web/src/app/api/cron/schedules/route.ts"
+    as: "read"
+  - id: "merge-policy-precedence-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/merge-policy.test.ts"
 ---
 
 # Scheduled-task merge policy override

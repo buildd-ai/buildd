@@ -1,3 +1,15 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "task-grid"
+    type: "symbol"
+    name: "TaskGrid"
+    path: "apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx"
+  - id: "task-grid-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/tasks/TaskGrid.test.ts"
+---
 # Mobile Filter Pattern — List Pages
 
 **Status:** Implemented — `TaskGrid.tsx` (Activity). Apply to Missions and Team pages as they are fixed.

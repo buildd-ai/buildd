@@ -499,38 +499,8 @@ export function checkContradiction(docType: DocType, declared: string | null, de
  * needs a permanent exemption uses `not_mechanizable_reason` instead (below),
  * which requires a stated reason rather than silent grandfathering.
  */
-export const MISSING_ASSERTIONS_DEBT = new Set<string>([
-  'docs/design/backend-failover-policy.md',
-  'docs/design/change-intent.md',
-  'docs/design/friction-dedup-serialization.md',
-  'docs/design/mobile-artifact-feed.md',
-  'docs/design/mobile-filter-pattern.md',
-  'docs/design/model-tiers.md',
-  'docs/design/task-classification-and-wait.md',
-  'docs/design/task-model-visibility.md',
-  'docs/design/workspace-memory-digest-arm.md',
-  'docs/specs/artifacts-and-sharing.md',
-  'docs/specs/auth-oauth-boundaries.md',
-  'docs/specs/codebase-memory-graph.md',
-  'docs/specs/codex-backend-spec.md',
-  'docs/specs/credential-isolation.md',
-  'docs/specs/human-in-the-loop-protocol.md',
-  'docs/specs/knowledge-ingest-pipeline.md',
-  'docs/specs/knowledge-store-retrieval.md',
-  'docs/specs/mcp-action-contracts.md',
-  'docs/specs/mcp-connectors-and-roles.md',
-  'docs/specs/migration-execution.md',
-  'docs/specs/mission-structure-view.md',
-  'docs/specs/mission-task-lifecycle.md',
-  'docs/specs/model-routing-and-tiers.md',
-  'docs/specs/pr-lifecycle-reconciliation.md',
-  'docs/specs/team-namespace-scoping.md',
-  'docs/specs/team-workspace-mission-onboarding.md',
-  'docs/specs/timeline-dependency-geometry.md',
-  'docs/specs/usage-and-cost-accounting.md',
-  'docs/specs/work-tracker-integration.md',
-  'docs/specs/worker-sandbox-isolation.md',
-]);
+// All original terminal-status documents now carry assertions. Keep the set empty.
+export const MISSING_ASSERTIONS_DEBT = new Set<string>();
 
 const NOT_MECHANIZABLE_REASON_MIN_LENGTH = 10;
 

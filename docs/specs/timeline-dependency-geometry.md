@@ -9,6 +9,19 @@ surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx,
 related: [missions-tab-triage, mission-task-lifecycle, surface-ia-home-missions-initiatives]
 keywords: [dependencyrail, blockedbyfrontier, dependson, phantom blocker, elbow indent, step n/m]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "timeline-grouping"
+    type: "symbol"
+    name: "groupTimelineTasks"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "chain-detection"
+    type: "symbol"
+    name: "identifyChains"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "timeline-geometry-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/condensed-timeline.test.ts"
 ---
 
 # Timeline Dependency Geometry — DAG Shapes

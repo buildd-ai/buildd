@@ -1,3 +1,27 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "evaluate-spec-documents"
+    type: "symbol"
+    name: "evaluateAllDocs"
+    path: "packages/core/spec-conformance.ts"
+  - id: "discrepancy-ledger-table"
+    type: "symbol"
+    name: "specDiscrepancies"
+    path: "packages/core/db/schema.ts"
+  - id: "checker-regression-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/spec-conformance.test.ts"
+  - id: "delta-gate-tests"
+    type: "test_file"
+    path: "scripts/spec-conformance-delta-gate.test.ts"
+  - id: "promote-discrepancy-action"
+    type: "symbol_reachable"
+    symbol: "promote_discrepancy"
+    entry: "packages/core/mcp-tools.ts"
+    as: "read"
+---
 # Machine-Checkable Spec Conformance
 
 **Status:** Proposed

@@ -1,3 +1,22 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "cancel-disposition"
+    type: "symbol_reachable"
+    symbol: "dependentDisposition"
+    entry: "apps/web/src/app/api/tasks/[id]/route.ts"
+    as: "read"
+  - id: "hard-edge-gate"
+    type: "symbol_reachable"
+    symbol: "hardDependsOn"
+    entry: "apps/web/src/app/api/workers/claim/deps-gate.ts"
+    as: "read"
+  - id: "shared-dependency-gate"
+    type: "symbol"
+    name: "isGateSatisfied"
+    path: "apps/web/src/lib/task-presentation.ts"
+---
 # Cancellation Must Resolve: Edge Semantics, Disposition, and Stranded Detection
 
 **Status:** Proposed  

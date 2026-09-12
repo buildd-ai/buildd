@@ -1,3 +1,17 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "cross-workspace-opt-in"
+    type: "config_key"
+    key: "crossWorkspaceDocs"
+    file: "packages/core/db/schema.ts"
+  - id: "readable-workspace-resolution"
+    type: "symbol_reachable"
+    symbol: "resolveReadableWorkspaces"
+    entry: "packages/core/mcp-tools.ts"
+    as: "read"
+---
 # Cross-Workspace Retrieval
 
 **Status:** Proposed

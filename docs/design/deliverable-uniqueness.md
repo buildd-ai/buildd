@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "deliverable-manifest"
+    type: "config_key"
+    key: "deliverableManifest"
+    file: "packages/core/db/schema.ts"
+  - id: "deliverable-claims-table"
+    type: "config_key"
+    key: "deliverable_claims"
+    file: "packages/core/db/schema.ts"
+  - id: "deliverable-intake-result"
+    type: "symbol_reachable"
+    symbol: "deliverable_claimed"
+    entry: "apps/web/src/app/api/tasks/route.ts"
+    as: "read"
+---
 # Deliverable Uniqueness: Authoring-Time Prevention of Duplicate Artifacts
 
 **Status:** Proposed  

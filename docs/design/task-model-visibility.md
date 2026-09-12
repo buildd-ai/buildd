@@ -1,3 +1,20 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "session-model-resolution"
+    type: "symbol"
+    name: "resolveSessionModel"
+    path: "apps/runner/src/prompt-builder.ts"
+  - id: "task-detail-resolved-model"
+    type: "symbol_reachable"
+    symbol: "predictedModel"
+    entry: "apps/web/src/app/app/(protected)/tasks/[id]/page.tsx"
+    as: "read"
+  - id: "usage-model-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/usage-stats.test.ts"
+---
 # Task model visibility
 
 **Status:** Implemented

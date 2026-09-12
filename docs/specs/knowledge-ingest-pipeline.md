@@ -10,6 +10,20 @@ related: [knowledge-store-retrieval, webhook-dataflow, external-cron-triggers, c
 keywords: [knowledge_ingest_jobs, ingest-jobs/claim, sweep, skippedUnchanged, escalated, KNOWLEDGE_INGEST_JOBS, knowledge:ingest, file_hash]
 verified_by: [apps/web/src/lib/knowledge-ingest.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/files/route.test.ts, apps/web/src/app/api/knowledge/ingest-jobs/[id]/complete/route.test.ts, packages/core/__tests__/knowledge-full-ingest.test.ts, apps/runner/__tests__/unit/knowledge-ingest-poller.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "claim-ingest-job"
+    type: "route"
+    method: "POST"
+    path: "/api/knowledge/ingest-jobs/claim"
+    file: "apps/web/src/app/api/knowledge/ingest-jobs/claim/route.ts"
+  - id: "full-ingest-job"
+    type: "symbol"
+    name: "runFullIngestJob"
+    path: "packages/core/knowledge-store/full-ingest.ts"
+  - id: "ingest-claim-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/knowledge/ingest-jobs/claim/route.test.ts"
 ---
 # Knowledge Ingest Pipeline
 

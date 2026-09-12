@@ -1,3 +1,16 @@
+---
+status: phase
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "active-team-resolution"
+    type: "symbol"
+    name: "resolveActiveTeamId"
+    path: "apps/web/src/lib/team-access.ts"
+  - id: "workspace-filter"
+    type: "symbol"
+    name: "WorkspaceFilter"
+    path: "apps/web/src/components/WorkspaceFilter.tsx"
+---
 # Unified App IA + Scoping Model (SPEC)
 
 > **Status: Phase 1 (Roles schema) and Phase 2 (Settings split) shipped. Phase 3-6 substantially complete. Open gaps: §C.5 Role editor scope control, Release Management UI (§D.4 / release-management-ui.md).** This is the gating deliverable for the

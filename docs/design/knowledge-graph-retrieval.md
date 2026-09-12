@@ -1,3 +1,24 @@
+---
+status: draft
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "recency-authority"
+    type: "symbol"
+    name: "applyRecencyAuthority"
+    path: "packages/core/knowledge-store/recency-authority.ts"
+  - id: "knowledge-entities"
+    type: "symbol"
+    name: "knowledgeEntities"
+    path: "packages/core/db/schema.ts"
+  - id: "knowledge-edges"
+    type: "symbol"
+    name: "knowledgeEdges"
+    path: "packages/core/db/schema.ts"
+  - id: "graph-schema-migration"
+    type: "migration"
+    number: "0061"
+    contains: "knowledge_edges"
+---
 # Recency-Aware + Entity/Graph Retrieval for KnowledgeStore
 
 **Status:** Draft spec — awaiting approval before any implementation task is created

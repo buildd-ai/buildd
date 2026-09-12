@@ -1,3 +1,20 @@
+---
+status: phase
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "initiative-progress"
+    type: "symbol"
+    name: "computeInitiativeProgress"
+    path: "packages/core/mission-helpers.ts"
+  - id: "linear-progress-adapter"
+    type: "symbol"
+    name: "fetchLinearProgress"
+    path: "apps/web/src/lib/work-tracker.ts"
+  - id: "initiatives-table"
+    type: "symbol"
+    name: "initiatives"
+    path: "packages/core/db/schema.ts"
+---
 # Native Initiatives Tier + Optional Linear Sync
 
 **Status:** Phase 0 Implemented (native tier — initiatives + rollup + MCP + UI + KB corpus, PRs #1446/#1452). Phase 1 Shipped (link layer + token refresh, PR #1459; plan archived at `docs/plans/archive/linear-phase-1.md`). Phase 2 Shipped (read-back tracking panel, PR #1470). Phase 3 split into **3a** (inbound Linear webhook — in progress, `docs/plans/linear-phase-3.md`) and **3b** (graph import + GitHub inbound + echo suppression — Proposed). Phase 4 Proposed.

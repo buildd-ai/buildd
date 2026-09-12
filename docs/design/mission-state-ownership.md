@@ -1,3 +1,19 @@
+---
+status: accessor
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mission-state-accessor"
+    type: "symbol"
+    name: "deriveMissionStateView"
+    path: "apps/web/src/lib/mission-state-view.ts"
+  - id: "mission-state-view"
+    type: "symbol"
+    name: "MissionStateView"
+    path: "apps/web/src/lib/mission-state-view.ts"
+  - id: "mission-state-view-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-state-view.test.ts"
+---
 # Mission State Ownership
 
 **Status:** Accessor implemented (`apps/web/src/lib/mission-state-view.ts`); panel adoption still pending — see "Implementation status" at the bottom. The `explain` MCP read consumes the accessor and its contract is documented in "The `explain` MCP contract" below.
