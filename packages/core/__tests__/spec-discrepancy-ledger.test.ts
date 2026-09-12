@@ -11,6 +11,7 @@ import {
   isDirection,
   writeLedgerFromEvaluations,
   summarizeClassifications,
+  planAdjudication,
   type Direction,
 } from '../spec-discrepancy-ledger';
 import type { AssertionResult, DocEvaluation } from '../spec-conformance';
@@ -309,5 +310,77 @@ describe('writeLedgerFromEvaluations', () => {
     const summary = await writeLedgerFromEvaluations('ws-1', evaluations, new Date());
     expect(summary.skipped).toBe(2);
     expect(store.size).toBe(0);
+  });
+});
+
+// ─── planAdjudication (§13 adjudicate_discrepancy) ──────────────────────────
+
+describe('planAdjudication', () => {
+  test('accept with a reason parks the row', () => {
+    expect(
+      planAdjudication({ direction: 'code_ahead', status: 'open' }, { action: 'accept', reason: 'known, tracked elsewhere' })
+    ).toEqual({ status: 'accepted', acceptedReason: 'known, tracked elsewhere' });
+  });
+
+  test('accept trims the reason', () => {
+    expect(
+      planAdjudication({ direction: 'code_ahead', status: 'open' }, { action: 'accept', reason: '  padded  ' })
+    ).toEqual({ status: 'accepted', acceptedReason: 'padded' });
+  });
+
+  test('accept with a blank or missing reason throws', () => {
+    expect(() => planAdjudication({ direction: 'code_ahead', status: 'open' }, { action: 'accept', reason: '' })).toThrow(/non-blank/);
+    expect(() => planAdjudication({ direction: 'code_ahead', status: 'open' }, { action: 'accept', reason: '   ' })).toThrow(/non-blank/);
+    expect(() => planAdjudication({ direction: 'code_ahead', status: 'open' }, { action: 'accept' })).toThrow(/non-blank/);
+  });
+
+  test('accepting a resolved row throws — no open gap left to defer', () => {
+    expect(() =>
+      planAdjudication({ direction: 'code_ahead', status: 'resolved' }, { action: 'accept', reason: 'anything' })
+    ).toThrow(/resolved/);
+  });
+
+  test('accept is allowed on an already-accepted row (idempotent reason update)', () => {
+    expect(
+      planAdjudication({ direction: 'code_ahead', status: 'accepted' }, { action: 'accept', reason: 'updated reason' })
+    ).toEqual({ status: 'accepted', acceptedReason: 'updated reason' });
+  });
+
+  test('flip_direction off a contradicted row to spec_ahead', () => {
+    expect(
+      planAdjudication({ direction: 'contradicted', status: 'open' }, { action: 'flip_direction', newDirection: 'spec_ahead' })
+    ).toEqual({ direction: 'spec_ahead' });
+  });
+
+  test('flip_direction off a contradicted row to code_ahead', () => {
+    expect(
+      planAdjudication({ direction: 'contradicted', status: 'open' }, { action: 'flip_direction', newDirection: 'code_ahead' })
+    ).toEqual({ direction: 'code_ahead' });
+  });
+
+  test('flip_direction on a non-contradicted row throws — it is the only path off contradicted', () => {
+    for (const direction of ['spec_ahead', 'code_ahead'] as Direction[]) {
+      expect(() =>
+        planAdjudication({ direction, status: 'open' }, { action: 'flip_direction', newDirection: 'code_ahead' })
+      ).toThrow(/only applies to 'contradicted' rows/);
+    }
+  });
+
+  test('flip_direction without newDirection throws', () => {
+    expect(() =>
+      planAdjudication({ direction: 'contradicted', status: 'open' }, { action: 'flip_direction' })
+    ).toThrow(/requires 'newDirection'/);
+  });
+
+  test('flip_direction to contradicted itself throws — that is a no-op, not a flip', () => {
+    expect(() =>
+      planAdjudication({ direction: 'contradicted', status: 'open' }, { action: 'flip_direction', newDirection: 'contradicted' })
+    ).toThrow(/no-op/);
+  });
+
+  test('unknown action throws', () => {
+    expect(() =>
+      planAdjudication({ direction: 'contradicted', status: 'open' }, { action: 'bogus' as any, reason: 'x' })
+    ).toThrow(/Unknown adjudicate_discrepancy action/);
   });
 });

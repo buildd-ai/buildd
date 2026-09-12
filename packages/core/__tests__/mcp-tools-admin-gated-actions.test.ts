@@ -73,6 +73,8 @@ describe('Admin-gated actions return structured 403 for non-admin tokens', () =>
   it('release_status', () => expectForbidden('release_status', { workspaceId: WS_ID }));
   it('send_agent_message', () => expectForbidden('send_agent_message', { taskId: 'task-1', message: 'hi' }));
   it('correct_task_result', () => expectForbidden('correct_task_result', { taskId: 'task-1', summary: 'corrected' }));
+  it('adjudicate_discrepancy', () => expectForbidden('adjudicate_discrepancy', { discrepancyId: '00000000-0000-0000-0000-0000000000d1', action: 'accept', reason: 'x' }));
+  it('promote_discrepancy', () => expectForbidden('promote_discrepancy', { discrepancyId: '00000000-0000-0000-0000-0000000000d1' }));
   // spec_compare moved to workerActions: read-only retrieval over {ws}:spec and
   // {ws}:code, both already reachable by a worker via query_knowledge/recall.
   // Worker-level access is asserted in mcp-tools-spec-compare.test.ts.
