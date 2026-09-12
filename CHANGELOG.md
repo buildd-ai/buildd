@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.209.1] - 2026-09-12
+
+### Fixed
+
+- Provider quota reset times are parsed with their minutes and meridiem, so a claim pause can no longer be inflated to the next day by a dropped `PM`. Reset-time parsing now lives in one shared module, and a pause is bounded by the reset the error text itself quotes (#2327)
+
 ## [0.191.0] - 2026-08-31
 
 ### Changed
