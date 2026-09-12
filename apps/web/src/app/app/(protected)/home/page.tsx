@@ -46,6 +46,7 @@ import HomeAutoRefresh from './HomeAutoRefresh';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import { ReviewerVerdictBanner } from '@/components/ReviewerVerdictBanner';
 import { AgentHandledCard } from '@/components/AgentHandledCard';
+import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
@@ -2120,6 +2121,12 @@ export default async function HomePage({
                               >
                                 Last attempt
                               </Link>
+                            )}
+                            {/* Only a genuine CI block gets a fix action — a
+                                conflict dead-zone needs a merge decision, not
+                                a CI retry. */}
+                            {item.ciGate?.kind === 'blocked' && (
+                              <FixCiButton prNumber={item.prNumber} workspaceId={item.workspaceId} />
                             )}
                           </div>
                         </div>

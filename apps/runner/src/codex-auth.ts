@@ -252,6 +252,26 @@ export interface CodexMcpConfig {
     url: string;
     bearerTokenEnvVar: string;
   }>;
+  /**
+   * Local stdio MCP servers to inject — the shape `codebase-memory` needs.
+   *
+   * Until this existed the writer could only model HTTP servers, so every stdio
+   * server was skipped with a warning and the codebase graph never reached a Codex
+   * worker. The codex CLI has always accepted stdio servers here; it was buildd's
+   * writer that could not express one.
+   *
+   * `env` values are written into config.toml verbatim, so this is for
+   * NON-SECRET configuration only (paths, flags). Anything secret belongs in the
+   * worker env under an env-var NAME, the way `bearerTokenEnvVar` does.
+   */
+  stdioMcpServers?: Array<{
+    name: string;
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+    /** Tool names to withhold — Codex's equivalent of Claude's `disallowedTools`. */
+    disabledTools?: string[];
+  }>;
 }
 
 /**
@@ -302,6 +322,32 @@ export function writeCodexMcpConfig(codexHome: string, config: CodexMcpConfig): 
       `bearer_token_env_var = ${tomlString(server.bearerTokenEnvVar)}`,
       'enabled = true',
       'default_tools_approval_mode = "approve"',
+      '',
+    ]),
+    // Local stdio MCP servers (codebase-memory). Same approval rule as the HTTP
+    // servers above and for the same reason: headless `codex exec` cancels every
+    // unapproved MCP call. The nested `[mcp_servers.<name>.env]` table MUST come
+    // after this server's own scalar keys — a bare `key = value` written after a
+    // nested table header would be scoped INTO that table and `--strict-config`
+    // would reject it (the same TOML trap `model_reasoning_effort` hit above).
+    ...(config.stdioMcpServers || []).flatMap(server => [
+      `[mcp_servers.${tomlBareKey(server.name)}]`,
+      `command = ${tomlString(server.command)}`,
+      ...(server.args && server.args.length > 0
+        ? [`args = [${server.args.map(tomlString).join(', ')}]`]
+        : []),
+      'enabled = true',
+      'default_tools_approval_mode = "approve"',
+      ...(server.disabledTools && server.disabledTools.length > 0
+        ? [`disabled_tools = [${server.disabledTools.map(tomlString).join(', ')}]`]
+        : []),
+      ...(server.env && Object.keys(server.env).length > 0
+        ? [
+            '',
+            `[mcp_servers.${tomlBareKey(server.name)}.env]`,
+            ...Object.entries(server.env).map(([k, v]) => `${tomlBareKey(k)} = ${tomlString(v)}`),
+          ]
+        : []),
       '',
     ]),
     // Codex's `workspace-write` sandbox DISABLES outbound network by default, which

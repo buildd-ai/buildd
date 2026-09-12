@@ -54,6 +54,26 @@ export interface BuildCodexInstructionDocInput {
   skillBundles: CodexSkillInput[];
   /** Project CLAUDE.md / AGENTS.md content, included when `useClaudeMd` is set. */
   projectInstructions?: string;
+  /**
+   * Codebase-graph guidance, present iff CBM is actually mounted for this task.
+   *
+   * This is the Codex half of an asymmetry worth stating plainly: on Claude the
+   * same guidance is a `systemPrompt.append` block, and Claude additionally has
+   * hooks — a PreToolUse seam that can observe or steer a tool call as it happens.
+   * Through `@openai/codex-sdk` we have neither: `ThreadOptions` carries no
+   * instructions field and the SDK surfaces no hook configuration, so standing
+   * instructions are the only lever we can reach, and AGENTS.md is the only
+   * channel that survives past turn one (a prompt preamble attaches to the first
+   * turn's input string only, and this run is multi-turn). The body is shared with
+   * the Claude block so the two cannot drift.
+   *
+   * Not "Codex has no hooks": the codex CLI itself does ship a hook engine
+   * (PreToolUse among others, behind a `[features] hooks` flag and a trust hash),
+   * and it fires in non-interactive `codex exec`. Whether it can be driven through
+   * the SDK's `--config` passthrough is unverified. That is the future path to
+   * hook parity, not a reason to weaken this channel.
+   */
+  cbmGuidance?: string;
 }
 
 /**
@@ -86,6 +106,14 @@ export function buildCodexInstructionDoc(input: BuildCodexInstructionDocInput): 
   const project = input.projectInstructions?.trim();
   if (project) {
     sections.push(`# Project Instructions\n\n${project}`);
+  }
+
+  // Before Completion, after the project context: the guidance is procedural
+  // ("your FIRST navigation step"), so it belongs with the how-to-work sections
+  // rather than trailing the exit contract.
+  const cbm = input.cbmGuidance?.trim();
+  if (cbm) {
+    sections.push(`# Codebase graph (codebase-memory)\n\n${cbm}`);
   }
 
   // Always present — this is the review-loop exit contract.
