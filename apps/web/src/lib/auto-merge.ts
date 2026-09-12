@@ -608,6 +608,83 @@ export async function escalateReviewerExhaustion(
 }
 
 /**
+ * Emit escalation when a reviewer task permanently fails the review contract
+ * (ended without a structuredOutput.verdict — dropped as prose, or the
+ * session never reached `complete_task` at all — and the bounded retry in
+ * apps/web/src/app/api/workers/[id]/route.ts's `reviewContractViolation`
+ * guard has already been exhausted).
+ *
+ * A reviewer task is dispatched only on the webhook's `pull_request: opened`
+ * action (see reviewer.ts) — nothing else re-reviews an existing PR/head SHA.
+ * Without this, the PR sits unreviewed forever with only `get_pr_review`
+ * reporting `review_failed`/terminal to whoever happens to poll it.
+ *
+ * Idempotent: CAS on tasks.context.reviewContractFailureEscalated — fires at
+ * most once per task (this is a single-shot terminal failure, not a per-head
+ * -SHA retry loop like escalateReviewerExhaustion above).
+ */
+export async function escalateReviewContractFailure(params: {
+  taskId: string;
+  repoFullName: string;
+  prNumber: number;
+  headSha: string;
+}): Promise<void> {
+  const { taskId, repoFullName, prNumber, headSha } = params;
+
+  const task = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { id: true, missionId: true, title: true },
+  });
+  if (!task) return;
+
+  // Atomic dedup: only one escalation per task.
+  const [claimed] = await db
+    .update(tasks)
+    .set({
+      context: sql`COALESCE(context, '{}'::jsonb) || jsonb_build_object('reviewContractFailureEscalated', true)`,
+    })
+    .where(and(
+      eq(tasks.id, taskId),
+      or(
+        sql`context IS NULL`,
+        sql`context->>'reviewContractFailureEscalated' IS NULL`,
+      ),
+    ))
+    .returning({ id: tasks.id });
+
+  if (!claimed) {
+    console.log(`[reviewer] contract-failure escalation already fired for task ${taskId}`);
+    return;
+  }
+
+  const prUrl = repoFullName && prNumber ? `https://github.com/${repoFullName}/pull/${prNumber}` : null;
+  const taskUrl = `${process.env.NEXT_PUBLIC_APP_URL ?? 'https://buildd.dev'}/app/tasks/${taskId}`;
+
+  if (task.missionId) {
+    await db.insert(missionNotes).values({
+      missionId: task.missionId,
+      taskId: task.id,
+      authorType: 'system',
+      type: 'reviewer_escalated',
+      title: prNumber ? `PR #${prNumber} — review never produced a verdict` : 'Review never produced a verdict',
+      body: `The reviewer agent's session ended without returning a structuredOutput.verdict, twice — the automated retry was exhausted. Nothing re-dispatches a reviewer for this PR outside its original open event, so it will sit unreviewed until a human acts.\n\n${prUrl ? `PR: ${prUrl}` : ''}`,
+      status: 'open',
+    });
+  }
+
+  notify({
+    app: 'tasks',
+    title: prNumber ? `PR #${prNumber}: review never produced a verdict` : 'Review never produced a verdict',
+    message: `${task.title}\nReviewer retries exhausted with no verdict — human review required.`,
+    url: taskUrl,
+    urlTitle: 'View task',
+    priority: 0,
+  });
+
+  console.log(`[reviewer] contract-failure escalated${prNumber ? ` PR #${prNumber}` : ''}@${headSha ? headSha.slice(0, 7) : '?'} for task ${taskId}`);
+}
+
+/**
  * Returns true when an active (pending/assigned/in_progress) reviewer-dispatched
  * fix task already exists for the given PR.
  *

@@ -1327,6 +1327,14 @@ export const workers = pgTable('workers', {
   supportsInstructionAck: boolean('supports_instruction_ack').default(false).notNull(),
   // SDK result metadata - captured from SDKResultSuccess/SDKResultError on completion
   resultMeta: jsonb('result_meta').$type<ResultMeta | null>(),
+  // What the agent actually sent on a completion the outputRequirement gate
+  // refused (400) — summary/structuredOutput/resultMeta, verbatim. Without
+  // this, a rejected `complete_task` call (e.g. a 60-turn review with no PR/
+  // artifact) discarded the agent's payload entirely; a human investigating
+  // the failure had nothing to read. Written right before the gate's 400
+  // response, never cleared — each rejection is a distinct worker row, so
+  // there is nothing later to go stale against.
+  rejectedCompletionPayload: jsonb('rejected_completion_payload').$type<Record<string, unknown> | null>(),
   // MCP tool call log - appended by runner during execution
   mcpCalls: jsonb('mcp_calls').default([]).$type<Array<{
     server: string;
