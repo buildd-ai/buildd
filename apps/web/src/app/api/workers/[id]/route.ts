@@ -1181,20 +1181,27 @@ export async function PATCH(
   const isSandboxMountGap = body.sandboxMountGap === true;
   const isSteeringDelivery = body.steeringDelivery === true;
   const isConcurrencyConflict = body.concurrencyConflict === true || isConcurrencyConflictError(error);
+  // Codex sequential-enforcement deferral: the runner allows only one active
+  // Codex worker per workspace and reports extras as failed with a "Deferred:"
+  // error. These aren't real failures — re-queue the task so it's retried once
+  // the active Codex worker frees, instead of marking it permanently failed.
+  // (Matters most under budget failover, which funnels tasks onto Codex.)
+  //
+  // This has to be decided BEFORE the classification below, not after it: the
+  // predicate used to live below the classify call, so a deferred worker —
+  // concurrency control working exactly as designed — was booked as
+  // `code_failure`, which consumesRetryAttempt() charges. Enough deferrals in a
+  // row and a task that was never actually attempted is permanently failed.
+  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
       steeringDelivery: isSteeringDelivery,
       concurrencyConflict: isConcurrencyConflict,
+      conditionUnmet: isCodexDeferral,
     });
   }
-  // Codex sequential-enforcement deferral: the runner allows only one active
-  // Codex worker per workspace and reports extras as failed with a "Deferred:"
-  // error. These aren't real failures — re-queue the task so it's retried once
-  // the active Codex worker frees, instead of marking it permanently failed.
-  // (Matters most under budget failover, which funnels tasks onto Codex.)
-  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
   // Held = task goes back to pending and is NOT treated as a real failure
   // (no failure notification, no task-status overwrite below).
   let isBudgetReset = false;
@@ -1945,6 +1952,14 @@ export async function PATCH(
         // Also mark the worker row failed so UI shows the correct terminal state.
         updates.status = 'failed';
         updates.error = 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created';
+        // The classification block above only runs for a *reported* terminal
+        // failure, so a completed→failed override arrives here with exitCause
+        // still unset. NULL is chargeable (consumesRetryAttempt treats it as
+        // an unclassified failure) but it is also indistinguishable from a
+        // genuinely unclassified one, so state the cause instead of inheriting
+        // the default by accident: not returning the contract's output is the
+        // agent's own failure, so it is a code_failure and it should be charged.
+        updates.exitCause = 'code_failure';
       }
 
       // Review contract guard: a reviewer verdict only reaches
@@ -1983,6 +1998,12 @@ export async function PATCH(
         // This worker's review is discarded either way.
         updates.status = 'failed';
         updates.error = 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+        // Same override-after-classification shape as the planning guard: state
+        // the cause rather than leaving exitCause NULL. Writing the verdict as
+        // prose is the agent's own contract violation, so it stays chargeable —
+        // the requeue above has its own separate budget
+        // (MAX_REVIEW_CONTRACT_RETRIES) and does not rely on this being exempt.
+        updates.exitCause = 'code_failure';
         if (willRequeue) {
           // Piggyback on the shouldAutoRetry machinery to reset the task to pending
           // (same pattern as the loop requeue above).
