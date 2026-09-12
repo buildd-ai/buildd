@@ -3,21 +3,22 @@ title: Codebase Memory Graph
 status: active
 owner: max
 last_verified: 2026-09-11
-summary: Codebase Memory MUST be mounted for every repo-backed Claude task whose binary is present, MUST degrade silently through exactly four named reasons, and MUST never fail a task because indexing failed.
+summary: Codebase Memory MUST be mounted for every repo-backed task whose binary is present, on both agent backends and each by the mechanism it reads, MUST degrade silently through four named reasons, and MUST never fail a task.
 domain: runners
-surfaces: [apps/runner/src/cbm-enforcement.ts, apps/runner/src/cbm-bootstrap.ts, packages/core/cbm-health.ts, apps/web/src/app/api/cbm/metrics/route.ts]
+surfaces: [apps/runner/src/cbm-enforcement.ts, apps/runner/src/cbm-bootstrap.ts, apps/runner/src/codex-auth.ts, apps/web/src/lib/cbm-insight.ts]
 related: [mcp-connectors-and-roles, codex-backend-spec, worker-sandbox-isolation, knowledge-store-retrieval]
-keywords: [codebase-memory, codebase-memory-mcp, CBM, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm]
-verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts]
+keywords: [codebase-memory, codebase-memory-mcp, CBM, CBM_ALLOWED_ROOT, CBM_CACHE_DIR, binary_absent, cbmDisabled, codex_task, index_repository, graph_index_failed, fallbackRate, resultMeta.cbm, BUILDD_CBM_CODEX]
+verified_by: [apps/runner/__tests__/unit/cbm-enforcement.test.ts, apps/runner/__tests__/unit/cbm-bootstrap.test.ts, apps/runner/__tests__/unit/cbm-prompt-block.test.ts, apps/runner/__tests__/unit/codex-mcp-config.test.ts, apps/runner/__tests__/unit/codex-instructions.test.ts, apps/runner/__tests__/unit/bwrap-mount-allowlist.test.ts, packages/core/__tests__/cbm-health.test.ts, apps/web/src/lib/cbm-insight.test.ts, apps/web/src/app/api/cbm/metrics/route.test.ts]
 supersedes: []
 ---
 # Codebase Memory Graph
 
-**Capability statement**: Every repo-backed Claude task MUST run with the
+**Capability statement**: Every repo-backed task MUST run with the
 `codebase-memory` MCP server mounted, scoped to that task's worktree and its own
-cache directory; when any activation gate fails the task MUST proceed without the
-server and MUST record which of exactly four named reasons applied; and a failed
-or timed-out index build MUST NOT fail the task.
+cache directory, on **either** agent backend and through the mechanism that
+backend actually reads; when any activation gate fails the task MUST proceed
+without the server and MUST record which of exactly four named reasons applied;
+and a failed or timed-out index build MUST NOT fail the task.
 
 This is the living contract for what `docs/design/codebase-memory-mcp-integration.md`
 (status: **Proposed**) proposed. That document remains the rationale — the
@@ -59,14 +60,18 @@ needs an assertion, not a preference.
 decision point. It is pure and does not create the cache directory.
 
 **Invariants**:
-- **CBM-1**: CBM is enforced iff **all four** hold: the task is not a Codex task,
-  `worker.worktreePath` is set, the role has not opted out, and
-  `CBM_BINARY_PATH` (`/opt/buildd/bin/codebase-memory-mcp`) exists on the host.
-  Default-on: no role has to ask for it.
-- **CBM-2**: Each failing gate maps to exactly one `disableReason`, evaluated in
-  the same precedence order as the gate itself — `codex_task`, `no_worktree`,
-  `role_opt_out`, `binary_absent` (`workers.ts:2356-2364`). There is no fifth
-  reason and no unlabelled disable.
+- **CBM-1**: CBM is enforced iff **all three** hold: `worker.worktreePath` is set,
+  the role has not opted out, and `CBM_BINARY_PATH`
+  (`/opt/buildd/bin/codebase-memory-mcp`) exists on the host. Default-on: no role
+  has to ask for it, and the agent backend is **not** a gate — a Codex task with a
+  worktree is enforced exactly like a Claude one (CBM-27).
+- **CBM-2**: Each failing gate maps to exactly one `disableReason`, decided by
+  `buildCbmActivation` itself and returned on the activation, in precedence order
+  `no_worktree`, `role_opt_out`, `codex_task`, `binary_absent`. There is no fifth
+  reason and no unlabelled disable. The caller MUST NOT re-derive the label: when
+  it did, it tested `isCodexTask` first, so every skip on a Codex task read
+  `codex_task` — a by-design reason excluded from the eligible-fallback rate —
+  and genuine breakage (`binary_absent`) on a Codex task left the metric silently.
 - **CBM-3**: Every degradation is **silent to the task**. No gate failure raises,
   requeues, or changes the agent's outcome. A missing binary MUST degrade, never
   block — a hard failure would have taken the whole fleet down for four weeks
@@ -85,10 +90,13 @@ decision point. It is pure and does not create the cache directory.
   `configStorageKey`, so opting out works with no R2 config present.
 
 **Acceptance criteria**:
-- AC-1: GIVEN a non-Codex task with `worktreePath` set, `cbmRoleDisabled: false`
-  and the binary present WHEN `buildCbmActivation` runs THEN it returns
-  `enforced: true`, `cbmBinaryPath: '/opt/buildd/bin/codebase-memory-mcp'`, and
-  `cbmCacheDir: '/tmp/cbm-<workerId>'`.
+- AC-1: GIVEN a task with `worktreePath` set, `cbmRoleDisabled: false` and the
+  binary present WHEN `buildCbmActivation` runs THEN it returns `enforced: true`,
+  `cbmBinaryPath: '/opt/buildd/bin/codebase-memory-mcp'`, and
+  `cbmCacheDir: '/tmp/cbm-<workerId>'` — for `isCodexTask: true` as well as false.
+- AC-1b: GIVEN `isCodexTask: true` and `worktreePath: undefined` WHEN
+  `buildCbmActivation` runs THEN `disableReason` is `no_worktree`, not
+  `codex_task`; and with the binary absent it is `binary_absent`.
 - AC-2 (failure path): GIVEN the binary is absent WHEN `buildCbmActivation` runs
   THEN it returns `enforced: false` with `cbmBinaryPath` and `cbmCacheDir`
   undefined, does not throw, and the completed worker reports
@@ -190,9 +198,10 @@ agent does not spend turn one on infrastructure.
   `index_repository` will walk, so a worker cannot index another workspace's
   worktree or a host system path. It MUST equal the session cwd, never the parent
   clone and never a static path.
-- **CBM-12**: Enforcement MUST NOT double-mount. If `codebase-memory` is already
-  present in `queryOptions.mcpServers` (connector or `.mcp.json`), the enforced
-  entry is not injected (`workers.ts:2584`).
+- **CBM-12**: Enforcement MUST NOT double-mount, on either backend. If
+  `codebase-memory` is already present in `queryOptions.mcpServers` (Claude) or
+  among the config.toml servers resolved from connectors / `.mcp.json` (Codex),
+  the enforced entry is not injected.
 - **CBM-13**: `CBM_BLOCKED_TOOLS` — `delete_project`, `manage_adr`,
   `ingest_traces` — are appended to `disallowedTools` for **any** mounted
   `codebase-memory` server, regardless of how it was wired. `manage_adr` writes
@@ -205,6 +214,35 @@ agent does not spend turn one on infrastructure.
   silently drops mounts whose path does not exist.
 - **CBM-15**: The cache dir is ephemeral. It is deleted in the session's `finally`
   block, and deletion failure is logged, never thrown.
+- **CBM-27** (per-backend delivery): The server is wired by whichever mechanism
+  the task's backend reads, and by no other:
+  - **Claude**: the stdio entry in `queryOptions.mcpServers` (CBM-10) plus the
+    system-prompt block.
+  - **Codex**: an stdio `[mcp_servers.codebase-memory]` table in the worker's
+    `$CODEX_HOME/config.toml` (`writeCodexMcpConfig`, `stdioMcpServers`) plus a
+    `# Codebase graph` section in the generated `AGENTS.md`. `ThreadOptions`
+    carries no `mcpServers` and no `instructions` field, so these are the only two
+    channels; a `queryOptions` entry for a Codex task MUST NOT be written, since
+    nothing reads it and it would make CBM-19's `mounted` answer a question about
+    the wrong object.
+  The Codex table MUST carry `default_tools_approval_mode = "approve"` (headless
+  `codex exec` auto-cancels unapproved MCP calls) and `disabled_tools` derived from
+  the same classification as CBM-13, so the destructive tools are out of reach on
+  both backends. Its `env` table MUST be byte-identical to the Claude entry's env:
+  a different `CBM_CACHE_DIR` means the bootstrap warms one graph and the worker
+  queries another.
+- **CBM-28** (one body, two dialects): The graph guidance text is built once
+  (`buildCbmGuidanceBody`) and rendered per backend. The procedural ordering — a
+  graph call is the FIRST navigation step, then the tool-per-question list, then
+  the explicit accelerator-never-a-gate release — is identical in both; only the
+  names of the tools the graph is preferred OVER differ, because Codex has no
+  Read/Grep/Glob. Naming tools the backend does not have is the same class of
+  error as describing a server that is not mounted. A capability-list version of
+  this text measurably did not work and MUST NOT return.
+- **CBM-29** (reversibility): CBM-for-Codex is default-on with two off-switches at
+  different granularities: the per-role DB opt-out (CBM-5, no restart, no deploy)
+  and `BUILDD_CBM_CODEX=0` on a runner (fleet-wide, needs a restart). Only the
+  second produces `disableReason: 'codex_task'`.
 
 **Acceptance criteria**:
 - AC-9: WHEN the stdio server entry is built THEN `command` is `CBM_BINARY_PATH`,
@@ -219,6 +257,18 @@ agent does not spend turn one on infrastructure.
 - AC-12: GIVEN any mounted `codebase-memory` server WHEN query options are built
   THEN `disallowedTools` contains all three of
   `mcp__codebase-memory__delete_project`, `…__manage_adr`, `…__ingest_traces`.
+- AC-13: GIVEN an enforced Codex task WHEN `writeCodexMcpConfig` runs THEN
+  `config.toml` contains `[mcp_servers.codebase-memory]` with `command`, `args`,
+  `enabled`, `default_tools_approval_mode = "approve"` and `disabled_tools`, every
+  scalar key emitted BEFORE the nested `[mcp_servers.codebase-memory.env]` table
+  (a bare key after a table header is scoped into it and `--strict-config`
+  rejects the result) and the whole block before `[sandbox_workspace_write]`.
+- AC-14: GIVEN no `stdioMcpServers` WHEN `writeCodexMcpConfig` runs THEN
+  `config.toml` mentions neither `codebase-memory` nor `command =`.
+- AC-15: GIVEN CBM mounted for a Codex task WHEN the instruction document is built
+  THEN it contains a `# Codebase graph (codebase-memory)` section carrying the
+  shared body, positioned before `# Completion`, and naming no Read/Grep/Glob
+  tool; GIVEN CBM is not mounted THEN the document does not mention the server.
 
 ## 4. Per-task observability
 
@@ -347,9 +397,17 @@ cold-per-task model (CBM-4) is what this spec describes.
 
 ## Code surface
 
-- **Activation** — `apps/runner/src/cbm-enforcement.ts`: `buildCbmActivation` (:70),
-  the four-gate expression (:75), cache-dir naming (:80), `buildCbmMcpEntry` (:88),
-  `CBM_BLOCKED_TOOLS` (:23), `CBM_ALLOWED_TOOLS` (:33, documentation only).
+- **Activation** — `apps/runner/src/cbm-enforcement.ts`: `buildCbmActivation`, the
+  gate expression and its `disableReason` precedence, `isCbmCodexEnabled`,
+  cache-dir naming, `buildCbmMcpEntry`, `buildCbmCodexStdioServer`,
+  `CBM_BLOCKED_TOOLS` / `CBM_BLOCKED_TOOL_NAMES`, `CBM_ALLOWED_TOOLS`.
+- **Steering text** — `apps/runner/src/cbm-enforcement.ts`:
+  `buildCbmGuidanceBody` (shared body, both dialects) and
+  `buildCbmSystemPromptBlock` (Claude heading wrapper);
+  `apps/runner/src/codex-instructions.ts`: `cbmGuidance` section in
+  `buildCodexInstructionDoc`.
+- **Codex config.toml** — `apps/runner/src/codex-auth.ts`: `writeCodexMcpConfig`
+  `stdioMcpServers` block and its nested `env` table.
 - **Bootstrap** — `apps/runner/src/cbm-bootstrap.ts`: `CBM_INDEX_WAIT_MS` (:30),
   `resolveCbmIndexWaitMs` (:40), `resolveCbmEnv` (:60), `stopBackgroundCbmIndex`
   (:145), `discardCache` — non-zero exit only (:168), `runCbmBootstrap` (:202),
@@ -398,8 +456,10 @@ cold-per-task model (CBM-4) is what this spec describes.
   boundary to the agent verbatim.
 - **CBM's own indexing correctness** — what it parses, how the graph is modelled,
   `.cbmignore` semantics, `query_graph`'s Cypher subset. Upstream's contract.
-- **Codex tasks.** CBM is Claude-only by construction (CBM-1); see
-  `docs/specs/codex-backend-spec.md`.
+- **Hook-level enforcement on Codex.** CBM-27 gives a Codex worker the graph and
+  the same standing guidance; it does not give it the Claude read-jail/path-claim
+  hooks. The codex CLI does ship a hook engine, but it is not reachable through
+  `@openai/codex-sdk` today. Out of scope here.
 - **The bwrap sandbox itself** — namespace setup, the support probe,
   `BUILDD_DISABLE_SANDBOX`. This spec covers only the two CBM mounts.
 - **Connector-mounted `codebase-memory`.** A role may wire the server itself; only
@@ -466,6 +526,15 @@ asserted as an invariant above.
    aggregates `bootstrapResult`; the only trace of a failed index is a per-task
    milestone string. This is the specific silence that let the `--repo-path` bug
    run for four weeks.
+
+   Partly narrowed since: `eligibleFallbackRate` subtracts the by-design reasons
+   (`BY_DESIGN_SKIP_REASONS` in `apps/web/src/lib/cbm-insight.ts`), and `codex_task`
+   no longer describes a whole backend — CBM mounts for Codex (CBM-27), so the
+   reason now only means "switched off fleet-wide" (CBM-29). The masking bug that
+   came with it is closed by CBM-2: `codex_task` used to be evaluated first, so
+   `binary_absent` on a Codex task was labelled a by-design skip and left the
+   eligible denominator. The rest of this gap stands: `fallbackRate` itself is
+   still composition, and no metric aggregates `bootstrapResult`.
 6. **FIXED** — Bootstrap failure drops the cache-dir sandbox mount.** Ordering in
    `workers.ts` is `mkdirSync(cbmCacheDir)` (:2327) → `runCbmBootstrap` (:2336),
    which `rmSync`s the dir on failure or timeout (`cbm-bootstrap.ts:104,123`) →

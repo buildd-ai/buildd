@@ -81,7 +81,7 @@ import {
   shouldWrapWorkerInBwrap,
   CBM_BINARY_PATH,
 } from './bwrap-mount-allowlist';
-import { buildCbmActivation, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
+import { buildCbmActivation, buildCbmCodexStdioServer, buildCbmGuidanceBody, buildCbmMcpEntry, buildCbmMetrics, buildCbmSystemPromptBlock, CBM_SERVER_NAME, ensureCbmRuntimeDir, resolveCbmOutcome, seedBaseRefFor, spawnCbmSeedRefresh, applyCbmToolBlocklist } from './cbm-enforcement.js';
 import { applyPrMutationDeny } from './pr-mutation-enforcement.js';
 // Re-export for backwards compatibility (tests import from './workers')
 export { isEphemeralTestBranch };
@@ -2055,6 +2055,40 @@ export class WorkerManager {
       // Determine backend early — needed to gate Anthropic credential injection below.
       const isCodexTask = (task.backend || 'claude') === 'codex';
 
+      // Codebase Memory (CBM) activation — see cbm-enforcement.ts for full spec.
+      //
+      // Resolved HERE, before the Codex credential block below, because a Codex
+      // worker receives CBM through `$CODEX_HOME/config.toml`, which that block
+      // writes. The decision is a pure function (fs reads only, no side effects);
+      // the expensive parts it gates — cache mkdir, the bootstrap index, the seed
+      // refresh — still happen further down, before either backend starts.
+      //
+      // The repo's default base, so the seed lookup can tell "this task is on
+      // trunk" (which keeps using the existing unkeyed seed record, unchanged)
+      // from "this task is on a mission integration branch" (which needs its own).
+      const cbmDefaultBaseRef = `origin/${gitConfig?.defaultBranch || 'main'}`;
+      const cbmActivation = buildCbmActivation({
+        workerId: worker.id,
+        worktreePath: worker.worktreePath,
+        // The base clone, not the worktree: a shared seed is indexed at this path,
+        // and CBM keys a project by the path it was indexed at.
+        repoPath,
+        // ...and the base that path's seed must describe. A mission task based on
+        // the integration branch must not be served the trunk graph: its siblings
+        // have been merging into that base, so the trunk graph is wrong about
+        // exactly the code this task is most likely to touch.
+        baseRef: worker.worktreeBaseRef,
+        defaultBaseRef: cbmDefaultBaseRef,
+        isCodexTask,
+        cbmRoleDisabled: !!(worker as any).cbmDisabled,
+      });
+      const cbmEnforced = cbmActivation.enforced;
+      // Whether the CBM server actually landed in the Codex config.toml. Tracked
+      // separately from `cbmEnforced` because the Codex path does not use
+      // `queryOptions.mcpServers`, so the mounted/not-mounted question that
+      // resolveCbmOutcome asks cannot be answered by inspecting that map.
+      let codexCbmMounted = false;
+
       // Codex tasks run against OpenAI, not Anthropic. Strip any inherited
       // ANTHROPIC_API_KEY from the runner's own process.env so it can't leak
       // into the Codex CLI subprocess (which uses Claude Code internally and
@@ -2274,6 +2308,16 @@ export class WorkerManager {
           }
         }
 
+        // Codebase graph. Codex reads no `mcpServers` option, so the only way the
+        // graph reaches a Codex worker is as an stdio table in this file — which is
+        // why Codex tasks used to be skipped outright rather than for any reason
+        // intrinsic to Codex. Skipped when a connector or the project's .mcp.json
+        // already registered the name, mirroring the Claude no-double-mount rule.
+        const codexCbmServers = cbmEnforced && !codexAdditionalServers.some(s => s.name === CBM_SERVER_NAME)
+          ? [buildCbmCodexStdioServer(cwd, cbmActivation.cbmCacheDir!, cbmActivation.cbmRuntimeDir)]
+          : [];
+        codexCbmMounted = codexCbmServers.length > 0;
+
         writeCodexMcpConfig(_ch, {
           builddServer: this.config.builddServer,
           workspaceId: task.workspaceId,
@@ -2281,7 +2325,11 @@ export class WorkerManager {
           bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
           ...(codexEffort ? { effort: codexEffort } : {}),
           ...(codexAdditionalServers.length > 0 ? { additionalMcpServers: codexAdditionalServers } : {}),
+          ...(codexCbmServers.length > 0 ? { stdioMcpServers: codexCbmServers } : {}),
         });
+        if (codexCbmMounted) {
+          console.log(`[Worker ${worker.id}] CBM MCP injected into Codex config.toml (worktree: ${cwd})`);
+        }
         // NOTE: deliberately NOT assigning the local `codexHome` var here — that
         // var drives the finally-block teardown, which must not delete a stable
         // home (would destroy resumable sessions).
@@ -2602,29 +2650,6 @@ export class WorkerManager {
       // breaks the SDK's own resolver. See ./sdk-binary-path.ts.
       const pathToClaudeCodeExecutable = resolveClaudeBinaryPath();
 
-      // Codebase Memory (CBM) activation — see cbm-enforcement.ts for full spec.
-      //
-      // The repo's default base, so the seed lookup can tell "this task is on
-      // trunk" (which keeps using the existing unkeyed seed record, unchanged)
-      // from "this task is on a mission integration branch" (which needs its own).
-      const cbmDefaultBaseRef = `origin/${gitConfig?.defaultBranch || 'main'}`;
-      const cbmActivation = buildCbmActivation({
-        workerId: worker.id,
-        worktreePath: worker.worktreePath,
-        // The base clone, not the worktree: a shared seed is indexed at this path,
-        // and CBM keys a project by the path it was indexed at.
-        repoPath,
-        // ...and the base that path's seed must describe. A mission task based on
-        // the integration branch must not be served the trunk graph: its siblings
-        // have been merging into that base, so the trunk graph is wrong about
-        // exactly the code this task is most likely to touch.
-        baseRef: worker.worktreeBaseRef,
-        defaultBaseRef: cbmDefaultBaseRef,
-        isCodexTask,
-        cbmRoleDisabled: !!(worker as any).cbmDisabled,
-      });
-      const cbmEnforced = cbmActivation.enforced;
-
       let cbmBinaryPath: string | undefined;
       // Set when a required CBM bind could not be mounted; see the bwrap argv
       // build below. CBM is then off for this task even though the gates passed.
@@ -2765,10 +2790,12 @@ export class WorkerManager {
         worker.cbmOutcome = 'enforced';
       } else {
         worker.cbmOutcome = 'disabled';
-        if (isCodexTask) worker.cbmDisableReason = 'codex_task';
-        else if (!worker.worktreePath) worker.cbmDisableReason = 'no_worktree';
-        else if (!!(worker as any).cbmDisabled) worker.cbmDisableReason = 'role_opt_out';
-        else worker.cbmDisableReason = 'binary_absent';
+        // Taken from the activation, not re-derived. Re-deriving it here is what
+        // made every skip on a Codex task read `codex_task`, including the ones
+        // that were really a missing worktree, an opted-out role, or a missing
+        // binary — and `codex_task` is filed as a by-design skip, so that
+        // breakage left the eligible-fallback rate entirely.
+        worker.cbmDisableReason = cbmActivation.disableReason;
       }
       worker.cbmToolCounts = {};
       worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
@@ -2833,7 +2860,10 @@ export class WorkerManager {
       // warning that `get_code_snippet` serves the base checkout rather than this
       // branch. An agent that believes it reads a stale snippet of a file it just
       // edited, and then stops trusting the graph at all.
-      if (cbmEnforced && !cbmMountBlocked) {
+      //
+      // `!isCodexTask`: Codex never reads `systemPrompt`. It is fed the same
+      // guidance body through AGENTS.md instead — see codexCbmGuidance below.
+      if (cbmEnforced && !cbmMountBlocked && !isCodexTask) {
         systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
           project: cbmActivation.cbmProject,
           sharedBaseIndex: cbmActivation.sharedCache,
@@ -3021,8 +3051,11 @@ export class WorkerManager {
 
       // Enforce CBM as default MCP for repo-backed tasks.
       // Skip if already mounted by a connector or manual .mcp.json config — no double-mount.
-      if (cbmEnforced && !cbmMountBlocked && !queryOptions.mcpServers['codebase-memory']) {
-        queryOptions.mcpServers['codebase-memory'] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
+      // Codex ignores queryOptions entirely and was mounted via config.toml above;
+      // writing an entry it never reads would also make `mounted` below answer a
+      // question about the wrong object.
+      if (cbmEnforced && !cbmMountBlocked && !isCodexTask && !queryOptions.mcpServers[CBM_SERVER_NAME]) {
+        queryOptions.mcpServers[CBM_SERVER_NAME] = buildCbmMcpEntry(cwd, cbmCacheDir!, cbmRuntimeDir);
         console.log(`[Worker ${worker.id}] CBM MCP injected (worktree: ${cwd})`);
       }
 
@@ -3034,7 +3067,8 @@ export class WorkerManager {
       // session in the metrics control group.
       worker.cbmOutcome = resolveCbmOutcome({
         enforced: cbmEnforced,
-        mounted: !!queryOptions.mcpServers['codebase-memory'],
+        // Per backend: Codex's mount lives in config.toml, Claude's in this map.
+        mounted: isCodexTask ? codexCbmMounted : !!queryOptions.mcpServers[CBM_SERVER_NAME],
       });
       if (worker.cbmOutcome !== 'disabled') worker.cbmDisableReason = undefined;
 
@@ -3171,10 +3205,22 @@ export class WorkerManager {
             }
           }
 
+          // Codex's only standing-instruction channel. Same guard as the Claude
+          // system-prompt append: included iff the graph is really mounted, so the
+          // document never describes a server that is not there.
+          const codexCbmGuidance = codexCbmMounted
+            ? buildCbmGuidanceBody({
+                dialect: 'codex',
+                project: cbmActivation.cbmProject,
+                sharedBaseIndex: cbmActivation.sharedCache,
+              })
+            : undefined;
+
           const instructionBody = buildCodexInstructionDoc({
             rolePersona,
             skillBundles: (skillBundles || []).map(b => ({ slug: b.slug, name: b.name, content: b.content })),
             projectInstructions,
+            ...(codexCbmGuidance ? { cbmGuidance: codexCbmGuidance } : {}),
           });
 
           codexAgentsMd = await writeCodexAgentsMd(cwd, instructionBody);

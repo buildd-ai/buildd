@@ -21,8 +21,26 @@ export interface CbmRow {
 
 /**
  * Disable reasons that are decisions, not failures. Excluded from both sides of
- * the fallback rate: no amount of engineering makes a Codex task or a
- * worktree-less run use the graph.
+ * the fallback rate: a worktree-less run has nothing to index, and an opted-out
+ * role asked not to have the graph.
+ *
+ * `codex_task` is a decision too, but a much narrower one than it used to be, and
+ * the distinction is the whole reason this set is documented rather than obvious.
+ * The original rationale was that "no amount of engineering makes a Codex task use
+ * the graph" — that turned out to be false. CBM now mounts for Codex tasks
+ * (stdio `[mcp_servers.codebase-memory]` in the worker's Codex config.toml), so a
+ * Codex worker with a worktree and the binary present is `enforced`, lands in
+ * `active`, and counts in BOTH the adoption numerator's denominator and the
+ * eligible cohort — exactly like a Claude worker. The runner only emits
+ * `codex_task` when CBM-for-Codex is deliberately switched off fleet-wide, which
+ * is a configuration decision and belongs here.
+ *
+ * The other half of that fix is in the runner: `codex_task` used to be evaluated
+ * FIRST, so a Codex task that actually hit `no_worktree`, `role_opt_out` or
+ * `binary_absent` was labelled `codex_task` and — via this set — excluded from the
+ * fallback rate. Genuine breakage on Codex was therefore invisible here. The
+ * reason is now decided once, in `buildCbmActivation`, with `codex_task` last but
+ * for the kill switch.
  */
 export const BY_DESIGN_SKIP_REASONS: ReadonlySet<string> = new Set([
   'codex_task',
