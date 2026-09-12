@@ -2,12 +2,18 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
 import { githubInstallations, githubRepos, tasks, workers, workspaces, missions, missionNotes, releases, reviewFeedback } from '@buildd/core/db/schema';
 import { and, eq, sql, inArray, isNull, not, or, ne, desc } from 'drizzle-orm';
-import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent, githubApiText } from '@/lib/github';
+import { verifyWebhookSignature, allCheckSuitesPassed, hasCheckSuites, mergePullRequest, githubApi, type GitHubInstallationEvent, type GitHubIssuesEvent, type GitHubCheckSuiteEvent } from '@/lib/github';
 import type { WorkspaceGitConfig, WorkspaceWorkTrackerConfig, ReleaseResult } from '@buildd/core/db/schema';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { buildCIRetryTask } from '@/lib/ci-retry';
-import { extractFailureDigest } from '@/lib/ci-failure-digest';
+import {
+  checkPrIsDraft,
+  fetchCIFailureLogs,
+  fetchCommitAuthor,
+  isBuilddWorkerCommit,
+} from '@/lib/ci-failure-inspect';
+import { isSchemaDriftFailure, buildDriftDiagnoseTask } from '@/lib/ci-drift-diagnose';
 import {
   reviewRowFromEvent,
   commentRowFromEvent,
@@ -61,7 +67,7 @@ import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
-import { deliverPrReviewCallback, readPrReviewStatus } from '@/lib/pr-review-request';
+import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 
 export async function POST(req: NextRequest) {
@@ -252,6 +258,18 @@ const DEFAULT_INBOUND_LABELS = ['buildd', 'ai'];
 const TERMINAL_TASK_STATUSES = ['completed', 'failed', 'cancelled'];
 // PR lifecycle statuses that must not be overwritten by any later CI event.
 const TERMINAL_STATUSES = ['merged', 'closed'];
+
+/**
+ * True for the bookkeeping task `resolveOrAdoptPrOwner` creates for a PR
+ * buildd did not open. Its `status` is always 'completed' (the PR already
+ * exists — a pending row here would be claimable and "redone"), which would
+ * otherwise look identical to a task whose real agent work genuinely
+ * finished. Callers that gate on terminal status must exempt this case.
+ */
+function isAdoptedPrTask(task: { context: unknown }): boolean {
+  const context = task.context as Record<string, unknown> | null;
+  return !!context?.adoptedPr;
+}
 
 /**
  * Create a buildd task from a labeled GitHub issue (spec §3). Idempotent per
@@ -1405,19 +1423,69 @@ async function handleCheckSuiteFailure(
 ) {
   for (const pr of checkSuite.pull_requests) {
     try {
-      const worker = await db.query.workers.findFirst({
+      let worker = await db.query.workers.findFirst({
         where: workerOwnsPr(repository.full_name, pr.number),
         with: { task: true },
       });
+
       if (!worker?.task) {
-        continue;
+        // No worker owns this PR — a release PR opened by `workflow_dispatch`,
+        // a hand-pushed PR, or an external contribution. Adopt it through the
+        // SAME path `request_pr_review` uses (see resolveOrAdoptPrOwner), then
+        // fall through to the normal retry logic below. Adoption is scoped to
+        // repos this workspace actually manages, and skipped for forks — a
+        // fork's CI failure is not buildd's to fix.
+        const adoptingWorkspace = await db.query.workspaces.findFirst({
+          where: workspaceRepoMatches(repository.full_name),
+        });
+        if (!adoptingWorkspace) {
+          continue;
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let prData: any = null;
+        try {
+          prData = await githubApi(installationId, `/repos/${repository.full_name}/pulls/${pr.number}`);
+        } catch (err) {
+          console.warn(`[webhook] Could not fetch PR #${pr.number} on ${repository.full_name} for adoption:`, err);
+        }
+        if (!prData?.number) {
+          continue;
+        }
+
+        const headRepoFullName = prData.head?.repo?.full_name as string | undefined;
+        const isFork = !!headRepoFullName && headRepoFullName.toLowerCase() !== repository.full_name.toLowerCase();
+        if (isFork) {
+          console.log(`[webhook] Skipping adoption of fork PR #${pr.number} on ${repository.full_name}`);
+          continue;
+        }
+
+        const { ownerWorker } = await resolveOrAdoptPrOwner({
+          workspaceId: adoptingWorkspace.id,
+          installationId,
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          pr: prData,
+          creationSource: 'webhook',
+        });
+
+        worker = await db.query.workers.findFirst({
+          where: eq(workers.id, ownerWorker.id),
+          with: { task: true },
+        });
+        if (!worker?.task) {
+          continue;
+        }
       }
       const task = worker.task;
 
       // Terminal tasks (completed/failed/cancelled) must not spawn retry children —
       // the PR is orphaned from the agent's perspective. Surface CI failures to the
-      // mission feed instead so a human can act (AC-5).
-      if (TERMINAL_TASK_STATUSES.includes(task.status)) {
+      // mission feed instead so a human can act (AC-5). An adopted PR's task is
+      // ALWAYS stamped 'completed' as bookkeeping (the PR already exists, so it
+      // must not be claimable as pending work) — that stamp says nothing about
+      // whether an agent is "done" with it, so this guard does not apply.
+      if (TERMINAL_TASK_STATUSES.includes(task.status) && !isAdoptedPrTask(task)) {
         if (task.missionId) {
           await notifyMissionPrReady(task.missionId, {
             title: 'CI failing on completed task PR',
@@ -1453,6 +1521,61 @@ async function handleCheckSuiteFailure(
       ]);
       const failureContext = ciLogs.summary ||
         `CI check suite failed on ${repository.full_name} PR #${pr.number} (SHA: ${checkSuite.head_sha})`;
+
+      // Schema drift is diagnose-only — never a fix agent, automatic or manual.
+      // Classified by check name (the only reliable signal here); see
+      // ci-drift-diagnose.ts for why. This skips buildCIRetryTask entirely,
+      // for both a pre-existing worker's PR and one just adopted above.
+      if (isSchemaDriftFailure(ciLogs.failedJobNames)) {
+        const diagnoseTask = buildDriftDiagnoseTask({
+          originalTask: {
+            id: task.id,
+            title: task.title,
+            workspaceId: task.workspaceId,
+            missionId: task.missionId ?? null,
+          },
+          repoFullName: repository.full_name,
+          prNumber: pr.number,
+          headSha: checkSuite.head_sha,
+          failureContext,
+          ciRunUrl: ciLogs.runUrl,
+        });
+
+        const [newDiagnoseTask] = await db
+          .insert(tasks)
+          .values({
+            workspaceId: diagnoseTask.workspaceId,
+            title: diagnoseTask.title,
+            description: diagnoseTask.description,
+            parentTaskId: diagnoseTask.parentTaskId,
+            ciRetryPrNumber: pr.number,
+            ciRetryHeadSha: checkSuite.head_sha,
+            missionId: diagnoseTask.missionId,
+            context: diagnoseTask.context,
+            creationSource: diagnoseTask.creationSource,
+            taskClass: diagnoseTask.taskClass,
+            outputRequirement: diagnoseTask.outputRequirement,
+            status: 'pending',
+            priority: 7,
+          })
+          .onConflictDoNothing()
+          .returning();
+
+        if (newDiagnoseTask) {
+          await dispatchNewTask(newDiagnoseTask, workspace);
+          console.log(`Created drift-diagnose task ${newDiagnoseTask.id} for PR #${pr.number} on ${repository.full_name} (iteration skipped — diagnose only)`);
+          await appendPrActivity({
+            installationId,
+            repoFullName: repository.full_name,
+            prNumber: pr.number,
+            entry: { kind: 'ci_fixing', detail: 'schema drift detected — dispatched diagnose-only task, no auto-fix', url: ciLogs.runUrl },
+            workspaceId: diagnoseTask.workspaceId,
+          });
+        } else {
+          console.log(`Skipping duplicate drift-diagnose task for ${diagnoseTask.workspaceId}/PR #${pr.number}/${checkSuite.head_sha}`);
+        }
+        continue;
+      }
 
       // Non-worker commits (human pushes, GitHub Actions, etc.) still need a fix
       // task — the PR is red — but must NOT consume a retry attempt against
@@ -1613,160 +1736,6 @@ async function handleCheckSuiteFailure(
     } catch (error) {
       console.error(`Error creating CI retry task for PR #${pr.number} on ${repository.full_name}:`, error);
     }
-  }
-}
-
-// Check if a PR is a draft via the GitHub API. Fails open (returns false).
-async function checkPrIsDraft(
-  installationId: number,
-  repoFullName: string,
-  prNumber: number,
-): Promise<boolean> {
-  try {
-    const pr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
-    return pr?.draft === true;
-  } catch (error) {
-    console.warn(`Failed to check draft status for PR #${prNumber} on ${repoFullName}:`, error);
-    return false;
-  }
-}
-
-interface CIFailureInfo {
-  /** Failed-job/step summary plus the extracted failure digest, or null. */
-  summary: string | null;
-  /** Actions run ID. */
-  runId: number | null;
-  runUrl: string | null;
-  /**
-   * Id of the first failed job. The retry instruction needs it to name a log
-   * endpoint that returns content; without it the agent has to list jobs first.
-   */
-  failedJobId: number | null;
-}
-
-interface CommitAuthorInfo {
-  /** GitHub login of the commit's associated account, or null if unresolvable. */
-  login: string | null;
-  /** Commit author email from the git metadata. */
-  email: string | null;
-  /** Commit author display name. */
-  name: string | null;
-}
-
-// Fetch the commit author/committer identity for the given SHA via the GitHub API.
-// Fails open — returns all-null on any error so the caller can still proceed.
-async function fetchCommitAuthor(
-  installationId: number,
-  repoFullName: string,
-  sha: string,
-): Promise<CommitAuthorInfo> {
-  const empty: CommitAuthorInfo = { login: null, email: null, name: null };
-  try {
-    const data = await githubApi(installationId, `/repos/${repoFullName}/commits/${sha}`);
-    if (!data || typeof data !== 'object') return empty;
-    const d = data as Record<string, unknown>;
-    const login = typeof d.author === 'object' && d.author !== null
-      ? ((d.author as Record<string, unknown>).login as string | null) ?? null
-      : null;
-    const commitMeta = typeof d.commit === 'object' && d.commit !== null
-      ? (d.commit as Record<string, unknown>).author
-      : null;
-    const email = typeof commitMeta === 'object' && commitMeta !== null
-      ? ((commitMeta as Record<string, unknown>).email as string | null) ?? null
-      : null;
-    const name = typeof commitMeta === 'object' && commitMeta !== null
-      ? ((commitMeta as Record<string, unknown>).name as string | null) ?? null
-      : null;
-    return { login, email, name };
-  } catch {
-    return empty;
-  }
-}
-
-// Returns true when the commit was authored by the buildd GitHub App bot.
-// The bot commits as 'buildd-ai[bot]' with a noreply email containing the same string.
-function isBuilddWorkerCommit(author: CommitAuthorInfo): boolean {
-  if (author.login && author.login.includes('buildd-ai')) return true;
-  if (author.email && author.email.includes('buildd-ai[bot]')) return true;
-  return false;
-}
-
-// Fetch failed-job/step names from GitHub Actions for actionable retry context.
-// Returns the failing-step summary plus the run id/url so the agent can pull the
-// scoped logs itself (`gh run view <id> --log-failed`) rather than us shipping
-// the full, verbose log down. Fields are null when nothing can be fetched.
-async function fetchCIFailureLogs(
-  installationId: number,
-  repoFullName: string,
-  headSha: string,
-): Promise<CIFailureInfo> {
-  const empty: CIFailureInfo = { summary: null, runId: null, runUrl: null, failedJobId: null };
-  try {
-    const runsData = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/actions/runs?head_sha=${headSha}&status=failure`,
-    );
-    if (!runsData?.workflow_runs?.length) {
-      return empty;
-    }
-
-    const run = runsData.workflow_runs[0];
-    const runId = typeof run.id === 'number' ? run.id : null;
-    const runUrl = typeof run.html_url === 'string' ? run.html_url : null;
-
-    const jobsData = await githubApi(
-      installationId,
-      `/repos/${repoFullName}/actions/runs/${run.id}/jobs`,
-    );
-    if (!jobsData?.jobs?.length) {
-      return { summary: null, runId, runUrl, failedJobId: null };
-    }
-
-    const failedJobs: string[] = [];
-    let firstFailedJobId: number | null = null;
-    for (const job of jobsData.jobs) {
-      if (job.conclusion === 'failure') {
-        if (firstFailedJobId === null && typeof job.id === 'number') firstFailedJobId = job.id;
-        const failedSteps = (job.steps || [])
-          .filter((s: { conclusion?: string }) => s.conclusion === 'failure')
-          .map((s: { name?: string }) => `  - Step "${s.name}" failed`)
-          .join('\n');
-        failedJobs.push(`Job "${job.name}" failed${failedSteps ? ':\n' + failedSteps : ''}`);
-      }
-    }
-    if (failedJobs.length === 0) {
-      return { summary: null, runId, runUrl, failedJobId: null };
-    }
-
-    // Job and step names alone told a cold-start retry agent that "Run tests"
-    // failed and nothing more. Carry the actual digest — the failing file and
-    // test names — so the retry starts from the failure instead of rediscovering
-    // it. One job only, and the extractor caps what it returns.
-    let digest: string | null = null;
-    if (firstFailedJobId !== null) {
-      try {
-        const log = await githubApiText(
-          installationId,
-          `/repos/${repoFullName}/actions/jobs/${firstFailedJobId}/logs`,
-        );
-        digest = extractFailureDigest(log);
-      } catch (err) {
-        // Soft: the job/step summary below is still worth shipping, and a retry
-        // task with a thinner description beats no retry task.
-        console.warn(`Could not read job log ${firstFailedJobId} for ${repoFullName}:`, err);
-      }
-    }
-
-    const digestSection = digest ? `\n\n${digest}` : '';
-    return {
-      summary: `CI failed on ${repoFullName} (run: ${runUrl})\n\n${failedJobs.join('\n\n')}${digestSection}`,
-      runId,
-      runUrl,
-      failedJobId: firstFailedJobId,
-    };
-  } catch (error) {
-    console.warn(`Failed to fetch CI logs for ${repoFullName}@${headSha}:`, error);
-    return empty;
   }
 }
 
