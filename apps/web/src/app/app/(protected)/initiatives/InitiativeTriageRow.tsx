@@ -22,6 +22,13 @@ import type { InitiativePulse } from '@/lib/verdict-presentation';
  *
  * The sparkline mounts at 84×24, the §6.4 default. It previously mounted 48×16,
  * which drew 2.5px bars.
+ *
+ * Below `sm` the anatomy reflows: the title spans the full row width and the
+ * sparkline/meter drop to the evidence line. Sharing one line on a 390px
+ * viewport left the title ~50px after a `READY TO CLOSE` chip, an `unverified`
+ * qualifier and a 124px right rail — every row truncated to `Code…`, which is
+ * not a title. The reflow is pure grid placement, so the row still mounts
+ * exactly one sparkline (AC-13).
  */
 
 /** §6.4 default mount. A smaller mount is a spec violation. */
@@ -91,14 +98,19 @@ export function InitiativeTriageRow({ pulse, onDismiss }: InitiativeTriageRowPro
 
   return (
     <div className="relative overflow-hidden">
-      {/* Swipe-reveal dismiss action (mobile) */}
-      {isDismissible && (
+      {/* Swipe-reveal dismiss action (mobile).
+          Only mounted while a swipe is actually in progress. At width 0 the
+          panel still painted: as a flex item its automatic minimum size is
+          min-content, so it clamped to its longest word and sat over the right
+          of every dormant row. The clipper now hides the overflow too, and the
+          panel keeps a fixed width so the label is revealed, never squeezed. */}
+      {isDismissible && revealWidth > 0 && (
         <div
-          className="absolute inset-y-0 right-0 flex items-center justify-end pointer-events-none"
+          className="absolute inset-y-0 right-0 flex items-center justify-end overflow-hidden pointer-events-none"
           style={{ width: revealWidth, transition: isSwiping ? 'none' : 'width 0.2s ease' }}
           aria-hidden="true"
         >
-          <div className="flex flex-col items-center justify-center h-full px-3 bg-status-warning text-[10px] text-white leading-tight text-center w-full">
+          <div className="flex flex-col items-center justify-center h-full w-[140px] shrink-0 px-3 bg-status-warning text-[10px] text-white leading-tight text-center">
             <span>Hidden from this list</span>
             <span className="opacity-70">· cleared on reload</span>
           </div>
@@ -121,48 +133,53 @@ export function InitiativeTriageRow({ pulse, onDismiss }: InitiativeTriageRowPro
       >
         <Link
           href={`/app/initiatives/${id}`}
-          className="flex items-start gap-3 px-1 py-2.5 rounded-lg hover:bg-card-hover transition-colors"
+          className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 px-1 py-2.5 rounded-lg hover:bg-card-hover transition-colors"
         >
-          <div className="flex-1 min-w-0">
-            {/* Verdict + title */}
-            <span className="flex items-center gap-2 min-w-0">
-              <span
-                className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border ${chip.className}`}
-              >
-                {chip.label}
-              </span>
-              {/* Confidence is a qualifier, never part of the verdict (§6.5). */}
-              {confidence === 'unverified' && (
-                <span
-                  className="shrink-0 text-[10px] text-text-muted"
-                  title="No goal criteria or KPI has checked this outcome"
-                >
-                  unverified
-                </span>
-              )}
-              <span className="text-[13px] font-medium text-text-primary truncate leading-5">
-                {title}
-              </span>
+          {/* Verdict + title — spans both columns below `sm` so the title gets
+              the whole width instead of the remainder after the right rail. */}
+          <span className="col-span-2 sm:col-span-1 sm:col-start-1 sm:row-start-1 flex items-start gap-2 min-w-0">
+            <span
+              className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 border leading-4 ${chip.className}`}
+            >
+              {chip.label}
             </span>
+            {/* Confidence is a qualifier, never part of the verdict (§6.5). */}
+            {confidence === 'unverified' && (
+              <span
+                className="shrink-0 text-[10px] text-text-muted leading-5"
+                title="No goal criteria or KPI has checked this outcome"
+              >
+                unverified
+              </span>
+            )}
+            {/* Two lines on mobile beats one truncated line: a wrapped title is
+                still a title. From `sm` up the row is wide enough to clip. */}
+            <span className="min-w-0 text-[13px] font-medium text-text-primary leading-5 line-clamp-2 sm:truncate">
+              {title}
+            </span>
+          </span>
 
+          {/* Evidence line */}
+          <span className="col-start-1 row-start-2 min-w-0 self-end">
             {subline && (
-              <span className="block text-[11px] text-text-muted leading-4 mt-0.5">
+              <span className="block text-[11px] text-text-muted leading-4">
                 {subline}
               </span>
             )}
 
-            <span className="block text-[11px] text-text-muted tabular-nums leading-4 mt-0.5">
+            <span className="block text-[11px] text-text-muted tabular-nums leading-4">
               {completedMissions}/{totalMissions} missions · {completedTasks}/{totalTasks} tasks
             </span>
-          </div>
+          </span>
 
-          {/* Sparkline + scope meter */}
-          <div className="flex items-center gap-2 shrink-0 mt-0.5">
+          {/* Sparkline + scope meter — beside the title from `sm` up, on the
+              evidence line below it. */}
+          <span className="col-start-2 row-start-2 sm:row-start-1 sm:row-span-2 flex items-end sm:items-center justify-end gap-2 self-end sm:self-center">
             <SparklineBar days={effortDays} width={SPARKLINE_WIDTH} height={SPARKLINE_HEIGHT} />
             <span className="text-[11px] text-text-muted tabular-nums w-8 text-right">
               {progress}%
             </span>
-          </div>
+          </span>
         </Link>
 
         {/* Hover-reveal dismiss (desktop) */}
