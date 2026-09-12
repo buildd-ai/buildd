@@ -2462,6 +2462,31 @@ export const userFeedbackRelations = relations(userFeedback, ({ one }) => ({
   team: one(teams, { fields: [userFeedback.teamId], references: [teams.id] }),
 }));
 
+// Per-user snooze on a Home/Activity action-queue gate card (MERGE/REVIEW).
+// Keyed on the item's subjectKey (see lib/action-queue.ts's ActionQueueItem)
+// rather than a PR or task id, since that's the same dedupe key the queue
+// itself already uses and survives whichever raw source (escalation vs.
+// waitingOnYou) produced the row. snoozedUntil is re-checked against `now` on
+// every queue build (lib/action-queue.ts buildActionQueue) — never trusted as
+// a standing flag — so an expired snooze silently stops applying.
+export const actionQueueSnoozes = pgTable('action_queue_snoozes', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  teamId: uuid('team_id').references(() => teams.id, { onDelete: 'cascade' }).notNull(),
+  subjectKey: text('subject_key').notNull(),
+  snoozedUntil: timestamp('snoozed_until', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  userSubjectIdx: uniqueIndex('action_queue_snoozes_user_subject_idx').on(t.userId, t.subjectKey),
+  teamIdx: index('action_queue_snoozes_team_idx').on(t.teamId),
+}));
+
+export const actionQueueSnoozesRelations = relations(actionQueueSnoozes, ({ one }) => ({
+  user: one(users, { fields: [actionQueueSnoozes.userId], references: [users.id] }),
+  team: one(teams, { fields: [actionQueueSnoozes.teamId], references: [teams.id] }),
+}));
+
 // System cache — generic key-value store for cached data (model lists, etc.)
 export const systemCache = pgTable('system_cache', {
   key: text('key').primaryKey(),

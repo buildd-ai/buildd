@@ -1,6 +1,6 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, releases } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, releases, actionQueueSnoozes } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
 import { ReleaseWidget } from './ReleaseWidget';
@@ -1690,8 +1690,23 @@ export default async function HomePage({
           }
         }
 
+        // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
+        // on a MERGE/REVIEW card) — re-checked against `now` here, not trusted
+        // as a standing flag, per the freshness invariant at the top of
+        // lib/action-queue.ts.
+        const activeSnoozes = user
+          ? await db.query.actionQueueSnoozes.findMany({
+              where: and(
+                eq(actionQueueSnoozes.userId, user.id),
+                gt(actionQueueSnoozes.snoozedUntil, new Date()),
+              ),
+              columns: { subjectKey: true },
+            })
+          : [];
+        const snoozedSubjectKeys = new Set(activeSnoozes.map((s) => s.subjectKey));
+
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
-        actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys });
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression
@@ -1851,6 +1866,7 @@ export default async function HomePage({
                           cardType="gate-card"
                           taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
                           prUrl={item.prUrl}
+                          subjectKey={item.subjectKey}
                         >
                           <WaitingOnYouMergeCard item={item} />
                         </SwipeableRow>
@@ -1863,6 +1879,7 @@ export default async function HomePage({
                           cardType="gate-card"
                           taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
                           prUrl={item.prUrl}
+                          subjectKey={item.subjectKey}
                         >
                           <WaitingOnYouReviewCard item={item} />
                         </SwipeableRow>

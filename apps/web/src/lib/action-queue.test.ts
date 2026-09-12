@@ -899,3 +899,36 @@ describe('buildActionQueue — recommendations', () => {
     expect(result[0].recommendation).toBe('CI handoff advice');
   });
 })
+
+describe('buildActionQueue — snoozedSubjectKeys', () => {
+  it('drops a MERGE card whose subjectKey is in the snoozed set', () => {
+    const result = buildActionQueue([], [escalationItem()], {
+      snoozedSubjectKeys: new Set([PR_URL_A]),
+    });
+    expect(result).toHaveLength(0);
+  });
+
+  it('leaves a card whose subjectKey is not in the snoozed set', () => {
+    const result = buildActionQueue([], [escalationItem()], {
+      snoozedSubjectKeys: new Set(['some-other-key']),
+    });
+    expect(result).toHaveLength(1);
+  });
+
+  it('drops only the snoozed PR, keeping other cards visible', () => {
+    const woy: WaitingOnYouRawItem[] = [
+      mergeItem({ prUrl: PR_URL_A, prNumber: 1480, upstreamTaskId: 'u1' }),
+    ];
+    const esc: EscalationRawItem[] = [
+      escalationItem({ prUrl: PR_URL_B, prNumber: 1481, taskId: 'task-2' }),
+    ];
+    const result = buildActionQueue(woy, esc, { snoozedSubjectKeys: new Set([PR_URL_A]) });
+    expect(result).toHaveLength(1);
+    expect(result[0].prNumber).toBe(1481);
+  });
+
+  it('with no snoozedSubjectKeys option, behaves exactly as before (no filtering)', () => {
+    const result = buildActionQueue([mergeItem()], [escalationItem()]);
+    expect(result).toHaveLength(1);
+  });
+})
