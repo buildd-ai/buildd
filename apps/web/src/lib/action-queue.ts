@@ -138,6 +138,13 @@ export interface EscalationRawItem {
   ciGate?: CiGate | null;
   /** Reviewer's recommended next step, when it escalated to a human. */
   recommendation?: string | null;
+  /**
+   * An open `reviewer_approved` note's summary — set only when the reviewer
+   * approved under an approve-only gate and is waiting on a human merge.
+   * Distinguishes "approved, nothing to apply" from "no verdict at all" for a
+   * REVIEW-chip card, since both leave `recommendation` null.
+   */
+  verdictSummary?: string | null;
   /** Set when an agent is actively resolving conflicts for this PR. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
@@ -200,6 +207,8 @@ export interface ActionQueueItem {
    * being asked to decide something an agent already failed at.
    */
   recommendation?: string | null;
+  /** See {@link EscalationRawItem.verdictSummary} — carried through unchanged. */
+  verdictSummary?: string | null;
   /** Set when chip === 'RESOLVING' — the task actively resolving merge conflicts. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
@@ -418,6 +427,7 @@ export function buildActionQueue(
       recommendation: ciGate?.kind === 'blocked'
         ? ciGate.recommendation
         : item.recommendation ?? null,
+      verdictSummary: item.verdictSummary ?? null,
       conflictRetryTaskId: item.conflictRetryTaskId ?? undefined,
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
