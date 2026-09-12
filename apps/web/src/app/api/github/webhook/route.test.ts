@@ -3383,6 +3383,86 @@ describe('workflow_run → releases state advancement', () => {
     expect(releaseUpdate).toBeUndefined();
   });
 
+  // ── contradictory second delivery for the identical run ──────────────────
+  //
+  // GitHub can send two `workflow_run.completed` events for the same run with
+  // different conclusions — observed live for a release job that calls out to
+  // a reusable workflow via `uses:`. The first (success) legitimately advances
+  // dispatched → deploying; a second, disagreeing delivery for the SAME run
+  // must not be trusted verbatim, since 'deploying' isn't a terminal state a
+  // regression guard already covers.
+
+  it('ignores a conflicting second delivery for an already-resolved run when the live run is still success', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-6', workspaceId: 'ws-release', state: 'deploying', runUrl: RUN_URL }]
+        : null;
+    mockGithubApi.mockReturnValue(Promise.resolve({ conclusion: 'success' }));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
+
+    const liveCheck = (mockGithubApi.mock.calls as any[]).find(([, url]) =>
+      String(url).includes('/actions/runs/9999'),
+    );
+    expect(liveCheck).toBeDefined();
+  });
+
+  it('ignores a conflicting second delivery when the live refetch is unavailable', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-6b', workspaceId: 'ws-release', state: 'deploying', runUrl: RUN_URL }]
+        : null;
+    mockGithubApi.mockImplementation(() => Promise.reject(new Error('GitHub API error: 500')));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
+  });
+
+  it('still marks the release failed when the live refetch confirms the run actually failed', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-7', workspaceId: 'ws-release', state: 'deploying', runUrl: RUN_URL }]
+        : null;
+    mockGithubApi.mockReturnValue(Promise.resolve({ conclusion: 'failure' }));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'failed',
+    );
+    expect(releaseUpdate).toBeDefined();
+  });
+
+  it('does not need a live check when the row is still dispatched (first-ever delivery for this run)', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-8', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('failure')));
+    expect(res.status).toBe(200);
+
+    // No live refetch — the row hasn't been resolved by a prior delivery yet,
+    // so the payload's own conclusion is trusted as it always was.
+    const liveCheck = (mockGithubApi.mock.calls as any[]).find(([, url]) =>
+      String(url).includes('/actions/runs/9999'),
+    );
+    expect(liveCheck).toBeUndefined();
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'failed',
+    );
+    expect(releaseUpdate).toBeDefined();
+  });
+
   // ── the runId lookup ──────────────────────────────────────────────────────
   //
   // This lookup runs on EVERY completed workflow_run — every CI workflow on
