@@ -213,6 +213,136 @@ describe('parseResetDelay', () => {
   });
 });
 
+/**
+ * Regression: a Codex worker hit its quota wall with the meridiem spaced off
+ * the digits ("try again at 10:58 pm."). The runner's own copy of the reset
+ * regex required the meridiem flush against the digits, so it captured
+ * "10:58", then stripped the minutes to "10", then resolved a bare hour 10 to
+ * 10:00 the next morning — pausing every claim for the auth context for most
+ * of a day when the correct answer was the 5-minute floor, because the stated
+ * reset had already gone by.
+ *
+ * These cases assert `pauseMs` exactly. Asserting only that it is positive is
+ * how the bug shipped.
+ */
+describe('reset-time parsing — spaced meridiem', () => {
+  const MIN = 60 * 1000;
+  const HOUR = 60 * MIN;
+  /** Callers lowercase the error before classifying, so these inputs are lowercased too. */
+  const codexWall = (resetAt: string) =>
+    "you've hit your usage limit. upgrade to pro (https://example.invalid/upgrade) " +
+    `and get 3x more usage, or try again at ${resetAt}`;
+
+  test('the incident: a reset that already passed pauses for the floor, not a day', () => {
+    // Reset quoted at 22:58 UTC, observed 12 minutes later.
+    const res = classifyClaimError(codexWall('10:58 pm.'), new Date('2026-01-14T23:10:00.000Z'));
+    expect(res).not.toBeNull();
+    expect(res!.scope).toBe('context');
+    expect(res!.pauseMs).toBe(5 * MIN);
+  });
+
+  test('a reset still ahead pauses exactly until it, minutes included', () => {
+    const res = classifyClaimError(codexWall('10:58 pm.'), new Date('2026-01-14T22:00:00.000Z'));
+    expect(res!.pauseMs).toBe(58 * MIN);
+    expect(res!.label).toContain('10:58 pm');
+  });
+
+  test('minutes are not stripped off the Codex wording', () => {
+    const res = classifyClaimError(codexWall('3:45 pm.'), new Date('2026-01-14T12:00:00.000Z'));
+    expect(res!.pauseMs).toBe(3 * HOUR + 45 * MIN);
+  });
+
+  test('spaced session-limit form parses and keeps the reset time in the label', () => {
+    const res = classifyClaimError(
+      "you've hit your session limit · resets 8:20 pm (utc)",
+      new Date('2026-01-14T12:00:00.000Z'),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.scope).toBe('context');
+    expect(res!.pauseMs).toBe(8 * HOUR + 20 * MIN);
+    expect(res!.label).toContain('8:20 pm');
+  });
+
+  test('unspaced session-limit form does not regress', () => {
+    const res = classifyClaimError(
+      "you've hit your session limit · resets 8:20pm (utc)",
+      new Date('2026-01-14T12:00:00.000Z'),
+    );
+    expect(res!.pauseMs).toBe(8 * HOUR + 20 * MIN);
+  });
+
+  test('extra-usage wording with minutes trips a context breaker', () => {
+    // Failure shape unique to this branch: the old regex demanded an
+    // hours-only clause, so a reset carrying minutes matched nothing and
+    // classifyClaimError returned null — no breaker at all, the opposite
+    // failure from the over-pausing branches above.
+    const res = classifyClaimError(
+      "you're out of extra usage · resets 11:20am (utc)",
+      new Date('2026-01-14T09:00:00.000Z'),
+    );
+    expect(res).not.toBeNull();
+    expect(res!.scope).toBe('context');
+    expect(res!.pauseMs).toBe(2 * HOUR + 20 * MIN);
+  });
+
+  test('extra-usage wording reported just after its reset pauses for the floor', () => {
+    const res = classifyClaimError(
+      "you're out of extra usage · resets 11:20am (utc)",
+      new Date('2026-01-14T11:25:00.000Z'),
+    );
+    expect(res!.pauseMs).toBe(5 * MIN);
+  });
+
+  test('session limit reported just after its reset pauses for the floor', () => {
+    for (const wording of ['resets 8:20pm (utc)', 'resets 8:20 pm (utc)']) {
+      const res = classifyClaimError(
+        `you've hit your session limit · ${wording}`,
+        new Date('2026-01-14T20:25:00.000Z'),
+      );
+      expect(res!.pauseMs).toBe(5 * MIN);
+    }
+  });
+
+  test('stripping the minutes is what made an unspaced reset look past', () => {
+    // 8:20pm at 20:05 is 15 min away. Dropping ":20" made it 20:00 — already
+    // gone — which then rolled forward to the next day: a ~24h pause.
+    const res = classifyClaimError(
+      "you've hit your session limit · resets 8:20pm (utc)",
+      new Date('2026-01-14T20:05:00.000Z'),
+    );
+    expect(res!.pauseMs).toBe(15 * MIN);
+  });
+
+  test('a timezone we will not guess at falls back to the branch default', () => {
+    const res = classifyClaimError(
+      "you've hit your session limit · resets 3am (pst)",
+      new Date('2026-01-14T12:00:00.000Z'),
+    );
+    expect(res!.pauseMs).toBe(5 * HOUR);
+  });
+
+  test('prose that merely mentions a limit still classifies as null', () => {
+    expect(
+      classifyClaimError(
+        'the docs say the api enforces a usage limit; try again at 10:58 pm if throttled',
+        new Date('2026-01-14T12:00:00.000Z'),
+      ),
+    ).toBeNull();
+  });
+
+  // The invariant: whatever branch produces the pause, it may not outlast the
+  // reset instant the provider's own text quoted. Branches that never consult
+  // the reset clause (billing, auth, rate limit) are bounded by it too.
+  test('a flat branch default cannot outlast the reset the text quoted', () => {
+    const res = classifyClaimError(
+      'insufficient credits — try again at 10:58 pm.',
+      new Date('2026-01-14T22:30:00.000Z'),
+    );
+    expect(res!.label).toBe('Billing error');
+    expect(res!.pauseMs).toBe(28 * MIN); // not the branch's flat 1h
+  });
+});
+
 describe('ContextBreaker', () => {
   test('is not paused by default', () => {
     const b = new ContextBreaker();
