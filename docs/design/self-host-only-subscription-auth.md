@@ -401,8 +401,11 @@ Checks, in hosted mode:
    `auth.openai.com/oauth/token`, `TENANT_MASTER_KEY`. Source-only assertions
    cannot see a transitive import; this one can.
 
-**How someone proves this gate works.** The repo has ~19 recorded cases of gates
-that were green while measuring nothing, so this section is load-bearing, and
+**How someone proves this gate works.** This repo has a long, documented history
+of gates that were green while measuring nothing — `bun test` exiting 0 having run
+almost no files, orphaned test directories nothing collected, a `vars.` reference
+that made the no-prod-data scan match an empty pattern on every PR
+(`.github/workflows/no-prod-data.yml:14-19`). So this section is load-bearing, and
 each mechanism below is already used somewhere in the tree:
 
 1. **A negative self-test inside the gate.** `.github/workflows/build.yml:39-63`
