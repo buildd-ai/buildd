@@ -2744,21 +2744,6 @@ export class WorkerManager {
       worker.cbmToolCounts = {};
       worker.cbmFileAccessCounts = { read: 0, grep: 0, glob: 0 };
 
-      // Steer the agent toward the graph when CBM is actually mounted. Without
-      // this, CBM was mounted but unmentioned: the tools appear in the tool list
-      // with no policy preferring them over a Read/Grep sweep, so structural
-      // questions kept being answered the expensive way. Appended only when
-      // enforced AND actually mounted, so the instruction can never describe a
-      // server that is absent — `cbmMountBlocked` means a required bind was
-      // missing and CBM was dropped for this task.
-      if (cbmEnforced && !cbmMountBlocked) {
-        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
-          project: cbmActivation.cbmProject,
-          sharedBaseIndex: cbmActivation.sharedCache,
-        });
-      }
-
-
       // Phase-1 rollout: opted-in runners wrap the agent process in an outer
       // bwrap namespace containing only this task's required paths. The SDK
       // currently has no sandbox.extraMounts option, so its supported custom
@@ -2806,13 +2791,24 @@ export class WorkerManager {
       // Steer the agent toward the graph when CBM is actually mounted. Without
       // this, CBM was mounted but unmentioned: the tools appear in the tool list
       // with no policy preferring them over a Read/Grep sweep, so structural
-      // questions kept being answered the expensive way. Appended only when
-      // enforced, so the instruction can never describe a server that is absent.
-      // `!cbmMountBlocked`: a required CBM bind that could not be mounted disables
-      // CBM entirely (see the mount-unavailable path above), so steering the agent
-      // toward a graph that is not there would be a lie.
+      // questions kept being answered the expensive way.
+      //
+      // Exactly one append, and it lives HERE — after the bwrap argv is built —
+      // because that is the only point where `cbmMountBlocked` is final. An
+      // earlier copy of this append ran before the mount could fail, so a
+      // mount-blocked worker was steered toward a graph that was never mounted,
+      // which is the very case `!cbmMountBlocked` exists to exclude.
+      //
+      // The options are not optional: with none, the block claims "this worktree
+      // is already indexed", which is false on a shared base index and drops the
+      // warning that `get_code_snippet` serves the base checkout rather than this
+      // branch. An agent that believes it reads a stale snippet of a file it just
+      // edited, and then stops trusting the graph at all.
       if (cbmEnforced && !cbmMountBlocked) {
-        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock();
+        systemPrompt.append = (systemPrompt.append ?? '') + '\n\n' + buildCbmSystemPromptBlock({
+          project: cbmActivation.cbmProject,
+          sharedBaseIndex: cbmActivation.sharedCache,
+        });
       }
 
 
