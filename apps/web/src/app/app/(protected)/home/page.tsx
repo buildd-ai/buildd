@@ -244,6 +244,10 @@ export default async function HomePage({
     leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human';
     escalationReason: string | null;
     verdictSummary: string | null;
+    /** The SHA the latest reviewer verdict was made against, if any. */
+    approvedSha: string | null;
+    /** The PR's current head — compared against approvedSha on the card. */
+    headSha: string | null;
     waitingMinutes: number | null;
     conflictRetryTaskId: string | null;
     conflictRetryIteration: number | null;
@@ -948,6 +952,10 @@ export default async function HomePage({
               // into a mission integration branch (no human gate — the gate is on
               // the mission PR) from a PR into trunk (gate applies).
               prBaseRef: true,
+              // The PR's current head — compared against the terminal verdict's
+              // headSha to decide whether "Re-review changes since approval" has
+              // anything new to review.
+              lastCommitSha: true,
             },
             with: {
               task: {
@@ -1281,6 +1289,17 @@ export default async function HomePage({
                 const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
                 const gate = w.taskId ? reviewerGateMap.get(w.taskId) : undefined;
                 const verdictSummary = (w.taskId ? approvedMap.get(w.taskId) : undefined) ?? null;
+                // The SHA the most recent reviewer task's verdict was made
+                // against — set at createReviewerTask time, so it is present on
+                // any completed reviewer task regardless of verdict. Compared
+                // against the PR's current head to gate "Re-review changes
+                // since approval" — a terminal verdict at the current head has
+                // nothing new to re-review.
+                const rt = w.taskId ? latestReviewerTaskByOrigId.get(w.taskId) : undefined;
+                const approvedShaRaw = rt?.context && typeof rt.context === 'object'
+                  ? (rt.context as Record<string, unknown>).headSha
+                  : undefined;
+                const approvedSha = typeof approvedShaRaw === 'string' ? approvedShaRaw : null;
                 const waitingMinutes = w.completedAt
                   ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
                   : null;
@@ -1322,6 +1341,8 @@ export default async function HomePage({
                     ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
                     : (gate?.reason ?? null),
                   verdictSummary,
+                  approvedSha,
+                  headSha: w.lastCommitSha ?? null,
                   waitingMinutes,
                   conflictRetryTaskId: conflictRetry?.taskId ?? null,
                   conflictRetryIteration: conflictRetry?.iteration ?? null,

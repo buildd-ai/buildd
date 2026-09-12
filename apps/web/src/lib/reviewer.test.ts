@@ -91,11 +91,13 @@ mock.module('@/lib/pr-activity-comment', () => ({
 
 import {
   buildReviewerContext,
+  buildDeltaReviewerContext,
   createReviewerTask,
   enforceServerSideEscalation,
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
+  resolvePriorVerdict,
   supersedeReviewerTaskOnMerge,
 } from './reviewer';
 import { resolvePolicy } from './merge-policy';
@@ -932,5 +934,197 @@ describe('enforceServerSideEscalation', () => {
 
     expect(result.verdict).toBe('escalate');
     expect(result.overrideReason).toBeNull();
+  });
+});
+
+// ── Delta re-review ───────────────────────────────────────────────────────────
+
+describe('resolvePriorVerdict', () => {
+  it('returns null for anything but a completed task', () => {
+    expect(resolvePriorVerdict(null)).toBeNull();
+    expect(resolvePriorVerdict({ status: 'pending', result: null, context: null })).toBeNull();
+    expect(resolvePriorVerdict({ status: 'failed', result: null, context: { headSha: 'a'.repeat(40) } })).toBeNull();
+  });
+
+  it('returns null when the task never recorded the SHA it ran against', () => {
+    // Pre-dates this feature, or the context was otherwise malformed — there is
+    // no "from" side for a delta without it.
+    const result = resolvePriorVerdict({
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'approve', confidence: 0.9, summary: 'ok' } },
+      context: { prNumber: 42 },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('returns null when the task completed without a usable structured verdict', () => {
+    const result = resolvePriorVerdict({
+      status: 'completed',
+      result: null,
+      context: { headSha: 'sha1' },
+    });
+    expect(result).toBeNull();
+  });
+
+  it('extracts verdict, confidence, summary, feedback, escalationReason and the from-SHA', () => {
+    const result = resolvePriorVerdict({
+      status: 'completed',
+      result: {
+        structuredOutput: {
+          verdict: 'request-changes',
+          confidence: 0.75,
+          summary: 'Needs a null check',
+          feedback: 'Add a guard at line 40',
+        },
+      },
+      context: { headSha: 'sha-old' },
+    });
+    expect(result).toEqual({
+      headSha: 'sha-old',
+      verdict: 'request-changes',
+      confidence: 0.75,
+      summary: 'Needs a null check',
+      feedback: 'Add a guard at line 40',
+      escalationReason: null,
+    });
+  });
+});
+
+describe('buildDeltaReviewerContext', () => {
+  const PRIOR_VERDICT = {
+    headSha: 'old-sha',
+    verdict: 'approve' as const,
+    confidence: 0.92,
+    summary: 'Clean refactor, approved.',
+    feedback: null,
+    escalationReason: null,
+  };
+
+  const DELTA_FILES = [
+    {
+      filename: 'apps/web/src/lib/foo.ts',
+      status: 'modified',
+      additions: 1,
+      deletions: 0,
+      patch: ['@@ -10,3 +10,4 @@ export function foo() {', '   return a;', '+  // ci fix', ' }'].join('\n'),
+    },
+  ];
+
+  const BASE = {
+    originalTaskId: 'original-delta',
+    originalTask: { title: 'Original PR title', description: 'Original description', pathManifest: null },
+    prNumber: 99,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/99',
+    headSha: 'new-sha',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    priorVerdict: PRIOR_VERDICT,
+    deltaFiles: DELTA_FILES,
+  };
+
+  it('sends only the delta range — never the full PR diff shape', async () => {
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    expect(prompt).toContain('old-sha..new-sha');
+    expect(prompt).toContain('Delta Files Changed Since Prior Review');
+    expect(prompt).toContain('apps/web/src/lib/foo.ts');
+    // Not the full-PR builder's section headers.
+    expect(prompt).not.toContain('## PR Files Changed');
+    expect(prompt).not.toContain('## Expected Path Manifest');
+  });
+
+  it('carries the prior verdict, confidence and summary into the prompt', async () => {
+    const prompt = await buildDeltaReviewerContext(BASE);
+    expect(prompt).toContain('Your Prior Verdict (at old-sha)');
+    expect(prompt).toContain('**Verdict:** approve');
+    expect(prompt).toContain('**Confidence:** 0.92');
+    expect(prompt).toContain('Clean refactor, approved.');
+  });
+
+  it('carries prior feedback and escalation reason when present', async () => {
+    const prompt = await buildDeltaReviewerContext({
+      ...BASE,
+      priorVerdict: {
+        ...PRIOR_VERDICT,
+        verdict: 'request-changes',
+        feedback: 'Add a null guard',
+        escalationReason: 'Touches auth',
+      },
+    });
+    expect(prompt).toContain('Add a null guard');
+    expect(prompt).toContain('Touches auth');
+  });
+
+  it('instructs the reviewer to escalate on a concerning delta and never silently inherit the prior verdict', async () => {
+    const prompt = await buildDeltaReviewerContext(BASE);
+    expect(prompt).toContain('disables or deletes a test');
+    expect(prompt).toContain('does NOT change the prior verdict');
+  });
+
+  it('asks for a fresh verdict rather than pre-filling one', async () => {
+    const prompt = await buildDeltaReviewerContext(BASE);
+    expect(prompt).toContain('Do not silently\ninherit it');
+    expect(prompt).toContain("- `verdict`: 'approve' | 'request-changes' | 'escalate'");
+  });
+});
+
+describe('createReviewerTask — delta re-review', () => {
+  it('creates a NEW reviewer task row (never mutates the prior terminal one) and marks it a delta', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-delta-1',
+      originalTask: { title: 'Original title', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/original' },
+      prNumber: 101,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/101',
+      headSha: 'new-sha',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      priorVerdict: {
+        headSha: 'old-sha',
+        verdict: 'approve',
+        confidence: 0.9,
+        summary: 'good',
+        feedback: null,
+        escalationReason: null,
+      },
+      deltaFiles: [{ filename: 'a.ts', status: 'modified', additions: 1, deletions: 0, patch: null }],
+    });
+
+    expect(insertedTask).toBeDefined();
+    const ctx = insertedTask?.context as any;
+    expect(ctx.deltaReview).toBe(true);
+    expect(ctx.priorVerdictHeadSha).toBe('old-sha');
+    expect(ctx.priorVerdict).toBe('approve');
+    // The new task's own head SHA is the new one, not the prior verdict's.
+    expect(ctx.headSha).toBe('new-sha');
+    const description = insertedTask?.description as string;
+    expect(description).toContain('old-sha..new-sha');
+    expect(description).not.toContain('## PR Files Changed');
+  });
+
+  it('dispatches a normal full review when no priorVerdict is passed (unchanged behaviour)', async () => {
+    insertedTask = undefined;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-full-1',
+      originalTask: { title: 'Original title', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/original' },
+      prNumber: 102,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/102',
+      headSha: 'sha1',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    const ctx = insertedTask?.context as any;
+    expect(ctx.deltaReview).toBeUndefined();
+    const description = insertedTask?.description as string;
+    expect(description).toContain('# Reviewer Task');
   });
 });

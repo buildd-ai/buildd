@@ -42,6 +42,13 @@ type CardState =
  * was cancelled, retries were exhausted, or no reviewer task exists at all —
  * additionally offers Re-review, since nothing re-dispatches on its own from
  * a terminal state.
+ *
+ * Separately, ANY terminal verdict (approved or escalated) whose PR head has
+ * since moved past the SHA it was made against additionally offers "Re-review
+ * changes since approval" — the verdict is still valid for what it saw, but
+ * new commits landed it never judged. This posts to the same re-review
+ * endpoint as plain Re-review; the server decides delta-vs-full from the
+ * stored verdict, so the button never needs to know which one it triggers.
  */
 export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [state, setState] = useState<CardState>('idle');
@@ -53,6 +60,15 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const hasRecommendation = Boolean(item.recommendation);
   const isApproved = !hasRecommendation && Boolean(item.verdictSummary);
   const noVerdict = !hasRecommendation && !item.verdictSummary;
+  // A terminal verdict exists (approve or escalate — both reach this card) AND
+  // the PR's head has moved past the SHA it was made against: there is new
+  // work the verdict never saw. Re-review then means a DELTA review against
+  // just that new work, not a full re-read (see /api/prs/[prNumber]/re-review).
+  const canReReviewSinceApproval =
+    (isApproved || hasRecommendation) &&
+    Boolean(item.approvedSha) &&
+    Boolean(item.headSha) &&
+    item.approvedSha !== item.headSha;
 
   const handleApply = async (corrections?: string) => {
     setState('applying');
@@ -191,12 +207,22 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                   Apply with corrections
                 </button>
               </div>
-              <button
-                onClick={() => setState('confirming_override')}
-                className="mt-1.5 text-[11px] text-text-muted hover:text-text-secondary underline"
-              >
-                Merge anyway
-              </button>
+              <div className="mt-1.5 flex items-center gap-3">
+                <button
+                  onClick={() => setState('confirming_override')}
+                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                >
+                  Merge anyway
+                </button>
+                {canReReviewSinceApproval && (
+                  <button
+                    onClick={handleReReview}
+                    className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  >
+                    Re-review changes since approval
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -220,6 +246,14 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                     className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
                   >
                     Re-review
+                  </button>
+                )}
+                {isApproved && canReReviewSinceApproval && (
+                  <button
+                    onClick={handleReReview}
+                    className="text-[12px] font-medium text-text-secondary hover:text-text-primary transition-colors px-2.5 py-1 border border-border-default rounded"
+                  >
+                    Re-review changes since approval
                   </button>
                 )}
               </div>

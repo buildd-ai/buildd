@@ -900,6 +900,24 @@ describe('buildActionQueue — recommendations', () => {
   });
 })
 
+describe('buildActionQueue — approvedSha / headSha pass-through', () => {
+  it('carries approvedSha and headSha through unchanged, for the card\'s re-review-since-approval gate', () => {
+    const result = buildActionQueue([], [escalationItem({
+      verdictSummary: 'Looks good, confidence 0.92',
+      approvedSha: 'old-sha',
+      headSha: 'new-sha',
+    })]);
+    expect(result[0].approvedSha).toBe('old-sha');
+    expect(result[0].headSha).toBe('new-sha');
+  });
+
+  it('defaults both to null when the caller supplied neither', () => {
+    const result = buildActionQueue([], [escalationItem()]);
+    expect(result[0].approvedSha).toBeNull();
+    expect(result[0].headSha).toBeNull();
+  });
+})
+
 describe('buildActionQueue — snoozedSubjectKeys', () => {
   it('drops a MERGE card whose subjectKey is in the snoozed set', () => {
     const result = buildActionQueue([], [escalationItem()], {

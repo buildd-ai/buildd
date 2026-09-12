@@ -204,3 +204,71 @@ describe('WaitingOnYouReviewCard — CTA set derives from server state, per revi
     });
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// "Re-review changes since approval" — offered whenever a terminal verdict
+// (approve OR escalate) exists but the PR's head has since moved past the SHA
+// it was made against. Head === approvedSha must never offer it: a re-review
+// against an empty diff has nothing new to say.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('WaitingOnYouReviewCard — Re-review changes since approval', () => {
+  it('offers it on an approved PR whose head has advanced past the verdict', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Reviewer approved — awaiting human merge',
+          verdictSummary: 'Looks good, confidence 0.92',
+          approvedSha: 'old-sha',
+          headSha: 'new-sha',
+        })}
+      />,
+    );
+    expect(html).toContain('Re-review changes since approval');
+  });
+
+  it('does NOT offer it when the head equals the verdict SHA', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Reviewer approved — awaiting human merge',
+          verdictSummary: 'Looks good, confidence 0.92',
+          approvedSha: 'same-sha',
+          headSha: 'same-sha',
+        })}
+      />,
+    );
+    expect(html).not.toContain('Re-review changes since approval');
+  });
+
+  it('offers it on an escalated PR (with a recommendation) whose head has advanced', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Touches schema.ts',
+          recommendation: 'Guard the null-overwrite.',
+          approvedSha: 'old-sha',
+          headSha: 'new-sha',
+        })}
+      />,
+    );
+    expect(html).toContain('Re-review changes since approval');
+    // Apply/Apply-with-corrections/Merge anyway stay exactly as before.
+    expect(html).toContain('>Apply<');
+    expect(html).toContain('Merge anyway');
+  });
+
+  it('does not offer it when there is no verdict at all, even with mismatched SHAs (plain Re-review already covers that state)', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Reviewer task failed — needs human review',
+          approvedSha: 'old-sha',
+          headSha: 'new-sha',
+        })}
+      />,
+    );
+    expect(html).not.toContain('Re-review changes since approval');
+    // Plain Re-review is still there for the no-verdict state.
+    expect(html).toContain('>Re-review<');
+  });
+});

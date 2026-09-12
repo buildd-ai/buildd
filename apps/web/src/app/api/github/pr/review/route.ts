@@ -20,7 +20,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { createReviewerTask } from '@/lib/reviewer';
+import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import {
@@ -212,6 +212,17 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // A force re-review of a PR that already carries a terminal verdict at a
+  // DIFFERENT head is a delta review: the reviewer gets the delta plus its
+  // own prior verdict instead of re-reading the whole PR. Same head (or no
+  // recorded verdict) falls through to the full review below unchanged.
+  const priorVerdict: PriorVerdict | undefined = force
+    ? (resolvePriorVerdict(existingReview) ?? undefined)
+    : undefined;
+  const deltaPriorVerdict = priorVerdict && priorVerdict.headSha !== (pr.head?.sha ?? '')
+    ? priorVerdict
+    : undefined;
+
   // Adopt the PR when buildd has no worker for it: every downstream surface
   // keys off "the worker that owns this PR", so adoption is what lets an
   // externally-authored PR use the existing review rails unchanged.
@@ -255,6 +266,7 @@ export async function POST(req: NextRequest) {
     repoFullName: repo.fullName,
     policyConfig: (workspace.gitConfig as any)?.policyConfig,
     ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
+    ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });
 
   if (!reviewerTask?.id) return bad('Could not create the reviewer task', 500);

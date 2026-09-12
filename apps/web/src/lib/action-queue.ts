@@ -145,6 +145,14 @@ export interface EscalationRawItem {
    * REVIEW-chip card, since both leave `recommendation` null.
    */
   verdictSummary?: string | null;
+  /**
+   * The SHA the most recent terminal reviewer verdict was made against, and
+   * the PR's current head. Together they drive the "Re-review changes since
+   * approval" affordance — offered only while they differ, since a re-review
+   * at an unchanged head has nothing new to say.
+   */
+  approvedSha?: string | null;
+  headSha?: string | null;
   /** Set when an agent is actively resolving conflicts for this PR. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
@@ -209,6 +217,10 @@ export interface ActionQueueItem {
   recommendation?: string | null;
   /** See {@link EscalationRawItem.verdictSummary} — carried through unchanged. */
   verdictSummary?: string | null;
+  /** See {@link EscalationRawItem.approvedSha} — carried through unchanged. */
+  approvedSha?: string | null;
+  /** See {@link EscalationRawItem.headSha} — carried through unchanged. */
+  headSha?: string | null;
   /** Set when chip === 'RESOLVING' — the task actively resolving merge conflicts. */
   conflictRetryTaskId?: string | null;
   conflictRetryIteration?: number | null;
@@ -439,6 +451,8 @@ export function buildActionQueue(
         ? ciGate.recommendation
         : item.recommendation ?? null,
       verdictSummary: item.verdictSummary ?? null,
+      approvedSha: item.approvedSha ?? null,
+      headSha: item.headSha ?? null,
       conflictRetryTaskId: item.conflictRetryTaskId ?? undefined,
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
