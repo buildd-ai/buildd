@@ -59,6 +59,13 @@
       "method": "POST"
     },
     {
+      "$comment": "Fleet-idle detector — the SAME route as the queue-stall watchdog above, behind ?scope=fleet-idle, and a different question: not 'is this task gated' but 'is this account's fleet transacting at all'. Alarms when a runner is heartbeating with a free worker slot, claimable work has waited past the route's 45-minute threshold, and workers.started_at shows nothing has started. That is what a tripped claim circuit breaker looks like from the server: a fully-paused runner's heartbeat is byte-identical to a healthy idle one, and its refusal reason never leaves the host. ALL 24 HOURS, and that is the whole point — the incident this detects ran overnight, and with a `7-23` range the back half of the window falls in the nightly gap exactly as it did for the credential sweep ('OAuth tokens expire overnight too') and release health ('releases are cut at any hour'). It can afford 24h because it is pure indexed aggregates with NO network: the gate pass is daytime-only BECAUSE it HTTP-probes every connector a role needs, so do NOT fold these two passes together or merge their schedules — that re-imports the cost that created the gap. On the hour, NOT offset: Neon autosuspends after ~5 idle minutes, so landing inside the window the schedules tick already opens at :00 is free, while an offset 20 minutes out would open a second one every hour. Separate cron_runs slug (queue-stall:fleet-idle, same convention as pr-reconcile:merge-state) so the two cadences stay separate health signals.",
+      "title": "Buildd: Fleet Idle Detector",
+      "path": "/api/cron/queue-stall?scope=fleet-idle",
+      "schedule": "0 * * * *",
+      "method": "POST"
+    },
+    {
       "$comment": "Mission-state invariant sweep. Eleven named invariants over mission/task/worker/release state; ten report-only, one (orphaned_integration_base) files a deduped friction task. Hourly, because every threshold in the route is hours-to-days and the target is 'caught the same working day' — finer would cost Neon wake time for no detection gain. Daytime only (EST) like the other DB-touching jobs; the tightest threshold is 15m, so an overnight breach is reported at 07:00. A healthy fleet costs one set of queries and spawns nothing.",
       "title": "Buildd: Mission Invariant Sweep",
       "path": "/api/cron/mission-invariants",
@@ -113,6 +120,14 @@
       "path": "/api/cron/release-health-check",
       "schedule": "5 * * * *",
       "method": "GET"
+    },
+    {
+      "$comment": "Memory-digest experiment readout. Recomputes the experiment analysis from worker_prompt_composition_events, persists it to system_cache, and pushes ONLY when the verdict is terminal (post-boundary cohort powered, or accrual stalled). Every other run is silent by design, so this is NOT a daily digest. Daily rather than hourly because the unit of accrual is a task's prompt build, not a minute, and a terminal verdict is read by a human once: a finer cadence buys nothing and wakes Neon for nothing. 07:00 EST so a verdict lands at the start of a working day. ENABLED, deliberately: the experiment has days of useful accrual left, and a job staged dark satisfies scripts/cron-coverage.test.ts while never firing, which is the exact failure mode that left three other routes in this file inert for their whole lives. The route always reports a verdict (changed/errors) to withCronRun, and an empty cohort reports errors=1, so it is alarmable through cron health instead of being heartbeat-only. Notification dedupe is a once-ever atomic claim in system_cache, not a time window, so one terminal verdict pushes exactly once however long this keeps running.",
+      "title": "Buildd: Memory Digest Readout",
+      "path": "/api/cron/memory-digest-readout",
+      "schedule": "0 7 * * *",
+      "method": "GET",
+      "enabled": true
     }
   ]
 }

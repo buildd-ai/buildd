@@ -15,6 +15,7 @@ import { eq, and, inArray, desc } from 'drizzle-orm';
 import { extractSubjectAnchor } from '@buildd/core/subject-anchor-extractor';
 import { projectSubjectAnchor } from '@buildd/core/subject-anchor-observe';
 import type { MergePolicy } from '@buildd/shared';
+import { isGeneratedPath, splitDiffStats, formatDiffStats } from '@buildd/shared';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 import { reviewerTitle } from './task-title';
@@ -85,6 +86,56 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
   },
   additionalProperties: false,
 } as const;
+
+// ── Delta re-review ──────────────────────────────────────────────────────────
+
+/**
+ * A prior terminal verdict, read off a completed reviewer task, at the SHA it
+ * was made against. This is the thing a delta re-review is judged relative to
+ * — never the full PR, and never anything the new reviewer invents itself.
+ */
+export interface PriorVerdict {
+  /** The commit the prior verdict was made against — the delta's `from` side. */
+  headSha: string;
+  verdict: ReviewerTaskOutput['verdict'];
+  confidence: number;
+  summary: string;
+  feedback?: string | null;
+  escalationReason?: string | null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+}
+
+/**
+ * Extract a re-reviewable prior verdict from a reviewer task row, or null when
+ * there is nothing to re-review against: the task never reached a terminal
+ * state, produced no structured verdict, or (pre-dating this feature) never
+ * recorded the SHA it ran against.
+ */
+export function resolvePriorVerdict(
+  reviewTask: { status: string; result?: unknown; context?: unknown } | null,
+): PriorVerdict | null {
+  if (!reviewTask || reviewTask.status !== 'completed') return null;
+
+  const ctx = asRecord(reviewTask.context);
+  const headSha = ctx.headSha;
+  if (typeof headSha !== 'string' || headSha.length === 0) return null;
+
+  const output = asRecord(asRecord(reviewTask.result).structuredOutput);
+  const verdict = output.verdict;
+  if (verdict !== 'approve' && verdict !== 'request-changes' && verdict !== 'escalate') return null;
+
+  return {
+    headSha,
+    verdict,
+    confidence: typeof output.confidence === 'number' ? output.confidence : 0,
+    summary: typeof output.summary === 'string' ? output.summary : '',
+    feedback: typeof output.feedback === 'string' ? output.feedback : null,
+    escalationReason: typeof output.escalationReason === 'string' ? output.escalationReason : null,
+  };
+}
 
 // ── Schema-touching path patterns ────────────────────────────────────────────
 
@@ -241,6 +292,16 @@ export interface CreateReviewerTaskParams {
    * point can deliver it (see `deliverPrReviewCallback`).
    */
   reviewCallback?: { url: string; on: 'verdict' | 'merge' };
+  /**
+   * A prior terminal verdict to re-review against, when set. Switches the
+   * dispatched task from a full-PR review to a DELTA review: the reviewer
+   * gets `priorVerdict.headSha..headSha` instead of the whole PR diff, plus
+   * the prior verdict, and is asked whether the delta changes it. See
+   * `buildDeltaReviewerContext`. Omit for a normal full review.
+   */
+  priorVerdict?: PriorVerdict;
+  /** The delta's files (`priorVerdict.headSha..headSha`), when already fetched. */
+  deltaFiles?: GithubPrFile[];
 }
 
 /** Task states in which a reviewer task still owns its subject. */
@@ -336,18 +397,34 @@ export async function createReviewerTask(
     }
   }
 
-  // Build reviewer context description
-  const diffContext = await buildReviewerContext({
-    originalTaskId,
-    originalTask,
-    prNumber,
-    prUrl,
-    headSha,
-    installationId,
-    repoFullName,
-    policyConfig: params.policyConfig,
-    prFiles: params.prFiles,
-  });
+  // Build reviewer context description. A priorVerdict switches this to a
+  // DELTA review: the diff is `priorVerdict.headSha..headSha`, not the whole
+  // PR, and the prompt carries the prior verdict instead of asking the agent
+  // to re-derive an opinion it already reached.
+  const diffContext = params.priorVerdict
+    ? await buildDeltaReviewerContext({
+        originalTaskId,
+        originalTask,
+        prNumber,
+        prUrl,
+        headSha,
+        installationId,
+        repoFullName,
+        policyConfig: params.policyConfig,
+        priorVerdict: params.priorVerdict,
+        deltaFiles: params.deltaFiles,
+      })
+    : await buildReviewerContext({
+        originalTaskId,
+        originalTask,
+        prNumber,
+        prUrl,
+        headSha,
+        installationId,
+        repoFullName,
+        policyConfig: params.policyConfig,
+        prFiles: params.prFiles,
+      });
 
   const title = reviewerTitle(prNumber, originalTask.title);
 
@@ -380,6 +457,11 @@ export async function createReviewerTask(
         iteration: originalTask.iteration ?? 0,
         maxIterations: originalTask.maxIterations ?? 3,
         ...(params.reviewCallback ? { reviewCallback: params.reviewCallback } : {}),
+        ...(params.priorVerdict ? {
+          deltaReview: true,
+          priorVerdictHeadSha: params.priorVerdict.headSha,
+          priorVerdict: params.priorVerdict.verdict,
+        } : {}),
       },
       release: 'false', // reviewer tasks never trigger releases
       priority: 8,      // reviewer tasks are high priority
@@ -493,12 +575,17 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
     }
 
     if (files.length > 0) {
-      const totalAdded = files.reduce((s, f) => s + (f.additions || 0), 0);
-      const totalDeleted = files.reduce((s, f) => s + (f.deletions || 0), 0);
+      // Generated files (e.g. Drizzle snapshot JSON) stay in the list — a
+      // reviewer needs to know they exist and were touched — but are marked
+      // rather than counted toward the diff-size figure a human reads first.
+      // See packages/shared/src/generated-paths.ts.
+      const stats = formatDiffStats(splitDiffStats(files));
       const fileLines = files
-        .map((f) => `  - ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]`)
+        .map((f) => `  - ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]${
+          isGeneratedPath(f.filename) ? ' [generated — do not review]' : ''
+        }`)
         .join('\n');
-      diffSummary = `## PR Files Changed (+${totalAdded}/-${totalDeleted})\n\n${fileLines}`;
+      diffSummary = `## PR Files Changed (${stats})\n\n${fileLines}`;
     }
   } catch (err) {
     console.warn(`[reviewer] Failed to fetch PR files for #${prNumber}:`, err);
@@ -623,6 +710,136 @@ Use your outputSchema to return:
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide; include any proposed policy additions
 - \`recommendation\`: (escalate only) what the human should DO next — the specific action, decision, or check. Never leave this empty on an escalation: it is the first line they read on their queue.
+`.trim();
+}
+
+interface BuildDeltaContextParams {
+  originalTaskId: string;
+  originalTask: BuildContextParams['originalTask'];
+  prNumber: number;
+  prUrl: string;
+  /** The new HEAD — the delta's `to` side. */
+  headSha: string;
+  installationId: number;
+  repoFullName: string;
+  policyConfig?: WorkspacePolicyConfig;
+  priorVerdict: PriorVerdict;
+  /** The delta's files, when the caller already fetched them (GitHub compare). */
+  deltaFiles?: GithubPrFile[];
+}
+
+/**
+ * DELTA re-review context: `priorVerdict.headSha..headSha` only, plus the
+ * prior verdict — never the whole PR. The reviewer already judged everything
+ * before `priorVerdict.headSha`; re-sending it would waste the read and risks
+ * a second, possibly different, opinion on code nothing changed.
+ *
+ * @internal exported for tests — the assembled prompt is the unit under test.
+ */
+export async function buildDeltaReviewerContext(params: BuildDeltaContextParams): Promise<string> {
+  const { originalTask, prNumber, prUrl, headSha, repoFullName, policyConfig, priorVerdict } = params;
+
+  let files: ReviewerPatchFile[] = [];
+  let diffSummary = '';
+  try {
+    if (params.deltaFiles) {
+      files = normalizeGithubPrFiles(params.deltaFiles);
+    } else {
+      const { githubApi } = await import('@/lib/github');
+      const compare = await githubApi(
+        params.installationId,
+        `/repos/${repoFullName}/compare/${priorVerdict.headSha}...${headSha}`,
+      );
+      const rawFiles = compare && typeof compare === 'object' ? (compare as { files?: unknown }).files : null;
+      files = Array.isArray(rawFiles) ? normalizeGithubPrFiles(rawFiles as GithubPrFile[]) : [];
+    }
+
+    if (files.length > 0) {
+      const stats = formatDiffStats(splitDiffStats(files));
+      const fileLines = files
+        .map((f) => `  - ${f.filename} (+${f.additions}/-${f.deletions}) [${f.status}]${
+          isGeneratedPath(f.filename) ? ' [generated — do not review]' : ''
+        }`)
+        .join('\n');
+      diffSummary = `## Delta Files Changed Since Prior Review (${stats})\n\n${fileLines}`;
+    } else {
+      diffSummary = '## Delta Files Changed Since Prior Review\n\n(No files changed between the prior review and HEAD)';
+    }
+  } catch (err) {
+    console.warn(`[reviewer] Failed to fetch delta files for #${prNumber}:`, err);
+    files = [];
+    diffSummary = '## Delta Files\n\n(Could not fetch the delta — check GitHub API access)';
+  }
+
+  let patchSection = '';
+  if (files.length > 0) {
+    const rendered = renderReviewerPatch(files, {
+      tokenBudget: policyConfig?.reviewerPatchTokenBudget,
+    });
+    if (rendered.text) {
+      patchSection = [
+        rendered.text,
+        '',
+        'Cite findings as `path:line`, using only the numbered lines above — those',
+        'are the lines this DELTA added since the prior review, not the whole PR.',
+      ].join('\n');
+    }
+  }
+  const patchBlock = patchSection ? `\n\n${patchSection}` : '';
+
+  const policySection = policyConfig
+    ? buildPolicyClassPaths(policyConfig)
+    : `## Escalation Rules (hard — these override your confidence)
+- Escalate if the delta touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
+- Escalate if your confidence is below the workspace threshold (default 0.6)
+- Escalate if you detect a possible security issue`;
+
+  const feedbackLine = priorVerdict.feedback
+    ? `\n- **Feedback given:** ${sanitizeUntrustedText(priorVerdict.feedback).text}`
+    : '';
+  const escalationLine = priorVerdict.escalationReason
+    ? `\n- **Escalation reason:** ${sanitizeUntrustedText(priorVerdict.escalationReason).text}`
+    : '';
+
+  return `# Delta Re-Review
+
+You already reviewed PR #${prNumber} on \`${repoFullName}\` at commit ${priorVerdict.headSha}.
+HEAD has since advanced to ${headSha}. PR URL: ${prUrl}
+
+THIS IS A RE-REVIEW OF THE DELTA ONLY. The diff below is
+\`${priorVerdict.headSha}..${headSha}\` — the commits added since your prior verdict — not the
+whole PR. You already judged everything before it; do not re-review it.
+
+## Original Task
+**Title:** ${sanitizeUntrustedText(originalTask.title).text}
+
+## Your Prior Verdict (at ${priorVerdict.headSha})
+- **Verdict:** ${priorVerdict.verdict}
+- **Confidence:** ${priorVerdict.confidence}
+- **Summary:** ${sanitizeUntrustedText(priorVerdict.summary).text}${feedbackLine}${escalationLine}
+
+## Your Task Now
+Decide whether this delta changes your prior verdict. Escalate if the delta itself is
+concerning — e.g. a "fix" that disables or deletes a test, or a file matching an escalation
+rule below — even if your prior verdict was approve. A CI-fix or conflict-resolution commit
+that touches nothing concerning does NOT change the prior verdict.
+
+If the delta changes nothing, RE-AFFIRM your prior verdict at the new HEAD. Do not silently
+inherit it: your output is a fresh verdict, reached by reading the delta below, not a copy of
+the prior one.
+
+${policySection}
+
+${diffSummary}${patchBlock}
+
+## Your Output
+Use your outputSchema to return:
+- \`verdict\`: 'approve' | 'request-changes' | 'escalate'
+- \`confidence\`: 0.0–1.0
+- \`summary\`: one sentence — about the delta, and whether it changes the prior verdict
+- \`feedback\`: (request-changes only) specific, actionable, with file paths
+- \`escalationReason\`: (escalate only) why a human must decide
+- \`recommendation\`: (escalate only) what the human should DO next
 `.trim();
 }
 

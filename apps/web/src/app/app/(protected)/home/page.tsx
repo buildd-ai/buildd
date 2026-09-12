@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, releases } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, gte, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes } from '@buildd/core/db/schema';
+import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
+import type { ReleaseReadinessItem } from '@/lib/release-readiness';
 import { ReleaseWidget } from './ReleaseWidget';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -28,7 +28,7 @@ import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
-import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { resolveGatedReleaseState } from '@/lib/release-baseline';
 import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
@@ -44,6 +44,7 @@ import { WaitingOnYouMergeCard } from '@/components/WaitingOnYouMergeCard';
 import HomeAutoRefresh from './HomeAutoRefresh';
 import { WaitingOnYouReviewCard } from '@/components/WaitingOnYouReviewCard';
 import { AgentHandledCard } from '@/components/AgentHandledCard';
+import { FixCiButton } from '@/components/FixCiButton';
 import { AgentRecommendation } from '@/components/AgentRecommendation';
 import InitiativeFilterChips from '@/components/InitiativeFilterChips';
 import { loadInitiativeList } from '@/lib/initiative-list';
@@ -243,6 +244,10 @@ export default async function HomePage({
     leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human';
     escalationReason: string | null;
     verdictSummary: string | null;
+    /** The SHA the latest reviewer verdict was made against, if any. */
+    approvedSha: string | null;
+    /** The PR's current head — compared against approvedSha on the card. */
+    headSha: string | null;
     waitingMinutes: number | null;
     conflictRetryTaskId: string | null;
     conflictRetryIteration: number | null;
@@ -871,20 +876,14 @@ export default async function HomePage({
               gatedWsIds.map(async (wsId) => {
                 const ws = wsRows.find((w) => w.id === wsId)!;
 
-                const [latestRelease] = await db
-                  .select({ id: releases.id, ciStateAtDispatch: releases.ciStateAtDispatch })
-                  .from(releases)
-                  .where(eq(releases.workspaceId, wsId))
-                  .orderBy(desc(releases.createdAt))
-                  .limit(1);
-
-                const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
-
-                // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
-                // healthy release → deployed release → any release row → prod-branch HEAD.
-                // Shared with the missions page and the readiness route so no two
-                // release surfaces can disagree about where the queue starts.
-                const baseline = await resolveGatedReleaseBaseline(wsId);
+                // Baseline + CI reading (@buildd/core/release-baseline via
+                // resolveGatedReleaseState): healthy release → deployed release →
+                // any non-failed release → prod-branch HEAD. A failed dispatch
+                // establishes neither a baseline nor a CI reading, and a reading
+                // past its TTL degrades to unknown rather than pinning to a stale
+                // failure. Shared with the readiness route so no two release
+                // surfaces can disagree about where the queue starts.
+                const { baseline, ciState, latestReleaseId, commitsAheadAtDispatch } = await resolveGatedReleaseState(wsId);
 
                 if (!baseline.asOf) {
                   return {
@@ -894,7 +893,8 @@ export default async function HomePage({
                     oldestMergedAt: derivedUnavailable<string>('no_baseline'),
                     baselineSource: baseline.source,
                     ciState,
-                    latestReleaseId: latestRelease?.id ?? null,
+                    latestReleaseId,
+                    commitsAheadAtDispatch,
                   };
                 }
 
@@ -925,7 +925,8 @@ export default async function HomePage({
                     : derivedUnavailable<string>('no_scope'),
                   baselineSource: baseline.source,
                   ciState,
-                  latestReleaseId: latestRelease?.id ?? null,
+                  latestReleaseId,
+                  commitsAheadAtDispatch,
                 };
               }),
             );
@@ -951,6 +952,10 @@ export default async function HomePage({
               // into a mission integration branch (no human gate — the gate is on
               // the mission PR) from a PR into trunk (gate applies).
               prBaseRef: true,
+              // The PR's current head — compared against the terminal verdict's
+              // headSha to decide whether "Re-review changes since approval" has
+              // anything new to review.
+              lastCommitSha: true,
             },
             with: {
               task: {
@@ -1284,6 +1289,17 @@ export default async function HomePage({
                 const policy = ws ? resolvePolicy(ws) : { tier: 'auto-threshold' as const };
                 const gate = w.taskId ? reviewerGateMap.get(w.taskId) : undefined;
                 const verdictSummary = (w.taskId ? approvedMap.get(w.taskId) : undefined) ?? null;
+                // The SHA the most recent reviewer task's verdict was made
+                // against — set at createReviewerTask time, so it is present on
+                // any completed reviewer task regardless of verdict. Compared
+                // against the PR's current head to gate "Re-review changes
+                // since approval" — a terminal verdict at the current head has
+                // nothing new to re-review.
+                const rt = w.taskId ? latestReviewerTaskByOrigId.get(w.taskId) : undefined;
+                const approvedShaRaw = rt?.context && typeof rt.context === 'object'
+                  ? (rt.context as Record<string, unknown>).headSha
+                  : undefined;
+                const approvedSha = typeof approvedShaRaw === 'string' ? approvedShaRaw : null;
                 const waitingMinutes = w.completedAt
                   ? Math.round((Date.now() - new Date(w.completedAt).getTime()) / 60000)
                   : null;
@@ -1325,6 +1341,8 @@ export default async function HomePage({
                     ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
                     : (gate?.reason ?? null),
                   verdictSummary,
+                  approvedSha,
+                  headSha: w.lastCommitSha ?? null,
                   waitingMinutes,
                   conflictRetryTaskId: conflictRetry?.taskId ?? null,
                   conflictRetryIteration: conflictRetry?.iteration ?? null,
@@ -1690,8 +1708,23 @@ export default async function HomePage({
           }
         }
 
+        // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
+        // on a MERGE/REVIEW card) — re-checked against `now` here, not trusted
+        // as a standing flag, per the freshness invariant at the top of
+        // lib/action-queue.ts.
+        const activeSnoozes = user
+          ? await db.query.actionQueueSnoozes.findMany({
+              where: and(
+                eq(actionQueueSnoozes.userId, user.id),
+                gt(actionQueueSnoozes.snoozedUntil, new Date()),
+              ),
+              columns: { subjectKey: true },
+            })
+          : [];
+        const snoozedSubjectKeys = new Set(activeSnoozes.map((s) => s.subjectKey));
+
         // Merge waitingOnYou + escalationInbox into one deduplicated action queue
-        actionQueue = buildActionQueue(waitingOnYou, escalationInbox);
+        actionQueue = buildActionQueue(waitingOnYou, escalationInbox, { snoozedSubjectKeys });
 
         // Age telemetry. Four MERGE cards up to 90 days old were visible here
         // for months with nothing in the system counting them — the regression
@@ -1851,6 +1884,7 @@ export default async function HomePage({
                           cardType="gate-card"
                           taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
                           prUrl={item.prUrl}
+                          subjectKey={item.subjectKey}
                         >
                           <WaitingOnYouMergeCard item={item} />
                         </SwipeableRow>
@@ -1863,6 +1897,7 @@ export default async function HomePage({
                           cardType="gate-card"
                           taskTitle={item.taskTitle ?? `PR #${item.prNumber}`}
                           prUrl={item.prUrl}
+                          subjectKey={item.subjectKey}
                         >
                           <WaitingOnYouReviewCard item={item} />
                         </SwipeableRow>
@@ -2034,6 +2069,12 @@ export default async function HomePage({
                               >
                                 Last attempt
                               </Link>
+                            )}
+                            {/* Only a genuine CI block gets a fix action — a
+                                conflict dead-zone needs a merge decision, not
+                                a CI retry. */}
+                            {item.ciGate?.kind === 'blocked' && (
+                              <FixCiButton prNumber={item.prNumber} workspaceId={item.workspaceId} />
                             )}
                           </div>
                         </div>

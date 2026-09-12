@@ -149,20 +149,23 @@ export default async function InitiativesListPage() {
 
   return (
     <div className="px-4 sm:px-7 md:px-10 pt-14 md:pt-8 max-w-5xl">
-      <div className="flex items-center justify-between mb-6">
-        <div>
+      {/* The summary sits below the title row, not beside the button: on a
+          narrow viewport it otherwise wrapped mid-verdict ("2 ready to /
+          close"), which is the one line meant to answer the page at a glance. */}
+      <div className="mb-6">
+        <div className="flex items-center justify-between gap-3">
           <h1 className="text-xl font-semibold text-text-primary font-sans uppercase tracking-tight">Initiatives</h1>
-          <p className="text-[12px] text-text-muted mt-1">
-            {initiatives.length} {initiatives.length === 1 ? 'arc' : 'arcs'}
-            {notWinningSummary ? ` · ${notWinningSummary}` : ''}
-          </p>
+          <Link
+            href="/app/initiatives/new"
+            className="shrink-0 px-2.5 py-1 text-[11px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
+          >
+            + New initiative
+          </Link>
         </div>
-        <Link
-          href="/app/initiatives/new"
-          className="shrink-0 px-2.5 py-1 text-[11px] font-medium bg-primary text-white rounded-sm hover:bg-primary-hover transition-colors"
-        >
-          + New initiative
-        </Link>
+        <p className="text-[12px] text-text-muted mt-1">
+          {initiatives.length} {initiatives.length === 1 ? 'arc' : 'arcs'}
+          {notWinningSummary ? ` · ${notWinningSummary}` : ''}
+        </p>
       </div>
 
       <InitiativeTriage items={pulses} teamId={teamIds[0] ?? 'none'} />

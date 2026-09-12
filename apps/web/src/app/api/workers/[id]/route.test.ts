@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { isMissionIntegrationBase } from '@buildd/core/mission-integration';
+import { consumesRetryAttempt } from '@/lib/worker-exit-taxonomy';
 import { NextRequest } from 'next/server';
 
 const mockAuthenticateApiKey = mock(() => null as any);
@@ -364,11 +365,13 @@ mock.module('@/lib/mission-release', () => ({
 }));
 
 // Phase 2: reviewer outcome mocks
-const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve());
+const mockTryAutoMergeWorkerPr = mock(() => Promise.resolve({ merged: false }));
 const mockEscalateReviewerExhaustion = mock(() => Promise.resolve());
+const mockEscalateReviewContractFailure = mock(() => Promise.resolve());
 mock.module('@/lib/auto-merge', () => ({
   tryAutoMergeWorkerPr: mockTryAutoMergeWorkerPr,
   escalateReviewerExhaustion: mockEscalateReviewerExhaustion,
+  escalateReviewContractFailure: mockEscalateReviewContractFailure,
 }));
 
 // Own the merge-policy resolution for this file. Other test files (e.g.
@@ -1888,6 +1891,11 @@ describe('PATCH /api/workers/[id]', () => {
         milestones: [],
         pendingInstructions: null,
       });
+      // These tests are about summarySource tagging, not deliverable gating —
+      // outputRequirement: 'none' skips the gate entirely so a bare fallback
+      // summary with no PR/artifact (the exact session-end shape under test)
+      // isn't refused for an unrelated reason.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', missionId: null });
       return () => capturedTaskSet;
     }
 
@@ -2153,6 +2161,94 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
     });
 
+    it('refuses completion when the summary is fallback-provenance and there is no PR/artifact, even with zero commits (auto mode)', async () => {
+      // The exact shape of the false-completion incident: a session ended
+      // without the agent calling complete_task (summarySource='fallback'),
+      // commitCount/dirtyWorktree both read 0 (a worktree that never diverged
+      // from its base reports no work), and no PR or artifact exists. A
+      // fallback summary is never a deliberate "nothing to ship" conclusion —
+      // it must not be trusted the way a real agent-authored summary is.
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here and wait for direction.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+      const data = await res.json();
+      expect(data.error).toContain('no confirmed outcome');
+      expect(data.hint).toBe('create_pr');
+    });
+
+    it('completes normally with a fallback summary when a PR exists (auto mode)', async () => {
+      // The fallback-summary check must not override the normal hasPR
+      // satisfier — a session that ends right after create_pr but before the
+      // agent calls complete_task itself is a legitimate completion.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 3,
+        dirtyWorktree: false,
+        prUrl: 'https://github.com/org/repo/pull/55',
+        prNumber: 55,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Session ended after PR was opened.', summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
     it('completes normally when commits belong to a pre-existing PR opened by an earlier worker on the same branch (auto mode)', async () => {
       let capturedTaskSet: any = null;
       mockTasksUpdate.mockReturnValue({
@@ -2399,6 +2495,99 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedTaskSet?.result?.prNumber).toBe(77);
+    });
+
+    it('completes a dirty-worktree worker with no PR that merged a sibling PR during its run (cross-branch deliverable)', async () => {
+      // A conflict-resolution/coordination task ships nothing on its own
+      // branch by design — its deliverable is a merge_pr call against a
+      // sibling PR. That call stamps mergedAt on THIS worker's row on a
+      // GitHub-confirmed merge (apps/web/src/app/api/github/pr/route.ts PUT
+      // handler), regardless of whose PR was merged, so mergedAt is a real,
+      // verified signal rather than a self-reported claim.
+      const updatedWorker = { id: 'worker-3', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-3',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: new Date('2026-09-10T00:00:00Z'),
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a dirty-worktree worker with no PR and an explicit discardEdits acknowledgement, recording the reason', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-4', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-4',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', discardEdits: 'scratch notes from conflict investigation, no longer needed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.discardedEdits).toBe('scratch notes from conflict investigation, no longer needed');
     });
   });
 
@@ -4273,6 +4462,51 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockAccountsUpdate).toHaveBeenCalled();
     });
 
+    // Regression: the Codex quota wall ("You've hit your usage limit ...")
+    // matched none of the detector's substrings, so a caller reporting the
+    // raw error text without an explicit `budgetExhausted` flag hard-failed
+    // the task instead of pausing Codex + failing over.
+    it('detects the Codex quota wall from error message string alone (fallback)', async () => {
+      lastBackendPauseValues = null;
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1',
+        authType: 'oauth',
+      });
+
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        taskId: 'task-1',
+        workspaceId: 'ws-1',
+        accountId: 'account-1',
+        status: 'running',
+        milestones: [],
+      });
+
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        context: {},
+        workspaceId: 'ws-1',
+        backend: 'codex',
+        workspace: { teamId: 'team-1' },
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'failed',
+          error:
+            "You've hit your usage limit. Upgrade to Pro or try again at 5pm.",
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      // Recorded against Codex's own pause pool, not the Claude account flag.
+      expect(lastBackendPauseValues?.backend).toBe('codex');
+      expect(lastBackendPauseValues?.reason).toBe('budget');
+    });
+
     it('upserts tenant budget when task has tenant context', async () => {
       mockAuthenticateApiKey.mockResolvedValue({
         id: 'account-1',
@@ -5058,9 +5292,11 @@ describe('PATCH /api/workers/[id]', () => {
 
       mockInsertConflictDoNothingResult = 'row';
       mockTryAutoMergeWorkerPr.mockReset();
-      mockTryAutoMergeWorkerPr.mockResolvedValue(undefined);
+      mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false });
       mockEscalateReviewerExhaustion.mockReset();
       mockEscalateReviewerExhaustion.mockResolvedValue(undefined);
+      mockEscalateReviewContractFailure.mockReset();
+      mockEscalateReviewContractFailure.mockResolvedValue(undefined);
       mockNotify.mockReset();
       mockDispatchNewTask.mockReset();
       mockDispatchNewTask.mockResolvedValue(undefined);
@@ -5222,6 +5458,125 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    // postPrReview never throws on a GitHub-side failure — it resolves
+    // `{ posted: false, reason }` — so a bare `.catch` on the call never sees
+    // it. Before this, that resolved failure was checked nowhere: buildd's
+    // own store had the verdict, GitHub showed no review at all, and nothing
+    // said so.
+    it('approve: a GitHub review-post failure that resolves (not throws) is surfaced, not swallowed', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockPostPrReview.mockResolvedValue({ posted: false, reason: 'resource not accessible by integration' });
+
+      const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const note = missionNoteInserts.find((n) => n.type === 'warning');
+      expect(note).toBeDefined();
+      expect(note.body).toContain('resource not accessible by integration');
+      // A posting failure is surfaced, not treated as a merge blocker.
+      expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+    });
+
+    it('approve: the idempotent duplicate-review skip is not treated as a posting failure', async () => {
+      setupReviewerTaskCompletion('approve');
+      mockPostPrReview.mockResolvedValue({ posted: false, reason: 'a matching review already exists for this commit' });
+
+      await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+      expect(missionNoteInserts.find((n) => n.type === 'warning')).toBeUndefined();
+    });
+
+    // ── Self-merge fallback: the approve arriving after CI already went green ──
+    //
+    // The bounded call above only ever authorises landing in a quarantined
+    // mission integration branch. An ordinary PR based on trunk is refused
+    // there by design, and check_suite already fired (possibly before the
+    // review finished) so nothing else will ever re-check this verdict. These
+    // tests pin the fallback: the SAME unbounded self-merge authorisation the
+    // check_suite retry and merge_pr's escape hatch use, triggered by the
+    // approve arriving, gated to tier=agent-review only.
+    describe('approve: unbounded self-merge fallback', () => {
+      function agentReviewWorkspace(agentReview: Record<string, unknown> = { reviewerRole: 'reviewer' }) {
+        mockWorkspacesFindFirst.mockResolvedValue({
+          id: 'ws-1',
+          gitConfig: { mergePolicy: { tier: 'agent-review', agentReview } },
+        });
+      }
+
+      it('regression: approve arriving after the last check_suite event still reaches merged (not open)', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 });
+        mockTryAutoMergeWorkerPr
+          .mockResolvedValueOnce({ merged: false, reason: 'base ref is not the mission integration branch' })
+          .mockResolvedValueOnce({ merged: true });
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(2);
+        expect(mockTryAutoMergeWorkerPr.mock.calls[0][0]).toHaveProperty('bound');
+        expect(mockTryAutoMergeWorkerPr.mock.calls[1][0]).not.toHaveProperty('bound');
+        expect(mockTryAutoMergeWorkerPr.mock.calls[1][0]).toMatchObject({ prNumber: 42, headSha: 'abc123' });
+      });
+
+      it('does not retry once the bounded merge already landed', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace();
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: true });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('a dirty PR does not self-merge, and the bounded call already left a trace naming the reason', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.6 });
+        mockTryAutoMergeWorkerPr
+          .mockResolvedValueOnce({ merged: false, reason: 'base ref is not the mission integration branch' })
+          .mockResolvedValueOnce({ merged: false, reason: 'PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch' });
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(2);
+      });
+
+      it('below the confidence threshold: does not attempt the unbounded fallback', async () => {
+        setupReviewerTaskCompletion('approve');
+        agentReviewWorkspace({ reviewerRole: 'reviewer', maxConfidenceThreshold: 0.95 });
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
+
+        // makeReviewerPatchRequest defaults confidence to 0.9, below 0.95.
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('tier=human: does not attempt the unbounded fallback', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: { mergePolicy: { tier: 'human' } } });
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
+
+      it('tier=auto-threshold (bound refused): does not attempt the unbounded fallback', async () => {
+        // The default setupReviewerTaskCompletion workspace resolves to
+        // auto-threshold — the fallback is gated to agent-review only,
+        // since an auto-threshold PR already merges unattended via the
+        // check_suite CI-green path.
+        setupReviewerTaskCompletion('approve');
+        mockTryAutoMergeWorkerPr.mockResolvedValue({ merged: false, reason: 'base ref is not the mission integration branch' });
+
+        await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('approve: bounds the merge to the PR base ref, passing the workspace trunk branches', async () => {
@@ -5457,6 +5812,166 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
+    // createReviewerTask never sets outputRequirement, so a reviewer task runs
+    // under the schema default ('auto') — not the 'none' most fixtures above
+    // use to dodge the PR/artifact gate. A reviewer session that ends without
+    // the agent calling complete_task (summarySource: 'fallback') has zero
+    // commits, no dirty worktree, and — structurally — no PR/artifact of its
+    // own. Before the fix, the 'auto' gate 400'd this outright, short-circuiting
+    // before the review-contract guard ever got a chance to requeue/escalate it.
+    it("outputRequirement='auto': a fallback-summary reviewer completion is NOT 400'd — it reaches the review-contract guard instead", async () => {
+      setupReviewerTaskCompletion('approve');
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'auto',
+        }),
+      );
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'reviewer-task-1',
+        turns: 3,
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      // Not a 400 — the auto gate's PR/artifact check does not apply to a
+      // reviewer task at all.
+      expect(res.status).toBe(200);
+      // No verdict was ever produced, so the review-contract guard requeues it
+      // (first offence) rather than recording a silent, unreviewed "completed".
+      expect(taskSetCalls.some((u: any) => u.status === 'completed')).toBe(false);
+      const requeue = taskSetCalls.find((u: any) => u.status === 'pending');
+      expect(requeue).toBeDefined();
+      expect((requeue?.context as any)?.reviewContractRetryCount).toBe(1);
+    });
+
+    it("outputRequirement='auto': same fallback-summary reviewer completion with retries exhausted escalates instead of 400-ing into a dead end", async () => {
+      setupReviewerTaskCompletion('approve');
+      mockTasksFindFirst.mockImplementation(() =>
+        Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+            reviewContractRetryCount: 1,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'auto',
+        }),
+      );
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'reviewer-task-1',
+        turns: 3,
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const failing = taskSetCalls.find((u: any) => u.status === 'failed');
+      expect(failing).toBeDefined();
+      expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+      expect(mockEscalateReviewContractFailure).toHaveBeenCalledTimes(1);
+    });
+
+    // A non-review task must still refuse a fallback-summary completion with
+    // no PR/artifact under 'auto' — the exemption above is scoped to
+    // category='review' + context.reviewerFor and must not weaken this path.
+    it("outputRequirement='auto': a non-review task with a fallback summary and no PR/artifact is still 400'd unchanged", async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', category: 'feature', context: {} });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('no confirmed outcome');
+    });
+
     // A reviewer task is only dispatched on pull_request action='opened', so a
     // review that ends without a usable verdict is never redone by the platform.
     // First offence therefore requeues the same task (it re-reads the PR and
@@ -5537,6 +6052,71 @@ describe('PATCH /api/workers/[id]', () => {
       const failing = taskSetCalls.find((u: any) => u.status === 'failed');
       expect(failing).toBeDefined();
       expect((failing?.result as any)?.errorType).toBe('review_contract_violation');
+      // The agent's actual payload must survive the override — this is the
+      // review-path fix for the outputRequirement-rejection payload-discard bug.
+      expect((failing?.result as any)?.rejectedSummary).toBe('Verdict: APPROVE (confidence 0.90).');
+      // Retries are exhausted (reviewContractRetryCount already 1) — nothing will
+      // ever re-review this PR outside the webhook's `opened` trigger, so the
+      // permanent failure must escalate rather than vanish.
+      expect(mockEscalateReviewContractFailure).toHaveBeenCalledTimes(1);
+      expect(mockEscalateReviewContractFailure.mock.calls[0][0]).toMatchObject({
+        taskId: 'reviewer-task-1',
+        repoFullName: 'org/repo',
+        prNumber: 42,
+        headSha: 'abc123',
+      });
+    });
+
+    it('does NOT escalate on the first contract violation — only once retries are exhausted', async () => {
+      setupReviewerTaskCompletion('approve');
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(mockEscalateReviewContractFailure).not.toHaveBeenCalled();
+    });
+
+    // Regression: the override flips an incoming `completed` to `failed` long
+    // after the exit-cause classification block has run — and that block only
+    // fires for a *reported* terminal failure. So the worker row was written
+    // with exitCause NULL. NULL is chargeable, so the retry accounting happened
+    // to be right, but only by accident: it is indistinguishable from a genuinely
+    // unclassified failure, which makes every taxonomy report on these rows a
+    // guess. State the cause explicitly instead.
+    it('records an explicit exitCause on a review-contract override rather than leaving it NULL', async () => {
+      setupReviewerTaskCompletion('approve');
+      const workerSetCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((u: any) => {
+          workerSetCalls.push(u);
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Verdict: APPROVE (confidence 0.90).' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+      expect(overridden).toBeDefined();
+      expect(overridden.exitCause).not.toBeUndefined();
+      expect(overridden.exitCause).not.toBeNull();
+      // A dropped verdict is the agent's own contract violation, so it stays
+      // chargeable — the guard's own requeue budget governs the retry, not this.
+      expect(overridden.exitCause).toBe('code_failure');
+      expect(consumesRetryAttempt(overridden.exitCause)).toBe(true);
     });
 
     it('structuredOutput without a verdict key: also treated as a contract violation', async () => {
@@ -6454,6 +7034,41 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedSet.exitCause).toBe('budget_limited');
     });
 
+    // Regression: Codex's quota wall previously matched none of the detector's
+    // patterns and was classified as code_failure — a real provider quota
+    // wall counted against the task's own retry budget instead of being
+    // excluded from it.
+    it('sets exitCause=budget_limited when error matches the Codex quota-wall pattern', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null, backend: 'codex' });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: "You've hit your usage limit. Upgrade to Pro or try again at 4pm." },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('budget_limited');
+    });
+
     it('sets exitCause=code_failure for a normal (non-budget) failure', async () => {
       let capturedSet: any = null;
       mockWorkersUpdate.mockReturnValue({
@@ -6483,6 +7098,82 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(capturedSet.exitCause).toBe('code_failure');
+    });
+
+    // Regression: the sequential-backend deferral report is the runner saying
+    // "another worker of this backend already holds the workspace" — the task is
+    // put straight back to pending and never attempted. The predicate used to be
+    // evaluated AFTER exitCause had been written, so the row was stamped
+    // code_failure, which consumesRetryAttempt() charges: enough deferrals in a
+    // row and the retry cap permanently fails a task nothing ever ran.
+    it('sets exitCause=condition_unmet for a Deferred: failure, and does not charge a retry', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null, outputRequirement: 'none', context: null });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Deferred: another Codex worker is already active in this workspace' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('condition_unmet');
+      expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(false);
+    });
+
+    // The deferral is a scheduling decision, not a diagnosis: when the same
+    // report also carries a real budget signal, the budget cause still wins.
+    it('keeps budget_limited ahead of the deferral predicate', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+        milestones: [],
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: null,
+        outputRequirement: 'none', context: null,
+        workspace: { teamId: 'team-1', name: 'ws' }, backend: 'codex',
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Deferred: another Codex worker is already active in this workspace', budgetExhausted: true },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('budget_limited');
     });
 
     it('sets exitCause=sandbox_mount_gap when sandboxMountGap flag is true', async () => {
@@ -8053,6 +8744,54 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     expect(failedUpdate.result.error).not.toContain('runner did not request outputFormat');
     // Still has to say what was actually observed, so the failure stays diagnosable.
     expect(failedUpdate.result.error.toLowerCase()).toContain('structuredoutput');
+  });
+
+  // Same NULL-exitCause hole as the review-contract override: this guard also
+  // runs after the classification block, which only fires for a reported
+  // failure. An overridden worker must still say why it failed.
+  it('records an explicit exitCause on a planning-contract override rather than leaving it NULL', async () => {
+    const workerSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        workerSetCalls.push(u);
+        return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-planning-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{ outputRequirement: 'auto', missionId: null, scheduleId: null, mode: 'planning' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'I thought about the mission and here is my plan in prose.' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const overridden = workerSetCalls.find((u: any) => u.status === 'failed' && u.error);
+    expect(overridden).toBeDefined();
+    expect(overridden.exitCause).not.toBeUndefined();
+    expect(overridden.exitCause).not.toBeNull();
+    expect(overridden.exitCause).toBe('code_failure');
   });
 
   // Regression: an orchestrator/heartbeat cycle whose task row never got

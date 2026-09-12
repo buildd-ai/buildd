@@ -10,9 +10,48 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { readFileSync } from 'fs';
 
 const INSTALL_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
-const BRANCH = process.env.BUILDD_BRANCH || 'main';
+
+/**
+ * The branch this install tracks. Every update path resets to
+ * `origin/${TRACKED_BRANCH}`, so it is the ONLY branch whose commits this
+ * runner can reach — which is why it is also reported to the server on each
+ * heartbeat (see BuilddClient.sendHeartbeat). Exported so the heartbeat and the
+ * updater can never disagree about the default.
+ */
+export const TRACKED_BRANCH = process.env.BUILDD_BRANCH || 'main';
+const BRANCH = TRACKED_BRANCH;
+
+/**
+ * Env kill switch for the in-process idle auto-updater.
+ *
+ * The documented deployment model is releases-to-`main`, with dev merges inert
+ * — so a runner that resets its own tree on an idle timer is a second,
+ * unsupervised deploy channel. An operator needs to be able to turn it off
+ * without patching the install. Defaults to OFF (current behaviour).
+ *
+ * Deliberately narrow: it disables only the unattended path. The manual
+ * `/api/update` endpoints and the commit-drift restart stay live, because those
+ * are how a human-driven deploy takes effect.
+ */
+export function isAutoUpdateDisabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = (env.BUILDD_DISABLE_AUTO_UPDATE ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+// Read once at module load from package.json (updated by release script + CI).
+// Shared by index.ts (local console/API display) and workers.ts (heartbeat
+// payload) so both report the same value without a circular import between them.
+export const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(join(import.meta.dir, '..', 'package.json'), 'utf-8'));
+    return pkg.version || '0.0.0';
+  } catch { return '0.0.0'; }
+})();
 
 /** Returns the current HEAD commit SHA of the local installation. */
 export function getCurrentCommit(): string | null {
@@ -46,6 +85,84 @@ export function hasCommitDrift(diskCommit: string | null, processCommit: string 
 }
 
 /**
+ * **The load-bearing invariant: a runner must never act on a commit it cannot
+ * reach.**
+ *
+ * Every update path does `git fetch origin $BRANCH` + `git reset --hard
+ * origin/$BRANCH`, so the only commit this install can land on is the tracked
+ * branch's head. A target that is anything else is unreachable no matter how
+ * many times it is attempted: the reset is a no-op, the runner is still
+ * "behind", and it tries again forever.
+ *
+ * That is not hypothetical. The server advertised one branch's head to a runner
+ * tracking another, and a runner sitting exactly at its own branch's head
+ * concluded it was behind, reset to the commit it already had, and looped.
+ *
+ * This predicate is checked against `git rev-parse origin/$BRANCH` **after**
+ * fetching, on the runner side, so it holds even against an old or
+ * misconfigured server — which the server-side fix alone cannot guarantee.
+ *
+ * Also false when the target is what we already have: there is nothing to act
+ * on, and acting anyway is precisely the no-op reset.
+ */
+export function isUpdateTargetReachable(
+  target: string | null,
+  trackedBranchHead: string | null,
+  currentCommit: string | null,
+): boolean {
+  if (!target || !trackedBranchHead || !currentCommit) return false;
+  if (target !== trackedBranchHead) return false;
+  return target !== currentCommit;
+}
+
+/**
+ * **The second invariant: an update that did not move the commit is a FAILURE.**
+ *
+ * The old code read HEAD back after the reset, found it unchanged, and still
+ * proceeded to restart — logging `Auto-updated to <the same commit>`. Because
+ * restarting re-initialises the per-process retry counter, the "3 retries" cap
+ * only ever constrained failures that *threw*; a no-op success reset the budget
+ * and the loop was unbounded.
+ *
+ * An unreadable SHA on either side counts as no progress: absence of evidence
+ * that the tree moved must not be read as evidence that it did.
+ */
+export function isNoProgressUpdate(
+  previousCommit: string | null,
+  newCommit: string | null,
+): boolean {
+  if (!previousCommit || !newCommit) return true;
+  return previousCommit === newCommit;
+}
+
+export interface AutoUpdateAttemptState {
+  /** The advertised commit we would be updating to. */
+  target: string | null;
+  /**
+   * Targets already proven not to move HEAD. A plain retry counter cannot hold
+   * this line: `hasAutoUpdateBudget` re-arms on every change of the advertised
+   * commit by design, and the advertised commit tracks a moving branch. The
+   * latch is keyed on the SHA and survives for the life of the process.
+   */
+  skipped: ReadonlySet<string>;
+  retriesSpent: number;
+  spentAgainstCommit: string | null;
+  lastIdleAt: number | null;
+  now: number;
+  idleDelayMs: number;
+  limit?: number;
+}
+
+/** Should an idle auto-update attempt be made at all? */
+export function canAttemptAutoUpdate(state: AutoUpdateAttemptState): boolean {
+  if (!state.target) return false;
+  if (state.skipped.has(state.target)) return false;
+  if (state.lastIdleAt === null) return false;
+  if (state.now - state.lastIdleAt < state.idleDelayMs) return false;
+  return hasAutoUpdateBudget(state.retriesSpent, state.spentAgainstCommit, state.target, state.limit);
+}
+
+/**
  * Decide whether an update should be surfaced/applied given a runner-relevant
  * changelog. An empty changelog normally means "no runner-code changes in
  * this release" — but on a shallow clone (`git clone --depth 1`), a truncated
@@ -53,8 +170,18 @@ export function hasCommitDrift(diskCommit: string | null, processCommit: string 
  * release content. When the changelog can't be trusted (`reliable: false`),
  * default to treating the update as available rather than silently skipping
  * it — a redundant sync is cheap; a missed one leaves the runner stale.
+ *
+ * `targetReachable` is **required**, not optional, so a new call site cannot
+ * silently default to "reachable". The "when in doubt, advertise" bias above is
+ * right for a reachable target and exactly wrong for one that can never be
+ * checked out: there, advertising is what starts the loop.
  */
-export function shouldShowUpdateAvailable(changelogEntries: string[], changelogReliable: boolean): boolean {
+export function shouldShowUpdateAvailable(
+  changelogEntries: string[],
+  changelogReliable: boolean,
+  targetReachable: boolean,
+): boolean {
+  if (!targetReachable) return false;
   return changelogEntries.length > 0 || !changelogReliable;
 }
 
@@ -261,6 +388,14 @@ export function buildHealthProbeSpawn(opts: {
   env.BUILDD_HOME = opts.probeHome;
   env.BUILDD_CONFIG = opts.configFile;
   env.BUILDD_SERVER = HEALTH_PROBE_SERVER;
+  // The credential broker's socket path defaults to a FIXED path shared by
+  // every process on the host. Left un-isolated, the probe's broker unlinks the
+  // live runner's socket and rebinds it on start, then unlinks it again on
+  // shutdown — so worker credential-token fetches on the live runner break
+  // until that process restarts. One line, and it is the difference between a
+  // probe that is merely wasteful and one that breaks the credential path on
+  // every single update attempt.
+  env.BUILDD_BROKER_SOCKET = join(opts.probeHome, 'broker.sock');
 
   return {
     // --debug is explicit: the HTTP server only exists in debug mode, and a
@@ -269,6 +404,86 @@ export function buildHealthProbeSpawn(opts: {
     cwd: opts.installDir,
     env,
   };
+}
+
+/**
+ * Resolves `p`, or `fallback` once `ms` has elapsed — whichever is first.
+ * Always clears its timer, so it never keeps an idle event loop alive.
+ */
+export async function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((resolve) => { timer = setTimeout(() => resolve(fallback), ms); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** How long a child gets to honour SIGTERM before SIGKILL. */
+export const CHILD_TERM_GRACE_MS = 3_000;
+/** How long to wait for the kernel to reap a SIGKILLed child. */
+export const CHILD_KILL_GRACE_MS = 5_000;
+
+/** The slice of a `Bun.Subprocess` that reaping needs. */
+export interface ReapableChild {
+  kill(signal?: number | NodeJS.Signals): void;
+  readonly exited: Promise<number>;
+  readonly exitCode: number | null;
+}
+
+/**
+ * Terminate a child and wait for it — **with a ceiling**, escalating SIGTERM to
+ * SIGKILL.
+ *
+ * This is the fix for the process leak. The health probe used to do
+ * `proc.kill(); await proc.exited;` and `await proc.exited` has no timeout, so
+ * when SIGTERM did not take, the await parked forever: `updating` stayed true,
+ * the probe stayed alive, and a watchdog cleared the flag ~10 minutes later so
+ * the next tick could leak another one.
+ *
+ * SIGTERM does not take, and the reason is specific rather than mysterious:
+ * `CredentialBroker.start()` registers `process.on('SIGTERM', ...)`, which
+ * **replaces the default terminate disposition**, and its handler never calls
+ * `process.exit` — it releases leases and returns. The probe is a full runner,
+ * so it keeps `Bun.serve` and its interval timers alive and the event loop
+ * never drains. The signal is delivered, handled, and terminal for nothing.
+ * (The handler is also guarded by a `shuttingDown` flag, so repeating SIGTERM
+ * is a no-op.) SIGKILL is uncatchable, which is why it has to be the last step.
+ *
+ * That broker handler is being fixed separately, but **do not weaken this
+ * function when it is**. Escalation is the invariant, not a workaround for one
+ * known handler: the probe boots the entire runner module graph, so any module
+ * that ever registers a signal listener — now or later — can make SIGTERM
+ * non-terminal again, and the caller has no way to know. Bounded teardown must
+ * hold without assuming anything about the child's signal disposition.
+ *
+ * Why not kill the process group: `Bun.spawn` places the child in the PARENT's
+ * process group — verified, not assumed — so `kill(-pgid)` would take down the
+ * live runner with it. The pid is the right target: `bun run <file>` executes
+ * the file in that same process rather than behind a wrapper, so the pid that
+ * was spawned is the one holding the socket.
+ */
+export async function reapChild(
+  proc: ReapableChild,
+  opts: { termGraceMs?: number; killGraceMs?: number } = {},
+): Promise<{ exited: boolean; escalated: boolean }> {
+  if (proc.exitCode !== null) return { exited: true, escalated: false };
+
+  const termGraceMs = opts.termGraceMs ?? CHILD_TERM_GRACE_MS;
+  const killGraceMs = opts.killGraceMs ?? CHILD_KILL_GRACE_MS;
+  const settled = proc.exited.then(() => true, () => true);
+
+  try { proc.kill(); } catch { /* already gone */ }
+  if (await withTimeout(settled, termGraceMs, false)) {
+    return { exited: true, escalated: false };
+  }
+
+  try { proc.kill('SIGKILL'); } catch { /* already gone */ }
+  const exited = await withTimeout(settled, killGraceMs, false);
+  return { exited, escalated: true };
 }
 
 /** Attempts allowed against one target commit before auto-update gives up on it. */

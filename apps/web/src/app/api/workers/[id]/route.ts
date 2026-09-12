@@ -30,12 +30,13 @@ import { isBudgetExhaustionError, extractResetTime, SESSION_WINDOW_MS } from '@/
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { recordBackendPause, resolveFailoverBackend, teamEnabledBackends } from '@/lib/backend-failover';
 import { backendLabel } from '@buildd/core/backend-policy';
-import { tryAutoMergeWorkerPr, escalateReviewerExhaustion } from '@/lib/auto-merge';
+import { tryAutoMergeWorkerPr, escalateReviewerExhaustion, escalateReviewContractFailure } from '@/lib/auto-merge';
 import { protectedBaseBranches } from '@/lib/auto-merge-bound';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import type { ReviewerTaskOutput } from '@/lib/reviewer';
 import { enforceServerSideEscalation } from '@/lib/reviewer';
+import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
@@ -592,6 +593,11 @@ export async function PATCH(
     // refreshed by the runner's periodic sync. Read by the complete_task gate
     // below — see the 'auto' output-requirement block.
     dirtyWorktree,
+    // Explicit complete_task acknowledgement that worktree edits (commits or
+    // uncommitted changes) are being intentionally thrown away — a first-class
+    // success exit for the 'auto' output-requirement gate below, distinct from
+    // the `error` param (which marks the task failed).
+    discardEdits,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -980,6 +986,20 @@ export async function PATCH(
     // can intermittently emit "missing FROM-clause entry for table workers".
     const outputReq = terminalTaskRow[0]?.outputRequirement ?? 'auto';
 
+    // A reviewer task (createReviewerTask, apps/web/src/lib/reviewer.ts) never
+    // opens a PR or produces an artifact of its own — its deliverable is
+    // structuredOutput.verdict, consumed by handleReviewerOutcomeIfNeeded. The
+    // `auto` gate's PR/artifact/fallback-summary check below was written for
+    // ordinary coding tasks and has no concept of a verdict, so it 400'd every
+    // reviewer session that ended without an agent-authored `complete_task`
+    // (summarySource: 'fallback') even though that is the review contract's
+    // OWN failure mode, already handled downstream by the review-contract
+    // guard (requeue once, then fail with a recorded reason — see
+    // reviewContractViolation below). Gate reviewer tasks on their own
+    // contract instead of skipping the check outright.
+    const isReviewerTask = terminalTaskRow[0]?.category === 'review'
+      && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
+
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       // Same precedence as effectiveCommits: this request's own report wins,
@@ -1096,8 +1116,28 @@ export async function PATCH(
         }
       }
 
+      // Standing ask from the outputRequirement-rejection bug: a gate-rejected
+      // completion used to discard the agent's summary/structuredOutput with
+      // zero persistence — a 60-turn run's only record was a 400 in the
+      // runner's logs. Write what the agent actually sent onto this worker
+      // row before refusing it; each rejection is its own worker row, so
+      // there is nothing to reconcile against a later, successful attempt.
+      const persistRejectedCompletionPayload = async (reason: string) => {
+        await db.update(workers).set({
+          rejectedCompletionPayload: {
+            reason,
+            summary: isSensitive ? null : (typeof body.summary === 'string' ? body.summary.slice(0, 5000) : null),
+            structuredOutput: isSensitive ? null : (body.structuredOutput ?? null),
+            summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+            rejectedAt: new Date().toISOString(),
+          },
+          updatedAt: new Date(),
+        }).where(eq(workers.id, id));
+      };
+
       // pr_required: always require a PR (regardless of commits)
       if (outputReq === 'pr_required' && !hasPR) {
+        await persistRejectedCompletionPayload('pr_required');
         return NextResponse.json({
           error: 'This task requires a pull request before completing. Use create_pr to open one.',
           hint: 'create_pr',
@@ -1107,6 +1147,7 @@ export async function PATCH(
       // artifact_required: require PR or artifact (regardless of commits)
       if (outputReq === 'artifact_required' && !hasPR) {
         if (!(await hasDeliverableArtifact())) {
+          await persistRejectedCompletionPayload('artifact_required');
           return NextResponse.json({
             error: 'This task requires a deliverable before completing. Use create_pr or create_artifact.',
             hint: 'create_pr or create_artifact',
@@ -1126,16 +1167,48 @@ export async function PATCH(
       // was opened by a different worker row (retries/CI-fix continuations
       // push to the same branch as an earlier attempt), so this only fires
       // when no PR exists anywhere for the branch.
-      if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
-        if (!(await hasDeliverableArtifact())) {
+      //
+      // A fallback-provenance summary (body.summarySource === 'fallback', see
+      // #2270) gates independently of commits/dirtyWorktree. It means the SDK
+      // session ended without the agent ever calling complete_task, so the
+      // "summary" is the runner's own last-assistant-message capture, not a
+      // decision the agent made — a stalled session, not a conclusion. A
+      // genuine "nothing to ship" outcome is something the agent states
+      // deliberately (summarySource='agent'); commitCount/dirtyWorktree alone
+      // are also exactly the signals a worktree that never diverged from its
+      // base can misreport as "nothing happened" (see collectGitStats in
+      // apps/runner/src/git-operations.ts), so they must not be the only gate
+      // for this outcome.
+      const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
+      if (outputReq === 'auto' && !isReviewerTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
+        // A coordination/conflict-resolution task legitimately ships nothing on
+        // its own branch — its deliverable is action taken against OTHER PRs
+        // (a merge, a dispatched release). merge_pr stamps mergedAt on the
+        // CALLING worker's row on a GitHub-confirmed merge regardless of whose
+        // PR was actually merged (see the PUT handler in
+        // apps/web/src/app/api/github/pr/route.ts), so a worker with no PR of
+        // its own that still has mergedAt set has a real, verified
+        // cross-branch deliverable — not a self-reported claim in the summary.
+        const hasCrossBranchDeliverable = !!worker.mergedAt;
+        // Explicit, auditable acknowledgement that these edits are scratch and
+        // meant to be thrown away — a legitimate success, not the failure
+        // shape `error` produces.
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
-            : 'uncommitted changes in the worktree';
+            : effectiveDirtyWorktree
+              ? 'uncommitted changes in the worktree'
+              : 'no confirmed outcome — the session ended without the agent calling complete_task';
+          await persistRejectedCompletionPayload('auto');
           return NextResponse.json({
-            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with an \`error\` explaining why these edits are being intentionally discarded.`,
+            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
           }, { status: 400 });
         }
+        // Neither satisfier put anything on this worker's own branch — a
+        // branch-merge release would find nothing of this worker's own to ship.
+        if ((hasCrossBranchDeliverable || discardReason) && !hasPR) skipRelease = true;
       }
     }
   }
@@ -1180,20 +1253,27 @@ export async function PATCH(
   const isSandboxMountGap = body.sandboxMountGap === true;
   const isSteeringDelivery = body.steeringDelivery === true;
   const isConcurrencyConflict = body.concurrencyConflict === true || isConcurrencyConflictError(error);
+  // Codex sequential-enforcement deferral: the runner allows only one active
+  // Codex worker per workspace and reports extras as failed with a "Deferred:"
+  // error. These aren't real failures — re-queue the task so it's retried once
+  // the active Codex worker frees, instead of marking it permanently failed.
+  // (Matters most under budget failover, which funnels tasks onto Codex.)
+  //
+  // This has to be decided BEFORE the classification below, not after it: the
+  // predicate used to live below the classify call, so a deferred worker —
+  // concurrency control working exactly as designed — was booked as
+  // `code_failure`, which consumesRetryAttempt() charges. Enough deferrals in a
+  // row and a task that was never actually attempted is permanently failed.
+  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
       steeringDelivery: isSteeringDelivery,
       concurrencyConflict: isConcurrencyConflict,
+      conditionUnmet: isCodexDeferral,
     });
   }
-  // Codex sequential-enforcement deferral: the runner allows only one active
-  // Codex worker per workspace and reports extras as failed with a "Deferred:"
-  // error. These aren't real failures — re-queue the task so it's retried once
-  // the active Codex worker frees, instead of marking it permanently failed.
-  // (Matters most under budget failover, which funnels tasks onto Codex.)
-  const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
   // Held = task goes back to pending and is NOT treated as a real failure
   // (no failure notification, no task-status overwrite below).
   let isBudgetReset = false;
@@ -1944,6 +2024,14 @@ export async function PATCH(
         // Also mark the worker row failed so UI shows the correct terminal state.
         updates.status = 'failed';
         updates.error = 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created';
+        // The classification block above only runs for a *reported* terminal
+        // failure, so a completed→failed override arrives here with exitCause
+        // still unset. NULL is chargeable (consumesRetryAttempt treats it as
+        // an unclassified failure) but it is also indistinguishable from a
+        // genuinely unclassified one, so state the cause instead of inheriting
+        // the default by accident: not returning the contract's output is the
+        // agent's own failure, so it is a code_failure and it should be charged.
+        updates.exitCause = 'code_failure';
       }
 
       // Review contract guard: a reviewer verdict only reaches
@@ -1982,6 +2070,12 @@ export async function PATCH(
         // This worker's review is discarded either way.
         updates.status = 'failed';
         updates.error = 'Review task completed without structuredOutput.verdict: the verdict was returned as prose and dropped';
+        // Same override-after-classification shape as the planning guard: state
+        // the cause rather than leaving exitCause NULL. Writing the verdict as
+        // prose is the agent's own contract violation, so it stays chargeable —
+        // the requeue above has its own separate budget
+        // (MAX_REVIEW_CONTRACT_RETRIES) and does not rely on this being exempt.
+        updates.exitCause = 'code_failure';
         if (willRequeue) {
           // Piggyback on the shouldAutoRetry machinery to reset the task to pending
           // (same pattern as the loop requeue above).
@@ -1995,6 +2089,22 @@ export async function PATCH(
               'the task outputSchema (verdict / confidence / summary). Review the PR again ' +
               'and return the verdict as structuredOutput.',
           };
+        } else {
+          // Retries exhausted and the reviewer contract is dead for this PR.
+          // A reviewer task is dispatched only on the webhook's `opened`
+          // action (see reviewer.ts), so nothing re-reviews this PR/head SHA
+          // outside this task — a silent permanent failure here strands the
+          // PR unreviewed forever, with only `get_pr_review` reporting
+          // `review_failed`/terminal to anyone who happens to poll. Escalate
+          // the same way an iteration-exhausted request-changes loop does.
+          await escalateReviewContractFailure({
+            taskId: worker.taskId as string,
+            repoFullName: String(reviewTaskCtx.repoFullName ?? ''),
+            prNumber: Number(reviewTaskCtx.prNumber ?? 0),
+            headSha: String(reviewTaskCtx.headSha ?? ''),
+          }).catch((err) => console.error(
+            `[review-contract-enforcement] escalation failed for task ${worker.taskId}:`, err,
+          ));
         }
       }
 
@@ -2019,6 +2129,14 @@ export async function PATCH(
           result: {
             error: 'Review task completed without structuredOutput.verdict — the verdict was returned as prose and dropped. Review will be redone.',
             errorType: 'review_contract_violation',
+            // Standing ask from the outputRequirement-rejection bug: a
+            // rejected completion must not discard what the agent actually
+            // sent. Redacted like every other prose field for a sensitive
+            // workspace.
+            rejectedSummary: isSensitive
+              ? null
+              : (typeof body.summary === 'string' ? body.summary.slice(0, 5000) : null),
+            rejectedStructuredOutput: isSensitive ? null : (body.structuredOutput ?? null),
           },
         } : status === 'failed' ? {
           // Persist context for permanent failures so CI retry / reviewer-loop can read resumeBranch
@@ -2104,6 +2222,13 @@ export async function PATCH(
           ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
           // Artifact protocol: hint for the orchestrator on what to consider next
           ...(body.nextSuggestion && typeof body.nextSuggestion === 'string' && { nextSuggestion: body.nextSuggestion }),
+          // Auditable record of the explicit discard acknowledgement (see the
+          // 'auto' output-requirement gate above) — same sensitive treatment
+          // as `summary`: a workspace flagged sensitive gets a structured
+          // marker instead of the agent's raw prose reason.
+          ...(typeof discardEdits === 'string' && discardEdits.trim() && {
+            discardedEdits: isSensitive ? 'edits discarded' : discardEdits.trim(),
+          }),
         };
 
         // Snapshot unique MCP servers into task result
@@ -2527,7 +2652,13 @@ export async function PATCH(
         });
         const notifyTeamId = (taskRecord?.workspace as { teamId?: string } | undefined)?.teamId;
         if (taskRecord && notifyTeamId) {
-          const isDone = status === 'completed';
+          // A contract violation (planning/review) reports `status:'completed'`
+          // in the request body — that's what the agent claimed — but the task
+          // was overridden to failed/requeued above. Using the raw body status
+          // here reported a permanently-failed review-contract violation as
+          // "Task done" (see recordTaskOutcome's `effectiveOutcome`, which
+          // already applies this same correction).
+          const isDone = status === 'completed' && !contractViolation;
           if (shouldAutoRetry) {
             // Broadcast the task as available for any worker to claim
             await triggerEvent(
@@ -3375,7 +3506,7 @@ async function handleReviewerOutcomeIfNeeded(
   // re-review that reaches the same verdict on the same commit does not stack a
   // second approval.
   if (effectiveVerdict === 'approve' || effectiveVerdict === 'request-changes') {
-    await postPrReview({
+    const reviewPostResult = await postPrReview({
       installationId,
       repoFullName,
       prNumber,
@@ -3384,9 +3515,36 @@ async function handleReviewerOutcomeIfNeeded(
       body: effectiveVerdict === 'approve'
         ? `Approved by buildd reviewer (confidence ${output.confidence.toFixed(2)}): ${output.summary}`
         : `Changes requested by buildd reviewer: ${output.feedback ?? output.summary}`,
-    }).catch((err) => {
-      console.warn(`[reviewer] could not post GitHub review for PR #${prNumber}:`, err);
-    });
+    }).catch((err) => ({
+      posted: false as const,
+      reason: err instanceof Error ? err.message : 'unknown error',
+    }));
+    // postPrReview never throws on a GitHub-side failure — it resolves
+    // `{ posted: false, reason }` — so a plain `.catch` on the call above only
+    // ever fires for a genuinely unexpected rejection. Without checking
+    // `posted` here, a real post failure (bad token, deleted PR, API outage)
+    // resolved successfully and silently: buildd's own store had the verdict
+    // but GitHub never showed a review at all, with nothing in the logs to
+    // say so.
+    if (
+      !reviewPostResult.posted &&
+      reviewPostResult.reason !== 'a matching review already exists for this commit'
+    ) {
+      console.error(
+        `[reviewer] failed to post GitHub review for PR #${prNumber}: ${reviewPostResult.reason}`,
+      );
+      if (missionId) {
+        await db.insert(missionNotes).values({
+          missionId,
+          taskId: originalTaskId,
+          authorType: 'system',
+          type: 'warning',
+          title: `Reviewer verdict could not be posted to GitHub for PR #${prNumber}`,
+          body: `buildd recorded a ${effectiveVerdict} verdict, but posting it to GitHub as a review failed: ${reviewPostResult.reason ?? 'unknown error'}`,
+          status: 'open',
+        });
+      }
+    }
   }
 
   switch (effectiveVerdict) {
@@ -3447,7 +3605,7 @@ async function handleReviewerOutcomeIfNeeded(
         workspaceId,
       });
 
-      await tryAutoMergeWorkerPr({
+      const boundMergeResult = await tryAutoMergeWorkerPr({
         installationId,
         repoFullName,
         prNumber,
@@ -3467,6 +3625,38 @@ async function handleReviewerOutcomeIfNeeded(
           }),
         },
       });
+
+      // The bound above only ever authorises landing in a quarantined mission
+      // integration branch — an ordinary PR based on trunk is refused there
+      // by design. Under tier=agent-review the arrival of THIS approve is the
+      // only event that will ever re-check the stored verdict for such a PR
+      // (check_suite already fired, possibly before the review finished), so
+      // it is the trigger for the SAME unbounded self-merge authorisation the
+      // check_suite CI-green retry and merge_pr's escape hatch use —
+      // `isApprovalSelfMergeable`, the one definition of "does this verdict
+      // clear the confidence bar" all three call sites share.
+      if (
+        !boundMergeResult.merged &&
+        approvePolicy?.tier === 'agent-review' &&
+        isApprovalSelfMergeable(
+          { verdict: 'approve', confidence: output.confidence, merged: false },
+          approvePolicy.agentReview?.maxConfidenceThreshold,
+        )
+      ) {
+        const selfMergeResult = await tryAutoMergeWorkerPr({
+          installationId,
+          repoFullName,
+          prNumber,
+          headSha,
+          worker: { id: originalWorker.id, taskId: originalWorker.taskId },
+          policy: approvePolicy,
+        });
+        if (!selfMergeResult.merged) {
+          console.log(
+            `[reviewer] approve for PR #${prNumber} did not self-merge: ${selfMergeResult.reason}`,
+          );
+        }
+      }
       break;
     }
 

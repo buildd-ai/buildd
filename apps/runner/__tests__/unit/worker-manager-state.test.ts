@@ -712,6 +712,54 @@ describe('WorkerManager — state transitions', () => {
       // startFromClaim must call sendHeartbeat as its first action so the
       // stale-workers cron can't flag a freshly-started worker dead.
       expect(mockSendHeartbeat.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+      // Regression: the platform had no way to tell a runner still serving
+      // pre-fix code from one running a merged fix — every merged runner fix
+      // silently sat undeployed on any host that never picked it up (see
+      // apps/runner/src/updater.ts PKG_VERSION). The runnerVersion argument
+      // (9th positional arg to sendHeartbeat) is how that becomes observable
+      // from the platform instead of requiring SSH into the host.
+      const call = mockSendHeartbeat.mock.calls[0] as unknown as any[];
+      const runnerVersionArg = call[8];
+      expect(typeof runnerVersionArg).toBe('string');
+      expect(runnerVersionArg.length).toBeGreaterThan(0);
     });
+  });
+});
+
+// ─── Debug surface ───────────────────────────────────────────────────────────
+
+describe('WorkerManager — getInternalState context breaker', () => {
+  let manager: InstanceType<typeof WorkerManager>;
+
+  afterEach(() => {
+    manager?.destroy();
+  });
+
+  test('reports a paused context while the global breaker is still open', () => {
+    manager = new WorkerManager(makeConfig());
+
+    // The incident signature: the debug internals endpoint answered
+    // `paused: false` with authority for hours while a per-context pause was
+    // silently walling every claim for that context. Both must be observable.
+    const until = Date.now() + 60 * 60 * 1000;
+    (manager as any).contextBreaker.pause('account:codex', until);
+
+    const state = manager.getInternalState();
+    expect(state.circuitBreaker.paused).toBe(false);
+    expect(state.contextBreaker).toEqual({ 'account:codex': until });
+  });
+
+  test('omits an expired context pause so the endpoint cannot show a phantom', () => {
+    manager = new WorkerManager(makeConfig());
+
+    (manager as any).contextBreaker.pause('account:codex', Date.now() - 1_000);
+
+    expect(manager.getInternalState().contextBreaker).toEqual({});
+  });
+
+  test('reports an empty context breaker when nothing is paused', () => {
+    manager = new WorkerManager(makeConfig());
+    expect(manager.getInternalState().contextBreaker).toEqual({});
   });
 });

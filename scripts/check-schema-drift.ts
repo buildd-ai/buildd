@@ -16,14 +16,18 @@
  * It does NOT fail for a column whose migration has not been recorded yet:
  * migrations run during the deploy, i.e. after this gate. Those are reported as
  * `[pending]` with a count. Classification lives in
- * packages/core/db/migrate-drift.ts (unit-tested; scripts/*.test.ts is not
- * collected by the unit-test runner).
+ * packages/core/db/migrate-drift.ts, which keeps this file thin enough to stay a
+ * top-to-bottom script while the decisions it makes are unit-tested.
  *
  * Reads DATABASE_URL from env. Uses information_schema for read-only introspection.
  * Run from the repo root: bun run scripts/check-schema-drift.ts
  *   --offline   skip the database entirely and report only what can be measured
  *               from the repo (snapshot + journal). Useful for verifying this
  *               script runs at all without touching a real database.
+ *
+ * Exit codes: 0 pass, 1 drift, 2 could not verify (forked snapshot chain, or no
+ * usable DATABASE_URL). 2 never implicates production — see
+ * docs/design/migration-doctrine.md Rule 7.
  */
 
 import { neon } from '@neondatabase/serverless';
@@ -31,8 +35,12 @@ import { readFileSync, readdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import {
+  classifyExtraSchemaObjects,
   classifyMissingSchemaObjects,
   loadMigrationSources,
+  loadSnapshotMetas,
+  reconcileAppliedCount,
+  resolveSnapshotSelection,
 } from '../packages/core/db/migrate-drift';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -54,10 +62,17 @@ type NeonClient = ReturnType<typeof neon<false, false>>;
 // stays because a legacy `public.__drizzle_migrations` exists on older databases.
 const MIGRATOR_OWNED_TABLES = new Set(['__drizzle_migrations', '__buildd_migrate_lock']);
 
+// Exit codes are distinct on purpose. 1 means "I compared the DB to the schema
+// and they diverge". 2 means "I could not make a trustworthy comparison at all",
+// which is a repo problem, not a production one. Conflating them is how a
+// metadata fork came to be reported as a hand-edited production database.
+const EXIT_DRIFT = 1;
+const EXIT_CANNOT_VERIFY = 2;
+
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL && !OFFLINE) {
   console.error('ERROR: DATABASE_URL is not set');
-  process.exit(1);
+  process.exit(EXIT_CANNOT_VERIFY);
 }
 
 // neon() throws a raw stack trace on invalid URLs — validate format up front
@@ -67,7 +82,7 @@ if (DATABASE_URL) {
     new URL(DATABASE_URL);
   } catch {
     console.error('ERROR: DATABASE_URL is not a valid URL — check the DATABASE_URL secret value in repo settings');
-    process.exit(1);
+    process.exit(EXIT_CANNOT_VERIFY);
   }
 }
 
@@ -119,13 +134,54 @@ function droppedByMigration(): { columns: Set<string>; tables: Set<string> } {
 // ─── Load latest snapshot ────────────────────────────────────────────────────
 
 function latestSnapshot(): { tables: Record<string, DrizzleTable> } {
-  const files = readdirSync(SNAPSHOT_DIR)
-    .filter((f) => f.match(/^\d+_snapshot\.json$/))
-    .sort();
-  if (files.length === 0) throw new Error('No snapshot files found in ' + SNAPSHOT_DIR);
-  const latest = files[files.length - 1];
-  console.log(`Using snapshot: ${latest}`);
-  return JSON.parse(readFileSync(join(SNAPSHOT_DIR, latest), 'utf8'));
+  const metas = loadSnapshotMetas(SNAPSHOT_DIR);
+  const selection = resolveSnapshotSelection(metas);
+
+  if (selection.kind === 'empty') {
+    throw new Error('No snapshot files found in ' + SNAPSHOT_DIR);
+  }
+
+  if (selection.kind === 'forked') {
+    console.error('\n\u26d4 Cannot verify: the Drizzle snapshot chain is FORKED.\n');
+    console.error(`  ${selection.file} and ${selection.siblings.join(', ')}`);
+    console.error(`  all record prevId ${selection.prevId} \u2014 they are siblings, not a sequence.\n`);
+    console.error(`Two concurrent 'bun db:generate' runs each diffed against the same parent and
+each claimed the next free index. Git conflicts on neither the .sql nor the
+.json, so the fork lands silently, and each sibling holds only part of the
+schema.
+
+NO DRIFT VERDICT IS POSSIBLE in this state. Whichever sibling this gate picked,
+whatever the other one added would read as an object the snapshot has never
+heard of \u2014 indistinguishable from production having been hand-edited. Only one
+of those is an emergency, so the gate refuses to guess.
+
+This is a repo metadata problem. Production has not been inspected and is not
+implicated. To resolve, relinearize the chain: rebuild the highest-numbered
+snapshot as a true child of its sibling (its sibling's content plus its own
+delta, keeping its own id, with prevId set to the sibling's id).
+
+Do NOT delete the snapshot and re-run db:generate \u2014 that re-derives migrations
+production has already applied. The .sql files are correct and already applied;
+only the snapshot metadata is inconsistent.`);
+    process.exit(EXIT_CANNOT_VERIFY);
+  }
+
+  console.log(`Using snapshot: ${selection.file} (chain tip of ${metas.length} snapshots)`);
+
+  // Older fragments dangle in this repo as residue from past renumbering, which
+  // has been harmless for a long time \u2014 surfaced, never fatal, because failing
+  // on it would block every release to re-litigate settled history.
+  const tips = metas.filter(
+    (m) => m.id && !metas.some((other) => other.prevId === m.id) && m.file !== selection.file
+  );
+  if (tips.length > 0) {
+    console.log(
+      `  [note] ${tips.length} older snapshot(s) dangle (successor removed by past ` +
+        `renumbering): ${tips.map((t) => t.file).join(', ')} \u2014 not release-blocking`
+    );
+  }
+
+  return JSON.parse(readFileSync(join(SNAPSHOT_DIR, selection.file), 'utf8'));
 }
 
 interface DrizzleColumn {
@@ -238,9 +294,25 @@ async function main() {
 
   const actual = await actualColumns(sql);
   const applied = await appliedWhens(sql);
-  console.log(
-    `Applied migrations in DB: ${applied === null ? 'tracking table absent' : applied.size}`
-  );
+  if (applied === null) {
+    console.log('Applied migrations in DB: tracking table absent');
+  } else {
+    // Print the arithmetic, not two bare numbers. The journal is only what this
+    // ref carries; the tracking table is append-only apply history, so it
+    // legitimately holds rows for migrations that were renumbered or that
+    // predate a rebuilt journal. Side by side those two counts invite the
+    // inference that production is running migrations we do not know about.
+    const counts = reconcileAppliedCount({ sources, appliedWhens: applied });
+    console.log(
+      `Applied migrations in DB: ${counts.appliedTotal} = ` +
+        `${counts.appliedFromJournal} from this ref's journal + ` +
+        `${counts.historicalOutsideRef} historical (renumbered, or predating a rebuilt journal)`
+    );
+    console.log(
+      `  journal has ${counts.journalEntries} entries: ${counts.appliedFromJournal} applied, ` +
+        `${counts.pending} pending (they run on deploy, after this gate)`
+    );
+  }
 
   const drops = droppedByMigration();
 
@@ -273,34 +345,36 @@ async function main() {
     driftLines.push(`  MISSING in DB  : ${line}`);
   }
 
-  for (const [tableName, expectedCols] of expected) {
-    const actualCols = actual.get(tableName);
-    if (!actualCols) continue; // already classified above
-
-    // Columns in DB but not in schema. Either a pending migration drops it
-    // (expected — migrations run on deploy, after this gate), or it is manual DDL.
-    for (const col of actualCols) {
-      if (!expectedCols.has(col)) {
-        if (drops.columns.has(`${tableName}.${col}`)) {
-          console.log(`  [pending] Column '${tableName}.${col}' still in DB — will be dropped on migrate`);
-          continue;
-        }
-        driftLines.push(`  EXTRA in DB    : ${tableName}.${col}  ← untracked manual DDL`);
-      }
-    }
+  // Objects the DB has that the snapshot does not. Symmetrically with the
+  // missing-object scan above, an extra object is traced to its creating
+  // migration BEFORE it can be called manual DDL: a table created by a
+  // migration the tracking table records as applied is tracked and applied, and
+  // its absence from the snapshot is a snapshot-coverage gap. Asserting
+  // "untracked manual DDL" there reads as a hand-edited production database and
+  // sends the reader after entirely the wrong cause.
+  const extra = classifyExtraSchemaObjects({
+    sources,
+    appliedWhens: applied ?? new Set(),
+    expected,
+    actual,
+    droppedTables: drops.tables,
+    droppedColumns: drops.columns,
+    ignoredTables: MIGRATOR_OWNED_TABLES,
+  });
+  for (const target of extra.pendingDrop) {
+    console.log(`  [pending] '${target}' still in DB — will be dropped on migrate`);
   }
-
-  // Tables in DB but not in snapshot at all (manual CREATE TABLE, or a DROP TABLE
-  // migration that has not run yet — migrations run during the deploy, after this gate).
-  for (const tableName of actual.keys()) {
-    if (!expected.has(tableName) && !MIGRATOR_OWNED_TABLES.has(tableName)) {
-      if (drops.tables.has(tableName)) {
-        console.log(`  [pending] Table '${tableName}' still in DB — will be dropped on migrate`);
-        continue;
-      }
-      const cols = [...(actual.get(tableName) ?? [])].join(', ');
-      driftLines.push(`  EXTRA TABLE    : ${tableName}  (columns: ${cols})  ← untracked manual DDL`);
-    }
+  for (const line of extra.notYetApplied) {
+    console.log(`  [pending] ${line}`);
+  }
+  for (const line of extra.snapshotGap) {
+    // Not drift: the object is fully migrated and applied. The snapshot this
+    // gate resolved simply does not cover it, which happens when a migration is
+    // hand-added to the journal without a regenerated snapshot.
+    console.log(`  [snapshot gap] ${line}`);
+  }
+  for (const line of extra.manualDdl) {
+    driftLines.push(`  EXTRA in DB    : ${line}  ← untracked manual DDL`);
   }
 
   if (driftLines.length === 0) {
@@ -323,10 +397,10 @@ migrations) or a migration failed to apply. To resolve:
   2. If a column/table is missing from the DB: run migrations before promoting
      (cd packages/core && bun db:migrate).
 `);
-  process.exit(1);
+  process.exit(EXIT_DRIFT);
 }
 
 main().catch((err) => {
   console.error('check-schema-drift: unexpected error:', err);
-  process.exit(1);
+  process.exit(EXIT_CANNOT_VERIFY);
 });

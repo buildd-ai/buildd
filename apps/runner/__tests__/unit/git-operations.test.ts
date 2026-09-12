@@ -53,10 +53,15 @@ let statusFails = false;
 let mergeBaseOutput = 'abc1234';
 // Controls `git diff --numstat <target>`.
 let numstatOutput = '';
+// Controls `git rev-parse HEAD` — the SHA collectGitStats considers reporting
+// as lastCommitSha. Defaults to something other than mergeBaseOutput so
+// existing tests (which don't care about lastCommitSha) see it reported.
+let headOutput = 'deadbee';
 
 function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   syncCalls.push({ cmd, opts });
   if (cmd.includes('worktree list --porcelain')) return worktreeListOutput;
+  if (cmd === 'git rev-parse HEAD') return headOutput;
   if (cmd.includes('status --porcelain')) {
     if (statusFails) {
       const err: any = new Error('fatal: not a git repository');
@@ -507,6 +512,52 @@ describe('collectGitStats', () => {
     revListBehavior = 'ok';
     mergeBaseOutput = 'abc1234';
     numstatOutput = '';
+    headOutput = 'deadbee';
+  });
+
+  // The cross-PR SHA binding incident: a worktree that never diverged from
+  // its base (zero commits of its own) has HEAD sitting exactly on the
+  // merge-base — which is the base's OWN tip, not a commit this worker made.
+  // The base moves as sibling branches/missions merge into it, so reporting
+  // that SHA as "this worker's last commit" attributes someone else's
+  // already-merged work to this task.
+  test('a SHA equal to the resolved merge-base (no divergence) is not reported as lastCommitSha', async () => {
+    mergeBaseOutput = 'shared-tip-sha';
+    headOutput = 'shared-tip-sha'; // HEAD === merge-base: this worker made zero commits
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.lastCommitSha).toBeUndefined();
+  });
+
+  test('a SHA ahead of the resolved merge-base is reported as lastCommitSha', async () => {
+    mergeBaseOutput = 'shared-tip-sha';
+    headOutput = 'own-commit-sha'; // HEAD !== merge-base: this worker's own commit
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.lastCommitSha).toBe('own-commit-sha');
+  });
+
+  test('reports lastCommitSha as-is when no base can be resolved at all', async () => {
+    mergeBaseOutput = ''; // every merge-base probe fails
+    headOutput = 'whatever-head-sha';
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, undefined);
+
+    expect(stats.lastCommitSha).toBe('whatever-head-sha');
+  });
+
+  test('does not fabricate a diff via HEAD~1 when no base can be resolved', async () => {
+    mergeBaseOutput = ''; // every merge-base probe fails
+    numstatOutput = '10\t2\tsrc/unrelated.ts\n'; // would show up if a HEAD~1 fallback were used
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, undefined);
+
+    expect(stats.filesChanged).toBeUndefined();
+    expect(stats.linesAdded).toBeUndefined();
+    expect(stats.linesRemoved).toBeUndefined();
+    expect(syncCalls.some(c => c.cmd.includes('diff --numstat HEAD~1'))).toBe(false);
   });
 
   test('diffs against the worktree\'s actual base ref, not the dev/main/master search', async () => {
@@ -541,6 +592,26 @@ describe('collectGitStats', () => {
     expect(stats.filesChanged).toBe(2);
     expect(stats.linesAdded).toBe(15);
     expect(stats.linesRemoved).toBe(2);
+  });
+
+  test('excludes generated Drizzle snapshot/journal paths from the reported diff', async () => {
+    // Same shape as the real diff that got a PR closed and fully re-implemented
+    // over an "unexplained" +10962 line count — the bulk was the migration
+    // snapshot Drizzle emits with every migration. This is the worker's own
+    // self-reported stat (used before a PR exists), so it must exclude the
+    // same generated paths the GitHub-derived surfaces do.
+    numstatOutput = [
+      '5\t0\tpackages/core/db/schema.ts',
+      '2\t0\tpackages/core/drizzle/0157_noisy_marauders.sql',
+      '10657\t0\tpackages/core/drizzle/meta/0157_snapshot.json',
+      '7\t0\tpackages/core/drizzle/meta/_journal.json',
+    ].join('\n');
+
+    const stats = await collectGitStats('/worktree', 'worker-1', 0, 'origin/mission/foo-integration-abc123');
+
+    expect(stats.filesChanged).toBe(2);
+    expect(stats.linesAdded).toBe(7);
+    expect(stats.linesRemoved).toBe(0);
   });
 
   test('falls back to the dev/main/master search when no base ref is known', async () => {

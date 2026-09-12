@@ -26,12 +26,16 @@ on:
       - 'docker/worker/Dockerfile'
       - 'apps/runner/install.sh'
       - 'scripts/verify-cbm-pin.sh'
+      - 'scripts/verify-cbm-grep-steering.ts'
+      - '.github/workflows/worker-image.yml'
   pull_request:
     branches: [dev, main]
     paths:
       - 'docker/worker/Dockerfile'
       - 'apps/runner/install.sh'
       - 'scripts/verify-cbm-pin.sh'
+      - 'scripts/verify-cbm-grep-steering.ts'
+      - '.github/workflows/worker-image.yml'
   workflow_dispatch:
 
 permissions:
@@ -49,6 +53,37 @@ jobs:
       # install.sh agree with each other. This proves they agree with upstream.
       - name: Verify pinned CBM checksums against upstream release
         run: bash scripts/verify-cbm-pin.sh
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.2"
+
+      # The pinned binary, fetched exactly as the Dockerfile fetches it (same
+      # version ARG, same checksum ARG) so the handshake below interrogates the
+      # build the fleet will actually run. No `bun install` needed: the check
+      # script has no dependencies outside bun/node builtins.
+      - name: Download pinned CBM binary
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 -E '^ARG CBM_VERSION=' docker/worker/Dockerfile | cut -d= -f2)
+          sha=$(grep -m1 -E '^ARG CBM_SHA256_AMD64=' docker/worker/Dockerfile | cut -d= -f2)
+          curl -fsSL \
+            "https://github.com/DeusData/codebase-memory-mcp/releases/download/v${version}/codebase-memory-mcp-linux-amd64.tar.gz" \
+            -o /tmp/cbm.tar.gz
+          echo "${sha}  /tmp/cbm.tar.gz" | sha256sum -c
+          mkdir -p /tmp/cbm-bin
+          tar -xzf /tmp/cbm.tar.gz -C /tmp/cbm-bin codebase-memory-mcp
+          chmod +x /tmp/cbm-bin/codebase-memory-mcp
+
+      # A version bump that KEEPS the vendor's anti-grep tool descriptions passes;
+      # one that strips them fails here, loudly, instead of silently halving
+      # buildd's grep steering. This is a property check, not a version ceiling —
+      # see the header of the script for the matching rule and its tolerance.
+      - name: Verify CBM graph tools still steer away from grep
+        env:
+          CBM_BINARY: /tmp/cbm-bin/codebase-memory-mcp
+        run: bun scripts/verify-cbm-grep-steering.ts
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

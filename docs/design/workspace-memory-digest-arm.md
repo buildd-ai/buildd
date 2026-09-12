@@ -1,7 +1,7 @@
 # Task-Scoped Workspace Memory (experiment arm)
 
 **Status:** Implemented — `task_scoped` arm and the composition record ship with this doc; enrolment defaults to nobody.
-**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts`, `apps/runner/src/workers.ts`, `docs/design/mission-context-clusters.md`, `docs/design/retrieval-policy-evaluation.md`
+**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts`, `apps/runner/src/workers.ts`, `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts` (guards the control against mid-flight change), `packages/core/db/schema.ts` → `worker_prompt_composition_events`, `docs/design/mission-context-clusters.md`, `docs/design/retrieval-policy-evaluation.md`
 
 ## Problem
 
@@ -164,29 +164,81 @@ the `full` arm is the control and moving it mid-flight invalidates the result.
   untouched in both arms.
 - **Retrieval-side changes.** Nothing here alters what `getCompactObservations`
   or `searchObservations` return; this is purely about what reaches the prompt.
-- **A durable analysis rail.** See below.
+- **A durable analysis rail.** Out of scope when this was written. It has since
+  shipped — see "Where the record durably lands" below.
+
+## Resolved
+
+**How the result gets read.** `packages/core/memory-digest-readout.ts` (pure
+arithmetic), `packages/core/memory-digest-readout-source.ts` (the three
+queries), `packages/core/scripts/memory-digest-readout.ts` (`bun run
+readout:memory-digest`) and `/api/cron/memory-digest-readout` (daily,
+notifies only on a terminal verdict). One importable function computes the
+readout, so the CLI, the cron route and any future page or MCP action cannot
+disagree about what the experiment says.
+
+Five analysis rules are enforced structurally rather than documented, because
+the first analysis of this experiment was hand-pasted SQL and was contaminated:
+
+1. **The cohort is split at a boundary derived from the rows** — the first
+   appearance of `task_match_derived_by = 'inferred_paths'`, the retrieval
+   change that landed mid-enrolment without a policy-version bump. The date is
+   never a constant in the code. Tasks whose builds straddle it are excluded and
+   counted, as are mixed-arm and foreign-version tasks.
+2. **`called_recall` is reported per era, and no pooled figure exists.** Its
+   apparent effect lives almost entirely pre-boundary and all but vanishes
+   after it, so a pooled number measures the boundary and not the arm. There is
+   no code path that produces one.
+3. **Primary outcomes are the continuous process metrics** — prompt bytes,
+   memory share, file-read calls, shell calls, turns, duration. Failure rate is
+   a catastrophe guardrail and is labelled as one.
+4. **Effect sizes carry intervals**, plus a covariate-balance check on
+   `task_match_derived_by`, which is arm-independent by construction and
+   therefore a legitimate balance check rather than an outcome.
+5. **"Not yet conclusive" is a first-class verdict**, reported with an explicit
+   power position against a design MDE fixed up front (never re-derived from the
+   observed effect, which would make the threshold chase the noise).
+
+Two failure modes of the readout itself are closed the same way. An empty
+cohort or an underivable boundary is `indeterminate`, and the cron route reports
+it as an error rather than as health — a readout that reports a clean bill over
+an empty set is worse than no readout. And every binary outcome carries a
+coverage figure, because `called_recall` was initially sourced from
+`worker_action_events`, which records the bare action name off the `buildd` MCP
+call and therefore has never contained a `recall` row: the metric read 0% in
+both arms, in both eras, which is indistinguishable from a null result. It is
+read off `resultMeta.toolCounts['mcp__buildd__recall']` instead, and a
+zero-coverage outcome now says so in capitals.
+
+**Where the record durably lands.** `worker_prompt_composition_events`
+(`packages/core/db/schema.ts`, migrations `0152_rainy_miek.sql` and
+`0153_greedy_mad_thinker.sql`). One row per prompt build, queryable, with
+`policy_version` and `arm` indexed together so a cohort can be selected without
+a scan.
+
+The path: the runner appends each record to a per-worker buffer
+(`appendPromptCompositionEvent`), `worker-sync.ts` drains the buffer onto the
+next `PATCH /api/workers/[id]`, and the route inserts the rows. The insert is
+`onConflictDoNothing` against a unique index on `(worker_id, build_index)`, so a
+retried sync re-sends the same buffer without duplicating rows — which is why
+`build_index` is threaded through explicitly rather than reset per build.
+
+It landed as an event table rather than columns on `workers` for the reason
+predicted here: the record is per prompt build and a looped or bwrap-retried task
+builds several, so columns would silently keep only the last one.
+
+Two columns are deliberately NULLable — `task_match_derived_by` and `backend`.
+A row written by a runner predating either field is genuinely unknown, and
+defaulting it would encode an inference as data: it would pool a Codex row into
+the Claude cohort, or make a stopword hit indistinguishable from a declared-path
+hit. Filter those rows out rather than imputing them.
+
+The two older sinks — the per-worker session log (pruned after 48 hours) and
+runner stdout — still exist and are still worth grepping for
+`[prompt-composition]` to confirm the arm fires at all. Neither is the analysis
+source any more.
 
 ## Open questions
-
-**Where the record durably lands.** Today it goes to the per-worker session log,
-pruned after 48 hours, and to runner stdout.
-
-Stdout is the longer-lived of the two but not by design. The reference
-deployment's launcher redirects the runner into an append-mode file under the
-container's `/tmp`, wrapped in a restart loop, so the file does survive the
-`exit 75` update restart and does accumulate days of history. It is still not a
-rail: it is unrotated and grows without bound, it is container-local so it dies
-with the container rather than with the process, and it is a text log with no
-query path — you grep it by hand over SSH.
-
-So the arm can be *run*, and a recent window can be *read by hand*. Neither is
-enough to attribute a multi-day rework chain to an arm. A durable rail is a
-precondition for trusting any result, and it should be a small server-side event
-rather than a column on `workers`: the record is per prompt build, and a looped
-task builds several, so a column would silently keep only the last one.
-
-Treat both existing sinks as debugging aids — good for confirming the arm fires
-at all, not for analysis.
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
 out negative would leave open whether a *smaller but non-empty* digest is better

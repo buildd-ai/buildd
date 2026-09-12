@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { db } from '@buildd/core/db';
-import { releases, workers, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, eq, inArray, isNotNull, sql, desc } from 'drizzle-orm';
+import { workers, tasks, workspaces } from '@buildd/core/db/schema';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
+import type { ReleaseReadinessItem } from '@/lib/release-readiness';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
-import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { resolveGatedReleaseState } from '@/lib/release-baseline';
 import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 
 /**
@@ -74,19 +74,13 @@ export async function GET(req: NextRequest) {
     gatedWsIds.map(async (wsId) => {
       const ws = wsRows.find((w) => w.id === wsId)!;
 
-      const [latestRelease] = await db
-        .select({ id: releases.id, ciStateAtDispatch: releases.ciStateAtDispatch })
-        .from(releases)
-        .where(eq(releases.workspaceId, wsId))
-        .orderBy(desc(releases.createdAt))
-        .limit(1);
-
-      const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
-
-      // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
-      // healthy release → deployed release → any release row → prod-branch HEAD.
-      // Shared with the missions page so the two surfaces cannot disagree.
-      const baseline = await resolveGatedReleaseBaseline(wsId);
+      // Baseline + CI reading (@buildd/core/release-baseline via
+      // resolveGatedReleaseState): healthy release → deployed release → any
+      // non-failed release → prod-branch HEAD. A failed dispatch establishes
+      // neither a baseline nor a CI reading, and a reading past its TTL
+      // degrades to unknown rather than pinning to a stale failure. Shared
+      // with the Home page so the two surfaces cannot disagree.
+      const { baseline, ciState, latestReleaseId, commitsAheadAtDispatch } = await resolveGatedReleaseState(wsId);
 
       if (!baseline.asOf) {
         return {
@@ -96,7 +90,8 @@ export async function GET(req: NextRequest) {
           oldestMergedAt: derivedUnavailable<string>('no_baseline'),
           baselineSource: baseline.source,
           ciState,
-          latestReleaseId: latestRelease?.id ?? null,
+          latestReleaseId,
+          commitsAheadAtDispatch,
         };
       }
 
@@ -127,7 +122,8 @@ export async function GET(req: NextRequest) {
           : derivedUnavailable<string>('no_scope'),
         baselineSource: baseline.source,
         ciState,
-        latestReleaseId: latestRelease?.id ?? null,
+        latestReleaseId,
+        commitsAheadAtDispatch,
       };
     }),
   );

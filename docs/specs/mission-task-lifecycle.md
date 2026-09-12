@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-10
+last_verified: 2026-09-12
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/mission-base-guard.ts]
@@ -61,7 +61,28 @@ an enum) to allow extension without migrations.
   runner's periodic sync (`git status --porcelain`, tracked files only —
   untracked entries don't count) — `complete_task` calls made directly by the
   agent's MCP tool reach the server with no local git access of their own, so
-  the gate reads whatever the sync loop most recently reported.
+  the gate reads whatever the sync loop most recently reported. The dispatch
+  prompt (`apps/runner/src/prompt-builder.ts`) announces this obligation up
+  front for `auto` (previously the only output requirement with no explicit
+  section), so the agent learns it before spending the work, not from a 400 on
+  its last call. Two additional shapes satisfy the gate without a PR or
+  artifact of the worker's own branch: (1) a **cross-branch deliverable** —
+  `workers.mergedAt` is set, meaning `merge_pr` was called and GitHub confirmed
+  a merge, regardless of whose PR it was (a coordination/conflict-resolution
+  task's real output is action against OTHER PRs); and (2) an explicit
+  **discard acknowledgement** — `complete_task` was called with a non-empty
+  `discardEdits` reason, a first-class success exit for edits that are
+  legitimately scratch. Both are recorded: a cross-branch merge is inherent in
+  `workers.mergedAt`, and the discard reason is snapshotted onto
+  `tasks.result.discardedEdits` for audit. A **reviewer task** (`category =
+  'review'`, `context.reviewerFor` set — created by `createReviewerTask`,
+  `apps/web/src/lib/reviewer.ts`) is exempt from this entire check: see AC-3f.
+  Its contract is judged on `structuredOutput.verdict` instead, by the
+  review-contract guard in `apps/web/src/app/api/workers/[id]/route.ts`.
+  A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c) persists the
+  agent's `summary`/`structuredOutput`/`resultMeta` verbatim onto
+  `workers.rejectedCompletionPayload` before returning the 400 — a 60-turn
+  run's only output must not evaporate along with the 400.
 - A task transitions to `failed` permanently after `MAX_WORKER_RETRIES = 3`
   failed workers with no deliverables.
 - A task with `roleSlug = null` is claimable by any runner with access to the
@@ -91,6 +112,45 @@ an enum) to allow extension without migrations.
   clean worktree, or has a deliverable artifact, or its branch already carries
   a PR (e.g. a CI/conflict retry), completion succeeds unchanged regardless of
   the dirty-worktree flag.
+- AC-3c: GIVEN `outputRequirement = 'auto'`, `summarySource = 'fallback'` (the
+  runner's own session-end PATCH, not an agent-authored `complete_task` call —
+  see `docs/specs`'s summary-provenance note in workers.ts), no PR detected,
+  and no deliverable artifact WHEN `complete_task` is called THEN the server
+  returns a 400 with `hint: 'create_pr'` — the task is NOT completed,
+  regardless of `commitCount`/`dirtyWorktree`. A fallback summary is a stalled
+  session, never a deliberate "nothing to ship" conclusion, so it cannot rely
+  on self-reported commit/worktree stats (which a worktree that never
+  diverged from its base can misreport as "nothing happened" — see
+  `collectGitStats` in `apps/runner/src/git-operations.ts`) as the only gate.
+  GIVEN the same completion carries a PR, or `summarySource = 'agent'`,
+  completion succeeds unchanged. **Carve-out:** this AC does not apply to a
+  reviewer task (`tasks.category = 'review'` with `context.reviewerFor` set,
+  created by `createReviewerTask`) — see AC-3f.
+- AC-3d: GIVEN `outputRequirement = 'auto'`, no PR of the worker's own, and a
+  dirty worktree or commits WHEN `workers.mergedAt` is already set (a prior
+  `merge_pr` call GitHub-confirmed a merge, of any PR) AND `complete_task` is
+  called THEN completion succeeds — a verified cross-branch deliverable
+  satisfies the gate without a PR of the worker's own.
+- AC-3e: GIVEN the same otherwise-refusing shape as AC-3a/AC-3b WHEN
+  `complete_task` is called with a non-empty `discardEdits` reason THEN
+  completion succeeds and the reason is written to
+  `tasks.result.discardedEdits` — an explicit discard is a success, not the
+  `failed` status the `error` param produces.
+- AC-3f: GIVEN a reviewer task (`category = 'review'`, `context.reviewerFor`
+  set) WHEN `complete_task` reports `status = 'completed'` THEN the `auto`
+  gate's PR/artifact/fallback-summary check (AC-3a/AC-3b/AC-3c) does NOT apply
+  — a reviewer task structurally never opens a PR or produces an artifact of
+  its own; its deliverable is `structuredOutput.verdict`. The completion is
+  instead judged by the review-contract guard: a verdict present ⇒ normal
+  reviewer-outcome handling (approve/request-changes/escalate); no verdict at
+  all (whether written as prose, or never produced because the session ended
+  without an agent-authored `complete_task`, i.e. `summarySource = 'fallback'`)
+  ⇒ dropped-verdict handling: requeue the same task once (`context.
+  reviewContractRetryCount`), and on a second contract violation, fail
+  permanently AND escalate (mission note + Pushover via
+  `escalateReviewContractFailure`) — nothing else re-dispatches a reviewer for
+  an existing PR/head SHA outside the webhook's `opened` action, so a silent
+  permanent failure here would strand the PR unreviewed forever.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`
@@ -100,10 +160,14 @@ an enum) to allow extension without migrations.
 **Code surface**:
 - Claim route: `apps/web/src/app/api/workers/claim/route.ts`
 - Worker update (PATCH): `apps/web/src/app/api/workers/[id]/route.ts`
+- Dispatch prompt (output-requirement announcement): `apps/runner/src/prompt-builder.ts`
 - Dependency resolution: `apps/web/src/lib/task-dependencies.ts` —
   `resolveCompletedTask()`
 - Stale reclaim: `apps/web/src/lib/stale-workers.ts` — `resolveStaleTask()`
-- Schema: `packages/core/db/schema.ts` — `tasks` table
+- Schema: `packages/core/db/schema.ts` — `tasks` table, `workers.rejectedCompletionPayload`
+- Reviewer task creation: `apps/web/src/lib/reviewer.ts` — `createReviewerTask()`
+- Reviewer contract-failure escalation: `apps/web/src/lib/auto-merge.ts` —
+  `escalateReviewContractFailure()`
 
 ---
 

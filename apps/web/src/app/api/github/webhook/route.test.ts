@@ -1258,6 +1258,242 @@ describe('POST /api/github/webhook', () => {
     });
   });
 
+  // ── unowned-PR adoption + schema-drift classification ───────────────────────
+  describe('check_suite — unowned PR adoption', () => {
+    // A release PR (or any PR buildd did not open) has no worker record. The
+    // first two workers.findFirst calls are the ci_failed-marking loop in
+    // handleCheckSuiteEvent and handleCheckSuiteFailure's own initial lookup —
+    // both miss. resolveOrAdoptPrOwner's findPrOwningWorker is the third miss,
+    // then the fourth call is the re-fetch after adoption inserts the rows.
+    function withAdoptablePr(opts: { foreignCommit?: boolean; isFork?: boolean } = {}) {
+      mockWorkersFindFirst
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce({
+          id: 'adopted-w1',
+          branch: 'release/v1.2.3',
+          prNumber: 42,
+          task: {
+            id: 'adopted-t1',
+            title: 'PR #42: Release v1.2.3',
+            description: 'Release notes',
+            workspaceId: 'ws1',
+            missionId: null,
+            context: { adoptedPr: { prNumber: 42 } },
+            result: null,
+            status: 'completed',
+          },
+        });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (typeof url === 'string' && url.includes('/commits/')) {
+          if (opts.foreignCommit) {
+            return Promise.resolve({
+              author: { login: 'release-bot' },
+              commit: { author: { email: 'release-bot@users.noreply.github.com', name: 'release-bot' } },
+            });
+          }
+          return Promise.resolve({
+            author: { login: 'buildd-ai[bot]' },
+            commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
+          });
+        }
+        if (typeof url === 'string' && url.includes('/pulls/42')) {
+          return Promise.resolve({
+            number: 42,
+            title: 'Release v1.2.3',
+            body: 'Release notes',
+            html_url: 'https://github.com/test-org/test-repo/pull/42',
+            head: opts.isFork
+              ? { sha: 'abc123', ref: 'release/v1.2.3', repo: { full_name: 'someone-else/test-repo' } }
+              : { sha: 'abc123', ref: 'release/v1.2.3' },
+            base: { sha: 'def456', ref: 'main' },
+            draft: false,
+          });
+        }
+        return Promise.resolve({ draft: false });
+      });
+    }
+
+    it('adopts an unowned PR once and dispatches a normal CI retry (indistinguishable from a worker PR)', async () => {
+      withAdoptablePr();
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      // 2 adoption inserts (task, worker) + 1 CI retry task insert.
+      expect(insertCalls.length).toBe(3);
+      const retryInsert = insertCalls[2].values;
+      expect(retryInsert.title).toBe('[CI Retry #1] PR #42: Release v1.2.3');
+      expect(retryInsert.parentTaskId).toBe('adopted-t1');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not adopt twice — a second failure on the same (already-adopted) PR just retries normally', async () => {
+      // No adoption branch is entered at all: every workers.findFirst call
+      // (both the ci_failed-marking loop and handleCheckSuiteFailure) already
+      // finds the previously-adopted worker/task.
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'adopted-w1',
+        branch: 'release/v1.2.3',
+        prNumber: 42,
+        task: {
+          id: 'adopted-t1',
+          title: 'PR #42: Release v1.2.3',
+          description: 'Release notes',
+          workspaceId: 'ws1',
+          // A prior CI failure already produced one retry attempt.
+          missionId: null,
+          context: { adoptedPr: { prNumber: 42 }, iteration: 1 },
+          result: null,
+          status: 'completed',
+        },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (typeof url === 'string' && url.includes('/commits/')) {
+          return Promise.resolve({
+            author: { login: 'buildd-ai[bot]' },
+            commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
+          });
+        }
+        return Promise.resolve({ draft: false });
+      });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      // Only the retry task insert — no adoption task/worker rows created again.
+      expect(insertCalls.length).toBe(1);
+      expect(insertCalls[0].values.title).toBe('[CI Retry #2] PR #42: Release v1.2.3');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not adopt a fork PR', async () => {
+      withAdoptablePr({ isFork: true });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+
+    it('does not adopt a PR outside a managed workspace', async () => {
+      mockWorkersFindFirst.mockReturnValue(null);
+      mockWorkspacesFindFirst.mockReturnValue(null);
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(0);
+      expect(mockDispatchNewTask).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('check_suite — schema drift is diagnose-only', () => {
+    function withDriftFailure() {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1', branch: 'buildd/abc12345-fix', prNumber: 42,
+        task: {
+          id: 't1', title: 'Fix the thing', description: 'orig desc',
+          workspaceId: 'ws1', missionId: 'm1', context: {}, result: null, status: 'in_progress',
+        },
+      });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (typeof url === 'string' && url.includes('/commits/')) {
+          return Promise.resolve({
+            author: { login: 'buildd-ai[bot]' },
+            commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
+          });
+        }
+        if (typeof url === 'string' && url.includes('/actions/runs?')) {
+          return Promise.resolve({
+            workflow_runs: [{ id: 999, html_url: 'https://github.com/test-org/test-repo/actions/runs/999' }],
+          });
+        }
+        if (typeof url === 'string' && url.includes('/actions/runs/999/jobs')) {
+          return Promise.resolve({
+            jobs: [{ id: 111, name: 'Schema Drift / check-prod', conclusion: 'failure', steps: [] }],
+          });
+        }
+        return Promise.resolve({ draft: false });
+      });
+    }
+
+    it('dispatches a diagnose-and-report task, never a fix task, for a drift-class failure', async () => {
+      withDriftFailure();
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      expect(insertCalls.length).toBe(1);
+      const inserted = insertCalls[0].values;
+      expect(inserted.title).toContain('[CI Diagnose]');
+      expect(inserted.title).not.toContain('[CI Retry');
+      expect(inserted.outputRequirement).toBe('artifact_required');
+      expect(inserted.parentTaskId).toBe('t1');
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('is diagnose-only even for a just-adopted (unowned) PR', async () => {
+      mockWorkersFindFirst
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce(null)
+        .mockReturnValueOnce({
+          id: 'adopted-w1',
+          branch: 'release/v1.2.3',
+          prNumber: 42,
+          task: {
+            id: 'adopted-t1', title: 'PR #42: Release v1.2.3', description: null,
+            workspaceId: 'ws1', missionId: null,
+            context: { adoptedPr: { prNumber: 42 } }, result: null, status: 'completed',
+          },
+        });
+      mockWorkspacesFindFirst.mockReturnValue({ id: 'ws1', gitConfig: {} });
+      mockGithubApi.mockImplementation((_installationId: number, url: string) => {
+        if (typeof url === 'string' && url.includes('/commits/')) {
+          return Promise.resolve({
+            author: { login: 'buildd-ai[bot]' },
+            commit: { author: { email: '258464409+buildd-ai[bot]@users.noreply.github.com', name: 'buildd-ai[bot]' } },
+          });
+        }
+        if (typeof url === 'string' && url.includes('/pulls/42')) {
+          return Promise.resolve({
+            number: 42, title: 'Release v1.2.3', body: 'notes',
+            html_url: 'https://github.com/test-org/test-repo/pull/42',
+            head: { sha: 'abc123', ref: 'release/v1.2.3' },
+            base: { sha: 'def456', ref: 'main' },
+            draft: false,
+          });
+        }
+        if (typeof url === 'string' && url.includes('/actions/runs?')) {
+          return Promise.resolve({
+            workflow_runs: [{ id: 999, html_url: 'https://github.com/test-org/test-repo/actions/runs/999' }],
+          });
+        }
+        if (typeof url === 'string' && url.includes('/actions/runs/999/jobs')) {
+          return Promise.resolve({
+            jobs: [{ id: 111, name: 'Schema Drift / check-prod', conclusion: 'failure', steps: [] }],
+          });
+        }
+        return Promise.resolve({ draft: false });
+      });
+
+      const res = await POST(createWebhookRequest('check_suite', makeCheckSuitePayload()));
+
+      expect(res.status).toBe(200);
+      // 2 adoption inserts (task, worker) + 1 diagnose task insert. No fix task.
+      expect(insertCalls.length).toBe(3);
+      const diagnoseInsert = insertCalls[2].values;
+      expect(diagnoseInsert.title).toContain('[CI Diagnose]');
+      expect(diagnoseInsert.outputRequirement).toBe('artifact_required');
+    });
+  });
+
   // ── policy tier gating (check_suite success path) ──────────────────────────
   describe('check_suite — policy tier gating', () => {
     function withSuccessWorkerPr(opts: {
@@ -3145,6 +3381,86 @@ describe('workflow_run → releases state advancement', () => {
 
     const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
     expect(releaseUpdate).toBeUndefined();
+  });
+
+  // ── contradictory second delivery for the identical run ──────────────────
+  //
+  // GitHub can send two `workflow_run.completed` events for the same run with
+  // different conclusions — observed live for a release job that calls out to
+  // a reusable workflow via `uses:`. The first (success) legitimately advances
+  // dispatched → deploying; a second, disagreeing delivery for the SAME run
+  // must not be trusted verbatim, since 'deploying' isn't a terminal state a
+  // regression guard already covers.
+
+  it('ignores a conflicting second delivery for an already-resolved run when the live run is still success', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-6', workspaceId: 'ws-release', state: 'deploying', runUrl: RUN_URL }]
+        : null;
+    mockGithubApi.mockReturnValue(Promise.resolve({ conclusion: 'success' }));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
+
+    const liveCheck = (mockGithubApi.mock.calls as any[]).find(([, url]) =>
+      String(url).includes('/actions/runs/9999'),
+    );
+    expect(liveCheck).toBeDefined();
+  });
+
+  it('ignores a conflicting second delivery when the live refetch is unavailable', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-6b', workspaceId: 'ws-release', state: 'deploying', runUrl: RUN_URL }]
+        : null;
+    mockGithubApi.mockImplementation(() => Promise.reject(new Error('GitHub API error: 500')));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeUndefined();
+  });
+
+  it('still marks the release failed when the live refetch confirms the run actually failed', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-7', workspaceId: 'ws-release', state: 'deploying', runUrl: RUN_URL }]
+        : null;
+    mockGithubApi.mockReturnValue(Promise.resolve({ conclusion: 'failure' }));
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('skipped')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'failed',
+    );
+    expect(releaseUpdate).toBeDefined();
+  });
+
+  it('does not need a live check when the row is still dispatched (first-ever delivery for this run)', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-8', workspaceId: 'ws-release', state: 'dispatched', runUrl: RUN_URL }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('failure')));
+    expect(res.status).toBe(200);
+
+    // No live refetch — the row hasn't been resolved by a prior delivery yet,
+    // so the payload's own conclusion is trusted as it always was.
+    const liveCheck = (mockGithubApi.mock.calls as any[]).find(([, url]) =>
+      String(url).includes('/actions/runs/9999'),
+    );
+    expect(liveCheck).toBeUndefined();
+
+    const releaseUpdate = updateCalls.find(
+      (c) => c.table === schemaMock.releases && (c.setValues as any).state === 'failed',
+    );
+    expect(releaseUpdate).toBeDefined();
   });
 
   // ── the runId lookup ──────────────────────────────────────────────────────

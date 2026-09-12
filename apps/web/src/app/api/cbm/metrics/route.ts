@@ -118,7 +118,11 @@ function emptyResponse(window: string, windowStart: Date) {
     fallbackRate: null,
     eligibleFallbackRate: null,
     eligibility: { eligibleCount: 0, fallbackCount: 0, byDesignSkipCount: 0, byDesignSkips: {} },
-    indexBuild: { attempted: 0, ok: 0, failed: 0, failureRate: null, skippedWarm: 0, warmStartRate: null, unreported: 0, failReasons: {} },
+    indexBuild: {
+      attempted: 0, ok: 0, failed: 0, failureRate: null,
+      backgrounded: 0, backgroundedRate: null, backgroundLanded: 0, backgroundLandedRate: null,
+      skippedWarm: 0, warmStartRate: null, unreported: 0, failReasons: {},
+    },
     cbmActive: { count: 0, byOutcome: {}, avgInputTokens: null, avgFileAccessCalls: null, avgToolCalls: {}, activeWithZeroToolCalls: 0, mechanismObserved: false, adoptionRate: null, totalGraphCalls: 0 },
     cbmDisabled: {
       count: 0,

@@ -20,13 +20,14 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { resolveWorkspace } from '@/lib/workspace-resolver';
 import { resolvePolicy } from '@/lib/merge-policy';
-import { createReviewerTask } from '@/lib/reviewer';
+import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import {
   findPrOwningWorker,
   findReviewTaskForPr,
   listWorkspaceRoles,
+  resolveOrAdoptPrOwner,
   waitForPrReviewStatus,
 } from '@/lib/pr-review-request';
 import {
@@ -211,112 +212,29 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // A force re-review of a PR that already carries a terminal verdict at a
+  // DIFFERENT head is a delta review: the reviewer gets the delta plus its
+  // own prior verdict instead of re-reading the whole PR. Same head (or no
+  // recorded verdict) falls through to the full review below unchanged.
+  const priorVerdict: PriorVerdict | undefined = force
+    ? (resolvePriorVerdict(existingReview) ?? undefined)
+    : undefined;
+  const deltaPriorVerdict = priorVerdict && priorVerdict.headSha !== (pr.head?.sha ?? '')
+    ? priorVerdict
+    : undefined;
+
   // Adopt the PR when buildd has no worker for it: every downstream surface
   // keys off "the worker that owns this PR", so adoption is what lets an
   // externally-authored PR use the existing review rails unchanged.
-  let ownerWorker = existingWorker;
-  let adopted = false;
-  let originalTask: {
-    id: string;
-    title: string;
-    description: string | null;
-    backend: 'claude' | 'codex';
-    missionId: string | null;
-    pathManifest?: string[] | null;
-    iteration?: number | null;
-    maxIterations?: number | null;
-  };
-
-  if (ownerWorker?.taskId) {
-    const worker = await db.query.workers.findFirst({
-      where: eq(workers.id, ownerWorker.id),
-      with: { task: true },
-    });
-    const task = (worker as any)?.task;
-    originalTask = {
-      id: task?.id ?? ownerWorker.taskId,
-      title: task?.title ?? pr.title ?? `PR #${prNumber}`,
-      description: task?.description ?? null,
-      backend: task?.backend ?? 'claude',
-      missionId: task?.missionId ?? null,
-      pathManifest: task?.pathManifest ?? null,
-      iteration: typeof task?.context?.iteration === 'number' ? task.context.iteration : 0,
-      maxIterations: typeof task?.context?.maxIterations === 'number' ? task.context.maxIterations : 3,
-    };
-  } else {
-    const [adoptedTask] = await db
-      .insert(tasks)
-      .values({
-        workspaceId: workspace.id,
-        title: `PR #${prNumber}: ${pr.title ?? 'untitled'}`,
-        description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
-        // The work is already done — the PR exists. A pending task here would
-        // be claimable by a runner and re-do it.
-        status: 'completed',
-        priority: 5,
-        release: 'false',
-        creationSource: 'mcp',
-        context: {
-          adoptedPr: {
-            prNumber,
-            prUrl: pr.html_url,
-            headSha: pr.head?.sha ?? null,
-            baseBranch: pr.base?.ref ?? null,
-            author: pr.user?.login ?? null,
-            adoptedAt: new Date().toISOString(),
-          },
-        },
-      })
-      .returning({ id: tasks.id });
-
-    if (!adoptedTask?.id) return bad('Could not adopt the PR (task insert failed)', 500);
-
-    const [adoptedWorker] = await db
-      .insert(workers)
-      .values({
-        workspaceId: workspace.id,
-        taskId: adoptedTask.id,
-        accountId: account.id,
-        name: `pr-${prNumber}-review`,
-        // Not a runner buildd operates — the commits came from elsewhere.
-        runner: 'external',
-        branch: pr.head?.ref ?? `pr-${prNumber}`,
-        status: 'completed',
-        prNumber,
-        prUrl: pr.html_url,
-        prLifecycleStatus: 'pr_open',
-        ...(typeof pr.base?.sha === 'string' ? { prOpenedBaseSha: pr.base.sha } : {}),
-        // Where this PR lands, alongside the base SHA. Without it an adopted PR
-        // reads "unknown base" forever to every Option A′ consumer — which is
-        // safe (unknown degrades to the existing gate) but means an adopted PR
-        // never gets the integration-branch treatment even when it targets one.
-        ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
-        ...(typeof pr.additions === 'number' ? { linesAdded: pr.additions } : {}),
-        ...(typeof pr.deletions === 'number' ? { linesRemoved: pr.deletions } : {}),
-        ...(typeof pr.changed_files === 'number' ? { filesChanged: pr.changed_files } : {}),
-      })
-      .returning({ id: workers.id });
-
-    adopted = true;
-    ownerWorker = {
-      id: adoptedWorker?.id ?? 'adopted',
-      taskId: adoptedTask.id,
-      branch: pr.head?.ref ?? `pr-${prNumber}`,
-      prUrl: pr.html_url,
-      prLifecycleStatus: 'pr_open',
-      mergedAt: null,
-    } as typeof ownerWorker;
-    originalTask = {
-      id: adoptedTask.id,
-      title: pr.title ?? `PR #${prNumber}`,
-      description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
-      backend: 'claude',
-      missionId: null,
-      pathManifest: null,
-      iteration: 0,
-      maxIterations: 3,
-    };
-  }
+  const { adopted, ownerWorker, originalTask } = await resolveOrAdoptPrOwner({
+    workspaceId: workspace.id,
+    installationId: repo.installationId,
+    repoFullName: repo.fullName,
+    prNumber,
+    pr,
+    creationSource: 'mcp',
+    accountId: account.id,
+  });
 
   const policy = await resolveEffectivePolicy(workspace, originalTask.missionId);
   const roles = await listWorkspaceRoles(workspace.id, account.teamId);
@@ -348,6 +266,7 @@ export async function POST(req: NextRequest) {
     repoFullName: repo.fullName,
     policyConfig: (workspace.gitConfig as any)?.policyConfig,
     ...(callbackUrl ? { reviewCallback: { url: callbackUrl, on: callbackOn } } : {}),
+    ...(deltaPriorVerdict ? { priorVerdict: deltaPriorVerdict } : {}),
   });
 
   if (!reviewerTask?.id) return bad('Could not create the reviewer task', 500);

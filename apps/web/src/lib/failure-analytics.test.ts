@@ -5,6 +5,7 @@ import {
   parseFailureWindow,
   windowStartFor,
   computeFailureAnalytics,
+  buildSignatureFamily,
   type FailureWorkerRow,
 } from './failure-analytics';
 
@@ -529,5 +530,103 @@ describe('computeFailureAnalytics — repeat-failure tasks', () => {
       workers: [worker({ status: 'failed', taskId: null }), worker({ status: 'failed', taskId: null })],
     });
     expect(a.repeatFailureTasks).toEqual([]);
+  });
+});
+
+// ── buildSignatureFamily ──────────────────────────────────────────────────────
+// A family of errors that differ only in embedded free text (e.g.
+// `needs_input: <question>`) each normalize to their own singleton signature.
+// `computeFailureAnalytics.signatures` caps at maxSignatures, so a large but
+// diffuse family never shows its true size there — this is the escape hatch.
+
+describe('buildSignatureFamily', () => {
+  it('reports not known when nothing in the window shares the prefix', () => {
+    const rows = [worker({ status: 'failed', error: TERMINATED })];
+    const family = buildSignatureFamily(rows, 'needs_input:');
+    expect(family.known).toBe(false);
+    expect(family.count).toBe(0);
+    expect(family.distinctSignatures).toBe(0);
+    expect(family.firstSeen).toBeNull();
+    expect(family.lastSeen).toBeNull();
+    expect(family.exampleTaskId).toBeNull();
+    expect(family.topSignatures).toEqual([]);
+  });
+
+  it('aggregates every singleton variant sharing the prefix into one family', () => {
+    const rows = [
+      worker({ status: 'failed', error: 'needs_input: should I use bun or npm?' }),
+      worker({ status: 'failed', error: 'needs_input: which workspace should this target?' }),
+      worker({ status: 'failed', error: 'needs_input: is this endpoint supposed to be public?' }),
+      worker({ status: 'failed', error: TERMINATED }), // does not match — excluded
+    ];
+    const family = buildSignatureFamily(rows, 'needs_input:');
+    expect(family.known).toBe(true);
+    expect(family.count).toBe(3);
+    // Each variant is its own distinct normalized signature — none repeat.
+    expect(family.distinctSignatures).toBe(3);
+  });
+
+  it('collapses variants that normalize to the same signature and counts them once each', () => {
+    const rows = [
+      worker({ status: 'failed', error: 'Sandbox mount gap: "a" is not mounted in the bwrap sandbox' }),
+      worker({ status: 'failed', error: 'Sandbox mount gap: "a" is not mounted in the bwrap sandbox' }),
+      worker({ status: 'failed', error: 'Sandbox mount gap: "b" is not mounted in the bwrap sandbox' }),
+    ];
+    const family = buildSignatureFamily(rows, 'Sandbox mount gap:');
+    expect(family.count).toBe(3);
+    expect(family.distinctSignatures).toBe(2);
+    expect(family.topSignatures[0]).toEqual({
+      signature: 'Sandbox mount gap: "a" is not mounted in the bwrap sandbox',
+      count: 2,
+    });
+  });
+
+  it('tracks first/last seen, died-early count, exit causes and an example task across the family', () => {
+    const early = new Date(NOW.getTime() - 5 * 24 * 60 * 60 * 1000);
+    const late = new Date(NOW.getTime() - 60 * 1000);
+    const flakyTask = '33333333-0000-4000-8000-000000000001';
+    const rows = [
+      worker({ status: 'failed', error: 'needs_input: q1', exitCause: 'needs_input', turns: 0, costUsd: 0, completedAt: early, taskId: flakyTask }),
+      worker({ status: 'failed', error: 'needs_input: q2', exitCause: 'infra_failure', turns: 40, costUsd: 3, completedAt: late }),
+    ];
+    const family = buildSignatureFamily(rows, 'needs_input:');
+    expect(family.firstSeen).toBe(early.toISOString());
+    expect(family.lastSeen).toBe(late.toISOString());
+    expect(family.diedEarlyCount).toBe(1);
+    expect(family.exitCauses).toEqual(['infra_failure', 'needs_input']);
+    expect(family.exampleTaskId).toBe(flakyTask);
+  });
+
+  it('is a literal, case-sensitive prefix match — not a normalized-aware search', () => {
+    const rows = [worker({ status: 'failed', error: 'NEEDS_INPUT: different case' })];
+    const family = buildSignatureFamily(rows, 'needs_input:');
+    expect(family.known).toBe(false);
+  });
+
+  it('ignores non-failure statuses even if their error text would match', () => {
+    const rows = [worker({ status: 'completed', error: 'needs_input: not actually a failure' })];
+    const family = buildSignatureFamily(rows, 'needs_input:');
+    expect(family.known).toBe(false);
+  });
+
+  it('derives a stable, dedupe-safe frictionSignature from the prefix', () => {
+    const family = buildSignatureFamily([], 'needs_input:');
+    expect(family.frictionSignature).toMatch(/^worker-failure:[a-z0-9_]+$/);
+    expect(buildSignatureFamily([], 'needs_input:').frictionSignature).toBe(family.frictionSignature);
+    expect(buildSignatureFamily([], 'Sandbox mount gap:').frictionSignature).not.toBe(family.frictionSignature);
+  });
+
+  it('caps topSignatures at 5, sorted most frequent first', () => {
+    // Digits collapse to <n> in the normalizer, so variants must differ in
+    // words, not numbers, to stay distinct signatures.
+    const words = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel'];
+    const rows = words
+      .map((w, i) => Array.from({ length: 8 - i }, () => worker({ status: 'failed', error: `needs_input: is ${w} correct?` })))
+      .flat();
+    const family = buildSignatureFamily(rows, 'needs_input:');
+    expect(family.distinctSignatures).toBe(8);
+    expect(family.topSignatures).toHaveLength(5);
+    expect(family.topSignatures[0].signature).toContain('alpha');
+    expect(family.topSignatures[0].count).toBe(8);
   });
 });

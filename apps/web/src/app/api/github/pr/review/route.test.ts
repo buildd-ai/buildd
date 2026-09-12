@@ -33,6 +33,9 @@ mock.module('@/lib/api-auth', () => ({ authenticateApiKey: mockAuthenticateApiKe
 mock.module('@/lib/github', () => ({ githubApi: mockGithubApi }));
 mock.module('@/lib/team-access', () => ({ getTeamWorkspaceIds: mockGetTeamWorkspaceIds }));
 mock.module('@/lib/workspace-resolver', () => ({ resolveWorkspace: mockResolveWorkspace }));
+// resolvePriorVerdict stays REAL (bun merges an unstubbed named export from the
+// real module) — it is a pure extraction function, and the delta-vs-full
+// branch this route is judged on depends on its actual behaviour, not a stub.
 mock.module('@/lib/reviewer', () => ({ createReviewerTask: mockCreateReviewerTask }));
 mock.module('@/lib/task-dispatch', () => ({ dispatchNewTask: mockDispatchNewTask }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
@@ -134,7 +137,18 @@ beforeEach(() => {
   mockAuthenticateApiKey.mockReset();
   mockAuthenticateApiKey.mockReturnValue(ACCOUNT);
   mockGithubApi.mockReset();
-  mockGithubApi.mockReturnValue(Promise.resolve(OPEN_PR));
+  // Default: the PR itself, except the per-file breakdown fetchSplitPrStats
+  // uses to split reviewable vs generated lines before an adopted worker's
+  // diff stats are recorded.
+  mockGithubApi.mockImplementation((_installationId: number, path: string) => {
+    if (typeof path === 'string' && path.includes('/files')) {
+      return Promise.resolve([
+        { filename: 'apps/web/src/lib/spinner.ts', additions: 40, deletions: 0 },
+        { filename: 'apps/web/src/lib/spinner.test.ts', additions: 0, deletions: 3 },
+      ]);
+    }
+    return Promise.resolve(OPEN_PR);
+  });
   mockGetTeamWorkspaceIds.mockReset();
   mockGetTeamWorkspaceIds.mockReturnValue(['ws-1']);
   mockResolveWorkspace.mockReset();
@@ -404,6 +418,45 @@ describe('POST /api/github/pr/review — idempotency', () => {
     expect(res.status).toBe(200);
     expect((await res.json()).alreadyRequested).toBe(true);
     expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+  });
+
+  it('force sends a DELTA review (prior verdict + delta SHA) when the head has moved past the terminal verdict', async () => {
+    // OPEN_PR.head.sha is 'sha-42' — the terminal review recorded a different
+    // headSha, so head has advanced since the verdict.
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-1',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'approve', confidence: 0.9, summary: 'good' } },
+      context: { prNumber: 42, headSha: 'old-sha' },
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(201);
+    expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+    const created = mockCreateReviewerTask.mock.calls[0][0] as any;
+    expect(created.priorVerdict).toEqual({
+      headSha: 'old-sha',
+      verdict: 'approve',
+      confidence: 0.9,
+      summary: 'good',
+      feedback: null,
+      escalationReason: null,
+    });
+  });
+
+  it('force does NOT build a delta when the terminal verdict is already at the current head', async () => {
+    mockFindReviewTaskForPr.mockReturnValue({
+      id: 'review-task-1',
+      status: 'completed',
+      result: { structuredOutput: { verdict: 'approve', confidence: 0.9, summary: 'good' } },
+      context: { prNumber: 42, headSha: 'sha-42' }, // == OPEN_PR.head.sha
+    });
+
+    const res = await POST(post({ prNumber: 42, workspaceId: 'buildd', force: true }));
+    expect(res.status).toBe(201);
+    expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+    const created = mockCreateReviewerTask.mock.calls[0][0] as any;
+    expect(created.priorVerdict).toBeUndefined();
   });
 });
 

@@ -1031,6 +1031,69 @@ describe('GET /api/cron/schedules', () => {
     expect(deferral).toBeUndefined();
   });
 
+  // --- Manual-mode mission completion (held/manual missions must not defer forever) ---
+  //
+  // A manual-orchestration mission never lets a planning task complete, so the
+  // task-completion-driven trigger that closes every other mission never fires
+  // for it. Without this check the mission sits `active` and its heartbeat
+  // defers indefinitely even once all its deliverable work is done.
+
+  it('completes a manual-mode mission with no open work instead of deferring', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      orchestrationMode: 'manual',
+      maxConcurrentTasks: null,
+    });
+    mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(mockCompleteMission).toHaveBeenCalledWith('mission-1', { path: 'dormancy', proposed: false });
+    expect(body.created).toBe(0);
+    expect(tasksInsertValues).toBeNull();
+
+    // completeMissionIfVerified already disabled the schedule — the route must
+    // not also reschedule nextRunAt for it.
+    const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'orchestration_manual');
+    expect(deferral).toBeUndefined();
+  });
+
+  it('still defers a manual-mode mission with a pending deliverable', async () => {
+    const schedule = makeSchedule({ workspaceId: 'ws-1' });
+    mockTaskSchedulesFindMany.mockResolvedValue([schedule]);
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'mission-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      orchestrationMode: 'manual',
+      maxConcurrentTasks: null,
+    });
+    mockCompleteMission.mockResolvedValue({
+      completed: false,
+      decision: { code: 'pending_deliverables' },
+    } as any);
+
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+
+    expect(mockCompleteMission).toHaveBeenCalledWith('mission-1', { path: 'dormancy', proposed: false });
+    expect(body.skipped).toBe(1);
+    expect(body.created).toBe(0);
+    expect(tasksInsertValues).toBeNull();
+
+    const deferral = taskSchedulesUpdateCalls.find(c => c.set?.lastDeferralReason === 'orchestration_manual');
+    expect(deferral).toBeDefined();
+    expect(deferral.set.lastDeferredAt).toBeInstanceOf(Date);
+    expect(deferral.set.nextRunAt).toBeInstanceOf(Date);
+  });
+
   // --- Overdue heartbeat alerts ---
 
   function makeOverdueHeartbeatSchedule(overrides: Partial<any> = {}): any {

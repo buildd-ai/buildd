@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.207.0",
+  "version": "0.211.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -35,6 +35,8 @@
     "./secrets": "./secrets/index.ts",
     "./memory-store": "./memory-store.ts",
     "./memory-file-scope": "./memory-file-scope.ts",
+    "./memory-digest-readout": "./memory-digest-readout.ts",
+    "./memory-digest-readout-source": "./memory-digest-readout-source.ts",
     "./task-path-inference": "./task-path-inference.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
@@ -65,6 +67,8 @@
     "./friction-manifest": "./friction-manifest.ts",
     "./failure-friction-signature": "./failure-friction-signature.ts",
     "./auth-error-classifier": "./auth-error-classifier.ts",
+    "./budget-error-classifier": "./budget-error-classifier.ts",
+    "./reset-time": "./reset-time.ts",
     "./buildd-transport": "./buildd-transport.ts",
     "./redaction": "./redaction.ts",
     "./timezone": "./timezone.ts",

@@ -1,6 +1,7 @@
 import type { RoleConfig } from './roles.js';
 import type { SeedRefreshOutcome } from './cbm-enforcement.js';
 import type { PromptCompositionEvent } from './memory-digest-policy.js';
+import type { BashCommandCounts } from './bash-classify.js';
 
 // Worker status
 export type WorkerStatus = 'idle' | 'working' | 'done' | 'error' | 'stale' | 'waiting';
@@ -246,8 +247,17 @@ export interface LocalWorker {
   // CBM observability counters (accumulated during session, flushed into resultMeta at completion)
   cbmOutcome?: 'enforced' | 'legacy_mcp_json' | 'disabled';
   cbmDisableReason?: 'codex_task' | 'no_worktree' | 'role_opt_out' | 'binary_absent' | 'mount_unavailable';
-  cbmBootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
+  cbmBootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   cbmBootstrapFailReason?: string;
+  /**
+   * Whether a backgrounded index build finished successfully before the session
+   * ended. Only meaningful with cbmBootstrapResult='backgrounded'.
+   *
+   * This is the field that keeps the hand-off honest: without it, every
+   * overrunning build reads as 'backgrounded' and nothing distinguishes "the
+   * graph arrived a few turns in" from "the graph never arrived".
+   */
+  cbmBackgroundIndexLanded?: boolean;
   /**
    * Whether this session ran on the host-wide seeded graph rather than indexing
    * its own. Lived only in a local in startSession before, so it never reached
@@ -272,6 +282,14 @@ export interface LocalWorker {
   // Full tool-call histogram keyed by exact SDK tool name (see tool-metrics.ts).
   // Superset of the CBM counters above — flushed into resultMeta.toolCounts at completion.
   toolCounts?: Record<string, number>;
+  /**
+   * Bash sub-classification (see bash-classify.ts). The histogram above can
+   * only ever show a single bar for `Bash` — by far the most-called tool — so
+   * every shell-run `grep` / `rg` / VCS content search was invisible to any
+   * rollup, including to the Read/Grep/Glob counters above. Bucket counts plus
+   * coarse search-pattern shapes only; no command or pattern text is retained.
+   */
+  bashCommandCounts?: BashCommandCounts;
   // MCP credential secrets (label → value) delivered inline at claim time.
   // Injected as env vars into cleanEnv so ${VAR} refs in .mcp.json HTTP headers resolve.
   mcpSecrets?: Record<string, string>;
@@ -351,8 +369,13 @@ export interface CbmMetrics {
    * per-task index ran at all — the two extra members were written to the column
    * for weeks while this type still claimed 'ok' | 'failed'.
    */
-  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
+  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   bootstrapFailReason?: string;
+  /**
+   * Whether a backgrounded build landed before the session ended. Only set with
+   * bootstrapResult='backgrounded'.
+   */
+  backgroundIndexLanded?: boolean;
   /** Whether the session ran on the host-wide seeded graph. Always emitted. */
   sharedCache: boolean;
   /** Why the out-of-band seed refresh did or did not spawn for this repo. */
@@ -398,6 +421,12 @@ export interface ResultMeta {
    * that called no tools; consumers must treat absence as "unknown", not zero.
    */
   toolCounts?: Record<string, number>;
+  /**
+   * What the session's Bash calls were FOR: bucket counts plus coarse
+   * search-pattern shapes (see bash-classify.ts). Absent when the worker made
+   * no Bash call or predates the classifier — absence is "unknown", not zero.
+   */
+  bashCommandCounts?: BashCommandCounts;
 }
 
 // Loop exit condition (spec §1)

@@ -33,6 +33,7 @@
     "backfill:seat-ids": "bun run scripts/backfill-seat-ids.ts",
     "seed:cue-connector": "cd packages/core && bun scripts/seed-cue-connector.ts",
     "eval:retrieval": "bun run packages/core/scripts/eval-retrieval.ts",
+    "readout:memory-digest": "bun run packages/core/scripts/memory-digest-readout.ts",
     "knowledge:ingest": "bun run scripts/knowledge-ingest-ci.ts",
     "screenshot": "bun run scripts/qa/capture.ts",
     "screenshot:app": "bash scripts/qa/shoot.sh",
@@ -63,5 +64,8 @@
     "playwright": "^1.45.0",
     "typescript": "^6.0.0",
     "ws": "^8.19.0"
+  },
+  "patchedDependencies": {
+    "drizzle-kit@0.31.10": "patches/drizzle-kit@0.31.10.patch"
   }
 }

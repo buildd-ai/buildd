@@ -46,10 +46,19 @@ This pattern was established after the 0067_tasks_path_manifest incident (PR #11
 A required CI check (`Schema Drift / check-prod`) compares the production database's actual column structure against the Drizzle migration snapshot before any release PR merges to `main`. This check:
 
 - Introspects `information_schema.columns` on the production database (read-only)
-- Compares against the expected schema from `packages/core/drizzle/meta/<latest>_snapshot.json`
-- Fails if any column exists in the DB but not in the snapshot (manual DDL not tracked),
-  **unless** a migration drops that column — migrations run on deploy, after this gate,
-  so a column awaiting its `DROP COLUMN` is expected, not drift
+- Compares against the expected schema from the **chain tip** of
+  `packages/core/drizzle/meta/*_snapshot.json` (see Rule 7 — not simply the highest-numbered file)
+- For an object the DB has that the snapshot does **not**, the verdict again depends on
+  whether a migration accounts for it. It is symmetric with the missing-object case below,
+  and for the same reason: "extra" alone does not identify a cause.
+  - a migration **drops** it and has not run yet → `[pending]`, gate passes. Migrations run
+    on deploy, after this gate, so a column awaiting its `DROP COLUMN` is expected, not drift.
+  - a journal migration **creates** it and `__drizzle_migrations` records that migration as
+    applied → `[snapshot gap]`, gate passes. The object is tracked and applied; the resolved
+    snapshot merely does not cover it, which happens when a migration is hand-added to the
+    journal without a regenerated snapshot.
+  - **no** migration in the journal creates it → **fails** as untracked manual DDL. This is
+    the only extra-object case that is drift, and the only one phrased as such.
 - For an object the snapshot expects that the DB does **not** have, the verdict depends on
   `__drizzle_migrations`, because "missing" alone is ambiguous this early in the deploy:
   - the migration that adds it is **not** recorded as applied → `[pending]`, gate passes.
@@ -69,6 +78,44 @@ each verdict so a scan that compared nothing cannot read as a pass. Run
 `bun run scripts/check-schema-drift.ts --offline` to exercise everything except the database.
 
 **To add this as a required check:** go to GitHub → Settings → Branches → `main` → Require status checks → add `Schema Drift / check-prod`.
+
+### Rule 7: A forked snapshot chain blocks the release without producing a drift verdict
+
+Drizzle snapshots are a linked list, not a numbered pile: each records its own `id` and the
+`prevId` of the snapshot it was generated from. Two concurrent `bun db:generate` runs each
+diff against the same parent, each claim the next free index, and git conflicts on neither
+the `.sql` nor the `.json` — so the chain forks into **siblings that each hold only part of
+the schema**. This is the same concurrency that causes migration-index collisions (Rule 6),
+in its quieter form: nothing conflicts, so nothing tells you.
+
+The gate therefore resolves the snapshot through the chain rather than by filename sort, and:
+
+- **A fork at the chain tip is fatal and produces NO drift verdict.** It exits with a
+  distinct code (`2`, "cannot verify", versus `1`, "drift") and reports the siblings and
+  their shared parent. In this state the gate genuinely cannot distinguish *production was
+  hand-edited* from *I am reading the wrong branch of history* — whichever sibling it picked,
+  whatever the other one added looks like an object no snapshot has heard of. Only one of
+  those is an emergency, so it refuses to guess rather than assert the alarming one.
+- **Production is not implicated by a fork** and the message must say so. The `.sql` files
+  are correct and already applied; only the snapshot metadata is inconsistent.
+- **Older dangling fragments are reported, never fatal.** A snapshot whose successor was
+  removed by past renumbering leaves a tip behind. Several exist and have been harmless for
+  a long time; failing on them would block every release to re-litigate settled history.
+
+`drizzle-kit` itself detects the fork and refuses to generate — but then calls
+`process.exit(0)`, so every caller sees success while nothing was generated. That is
+patched at the root (`patches/drizzle-kit@<version>.patch`, exit 0 → exit 1). The patch is
+keyed to an exact version, so a drizzle-kit bump silently drops it; a unit test asserts the
+patched version still matches the lockfile.
+
+**To repair a fork:** rebuild the highest-numbered snapshot as a true child of its sibling —
+the sibling's content plus its own delta, keeping its own `id`, with `prevId` set to the
+sibling's `id`. Do **not** delete it and re-run `db:generate`: that re-derives migrations
+production has already applied.
+
+Rule 4's alert text must match this distinction. "Production DB schema has drifted" is the
+wrong sentence for a metadata fork, and sending it costs a responder the first hour of an
+investigation that has nothing to do with production.
 
 ### Rule 5: A migration is recorded as applied only if its statements ran
 
@@ -126,6 +173,9 @@ Schema change needed?
 
 - [ ] `build` job in `build.yml`: regenerates + checks migrations (existing)
 - [ ] `Schema Drift / check-prod` job in `build.yml`: introspects production DB on release PRs (new)
+- [x] Snapshot chain resolved through `prevId`, with a fork at the tip failing as "cannot
+      verify" rather than as drift (Rule 7). Guarded by a unit test that resolves this repo's
+      own chain, so a live fork fails the suite rather than the release.
 - [ ] `main` branch protection: `Schema Drift / check-prod` is a required status check
 - [ ] Pushover alert sent when either gate fails (`PUSHOVER_TOKEN_ALERT` + `PUSHOVER_USER` GitHub secrets)
 - [x] `bun run migrations:lint` (pre-commit hook): journal `when` ordering across the WHOLE

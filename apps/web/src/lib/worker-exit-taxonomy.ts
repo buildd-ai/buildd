@@ -51,6 +51,20 @@ export function classifyReportedFailure(input: {
   sandboxMountGap: boolean;
   steeringDelivery?: boolean;
   concurrencyConflict?: boolean;
+  /**
+   * The report is a "the precondition for doing this work was not met" signal
+   * rather than an outcome of the work — today, the runner's sequential-backend
+   * enforcement deferral (only one active worker of a given backend per
+   * workspace; extras are reported as failed with a `Deferred:` error). The
+   * task is re-queued untouched, so it must not consume a retry attempt.
+   *
+   * This input exists because the caller has to decide it BEFORE classifying:
+   * the deferral used to be detected only after `exitCause` had already been
+   * written, which booked concurrency control working as designed as a
+   * `code_failure` and let repeated deferrals permanently fail a task that was
+   * never actually attempted.
+   */
+  conditionUnmet?: boolean;
 }): WorkerExitCause {
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
@@ -60,6 +74,10 @@ export function classifyReportedFailure(input: {
   // Server-side concurrency conflicts are infra failures for the same reason:
   // the session was killed by coordination bookkeeping, not by the work.
   if (input.concurrencyConflict) return 'infra_failure';
+  // Deliberately last of the non-default causes: a deferral report carrying a
+  // real budget/sandbox/steering signal should still be filed under that
+  // signal, which is the diagnosis, not under the scheduling decision.
+  if (input.conditionUnmet) return 'condition_unmet';
   return 'code_failure';
 }
 
