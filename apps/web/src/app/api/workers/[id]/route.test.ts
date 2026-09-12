@@ -2494,6 +2494,99 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(capturedTaskSet?.result?.prNumber).toBe(77);
     });
+
+    it('completes a dirty-worktree worker with no PR that merged a sibling PR during its run (cross-branch deliverable)', async () => {
+      // A conflict-resolution/coordination task ships nothing on its own
+      // branch by design — its deliverable is a merge_pr call against a
+      // sibling PR. That call stamps mergedAt on THIS worker's row on a
+      // GitHub-confirmed merge (apps/web/src/app/api/github/pr/route.ts PUT
+      // handler), regardless of whose PR was merged, so mergedAt is a real,
+      // verified signal rather than a self-reported claim.
+      const updatedWorker = { id: 'worker-3', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-3',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: new Date('2026-09-10T00:00:00Z'),
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a dirty-worktree worker with no PR and an explicit discardEdits acknowledgement, recording the reason', async () => {
+      let capturedTaskSet: any = null;
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedTaskSet = updates;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const updatedWorker = { id: 'worker-4', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-4',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 0,
+        dirtyWorktree: true,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', discardEdits: 'scratch notes from conflict investigation, no longer needed' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedTaskSet?.result?.discardedEdits).toBe('scratch notes from conflict investigation, no longer needed');
+    });
   });
 
   describe('PR auto-detection from GitHub', () => {

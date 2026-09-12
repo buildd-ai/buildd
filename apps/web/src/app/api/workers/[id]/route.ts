@@ -593,6 +593,11 @@ export async function PATCH(
     // refreshed by the runner's periodic sync. Read by the complete_task gate
     // below — see the 'auto' output-requirement block.
     dirtyWorktree,
+    // Explicit complete_task acknowledgement that worktree edits (commits or
+    // uncommitted changes) are being intentionally thrown away — a first-class
+    // success exit for the 'auto' output-requirement gate below, distinct from
+    // the `error` param (which marks the task failed).
+    discardEdits,
     // SDK result metadata
     resultMeta,
     // Transient subagent progress (not persisted — forwarded via Pusher only)
@@ -1141,17 +1146,33 @@ export async function PATCH(
       // for this outcome.
       const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
       if (outputReq === 'auto' && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
-        if (!(await hasDeliverableArtifact())) {
+        // A coordination/conflict-resolution task legitimately ships nothing on
+        // its own branch — its deliverable is action taken against OTHER PRs
+        // (a merge, a dispatched release). merge_pr stamps mergedAt on the
+        // CALLING worker's row on a GitHub-confirmed merge regardless of whose
+        // PR was actually merged (see the PUT handler in
+        // apps/web/src/app/api/github/pr/route.ts), so a worker with no PR of
+        // its own that still has mergedAt set has a real, verified
+        // cross-branch deliverable — not a self-reported claim in the summary.
+        const hasCrossBranchDeliverable = !!worker.mergedAt;
+        // Explicit, auditable acknowledgement that these edits are scratch and
+        // meant to be thrown away — a legitimate success, not the failure
+        // shape `error` produces.
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
             : effectiveDirtyWorktree
               ? 'uncommitted changes in the worktree'
               : 'no confirmed outcome — the session ended without the agent calling complete_task';
           return NextResponse.json({
-            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with an \`error\` explaining why these edits are being intentionally discarded.`,
+            error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
           }, { status: 400 });
         }
+        // Neither satisfier put anything on this worker's own branch — a
+        // branch-merge release would find nothing of this worker's own to ship.
+        if ((hasCrossBranchDeliverable || discardReason) && !hasPR) skipRelease = true;
       }
     }
   }
@@ -2141,6 +2162,13 @@ export async function PATCH(
           ...(body.structuredOutput && typeof body.structuredOutput === 'object' && { structuredOutput: body.structuredOutput }),
           // Artifact protocol: hint for the orchestrator on what to consider next
           ...(body.nextSuggestion && typeof body.nextSuggestion === 'string' && { nextSuggestion: body.nextSuggestion }),
+          // Auditable record of the explicit discard acknowledgement (see the
+          // 'auto' output-requirement gate above) — same sensitive treatment
+          // as `summary`: a workspace flagged sensitive gets a structured
+          // marker instead of the agent's raw prose reason.
+          ...(typeof discardEdits === 'string' && discardEdits.trim() && {
+            discardedEdits: isSensitive ? 'edits discarded' : discardEdits.trim(),
+          }),
         };
 
         // Snapshot unique MCP servers into task result
