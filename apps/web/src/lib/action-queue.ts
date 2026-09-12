@@ -263,6 +263,17 @@ const MERGE_CTA_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>(['MERGE', '
 export interface BuildActionQueueOptions {
   /** Injected for deterministic tests. Defaults to now. */
   now?: Date;
+  /**
+   * subjectKeys the requesting user currently has an active (unexpired) snooze
+   * on — see `action_queue_snoozes` in schema.ts. Dropped from the built queue
+   * entirely rather than flagged, so a snoozed MERGE/REVIEW gate card behaves
+   * exactly like one that never escalated. Callers must have already filtered
+   * this set to `snoozedUntil > now`; buildActionQueue does not re-check it —
+   * the freshness invariant this file otherwise enforces (see header comment)
+   * is about re-deriving subject state (open/merged/CI), not about re-running
+   * an expiry check the caller already ran a moment earlier.
+   */
+  snoozedSubjectKeys?: ReadonlySet<string>;
 }
 
 /** Mission statuses under which a DECIDE card may still be a live ask. */
@@ -531,7 +542,10 @@ export function buildActionQueue(
     }
   }
 
-  return [...map.values()].sort((a, b) => {
+  const snoozed = options.snoozedSubjectKeys;
+  return [...map.values()]
+    .filter((item) => !snoozed?.has(item.subjectKey))
+    .sort((a, b) => {
     const chipDiff = CHIP_ORDER.indexOf(a.chip) - CHIP_ORDER.indexOf(b.chip);
     if (chipDiff !== 0) return chipDiff;
     // Within MERGE: most impactful (unblocks more tasks) first, then arc-linked
