@@ -11,7 +11,7 @@ import { TIERS, type Tier } from './model-tier-defaults';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
-import { assertPromotable, type Direction } from './spec-discrepancy-ledger';
+import type { Direction } from './spec-discrepancy-ledger';
 import type {
   FailureAnalytics,
   FailureSignatureFamily,
@@ -3549,6 +3549,11 @@ export async function handleBuilddAction(
       // Fail fast on the §8 gate before minting a mission nobody can link.
       // The authoritative check still lives at the write in
       // /api/discrepancies/[id]/promote — this is a cheaper early exit.
+      // Dynamic import: spec-discrepancy-ledger.ts pulls in the real `db`/schema
+      // module at its top level, which mcp-tools.ts otherwise never touches
+      // statically (it stays DB-free so drizzle-orm-mocking unit tests can
+      // import it safely) — load it lazily so that stays true.
+      const { assertPromotable } = await import('./spec-discrepancy-ledger');
       assertPromotable(row.direction as Direction);
 
       const title = (params.title as string) || `Spec discrepancy: ${row.assertionId} in ${row.specPath}`;
