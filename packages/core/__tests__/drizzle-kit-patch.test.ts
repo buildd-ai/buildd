@@ -18,11 +18,16 @@ import { join } from 'node:path';
  * Fixed at the root with a bun patch (`patches/drizzle-kit@<version>.patch`)
  * turning that one call into `process.exit(1)`.
  *
- * THE REGRESSION THIS GUARDS is not someone deleting the patch — bun fails the
- * install loudly if a registered patch cannot be applied. It is a VERSION BUMP:
- * `patchedDependencies` is keyed by exact version, so bumping drizzle-kit
- * silently orphans the patch and restores the old blindness with nothing in the
- * output to say so. Hence the version cross-check below.
+ * THE REGRESSION THIS GUARDS, verified against a pristine tree rather than
+ * assumed: `patchedDependencies` is keyed by EXACT version, and when the
+ * installed version no longer matches that key, `bun install` applies nothing,
+ * prints no warning, and EXITS 0. The dependency comes back unpatched with the
+ * abort branch restored to `process.exit(0)` — the original blindness, reachable
+ * by a routine version bump, with nothing anywhere to say so.
+ *
+ * (Do not assume bun validates the patch itself either: it applies hunks with
+ * fuzz, so a patch whose removed line no longer exists still applies via its
+ * context. A malformed patch is the benign case; a bumped version is not.)
  */
 
 const ROOT = join(import.meta.dir, '..', '..', '..');
@@ -39,6 +44,7 @@ describe('drizzle-kit exit-code patch', () => {
       'drizzle-kit must stay patched: unpatched, it exits 0 after refusing to ' +
         'generate, so CI cannot tell a blocked generate from "no changes needed".'
     ).toHaveLength(1);
+    expect(existsSync(join(ROOT, 'patches'))).toBe(true);
     expect(existsSync(join(ROOT, patched[keys[0]!]!))).toBe(true);
   });
 
@@ -61,6 +67,32 @@ describe('drizzle-kit exit-code patch', () => {
         `process.exit(1), bun patch --commit, and re-verify that a forked chain ` +
         `exits 1.`
     ).toBe(resolved);
+  });
+
+  it('is actually live in the installed dependency, not merely declared', () => {
+    // The declarations above can all be correct while the dependency on disk is
+    // unpatched — that is exactly what a version bump produces, silently. This
+    // is the only assertion that proves the fix is in effect. `bun run test`
+    // always follows an install, so the module is expected to be resolvable.
+    const binPath = join(ROOT, 'packages', 'core', 'node_modules', 'drizzle-kit', 'bin.cjs');
+    expect(
+      existsSync(binPath),
+      `drizzle-kit is not installed at ${binPath} — run bun install before the suite`
+    ).toBe(true);
+
+    const bin = readFileSync(binPath, 'utf8');
+    const idx = bin.indexOf('const abort = report.malformed.length');
+    expect(idx, 'the abort branch drizzle-kit patches has moved or vanished').toBeGreaterThan(-1);
+
+    const branch = bin.slice(idx, idx + 160);
+    expect(
+      branch,
+      'drizzle-kit is installed UNPATCHED: its abort branch still calls ' +
+        'process.exit(0), so an aborted generate reports success. Most likely a ' +
+        'version bump orphaned patches/drizzle-kit@<version>.patch — bun applies ' +
+        'nothing and exits 0 when the patch key does not match the installed version.'
+    ).toContain('process.exit(1)');
+    expect(branch).not.toContain('process.exit(0)');
   });
 
   it('turns the abort branch from exit 0 into exit 1, and changes nothing else', () => {
