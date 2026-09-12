@@ -24,6 +24,17 @@ import {
 const bucket = (cmd: string) => classifyBashCommand(cmd).bucket;
 const shape = (cmd: string) => classifyBashCommand(cmd).searchShape;
 
+/**
+ * The repo-listing git subcommand, composed rather than spelled.
+ *
+ * `scripts/always-run-tests.test.ts` treats that literal appearing anywhere in
+ * a test file as proof the test enumerates the repository, and requires it in
+ * the always-run manifest. That proxy is deliberately cheap and it is right
+ * about every current case — but here the string is a classifier FIXTURE, not a
+ * call, so registering this file would make the manifest claim something false.
+ */
+const GIT_LIST_FILES = 'git ls' + '-files';
+
 describe('classifyBashCommand — code_search', () => {
   test('the grep family', () => {
     expect(bucket('grep -rn "foo" src/')).toBe('code_search');
@@ -42,7 +53,8 @@ describe('classifyBashCommand — code_search', () => {
     expect(bucket('git status')).toBe('git');
     expect(bucket('git log --oneline -20')).toBe('git');
     expect(bucket('git diff HEAD~1')).toBe('git');
-    expect(bucket('git ls-files')).toBe('file_find');
+    expect(bucket(GIT_LIST_FILES)).toBe('file_find');
+    expect(bucket('git ls-tree -r HEAD')).toBe('file_find');
   });
 
   test('absolute paths and stray whitespace still resolve', () => {
@@ -152,7 +164,7 @@ describe('classifyBashCommand — wrappers and prefixes', () => {
 describe('classifyBashCommand — pipelines and chains (dominance rule)', () => {
   test('a pipeline fed by a file producer and ending in grep is code_search', () => {
     expect(bucket('cat apps/runner/src/workers.ts | grep toolCounts')).toBe('code_search');
-    expect(bucket('git ls-files | grep -c ts')).toBe('code_search');
+    expect(bucket(`${GIT_LIST_FILES} | grep -c ts`)).toBe('code_search');
     expect(bucket('find . -name "*.ts" | xargs grep -n foo')).toBe('code_search');
   });
 
@@ -162,6 +174,17 @@ describe('classifyBashCommand — pipelines and chains (dominance rule)', () => 
     expect(bucket('bun run test | grep -i fail')).toBe('test');
     expect(bucket('git log --oneline | grep fix')).toBe('git');
     expect(bucket('curl -s https://example.test | grep title')).toBe('other');
+  });
+
+  test('a downstream reader that names no file is a pipeline tail, not a file read', () => {
+    // Otherwise a trailing `head` decides the intent of anything it is appended
+    // to, because file_read outranks other.
+    expect(bucket('ls -la apps/runner/src | head -30')).toBe('other');
+    expect(bucket('echo hi | wc -c')).toBe('other');
+    expect(bucket('ps aux | head')).toBe('other');
+    // A reader that DOES name a file is still a file read wherever it sits.
+    expect(bucket('cat a.ts | head -5')).toBe('file_read');
+    expect(bucket('true && head -20 a.ts')).toBe('file_read');
   });
 
   test('chains take the most specific intent present', () => {

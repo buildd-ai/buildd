@@ -70,6 +70,11 @@
  * upstream win. `cat x | grep y` is a search; `ps aux | grep bun` is not, and
  * `bun run test | grep -i fail` is a test run.
  *
+ * The reader tools get the same treatment for the same reason: a downstream
+ * `head`/`tail`/`wc` that names no file is a pipeline tail, not a file read, so
+ * `ls -la src | head -30` is `other` rather than letting the `head` outrank the
+ * `ls` it is attached to.
+ *
  * Wrappers are unwrapped rather than classified: leading `VAR=value`
  * assignments, `env`, `time`, `nohup`, `timeout`, `command`, `npx`/`bunx`, and
  * `xargs` (which is classified as the command it runs, so
@@ -323,6 +328,14 @@ function stripXargs(tokens: Token[]): Token[] {
   return tokens.slice(i);
 }
 
+/**
+ * True when a command names something to operate on — any positional argument
+ * after the binary. `head -30` has none (it reads stdin); `head -30 file.ts` does.
+ */
+function hasFileOperand(tokens: Token[]): boolean {
+  return tokens.slice(1).some(t => t.quoted || !t.text.startsWith('-'));
+}
+
 /** True when any token is a recursive-listing flag (`-R`, `-lR`, `--recursive`). */
 function hasRecursiveFlag(tokens: Token[]): boolean {
   return tokens.some(t => {
@@ -503,6 +516,14 @@ function classifyParsed(src: string, depth: number): BashClassification {
       // A search that filters a non-file producer's output is not a code
       // search; drop it to `other` so the upstream command wins the reduction.
       if (result.bucket === 'code_search' && i > 0 && !FILE_PRODUCERS.has(results[i - 1].bucket)) {
+        candidates.push({ bucket: 'other' });
+        continue;
+      }
+      // Same reasoning for the reader tools: `… | head -30` / `… | wc -l` name
+      // no file, so they are pipeline tails rather than file reads. Counting
+      // them as `file_read` would let a `head` decide the intent of any call it
+      // is appended to, and `file_read` outranks `other`.
+      if (result.bucket === 'file_read' && i > 0 && !hasFileOperand(pipeline[i])) {
         candidates.push({ bucket: 'other' });
         continue;
       }
