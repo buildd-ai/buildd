@@ -12,16 +12,22 @@ No implementation status was promoted to make the checker green. Legacy prose st
 
 | Checker-derived state | Documents |
 | --- | ---: |
-| `implemented` | 84 |
-| `partial` | 16 |
+| `implemented` | 85 |
+| `partial` | 15 |
 | `failing` | 9 |
 | `unverified` | 3 |
 
-Assertions: **362** — **319 pass**, **40 fail**, **3 suppressed**. Validation errors: **0**. Document-level status contradictions: **24**.
+Assertions: **362** — **321 pass**, **38 fail**, **3 suppressed**. Validation errors: **0**. Document-level status contradictions: **24**.
 
 Three documents remain unverified: the retired `chat-integrations.md` note, plus `experiment-lifecycle.md` and `self-host-only-subscription-auth.md`, which were added after the original backfill corpus and are outside this recovery's scope. Every non-retired document from the original corpus now has assertions.
 
-## Ledger dry run
+## Review pass
+
+The 24 document-level status contradictions were reviewed individually against their named source files. 23 are `derived-ahead-of-declared`: every selected assertion passes, but the doc's declared status is still a non-terminal word (`draft`/`proposed`/`accepted`). These are left as-is — promoting status to green the checker would be exactly the status-promotion this backfill avoids elsewhere, and a passing structural assertion does not establish full implementation. They remain open findings for the doc owner to promote or leave.
+
+The one `declared-ahead-of-derived` contradiction, `backend-failover-policy.md`, was verified by reading the candidate substitute directly (see Findings above): the taxonomy mismatch is real, not a naming accident. Left failing.
+
+Outside the 24 contradictions, `mission-goal-criteria.md`'s two pre-existing failures were checked against the schema file directly (see Findings above) and found to be a checker-type mismatch, not a missing feature — corrected from `symbol` to `config_key`. This is the only assertion change made during this review; no other assertion target, doc status, or suppression was altered.
 
 `bun run specs:discrepancies --dry-run` reports:
 
@@ -38,11 +44,11 @@ A passing assertion under a recognized nonterminal declaration produces `code_ah
 
 ## Findings and limits
 
-- The implemented backend failover design explicitly names `packages/core/failure-classification.ts`, which does not resolve. A similarly named web helper has a different taxonomy; substituting it would conceal the discrepancy. This is the one terminal-status contradiction and requires adjudication.
+- The implemented backend failover design explicitly names `packages/core/failure-classification.ts`, which does not resolve. Confirmed by reading the actual candidate: `apps/web/src/lib/failure-classifier.ts` exports `classifyFailure`, but its taxonomy (`transient | environmental | logic | budget_limited | unknown`) has no `auth` class — the design's central claim is a `budget | auth | infra | task` classification specifically to fail over `auth` failures, which this helper cannot distinguish. Substituting it would conceal that gap rather than close it. This is the one terminal-status contradiction and requires adjudication; left failing.
 - Scheduled merge-policy propagation, the released criterion, MCP `start_task`, synchronous `ask`, and discrepancy promotion retain assertions on the precise promised action, field, or route. Their failures are findings, not reasons to invent alternative targets.
 - The archive-time schedule-retirement assertion now passes against `mission-archive.ts`; the earlier backfill snapshot's failure is obsolete.
 - `retry-continuity.md` explicitly names an absent `worktree-utils.test.ts`; retaining that literal reference records a stale test claim without claiming the behavior is absent.
-- The two original failures in `mission-goal-criteria.md` misuse export assertions for table fields (`goalCriteria`, `kpis`). They predate this backfill and do not prove those columns are absent. Existing assertion IDs and suppressions are preserved.
+- The two original failures in `mission-goal-criteria.md` misused `symbol` (export) assertions for table fields (`goalCriteria`, `kpis`), which are `pgTable` column properties, not exports. Both columns exist in `packages/core/db/schema.ts`. Retyped `goal-criteria-column` and `kpis-column` to `config_key` (a literal-occurrence check, matching the convention already used elsewhere in this corpus for schema columns) — same assertion IDs, no suppressions added. Both now pass. This was a checker-type correction, not a status promotion: the doc stays `superseded` and no assertion target changed.
 - The unified IA proposal withdraws a separate override table; the inference proposal withdraws migration of the dead classifier. Assertions follow those amendments rather than resurrecting withdrawn work.
 
 The checker verifies structural claims only. `route` checks a file's method export, `symbol` checks an exported identifier, `symbol_reachable` checks text at a named consumer, and `config_key` checks a literal occurrence. `test_file` checks presence, not test execution; migrations check committed SQL, not application to a database. Passing all selected assertions does not establish authorization behavior, visual parity, complete prose coverage, deployment, or resolution of every gap already described in the document.
@@ -105,7 +111,7 @@ Pass/fail/suppressed are assertion outcomes. A dash means no declaration was par
 | [design/migration-doctrine.md](../design/migration-doctrine.md) | `—` | `implemented` | 3 / 0 / 0 |
 | [design/mission-context-clusters.md](../design/mission-context-clusters.md) | `partially` | `partial` | 2 / 1 / 0 |
 | [design/mission-delivery-arc.md](../design/mission-delivery-arc.md) | `accepted` | `implemented` | 3 / 0 / 0 |
-| [design/mission-goal-criteria.md](../design/mission-goal-criteria.md) | `superseded` | `partial` | 5 / 2 / 0 |
+| [design/mission-goal-criteria.md](../design/mission-goal-criteria.md) | `superseded` | `implemented` | 7 / 0 / 0 |
 | [design/mission-state-ownership.md](../design/mission-state-ownership.md) | `accessor` | `implemented` | 3 / 0 / 0 |
 | [design/mission-state-progress.md](../design/mission-state-progress.md) | `proposed` | `implemented` | 3 / 0 / 0 |
 | [design/mission-status-mobile-header-spec.md](../design/mission-status-mobile-header-spec.md) | `normative` | `implemented` | 3 / 0 / 0 |
@@ -212,8 +218,6 @@ These are static checker results; none alone establishes a `spec_ahead` verdict.
 | `docs/design/inference-calls-primitive.md` | `visual-judge-uses-inference-client` | no read of "inferenceCall" found in apps/web/src/app/api/qa/judge/route.ts |
 | `docs/design/mcp-start-task.md` | `mcp-start-action` | no read of "start_task" found in packages/core/mcp-tools.ts |
 | `docs/design/mission-context-clusters.md` | `durable-context-assembly-table` | "assembly_id" not found in packages/core/db/schema.ts |
-| `docs/design/mission-goal-criteria.md` | `goal-criteria-column` | no exported "goalCriteria" found in packages/core/db/schema.ts |
-| `docs/design/mission-goal-criteria.md` | `kpis-column` | no exported "kpis" found in packages/core/db/schema.ts |
 | `docs/design/private-task-execution.md` | `visibility-filter` | file not found: apps/web/src/lib/task-visibility.ts |
 | `docs/design/private-task-execution.md` | `oauth-client-owner` | "ownerClientId" not found in packages/core/db/schema.ts |
 | `docs/design/retry-continuity.md` | `retry-worktree-tests` | apps/runner/__tests__/unit/worktree-utils.test.ts does not exist |
