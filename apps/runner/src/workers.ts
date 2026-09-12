@@ -71,7 +71,7 @@ import { activateRedaction, deactivateRedaction, getRedactionCounts, createSecre
 import { isBudgetExhaustionError } from '@buildd/core/budget-error-classifier';
 import { WorkerSync, extractPhaseLabel, isEphemeralTestBranch } from './worker-sync';
 import { runMcpPreflight, type McpPreflightFailure } from './mcp-preflight';
-import { runCbmBootstrap } from './cbm-bootstrap.js';
+import { runCbmBootstrap, stopBackgroundCbmIndex } from './cbm-bootstrap.js';
 import { buildSubagentSpans, computeBackgroundAgentMs } from './subagent-spans';
 import { resolveMcpEnvTokens } from './mcp-env-tokens.js';
 import {
@@ -2673,8 +2673,12 @@ export class WorkerManager {
         } else {
 
         // Pre-index the worktree so the graph is warm on turn one.
-        // CBM_INDEX_TIMEOUT_MS hard timeout; bootstrap failure is non-fatal — CBM
-        // is still mounted but without a warm cache; the agent can index on demand.
+        //
+        // The wait is BOUNDED, the build is not: when the startup budget expires
+        // the index keeps going in the background and the session starts without
+        // it, with the graph appearing in the agent's live MCP session when the
+        // build publishes. Neither slowness nor failure may fail the task — CBM
+        // stays mounted either way and the agent can index on demand.
         worker.currentAction = 'Indexing codebase (CBM)...';
         this.emit({ type: 'worker_update', worker });
         console.log(`[Worker ${worker.id}] CBM: running index_repository on ${cwd}`);
@@ -2682,12 +2686,35 @@ export class WorkerManager {
           worktreePath: cwd,
           workerId: worker.id,
           serverConfig: { command: cbmActivation.cbmBinaryPath!, args: [], env: {} },
+          // Records what a handed-off build actually did. Mutating the worker
+          // after startup is safe and is the point: buildCbmMetrics reads these
+          // fields at task completion, so a build that lands mid-session is
+          // reported as having landed instead of as a permanent unknown.
+          onLateCompletion: late => {
+            const durS = (late.durationMs / 1000).toFixed(1);
+            if (late.ok) {
+              worker.cbmBackgroundIndexLanded = true;
+              console.log(`[Worker ${worker.id}] CBM: backgrounded index landed after ${durS}s`);
+              this.addMilestone(worker, { type: 'status', label: `graph_index_landed_late durationMs=${late.durationMs}`, ts: Date.now() });
+            } else {
+              console.warn(`[Worker ${worker.id}] CBM: backgrounded index failed after ${durS}s (${late.reason})`);
+              this.addMilestone(worker, { type: 'status', label: `graph_index_failed_late reason=${(late.reason ?? 'unknown').slice(0, 80)}`, ts: Date.now() });
+            }
+          },
         });
         if (cbmBootstrapResult.ok) {
           const durS = (cbmBootstrapResult.durationMs / 1000).toFixed(1);
           console.log(`[Worker ${worker.id}] CBM: index ready in ${durS}s`);
           this.addMilestone(worker, { type: 'status', label: `graph_index_success durationMs=${cbmBootstrapResult.durationMs}`, ts: Date.now() });
           worker.cbmBootstrapResult = 'ok';
+        } else if (cbmBootstrapResult.backgrounded) {
+          // Not a failure: the build is alive and the cache dir is intact. Held
+          // apart from 'ok' as well, because the agent's first turns run without
+          // a graph and lumping the two together would hide that.
+          console.log(`[Worker ${worker.id}] CBM: ${cbmBootstrapResult.reason} — starting the session now`);
+          this.addMilestone(worker, { type: 'status', label: 'graph_index_backgrounded reason=wait_budget_expired', ts: Date.now() });
+          worker.cbmBootstrapResult = 'backgrounded';
+          worker.cbmBackgroundIndexLanded = false;
         } else {
           const reason = cbmBootstrapResult.reason;
           console.warn(`[Worker ${worker.id}] CBM: bootstrap failed (${reason}) — CBM mounted without warm cache`);
@@ -3917,10 +3944,19 @@ If something is missing or incomplete, describe what and fix it now.`;
           cleanupClaudeConfigDir(worker.id, claudeConfigDir);
         }
 
+        // End an index build that was handed off at startup and is still running.
+        // MUST come before the cache dir is removed below: otherwise the indexer
+        // keeps writing into a deleted directory and holds a core that the next
+        // task's build wants. A no-op unless the wait budget expired.
+        if (stopBackgroundCbmIndex(worker.id)) {
+          console.log(`[Worker ${worker.id}] CBM: stopped the backgrounded index at teardown`);
+        }
+
         // Clean up the per-worker CBM cache dir (ephemeral per design doc §4.2).
-        // NEVER the shared seeded cache: it is host-wide, costs ~20s to rebuild, and
-        // every other worker on this host is reading it right now. In shared mode the
-        // only per-worker state is the runtime dir, which lives outside the cache.
+        // NEVER the shared seeded cache: it is host-wide, costs a full index to
+        // rebuild, and every other worker on this host is reading it right now. In
+        // shared mode the only per-worker state is the runtime dir, which lives
+        // outside the cache.
         const cbmDirToRemove = cbmSharedCache ? cbmRuntimeDir : cbmCacheDir;
         if (cbmDirToRemove) {
           try {

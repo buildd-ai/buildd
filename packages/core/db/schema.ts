@@ -577,10 +577,24 @@ export interface CbmMetrics {
    * 'skipped_warm' means no index was needed because a shared seeded cache already
    * held this repo's graph. Distinct from 'ok' on purpose: lumping them together
    * makes the warm-start path invisible, so you cannot tell a fleet that is
-   * serving 0s starts from one that is paying ~20s per task.
+   * serving 0s starts from one that is paying a full index per task.
+   *
+   * 'backgrounded' means the build overran the startup wait budget and was handed
+   * off rather than aborted — the session started without a graph and the graph
+   * arrives mid-session. Kept separate from both 'ok' and 'failed' because it is
+   * neither: see backgroundIndexLanded for what the build actually did.
    */
-  bootstrapResult?: 'ok' | 'failed' | 'skipped_warm';
+  bootstrapResult?: 'ok' | 'failed' | 'backgrounded' | 'skipped_warm';
   bootstrapFailReason?: string;
+  /**
+   * Whether a backgrounded build finished successfully before the session ended.
+   * Only set when bootstrapResult='backgrounded'.
+   *
+   * The load-bearing field for judging the hand-off. Reclassifying overrunning
+   * builds out of 'failed' improves the index-build failure rate by definition;
+   * this is the number that says whether it improved anything real.
+   */
+  backgroundIndexLanded?: boolean;
   /** CBM MCP tool call counts, keyed by tool name (e.g. { search_code: 5, query_graph: 3 }). */
   toolCalls: Record<string, number>;
   /** Total CBM MCP tool calls across all CBM tools. */
