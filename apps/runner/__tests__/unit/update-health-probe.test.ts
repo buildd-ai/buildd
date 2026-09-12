@@ -109,6 +109,21 @@ describe('buildHealthProbeSpawn — isolation from live state', () => {
     expect(spawn.env.PATH).toBe('/home/coder/.bun/bin');
   });
 
+  // The broker's socket path defaults to a FIXED host-wide path, so it is not
+  // covered by BUILDD_HOME. Un-isolated, the probe's credential broker unlinks
+  // the LIVE runner's socket and rebinds it on start, then unlinks it again on
+  // shutdown — breaking worker token fetches on the live runner until it
+  // restarts. That happened on every single update attempt.
+  test('binds its credential-broker socket inside the isolated home', () => {
+    const spawn = buildHealthProbeSpawn({
+      ...base,
+      baseEnv: { ...base.baseEnv, BUILDD_BROKER_SOCKET: '/tmp/buildd-broker.sock' },
+    });
+    expect(spawn.env.BUILDD_BROKER_SOCKET).toBeString();
+    expect(spawn.env.BUILDD_BROKER_SOCKET.startsWith('/home/coder/.buildd/.health-probe')).toBe(true);
+    expect(spawn.env.BUILDD_BROKER_SOCKET).not.toBe('/tmp/buildd-broker.sock');
+  });
+
   // Bun.spawn's env takes Record<string, string>; an inherited undefined would
   // otherwise land in the child as the literal "undefined".
   test('drops undefined values rather than stringifying them', () => {
