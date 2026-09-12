@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, useTransition, useCallback } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation';
 import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import { deriveSandboxPosture, isRunnerOnline } from '@/lib/runner-heartbeats-shared';
-import { findDuplicateScheduleIds } from '@/lib/schedule-health';
+import { findDuplicateScheduleIds, isScheduleErrorLive } from '@/lib/schedule-health';
 import type {
   UsageStats,
   ConsumptionStats,
@@ -416,7 +416,7 @@ export function HealthClient({
       + 'are absent rather than zero. Each one still carries its own reason where it sits.';
   }, [consumption]);
 
-  const failedSchedules = schedules.filter(s => s.enabled && !!s.lastError);
+  const failedSchedules = schedules.filter(isScheduleErrorLive);
   const hasProblems =
     brokenCredentials.length > 0 ||
     strandedBackends.length > 0 ||
@@ -932,7 +932,7 @@ export function HealthClient({
                               </span>
                             )}
                           </p>
-                          {s.lastError && (
+                          {isScheduleErrorLive(s) && (
                             <p className="text-xs text-status-error mt-1 truncate">⚠ {s.lastError}</p>
                           )}
                         </div>

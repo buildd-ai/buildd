@@ -12,6 +12,7 @@
 import { db } from '@buildd/core/db';
 import { workers, tasks, workspaces } from '@buildd/core/db/schema';
 import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { normalizeErrorSignature, EMPTY_SIGNATURE } from './error-signature';
 import type {
   FailureAnalytics,
@@ -19,6 +20,7 @@ import type {
   FailureExitCauseRow,
   FailureRepeatTaskRow,
   FailureRoleRow,
+  FailureSignatureFamily,
   FailureSignatureRow,
   FailureTotals,
   FailureWindow,
@@ -32,6 +34,7 @@ export type {
   FailureExitCauseRow,
   FailureRepeatTaskRow,
   FailureRoleRow,
+  FailureSignatureFamily,
   FailureSignatureRow,
   FailureTotals,
   FailureWindow,
@@ -218,6 +221,67 @@ function buildSignatures(rows: FailureWorkerRow[], limit: number): FailureSignat
     }));
 }
 
+const FAMILY_TOP_SIGNATURES = 5;
+
+/**
+ * Aggregate every failure signature sharing a literal prefix into one rollup.
+ *
+ * `buildSignatures` above already discards this once it slices to the top-N
+ * ranking: a family of errors that differ only in embedded free text (e.g.
+ * `needs_input: <question>`) becomes dozens of singleton signatures, each
+ * individually too small to rank, with no way to answer "how big is this
+ * family as a whole?" This operates on the full row set instead of the
+ * capped ranking, which is the entire point.
+ *
+ * The match is a literal, case-sensitive prefix test against each row's
+ * *normalized* signature — the prefix itself is not run through the
+ * normalizer, so the caller is expected to pass the same literal text the
+ * signatures already start with (e.g. "needs_input:").
+ */
+export function buildSignatureFamily(rows: FailureWorkerRow[], prefix: string): FailureSignatureFamily {
+  const bySignature = new Map<string, number>();
+  let count = 0;
+  let firstSeen: number | null = null;
+  let lastSeen: number | null = null;
+  let diedEarlyCount = 0;
+  let exampleTaskId: string | null = null;
+  const exitCauses = new Set<FailureExitCauseBucket>();
+
+  for (const row of rows) {
+    if (!isFailure(row.status)) continue;
+    const sig = normalizeErrorSignature(row.error);
+    if (!sig.startsWith(prefix)) continue;
+
+    count += 1;
+    const ts = failedAt(row).getTime();
+    if (firstSeen === null || ts < firstSeen) firstSeen = ts;
+    if (lastSeen === null || ts > lastSeen) lastSeen = ts;
+    if (isDiedEarly(row)) diedEarlyCount += 1;
+    if (!exampleTaskId && row.taskId) exampleTaskId = row.taskId;
+    exitCauses.add(row.exitCause ?? UNCLASSIFIED);
+    bySignature.set(sig, (bySignature.get(sig) ?? 0) + 1);
+  }
+
+  const topSignatures = [...bySignature.entries()]
+    .map(([signature, sigCount]) => ({ signature, count: sigCount }))
+    .sort((a, b) => b.count - a.count || a.signature.localeCompare(b.signature))
+    .slice(0, FAMILY_TOP_SIGNATURES);
+
+  return {
+    prefix,
+    known: count > 0,
+    count,
+    distinctSignatures: bySignature.size,
+    firstSeen: firstSeen !== null ? new Date(firstSeen).toISOString() : null,
+    lastSeen: lastSeen !== null ? new Date(lastSeen).toISOString() : null,
+    diedEarlyCount,
+    exitCauses: [...exitCauses].sort(),
+    exampleTaskId,
+    frictionSignature: toFrictionSignature(prefix),
+    topSignatures,
+  };
+}
+
 /**
  * Aggregate a window of worker rows into a failure report.
  * Pure — no DB access, no clock reads (pass `now`).
@@ -335,6 +399,76 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
 
 // ── Server-side data fetcher ──────────────────────────────────────────────────
 
+interface FetchedFailureRows {
+  workerRows: FailureWorkerRow[];
+  workspaceNames: Record<string, string>;
+  taskTitles: Record<string, string>;
+}
+
+/** Shared by `getFailureAnalytics` and `getFailureSignatureFamily` — one query shape, two aggregations. */
+async function fetchFailureWorkerRows(
+  scopedWsIds: string[],
+  window: FailureWindow,
+  now: Date,
+): Promise<FetchedFailureRows> {
+  const windowStart = windowStartFor(window, now);
+
+  const rows = await db
+    .select({
+      id: workers.id,
+      taskId: workers.taskId,
+      workspaceId: workers.workspaceId,
+      status: workers.status,
+      error: workers.error,
+      exitCause: workers.exitCause,
+      turns: workers.turns,
+      costUsd: workers.costUsd,
+      createdAt: workers.createdAt,
+      completedAt: workers.completedAt,
+      roleSlug: tasks.roleSlug,
+      taskTitle: tasks.title,
+    })
+    .from(workers)
+    .leftJoin(tasks, eq(tasks.id, workers.taskId))
+    .where(and(
+      inArray(workers.workspaceId, scopedWsIds),
+      gte(workers.createdAt, windowStart),
+    ))
+    // Newest first, so if the cap truncates a very busy 30d window we keep the
+    // most recent slice rather than an arbitrary one.
+    .orderBy(desc(workers.createdAt))
+    .limit(MAX_WORKER_ROWS);
+
+  const wsRows = await db
+    .select({ id: workspaces.id, name: workspaces.name })
+    .from(workspaces)
+    .where(inArray(workspaces.id, scopedWsIds))
+    .catch(() => [] as { id: string; name: string }[]);
+
+  const workspaceNames: Record<string, string> = {};
+  for (const w of wsRows as { id: string; name: string }[]) workspaceNames[w.id] = w.name;
+
+  const taskTitles: Record<string, string> = {};
+  const workerRows: FailureWorkerRow[] = (rows as any[]).map((r: any) => {
+    if (r.taskId && r.taskTitle) taskTitles[r.taskId as string] = r.taskTitle as string;
+    return {
+      id: r.id as string,
+      taskId: (r.taskId as string | null) ?? null,
+      workspaceId: r.workspaceId as string,
+      roleSlug: (r.roleSlug as string | null) ?? null,
+      status: r.status as string,
+      error: (r.error as string | null) ?? null,
+      exitCause: (r.exitCause as WorkerExitCause | null) ?? null,
+      turns: Number(r.turns ?? 0),
+      costUsd: Number(r.costUsd ?? 0),
+      createdAt: r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt),
+      completedAt: r.completedAt ? (r.completedAt instanceof Date ? r.completedAt : new Date(r.completedAt)) : null,
+    };
+  });
+
+  return { workerRows, workspaceNames, taskTitles };
+}
+
 /**
  * Load and aggregate worker failures for the given workspaces.
  * Read-only. Never throws — returns an empty report if the query fails.
@@ -347,65 +481,33 @@ export async function getFailureAnalytics(
   const empty = () => computeFailureAnalytics({ window, now, workers: [] });
   if (scopedWsIds.length === 0) return empty();
 
-  const windowStart = windowStartFor(window, now);
-
   try {
-    const rows = await db
-      .select({
-        id: workers.id,
-        taskId: workers.taskId,
-        workspaceId: workers.workspaceId,
-        status: workers.status,
-        error: workers.error,
-        exitCause: workers.exitCause,
-        turns: workers.turns,
-        costUsd: workers.costUsd,
-        createdAt: workers.createdAt,
-        completedAt: workers.completedAt,
-        roleSlug: tasks.roleSlug,
-        taskTitle: tasks.title,
-      })
-      .from(workers)
-      .leftJoin(tasks, eq(tasks.id, workers.taskId))
-      .where(and(
-        inArray(workers.workspaceId, scopedWsIds),
-        gte(workers.createdAt, windowStart),
-      ))
-      // Newest first, so if the cap truncates a very busy 30d window we keep the
-      // most recent slice rather than an arbitrary one.
-      .orderBy(desc(workers.createdAt))
-      .limit(MAX_WORKER_ROWS);
-
-    const wsRows = await db
-      .select({ id: workspaces.id, name: workspaces.name })
-      .from(workspaces)
-      .where(inArray(workspaces.id, scopedWsIds))
-      .catch(() => [] as { id: string; name: string }[]);
-
-    const workspaceNames: Record<string, string> = {};
-    for (const w of wsRows as { id: string; name: string }[]) workspaceNames[w.id] = w.name;
-
-    const taskTitles: Record<string, string> = {};
-    const workerRows: FailureWorkerRow[] = (rows as any[]).map((r: any) => {
-      if (r.taskId && r.taskTitle) taskTitles[r.taskId as string] = r.taskTitle as string;
-      return {
-        id: r.id as string,
-        taskId: (r.taskId as string | null) ?? null,
-        workspaceId: r.workspaceId as string,
-        roleSlug: (r.roleSlug as string | null) ?? null,
-        status: r.status as string,
-        error: (r.error as string | null) ?? null,
-        exitCause: (r.exitCause as WorkerExitCause | null) ?? null,
-        turns: Number(r.turns ?? 0),
-        costUsd: Number(r.costUsd ?? 0),
-        createdAt: r.createdAt instanceof Date ? r.createdAt : new Date(r.createdAt),
-        completedAt: r.completedAt ? (r.completedAt instanceof Date ? r.completedAt : new Date(r.completedAt)) : null,
-      };
-    });
-
+    const { workerRows, workspaceNames, taskTitles } = await fetchFailureWorkerRows(scopedWsIds, window, now);
     return computeFailureAnalytics({ window, now, workers: workerRows, workspaceNames, taskTitles });
   } catch (err) {
     console.error('[failure-analytics] query failed:', err);
     return empty();
+  }
+}
+
+/**
+ * Same underlying data as `getFailureAnalytics`, aggregated by literal
+ * signature prefix instead of ranked top-N. See `buildSignatureFamily`.
+ * Read-only. Never throws — returns an unknown-family report if the query fails.
+ */
+export async function getFailureSignatureFamily(
+  scopedWsIds: string[],
+  window: FailureWindow,
+  prefix: string,
+  now: Date = new Date(),
+): Promise<FailureSignatureFamily> {
+  if (scopedWsIds.length === 0) return buildSignatureFamily([], prefix);
+
+  try {
+    const { workerRows } = await fetchFailureWorkerRows(scopedWsIds, window, now);
+    return buildSignatureFamily(workerRows, prefix);
+  } catch (err) {
+    console.error('[failure-analytics] family query failed:', err);
+    return buildSignatureFamily([], prefix);
   }
 }

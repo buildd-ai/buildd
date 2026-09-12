@@ -80,6 +80,26 @@ function lookup(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function family(overrides: Record<string, unknown> = {}) {
+  return {
+    prefix: 'needs_input:',
+    known: true,
+    count: 14,
+    distinctSignatures: 9,
+    firstSeen: '2026-08-22T00:00:00.000Z',
+    lastSeen: '2026-08-27T00:00:00.000Z',
+    diedEarlyCount: 3,
+    exitCauses: ['needs_input'],
+    exampleTaskId: 't1',
+    frictionSignature: 'worker-failure:needs_input_a1b2c3',
+    topSignatures: [
+      { signature: 'needs_input: should I use bun or npm?', count: 2 },
+      { signature: 'needs_input: which workspace should this target?', count: 1 },
+    ],
+    ...overrides,
+  };
+}
+
 // ── Registration & privilege gate ────────────────────────────────────────────
 
 describe('get_failure_analytics registration', () => {
@@ -101,6 +121,7 @@ describe('get_failure_analytics registration', () => {
     expect(desc).toContain(ACTION);
     expect(desc).toMatch(/window\?/);
     expect(desc).toMatch(/error\?/);
+    expect(desc).toMatch(/errorPrefix\?/);
     expect(desc).toMatch(/limit\?/);
     expect(desc).toMatch(/frictionSignature/);
   });
@@ -419,6 +440,101 @@ describe('get_failure_analytics lookup mode', () => {
       mockApi as unknown as ApiFn, ACTION,
       { error: 'Stale worker expired (no update for 15+ minutes)' }, ctx(),
     );
+    expect(res.content[0].text.length).toBeLessThan(900);
+  });
+});
+
+// ── Signature-family rollup mode (errorPrefix) ───────────────────────────────
+
+describe('get_failure_analytics family mode', () => {
+  let mockApi: ReturnType<typeof mock>;
+  beforeEach(() => { mockApi = mock(); });
+
+  it('sends the literal prefix upstream as errorPrefix', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), family: family() });
+    await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'needs_input:' }, ctx());
+    expect(mockApi.mock.calls[0][0]).toContain(`errorPrefix=${encodeURIComponent('needs_input:')}`);
+  });
+
+  it('reports a known family with its aggregate count and distinct-signature count', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), family: family() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'needs_input:' }, ctx());
+    const out = res.content[0].text;
+    expect(res.isError).toBeFalsy();
+    expect(out).toContain('needs_input:');
+    expect(out).toMatch(/14/);
+    expect(out).toMatch(/9/);
+    expect(out).toContain('2026-08-22T00:00:00.000Z');
+    expect(out).toContain('2026-08-27T00:00:00.000Z');
+    expect(out).toMatch(/died early 3\/14/);
+  });
+
+  it('hands back a dedupe key an agent can pass to create_task', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), family: family() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'needs_input:' }, ctx());
+    const out = res.content[0].text;
+    expect(out).toContain('worker-failure:needs_input_a1b2c3');
+    expect(out).toMatch(/frictionSignature/);
+  });
+
+  it('surfaces a sample of the distinct variants collapsed into the family', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), family: family() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'needs_input:' }, ctx());
+    expect(res.content[0].text).toContain('should I use bun or npm?');
+  });
+
+  it('returns a clean not-known answer for a prefix with no matches, not an error result', async () => {
+    mockApi.mockResolvedValueOnce({
+      analytics: analytics(),
+      family: family({
+        known: false, count: 0, distinctSignatures: 0, firstSeen: null, lastSeen: null,
+        diedEarlyCount: 0, exitCauses: [], exampleTaskId: null, topSignatures: [],
+        prefix: 'never_seen_prefix:',
+        frictionSignature: 'worker-failure:never_seen_prefix_9f8e7d',
+      }),
+    });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'never_seen_prefix:' }, ctx());
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text;
+    expect(out).toContain('never_seen_prefix:');
+    expect(out).toContain('worker-failure:never_seen_prefix_9f8e7d');
+  });
+
+  it('falls back to the overview when the route returns no family block', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'needs_input:' }, ctx());
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toMatch(/Worker failures/);
+  });
+
+  it('treats a blank errorPrefix as absent and returns the overview', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: '   ' }, ctx());
+    expect(mockApi.mock.calls[0][0]).not.toContain('errorPrefix=');
+    expect(res.content[0].text).toMatch(/Worker failures/);
+  });
+
+  it('truncates a huge prefix before putting it on the wire', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), family: family() });
+    const huge = `needs_input:${'x'.repeat(9000)}`;
+    await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: huge }, ctx());
+    const endpoint = mockApi.mock.calls[0][0] as string;
+    expect(endpoint.length).toBeLessThan(2500);
+    expect(endpoint).toContain('needs_input');
+  });
+
+  it('prefers the exact lookup over the family rollup when both are present', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), lookup: lookup(), family: family() });
+    const res = await handleBuilddAction(
+      mockApi as unknown as ApiFn, ACTION,
+      { error: 'Stale worker expired (no update for 15+ minutes)', errorPrefix: 'needs_input:' }, ctx(),
+    );
+    expect(res.content[0].text).toMatch(/^Known failure pattern/);
+  });
+
+  it('keeps family output short — one screen, no dashboard payload', async () => {
+    mockApi.mockResolvedValueOnce({ analytics: analytics(), family: family() });
+    const res = await handleBuilddAction(mockApi as unknown as ApiFn, ACTION, { errorPrefix: 'needs_input:' }, ctx());
     expect(res.content[0].text.length).toBeLessThan(900);
   });
 });

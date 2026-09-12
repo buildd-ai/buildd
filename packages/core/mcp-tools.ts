@@ -13,6 +13,7 @@ import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
 import type {
   FailureAnalytics,
+  FailureSignatureFamily,
   FailureSignatureLookup,
   FailureSignatureRow,
   FailureWindow,
@@ -357,7 +358,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
     update_schedule: '{ scheduleId (required), cronExpression?, timezone?, enabled?, name?, taskTemplate?, skillSlugs?, workspaceId? } [admin]',
     delete_schedule: '{ scheduleId (required), workspaceId? } — remove a schedule permanently; prefer pause_schedules if you might need to re-enable it. 401 means token lacks admin level. [admin]',
-    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
+    list_schedules: '{ workspaceId?, minutesAgo? (filter to schedules whose lastRunAt is within this window — use to identify "what just fired?"), nameContains? (case-insensitive substring filter on schedule name), type? ("heartbeat" | "workspace" | "all", default "all" — heartbeat schedules are mission-owned and not independently pausable/editable; pass "workspace" for the schedules you can actually act on) } — read-only, available at all token levels. Output includes lastRunAt, lastError, and an output-channel hint (e.g. "sends pushover via dispatch") inferred from the task template.',
     trace_schedule: '{ taskId? OR minutesAgo? OR taskTitleContains?, workspaceId? } — reverse-lookup: given a stray task or a recent notification, find the schedule that spawned it. taskId is the strongest signal (uses the schedule_id FK); minutesAgo lists schedules that fired within the window; taskTitleContains matches on the task template title.',
     pause_schedules: '{ workspaceId?, scheduleIds? (string[]), namePattern? (case-insensitive substring), enabled? (default false — pass true to resume) } — bulk-flip the enabled flag on schedules. Provide scheduleIds for an exact list, namePattern to match by name, or omit both to apply to all schedules in the workspace. The 2am kill-switch when a schedule is misbehaving. [admin]',
     register_skill: '{ name (required), content (required), description?, source?, workspaceId?, slug?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools? (string[]), canDelegateTo? (string[]), background? (boolean), maxTurns? (number), color? (hex string), mcpServers? (Record<string, McpServerConfig> or string[]), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts — role-level opt-in to team connectors), isRole? (boolean), defaultBackend? (claude|codex|null — default agent engine for tasks routed to this role; task.backend overrides) } — create/upsert skill by slug [admin]',
@@ -381,7 +382,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
-    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -465,6 +466,8 @@ const FAILURE_SIGNATURES_MAX = 15;
 const FAILURE_SIGNATURE_LINE_MAX = 120;
 /** Only the first line of an error is ever normalized, so this is generous. */
 const FAILURE_LOOKUP_INPUT_MAX = 1000;
+/** A prefix longer than the max normalized signature (200 chars) can never match anything. */
+const FAILURE_PREFIX_INPUT_MAX = 200;
 
 function truncateTo(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
@@ -501,6 +504,43 @@ function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWind
   lines.push(`New failure — no match for this signature in the last ${window} (${failedInWindow} failure(s) in the window).${caveat}`);
   lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
   lines.push(`Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`);
+  return lines.join('\n');
+}
+
+/**
+ * Rollup for a family of failures sharing a literal signature prefix.
+ *
+ * For an error family whose free-text tail makes each occurrence its own
+ * singleton signature (e.g. `needs_input: <question>`), this is the only way
+ * to see the family's true size — no single occurrence ranks into the top-N
+ * signature list on its own, so `formatFailureOverview` would never show it.
+ */
+function formatFailureFamily(family: FailureSignatureFamily, window: FailureWindow): string {
+  const lines: string[] = [];
+  const nextCall = `context: { frictionSignature: "${family.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
+
+  if (!family.known) {
+    lines.push(`No failure signature starts with "${truncateTo(family.prefix, 200)}" in the last ${window}.`);
+    lines.push(`Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`);
+    return lines.join('\n');
+  }
+
+  lines.push(`Signature family "${truncateTo(family.prefix, 200)}" — ${family.count} occurrence(s) across ${family.distinctSignatures} distinct signature(s) in the last ${window}.`);
+  const detail = [
+    `first seen ${family.firstSeen}`,
+    `last seen ${family.lastSeen}`,
+    `died early ${family.diedEarlyCount}/${family.count}`,
+  ];
+  if (family.exitCauses.length > 0) detail.push(`exit causes: ${family.exitCauses.join(', ')}`);
+  lines.push(detail.join(' · '));
+  if (family.exampleTaskId) lines.push(`example task: ${family.exampleTaskId}`);
+  if (family.topSignatures.length > 0) {
+    lines.push('Top variants:');
+    family.topSignatures.forEach(s => {
+      lines.push(`  ${s.count}× ${truncateTo(s.signature, FAILURE_SIGNATURE_LINE_MAX)}`);
+    });
+  }
+  lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
   return lines.join('\n');
 }
 
@@ -2273,6 +2313,9 @@ export async function handleBuilddAction(
       const minutesAgo = typeof params.minutesAgo === 'number' ? params.minutesAgo : null;
       const nameContains = typeof params.nameContains === 'string' ? params.nameContains.toLowerCase() : null;
       const filterCutoff = minutesAgo !== null ? Date.now() - minutesAgo * 60_000 : null;
+      const scheduleType = typeof params.type === 'string' ? params.type : 'all';
+
+      const isHeartbeat = (s: any): boolean => s.taskTemplate?.context?.heartbeat === true;
 
       const matchesFilters = (s: any): boolean => {
         if (filterCutoff !== null) {
@@ -2280,6 +2323,8 @@ export async function handleBuilddAction(
           if (!Number.isFinite(last) || last < filterCutoff) return false;
         }
         if (nameContains && !s.name.toLowerCase().includes(nameContains)) return false;
+        if (scheduleType === 'heartbeat' && !isHeartbeat(s)) return false;
+        if (scheduleType === 'workspace' && isHeartbeat(s)) return false;
         return true;
       };
 
@@ -2300,7 +2345,7 @@ export async function handleBuilddAction(
         const schedules = (data.schedules || []).filter(matchesFilters);
 
         if (schedules.length === 0) {
-          if (minutesAgo !== null || nameContains) return text('No schedules matched the filter.');
+          if (minutesAgo !== null || nameContains || scheduleType !== 'all') return text('No schedules matched the filter.');
           return text('No schedules configured for this workspace.');
         }
 
@@ -2322,7 +2367,7 @@ export async function handleBuilddAction(
       }
 
       if (allSchedules.length === 0) {
-        if (minutesAgo !== null || nameContains) return text('No schedules matched the filter across any workspace.');
+        if (minutesAgo !== null || nameContains || scheduleType !== 'all') return text('No schedules matched the filter across any workspace.');
         return text('No schedules configured across any workspace.');
       }
 
@@ -3342,10 +3387,14 @@ export async function handleBuilddAction(
       // The route only ever normalizes the first line, so a long trace adds URL
       // length and nothing else.
       const rawError = typeof params.error === 'string' && params.error.trim() ? params.error : null;
+      const rawErrorPrefix = typeof params.errorPrefix === 'string' && params.errorPrefix.trim()
+        ? params.errorPrefix.trim()
+        : null;
 
       const qs = [`window=${window}`];
       if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
       if (rawError) qs.push(`error=${encodeURIComponent(rawError.slice(0, FAILURE_LOOKUP_INPUT_MAX))}`);
+      if (rawErrorPrefix) qs.push(`errorPrefix=${encodeURIComponent(rawErrorPrefix.slice(0, FAILURE_PREFIX_INPUT_MAX))}`);
 
       const data = await api(`/api/health/failures?${qs.join('&')}`);
       const analytics = data?.analytics as FailureAnalytics | undefined;
@@ -3353,6 +3402,9 @@ export async function handleBuilddAction(
 
       const lookup = data?.lookup as FailureSignatureLookup | undefined;
       if (lookup) return text(formatFailureLookup(lookup, window, analytics.totals.failed));
+
+      const family = data?.family as FailureSignatureFamily | undefined;
+      if (family) return text(formatFailureFamily(family, window));
 
       return text(formatFailureOverview(analytics, limit));
     }
