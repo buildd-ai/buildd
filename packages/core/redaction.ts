@@ -276,24 +276,53 @@ const SECRET_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
   { pattern: /\bsk-[A-Za-z0-9_-]{20,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /\b(?:bld|dsp|ghp|gho|github_pat|xox[baprs])_[A-Za-z0-9_-]{16,}\b/g, replacement: '[REDACTED:token]' },
   { pattern: /\b(?:[a-fA-F0-9]{48,})\b/g, replacement: '[REDACTED:credential]' },
-  // Standard base64 alphabet only (+ / =) — deliberately excludes `-` and `_`.
-  // Those two chars are also every kebab_case/snake-case identifier's word
-  // separator, and this codebase mints plenty of long ones (mission branch
-  // names like `mission/<slug>-<missionId8>-w<workerId8>` easily clear 48
-  // chars of lowercase letters, digits, and hyphens). Base64url secrets that
-  // use `-`/`_` still get caught by the more specific patterns above (JWT,
-  // sk-, bld/dsp/ghp/xox tokens) or by an exact-value match in
-  // createSecretRedactor's `secrets` list.
-  { pattern: /\b(?=[A-Za-z0-9+/=]{48,}\b)(?=[A-Za-z0-9+/=]*[A-Za-z])(?=[A-Za-z0-9+/=]*\d)[A-Za-z0-9+/=]{48,}\b/g, replacement: '[REDACTED:credential]' },
+  // Full base64/base64url alphabet, including `-`/`_`. Those two chars are also
+  // every kebab-case/snake-case identifier's word separator, and this codebase
+  // mints plenty of long ones (mission branch names like
+  // `mission/<slug>-<missionId8>-w<workerId8>` easily clear 48 chars of
+  // lowercase letters, digits, and hyphens) — matching them here would corrupt
+  // structural fields like `branch` or `lastCommitSha`. Rather than narrowing
+  // the alphabet (which silently drops coverage for real base64url secrets
+  // pasted into free-text fields), generic patterns in this array are only
+  // applied to fields on the SECRET_SCAN_FIELDS allowlist by
+  // redactSecretsInBody — structural fields get exact-value matching only.
+  // See PR #2305 / its follow-up for the incident this guards against.
+  { pattern: /\b(?=[A-Za-z0-9+/=_-]{48,}\b)(?=[A-Za-z0-9+/=_-]*[A-Za-z])(?=[A-Za-z0-9+/=_-]*\d)[A-Za-z0-9+/=_-]{48,}\b/g, replacement: '[REDACTED:credential]' },
 ];
 
 /**
- * Build a redactor function for a set of known secret values.
- * Values shorter than 8 chars or empty are skipped.
- * Longer secrets are replaced before shorter ones to prevent partial matches
- * (if secretA is a prefix of secretB, secretB is replaced first).
+ * Body fields scanned with the generic SECRET_PATTERNS regexes by
+ * redactSecretsInBody. Mirrors FREE_TEXT_FIELDS above, extended with the
+ * additional free-text-bearing keys used on worker PATCH bodies and session
+ * transcripts (tool input/output, transcript text, currentAction, error).
+ *
+ * Fields NOT in this set still get exact-value secret matching (safe — no
+ * false-positive risk) but never generic pattern matching, so a structural
+ * identifier (branch, lastCommitSha, ids, status, ...) can never be corrupted
+ * by a credential-shaped heuristic, now or as new patterns are added. Keep
+ * this list explicit — do not derive it programmatically.
  */
-export function createSecretRedactor(secrets: SecretInput[]): (text: string) => string {
+export const SECRET_SCAN_FIELDS = new Set([
+  ...FREE_TEXT_FIELDS,
+  'error',
+  'currentAction',
+  'output',
+  'input',
+  'command',
+  'text',
+  'nextSuggestion',
+  'line',
+  'stderr',
+  'result',
+]);
+
+/**
+ * Build the exact-value lookup for a set of known secret values.
+ * Values shorter than 8 chars or empty are skipped.
+ * Longer secrets sort first to prevent partial matches (if secretA is a
+ * prefix of secretB, secretB is replaced first).
+ */
+function buildExactValueTable(secrets: SecretInput[]): Array<[string, string | null]> {
   const byValue = new Map<string, string | null>();
   for (const secret of secrets) {
     const value = typeof secret === 'string' ? secret : secret?.value;
@@ -302,27 +331,56 @@ export function createSecretRedactor(secrets: SecretInput[]): (text: string) => 
     const label = rawLabel?.replace(/[^A-Za-z0-9_.-]/g, '_') || null;
     byValue.set(value, label);
   }
-  const valid = [...byValue.entries()].sort(([a], [b]) => b.length - a.length);
+  return [...byValue.entries()].sort(([a], [b]) => b.length - a.length);
+}
 
+/** Replaces exact occurrences of known secret values. No false-positive risk — safe on any field. */
+function redactExactValues(text: string, table: Array<[string, string | null]>): string {
+  let result = text;
+  for (const [secret, label] of table) {
+    if (result.includes(secret)) {
+      // Simple global string replace — no regex so secret chars need no escaping
+      result = result.split(secret).join(label ? `[REDACTED:${label}]` : '[REDACTED]');
+    }
+  }
+  return result;
+}
+
+/** Applies the generic credential-shaped regexes. Only safe on known free-text fields. */
+function redactSecretPatterns(text: string): string {
+  let result = text;
+  for (const { pattern, replacement } of SECRET_PATTERNS) {
+    result = result.replace(pattern, replacement);
+  }
+  return result;
+}
+
+/**
+ * Build a redactor function for a set of known secret values.
+ * Applies exact-value matching plus the generic credential-shaped patterns.
+ * Intended for callers that already know they're handling free text (e.g. a
+ * milestone label, a tool-call log line) — not for scanning an arbitrary body
+ * with structural fields. Use redactSecretsInBody for that.
+ */
+export function createSecretRedactor(secrets: SecretInput[]): (text: string) => string {
+  const table = buildExactValueTable(secrets);
   return (text: string): string => {
     if (!text) return text;
-    let result = text;
-    for (const [secret, label] of valid) {
-      if (result.includes(secret)) {
-        // Simple global string replace — no regex so secret chars need no escaping
-        result = result.split(secret).join(label ? `[REDACTED:${label}]` : '[REDACTED]');
-      }
-    }
-    for (const { pattern, replacement } of SECRET_PATTERNS) {
-      result = result.replace(pattern, replacement);
-    }
-    return result;
+    return redactSecretPatterns(redactExactValues(text, table));
   };
 }
 
 /**
  * Redact known secret values from the mutable fields of a PATCH /api/workers/[id]
- * request body before DB writes and Pusher emission.
+ * request body (or an equivalent worker-session record) before DB writes,
+ * Pusher emission, or object-storage upload.
+ *
+ * Every string field gets exact-value matching against `secrets` regardless of
+ * its name — that carries no false-positive risk. The generic credential-shaped
+ * SECRET_PATTERNS regexes additionally run, but ONLY on fields named in
+ * SECRET_SCAN_FIELDS — a structural identifier (branch, lastCommitSha, ids,
+ * status, ...) is never at risk of being rewritten to "[REDACTED:credential]"
+ * by a heuristic, no matter how it's shaped. See SECRET_SCAN_FIELDS for why.
  *
  * Returns a shallow copy of the body with the relevant string fields cleaned.
  * The original body object is NOT mutated.
@@ -331,12 +389,16 @@ export function redactSecretsInBody<T extends Record<string, unknown>>(
   body: T,
   secrets: SecretInput[],
 ): T {
-  const redact = createSecretRedactor(secrets);
-  const visit = (value: unknown): unknown => {
-    if (typeof value === 'string') return redact(value);
-    if (Array.isArray(value)) return value.map(visit);
+  const table = buildExactValueTable(secrets);
+  const visit = (value: unknown, field?: string): unknown => {
+    if (typeof value === 'string') {
+      if (!value) return value;
+      const exact = redactExactValues(value, table);
+      return field && SECRET_SCAN_FIELDS.has(field) ? redactSecretPatterns(exact) : exact;
+    }
+    if (Array.isArray(value)) return value.map((item) => visit(item, field));
     if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child, key)]));
     }
     return value;
   };
