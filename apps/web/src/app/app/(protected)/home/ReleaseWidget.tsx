@@ -10,7 +10,7 @@ function daysAgo(isoDate: string): number {
 
 export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
   const visible = items.filter(
-    (item) => computeReleaseWidgetDecision(item.queueDepth, item.ciState) !== 'hide',
+    (item) => computeReleaseWidgetDecision(item.queueDepth, item.ciState, item.commitsAheadAtDispatch) !== 'hide',
   );
 
   if (visible.length === 0) return null;
@@ -22,8 +22,41 @@ export function ReleaseWidget({ items }: { items: ReleaseReadinessItem[] }) {
       </div>
       <div className="space-y-2">
         {visible.map((item) => {
-          const decision = computeReleaseWidgetDecision(item.queueDepth, item.ciState);
+          const decision = computeReleaseWidgetDecision(item.queueDepth, item.ciState, item.commitsAheadAtDispatch);
           const releaseHref = item.latestReleaseId ? `/app/releases/${item.latestReleaseId}` : null;
+
+          if (decision === 'error') {
+            return (
+              <div
+                key={item.workspaceId}
+                className="border border-status-warning/30 rounded-[10px] px-4 py-3 bg-surface-2"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    {item.workspaceName && (
+                      <span className="text-[10px] font-mono uppercase tracking-wide text-text-muted/80 block mb-0.5">
+                        {item.workspaceName}
+                      </span>
+                    )}
+                    <span className="text-[13px] text-text-secondary">
+                      Queue depth doesn&apos;t reconcile with the last dispatch — release baseline may be broken
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <ReleaseActionButton workspaceId={item.workspaceId} />
+                    {releaseHref && (
+                      <Link
+                        href={releaseHref}
+                        className="text-[11px] text-text-muted hover:text-text-secondary shrink-0"
+                      >
+                        Release →
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          }
 
           if (decision === 'ci_blocking') {
             return (

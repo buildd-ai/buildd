@@ -10,16 +10,32 @@
 import { db } from '@buildd/core/db';
 import { releases } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
-import { resolveReleaseBaseline, type ReleaseBaseline } from '@buildd/core/release-baseline';
+import {
+  resolveReleaseBaseline,
+  resolveLatestCiReading,
+  type ReleaseBaseline,
+  type CiStateReading,
+} from '@buildd/core/release-baseline';
 import { resolveReleaseTarget } from '@/lib/release/target';
 import { githubApi, isGitHubAppConfigured } from '@/lib/github';
 
-export type { ReleaseBaseline, ReleaseBaselineSource } from '@buildd/core/release-baseline';
+export type { ReleaseBaseline, ReleaseBaselineSource, CiStateReading } from '@buildd/core/release-baseline';
 
-export async function resolveGatedReleaseBaseline(workspaceId: string): Promise<ReleaseBaseline> {
-  const rows = await db
+export interface GatedReleaseState {
+  baseline: ReleaseBaseline;
+  ciState: CiStateReading;
+  latestReleaseId: string | null;
+  /** Most recent release row's commits-ahead snapshot — sanity-check input only, never a live count. */
+  commitsAheadAtDispatch: number | null;
+}
+
+async function fetchReleaseCandidates(workspaceId: string) {
+  return db
     .select({
+      id: releases.id,
       state: releases.state,
+      ciStateAtDispatch: releases.ciStateAtDispatch,
+      commitsAheadAtDispatch: releases.commitsAheadAtDispatch,
       healthyAt: sql<string | null>`healthy_at::text`,
       deployedAt: sql<string | null>`deployed_at::text`,
       dispatchedAt: sql<string | null>`dispatched_at::text`,
@@ -27,11 +43,45 @@ export async function resolveGatedReleaseBaseline(workspaceId: string): Promise<
     })
     .from(releases)
     .where(eq(releases.workspaceId, workspaceId));
+}
+
+export async function resolveGatedReleaseBaseline(workspaceId: string): Promise<ReleaseBaseline> {
+  const rows = await fetchReleaseCandidates(workspaceId);
 
   if (rows.length > 0) return resolveReleaseBaseline(rows, null);
 
   const prodHeadAsOf = await resolveProdBranchHeadAsOf(workspaceId);
   return resolveReleaseBaseline([], prodHeadAsOf);
+}
+
+/**
+ * The ONE shared resolver for baseline + CI reading together — used by the
+ * readiness route and the Home page so they cannot drift into computing the
+ * "most recent releases row" independently and disagreeing about which row
+ * won or how its CI/failed state should be read.
+ */
+export async function resolveGatedReleaseState(workspaceId: string, now: Date = new Date()): Promise<GatedReleaseState> {
+  const rows = await fetchReleaseCandidates(workspaceId);
+  const latest = [...rows].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const ciState = resolveLatestCiReading(rows, now.toISOString());
+  const commitsAheadAtDispatch = latest?.commitsAheadAtDispatch ?? null;
+
+  if (rows.length > 0) {
+    return {
+      baseline: resolveReleaseBaseline(rows, null),
+      ciState,
+      latestReleaseId: latest?.id ?? null,
+      commitsAheadAtDispatch,
+    };
+  }
+
+  const prodHeadAsOf = await resolveProdBranchHeadAsOf(workspaceId);
+  return {
+    baseline: resolveReleaseBaseline([], prodHeadAsOf),
+    ciState,
+    latestReleaseId: null,
+    commitsAheadAtDispatch: null,
+  };
 }
 
 // Rung 4: no release has ever been recorded for this workspace, so the only

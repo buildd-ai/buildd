@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, releases, actionQueueSnoozes } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
-import type { CiState, ReleaseReadinessItem } from '@/lib/release-readiness';
+import type { ReleaseReadinessItem } from '@/lib/release-readiness';
 import { ReleaseWidget } from './ReleaseWidget';
 import { redirect } from 'next/navigation';
 import { cookies } from 'next/headers';
@@ -28,7 +28,7 @@ import { needsReconnect } from '@/lib/connector-status';
 import { refreshStaleWorkersForWorkspaces } from '@/lib/pr-state-refresh';
 import { DEFAULT_MAX_CONFLICT_ITERATIONS } from '@/lib/conflict-retry';
 import { derivedValue, derivedUnavailable } from '@buildd/core/derived-metric';
-import { resolveGatedReleaseBaseline } from '@/lib/release-baseline';
+import { resolveGatedReleaseState } from '@/lib/release-baseline';
 import { notMissionIntegrationMerge } from '@buildd/core/release-queue-scope';
 import { ResolvedEscalationsGroup } from '@/components/ResolvedEscalationsGroup';
 import { SwipeableRow, SwipeProvider } from '@/components/SwipeableRow';
@@ -872,20 +872,14 @@ export default async function HomePage({
               gatedWsIds.map(async (wsId) => {
                 const ws = wsRows.find((w) => w.id === wsId)!;
 
-                const [latestRelease] = await db
-                  .select({ id: releases.id, ciStateAtDispatch: releases.ciStateAtDispatch })
-                  .from(releases)
-                  .where(eq(releases.workspaceId, wsId))
-                  .orderBy(desc(releases.createdAt))
-                  .limit(1);
-
-                const ciState: CiState = (latestRelease?.ciStateAtDispatch as CiState) ?? 'unknown';
-
-                // Baseline ladder (@buildd/core/release-baseline via resolveGatedReleaseBaseline):
-                // healthy release → deployed release → any release row → prod-branch HEAD.
-                // Shared with the missions page and the readiness route so no two
-                // release surfaces can disagree about where the queue starts.
-                const baseline = await resolveGatedReleaseBaseline(wsId);
+                // Baseline + CI reading (@buildd/core/release-baseline via
+                // resolveGatedReleaseState): healthy release → deployed release →
+                // any non-failed release → prod-branch HEAD. A failed dispatch
+                // establishes neither a baseline nor a CI reading, and a reading
+                // past its TTL degrades to unknown rather than pinning to a stale
+                // failure. Shared with the readiness route so no two release
+                // surfaces can disagree about where the queue starts.
+                const { baseline, ciState, latestReleaseId, commitsAheadAtDispatch } = await resolveGatedReleaseState(wsId);
 
                 if (!baseline.asOf) {
                   return {
@@ -895,7 +889,8 @@ export default async function HomePage({
                     oldestMergedAt: derivedUnavailable<string>('no_baseline'),
                     baselineSource: baseline.source,
                     ciState,
-                    latestReleaseId: latestRelease?.id ?? null,
+                    latestReleaseId,
+                    commitsAheadAtDispatch,
                   };
                 }
 
@@ -926,7 +921,8 @@ export default async function HomePage({
                     : derivedUnavailable<string>('no_scope'),
                   baselineSource: baseline.source,
                   ciState,
-                  latestReleaseId: latestRelease?.id ?? null,
+                  latestReleaseId,
+                  commitsAheadAtDispatch,
                 };
               }),
             );
