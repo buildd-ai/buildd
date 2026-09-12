@@ -190,9 +190,48 @@ describe('aggregateCbm — by-design skips', () => {
       ...Array.from({ length: 5 }, () => row({ outcome: 'disabled', disableReason: 'codex_task' })),
     ];
     const s = summarize(rows);
-    // No amount of engineering makes a Codex task use the graph.
+    // `codex_task` now means only "CBM-for-Codex is switched off fleet-wide" —
+    // still a configuration decision, so still out of the fallback rate.
     expect(s.eligibleFallbackRate).toBe(0);
     expect(s.byDesignSkips).toEqual({ codex_task: 5 });
+  });
+
+  it('counts a CBM-enforced Codex worker in the eligible cohort and the adoption denominator', () => {
+    // Regression for the shape the metric could not see: CBM is mounted for Codex
+    // tasks (stdio server in the worker's Codex config.toml), so such a worker is
+    // `enforced`, not a `codex_task` skip. If it were still recorded as a
+    // by-design skip it would leave BOTH sides of the adoption rate while the
+    // graph was actually mounted — a mounted-and-unused Codex fleet would read as
+    // a healthy Claude-only one.
+    const codexEnforcedUnused = row({ bootstrapResult: 'ok', readCount: 4 });
+    const codexEnforcedUsed = row({
+      bootstrapResult: 'ok',
+      toolCalls: { search_graph: 3 },
+      totalCbmCalls: 3,
+    });
+    const agg = aggregateCbm([codexEnforcedUnused, codexEnforcedUsed], '7d', WINDOW_START);
+    expect(agg.cbmActive.count).toBe(2);
+    expect(agg.eligibility.eligibleCount).toBe(2);
+    expect(agg.eligibility.byDesignSkipCount).toBe(0);
+    // Denominator is every mounted task, not only the ones that queried.
+    expect(agg.cbmActive.adoptionRate).toBeCloseTo(0.5, 5);
+  });
+
+  it('reports a Codex worker with no worktree as no_worktree, not codex_task', () => {
+    // The runner used to test isCodexTask first, so every skip on a Codex task
+    // read `codex_task`. Both reasons are by-design, so the aggregate totals look
+    // the same — the loss was diagnostic, and `binary_absent` (breakage) was
+    // masked the same way, which is NOT by-design. The label has to survive.
+    const rows = [
+      ...Array.from({ length: 3 }, () => row({ bootstrapResult: 'ok' })),
+      row({ outcome: 'disabled', disableReason: 'no_worktree' }),
+      row({ outcome: 'disabled', disableReason: 'binary_absent' }),
+    ];
+    const s = summarize(rows);
+    expect(s.byDesignSkips).toEqual({ no_worktree: 1 });
+    expect(s.binaryAbsent).toBe(1);
+    // The masked breakage now counts against the fallback target: 1 of 4 eligible.
+    expect(s.eligibleFallbackRate).toBeCloseTo(0.25, 5);
   });
 
   it('counts a missing sandbox mount as breakage, not a decision', () => {
