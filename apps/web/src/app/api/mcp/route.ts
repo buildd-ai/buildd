@@ -25,8 +25,9 @@ import {
 import { authenticateApiKey } from "@/lib/api-auth";
 import { db } from "@buildd/core/db";
 import { workspaces, workers as workersTable, tasks } from "@buildd/core/db/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import {
+  appendPathManifest,
   checkPathClaimConflict,
   insertClaims,
   registerWaiter,
@@ -451,7 +452,7 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
         }
         const taskId = workerRow.taskId;
 
-        let mcpTask = await db.query.tasks.findFirst({
+        const mcpTask = await db.query.tasks.findFirst({
           where: eq(tasks.id, taskId),
           columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
         });
@@ -468,105 +469,68 @@ function createMcpServer(api: ApiFn, accountLevel: 'trigger' | 'worker' | 'admin
           };
         }
 
-        const MCP_CLAIM_RETRIES = 3;
-        for (let attempt = 0; attempt < MCP_CLAIM_RETRIES; attempt++) {
-          // Check active path_claims rows for conflicts (workspace-scoped).
-          // Held locks are now in path_claims, not inferred from tasks.pathManifest.
-          const conflict = await checkPathClaimConflict(
-            mcpTask.workspaceId,
+        // Check active path_claims rows for conflicts (workspace-scoped).
+        // Held locks live in path_claims, not inferred from tasks.pathManifest.
+        const conflict = await checkPathClaimConflict(
+          mcpTask.workspaceId,
+          taskId,
+          paths,
+        );
+
+        if (conflict) {
+          const blocker = await db.query.tasks.findFirst({
+            where: eq(tasks.id, conflict.blockingTaskId),
+            columns: { id: true, title: true, missionId: true },
+          });
+
+          // Auto-register as waiter (deadlock check included)
+          const waiterResult = await registerWaiter(
+            conflict.blockingTaskId,
             taskId,
-            paths,
+            conflict.blockingPath,
+            mcpTask.workspaceId,
           );
 
-          if (conflict) {
-            const blocker = await db.query.tasks.findFirst({
-              where: eq(tasks.id, conflict.blockingTaskId),
-              columns: { id: true, title: true, missionId: true },
-            });
+          const isCrossMission =
+            blocker?.missionId !== null && blocker?.missionId !== undefined &&
+            mcpTask.missionId !== null && mcpTask.missionId !== undefined &&
+            blocker?.missionId !== mcpTask.missionId;
 
-            // Auto-register as waiter (deadlock check included)
-            const waiterResult = await registerWaiter(
-              conflict.blockingTaskId,
-              taskId,
-              conflict.blockingPath,
-              mcpTask.workspaceId,
-            );
+          const message = isCrossMission
+            ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`
+            : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
 
-            const isCrossMission =
-              blocker?.missionId !== null && blocker?.missionId !== undefined &&
-              mcpTask.missionId !== null && mcpTask.missionId !== undefined &&
-              blocker?.missionId !== mcpTask.missionId;
+          const result: Record<string, unknown> = {
+            claimed: false,
+            blockingTaskId: conflict.blockingTaskId,
+            blockingTaskTitle: blocker?.title ?? null,
+            blockingMissionId: blocker?.missionId ?? null,
+            message,
+          };
 
-            const message = isCrossMission
-              ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`
-              : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You are registered as a waiter — a path_released message is delivered on your next update_progress check-in when the path is free.`;
-
-            const result: Record<string, unknown> = {
-              claimed: false,
-              blockingTaskId: conflict.blockingTaskId,
-              blockingTaskTitle: blocker?.title ?? null,
-              blockingMissionId: blocker?.missionId ?? null,
-              message,
-            };
-
-            if ('deadlock' in waiterResult && waiterResult.deadlock) {
-              result.deadlock = true;
-              result.cycle = waiterResult.cycle;
-            }
-
-            return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+          if ('deadlock' in waiterResult && waiterResult.deadlock) {
+            result.deadlock = true;
+            result.cycle = waiterResult.cycle;
           }
 
-          const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
-          const existingSet = new Set(existingManifest);
-          const newPaths = paths.filter((p) => !existingSet.has(p));
-
-          if (newPaths.length === 0) {
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: existingManifest }) }],
-            };
-          }
-
-          const updatedManifest = [...existingManifest, ...newPaths];
-
-          // Atomic CAS: write only if pathManifest hasn't changed since we read it.
-          const [updated] = await db
-            .update(tasks)
-            .set({ pathManifest: updatedManifest })
-            .where(
-              and(
-                eq(tasks.id, taskId),
-                sql`path_manifest IS NOT DISTINCT FROM ${JSON.stringify(existingManifest)}::jsonb`,
-              )
-            )
-            .returning({ id: tasks.id });
-
-          if (updated) {
-            // Insert path_claims rows for the newly claimed paths
-            await insertClaims(mcpTask.workspaceId, taskId, newPaths);
-            return {
-              content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
-            };
-          }
-
-          // CAS failed — re-read and retry if attempts remain.
-          if (attempt < MCP_CLAIM_RETRIES - 1) {
-            const refreshed = await db.query.tasks.findFirst({
-              where: eq(tasks.id, taskId),
-              columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true },
-            });
-            if (!refreshed) {
-              return {
-                content: [{ type: "text" as const, text: "Task not found." }],
-                isError: true,
-              };
-            }
-            mcpTask = refreshed;
-          }
+          return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
         }
 
+        const existingManifest = (mcpTask.pathManifest as string[] | null) ?? [];
+        const existingSet = new Set(existingManifest);
+        const newPaths = paths.filter((p) => !existingSet.has(p));
+
+        if (newPaths.length === 0) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: existingManifest }) }],
+          };
+        }
+
+        // Atomic append — see appendPathManifest for why this needs no CAS/retry.
+        const updatedManifest = await appendPathManifest(taskId, newPaths);
+        await insertClaims(mcpTask.workspaceId, taskId, newPaths);
         return {
-          content: [{ type: "text" as const, text: JSON.stringify({ claimed: false, error: "Concurrent update conflict. Please retry." }) }],
+          content: [{ type: "text" as const, text: JSON.stringify({ claimed: true, pathManifest: updatedManifest }) }],
         };
       } else if (name === "send_worker_message") {
         // Requires worker or admin token — trigger tokens don't run agent work
