@@ -85,7 +85,33 @@ jobs:
         id: migration_check
         run: |
           cd packages/core
-          bun db:generate
+          # drizzle-kit aborts without generating anything and STILL EXITS 0. A
+          # generate that aborts writes nothing, which the porcelain check below
+          # cannot tell apart from "no changes needed" — so this step used to
+          # report success over a db:generate that never ran.
+          #
+          # The collision/malformed branch is fixed at the root by
+          # patches/drizzle-kit@*.patch (exit 0 -> exit 1), guarded by
+          # packages/core/__tests__/drizzle-kit-patch.test.ts. This output check
+          # stays for the abort paths the patch does NOT cover: the
+          # "snapshot is not of the latest version" branch still exits 0, and it
+          # prints via console.log rather than as an Error.
+          # Capture before asserting: the step runs under `bash -e`, so letting a
+          # now-nonzero db:generate fail the assignment would kill the step before
+          # its output is ever echoed, leaving no diagnosis in the log.
+          set +e
+          out=$(bun db:generate 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          if [ "$code" -ne 0 ]; then
+            echo "::error::bun db:generate exited $code (see output above)."
+            exit 1
+          fi
+          if grep -qE '^Error:|is not of the latest version' <<<"$out"; then
+            echo "::error::bun db:generate aborted without generating, yet exited 0 (see output above)."
+            exit 1
+          fi
           if [ -n "$(git status --porcelain drizzle/)" ]; then
             echo "::error::Schema changes detected but migrations not committed!"
             echo "Run 'cd packages/core && bun db:generate' and commit the generated files."
@@ -303,7 +329,17 @@ jobs:
       - name: Run schema drift check against production DB
         if: steps.gate.outputs.applies == 'true'
         id: drift_check
-        run: bun run scripts/check-schema-drift.ts
+        # Exit 1 is a drift verdict; exit 2 means the gate could not make a
+        # trustworthy comparison at all (a forked snapshot chain, a missing
+        # DATABASE_URL) and does NOT implicate production. Capture the code so
+        # the alert can tell a responder which one happened — see
+        # docs/design/migration-doctrine.md Rule 7.
+        run: |
+          set +e
+          bun run scripts/check-schema-drift.ts
+          code=$?
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
@@ -316,10 +352,16 @@ jobs:
           if [ -z "$PUSHOVER_USER" ] || [ -z "$PUSHOVER_TOKEN_ALERT" ]; then exit 0; fi
           PR_URL="${{ github.event.pull_request.html_url }}"
           PR_NUM="${{ github.event.pull_request.number }}"
-          MSG="Production DB schema has drifted from Drizzle migrations. Release PR #${PR_NUM} is blocked. Check the CI logs and open a reconciliation PR before promoting."
+          if [ "${{ steps.drift_check.outputs.exit_code }}" = "2" ]; then
+            TITLE="⚠️ Schema gate could not verify — release blocked"
+            MSG="The schema-drift gate could not make a trustworthy comparison (likely a forked snapshot chain) so it produced NO drift verdict. Production is NOT implicated. Release PR #${PR_NUM} is blocked until the repo metadata is repaired — see the CI logs and migration-doctrine Rule 7."
+          else
+            TITLE="🚨 Schema drift gate failed — release blocked"
+            MSG="Production DB schema has drifted from Drizzle migrations. Release PR #${PR_NUM} is blocked. Check the CI logs and open a reconciliation PR before promoting."
+          fi
           curl -s --form-string "token=${PUSHOVER_TOKEN_ALERT}" \
             --form-string "user=${PUSHOVER_USER}" \
-            --form-string "title=🚨 Schema drift gate failed — release blocked" \
+            --form-string "title=${TITLE}" \
             --form-string "message=${MSG}" \
             --form-string "priority=1" \
             --form-string "url=${PR_URL}" \

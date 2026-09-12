@@ -23,6 +23,22 @@ const EMPTY_ANALYTICS = {
 
 const mockGetFailureAnalytics = mock(() => Promise.resolve(EMPTY_ANALYTICS as any));
 
+const EMPTY_FAMILY = {
+  prefix: '',
+  known: false,
+  count: 0,
+  distinctSignatures: 0,
+  firstSeen: null,
+  lastSeen: null,
+  diedEarlyCount: 0,
+  exitCauses: [],
+  exampleTaskId: null,
+  frictionSignature: 'worker-failure:unknown_000000',
+  topSignatures: [],
+};
+
+const mockGetFailureSignatureFamily = mock(() => Promise.resolve(EMPTY_FAMILY as any));
+
 // Stands in for the real normalizer (unit tested in the lib): first non-empty
 // line, whitespace collapsed, digits → <n>. Spied so the lookup tests can prove
 // the route delegates rather than re-implementing normalization.
@@ -35,6 +51,7 @@ const mockNormalizeErrorSignature = mock((raw: string | null | undefined) => {
 
 mock.module('@/lib/failure-analytics', () => ({
   getFailureAnalytics: mockGetFailureAnalytics,
+  getFailureSignatureFamily: mockGetFailureSignatureFamily,
   normalizeErrorSignature: mockNormalizeErrorSignature,
   FAILURE_WINDOWS: ['24h', '7d', '30d'],
   parseFailureWindow: (raw: string | null | undefined) =>
@@ -87,12 +104,14 @@ describe('GET /api/health/failures', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
     mockGetFailureAnalytics.mockReset();
+    mockGetFailureSignatureFamily.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesFindMany.mockReset();
 
     mockAuthenticateApiKey.mockResolvedValue(authedAccount());
     mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
     mockGetFailureAnalytics.mockResolvedValue(EMPTY_ANALYTICS);
+    mockGetFailureSignatureFamily.mockResolvedValue(EMPTY_FAMILY);
   });
 
   it('returns 401 when API key is missing or invalid', async () => {
@@ -225,6 +244,7 @@ describe('GET /api/health/failures — signature lookup', () => {
   beforeEach(() => {
     mockAuthenticateApiKey.mockReset();
     mockGetFailureAnalytics.mockReset();
+    mockGetFailureSignatureFamily.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockNormalizeErrorSignature.mockClear();
@@ -232,6 +252,7 @@ describe('GET /api/health/failures — signature lookup', () => {
     mockAuthenticateApiKey.mockResolvedValue(authedAccount());
     mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
     mockGetFailureAnalytics.mockResolvedValue(analyticsWith([STALE_CLUSTER], 12));
+    mockGetFailureSignatureFamily.mockResolvedValue(EMPTY_FAMILY);
   });
 
   it('omits the lookup block entirely when no error param is given', async () => {
@@ -339,5 +360,101 @@ describe('GET /api/health/failures — signature lookup', () => {
     await GET(makeRequest(`${URL_BASE}?error=${encodeURIComponent('boom')}`));
     expect(mockWorkspacesFindMany.mock.calls.length).toBe(1);
     expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([VALID_UUID, 'ws-2']);
+  });
+});
+
+// ── Signature-family rollup mode (?errorPrefix=…) ────────────────────────────
+
+const NEEDS_INPUT_FAMILY = {
+  prefix: 'needs_input:',
+  known: true,
+  count: 14,
+  distinctSignatures: 9,
+  firstSeen: '2026-08-22T00:00:00.000Z',
+  lastSeen: '2026-08-27T00:00:00.000Z',
+  diedEarlyCount: 3,
+  exitCauses: ['needs_input'],
+  exampleTaskId: 't1',
+  frictionSignature: 'worker-failure:needs_input_a1b2c3',
+  topSignatures: [
+    { signature: 'needs_input: should I use bun or npm?', count: 2 },
+    { signature: 'needs_input: which workspace should this target?', count: 1 },
+  ],
+};
+
+describe('GET /api/health/failures — signature-family rollup', () => {
+  beforeEach(() => {
+    mockAuthenticateApiKey.mockReset();
+    mockGetFailureAnalytics.mockReset();
+    mockGetFailureSignatureFamily.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+
+    mockAuthenticateApiKey.mockResolvedValue(authedAccount());
+    mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
+    mockGetFailureAnalytics.mockResolvedValue(EMPTY_ANALYTICS);
+    mockGetFailureSignatureFamily.mockResolvedValue(NEEDS_INPUT_FAMILY);
+  });
+
+  it('omits the family block entirely when no errorPrefix param is given', async () => {
+    const res = await GET(makeRequest(URL_BASE));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.family).toBeUndefined();
+    expect(mockGetFailureSignatureFamily).toHaveBeenCalledTimes(0);
+  });
+
+  it('forwards the literal prefix and the same scoping/window to the aggregator', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?window=30d&errorPrefix=${encodeURIComponent('needs_input:')}`));
+    expect(res.status).toBe(200);
+    expect(mockGetFailureSignatureFamily.mock.calls[0][0]).toEqual([VALID_UUID]);
+    expect(mockGetFailureSignatureFamily.mock.calls[0][1]).toBe('30d');
+    expect(mockGetFailureSignatureFamily.mock.calls[0][2]).toBe('needs_input:');
+  });
+
+  it('returns the rollup under a "family" key alongside the overview analytics', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?errorPrefix=${encodeURIComponent('needs_input:')}`));
+    const body = await res.json();
+    expect(body.analytics).toBeDefined();
+    expect(body.family.known).toBe(true);
+    expect(body.family.count).toBe(14);
+    expect(body.family.distinctSignatures).toBe(9);
+    expect(body.family.frictionSignature).toBe('worker-failure:needs_input_a1b2c3');
+    expect(body.family.topSignatures.length).toBe(2);
+  });
+
+  it('treats a blank errorPrefix as absent instead of aggregating an empty prefix', async () => {
+    const res = await GET(makeRequest(`${URL_BASE}?errorPrefix=${encodeURIComponent('   ')}`));
+    const body = await res.json();
+    expect(body.family).toBeUndefined();
+    expect(mockGetFailureSignatureFamily).toHaveBeenCalledTimes(0);
+  });
+
+  it('can run alongside an exact-match error lookup in the same request', async () => {
+    mockGetFailureAnalytics.mockResolvedValue(analyticsWith([STALE_CLUSTER], 12));
+    const res = await GET(makeRequest(
+      `${URL_BASE}?error=${encodeURIComponent('Stale worker expired (no update for 15+ minutes)')}`
+      + `&errorPrefix=${encodeURIComponent('needs_input:')}`,
+    ));
+    const body = await res.json();
+    expect(body.lookup.known).toBe(true);
+    expect(body.family.known).toBe(true);
+  });
+
+  it('never leaks another team\'s failures: cross-team workspaceId 404s before any aggregation', async () => {
+    mockWorkspacesFindFirst.mockResolvedValue({ id: VALID_UUID, teamId: 'other-team' });
+    const res = await GET(makeRequest(
+      `${URL_BASE}?workspaceId=${VALID_UUID}&errorPrefix=${encodeURIComponent('needs_input:')}`,
+    ));
+    expect(res.status).toBe(404);
+    expect(mockGetFailureSignatureFamily).toHaveBeenCalledTimes(0);
+  });
+
+  it('truncates an oversized prefix before it reaches the aggregator', async () => {
+    const huge = `needs_input:${'x'.repeat(5000)}`;
+    await GET(makeRequest(`${URL_BASE}?errorPrefix=${encodeURIComponent(huge)}`));
+    const sentPrefix = mockGetFailureSignatureFamily.mock.calls[0][2] as string;
+    expect(sentPrefix.length).toBeLessThanOrEqual(200);
+    expect(sentPrefix.startsWith('needs_input:')).toBe(true);
   });
 });

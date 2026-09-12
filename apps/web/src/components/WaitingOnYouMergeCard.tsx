@@ -17,15 +17,19 @@ interface WaitingOnYouMergeCardProps {
 
 const MERGED_DISMISS_MS = 5000;
 
-type MergeState =
-  | 'idle'
-  | 'confirming'
-  | 'merging'
-  | 'merged'
-  | 'stale'
-  | 'error'
-  | 'conflict_dispatched'
-  | 'conflict_exhausted';
+// `state` below is transient client-only UI for the moment of a click, same
+// as WaitingOnYouReviewCard (see docs/specs/action-queue-card-state.md, I-1).
+// What happens AFTER a dispatch — merged, already merged, a conflict retry
+// in flight, retries exhausted — is never decided by `state`: that's server
+// truth, held in `optimistic` only until fresh `item` props land, then
+// cleared unconditionally so a background refresh always wins.
+type MergeState = 'idle' | 'confirming' | 'merging' | 'error';
+
+type Optimistic =
+  | { kind: 'merged' }
+  | { kind: 'stale' }
+  | { kind: 'conflict_dispatched'; taskId: string | null }
+  | { kind: 'conflict_exhausted' };
 
 /** How long the ✓ / stale confirmation shows before the server re-render lands. */
 const RESOLVE_REFRESH_MS = 1200;
@@ -39,7 +43,14 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
 
   const [mergeState, setMergeState] = useState<MergeState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
-  const [conflictRetryTaskId, setConflictRetryTaskId] = useState<string | null>(null);
+  const [optimistic, setOptimistic] = useState<Optimistic | null>(null);
+
+  // The moment fresh server props land, whatever `optimistic` was covering is
+  // either already reflected in `item` or superseded by it — it must never
+  // outlive the click that produced it.
+  useEffect(() => {
+    setOptimistic(null);
+  }, [item]);
 
   useEffect(() => {
     if (cardState === 'merged_resolved') {
@@ -72,17 +83,18 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       switch (outcome.kind) {
         case 'merged':
         case 'stale':
-          setMergeState(outcome.kind);
+          setOptimistic({ kind: outcome.kind });
           // Re-render Home so the card resolves (or disappears) instead of
           // flipping back to an idle Merge button that looks like a dead click.
           setTimeout(() => router.refresh(), RESOLVE_REFRESH_MS);
           break;
         case 'conflict_dispatched':
-          setConflictRetryTaskId(outcome.taskId);
-          setMergeState('conflict_dispatched');
+          setOptimistic({ kind: 'conflict_dispatched', taskId: outcome.taskId });
+          router.refresh();
           break;
         case 'conflict_exhausted':
-          setMergeState('conflict_exhausted');
+          setOptimistic({ kind: 'conflict_exhausted' });
+          router.refresh();
           break;
         case 'error':
           setErrorMsg(outcome.message);
@@ -190,7 +202,23 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
         {/* Right action slot: Merge trigger, Merging spinner, Merged confirmation */}
         {item.prNumber != null && (
           <div className="flex-shrink-0">
-            {mergeState === 'idle' && (
+            {optimistic?.kind === 'merged' && (
+              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-status-success">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+                Merged
+              </span>
+            )}
+            {optimistic?.kind === 'stale' && (
+              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-text-muted">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M20 6L9 17l-5-5" />
+                </svg>
+                Already merged
+              </span>
+            )}
+            {!optimistic && mergeState === 'idle' && (
               <button
                 onClick={() => setMergeState('confirming')}
                 className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-0.5 rounded"
@@ -201,26 +229,10 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 Merge
               </button>
             )}
-            {mergeState === 'merging' && (
+            {!optimistic && mergeState === 'merging' && (
               <span className="inline-flex items-center gap-1.5 text-[12px] text-text-muted">
                 <Spinner size="xs" className="text-status-success" aria-label="Merging" />
                 Merging…
-              </span>
-            )}
-            {mergeState === 'merged' && (
-              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-status-success">
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-                Merged
-              </span>
-            )}
-            {mergeState === 'stale' && (
-              <span className="inline-flex items-center gap-1 text-[12px] font-medium text-text-muted">
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M20 6L9 17l-5-5" />
-                </svg>
-                Already merged
               </span>
             )}
             {/* confirming: right slot empty — confirm strip renders below */}
@@ -264,7 +276,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       <ActionCardContextLine item={item} className="mt-0.5" />
 
       {/* Confirm strip: full-width below the title, only when confirming */}
-      {mergeState === 'confirming' && item.prNumber != null && (
+      {!optimistic && mergeState === 'confirming' && item.prNumber != null && (
         <div className="mt-2 pt-2 border-t border-primary/20 flex items-center justify-between gap-2">
           <span className="text-[11px] text-text-secondary min-w-0">{confirmMsg}</span>
           <div className="flex items-center gap-2 flex-shrink-0">
@@ -285,7 +297,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       )}
 
       {/* Error strip */}
-      {mergeState === 'error' && (
+      {!optimistic && mergeState === 'error' && (
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
           <button
@@ -298,16 +310,16 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       )}
 
       {/* Conflict dispatched strip — agent is handling it */}
-      {mergeState === 'conflict_dispatched' && (
+      {optimistic?.kind === 'conflict_dispatched' && (
         <div className="mt-2 pt-2 border-t border-primary/20">
           <div className="flex items-center gap-1.5 mb-1.5">
             <Spinner size="xs" className="flex-shrink-0" aria-label="Resolving conflicts" />
             <span className="text-[11px] text-text-secondary">Agent dispatched to resolve merge conflicts.</span>
           </div>
           <div className="flex items-center gap-3">
-            {conflictRetryTaskId && (
+            {optimistic.taskId && (
               <Link
-                href={`/app/tasks/${conflictRetryTaskId}`}
+                href={`/app/tasks/${optimistic.taskId}`}
                 className="text-[12px] font-medium text-primary hover:underline"
               >
                 View task
@@ -328,7 +340,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       )}
 
       {/* Conflict exhausted strip — retries maxed, human must act */}
-      {mergeState === 'conflict_exhausted' && (
+      {optimistic?.kind === 'conflict_exhausted' && (
         <div className="mt-2 pt-2 border-t border-status-error/20">
           <p className="text-[11px] text-status-error mb-1.5">
             Conflict resolution retries exhausted. Manual action required.

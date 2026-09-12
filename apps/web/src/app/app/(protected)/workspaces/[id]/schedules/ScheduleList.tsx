@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { isValidTaskId } from '@/lib/task-id';
+import { isScheduleErrorLive } from '@/lib/schedule-health';
 
 interface PendingSuggestion {
   cronExpression?: string;
@@ -194,7 +195,7 @@ export function ScheduleList({ workspaceId, initialSchedules }: Props) {
                   </a>
                 )}
               </div>
-              {schedule.lastError && (
+              {isScheduleErrorLive(schedule) && (
                 <p className="text-xs text-status-error mt-1 truncate">{schedule.lastError}</p>
               )}
               {schedule.pendingSuggestion && (

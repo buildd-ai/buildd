@@ -279,6 +279,7 @@ export async function applyCriteriaRearm(input: {
       body:
         `${decision.reason}.\n\n` +
         `Completion refusal: ${input.blockReason}\n\n` +
+        `Last evaluated: ${state?.evaluatedAt ?? 'unknown'}\n\n` +
         `Blocking criteria:\n${verdictLines || '- (no per-criterion detail recorded)'}\n\n` +
         readingLine +
         `The heartbeat has been stood down so this stops re-evaluating on a cadence. ` +

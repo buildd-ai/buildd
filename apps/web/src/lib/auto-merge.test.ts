@@ -83,7 +83,7 @@ mock.module('@/lib/conflict-retry', () => ({
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
 }));
 
-import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion } from './auto-merge';
+import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
 // ── evaluateAutoMergeSafety ───────────────────────────────────────────────────
@@ -593,6 +593,88 @@ describe('escalateReviewerExhaustion', () => {
   });
 });
 
+// ── escalateReviewContractFailure ─────────────────────────────────────────────
+
+describe('escalateReviewContractFailure', () => {
+  const TASK_ID = 'task-rev-789';
+  const REPO = 'acme/my-app';
+  const PR_NUMBER = 101;
+  const HEAD_SHA = 'beef1234567890abcdef';
+
+  const baseTask = {
+    id: TASK_ID,
+    missionId: null as string | null,
+    title: '[reviewer] feat: add search',
+    context: {},
+  };
+
+  beforeEach(() => {
+    mockNotify.mockReset();
+    capturedInsertValues = [];
+    mockUpdateReturns = [];
+    mockFindFirst = mock(() => baseTask);
+  });
+
+  it('returns early without firing Pushover when task is not found', async () => {
+    mockFindFirst = mock(() => null);
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('fires Pushover on first call when CAS succeeds', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    const call = mockNotify.mock.calls[0][0] as any;
+    expect(call.app).toBe('tasks');
+    expect(call.title).toContain(`PR #${PR_NUMBER}`);
+    expect(call.message).toContain('[reviewer] feat: add search');
+  });
+
+  it('does NOT fire Pushover when CAS returns empty (already escalated for this task)', async () => {
+    mockUpdateReturns = [[]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: exactly one Pushover across three concurrent observations', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }], [], []];
+    await Promise.all([
+      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
+      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
+      escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA }),
+    ]);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('inserts a reviewer_escalated note when task has a missionId', async () => {
+    mockFindFirst = mock(() => ({ ...baseTask, missionId: 'mission-xyz' }));
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(capturedInsertValues).toHaveLength(1);
+    expect(capturedInsertValues[0].type).toBe('reviewer_escalated');
+    expect(capturedInsertValues[0].missionId).toBe('mission-xyz');
+    expect(capturedInsertValues[0].taskId).toBe(TASK_ID);
+    expect(capturedInsertValues[0].status).toBe('open');
+    expect(capturedInsertValues[0].title).toContain(`PR #${PR_NUMBER}`);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('fires Pushover but inserts NO note when task has no missionId', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    expect(capturedInsertValues).toHaveLength(0);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it('Pushover URL points to the buildd task page', async () => {
+    mockUpdateReturns = [[{ id: TASK_ID }]];
+    await escalateReviewContractFailure({ taskId: TASK_ID, repoFullName: REPO, prNumber: PR_NUMBER, headSha: HEAD_SHA });
+    const url = (mockNotify.mock.calls[0][0] as any).url as string;
+    expect(url).toContain(`/app/tasks/${TASK_ID}`);
+  });
+});
+
 // ── Option A': the mission integration PR and the aggregate size gate ────────
 //
 // The mission PR is the union of every task diff in the mission, and each of
@@ -889,6 +971,81 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
       `/repos/buildd-ai/buildd/git/refs/heads/${encodeURIComponent(MISSION_BRANCH)}`,
       expect.objectContaining({ method: 'DELETE' }),
     );
+  });
+});
+
+// ── Return value: a caller with a second, differently-authorised merge path
+// (the reviewer approve handler falling back to the unbounded self-merge
+// check after a bounded attempt is refused) needs to know whether the merge
+// actually landed, and why not when it didn't. ──────────────────────────────
+describe('tryAutoMergeWorkerPr — return value', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockMergePullRequest.mockClear();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+  });
+
+  const CLEAN_GREEN = [{ name: 'build', status: 'completed', conclusion: 'success' }];
+  const ORDINARY_FILES = [{ filename: 'apps/web/src/lib/foo.ts', additions: 4, deletions: 1 }];
+
+  it('reports merged: true on a successful merge', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'task/x' } });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result).toEqual({ merged: true });
+  });
+
+  it('names conflicts as the reason for a dirty PR — the SAME shape a caller uses to distinguish "not authorised" from "would authorise, but blocked"', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { ref: 'task/x' } });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('conflicts');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('reports merged: false with the GitHub failure message when the merge call itself fails', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
+      .mockResolvedValueOnce(ORDINARY_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'task/x' } });
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'PR has already been merged' });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: null },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result).toEqual({ merged: false, reason: 'PR has already been merged' });
   });
 });
 

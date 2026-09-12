@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'bun:test';
 import {
   runCbmBootstrap,
-  CBM_INDEX_TIMEOUT_MS,
+  resolveCbmIndexWaitMs,
+  stopBackgroundCbmIndex,
+  CBM_INDEX_WAIT_MS,
 } from '../../src/cbm-bootstrap';
-import { existsSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -63,17 +65,31 @@ function makeErrorSpawn(errorMessage: string) {
   };
 }
 
-// Fake spawn that hangs forever (simulates timeout)
+// Fake spawn for an index that is still running when the wait budget expires.
+//
+// Exposes the child so a test can drive what happens AFTER the budget — the whole
+// point of backgrounding is that the process outlives the wait, so "what the child
+// does next" is now observable behaviour rather than something the timer ends.
 function makeHangSpawn() {
-  return (_cmd: string, _args: string[], _opts: any) => {
-    const { EventEmitter } = require('events');
-    const proc = new EventEmitter();
-    (proc as any).stdout = new EventEmitter();
-    (proc as any).stderr = new EventEmitter();
-    (proc as any).kill = () => {
-      proc.emit('close', null);
-    };
-    return proc;
+  const { EventEmitter } = require('events');
+  const proc = new EventEmitter();
+  (proc as any).stdout = new EventEmitter();
+  (proc as any).stderr = new EventEmitter();
+  const killSignals: (string | undefined)[] = [];
+  let unrefCount = 0;
+  (proc as any).kill = (sig?: string) => {
+    killSignals.push(sig);
+    // A real SIGTERM ends the process; mirror that so a test can tell a
+    // deliberate teardown from the budget expiring.
+    proc.emit('close', null);
+  };
+  (proc as any).unref = () => { unrefCount++; };
+  const spawnFn = (_cmd: string, _args: string[], _opts: any) => proc;
+  return {
+    spawnFn,
+    proc,
+    killSignals,
+    get unrefCount() { return unrefCount; },
   };
 }
 
@@ -121,19 +137,160 @@ describe('runCbmBootstrap', () => {
     }
   });
 
-  it('returns ok:false with timeout reason when process hangs past deadline', async () => {
+  // ── the wait budget hands the build off, it does not abort it ───────────────
+  //
+  // Root cause of the index-build failure class: the budget was a client-side
+  // KILL. CBM has no server-side request timeout, so every recorded "timeout"
+  // was buildd terminating a build that was still making progress — and because
+  // 0.10.8 publishes the graph atomically (it indexes into
+  // `<project>.db.stage.XXXXXX` and renames at the end, verified against the
+  // pinned binary), killing it mid-flight yields no `.db` at all. There is no
+  // partial index to salvage; the only thing the kill achieved was throwing the
+  // work away. A live MCP server does pick up a `.db` published into its cache
+  // dir after it started (verified in-session against 0.10.8), so the build is
+  // worth far more running than stopped.
+
+  it('backgrounds the build instead of killing it when the wait budget expires', async () => {
+    const hang = makeHangSpawn();
+    const workerId = `worker-bg-${process.pid}`;
     const result = await runCbmBootstrap({
       worktreePath: '/tmp/worktree',
-      workerId: 'worker-timeout',
+      workerId,
       serverConfig: fakeCbmConfig(),
       timeoutMs: 50,
-      spawnProcess: makeHangSpawn() as any,
+      spawnProcess: hang.spawnFn as any,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.reason).toMatch(/timeout after 50ms/);
-      expect(result.cbmCacheDir).toBe('/tmp/cbm-worker-timeout');
+      expect(result.backgrounded).toBe(true);
+      expect(result.cbmCacheDir).toBe(`/tmp/cbm-${workerId}`);
     }
+    // The regression this guards: no signal was sent to the indexer.
+    expect(hang.killSignals).toEqual([]);
+    // Detached from the runner's event loop so the wait can return.
+    expect(hang.unrefCount).toBe(1);
+    stopBackgroundCbmIndex(workerId);
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  it('keeps the cache dir intact when the wait budget expires', async () => {
+    const hang = makeHangSpawn();
+    const workerId = `worker-bg-keep-${process.pid}`;
+    const cacheDir = `/tmp/cbm-${workerId}`;
+    mkdirSync(cacheDir, { recursive: true });
+    // Stands in for CBM's in-progress staging file: work the backgrounded
+    // indexer is still writing into and will rename on completion.
+    writeFileSync(`${cacheDir}/project.db.stage.XXXXXX`, 'in progress');
+
+    const result = await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      timeoutMs: 50,
+      spawnProcess: hang.spawnFn as any,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(existsSync(`${cacheDir}/project.db.stage.XXXXXX`)).toBe(true);
+    stopBackgroundCbmIndex(workerId);
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it('reports a backgrounded build that lands later, so the metric is the real outcome', async () => {
+    const hang = makeHangSpawn();
+    const workerId = `worker-bg-land-${process.pid}`;
+    const late: { ok: boolean; reason?: string }[] = [];
+    const result = await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      timeoutMs: 50,
+      spawnProcess: hang.spawnFn as any,
+      onLateCompletion: r => { late.push(r); },
+    });
+    expect(result.ok).toBe(false);
+    expect(late).toEqual([]);
+
+    // The index finishes after the worker already started its turn.
+    hang.proc.emit('close', 0);
+    await Promise.resolve();
+    expect(late.length).toBe(1);
+    expect(late[0]!.ok).toBe(true);
+
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  it('reports a backgrounded build that later fails, and does not claim it landed', async () => {
+    const hang = makeHangSpawn();
+    const workerId = `worker-bg-fail-${process.pid}`;
+    const late: { ok: boolean; reason?: string }[] = [];
+    await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      timeoutMs: 50,
+      spawnProcess: hang.spawnFn as any,
+      onLateCompletion: r => { late.push(r); },
+    });
+
+    hang.proc.emit('close', 3);
+    await Promise.resolve();
+    expect(late.length).toBe(1);
+    expect(late[0]!.ok).toBe(false);
+    expect(late[0]!.reason).toMatch(/code 3/);
+
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  // Session teardown removes the per-worker cache dir. A backgrounded indexer
+  // still writing into it would be writing into a deleted directory and burning
+  // a core that the next task's index needs, so teardown must be able to end it —
+  // and that deliberate stop must not be logged as a build that failed.
+  it('stopBackgroundCbmIndex terminates the indexer without reporting a late failure', async () => {
+    const hang = makeHangSpawn();
+    const workerId = `worker-bg-stop-${process.pid}`;
+    const late: { ok: boolean; reason?: string }[] = [];
+    await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      timeoutMs: 50,
+      spawnProcess: hang.spawnFn as any,
+      onLateCompletion: r => { late.push(r); },
+    });
+
+    expect(stopBackgroundCbmIndex(workerId)).toBe(true);
+    await Promise.resolve();
+    expect(hang.killSignals).toEqual(['SIGTERM']);
+    expect(late).toEqual([]);
+    // Idempotent: teardown runs in a `finally` that can be reached twice.
+    expect(stopBackgroundCbmIndex(workerId)).toBe(false);
+
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  it('does not register a background indexer when the build finishes inside the budget', async () => {
+    const workerId = `worker-bg-none-${process.pid}`;
+    const result = await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId,
+      serverConfig: fakeCbmConfig(),
+      spawnProcess: makeSuccessSpawn() as any,
+    });
+    expect(result.ok).toBe(true);
+    expect(stopBackgroundCbmIndex(workerId)).toBe(false);
+    rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
+  });
+
+  it('marks a genuine non-zero exit as a failure, not as backgrounded', async () => {
+    const result = await runCbmBootstrap({
+      worktreePath: '/tmp/worktree',
+      workerId: 'worker-exit-class',
+      serverConfig: fakeCbmConfig(),
+      spawnProcess: makeFailSpawn(1) as any,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.backgrounded).toBeFalsy();
   });
 
   it('passes CBM_CACHE_DIR, CBM_ALLOWED_ROOT, CBM_AUTO_WATCH, CBM_MEM_BUDGET_MB to the subprocess', async () => {
@@ -274,17 +431,19 @@ describe('runCbmBootstrap', () => {
     rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
   });
 
-  it('leaves the daemon runtime dir in place after a timeout', async () => {
+  it('leaves the daemon runtime dir in place after the wait budget expires', async () => {
     const workerId = `worker-rt-timeout-${process.pid}`;
+    const hang = makeHangSpawn();
     const result = await runCbmBootstrap({
       worktreePath: '/tmp/worktree',
       workerId,
       serverConfig: fakeCbmConfig(),
       timeoutMs: 50,
-      spawnProcess: makeHangSpawn() as any,
+      spawnProcess: hang.spawnFn as any,
     });
     expect(result.ok).toBe(false);
     expect(existsSync(`/tmp/cbm-${workerId}/run`)).toBe(true);
+    stopBackgroundCbmIndex(workerId);
     rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
   });
 
@@ -304,11 +463,26 @@ describe('runCbmBootstrap', () => {
     rmSync(`/tmp/cbm-${workerId}`, { recursive: true, force: true });
   });
 
-  it('exports CBM_INDEX_TIMEOUT_MS as 60000', () => {
-    // 0.9.0 indexed this repo in ~10s, but 0.10.x rebuilt the pipeline and adds a
-    // daemon cold start: a cold default-mode run measured 32s in the worker image,
-    // i.e. over the old 30s budget. A timeout also deletes the cache dir, so the
-    // agent starts cold — headroom is cheaper than a wasted index.
-    expect(CBM_INDEX_TIMEOUT_MS).toBe(60_000);
+  // ── the budget is a WAIT, and it is tunable without a release ───────────────
+
+  it('keeps the default wait budget at 60s — the fix is what expiry does, not the number', () => {
+    // Deliberately unchanged. An uncontended build of a repo this size lands
+    // inside it; the builds that overran were the contended ones, and raising
+    // the number only moves where a kill would land. Expiry is now a hand-off,
+    // so the constant is no longer a cliff and did not need re-tuning.
+    expect(CBM_INDEX_WAIT_MS).toBe(60_000);
+  });
+
+  it('resolves the wait budget from BUILDD_CBM_INDEX_WAIT_MS when set', () => {
+    expect(resolveCbmIndexWaitMs({ BUILDD_CBM_INDEX_WAIT_MS: '15000' })).toBe(15_000);
+    expect(resolveCbmIndexWaitMs({})).toBe(CBM_INDEX_WAIT_MS);
+  });
+
+  it('ignores a non-numeric or non-positive wait override rather than disabling the wait', () => {
+    // A budget of 0 would background EVERY build, which is a fleet-wide
+    // behaviour change one typo away. Fail back to the default instead.
+    for (const bad of ['', '0', '-1', 'soon', 'NaN']) {
+      expect(resolveCbmIndexWaitMs({ BUILDD_CBM_INDEX_WAIT_MS: bad })).toBe(CBM_INDEX_WAIT_MS);
+    }
   });
 });

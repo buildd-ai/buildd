@@ -317,6 +317,8 @@ describe('assertion coverage over the real migration corpus', () => {
     expect(assertions).toBeGreaterThan(500);
     // Only pure data-fix migrations should be unverifiable. If this grows, the
     // parser has lost ground against a new SQL form.
-    expect(withoutAssertions.length).toBeLessThanOrEqual(6);
+    // 7: 0155_backfill_orphaned_mission_schedules added a DO-block data cleanup
+    // with no ALTER/CREATE for the parser to derive an assertion from.
+    expect(withoutAssertions.length).toBeLessThanOrEqual(7);
   });
 });

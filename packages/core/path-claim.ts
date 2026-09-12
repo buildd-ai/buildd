@@ -16,7 +16,7 @@
 
 import { db } from './db/client';
 import { pathClaims, pathClaimWaiters, missionNotes } from './db/schema';
-import { and, eq, isNull, lt, inArray } from 'drizzle-orm';
+import { and, eq, isNull, lt, inArray, sql } from 'drizzle-orm';
 import {
   pathsOverlap,
   stripTrailingSep,
@@ -140,6 +140,38 @@ export async function getActiveClaimsByWorkspace(
     byTask.set(row.taskId, existing);
   }
   return byTask;
+}
+
+// ── Manifest append ──────────────────────────────────────────────────────────
+
+/**
+ * Atomically append paths to a task's pathManifest and return the updated array.
+ *
+ * The jsonb concat + DISTINCT dedup runs as a single UPDATE, evaluated against
+ * the row's value at execution time — no read-modify-write, so there is nothing
+ * to compare-and-swap. Two callers appending different paths to the same task's
+ * manifest concurrently are simply serialized by Postgres's row lock; neither
+ * one loses a race. This replaces a fixed-retry CAS loop that, under bursty
+ * concurrent calls for the same task (e.g. several check_path_claim calls in
+ * flight at once), could exhaust its retries and surface a bare "concurrent
+ * update conflict" — indistinguishable from a real blocker to the caller.
+ */
+export async function appendPathManifest(
+  taskId: string,
+  paths: string[],
+): Promise<string[]> {
+  const result = await db.execute(sql`
+    UPDATE tasks
+    SET path_manifest = (
+      SELECT jsonb_agg(DISTINCT p)
+      FROM jsonb_array_elements_text(COALESCE(path_manifest, '[]'::jsonb) || ${JSON.stringify(paths)}::jsonb) AS p
+    )
+    WHERE id = ${taskId}
+    RETURNING path_manifest
+  `);
+
+  const rows = result.rows as Array<{ path_manifest: string[] }>;
+  return rows[0]?.path_manifest ?? paths;
 }
 
 // ── Claim insertion ──────────────────────────────────────────────────────────

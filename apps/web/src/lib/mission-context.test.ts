@@ -63,6 +63,7 @@ const mockArtifactsFindMany = mock(() => Promise.resolve([]));
 const mockWorkersFindMany = mock(() => Promise.resolve([]));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null));
 const mockWorkspacesFindMany = mock(() => Promise.resolve([]));
+const mockNotesFindMany = mock(() => Promise.resolve([]));
 
 // Mock for db.select() chain — supports both:
 //   db.select().from().innerJoin().where().groupBy()  (active workers)
@@ -84,7 +85,7 @@ mock.module('@buildd/core/db', () => ({
       artifacts: { findMany: mockArtifactsFindMany },
       workers: { findMany: mockWorkersFindMany },
       workspaces: { findFirst: mockWorkspacesFindFirst, findMany: mockWorkspacesFindMany },
-      missionNotes: { findMany: mock(() => Promise.resolve([])) },
+      missionNotes: { findMany: mockNotesFindMany },
     },
     select: mockSelect,
   },
@@ -182,6 +183,8 @@ describe('buildMissionContext', () => {
     mockWorkspacesFindFirst.mockResolvedValue(null);
     mockWorkspacesFindMany.mockReset();
     mockWorkspacesFindMany.mockResolvedValue([]);
+    mockNotesFindMany.mockReset();
+    mockNotesFindMany.mockResolvedValue([]);
     mockSelectResult.mockReset();
     mockSelectResult.mockResolvedValue([]);
     mockGroupBy.mockReset();
@@ -588,6 +591,142 @@ describe('buildMissionContext', () => {
     expect(result!.description).toContain('## Prior Heartbeats');
     expect(result!.description).toContain('[ok] 2 task(s) created, 5 action(s)');
     expect(result!.description).toContain('[action_taken] 1 retried, 3 action(s)');
+  });
+
+  it('surfaces the live goal-criteria verdict in heartbeat context', async () => {
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-crit',
+      title: 'Heartbeat with criteria',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-crit',
+      goalCriteria: [{ type: 'command', command: 'bun test', label: 'unit tests' }],
+      goalCriteriaState: {
+        overall: 'UNVERIFIED',
+        evaluatedAt: new Date(Date.now() - 3600_000).toISOString(),
+        criteria: [{ index: 0, type: 'command', verdict: 'UNVERIFIED', label: 'unit tests', evidence: 'could not be evaluated' }],
+      },
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
+    });
+    mockHeartbeatQueries();
+
+    const result = await buildMissionContext('obj-hb-crit', { triggerSource: 'cron' });
+    const d = result!.description;
+    expect(d).toContain('## Goal criteria — the completion gate');
+    expect(d).toContain('UNVERIFIED');
+    expect(d).toContain('unit tests');
+    expect(d).toContain('LIVE verdict');
+  });
+
+  it('drops a stale criteria decision note once a fresher evaluation exists (heartbeat)', async () => {
+    const evaluatedAt = new Date(Date.now() - 60_000).toISOString();
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-stale-note',
+      title: 'Heartbeat',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-stale',
+      goalCriteria: [{ type: 'command', command: 'bun test', label: 'unit tests' }],
+      goalCriteriaState: { overall: 'pass', evaluatedAt, criteria: [{ index: 0, type: 'command', verdict: 'pass' }] },
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
+    });
+    mockHeartbeatQueries();
+    mockNotesFindMany.mockResolvedValueOnce([
+      {
+        id: 'note-1',
+        type: 'decision',
+        status: 'open',
+        authorType: 'agent',
+        title: 'Goal criteria NOT_EVALUATED',
+        body: 'criteria NOT_EVALUATED because no ANTHROPIC_API_KEY',
+        createdAt: new Date(Date.now() - 22 * 3600_000), // 22h before the fresh evaluation above
+        replyTo: null,
+        defaultChoice: null,
+      },
+    ]);
+
+    const result = await buildMissionContext('obj-hb-stale-note', { triggerSource: 'cron' });
+    const d = result!.description;
+    // The live section says pass; the stale decision must not reappear to contradict it.
+    expect(d).not.toContain('NOT_EVALUATED because no ANTHROPIC_API_KEY');
+  });
+
+  it('keeps a criteria decision note newer than the last evaluation', async () => {
+    const evaluatedAt = new Date(Date.now() - 3600_000).toISOString();
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-fresh-note',
+      title: 'Heartbeat',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-fresh',
+      goalCriteria: [{ type: 'command', command: 'bun test', label: 'unit tests' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt, criteria: [{ index: 0, type: 'command', verdict: 'fail' }] },
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
+    });
+    mockHeartbeatQueries();
+    mockNotesFindMany.mockResolvedValueOnce([
+      {
+        id: 'note-2',
+        type: 'decision',
+        status: 'open',
+        authorType: 'agent',
+        title: 'Criteria still failing',
+        body: 'goal criteria still fail after the retry',
+        createdAt: new Date(), // newer than evaluatedAt
+        replyTo: null,
+        defaultChoice: null,
+      },
+    ]);
+
+    const result = await buildMissionContext('obj-hb-fresh-note', { triggerSource: 'cron' });
+    expect(result!.description).toContain('Criteria still failing');
+  });
+
+  it('keeps a non-criteria decision note regardless of the last evaluation time', async () => {
+    const evaluatedAt = new Date().toISOString();
+    mockFindFirst.mockResolvedValueOnce({
+      id: 'obj-hb-unrelated-note',
+      title: 'Heartbeat',
+      description: null,
+      status: 'active',
+      priority: 0,
+      workspaceId: 'ws-1',
+      scheduleId: 'sched-unrelated',
+      goalCriteria: [{ type: 'command', command: 'bun test', label: 'unit tests' }],
+      goalCriteriaState: { overall: 'pass', evaluatedAt, criteria: [{ index: 0, type: 'command', verdict: 'pass' }] },
+    });
+    mockScheduleFindFirst.mockResolvedValueOnce({
+      taskTemplate: { context: { heartbeat: true, heartbeatChecklist: '- check stuff' } },
+    });
+    mockHeartbeatQueries();
+    mockNotesFindMany.mockResolvedValueOnce([
+      {
+        id: 'note-3',
+        type: 'decision',
+        status: 'open',
+        authorType: 'agent',
+        title: 'Skipped duplicate task',
+        body: 'A similar PR merged 2 days ago, so decomposition was skipped',
+        createdAt: new Date(Date.now() - 30 * 24 * 3600_000), // long before evaluatedAt
+        replyTo: null,
+        defaultChoice: null,
+      },
+    ]);
+
+    const result = await buildMissionContext('obj-hb-unrelated-note', { triggerSource: 'cron' });
+    expect(result!.description).toContain('Skipped duplicate task');
   });
 
   it('includes prior artifacts in description when mission has linked artifacts', async () => {

@@ -1,3 +1,19 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "display-status"
+    type: "symbol"
+    name: "deriveDisplayStatus"
+    path: "apps/web/src/lib/task-presentation.ts"
+  - id: "timestamp-label"
+    type: "symbol"
+    name: "deriveTimestampLabel"
+    path: "apps/web/src/lib/task-presentation.ts"
+  - id: "timestamp-status-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/task-presentation.test.ts"
+---
 # Task Status & Timestamp Semantics
 
 > **Status:** Implemented — PR #1184 (Release v0.131.0)

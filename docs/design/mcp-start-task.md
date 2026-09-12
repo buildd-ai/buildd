@@ -1,3 +1,21 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "start-task-endpoint"
+    type: "route"
+    method: "POST"
+    path: "/api/tasks/[id]/start"
+    file: "apps/web/src/app/api/tasks/[id]/start/route.ts"
+  - id: "mcp-start-action"
+    type: "symbol_reachable"
+    symbol: "start_task"
+    entry: "packages/core/mcp-tools.ts"
+    as: "read"
+  - id: "start-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/tasks/[id]/start/route.test.ts"
+---
 # MCP `start_task` action: expose the existing /start route over MCP
 
 **Status:** Proposed — prerequisites merged (capability gate removed in PRs #1864, #1868; claim-gates.ts deleted; /start now imports from canonical gate modules)  

@@ -1,3 +1,16 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "public-spec-filter"
+    type: "config_key"
+    key: "user_facing"
+    file: "scripts/check-specs.ts"
+  - id: "json-export-output"
+    type: "config_key"
+    key: "specs.json"
+    file: "scripts/check-specs.ts"
+---
 # Binding buildd-docs to docs/specs
 
 **Status:** Proposed

@@ -883,8 +883,8 @@ describe('WorkerManager — lifecycle', () => {
   // Regression (2026-07-11): after an OAuth budget reset the server re-queues
   // held tasks with `task:updated` (no realtime nudge), so the runner must wake
   // itself at reset time rather than waiting for its hourly fallback poll.
-  describe('scheduleBudgetResume()', () => {
-    // Capture the timer scheduled by scheduleBudgetResume without waiting real time.
+  describe('scheduleResumeAt()', () => {
+    // Capture the timer scheduled by scheduleResumeAt without waiting real time.
     function withCapturedTimeout<T>(fn: () => T): { result: T; cb: (() => void) | null; delay: number | null } {
       const orig = globalThis.setTimeout;
       let cb: (() => void) | null = null;
@@ -906,7 +906,7 @@ describe('WorkerManager — lifecycle', () => {
       manager = new WorkerManager(makeConfig());
       const resetsAt = new Date(Date.now() + 60_000).toISOString(); // 1 min out
       const { cb, delay } = withCapturedTimeout(() =>
-        (manager as any).scheduleBudgetResume(resetsAt),
+        (manager as any).scheduleResumeAt(new Date(resetsAt).getTime(), 'account budget reset'),
       );
 
       // ~60s + the 5s post-reset buffer.
@@ -924,7 +924,7 @@ describe('WorkerManager — lifecycle', () => {
       manager = new WorkerManager(makeConfig());
       const farReset = new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(); // 12h out
       const { cb } = withCapturedTimeout(() =>
-        (manager as any).scheduleBudgetResume(farReset),
+        (manager as any).scheduleResumeAt(new Date(farReset).getTime(), 'account budget reset'),
       );
       expect(cb).toBeNull();
     });
@@ -932,8 +932,56 @@ describe('WorkerManager — lifecycle', () => {
     test('ignores an unparseable reset timestamp', () => {
       manager = new WorkerManager(makeConfig());
       const { cb } = withCapturedTimeout(() =>
-        (manager as any).scheduleBudgetResume('not-a-date'),
+        (manager as any).scheduleResumeAt(new Date('not-a-date').getTime(), 'account budget reset'),
       );
+      expect(cb).toBeNull();
+    });
+
+    test('keeps the earliest wake when a later one is requested (one shared timer)', () => {
+      manager = new WorkerManager(makeConfig());
+      const soon = Date.now() + 60_000;
+      const later = Date.now() + 60 * 60_000;
+
+      const first = withCapturedTimeout(() =>
+        (manager as any).scheduleResumeAt(soon, 'context pause expiry'),
+      );
+      expect(first.cb).not.toBeNull();
+
+      // A longer pause (e.g. an 11h provider wall) must not displace an
+      // imminent wake — otherwise the near-term recovery is lost.
+      const second = withCapturedTimeout(() =>
+        (manager as any).scheduleResumeAt(later, 'context pause expiry'),
+      );
+      expect(second.cb).toBeNull();
+      expect((manager as any).budgetResumeAtMs).toBe(soon + 5_000);
+    });
+
+    test('reschedules when the new wake is earlier than the armed one', () => {
+      manager = new WorkerManager(makeConfig());
+      const later = Date.now() + 60 * 60_000;
+      const soon = Date.now() + 60_000;
+
+      withCapturedTimeout(() => (manager as any).scheduleResumeAt(later, 'context pause expiry'));
+      const second = withCapturedTimeout(() =>
+        (manager as any).scheduleResumeAt(soon, 'context pause expiry'),
+      );
+      expect(second.cb).not.toBeNull();
+      expect((manager as any).budgetResumeAtMs).toBe(soon + 5_000);
+    });
+
+    test('a context pause arms the resume timer via scheduleContextWake()', () => {
+      manager = new WorkerManager(makeConfig());
+      const until = Date.now() + 60_000;
+      (manager as any).contextBreaker.pause('account:codex', until);
+
+      const { cb, delay } = withCapturedTimeout(() => (manager as any).scheduleContextWake());
+      expect(cb).not.toBeNull();
+      expect(delay).toBeGreaterThan(60_000);
+    });
+
+    test('scheduleContextWake() arms nothing when no context is paused', () => {
+      manager = new WorkerManager(makeConfig());
+      const { cb } = withCapturedTimeout(() => (manager as any).scheduleContextWake());
       expect(cb).toBeNull();
     });
   });

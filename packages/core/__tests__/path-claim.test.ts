@@ -47,6 +47,7 @@ function makeFindMany(table: keyof typeof findManyQueues) {
 // Track calls for assertions
 const updateCalls: any[] = [];
 const insertCalls: any[] = [];
+const mockExecute = mock(async (..._args: any[]) => ({ rows: [] as any[] }));
 
 function makeUpdateChain(resolvedWith: any[] = []) {
   const whereChain = { returning: mock(() => Promise.resolve(resolvedWith)) };
@@ -86,6 +87,7 @@ mock.module('../db/client', () => ({
     },
     update: (...args: any[]) => mockUpdate(...args),
     insert: (...args: any[]) => mockInsert(...args),
+    execute: (...args: any[]) => mockExecute(...args),
   },
 }));
 
@@ -101,6 +103,7 @@ mock.module('drizzle-orm', () => ({
   isNull: (a: any) => ({ type: 'isNull', a }),
   lt: (a: any, b: any) => ({ type: 'lt', a, b }),
   inArray: (a: any, b: any) => ({ type: 'inArray', a, b }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ type: 'sql', strings, values }),
 }));
 
 // Only `pathsOverlap` is stubbed. The rest of the module is re-exported for
@@ -117,6 +120,7 @@ mock.module('../path-overlap', () => ({
 // ── Import after mocks ───────────────────────────────────────────────────────
 
 import {
+  appendPathManifest,
   checkPathClaimConflict,
   claimObservedPaths,
   insertClaims,
@@ -141,6 +145,8 @@ function resetQueues() {
   mockPathsOverlap.mockReset();
   mockUpdate.mockReset();
   mockInsert.mockReset();
+  mockExecute.mockReset();
+  mockExecute.mockResolvedValue({ rows: [] });
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -277,6 +283,42 @@ describe('insertClaims', () => {
     const inserted = await insertClaims(WS, TASK_A, ['src/foo.ts']);
     expect(inserted).toEqual([]);
     expect(mockInsert).not.toHaveBeenCalled();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// appendPathManifest
+//
+// No CAS/retry loop to test here — that is the point of this function. A
+// single UPDATE evaluated against the row's current value replaced the
+// fixed-retry compare-and-swap that could exhaust its attempts under bursty
+// concurrent calls for the same task and surface a bare "concurrent update
+// conflict" indistinguishable from a real blocker.
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('appendPathManifest', () => {
+  beforeEach(resetQueues);
+
+  it('returns the manifest from the UPDATE ... RETURNING row', async () => {
+    mockExecute.mockResolvedValue({ rows: [{ path_manifest: ['src/a.ts', 'src/b.ts'] }] });
+
+    const result = await appendPathManifest(TASK_A, ['src/b.ts']);
+    expect(result).toEqual(['src/a.ts', 'src/b.ts']);
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('issues exactly one statement regardless of how many paths are appended', async () => {
+    mockExecute.mockResolvedValue({ rows: [{ path_manifest: ['a', 'b', 'c'] }] });
+
+    await appendPathManifest(TASK_A, ['a', 'b', 'c']);
+    expect(mockExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the requested paths if the row is missing (task deleted mid-flight)', async () => {
+    mockExecute.mockResolvedValue({ rows: [] });
+
+    const result = await appendPathManifest(TASK_A, ['src/only.ts']);
+    expect(result).toEqual(['src/only.ts']);
   });
 });
 

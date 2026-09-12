@@ -1,3 +1,17 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "user-owned-secret-field"
+    type: "config_key"
+    key: "userId"
+    file: "packages/core/secrets/types.ts"
+  - id: "claim-user-owned-credential"
+    type: "symbol_reachable"
+    symbol: "userId"
+    entry: "apps/web/src/app/api/workers/claim/credential-injection.ts"
+    as: "read"
+---
 # User-owned agent credentials
 
 **Status:** Proposed

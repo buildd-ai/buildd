@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workers, workspaces } from '@buildd/core/db/schema';
+import { tasks, workers, workspaces, missionNotes } from '@buildd/core/db/schema';
 import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
@@ -22,6 +22,8 @@ import { classifyMergeFailure, dispatchConflictRetry } from '@/lib/conflict-retr
 import { escalateConflictExhaustion } from '@/lib/auto-merge';
 import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 
 export async function POST(
   req: NextRequest,
@@ -47,10 +49,23 @@ export async function POST(
   // Accept workspaceId from body to disambiguate when the same PR number exists in
   // multiple repos. The merge card passes the workspace UUID from the escalation item.
   let rawWorkspaceId: string | null = null;
+  // "Merge anyway" on an escalate-verdict card — overrides the reviewer's
+  // escalation, not any CI/mergeability guard below (those run unmodified).
+  // escalationReason is the text the card was already displaying at the
+  // moment the human chose to override, so the audit trail records what they
+  // actually saw rather than a fresh (and possibly since-changed) DB re-read.
+  let override = false;
+  let overrideEscalationReason: string | null = null;
   try {
     const body = await req.json().catch(() => ({}));
     if (body?.workspaceId && typeof body.workspaceId === 'string') {
       rawWorkspaceId = body.workspaceId;
+    }
+    if (body?.override === true) {
+      override = true;
+      if (typeof body.escalationReason === 'string' && body.escalationReason.trim().length > 0) {
+        overrideEscalationReason = body.escalationReason.trim();
+      }
     }
   } catch { /* non-fatal — body is optional */ }
 
@@ -279,6 +294,41 @@ export async function POST(
     .where(eq(workers.id, worker.id));
 
   await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+
+  // "Merge anyway" — record the override ONLY now that the merge actually
+  // succeeded. Every guard above (branch protection's required checks, the
+  // mission-PR branch-lifecycle gate) ran unmodified; override never skips
+  // them, it just means a failure past this point would have nothing to log.
+  if (override && worker.taskId) {
+    const overriddenReason = overrideEscalationReason ?? 'reviewer escalation (reason not recorded)';
+    const missionId = (worker.task as { missionId?: string | null } | null)?.missionId;
+    if (missionId) {
+      await db.insert(missionNotes).values({
+        missionId,
+        taskId: worker.taskId,
+        authorType: 'user',
+        actorLabel: user.email,
+        type: 'decision',
+        title: `PR #${prNumber} merged despite reviewer escalation — human override`,
+        body: `${user.email} merged this PR via "Merge anyway", overriding: ${overriddenReason}`,
+        status: 'open',
+      }).catch((e: unknown) =>
+        console.error(`[pr-merge] failed to record override note for PR #${prNumber}:`, e)
+      );
+    }
+    await supersedeAncestorEscalations(db, worker.taskId, prNumber).catch((e: unknown) =>
+      console.error(`[pr-merge] failed to supersede escalation for PR #${prNumber}:`, e)
+    );
+    await appendPrActivity({
+      installationId,
+      repoFullName,
+      prNumber,
+      entry: { kind: 'human_override_merge', detail: `${user.email} overrode: ${overriddenReason}` },
+      workspaceId: worker.workspaceId,
+    }).catch((e: unknown) =>
+      console.error(`[pr-merge] failed to append override activity for PR #${prNumber}:`, e)
+    );
+  }
 
   // Trigger real-time update
   await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {

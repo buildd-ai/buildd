@@ -472,8 +472,21 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           continue;
         }
 
-        // Skip if linked mission is in manual orchestration mode — schedule is dormant until armed
+        // Skip if linked mission is in manual orchestration mode — schedule is dormant until armed.
+        // Manual mode never lets a planning task complete, so the task-completion-driven
+        // completion trigger (task-dependencies.ts -> mission-loop.ts) never fires for it —
+        // this is the only place left to ask whether the mission is actually done before
+        // deferring it again. `proposed: false`: dormancy must not close a mission that only
+        // proposed, but never executed, work.
         if (linkedMission && linkedMission.orchestrationMode === 'manual') {
+          const outcome = await completeMissionIfVerified(linkedMission.id, {
+            path: 'dormancy',
+            proposed: false,
+          });
+          if (outcome.completed) {
+            // completeMissionIfVerified already disabled the schedule — no reschedule.
+            continue;
+          }
           const rawNext = computeNextRunAt(schedule.cronExpression, schedule.timezone);
           const nextRunAt = rawNext;
           await db

@@ -22,6 +22,7 @@
 import { db } from '@buildd/core/db';
 import { tasks, workers, workspaceSkills } from '@buildd/core/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
+import { fetchSplitPrStats } from './supersession-check';
 import {
   derivePrReviewStatus,
   MAX_REVIEW_WAIT_SECONDS,
@@ -76,6 +77,173 @@ export async function findPrOwningWorker(workspaceId: string, prNumber: number) 
       mergedAt: true,
     },
   });
+}
+
+export interface AdoptedPrOwnerWorker {
+  id: string;
+  taskId: string | null;
+  branch: string;
+  prUrl: string | null;
+  prLifecycleStatus: string | null;
+  mergedAt: Date | null;
+}
+
+export interface AdoptedPrOriginalTask {
+  id: string;
+  title: string;
+  description: string | null;
+  backend: 'claude' | 'codex';
+  missionId: string | null;
+  pathManifest?: string[] | null;
+  iteration?: number | null;
+  maxIterations?: number | null;
+}
+
+/** Minimal shape read off a GitHub `GET /pulls/{number}` response. */
+export interface AdoptablePr {
+  number: number;
+  title?: string | null;
+  body?: string | null;
+  html_url: string;
+  head?: { sha?: string | null; ref?: string | null } | null;
+  base?: { sha?: string | null; ref?: string | null } | null;
+  additions?: number | null;
+  user?: { login?: string | null } | null;
+}
+
+/**
+ * Resolve the worker that owns a PR, adopting it as a task + worker first when
+ * buildd has none.
+ *
+ * This is THE adoption path (originally inline in the on-demand review route)
+ * — every caller that needs "the worker that owns this PR, creating it if
+ * buildd did not open the PR" goes through here, so verdicts, the activity
+ * comment, merge policy, and (as of the CI-retry webhook) automatic CI-fix
+ * dispatch all see the same worker/task shape for an externally-authored PR.
+ *
+ * The adopted task is stamped `status: 'completed'` and carries
+ * `context.adoptedPr` — the work already exists (the PR is open), so a
+ * pending row here would be claimable by a runner and get "redone". Callers
+ * that gate on task status (e.g. the CI-retry webhook's terminal-task guard)
+ * must check for `context.adoptedPr` and treat it as non-terminal for their
+ * own purposes; that stamp is what tells them apart from a task whose real
+ * agent work actually finished.
+ */
+export async function resolveOrAdoptPrOwner(params: {
+  workspaceId: string;
+  installationId: number;
+  repoFullName: string;
+  prNumber: number;
+  pr: AdoptablePr;
+  creationSource: 'mcp' | 'webhook' | 'dashboard';
+  accountId?: string | null;
+}): Promise<{ adopted: boolean; ownerWorker: AdoptedPrOwnerWorker; originalTask: AdoptedPrOriginalTask }> {
+  const { workspaceId, installationId, repoFullName, prNumber, pr, creationSource, accountId } = params;
+
+  const existingWorker = await findPrOwningWorker(workspaceId, prNumber);
+  if (existingWorker?.taskId) {
+    const worker = await db.query.workers.findFirst({
+      where: eq(workers.id, existingWorker.id),
+      with: { task: true },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const task = (worker as any)?.task;
+    return {
+      adopted: false,
+      ownerWorker: existingWorker,
+      originalTask: {
+        id: task?.id ?? existingWorker.taskId,
+        title: task?.title ?? pr.title ?? `PR #${prNumber}`,
+        description: task?.description ?? null,
+        backend: task?.backend ?? 'claude',
+        missionId: task?.missionId ?? null,
+        pathManifest: task?.pathManifest ?? null,
+        iteration: typeof task?.context?.iteration === 'number' ? task.context.iteration : 0,
+        maxIterations: typeof task?.context?.maxIterations === 'number' ? task.context.maxIterations : 3,
+      },
+    };
+  }
+
+  const [adoptedTask] = await db
+    .insert(tasks)
+    .values({
+      workspaceId,
+      title: `PR #${prNumber}: ${pr.title ?? 'untitled'}`,
+      description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
+      status: 'completed',
+      priority: 5,
+      release: 'false',
+      creationSource,
+      context: {
+        adoptedPr: {
+          prNumber,
+          prUrl: pr.html_url,
+          headSha: pr.head?.sha ?? null,
+          baseBranch: pr.base?.ref ?? null,
+          author: pr.user?.login ?? null,
+          adoptedAt: new Date().toISOString(),
+        },
+      },
+    })
+    .returning({ id: tasks.id });
+
+  if (!adoptedTask?.id) {
+    throw new Error(`Could not adopt PR #${prNumber} on ${repoFullName} (task insert failed)`);
+  }
+
+  // Diff stats excluding generated paths (e.g. Drizzle snapshots) — a migration
+  // snapshot must not inflate the number shown on task/PR cards.
+  const adoptSplit = typeof pr.additions === 'number'
+    ? await fetchSplitPrStats(installationId, repoFullName, prNumber)
+    : null;
+
+  const [adoptedWorker] = await db
+    .insert(workers)
+    .values({
+      workspaceId,
+      taskId: adoptedTask.id,
+      accountId: accountId ?? null,
+      name: `pr-${prNumber}-adopted`,
+      // Not a runner buildd operates — the commits came from elsewhere.
+      runner: 'external',
+      branch: pr.head?.ref ?? `pr-${prNumber}`,
+      status: 'completed',
+      prNumber,
+      prUrl: pr.html_url,
+      prLifecycleStatus: 'pr_open',
+      ...(typeof pr.base?.sha === 'string' ? { prOpenedBaseSha: pr.base.sha } : {}),
+      ...(typeof pr.base?.ref === 'string' ? { prBaseRef: pr.base.ref } : {}),
+      ...(adoptSplit ? { linesAdded: adoptSplit.reviewable.additions } : {}),
+      ...(adoptSplit ? { linesRemoved: adoptSplit.reviewable.deletions } : {}),
+      ...(adoptSplit ? { filesChanged: adoptSplit.reviewable.files } : {}),
+    })
+    .returning({ id: workers.id });
+
+  if (!adoptedWorker?.id) {
+    throw new Error(`Could not adopt PR #${prNumber} on ${repoFullName} (worker insert failed)`);
+  }
+
+  return {
+    adopted: true,
+    ownerWorker: {
+      id: adoptedWorker.id,
+      taskId: adoptedTask.id,
+      branch: pr.head?.ref ?? `pr-${prNumber}`,
+      prUrl: pr.html_url,
+      prLifecycleStatus: 'pr_open',
+      mergedAt: null,
+    },
+    originalTask: {
+      id: adoptedTask.id,
+      title: pr.title ?? `PR #${prNumber}`,
+      description: typeof pr.body === 'string' ? pr.body.slice(0, 8000) : null,
+      backend: 'claude',
+      missionId: null,
+      pathManifest: null,
+      iteration: 0,
+      maxIterations: 3,
+    },
+  };
 }
 
 /** Role slugs registered for a workspace (team-wide rows included). */

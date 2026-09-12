@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Select } from '@/components/ui/Select';
 import { isValidTaskId } from '@/lib/task-id';
+import { isScheduleErrorLive } from '@/lib/schedule-health';
 
 export type PendingSuggestion = {
   cronExpression?: string;
@@ -27,6 +28,7 @@ export type UnifiedScheduleItem = {
   totalRuns: number;
   consecutiveFailures: number;
   isEnabled: boolean;
+  lastError: string | null;
   href: string;
   apiType: 'mission' | 'taskSchedule';
   apiId: string;
@@ -240,6 +242,9 @@ function ScheduleRow({
             </div>
             <div className="text-sm font-medium text-text-primary truncate">{item.name}</div>
             <code className="text-[10px] text-text-muted font-mono mt-0.5 block">{item.cronExpression}</code>
+            {isScheduleErrorLive({ enabled: item.isEnabled, lastError: item.lastError }) && (
+              <p className="text-xs text-status-error mt-1 truncate">⚠ {item.lastError}</p>
+            )}
           </div>
 
           {/* Stats column */}
@@ -310,6 +315,7 @@ export default function SchedulesUnified({
   const [suggestionLoading, setSuggestionLoading] = useState<Set<string>>(new Set());
   const [itemToDelete, setItemToDelete] = useState<UnifiedScheduleItem | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [showHeartbeats, setShowHeartbeats] = useState(false);
 
   const filtered = useMemo(() => {
     return items.filter(item => {
@@ -318,6 +324,15 @@ export default function SchedulesUnified({
       return true;
     });
   }, [items, filter, workspaceFilter]);
+
+  // Default view (no type filter selected) groups heartbeats separately from
+  // user-owned rows, matching Health's collapsed heartbeat subgroup — a
+  // heartbeat is mission internals, not a peer of a user-authored schedule.
+  // An explicit "Heartbeats" filter click already isolates them, so grouping
+  // only applies to the unfiltered "all" view.
+  const isGrouped = filter === 'all';
+  const mainItems = isGrouped ? filtered.filter(item => item.type !== 'heartbeat') : filtered;
+  const heartbeatItems = isGrouped ? filtered.filter(item => item.type === 'heartbeat') : [];
 
   // Stats
   const total = items.length;
@@ -563,25 +578,62 @@ export default function SchedulesUnified({
       </div>
 
       {/* Schedule list */}
-      {filtered.length === 0 ? (
+      {mainItems.length === 0 && heartbeatItems.length === 0 ? (
         <div className="text-center py-10 text-text-muted text-sm">
           No schedules match this filter.
         </div>
       ) : (
-        <div className="space-y-2">
-          {filtered.map(item => (
-            <ScheduleRow
-              key={`${item.apiType}-${item.id}`}
-              item={item}
-              onToggle={handleToggle}
-              onDelete={setItemToDelete}
-              onApproveSuggestion={(i) => handleSuggestionAction(i, 'approve')}
-              onDismissSuggestion={(i) => handleSuggestionAction(i, 'dismiss')}
-              toggling={toggling.has(item.id)}
-              suggestionLoading={suggestionLoading.has(item.id)}
-            />
-          ))}
-        </div>
+        <>
+          {mainItems.length > 0 && (
+            <div className="space-y-2">
+              {mainItems.map(item => (
+                <ScheduleRow
+                  key={`${item.apiType}-${item.id}`}
+                  item={item}
+                  onToggle={handleToggle}
+                  onDelete={setItemToDelete}
+                  onApproveSuggestion={(i) => handleSuggestionAction(i, 'approve')}
+                  onDismissSuggestion={(i) => handleSuggestionAction(i, 'dismiss')}
+                  toggling={toggling.has(item.id)}
+                  suggestionLoading={suggestionLoading.has(item.id)}
+                />
+              ))}
+            </div>
+          )}
+
+          {heartbeatItems.length > 0 && (
+            <div data-testid="heartbeat-schedule-group" className={mainItems.length > 0 ? 'mt-4' : ''}>
+              <button
+                onClick={() => setShowHeartbeats(p => !p)}
+                className="flex items-center gap-2 text-xs text-text-muted hover:text-text-secondary mb-2 transition-colors"
+              >
+                <svg
+                  className={`w-3 h-3 transition-transform ${showHeartbeats ? 'rotate-90' : ''}`}
+                  fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                {heartbeatItems.length} mission heartbeat{heartbeatItems.length !== 1 ? 's' : ''}
+              </button>
+              {showHeartbeats && (
+                <div className="space-y-2 opacity-75">
+                  {heartbeatItems.map(item => (
+                    <ScheduleRow
+                      key={`${item.apiType}-${item.id}`}
+                      item={item}
+                      onToggle={handleToggle}
+                      onDelete={setItemToDelete}
+                      onApproveSuggestion={(i) => handleSuggestionAction(i, 'approve')}
+                      onDismissSuggestion={(i) => handleSuggestionAction(i, 'dismiss')}
+                      toggling={toggling.has(item.id)}
+                      suggestionLoading={suggestionLoading.has(item.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       {/* Footer: explain the types */}

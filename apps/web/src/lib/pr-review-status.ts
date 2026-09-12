@@ -165,6 +165,38 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
   };
 }
 
+/** Minimal shape needed to decide whether a stored verdict authorises a self-merge. */
+export interface SelfMergeApprovalInput {
+  verdict: PrReviewVerdict | null;
+  confidence: number | null;
+  /** Already merged — never re-authorise a merge that already happened. */
+  merged?: boolean;
+}
+
+/**
+ * Whether a stored reviewer verdict, on its own, authorises merging the PR —
+ * subject to the SAME diff-safety rails (CI green, escalateToPaths, dirty
+ * state) that `evaluateAutoMergeSafety` applies when called without a bound.
+ *
+ * This is the ONE definition of "does this verdict clear the confidence bar":
+ * merge_pr's self-merge escape hatch, the check_suite CI-green retry, and the
+ * reviewer approve path all call this instead of keeping their own copy of
+ * the threshold compare — three copies of this rule is how the confidence
+ * check and the "is it already merged" check drifted apart between them.
+ */
+export function isApprovalSelfMergeable(
+  input: SelfMergeApprovalInput,
+  maxConfidenceThreshold?: number,
+): boolean {
+  const threshold = maxConfidenceThreshold ?? 0.6;
+  return (
+    input.verdict === 'approve' &&
+    !input.merged &&
+    typeof input.confidence === 'number' &&
+    input.confidence >= threshold
+  );
+}
+
 /** Roles that make sense as a default reviewer, most specific first. */
 const REVIEWER_ROLE_PREFERENCE = ['reviewer', 'spec-validator', 'builder'];
 

@@ -20,20 +20,13 @@ const OTHER_MISSION_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => Promise.resolve(null as any));
 const mockTasksFindFirst = mock(() => Promise.resolve(null as any));
-const mockReturning = mock(() => Promise.resolve([{ id: TASK_ID }]));
-const mockTasksUpdate = mock(() => ({
-  set: mock(() => ({
-    where: mock(() => ({
-      returning: mockReturning,
-    })),
-  })),
-}));
 const mockInsert = mock(() => ({
   values: mock(() => Promise.resolve([])),
 }));
 const mockWorkspacesFindFirst = mock(() => Promise.resolve(null as any));
 
 // path-claim module mocks
+const mockAppendPathManifest = mock(async (_taskId: string, paths: string[]) => paths);
 const mockCheckPathClaimConflict = mock(async () => null as any);
 const mockInsertClaims = mock(async () => [] as string[]);
 const mockRegisterWaiter = mock(async () => ({ registered: true }));
@@ -52,7 +45,6 @@ mock.module('@buildd/core/db', () => ({
         findFirst: mockTasksFindFirst,
       },
     },
-    update: mockTasksUpdate,
     insert: mockInsert,
     select: mock(() => ({
       from: mock(() => ({
@@ -65,6 +57,7 @@ mock.module('@buildd/core/db', () => ({
 }));
 
 mock.module('@buildd/core/path-claim', () => ({
+  appendPathManifest: mockAppendPathManifest,
   checkPathClaimConflict: mockCheckPathClaimConflict,
   insertClaims: mockInsertClaims,
   registerWaiter: mockRegisterWaiter,
@@ -150,29 +143,21 @@ describe('check_path_claim MCP handler', () => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
     mockTasksFindFirst.mockReset();
-    mockReturning.mockReset();
-    mockTasksUpdate.mockReset();
+    mockAppendPathManifest.mockReset();
     mockInsert.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockCheckPathClaimConflict.mockReset();
     mockInsertClaims.mockReset();
     mockRegisterWaiter.mockReset();
 
-    // Default: authenticated, worker resolves to task, no conflict, CAS succeeds
+    // Default: authenticated, worker resolves to task, no conflict, append succeeds
     mockAuthenticateApiKey.mockResolvedValue({ id: 'acc-1', level: 'worker', teamId: 'team-1', authType: 'api' });
     mockWorkersFindFirst.mockResolvedValue({ taskId: TASK_ID });
     mockTasksFindFirst.mockResolvedValue(makeActiveTask());
     mockCheckPathClaimConflict.mockResolvedValue(null);
+    mockAppendPathManifest.mockImplementation(async (_taskId: string, paths: string[]) => paths);
     mockInsertClaims.mockResolvedValue(['src/new.ts']);
     mockRegisterWaiter.mockResolvedValue({ registered: true });
-    mockReturning.mockResolvedValue([{ id: TASK_ID }]);
-    mockTasksUpdate.mockReturnValue({
-      set: mock(() => ({
-        where: mock(() => ({
-          returning: mockReturning,
-        })),
-      })),
-    });
     mockInsert.mockReturnValue({
       values: mock(() => Promise.resolve([])),
     });
@@ -212,12 +197,34 @@ describe('check_path_claim MCP handler', () => {
 
   it('claims unclaimed paths and extends pathManifest', async () => {
     mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: ['src/existing.ts'] }));
+    mockAppendPathManifest.mockResolvedValue(['src/existing.ts', 'src/new.ts']);
 
     const body: any = await callTool({ paths: ['src/new.ts'] });
     const result = JSON.parse(body.result.content[0].text);
     expect(result.claimed).toBe(true);
     expect(result.pathManifest).toContain('src/existing.ts');
     expect(result.pathManifest).toContain('src/new.ts');
+  });
+
+  // Regression: check_path_claim used to CAS tasks.pathManifest with a fixed
+  // 3-attempt retry loop. Under bursty concurrent calls for the same task it
+  // could exhaust those retries and return `{claimed: false, error:
+  // "Concurrent update conflict. Please retry."}` — indistinguishable from a
+  // real blocker, with no blockingTaskId to act on. appendPathManifest
+  // replaced the CAS with a single atomic statement, so there is no retry
+  // loop left: this asserts the handler calls it exactly once.
+  it('extends the manifest via a single call with no CAS retry loop', async () => {
+    mockTasksFindFirst.mockResolvedValue(makeActiveTask({ pathManifest: null }));
+    mockAppendPathManifest.mockResolvedValue(['src/new.ts']);
+
+    const body: any = await callTool({ paths: ['src/new.ts'] });
+    const result = JSON.parse(body.result.content[0].text);
+
+    expect(result.claimed).toBe(true);
+    expect(result.pathManifest).toEqual(['src/new.ts']);
+    expect(mockAppendPathManifest).toHaveBeenCalledTimes(1);
+    expect(mockAppendPathManifest).toHaveBeenCalledWith(TASK_ID, ['src/new.ts']);
+    expect(mockTasksFindFirst).toHaveBeenCalledTimes(1);
   });
 
   it('inserts path_claims rows on successful claim', async () => {

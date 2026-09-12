@@ -1,3 +1,19 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "collapsed-preview"
+    type: "symbol"
+    name: "getArtifactCollapsedPreview"
+    path: "apps/web/src/components/artifact-helpers.ts"
+  - id: "summary-deduplication"
+    type: "symbol"
+    name: "isSummaryDuplicate"
+    path: "apps/web/src/components/artifact-helpers.ts"
+  - id: "artifact-preview-tests"
+    type: "test_file"
+    path: "apps/web/src/components/artifact-helpers.test.ts"
+---
 # Mobile Artifact Feed — Design Spec
 
 **Status:** Implemented

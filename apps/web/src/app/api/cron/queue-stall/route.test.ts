@@ -17,22 +17,49 @@ let depPrWorkers: any[] = [];
 let missionPeerTasks: any[] = [];
 let taskUpdates: Array<{ values: any }> = [];
 
+// ── Fleet-idle pass (?scope=fleet-idle) fixtures ────────────────────────────
+//
+// The second pass reads different tables entirely, so it gets its own
+// fixtures. Its pending-task query is the only `and(...)` on tasks that carries
+// an `or(...)` child (the deferred-start clause), which is how the dispatcher
+// below tells it apart from the gate pass's candidate scan.
+let fleetHeartbeats: any[] = [];
+let fleetPendingTasks: any[] = [];
+let fleetWorkspaces: any[] = [];
+let fleetAccountLinks: any[] = [];
+let fleetLastStarts: Record<string, any[]> = {};
+
 const mockTasksFindMany = mock((args: any) => {
   const where = args?.where;
-  if (where?.type !== 'inArray') return candidateTasks;
+  if (where?.type !== 'inArray') {
+    return (where?.c ?? []).some((c: any) => c?.type === 'or') ? fleetPendingTasks : candidateTasks;
+  }
   // inArray(tasks.missionId, ...) → the advisory-manifest peer probe.
   // inArray(tasks.id, ...)        → the dependency lookup.
   return where.f === 'missionId' ? missionPeerTasks : depTasks;
 });
-const mockWorkersFindMany = mock((args: any) =>
-  args?.where?.type === 'inArray' ? candidateWorkers : depPrWorkers,
-);
+const mockWorkersFindMany = mock((args: any) => {
+  const where = args?.where;
+  if (where?.type === 'inArray') return candidateWorkers;
+  // and(eq(workers.accountId, id), isNotNull(startedAt)) → the fleet pass's
+  // per-account last-start probe. Keyed by account so per-account isolation is
+  // actually observable.
+  const acct = (where?.c ?? []).find((c: any) => c?.type === 'eq' && c?.f === 'accountId');
+  if (acct) return fleetLastStarts[acct.v] ?? [];
+  return depPrWorkers;
+});
+const mockHeartbeatsFindMany = mock(() => fleetHeartbeats);
+const mockWorkspacesFindMany = mock(() => fleetWorkspaces);
+const mockAccountLinksFindMany = mock(() => fleetAccountLinks);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findMany: mockTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
+      workerHeartbeats: { findMany: mockHeartbeatsFindMany },
+      workspaces: { findMany: mockWorkspacesFindMany },
+      accountWorkspaces: { findMany: mockAccountLinksFindMany },
     },
     update: mock(() => ({
       set: mock((values: any) => ({
@@ -56,7 +83,9 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
   eq: (f: any, v: any) => ({ f, v, type: 'eq' }),
   and: (...c: any[]) => ({ c, type: 'and' }),
+  or: (...c: any[]) => ({ c, type: 'or' }),
   lt: (f: any, v: any) => ({ f, v, type: 'lt' }),
+  lte: (f: any, v: any) => ({ f, v, type: 'lte' }),
   inArray: (f: any, v: any) => ({ f, v, type: 'inArray' }),
   isNull: (f: any) => ({ f, type: 'isNull' }),
   isNotNull: (f: any) => ({ f, type: 'isNotNull' }),
@@ -67,8 +96,17 @@ mock.module('@buildd/core/db/schema', () => ({
   // withCronRun imports this; mock.module replaces the whole module, so a
   // partial stub deletes the export for every other importer in the process.
   cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
-  tasks: { id: 'id', status: 'status', createdAt: 'createdAt', missionId: 'missionId' },
-  workers: { taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt' },
+  tasks: { id: 'id', status: 'status', createdAt: 'createdAt', missionId: 'missionId', startAt: 'startAt' },
+  workers: {
+    taskId: 'taskId',
+    prUrl: 'prUrl',
+    mergedAt: 'mergedAt',
+    accountId: 'accountId',
+    startedAt: 'startedAt',
+  },
+  workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
+  workspaces: { id: 'id' },
+  accountWorkspaces: { accountId: 'accountId', workspaceId: 'workspaceId' },
 }));
 
 // ── Gate helper mocks (the real ones do DB + HTTP probes) ───────────────────
@@ -111,6 +149,11 @@ mock.module('@/lib/pacing-stall', () => ({
 const mockNotify = mock((_opts: any) => undefined);
 mock.module('@/lib/pushover', () => ({ notify: mockNotify }));
 
+// The fleet-idle pass alerts through reportOps (transport-level dedupe), not
+// through notify: a fleet-level alarm has no task row to stamp a context key on.
+const mockReportOps = mock((_input: any) => Promise.resolve(true));
+mock.module('@buildd/core/report-ops', () => ({ reportOps: mockReportOps }));
+
 const { POST } = await import('./route');
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -126,6 +169,8 @@ function makeRequest(token: string | null = CRON_SECRET): NextRequest {
 
 const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
 const hoursFromNow = (n: number) => new Date(Date.now() + n * 3_600_000);
+const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000);
+const minutesFromNow = (n: number) => new Date(Date.now() + n * 60_000);
 
 function task(over: Record<string, unknown> = {}) {
   return {
@@ -178,7 +223,17 @@ beforeEach(() => {
   strandVerdict = null;
   pacingVerdict = null;
   mockStrandCheck.mockClear();
+  mockPacingCheck.mockClear();
   mockNotify.mockClear();
+  fleetHeartbeats = [];
+  fleetPendingTasks = [];
+  fleetWorkspaces = [];
+  fleetAccountLinks = [];
+  fleetLastStarts = {};
+  mockReportOps.mockClear();
+  mockHeartbeatsFindMany.mockClear();
+  mockWorkspacesFindMany.mockClear();
+  mockAccountLinksFindMany.mockClear();
 });
 
 describe('queue-stall cron — auth', () => {
@@ -786,5 +841,323 @@ describe('OAuth budget pacing', () => {
     const body = await (await POST(makeRequest())).json();
 
     expect(body.stalled[0].detail).toContain('verify');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Fleet-idle pass — ?scope=fleet-idle
+//
+// The condition: a runner is heartbeating with spare capacity, claimable work
+// is queued, and NOTHING has started. That is what a tripped claim circuit
+// breaker looks like from the server: the heartbeat of a fully-paused runner is
+// byte-identical to a healthy idle one, and the refusal reason never leaves the
+// host. It is deliberately NOT "runner offline" (the heartbeat-stale rule owns
+// that) and NOT "no work queued" (normal idle).
+// ════════════════════════════════════════════════════════════════════════════
+
+function fleetRequest(token: string | null = CRON_SECRET): NextRequest {
+  return new NextRequest('http://localhost/api/cron/queue-stall?scope=fleet-idle', {
+    method: 'POST',
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+}
+
+function heartbeat(over: Record<string, unknown> = {}) {
+  return {
+    accountId: 'acct-1',
+    lastHeartbeatAt: minutesAgo(1),
+    activeWorkerCount: 0,
+    maxConcurrentWorkers: 3,
+    ...over,
+  };
+}
+
+function pendingTask(over: Record<string, unknown> = {}) {
+  return {
+    id: 'pending-1',
+    workspaceId: 'ws-1',
+    startAt: null,
+    createdAt: hoursAgo(2),
+    dependsOn: [],
+    context: {},
+    ...over,
+  };
+}
+
+function workspaceRow(over: Record<string, unknown> = {}) {
+  return { id: 'ws-1', name: 'Platform', accessMode: 'open', ...over };
+}
+
+describe('fleet-idle pass — alive but claiming nothing', () => {
+  it('alarms when a heartbeating fleet has claimable work and has started nothing', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.scope).toBe('fleet-idle');
+    expect(body.alarms).toBe(1);
+    expect(body.findings[0].accountId).toBe('acct-1');
+    expect(mockReportOps).toHaveBeenCalledTimes(1);
+
+    const arg = mockReportOps.mock.calls[0][0] as any;
+    expect(arg.source).toBe('fleet-idle');
+    // Names the cause, the volume and the duration — not a guess about roles.
+    expect(arg.message).toContain('1 claimable');
+    expect(arg.message).toContain('180m');
+    expect(`${arg.message} ${arg.detail}`).not.toContain('no runner is offering');
+  });
+
+  it('reports "never started" rather than an idle duration when there is no start at all', async () => {
+    // workers.startedAt is the load-bearing column: no row at all is a
+    // different sentence from "the last one was a while ago".
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = {};
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(1);
+    expect(body.findings[0].idleMinutes).toBeNull();
+    const arg = mockReportOps.mock.calls[0][0] as any;
+    expect(arg.message).toContain('no worker has ever started');
+    expect(arg.message).not.toMatch(/\d+m\b/);
+  });
+
+  it('stays quiet on a normal idle fleet with nothing queued', async () => {
+    // The test that stops this detector paging every night on an empty queue.
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [];
+    fleetWorkspaces = [];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(9) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when a worker started minutes ago (the fleet is transacting)', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask(), pendingTask({ id: 'pending-2' })];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: minutesAgo(4) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet for an offline runner — that is the heartbeat-stale rule, not this one', async () => {
+    // Double-paging one outage as two alarms is how alerts get muted.
+    fleetHeartbeats = [heartbeat({ lastHeartbeatAt: hoursAgo(3) })];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = {};
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('stays quiet when every runner is at capacity (a full runner refuses work correctly)', async () => {
+    fleetHeartbeats = [heartbeat({ activeWorkerCount: 3, maxConcurrentWorkers: 3 })];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+});
+
+describe('fleet-idle pass — what is not claimable work', () => {
+  it('does not count a task deferred to a future startAt', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ startAt: minutesFromNow(90) })];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.claimablePending).toBe(0);
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('does not count a dependency-blocked task', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'] })];
+    depTasks = [{ id: 'dep-1', title: 'Upstream', status: 'in_progress' }];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.claimablePending).toBe(0);
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('does not count a task whose completed dependency still has an unmerged PR', async () => {
+    // Same dep-gate contract the claim query enforces: a completed dep with an
+    // open PR keeps blocking, so this is not work the fleet is refusing.
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'] })];
+    depTasks = [{ id: 'dep-1', title: 'Upstream', status: 'completed' }];
+    depPrWorkers = [
+      { taskId: 'dep-1', prUrl: 'https://x/pull/12', prNumber: 12, prLifecycleStatus: 'pr_open' },
+    ];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.claimablePending).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('counts a dependency-blocked task once a human force-started past the gate', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ dependsOn: ['dep-1'], context: { bypassDepsGate: true } })];
+    depTasks = [{ id: 'dep-1', title: 'Upstream', status: 'in_progress' }];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.claimablePending).toBe(1);
+    expect(body.alarms).toBe(1);
+  });
+
+  it('does not count work in a restricted workspace the account cannot claim from', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ workspaceId: 'ws-locked' })];
+    fleetWorkspaces = [workspaceRow({ id: 'ws-locked', accessMode: 'restricted' })];
+    fleetAccountLinks = [];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(0);
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('counts restricted-workspace work the account does hold a claim grant for', async () => {
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ workspaceId: 'ws-locked' })];
+    fleetWorkspaces = [workspaceRow({ id: 'ws-locked', accessMode: 'restricted' })];
+    fleetAccountLinks = [{ accountId: 'acct-1', workspaceId: 'ws-locked', canClaim: true }];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(1);
+  });
+
+  it('does not count a task that only just became claimable', async () => {
+    // Pusher delivers assignments in seconds; a task queued a minute ago has
+    // not waited long enough for its absence of a start to mean anything.
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask({ createdAt: minutesAgo(2) })];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.claimablePending).toBe(0);
+    expect(body.alarms).toBe(0);
+  });
+});
+
+describe('fleet-idle pass — per-account isolation and dedupe', () => {
+  it('alarms only for the frozen account when another account is transacting', async () => {
+    // One tenant freezing must not hide behind another's healthy fleet.
+    fleetHeartbeats = [
+      heartbeat({ accountId: 'acct-frozen' }),
+      heartbeat({ accountId: 'acct-busy' }),
+    ];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = {
+      'acct-frozen': [{ startedAt: hoursAgo(6) }],
+      'acct-busy': [{ startedAt: minutesAgo(3) }],
+    };
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(1);
+    expect(body.findings.map((f: any) => f.accountId)).toEqual(['acct-frozen']);
+    expect(mockReportOps).toHaveBeenCalledTimes(1);
+    const arg = mockReportOps.mock.calls[0][0] as any;
+    expect(arg.dedupeKey).toContain('acct-frozen');
+    expect(arg.detail).toContain('acct-frozen');
+  });
+
+  it('uses a stable per-account dedupe key across runs', async () => {
+    // Suppression itself is reportOps' tested behaviour (atomic system_cache
+    // slot); what this route owes is a key that does not move between runs.
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+
+    await POST(fleetRequest());
+    await POST(fleetRequest());
+
+    expect(mockReportOps).toHaveBeenCalledTimes(2);
+    const keys = mockReportOps.mock.calls.map((c: any) => c[0].dedupeKey);
+    expect(keys[0]).toBe('fleet-idle:acct-1');
+    expect(keys[1]).toBe(keys[0]);
+  });
+});
+
+describe('fleet-idle pass — scope isolation', () => {
+  it('never runs the gate ladder, so it costs no connector probe', async () => {
+    // This is what earns the pass 24-hour coverage: the daytime-only
+    // restriction on the gate pass exists because that one HTTP-probes
+    // connectors. Folding the two together would re-import that cost.
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = { 'acct-1': [{ startedAt: hoursAgo(3) }] };
+    candidateTasks = [task({ roleSlug: 'researcher' })];
+
+    const body = await (await POST(fleetRequest())).json();
+
+    expect(body.alarms).toBe(1);
+    expect(mockCheckConnectorRouting).not.toHaveBeenCalled();
+    expect(mockCheckMissionHeld).not.toHaveBeenCalled();
+    expect(mockCheckWorkspaceCap).not.toHaveBeenCalled();
+    expect(mockStrandCheck).not.toHaveBeenCalled();
+    expect(mockPacingCheck).not.toHaveBeenCalled();
+    expect(body.stalled).toBeUndefined();
+  });
+
+  it('leaves the gate pass unchanged — the default scope does not fleet-alarm', async () => {
+    candidateTasks = [task({ dependsOn: ['dep-1'] })];
+    depTasks = [{ id: 'dep-1', title: 'Upstream migration', status: 'failed' }];
+    fleetHeartbeats = [heartbeat()];
+    fleetPendingTasks = [pendingTask()];
+    fleetWorkspaces = [workspaceRow()];
+    fleetLastStarts = {};
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(body.stalled[0].gate).toBe('dep_failed');
+    expect(mockReportOps).not.toHaveBeenCalled();
+  });
+
+  it('requires the cron secret on the fleet pass too', async () => {
+    const res = await POST(fleetRequest(null));
+    expect(res.status).toBe(401);
+    expect(mockReportOps).not.toHaveBeenCalled();
   });
 });

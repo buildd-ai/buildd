@@ -1327,7 +1327,10 @@ describe('cleanupStaleWorkers — activeSessions seat release', () => {
   it('decrements activeSessions when stale workers (15-min path) are reaped', async () => {
     // One stale worker in 'running' status — it held a seat that must be released.
     mockWorkersFindMany
-      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null }])
+      // accountId is part of the selected columns: the decrement is grouped by
+      // each reaped row's own account, so a fixture without it models a row
+      // that holds no seat anywhere and would (correctly) decrement nothing.
+      .mockResolvedValueOnce([{ id: 'w1', taskId: 'task-1', accountId: 'account-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null }])
       .mockResolvedValueOnce([])   // no other active workers
       .mockResolvedValueOnce([])   // failed workers (retry cap)
       .mockResolvedValueOnce([]);  // heartbeat orphans
@@ -1349,8 +1352,8 @@ describe('cleanupStaleWorkers — activeSessions seat release', () => {
     // Two stale workers — both seats must be released in one decrement.
     mockWorkersFindMany
       .mockResolvedValueOnce([
-        { id: 'w1', taskId: 'task-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
-        { id: 'w2', taskId: 'task-2', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w1', taskId: 'task-1', accountId: 'account-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w2', taskId: 'task-2', accountId: 'account-1', prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
       ])
       .mockResolvedValueOnce([])   // other active workers for task-1
       .mockResolvedValueOnce([])   // failed workers for task-1
@@ -1411,6 +1414,148 @@ describe('cleanupStaleWorkers — activeSessions seat release', () => {
     await cleanupStaleWorkers('account-1');
 
     expect(mockAccountsUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe('cleanupStaleWorkers — seat accounting across a cross-account batch', () => {
+  /**
+   * Companion to widening the never-started rule to the whole team.
+   *
+   * Once the reaper can pick up a row belonging to a *sibling* account, a single
+   * `accounts.activeSessions -= batchSize WHERE id = <cleaning account>` is a
+   * silent seat leak in two directions at once: the cleaning account is
+   * credited seats it never held (it can then over-claim past
+   * maxConcurrentSessions), and the account that actually held the seat never
+   * gets it back. The decrement has to be grouped by each reaped row's OWN
+   * account — the same grouping `cleanupStuckWaitingInput` already does.
+   *
+   * The schema mock flattens columns to `undefined`, so the column a predicate
+   * is keyed on is invisible here — but the bound *value* is not: mocked `eq`
+   * keeps `{ value }`, and mocked `sql` keeps its interpolations. That is
+   * enough to see which account each decrement targets and by how much.
+   */
+  const decrements: Array<{ accountId: string | undefined; amount: unknown }> = [];
+
+  beforeEach(() => {
+    decrements.length = 0;
+    capturedAccountsSet = null;
+    mockWorkersFindMany.mockReset();
+    mockTasksFindFirst.mockReset();
+    mockTasksFindMany.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockTasksUpdate.mockReset();
+    mockAccountsUpdate.mockReset();
+    mockCheckWorkerDeliverables.mockReset();
+    mockGetWorkerArtifactCount.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReset();
+    mockWorkerHeartbeatsFindFirst.mockReturnValue({ id: 'hb-1' }); // fresh heartbeat → section 2 inert
+    mockGetWorkerArtifactCount.mockResolvedValue(0);
+    mockCheckWorkerDeliverables.mockReturnValue({
+      hasPR: false, hasArtifacts: false, hasStructuredOutput: false, hasCommits: false, hasAny: false, details: 'none',
+    });
+    mockWorkersUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockTasksUpdate.mockReturnValue({ set: mock(() => ({ where: mock(() => Promise.resolve()) })) });
+    mockAccountsUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        // `activeSessions` is a mocked sql template: values[1] is the amount.
+        const amount = vals?.activeSessions?.values?.[1];
+        return {
+          where: mock((predicate: any) => {
+            // and(eq(accounts.id, <id>), eq(accounts.authType, 'oauth'))
+            const idClause = predicate?.args?.find((a: any) => a?.type === 'eq' && a?.value !== 'oauth');
+            decrements.push({ accountId: idClause?.value, amount });
+            return Promise.resolve();
+          }),
+        };
+      }),
+    });
+  });
+
+  it('issues one decrement per reaped row\'s own account, not one for the cleaning account', async () => {
+    // A team-widened batch: one orphan on the cleaning account, one on a
+    // sibling account in the same team.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w-own', taskId: 'task-1', accountId: 'account-1', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w-sibling', taskId: 'task-2', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // other active workers for task-1
+      .mockResolvedValueOnce([])  // failed workers for task-1
+      .mockResolvedValueOnce([])  // other active workers for task-2
+      .mockResolvedValueOnce([])  // failed workers for task-2
+      .mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-2' },
+    ]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null })
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(decrements).toHaveLength(2);
+    expect(decrements.map(d => d.accountId).sort()).toEqual(['account-1', 'account-2']);
+    // Each account held exactly one seat in this batch.
+    for (const d of decrements) {
+      expect(d.amount).toBe(1);
+    }
+  });
+
+  it('does not charge the cleaning account for a seat a sibling account held', async () => {
+    // Every reaped row belongs to the sibling. The cleaning account held no
+    // seat here and must not be decremented at all.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w-sibling', taskId: 'task-2', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])  // other active workers
+      .mockResolvedValueOnce([])  // failed workers
+      .mockResolvedValueOnce([]); // heartbeat orphans
+
+    mockTasksFindMany.mockResolvedValue([{ id: 'task-2', workspaceId: 'ws-2' }]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(decrements).toHaveLength(1);
+    expect(decrements[0].accountId).toBe('account-2');
+    expect(decrements[0].amount).toBe(1);
+  });
+
+  it('collapses several rows on the same account into a single decrement', async () => {
+    // Grouping must aggregate, not fan out one UPDATE per row.
+    mockWorkersFindMany
+      .mockResolvedValueOnce([
+        { id: 'w1', taskId: 'task-1', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+        { id: 'w2', taskId: 'task-2', accountId: 'account-2', status: 'idle', startedAt: null, prUrl: null, prNumber: null, commitCount: 0, branch: null, error: null },
+      ])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+
+    mockTasksFindMany.mockResolvedValue([
+      { id: 'task-1', workspaceId: 'ws-1' },
+      { id: 'task-2', workspaceId: 'ws-1' },
+    ]);
+    mockTasksFindFirst
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null })
+      .mockResolvedValueOnce({ status: 'assigned', context: {} })
+      .mockResolvedValueOnce({ parentTaskId: null });
+
+    await cleanupStaleWorkers('account-1');
+
+    expect(decrements).toHaveLength(1);
+    expect(decrements[0].accountId).toBe('account-2');
+    expect(decrements[0].amount).toBe(2);
   });
 });
 

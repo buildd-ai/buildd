@@ -12,8 +12,8 @@
  */
 
 // Leading, repeatable prefix fragments in any order:
-//   [reviewer]  ·  [reviewer retry #N] / [reviewer retry]  ·  PR #N:
-const TITLE_PREFIX = /^\s*(?:\[reviewer(?:\s+retry\s*#?\d*)?\]|PR\s*#\d+:)\s*/i;
+//   [reviewer]  ·  [reviewer retry #N] / [reviewer retry]  ·  [apply recommendation]  ·  PR #N:
+const TITLE_PREFIX = /^\s*(?:\[reviewer(?:\s+retry\s*#?\d*)?\]|\[apply recommendation\]|PR\s*#\d+:)\s*/i;
 
 /** Strip all bot-generated prefixes, returning the underlying human title. */
 export function stripTaskTitlePrefixes(title: string | null | undefined): string {
@@ -34,4 +34,9 @@ export function reviewerTitle(prNumber: number, baseTitle: string | null | undef
 /** Title for a reviewer retry (iteration k) — exactly one prefix, no stacking. */
 export function reviewerRetryTitle(iteration: number, baseTitle: string | null | undefined): string {
   return `[reviewer retry #${iteration}] ${stripTaskTitlePrefixes(baseTitle)}`;
+}
+
+/** Title for a human-initiated Apply/Apply-with-corrections dispatch — exactly one prefix, no stacking. */
+export function applyRecommendationTitle(baseTitle: string | null | undefined): string {
+  return `[apply recommendation] ${stripTaskTitlePrefixes(baseTitle)}`;
 }

@@ -15,6 +15,8 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 import { writeCodexMcpConfig } from '../../src/codex-auth';
+import { buildCbmCodexStdioServer } from '../../src/cbm-enforcement';
+import { CBM_BINARY_PATH } from '../../src/bwrap-mount-allowlist';
 
 function probeFsIsReal(): boolean {
   try {
@@ -184,5 +186,104 @@ describe('writeCodexMcpConfig — additional workspace/role MCP servers', () => 
     const serverMatches = content.match(/\[mcp_servers\./g) || [];
     expect(serverMatches).toHaveLength(1);
     expect(content).toContain('[mcp_servers.buildd]');
+  });
+});
+
+describe('writeCodexMcpConfig — stdio servers (codebase-memory)', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) {
+      try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
+    }
+    dirs.length = 0;
+  });
+
+  function writeWithCbm(extra: Partial<Parameters<typeof writeCodexMcpConfig>[1]> = {}): string {
+    const dir = fs.mkdtempSync(join(tmpdir(), 'codex-mcp-stdio-'));
+    dirs.push(dir);
+    writeCodexMcpConfig(dir, {
+      builddServer: 'https://buildd.dev',
+      workspaceId: 'ws_123',
+      workerId: 'w_456',
+      bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+      stdioMcpServers: [buildCbmCodexStdioServer('/repo/.buildd-worktrees/b', '/tmp/cbm-w_456')],
+      ...extra,
+    });
+    return fs.readFileSync(join(dir, 'config.toml'), 'utf-8');
+  }
+
+  fsTest('emits a command/args stdio block for codebase-memory', () => {
+    // Codex has no mcpServers option, so config.toml is the ONLY way the graph
+    // reaches a Codex worker. The writer previously modelled HTTP servers only,
+    // which is why CBM never got there — not anything intrinsic to Codex.
+    const content = writeWithCbm();
+    expect(content).toContain('[mcp_servers.codebase-memory]');
+    expect(content).toContain(`command = ${JSON.stringify(CBM_BINARY_PATH)}`);
+    expect(content).toContain('args = ["mcp"]');
+    expect(content).toContain('enabled = true');
+  });
+
+  fsTest('auto-approves its tools (headless codex exec cancels unapproved MCP calls)', () => {
+    const content = writeWithCbm();
+    const block = content.slice(content.indexOf('[mcp_servers.codebase-memory]'));
+    expect(block).toContain('default_tools_approval_mode = "approve"');
+  });
+
+  fsTest('withholds the destructive CBM tools via disabled_tools', () => {
+    const content = writeWithCbm();
+    expect(content).toContain('disabled_tools = ["delete_project", "manage_adr", "ingest_traces"]');
+  });
+
+  fsTest('scalar keys precede the nested env table (TOML scoping trap)', () => {
+    // A bare `key = value` written AFTER a nested table header is scoped INTO that
+    // table, and codex's --strict-config rejects the unknown field that results.
+    // The same trap model_reasoning_effort hit.
+    const content = writeWithCbm();
+    const serverIdx = content.indexOf('[mcp_servers.codebase-memory]');
+    const envIdx = content.indexOf('[mcp_servers.codebase-memory.env]');
+    const approvalIdx = content.indexOf('default_tools_approval_mode', serverIdx);
+    const disabledIdx = content.indexOf('disabled_tools', serverIdx);
+    expect(envIdx).toBeGreaterThan(serverIdx);
+    expect(approvalIdx).toBeGreaterThan(serverIdx);
+    expect(approvalIdx).toBeLessThan(envIdx);
+    expect(disabledIdx).toBeLessThan(envIdx);
+  });
+
+  fsTest('writes every CBM env var into the nested env table', () => {
+    const content = writeWithCbm();
+    const env = content.slice(content.indexOf('[mcp_servers.codebase-memory.env]'));
+    expect(env).toContain('CBM_CACHE_DIR = "/tmp/cbm-w_456"');
+    expect(env).toContain('CBM_RUNTIME_DIR = "/tmp/cbm-w_456/run"');
+    expect(env).toContain('CBM_ALLOWED_ROOT = "/repo/.buildd-worktrees/b"');
+    expect(env).toContain('CBM_AUTO_WATCH = "false"');
+    expect(env).toContain('CBM_MEM_BUDGET_MB = "1024"');
+  });
+
+  fsTest('stdio block sits before [sandbox_workspace_write] and beside buildd + HTTP servers', () => {
+    const content = writeWithCbm({
+      additionalMcpServers: [
+        { name: 'cue', url: 'https://cue.example.com/mcp', bearerTokenEnvVar: 'MCP_BEARER_CUE' },
+      ],
+    });
+    const cbmIdx = content.indexOf('[mcp_servers.codebase-memory]');
+    const sandboxIdx = content.indexOf('[sandbox_workspace_write]');
+    expect(content).toContain('[mcp_servers.buildd]');
+    expect(content).toContain('[mcp_servers.cue]');
+    expect(cbmIdx).toBeGreaterThan(0);
+    expect(sandboxIdx).toBeGreaterThan(cbmIdx);
+  });
+
+  fsTest('no stdio block when none is passed (existing config unchanged)', () => {
+    const dir = fs.mkdtempSync(join(tmpdir(), 'codex-mcp-nostdio-'));
+    dirs.push(dir);
+    writeCodexMcpConfig(dir, {
+      builddServer: 'https://buildd.dev',
+      workspaceId: 'ws_123',
+      workerId: 'w_456',
+      bearerTokenEnvVar: 'BUILDD_MCP_BEARER_TOKEN',
+    });
+    const content = fs.readFileSync(join(dir, 'config.toml'), 'utf-8');
+    expect(content).not.toContain('codebase-memory');
+    expect(content).not.toContain('command =');
   });
 });

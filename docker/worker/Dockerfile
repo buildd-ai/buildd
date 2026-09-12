@@ -7,6 +7,13 @@ FROM codercom/enterprise-base:ubuntu
 # updated today (this image is built in CI but never pushed). The pin-parity test
 # (apps/runner/__tests__/unit/cbm-version-pin.test.ts) fails if they drift.
 # Checksums come from the release's checksums.txt.
+#
+# Bumping is allowed and is not gated on a remembered ceiling: the graph tools'
+# own MCP descriptions carry anti-grep steering that an upstream token-reduction
+# pass removed, and scripts/verify-cbm-grep-steering.ts now interrogates the
+# pinned build over a real tools/list handshake in worker-image.yml. A version
+# that keeps the steering passes; one that dropped it fails and says what was
+# lost. Do not re-record the constraint as prose.
 ARG CBM_VERSION=0.10.8
 ARG CBM_SHA256_AMD64=e5cba4cad6ca8254a85f45041fc8a831908d7d5cb64f98fc3f8eb70a58671793
 ARG CBM_SHA256_ARM64=e2804a20f5a6fc392af361525a232703e351b7d1aacb81b88eef806eec5959fa

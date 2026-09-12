@@ -10,6 +10,19 @@ related: [auth-oauth-boundaries, provider-failover, mission-task-lifecycle, runn
 keywords: [cost_usd, input_tokens, monthly_cost_usd, oauth_budget_episodes, dailyBudgetPct, budget_exhausted, race_lost, estimateCostUsd, maxCostPerDay, costBudgetUsd]
 verified_by: [apps/web/src/app/api/workers/claim/route.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/lib/usage-stats.test.ts, packages/core/__tests__/oauth-budget.test.ts, packages/core/__tests__/budget-alerts.test.ts, apps/runner/__tests__/unit/usage-aggregate.test.ts, apps/runner/__tests__/unit/worker-manager-lifecycle.test.ts]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "usage-statistics"
+    type: "symbol"
+    name: "computeUsageStats"
+    path: "apps/web/src/lib/usage-stats.ts"
+  - id: "usage-aggregation"
+    type: "symbol"
+    name: "aggregateUsage"
+    path: "apps/runner/src/usage-aggregate.ts"
+  - id: "usage-accounting-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/usage-stats.test.ts"
 ---
 # Usage & Cost Accounting
 
@@ -380,6 +393,12 @@ clears — so the queue restarts itself.
   account reset and any provider pause this batch saw, because
   `accounts.budgetResetsAt` tracks Claude alone
   (`apps/web/src/app/api/workers/claim/route.ts:1767-1830`).
+- A claim pause sized from a provider's own reset text MUST honour the stated
+  minutes and meridiem, and MUST NOT outlast the instant that text quoted — a
+  reset that has already gone by yields the 5-minute floor, never a rollover
+  into the next day. Where no reset is readable the pause is the branch's named
+  default, logged as such (`packages/core/reset-time.ts`,
+  `apps/runner/src/claim-breaker.ts`).
 - The runner turns that reset time into a one-shot resume poll at
   `budgetResetsAt + 5s`, guarded to ≤ 6h and ignoring unparseable values, so held
   work resumes without restarting the runner — the budget-reset re-queue emits
@@ -410,8 +429,15 @@ clears — so the queue restarts itself.
   `limiter` names the binding metric.
 
 **Code surface**:
-- Detection/parsing: `apps/web/src/lib/budget-errors.ts`
-  (`isBudgetExhaustionError`, `extractResetTime`, `SESSION_WINDOW_MS`)
+- Detection: `packages/core/budget-error-classifier.ts` (`isBudgetExhaustionError`,
+  `BUDGET_EXHAUSTION_PATTERNS`) — the canonical pattern list, shared by the web
+  route and the runner's claim breaker / worker-error reporting so the three
+  call sites cannot drift into inconsistent per-provider wording.
+- Reset-time parsing: `packages/core/reset-time.ts` (`extractResetTime`,
+  `resetDelayMsFrom`, `clampPauseToQuotedReset`, `SESSION_WINDOW_MS`) — one
+  parser for both consumers; `apps/web/src/lib/budget-errors.ts` re-exports it
+  alongside `isBudgetExhaustionError`, and the runner's claim breaker imports it
+  instead of carrying regexes of its own
 - Wall handling: `apps/web/src/app/api/workers/[id]/route.ts:640-925`
 - Learner: `packages/core/oauth-budget.ts` (`learnOauthCapacity`,
   `oauthBudgetPressure`, `inferWindowStart`, `summarizeWindowUsage`,
@@ -419,7 +445,7 @@ clears — so the queue restarts itself.
 - Measurement: `apps/web/src/lib/oauth-budget-window.ts`
 - Claim diagnostics: `apps/web/src/app/api/workers/claim/route.ts:1767-1830`
 - Runner resume: `apps/runner/src/workers.ts:1027-1062`
-  (`scheduleBudgetResume`)
+  (`scheduleResumeAt`, also used for per-context breaker wake-ups)
 - Readout: `apps/web/src/app/api/accounts/me/route.ts:21-73` (`budgetPacing`)
 - Schema: `packages/core/db/schema.ts:2035-2061` (`oauthBudgetEpisodes`),
   `:1980-1990` (`tenantBudgets`), `:128-129` (account flags)

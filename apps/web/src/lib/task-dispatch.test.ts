@@ -41,6 +41,26 @@ describe('buildTaskPayload', () => {
     expect(payload.workspace).toBeUndefined();
   });
 
+  it('carries backend so the runner can key its per-backend claim breaker', () => {
+    const payload = buildTaskPayload(
+      { id: 'task-5', title: 'Codex work', workspaceId: 'ws-1', backend: 'codex' },
+      { name: 'ws' },
+    );
+
+    // Without this the runner evaluates every Pusher nudge against the Claude
+    // key, so a Codex wall silently drops Codex nudges (or vice versa).
+    expect(payload.backend).toBe('codex');
+  });
+
+  it('omits backend when the task does not set one', () => {
+    const payload = buildTaskPayload(
+      { id: 'task-6', title: 'Default', workspaceId: 'ws-1' },
+      { name: 'ws' },
+    );
+
+    expect('backend' in payload).toBe(false);
+  });
+
   it('includes compact task fields in payload — no description', () => {
     const payload = buildTaskPayload(
       { id: 't1', title: 'Full', workspaceId: 'ws-1', mode: 'execution', priority: 10, missionId: 'm1' },

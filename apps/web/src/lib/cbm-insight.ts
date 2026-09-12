@@ -21,8 +21,26 @@ export interface CbmRow {
 
 /**
  * Disable reasons that are decisions, not failures. Excluded from both sides of
- * the fallback rate: no amount of engineering makes a Codex task or a
- * worktree-less run use the graph.
+ * the fallback rate: a worktree-less run has nothing to index, and an opted-out
+ * role asked not to have the graph.
+ *
+ * `codex_task` is a decision too, but a much narrower one than it used to be, and
+ * the distinction is the whole reason this set is documented rather than obvious.
+ * The original rationale was that "no amount of engineering makes a Codex task use
+ * the graph" — that turned out to be false. CBM now mounts for Codex tasks
+ * (stdio `[mcp_servers.codebase-memory]` in the worker's Codex config.toml), so a
+ * Codex worker with a worktree and the binary present is `enforced`, lands in
+ * `active`, and counts in BOTH the adoption numerator's denominator and the
+ * eligible cohort — exactly like a Claude worker. The runner only emits
+ * `codex_task` when CBM-for-Codex is deliberately switched off fleet-wide, which
+ * is a configuration decision and belongs here.
+ *
+ * The other half of that fix is in the runner: `codex_task` used to be evaluated
+ * FIRST, so a Codex task that actually hit `no_worktree`, `role_opt_out` or
+ * `binary_absent` was labelled `codex_task` and — via this set — excluded from the
+ * fallback rate. Genuine breakage on Codex was therefore invisible here. The
+ * reason is now decided once, in `buildCbmActivation`, with `codex_task` last but
+ * for the kill switch.
  */
 export const BY_DESIGN_SKIP_REASONS: ReadonlySet<string> = new Set([
   'codex_task',
@@ -88,6 +106,8 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
 
   let bootstrapOk = 0;
   let bootstrapFailed = 0;
+  let bootstrapBackgrounded = 0;
+  let bootstrapBackgroundLanded = 0;
   let bootstrapSkippedWarm = 0;
   let bootstrapUnreported = 0;
   const bootstrapFailReasons: Record<string, number> = {};
@@ -95,7 +115,10 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
     const result = r.cbm.bootstrapResult;
     if (result === 'ok') bootstrapOk++;
     else if (result === 'skipped_warm') bootstrapSkippedWarm++;
-    else if (result === 'failed') {
+    else if (result === 'backgrounded') {
+      bootstrapBackgrounded++;
+      if (r.cbm.backgroundIndexLanded) bootstrapBackgroundLanded++;
+    } else if (result === 'failed') {
       bootstrapFailed++;
       const reason = r.cbm.bootstrapFailReason ?? 'unknown';
       bootstrapFailReasons[reason] = (bootstrapFailReasons[reason] ?? 0) + 1;
@@ -105,8 +128,20 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
   }
   // A warm start is not an attempt: nothing was built, so counting it would dilute
   // the failure rate of the tasks that did build an index.
-  const bootstrapAttempted = bootstrapOk + bootstrapFailed;
+  //
+  // A BACKGROUNDED build is an attempt — a build really ran — but not a failure:
+  // it overran the startup wait budget and was handed off, and the graph arrives
+  // mid-session. Keeping it in the denominator is what stops the hand-off from
+  // improving the headline rate by arithmetic alone; backgroundIndexLandedRate is
+  // the number that says whether it improved anything real.
+  const bootstrapAttempted = bootstrapOk + bootstrapFailed + bootstrapBackgrounded;
   const indexBuildFailureRate = bootstrapAttempted > 0 ? bootstrapFailed / bootstrapAttempted : null;
+  const indexBuildBackgroundedRate =
+    bootstrapAttempted > 0 ? bootstrapBackgrounded / bootstrapAttempted : null;
+  // null, not 0, when nothing was backgrounded: "never happened" must not render
+  // as "never landed".
+  const backgroundIndexLandedRate =
+    bootstrapBackgrounded > 0 ? bootstrapBackgroundLanded / bootstrapBackgrounded : null;
   const warmStartRate = active.length > 0 ? bootstrapSkippedWarm / active.length : null;
 
   const activeInputTokens = active.map(r => r.inputTokens);
@@ -165,6 +200,13 @@ export function aggregateCbm(rows: CbmRow[], windowParam: string, windowStart: D
       ok: bootstrapOk,
       failed: bootstrapFailed,
       failureRate: indexBuildFailureRate,
+      /** Builds handed off because they overran the startup wait budget. */
+      backgrounded: bootstrapBackgrounded,
+      backgroundedRate: indexBuildBackgroundedRate,
+      /** Of those, the ones that finished successfully before the session ended. */
+      backgroundLanded: bootstrapBackgroundLanded,
+      /** null when nothing was backgrounded — never render that as "never landed". */
+      backgroundLandedRate: backgroundIndexLandedRate,
       /** Tasks that needed no index because a shared seeded cache was already warm. */
       skippedWarm: bootstrapSkippedWarm,
       /** Share of active tasks that started warm — the payoff of the shared cache. */
@@ -238,6 +280,15 @@ export interface CbmHealthSummary {
   indexAttempted: number;
   indexFailed: number;
   indexFailureRate: number | null;
+  /**
+   * Builds handed off at the startup wait budget rather than aborted. An attempt,
+   * not a failure — reported alongside the failure rate so the reclassification
+   * cannot be mistaken for an improvement on its own.
+   */
+  indexBackgrounded: number;
+  indexBackgroundedRate: number | null;
+  /** Share of handed-off builds that finished before the session ended. */
+  backgroundIndexLandedRate: number | null;
   topIndexFailReason: { reason: string; count: number } | null;
   eligibleFallbackRate: number | null;
   byDesignSkips: Record<string, number>;
@@ -290,6 +341,9 @@ export function summarizeCbm(agg: CbmAggregate): CbmHealthSummary {
     indexAttempted: agg.indexBuild.attempted,
     indexFailed: agg.indexBuild.failed,
     indexFailureRate: agg.indexBuild.failureRate,
+    indexBackgrounded: agg.indexBuild.backgrounded,
+    indexBackgroundedRate: agg.indexBuild.backgroundedRate,
+    backgroundIndexLandedRate: agg.indexBuild.backgroundLandedRate,
     topIndexFailReason: failEntries.length > 0
       ? { reason: failEntries[0][0], count: failEntries[0][1] }
       : null,

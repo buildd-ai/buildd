@@ -1,15 +1,23 @@
 /**
- * Codebase Memory (CBM) enforcement — default-on MCP for repo-backed Claude tasks.
+ * Codebase Memory (CBM) enforcement — default-on MCP for repo-backed tasks.
  *
  * CBM is enforced across all roles rather than added per-role by hand.
  * A role can opt out by setting mcpServers['codebase-memory'] = false in its
  * skill DB record; the claim route reads this and sends cbmDisabled=true on the
  * claimed worker payload.
  *
- * Degradation rules:
- *   - Codex tasks: skipped (CBM is Claude-only)
+ * Both backends are covered, by two different delivery mechanisms:
+ *   - Claude: a stdio entry in `queryOptions.mcpServers` (buildCbmMcpEntry) plus a
+ *     system-prompt block (buildCbmSystemPromptBlock).
+ *   - Codex: a stdio `[mcp_servers.codebase-memory]` table in CODEX_HOME/config.toml
+ *     (buildCbmCodexStdioServer) plus a section in the generated AGENTS.md, because
+ *     the Codex SDK's ThreadOptions carries neither an mcpServers nor an
+ *     instructions field — config.toml and AGENTS.md are its only two levers.
+ *
+ * Degradation rules (precedence order — see buildCbmActivation):
  *   - No worktree (coordination workspaces, service roles): skipped — nothing to index
  *   - Role opted out (cbmDisabled): skipped
+ *   - Codex with CBM-for-Codex switched off (BUILDD_CBM_CODEX=0): skipped
  *   - Binary absent from image: skipped silently (existsSync guard)
  */
 
@@ -21,14 +29,29 @@ import { CBM_BINARY_PATH } from './bwrap-mount-allowlist';
 
 /**
  * Deny decision over a classified tool surface: everything on the surface that is
+ * not explicitly allowed is blocked. Bare tool names, no prefix.
+ *
+ * The two backends name the same tools differently — Claude's `disallowedTools`
+ * wants `mcp__codebase-memory__<tool>`, Codex's per-server `disabled_tools` wants
+ * the bare `<tool>` — so the decision is made once here and prefixed per backend.
+ */
+export function deriveCbmBlockedToolNames(
+  surface: readonly string[],
+  allowed: readonly string[],
+): string[] {
+  const allowedSet = new Set(allowed);
+  return surface.filter(tool => !allowedSet.has(tool));
+}
+
+/**
+ * Deny decision over a classified tool surface: everything on the surface that is
  * not explicitly allowed is blocked, MCP-prefixed for `disallowedTools`.
  */
 export function deriveCbmBlockedTools(
   surface: readonly string[],
   allowed: readonly string[],
 ): string[] {
-  const allowedSet = new Set(allowed);
-  return surface.filter(tool => !allowedSet.has(tool)).map(tool => `mcp__codebase-memory__${tool}`);
+  return deriveCbmBlockedToolNames(surface, allowed).map(tool => `mcp__codebase-memory__${tool}`);
 }
 
 /**
@@ -89,6 +112,16 @@ export const CBM_ALLOWED_TOOLS = [
 export const CBM_BLOCKED_TOOLS: readonly string[] = deriveCbmBlockedTools(CBM_TOOL_SURFACE, CBM_ALLOWED_TOOLS);
 
 /**
+ * The same deny decision as CBM_BLOCKED_TOOLS, unprefixed — the form Codex's
+ * per-server `disabled_tools` key takes. Derived from the one classification so
+ * the two backends cannot drift into blocking different tools.
+ */
+export const CBM_BLOCKED_TOOL_NAMES: readonly string[] = deriveCbmBlockedToolNames(
+  CBM_TOOL_SURFACE,
+  CBM_ALLOWED_TOOLS,
+);
+
+/**
  * Append the CBM blocklist to a session's disallowedTools.
  *
  * Apply this unconditionally. The previous call site ran only when the runner
@@ -127,14 +160,54 @@ export interface CbmContext {
    */
   defaultBaseRef?: string;
   isCodexTask: boolean;
+  /**
+   * Whether this runner mounts CBM for Codex tasks at all. Defaults to
+   * isCbmCodexEnabled() — i.e. on. False makes `isCodexTask` a skip gate again,
+   * reported as `codex_task`.
+   */
+  codexSupported?: boolean;
   /** True when the role's DB record has mcpServers['codebase-memory'] === false. */
   cbmRoleDisabled: boolean;
   /** Injectable for testing; defaults to existsSync in production. */
   pathExists?: (path: string) => boolean;
 }
 
+/**
+ * Is CBM mounted for Codex tasks on this runner?
+ *
+ * Default-on, kill-switch-off — the same shape as the rest of CBM enforcement:
+ * nothing has to ask for the graph. Two independent levers turn it off, and they
+ * are deliberately at different granularities:
+ *   - per role, with no redeploy and no restart: the DB role opt-out
+ *     (`mcpServers['codebase-memory'] === false`, surfaced as `cbmRoleDisabled`).
+ *     This is the lever to reach for first; the `builder-nocbm` role exists for it.
+ *   - per runner, for the whole fleet: `BUILDD_CBM_CODEX=0` + a runner restart.
+ */
+export function isCbmCodexEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.BUILDD_CBM_CODEX !== '0';
+}
+
+/**
+ * Why CBM is not active for a task. Exactly these four, no unlabelled disable.
+ * `mount_unavailable` is NOT here: it is decided later, by the sandbox argv
+ * build, on a task whose activation gates all passed.
+ */
+export type CbmDisableReason = 'no_worktree' | 'role_opt_out' | 'codex_task' | 'binary_absent';
+
 export interface CbmActivation {
   enforced: boolean;
+  /**
+   * Set iff `enforced` is false — which gate refused, decided HERE rather than
+   * re-derived by the caller.
+   *
+   * The caller used to re-run the gate conditions in its own order to label the
+   * skip, and that order put `isCodexTask` first: a Codex task with no worktree,
+   * an opted-out role, or a missing binary was all reported as `codex_task`. Since
+   * `codex_task` is classified as a by-design skip (it is excluded from both sides
+   * of the eligible-fallback rate), real breakage on a Codex task was recorded as
+   * a decision and vanished from the metric. One decision point, one label.
+   */
+  disableReason?: CbmDisableReason;
   cbmBinaryPath?: string;
   cbmCacheDir?: string;
   /** Per-worker daemon runtime dir; see cbmRuntimeDirFor. */
@@ -461,22 +534,63 @@ export function ensureCbmRuntimeDir(cbmCacheDir: string, explicitDir?: string): 
   return dir;
 }
 
+export interface CbmGuidanceOpts {
+  project?: string;
+  sharedBaseIndex?: boolean;
+  /**
+   * Which backend's file-reading vocabulary to use. The ordered, procedural framing
+   * is identical either way — only the names of the tools the graph is being
+   * preferred OVER change, because Codex has no Read/Grep/Glob tools. Naming tools
+   * the agent does not have is the same class of lie as describing a server that is
+   * not mounted, which this block is careful not to do.
+   */
+  dialect?: 'claude' | 'codex';
+}
+
 /**
- * System-prompt block appended for CBM-enforced sessions.
+ * How each backend reads files when it is not using the graph.
  *
- * Lives here (not inline in workers.ts) so the wording is testable: production
- * data showed essentially every CBM-enforced worker indexing successfully and then
- * making zero graph calls, so this text is the thing under test, not decoration.
+ * Three slots rather than one because the body uses the phrase three ways
+ * ("before any X", "then use X to read", "an X that a graph query would have
+ * answered") and English does not let one noun serve all three. The `claude`
+ * column reproduces the previous wording EXACTLY — that text is the version that
+ * measurably moved graph usage, so it is not a place to improve the prose.
+ */
+const FILE_SWEEP_DIALECT = {
+  claude: {
+    before: 'Read/Grep/Glob sweep',
+    use: 'Read/Grep/Glob',
+    sweep: 'A Grep-and-Read sweep',
+    readVerb: 'Read',
+  },
+  codex: {
+    before: '`rg`/`grep`/`cat` sweep',
+    use: '`rg`/`grep`/`cat`',
+    sweep: 'An `rg`-and-`cat` sweep',
+    readVerb: 'read',
+  },
+} as const;
+
+/**
+ * The ordered graph guidance, shared by both backends.
+ *
+ * Lives here (not inline in workers.ts / codex-instructions.ts) so the wording is
+ * testable, and so the two backends cannot drift: production data showed
+ * essentially every CBM-enforced worker indexing successfully and then making zero
+ * graph calls, so this text is the thing under test, not decoration.
  *
  * The previous version listed the tools and the question shapes they answer, which
  * is a capability list — the agent read it, then reached for Grep anyway, because
  * Grep answers well enough that the graph never gets consulted. The fix is
  * procedural and ordered: on a task that touches code you have not read yet, the
  * FIRST navigation call is a graph call. It stays scoped (greenfield files and
- * docs edits have no structural question) and stays non-blocking (Read/Grep remain
- * available, and the graph is explicitly an accelerator, never a gate).
+ * docs edits have no structural question) and stays non-blocking (plain file
+ * reading remains available, and the graph is explicitly an accelerator, never a
+ * gate). Keep that ordering when editing — the capability-list version measurably
+ * did not work.
  */
-export function buildCbmSystemPromptBlock(opts: { project?: string; sharedBaseIndex?: boolean } = {}): string {
+export function buildCbmGuidanceBody(opts: CbmGuidanceOpts = {}): string {
+  const dialect = FILE_SWEEP_DIALECT[opts.dialect ?? 'claude'];
   // Shared mode indexes the base clone, not this worktree, so the graph maps the
   // repo as of the seed and get_code_snippet serves that copy (verified against
   // 0.10.8: an edit made in the worktree does not appear in the snippet).
@@ -486,28 +600,42 @@ export function buildCbmSystemPromptBlock(opts: { project?: string; sharedBaseIn
     ? [
         'This repo is already indexed in the `codebase-memory` MCP server as project `'
           + (opts.project ?? 'unknown') + '` — the graph is warm before your first turn, with no indexing to wait for.',
-        'It maps the base checkout, not your branch: trust it for structure, and Read the file for current content'
+        `It maps the base checkout, not your branch: trust it for structure, and ${dialect.readVerb} the file for current content`
           + ' — especially anything you have edited this session.',
       ]
     : ['This worktree is already indexed in the `codebase-memory` MCP server — the graph is warm before your first turn.'];
   return [
-    '## Codebase graph (codebase-memory)',
     ...opening,
     '',
     'When a task touches existing code you have not read yet, make a graph call your FIRST navigation step,',
-    'before any Read/Grep/Glob sweep. One call is usually enough to know where to look:',
+    `before any ${dialect.before}. One call is usually enough to know where to look:`,
     '- orienting in an unfamiliar area, or "how is this laid out?" -> mcp__codebase-memory__get_architecture',
     '- "what calls X?" / "call chain from A to B?" -> mcp__codebase-memory__trace_path',
     '- "what breaks if I change X?" (dependents, blast radius) -> mcp__codebase-memory__search_graph',
     '- locating a symbol before reading it -> mcp__codebase-memory__search_code, then get_code_snippet',
     '',
-    'Then use Read/Grep/Glob to read what the graph located, for non-code files, for a greenfield file that',
+    `Then use ${dialect.use} to read what the graph located, for non-code files, for a greenfield file that`,
     'does not exist yet, and whenever the graph returns nothing useful — it is an accelerator, never a gate.',
-    'A Grep-and-Read sweep that a single graph query would have answered is the specific waste to avoid.',
+    `${dialect.sweep} that a single graph query would have answered is the specific waste to avoid.`,
     'If a query reports the project is not indexed, call mcp__codebase-memory__index_repository once.',
     '',
     'The graph answers structural questions ONLY. It is not a source of intent, history, or prior',
     'decisions — use the buildd knowledge tools (recall) for those.',
+  ].join('\n');
+}
+
+/**
+ * System-prompt block appended for CBM-enforced Claude sessions.
+ *
+ * Thin heading wrapper over the shared body. Codex gets the same body under a
+ * markdown `#` heading in AGENTS.md instead (see codex-instructions.ts) — Codex
+ * has no system-prompt seam and no hooks, so AGENTS.md is its only standing
+ * instruction channel.
+ */
+export function buildCbmSystemPromptBlock(opts: CbmGuidanceOpts = {}): string {
+  return [
+    '## Codebase graph (codebase-memory)',
+    buildCbmGuidanceBody({ ...opts, dialect: 'claude' }),
   ].join('\n');
 }
 
@@ -521,8 +649,15 @@ export function buildCbmActivation(ctx: CbmContext): CbmActivation {
     const { existsSync } = require('fs') as typeof import('fs');
     return existsSync(p);
   });
-  const enforced = !ctx.isCodexTask && !!ctx.worktreePath && !ctx.cbmRoleDisabled && pathExists(CBM_BINARY_PATH);
-  if (!enforced) return { enforced: false };
+  // Precedence: structural facts about the task first, then the Codex switch,
+  // then the host. `codex_task` deliberately does NOT come first — see
+  // CbmActivation.disableReason. It also no longer fires by default: CBM reaches
+  // Codex through config.toml + AGENTS.md, so only the kill switch produces it.
+  const codexBlocked = ctx.isCodexTask && !(ctx.codexSupported ?? isCbmCodexEnabled());
+  if (!ctx.worktreePath) return { enforced: false, disableReason: 'no_worktree' };
+  if (ctx.cbmRoleDisabled) return { enforced: false, disableReason: 'role_opt_out' };
+  if (codexBlocked) return { enforced: false, disableReason: 'codex_task' };
+  if (!pathExists(CBM_BINARY_PATH)) return { enforced: false, disableReason: 'binary_absent' };
 
   // Prefer a seed already built for this repo: the graph is warm, so the per-task
   // index (~20s cold, ~11s warm, worse under concurrency) is pure waste.
@@ -866,6 +1001,7 @@ export function buildCbmMetrics(worker: {
   cbmDisableReason?: CbmMetrics['disableReason'];
   cbmBootstrapResult?: CbmMetrics['bootstrapResult'];
   cbmBootstrapFailReason?: string;
+  cbmBackgroundIndexLanded?: boolean;
   cbmSharedCache?: boolean;
   cbmSeedRefresh?: SeedRefreshOutcome;
   cbmToolCounts?: Record<string, number>;
@@ -879,6 +1015,11 @@ export function buildCbmMetrics(worker: {
     ...(worker.cbmDisableReason && { disableReason: worker.cbmDisableReason }),
     ...(worker.cbmBootstrapResult && { bootstrapResult: worker.cbmBootstrapResult }),
     ...(worker.cbmBootstrapFailReason && { bootstrapFailReason: worker.cbmBootstrapFailReason }),
+    // Emitted including `false`, and only for the backgrounded case: "the build
+    // was handed off and never landed" is the finding this exists to surface, so
+    // it must be a value in the row rather than an absent key.
+    ...(worker.cbmBootstrapResult === 'backgrounded'
+      && { backgroundIndexLanded: !!worker.cbmBackgroundIndexLanded }),
     // Always emitted, including false: "this task did NOT get the seed" is the
     // finding, so it has to be a value in the row and not an absent key.
     sharedCache: !!worker.cbmSharedCache,
@@ -891,6 +1032,25 @@ export function buildCbmMetrics(worker: {
   };
 }
 
+/** The MCP server name CBM is mounted under. Both backends, one name. */
+export const CBM_SERVER_NAME = 'codebase-memory';
+
+/**
+ * The env every CBM process gets, whoever spawns it. One source for both backends:
+ * the Claude SDK entry below and the Codex config.toml table must not drift, or a
+ * Codex worker indexes into a different cache than the one the bootstrap warmed.
+ */
+function cbmServerEnv(sessionCwd: string, cbmCacheDir: string, cbmRuntimeDir?: string) {
+  return {
+    CBM_CACHE_DIR: cbmCacheDir,
+    CBM_RUNTIME_DIR: cbmRuntimeDir ?? cbmRuntimeDirFor(cbmCacheDir),
+    CBM_ALLOWED_ROOT: sessionCwd,
+    CBM_AUTO_WATCH: 'false',
+    // Soft memory hint (not a hard RSS cap). Measured buildd RSS: 650-800 MB at 512; raised to 1024.
+    CBM_MEM_BUDGET_MB: '1024',
+  };
+}
+
 /**
  * Build the SDK mcpServers entry for the codebase-memory server.
  * Returns a stdio entry with all required env vars resolved to concrete values.
@@ -900,14 +1060,38 @@ export function buildCbmMcpEntry(sessionCwd: string, cbmCacheDir: string, cbmRun
     type: 'stdio' as const,
     command: CBM_BINARY_PATH,
     args: ['mcp'],
-    env: {
-      CBM_CACHE_DIR: cbmCacheDir,
-      CBM_RUNTIME_DIR: cbmRuntimeDir ?? cbmRuntimeDirFor(cbmCacheDir),
-      CBM_ALLOWED_ROOT: sessionCwd,
-      CBM_AUTO_WATCH: 'false',
-      // Soft memory hint (not a hard RSS cap). Measured buildd RSS: 650-800 MB at 512; raised to 1024.
-      CBM_MEM_BUDGET_MB: '1024',
-    },
+    env: cbmServerEnv(sessionCwd, cbmCacheDir, cbmRuntimeDir),
+  };
+}
+
+/**
+ * The same server, as a Codex `[mcp_servers.codebase-memory]` config.toml table.
+ *
+ * Codex has no `mcpServers` option — `ThreadOptions` (codex-sdk 0.154) carries
+ * only model/sandbox/cwd/effort-shaped fields — so `$CODEX_HOME/config.toml` is the
+ * single injection point, exactly as it already is for the buildd HTTP server.
+ * buildd's writer previously only modelled HTTP servers (`url` +
+ * `bearer_token_env_var`) and skipped stdio connectors with a warning, which is
+ * why CBM never reached Codex; the codex CLI itself has always taken stdio servers.
+ *
+ * Two fields are load-bearing and are not decoration:
+ *   - `default_tools_approval_mode: 'approve'` — headless `codex exec` runs with
+ *     approval policy "never" and no TTY, so every MCP tool call is auto-cancelled
+ *     without it. Same reason the buildd server sets it.
+ *   - `disabled_tools` — Codex's equivalent of Claude's `disallowedTools`, fed from
+ *     the SAME classification (CBM_BLOCKED_TOOL_NAMES), so delete_project /
+ *     manage_adr / ingest_traces are out of reach on both backends.
+ *
+ * Keys verified against codex-cli 0.140 with `--strict-config` (which rejects
+ * unknown fields) and `codex mcp list`.
+ */
+export function buildCbmCodexStdioServer(sessionCwd: string, cbmCacheDir: string, cbmRuntimeDir?: string) {
+  return {
+    name: CBM_SERVER_NAME,
+    command: CBM_BINARY_PATH,
+    args: ['mcp'],
+    env: cbmServerEnv(sessionCwd, cbmCacheDir, cbmRuntimeDir),
+    disabledTools: [...CBM_BLOCKED_TOOL_NAMES],
   };
 }
 

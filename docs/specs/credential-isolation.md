@@ -8,6 +8,24 @@ domain: auth
 surfaces: [apps/runner/src/workers.ts, apps/runner/src/mcp-preflight.ts, apps/runner/src/hook-factory.ts, packages/core/redaction.ts]
 related: [mcp-connectors-and-roles, auth-oauth-boundaries, codex-backend-spec]
 keywords: [cleanenv, mcp_bearer_conn, buildd_api_key, sensitive_read_paths, mcp_preflight_failed, dataclass sensitive]
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mcp-preflight"
+    type: "symbol"
+    name: "runMcpPreflight"
+    path: "apps/runner/src/mcp-preflight.ts"
+  - id: "secret-redactor"
+    type: "symbol"
+    name: "createSecretRedactor"
+    path: "packages/core/redaction.ts"
+  - id: "mcp-preflight-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/mcp-preflight.test.ts"
+  - id: "worker-runs-preflight"
+    type: "symbol_reachable"
+    symbol: "runMcpPreflight"
+    entry: "apps/runner/src/workers.ts"
+    as: "read"
 ---
 # Credential Isolation & MCP Injection Security Model
 

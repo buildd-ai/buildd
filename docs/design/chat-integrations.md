@@ -2,6 +2,7 @@
 title: Chat integrations (Slack, Discord)
 status: Retired — record of a removed implementation
 owner: max
+# Intentionally assertion-free: this historical note declares no current implementation contract.
 ---
 
 # Chat integrations

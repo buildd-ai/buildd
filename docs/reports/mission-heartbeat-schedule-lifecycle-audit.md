@@ -11,8 +11,8 @@ design, enforcement, or backfill before any more code gets written.
 This is a generated artifact — rebuildable, not a source of truth. The
 normative rules it recommends live in
 [`docs/specs/mission-heartbeat-schedule-lifecycle.md`](../specs/mission-heartbeat-schedule-lifecycle.md)
-(draft); the resulting work items live in
-[`docs/plans/mission-heartbeat-schedule-lifecycle-fixes.md`](../plans/mission-heartbeat-schedule-lifecycle-fixes.md).
+(draft); the resulting work items shipped as
+[`docs/plans/archive/mission-heartbeat-schedule-lifecycle-fixes.md`](../plans/archive/mission-heartbeat-schedule-lifecycle-fixes.md).
 
 ---
 

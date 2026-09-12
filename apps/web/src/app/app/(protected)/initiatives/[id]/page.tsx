@@ -5,7 +5,7 @@ import { redirect, notFound } from 'next/navigation';
 import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds } from '@/lib/team-access';
-import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, type ChildMissionProgress } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeInitiativeProgress, computeInitiativeSegments, CRITERIA_GATE_TONE_CLASS, type ChildMissionProgress } from '@buildd/core/mission-helpers';
 import TrackerProgressPanel from '@/components/TrackerProgressPanel';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
@@ -29,6 +29,8 @@ import { verdictChip } from '@/lib/verdict-presentation';
 import {
   missionContributions,
   buildPendingChips,
+  closeAffordance,
+  initiativeKpiGate,
   formatVerdictEvidence,
   formatEffortTotal,
   latestWorkerPerTask,
@@ -40,6 +42,7 @@ import {
 } from './verdict-blocks';
 import AssignMissionModal, { type AssignableMission } from './AssignMissionModal';
 import InitiativeKPIPanel from './InitiativeKPIPanel';
+import InitiativeCloseControl from './InitiativeCloseControl';
 
 export const dynamic = 'force-dynamic';
 
@@ -179,6 +182,17 @@ export default async function InitiativeDetailPage({
   const chip = verdictChip(verdict);
   const kpiCount = ((initiative.kpis as any[]) ?? []).length;
   const evidenceAnchor = verdictEvidenceAnchor({ confidence, kpiCount });
+  // The lifecycle control. `won_unclaimed` renders as "Ready to close", so on
+  // that rung this is the page's primary action; otherwise it stays available
+  // but subordinate. Nothing auto-closes an initiative — this is the only way.
+  const close = closeAffordance({ status: initiative.status, verdict });
+  // The KPI gate chip, with `completionAttempted` decided by the helper rather
+  // than hardcoded here (it was `true`, which asserted an attempt nobody made).
+  const kpiGate = initiativeKpiGate({
+    kpiCount,
+    kpiState: initiative.kpiState as { overall?: string | null; kpis?: unknown } | null,
+    allMissionsDone: rollup.totalMissions > 0 && rollup.completedMissions === rollup.totalMissions,
+  });
   const pendingChips = buildPendingChips(missionContributions(pulseMissions, id), {
     initiativeId: id,
   });
@@ -290,6 +304,20 @@ export default async function InitiativeDetailPage({
               tokens7d,
             })}
           </span>
+          {/* The close affordance sits on the verdict row because it is the
+              answer to the verdict: "Ready to close" with no way to close is
+              the complaint this control exists to fix. */}
+          {close && (
+            <span className="ml-auto">
+              <InitiativeCloseControl
+                initiativeId={id}
+                nextStatus={close.nextStatus}
+                label={close.label}
+                pendingLabel={close.pendingLabel}
+                prominent={close.prominent}
+              />
+            </span>
+          )}
         </div>
 
         {initiative.description && (
@@ -303,31 +331,21 @@ export default async function InitiativeDetailPage({
           {/* KPI gate: missions all done but KPIs not met — make this legible.
               Reads the same shared presentation as the mission detail banner and
               card pill, so "not yet verified" never gets the same treatment as
-              an actual failure or a genuinely work-stopping state. */}
-          {(() => {
-            const kpis = (initiative.kpis as any[]) ?? [];
-            const allMissionsDone = rollup.totalMissions > 0 && rollup.completedMissions === rollup.totalMissions;
-            // The gate is only newsworthy once completion is actually on the
-            // table — before that, unmet KPIs on an in-progress initiative are
-            // expected, not a chip-worthy state.
-            if (kpis.length === 0 || !allMissionsDone) return null;
-            const kpiState = initiative.kpiState as { overall?: string; kpis?: any[] } | null;
-            const gate = deriveCriteriaGatePresentation({
-              criteriaCount: kpis.length,
-              overall: (kpiState?.overall as any) ?? null,
-              items: kpiState?.kpis as any,
-              completionAttempted: true,
-            });
-            if (!gate || gate.state === 'clear') return null;
-            return (
-              <span
-                className={`text-[11px] font-mono px-2 py-0.5 border rounded-sm ${CRITERIA_GATE_TONE_CLASS[gate.tone]}`}
-                title="All child missions completed but KPIs not yet verified"
-              >
-                {gate.detail ? `${gate.label}: ${gate.detail}` : gate.label}
-              </span>
-            );
-          })()}
+              an actual failure or a genuinely work-stopping state. The decision
+              (including whether completion was ever attempted) lives in
+              `initiativeKpiGate`, where it is testable. */}
+          {kpiGate && (
+            <span
+              className={`text-[11px] font-mono px-2 py-0.5 border rounded-sm ${CRITERIA_GATE_TONE_CLASS[kpiGate.tone]}`}
+              title={
+                kpiGate.state === 'failing'
+                  ? 'All child missions completed but a KPI failed its threshold'
+                  : 'All child missions completed but KPIs not yet verified'
+              }
+            >
+              {kpiGate.detail ? `${kpiGate.label}: ${kpiGate.detail}` : kpiGate.label}
+            </span>
+          )}
         </div>
         {aggregateSegments.length > 0 ? (
           <div className="flex max-w-md">

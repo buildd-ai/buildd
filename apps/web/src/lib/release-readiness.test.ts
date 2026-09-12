@@ -46,4 +46,32 @@ describe('computeReleaseWidgetDecision', () => {
     expect(computeReleaseWidgetDecision(val(4), 'passing')).toBe('show');
     expect(computeReleaseWidgetDecision(val(4), 'unknown')).toBe('show');
   });
+
+  // Failed-dispatch poisoning: a stale/failed CI reading must never suppress
+  // the CTA, and a count that grossly disagrees with the last commits-ahead
+  // snapshot must render as an error, not as a big number.
+  it('CI reading resolved as unknown (stale or failed-derived) + commits ahead → show, never ci_blocking', () => {
+    expect(computeReleaseWidgetDecision(val(24), 'unknown')).toBe('show');
+  });
+
+  it('regression guard: a healthy, fresh failing reading still blocks (the real gate is untouched)', () => {
+    expect(computeReleaseWidgetDecision(val(24), 'failing')).toBe('ci_blocking');
+  });
+
+  it('count grossly exceeds the last commits-ahead snapshot → error, not a large number', () => {
+    expect(computeReleaseWidgetDecision(val(859), 'passing', 4)).toBe('error');
+  });
+
+  it('count is a small fraction of the last commits-ahead snapshot → error', () => {
+    expect(computeReleaseWidgetDecision(val(2), 'passing', 40)).toBe('error');
+  });
+
+  it('count within a trivial margin of the commits-ahead snapshot → show as usual', () => {
+    expect(computeReleaseWidgetDecision(val(24), 'passing', 17)).toBe('show');
+  });
+
+  it('no commits-ahead snapshot available → divergence check is skipped', () => {
+    expect(computeReleaseWidgetDecision(val(24), 'passing', null)).toBe('show');
+    expect(computeReleaseWidgetDecision(val(24), 'passing')).toBe('show');
+  });
 });
