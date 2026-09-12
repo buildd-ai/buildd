@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import {
+  appendPathManifest,
   checkPathClaimConflict,
   insertClaims,
   registerWaiter,
@@ -13,7 +14,6 @@ import {
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MAX_CLAIM_RETRIES = 3;
 
 /**
  * POST /api/tasks/[id]/path-claim
@@ -25,7 +25,7 @@ const MAX_CLAIM_RETRIES = 3;
  *
  * Success — all paths are unclaimed by active sibling tasks:
  *   200 { claimed: true, pathManifest: string[] }
- *   The task's pathManifest is atomically extended with the new paths via CAS.
+ *   The task's pathManifest is atomically extended with the new paths.
  *   path_claims rows are inserted for each new path.
  *
  * Conflict — at least one path overlaps an active path_claims row:
@@ -88,7 +88,7 @@ export async function POST(
     );
   }
 
-  let currentTask = await db.query.tasks.findFirst({
+  const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
     columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, title: true },
   });
@@ -112,116 +112,80 @@ export async function POST(
     );
   }
 
-  for (let attempt = 0; attempt < MAX_CLAIM_RETRIES; attempt++) {
-    // Check active path_claims rows for conflicts (workspace-scoped).
-    // This replaces the old tasks.pathManifest sibling scan — held locks are
-    // now in path_claims, not inferred from manifest + status combinations.
-    const conflict = await checkPathClaimConflict(
-      currentTask.workspaceId,
+  // Check active path_claims rows for conflicts (workspace-scoped). Held locks
+  // live in path_claims, not inferred from manifest + status combinations.
+  const conflict = await checkPathClaimConflict(
+    currentTask.workspaceId,
+    id,
+    paths,
+  );
+
+  if (conflict) {
+    // Fetch blocker details for the response
+    const blocker = await db.query.tasks.findFirst({
+      where: eq(tasks.id, conflict.blockingTaskId),
+      columns: { id: true, title: true, missionId: true },
+    });
+
+    // Auto-register as waiter (deadlock check included)
+    const waiterResult = await registerWaiter(
+      conflict.blockingTaskId,
       id,
-      paths,
+      conflict.blockingPath,
+      currentTask.workspaceId,
     );
 
-    if (conflict) {
-      // Fetch blocker details for the response
-      const blocker = await db.query.tasks.findFirst({
-        where: eq(tasks.id, conflict.blockingTaskId),
-        columns: { id: true, title: true, missionId: true },
-      });
+    const isCrossMission =
+      blocker?.missionId !== null &&
+      blocker?.missionId !== undefined &&
+      currentTask.missionId !== null &&
+      currentTask.missionId !== undefined &&
+      blocker?.missionId !== currentTask.missionId;
 
-      // Auto-register as waiter (deadlock check included)
-      const waiterResult = await registerWaiter(
-        conflict.blockingTaskId,
-        id,
-        conflict.blockingPath,
-        currentTask.workspaceId,
-      );
+    const message = isCrossMission
+      ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`
+      : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`;
 
-      const isCrossMission =
-        blocker?.missionId !== null &&
-        blocker?.missionId !== undefined &&
-        currentTask.missionId !== null &&
-        currentTask.missionId !== undefined &&
-        blocker?.missionId !== currentTask.missionId;
+    const response: Record<string, unknown> = {
+      claimed: false,
+      blockingTaskId: conflict.blockingTaskId,
+      blockingTaskTitle: blocker?.title ?? null,
+      blockingMissionId: blocker?.missionId ?? null,
+      message,
+    };
 
-      const message = isCrossMission
-        ? `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}) in a different mission (${blocker?.missionId!.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`
-        : `Paths overlap with task "${blocker?.title ?? conflict.blockingTaskId.slice(0, 8)}" (${conflict.blockingTaskId.slice(0, 8)}). You have been registered as a waiter — a path_claim_released Pusher event will fire on the workspace channel when the path is free.`;
-
-      const response: Record<string, unknown> = {
-        claimed: false,
-        blockingTaskId: conflict.blockingTaskId,
-        blockingTaskTitle: blocker?.title ?? null,
-        blockingMissionId: blocker?.missionId ?? null,
-        message,
-      };
-
-      if ('deadlock' in waiterResult && waiterResult.deadlock) {
-        response.deadlock = true;
-        response.cycle = waiterResult.cycle;
-        // Post a warning for human resolution (best-effort)
-        if (currentTask.missionId) {
-          try {
-            await db.insert(missionNotes).values({
-              missionId: currentTask.missionId,
-              taskId: id,
-              authorType: 'system',
-              type: 'warning',
-              title: 'Deadlock detected in path claims',
-              body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
-              status: 'open',
-            });
-          } catch { /* non-fatal */ }
-        }
+    if ('deadlock' in waiterResult && waiterResult.deadlock) {
+      response.deadlock = true;
+      response.cycle = waiterResult.cycle;
+      // Post a warning for human resolution (best-effort)
+      if (currentTask.missionId) {
+        try {
+          await db.insert(missionNotes).values({
+            missionId: currentTask.missionId,
+            taskId: id,
+            authorType: 'system',
+            type: 'warning',
+            title: 'Deadlock detected in path claims',
+            body: `Tasks ${waiterResult.cycle.map((t: string) => t.slice(0, 8)).join(' → ')} form a circular wait. Cancel one task to resolve.`,
+            status: 'open',
+          });
+        } catch { /* non-fatal */ }
       }
-
-      return NextResponse.json(response, { status: 409 });
     }
 
-    const existingManifest = (currentTask.pathManifest as string[] | null) ?? [];
-    const existingSet = new Set(existingManifest);
-    const newPaths = paths.filter((p) => !existingSet.has(p));
-
-    if (newPaths.length === 0) {
-      return NextResponse.json({ claimed: true, pathManifest: existingManifest });
-    }
-
-    const updatedManifest = [...existingManifest, ...newPaths];
-
-    // Atomic CAS: write only if pathManifest hasn't changed since we read it.
-    // This serializes concurrent calls from the same task and prevents double-insertion.
-    const [updated] = await db
-      .update(tasks)
-      .set({ pathManifest: updatedManifest })
-      .where(
-        and(
-          eq(tasks.id, id),
-          sql`path_manifest IS NOT DISTINCT FROM ${JSON.stringify(existingManifest)}::jsonb`,
-        )
-      )
-      .returning({ id: tasks.id });
-
-    if (updated) {
-      // Insert path_claims rows for the newly claimed paths
-      await insertClaims(currentTask.workspaceId, id, newPaths);
-      return NextResponse.json({ claimed: true, pathManifest: updatedManifest });
-    }
-
-    // CAS failed — another concurrent call modified the manifest. Re-read and retry.
-    if (attempt < MAX_CLAIM_RETRIES - 1) {
-      const refreshed = await db.query.tasks.findFirst({
-        where: eq(tasks.id, id),
-        columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, title: true },
-      });
-      if (!refreshed) {
-        return NextResponse.json({ error: 'Task not found' }, { status: 404 });
-      }
-      currentTask = refreshed;
-    }
+    return NextResponse.json(response, { status: 409 });
   }
 
-  return NextResponse.json(
-    { error: 'Concurrent update conflict. Please retry the path claim.' },
-    { status: 409 }
-  );
+  const existingManifest = (currentTask.pathManifest as string[] | null) ?? [];
+  const existingSet = new Set(existingManifest);
+  const newPaths = paths.filter((p) => !existingSet.has(p));
+
+  if (newPaths.length === 0) {
+    return NextResponse.json({ claimed: true, pathManifest: existingManifest });
+  }
+
+  // Atomic append — see appendPathManifest for why this needs no CAS/retry.
+  const updatedManifest = await appendPathManifest(id, newPaths);
+  await insertClaims(currentTask.workspaceId, id, newPaths);
+  return NextResponse.json({ claimed: true, pathManifest: updatedManifest });
 }
