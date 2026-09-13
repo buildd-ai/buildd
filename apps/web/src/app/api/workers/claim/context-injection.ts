@@ -28,6 +28,51 @@ import { buildSubjectPriorWork } from './subject-prior-work';
 /** The claim-candidate rows these blocks look tasks up in. */
 type ClaimedTask = { id: string; title: string; workspaceId: string };
 
+/** Prefixes stripped from a title before it seeds the knowledge-context embedding query. */
+const SEED_TITLE_PREFIX_RE = /^\[(?:CI Retry #\d+|reviewer retry #\d+|reviewer|friction)\]\s*/i;
+
+/** Description chars kept in the seed query — a full CI-retry/friction body would dominate the embedding. */
+const SEED_DESCRIPTION_MAX_CHARS = 600;
+
+/**
+ * Normalise a task's title/description into the text embedded for claim-time
+ * knowledge retrieval (spec f14a3d02 §1).
+ *
+ * Strips templated prefixes ([CI Retry #N], [reviewer], [reviewer retry #N],
+ * [friction]) that carry no semantic content but would otherwise dominate the
+ * embedding, and caps the description so a long templated body doesn't drown
+ * out the title. Repeats the prefix strip since a retried reviewer task can
+ * stack more than one prefix (e.g. "[CI Retry #2] [reviewer] Fix the sandbox").
+ */
+function buildSeedQuery(title: string, description: string | null | undefined): string {
+  let normalizedTitle = title ?? '';
+  let stripped: string;
+  do {
+    stripped = normalizedTitle.replace(SEED_TITLE_PREFIX_RE, '');
+    if (stripped === normalizedTitle) break;
+    normalizedTitle = stripped;
+  } while (true);
+  normalizedTitle = normalizedTitle.trim();
+
+  const truncatedDescription = (description ?? '').slice(0, SEED_DESCRIPTION_MAX_CHARS);
+  return [normalizedTitle, truncatedDescription].filter(Boolean).join('\n');
+}
+
+/**
+ * Concrete search paths from a task's pathManifest, for the knowledge-store
+ * path lookup ("Recent work on relevant paths"). `path_manifest` is jsonb with
+ * only a compile-time $type assertion, so a non-array or non-string entry is a
+ * live possibility, not a hypothetical — mirrors the guard in
+ * deriveErrorClusterKeys above. The repo-wide sentinel `'**'` records that scope
+ * was never declared and would otherwise search for a file literally named `**`.
+ */
+function manifestPaths(pathManifest: unknown): string[] {
+  if (!Array.isArray(pathManifest)) return [];
+  return pathManifest.filter(
+    (p): p is string => typeof p === 'string' && p.trim() !== '' && p !== REPO_WIDE_SENTINEL,
+  );
+}
+
 /**
  * Derive the search keys for an error-subject cluster, deterministically.
  *
@@ -195,7 +240,9 @@ export async function attachKnowledgeContext(
     }
 
     if (parts.length === 0) {
-      parts = await buildKnowledgeContext(goal, task.workspaceId, teamId, undefined, { sensitive });
+      const seedQuery = buildSeedQuery(task.title, (task as any).description);
+      const paths = manifestPaths((task as any).pathManifest);
+      parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, { sensitive, paths });
     }
 
     // One record per claim, always — the recipe's when it served the request,
