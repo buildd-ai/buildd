@@ -41,6 +41,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
 import { classifyAuthErrorSeverity } from '@buildd/core/auth-error-classifier';
@@ -3468,6 +3469,35 @@ async function handleReviewerOutcomeIfNeeded(
     }
   }
 
+  // ── Corrected lede ───────────────────────────────────────────────────────
+  // Applied HERE, server-side, because the reviewer agent is read-only and
+  // never touches the PR — it proposes, this handler applies, the same division
+  // as the verdict itself.
+  //
+  // Deliberately not awaited into any decision below: the verdict is already
+  // fixed by this point, and nothing in this block can change it. A failure
+  // resolves to `{ applied: false }` (the helper never throws), which the
+  // mission note and the switch below simply ignore. The most common outcome by
+  // far is `no correction proposed`, which touches GitHub not at all.
+  const ledeCorrection = await applyReviewerLedeCorrection({
+    installationId,
+    repoFullName,
+    prNumber,
+    correctedLede: output.correctedLede,
+    workspaceId,
+  }).catch((err) => {
+    console.warn(`[reviewer] lede correction threw unexpectedly for PR #${prNumber}:`, err);
+    return { applied: false as const, reason: 'unexpected error' };
+  });
+
+  // Surfaced as SIGNAL, not a quiet patch. A lede that contradicts its own diff
+  // usually means the agent misunderstood its own change, so the correction is
+  // recorded on the decision note a human reads — alongside the reviewer's own
+  // `summary`, which the prompt requires to name the contradiction.
+  const ledeNote = ledeCorrection.applied
+    ? `\n\nLede corrected: the PR's opening sentence contradicted the diff, and has been replaced. The author's original is preserved in the PR body: “${ledeCorrection.original}”`
+    : '';
+
   // Audit event — every decision is persisted as a mission note
   if (missionId) {
     await db.insert(missionNotes).values({
@@ -3491,6 +3521,7 @@ async function handleReviewerOutcomeIfNeeded(
       body: (serverOverrideReason
         ? `The reviewer approved this PR, but the file list requires a human: ${serverOverrideReason}.\n\nReviewer summary: ${output.summary}`
         : (output.feedback ?? output.escalationReason ?? output.summary))
+        + ledeNote
         + (effectiveVerdict === 'escalate' && output.recommendation
             ? `${RECOMMENDATION_MARKER}${output.recommendation}`
             : ''),

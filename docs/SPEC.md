@@ -307,7 +307,7 @@ from, in precedence order: `task.requiresReview` → `mission.mergePolicy` →
 | Tier | Who ends the PR |
 |------|-----------------|
 | `auto-threshold` | The platform, unattended, once `evaluateAutoMergeSafety` passes: CI green (fail-closed if unverifiable), no `denyPaths` hit, diff under the source-line cap, migration operation-class inspector satisfied, no conflicts. |
-| `agent-review` | A **reviewer agent**. A `reviewer`-role task is spawned on PR open and returns `{verdict, confidence, summary, feedback?, escalationReason?, recommendation?}` as structured output. `approve` may merge; `request-changes` sends the PR back to the authoring agent for up to `maxIterations` (default 3); `escalate` goes to a human. |
+| `agent-review` | A **reviewer agent**. A `reviewer`-role task is spawned on PR open and returns `{verdict, confidence, summary, feedback?, escalationReason?, recommendation?, correctedLede?}` as structured output. `approve` may merge; `request-changes` sends the PR back to the authoring agent for up to `maxIterations` (default 3); `escalate` goes to a human. |
 | `human` | A person, from the escalation inbox. No automated merge. |
 
 **Every route to a merge runs the same gate.** There are three: auto-merge on green
@@ -336,8 +336,25 @@ the head SHA — an absent check run is not a passing one.
 changed-file list, and — when `policyConfig.reviewerPatchEvidence` is set — the PR patch
 itself, rendered in a hunk format where **only added lines carry a line number**, so a
 cited `path:line` is provably a line the PR introduced. PR-authored text (task
-description, title) is stripped of injection carriers and fenced as data before it
+description, title, lede) is stripped of injection carriers and fenced as data before it
 enters the prompt.
+
+**The PR lede.** Every PR body opens with a one-sentence plain-language lede, composed
+into the body at creation behind `<!-- buildd-lede -->` markers so that GitHub, `get_pr`
+and the `pr` knowledge corpus all read it first without knowing the field exists.
+`lede` is **required** on `create_pr` and can fail only by being ABSENT — nothing
+inspects or grades what is written, and no PR is ever refused over its prose. The
+`prUrl` adoption path, which registers a pull request that already exists on GitHub,
+takes a deterministic title-derived lede instead of a refusal. Only the lede is bounded
+(240 characters, truncated not rejected); the body is never capped, because it is the
+durable record the corpus searches.
+
+A reviewer may return `correctedLede` when the lede **contradicts the diff** — spec
+conformance applied one object over. A lede that is accurate but clumsy is taste and is
+left alone. The agent proposes; `handleReviewerOutcomeIfNeeded` applies, keeping the
+author's original visible in the body and on the PR activity comment, and surfacing the
+correction on the decision note. A failed body edit is logged and dropped: it never
+gates, delays or alters the verdict.
 
 ---
 
