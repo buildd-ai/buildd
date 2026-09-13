@@ -4152,6 +4152,12 @@ export async function handleBuilddAction(
             fileCount: number;
             detectedClassCount: number;
             hint: string;
+            specConformance: {
+              detected: { specsRoot: string | null; designRoot: string | null };
+              proposed: { specsRoot: string; designRoot: string };
+              hint: string;
+              tier3Schedule: { params: Record<string, unknown>; hint: string };
+            };
           } | null = null;
           try {
             scanResult = await api(`/api/workspaces/${wsId}/policy-init`, {
@@ -4176,7 +4182,7 @@ export async function handleBuilddAction(
             return text(`policy-init scan returned no result for workspace ${wsId}`);
           }
 
-          const { proposed, repoFullName, fileCount, detectedClassCount } = scanResult;
+          const { proposed, repoFullName, fileCount, detectedClassCount, specConformance } = scanResult;
 
           // Format proposed policy for human confirmation
           const riskClasses = (proposed as any).riskClasses ?? [];
@@ -4184,6 +4190,10 @@ export async function handleBuilddAction(
             .filter((c: any) => c.detectedPaths?.length > 0)
             .map((c: any) => `  - ${c.name}: ${(c.detectedPaths as string[]).join(', ')}`)
             .join('\n');
+
+          const specRootsLine = specConformance.detected.specsRoot || specConformance.detected.designRoot
+            ? `detected specsRoot=${specConformance.detected.specsRoot ?? '(none — using default)'}, designRoot=${specConformance.detected.designRoot ?? '(none — using default)'}`
+            : `no docs/ tree detected — proposing buildd's own defaults`;
 
           return text(
             `## Proposed Policy for ${repoFullName}\n\n` +
@@ -4197,7 +4207,18 @@ export async function handleBuilddAction(
             `\`\`\`\n\n` +
             `This replaces hand-authored escalateToPaths. Paths are derived from the repo — never type them manually.\n` +
             `To change the preset: re-run with preset=cautious or preset=autonomous.\n` +
-            `To add paths: set userPaths on any risk class entry after applying.`,
+            `To add paths: set userPaths on any risk class entry after applying.\n\n` +
+            `## Proposed Spec Conformance Setup (docs/design/spec-conformance.md §14)\n\n` +
+            `${specRootsLine}.\n\n` +
+            `**To apply:** manage_workspaces action=update workspaceId=${wsId} gitConfig={ "specConformance": ${JSON.stringify(specConformance.proposed)} }\n\n` +
+            `**To opt into the weekly Tier-3 cron** (specs with zero assertions only — never a hardcoded schedule ID, one row per workspace that opts in):\n` +
+            `\`\`\`\n` +
+            `create_schedule workspaceId=${wsId} name="${specConformance.tier3Schedule.params.name}" ` +
+            `cronExpression="${specConformance.tier3Schedule.params.cronExpression}" ` +
+            `timezone="${specConformance.tier3Schedule.params.timezone}" ` +
+            `title="${specConformance.tier3Schedule.params.title}" ` +
+            `description=<the generated description in the tool result>\n` +
+            `\`\`\``,
           );
         }
         default:

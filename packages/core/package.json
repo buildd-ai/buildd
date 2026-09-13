@@ -46,6 +46,8 @@
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
     "./external-links": "./external-links.ts",
     "./spec-conformance": "./spec-conformance.ts",
+    "./spec-conformance-detect": "./spec-conformance-detect.ts",
+    "./spec-conformance-schedule": "./spec-conformance-schedule.ts",
     "./spec-discrepancy-intake": "./spec-discrepancy-intake.ts",
     "./spec-discrepancy-ledger": "./spec-discrepancy-ledger.ts",
     "./release-strategy": "./release-strategy.ts",
