@@ -149,6 +149,17 @@ export interface EscalationRawItem {
   prUrl: string | null;
   policyTier: string;
   escalationReason: string | null;
+  /**
+   * True only when an OPEN `reviewer_escalated` mission note exists for this
+   * task — as opposed to `escalationReason` being set from pure reviewer-task-
+   * status inference (review_failed, cancelled, stalled, no reviewer task,
+   * completed-without-a-verdict). A note existing means an agent (or the
+   * automated retry-exhaustion path) handed the PR back with a concrete
+   * statement, even absent a structured `recommendation` — that statement is
+   * still a valid instruction to dispatch a fix against. Pure inference has no
+   * defect statement to dispatch, only a description of why nothing acted.
+   */
+  hasEscalationNote?: boolean;
   /** Mission the PR's task belongs to — drives the card's arc context line. */
   missionId?: string | null;
   missionTitle?: string | null;
@@ -224,6 +235,8 @@ export interface ActionQueueItem {
   unblockMissionTitle?: string | null;
   waitingMinutes?: number | null;
   escalationReason?: string | null;
+  /** See {@link EscalationRawItem.hasEscalationNote} — carried through unchanged. */
+  hasEscalationNote?: boolean;
   workerId?: string;
   question?: string;
   /** Set when the card is CI-gated — drives FIXING_CI / CI_RUNNING / CI BLOCKED copy. */
@@ -575,6 +588,7 @@ export function buildActionQueue(
       escalationReason: staleGate
         ? staleGate.reason
         : ciGate?.kind === 'blocked' ? ciGate.reason : item.escalationReason,
+      hasEscalationNote: item.hasEscalationNote ?? false,
       recommendation: ciGate?.kind === 'blocked'
         ? ciGate.recommendation
         : item.recommendation ?? null,

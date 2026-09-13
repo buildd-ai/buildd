@@ -10,6 +10,13 @@
  * and (when `corrections` is supplied) the human's text as the authoritative
  * instruction with the recommendation demoted to context.
  *
+ * The precondition is "an open reviewer_escalated note exists for this PR",
+ * not "...and it carries a structured recommendation". A note can state a
+ * concrete, mechanical defect (e.g. a schema change with no generated
+ * migration) as free-text `escalationReason` without ever populating
+ * `recommendation` — that text is still a valid instruction to hand an agent,
+ * so it is used as the fallback instruction when no recommendation exists.
+ *
  * Auth: session user who has access to the workspace.
  */
 
@@ -37,20 +44,24 @@ const STOP_AND_REPORT =
 
 function buildApplyDescription(
   originalDescription: string | null,
-  recommendation: string,
+  instruction: string,
+  hasRecommendation: boolean,
   corrections: string | null,
 ): string {
+  const contextHeading = hasRecommendation
+    ? "## Reviewer's recommendation (context — the correction above takes precedence wherever it conflicts)"
+    : '## Reported defect (context — the correction above takes precedence wherever it conflicts)';
   const sections = corrections
     ? [
         '## Correction (authoritative instruction)',
         corrections,
         '',
-        "## Reviewer's recommendation (context — the correction above takes precedence wherever it conflicts)",
-        recommendation,
+        contextHeading,
+        instruction,
       ]
     : [
-        "## Apply the reviewer's recommendation",
-        recommendation,
+        hasRecommendation ? "## Apply the reviewer's recommendation" : '## Fix the reported defect',
+        instruction,
       ];
   sections.push('', STOP_AND_REPORT, '', '## Original task', originalDescription ?? '');
   return sections.join('\n');
@@ -125,14 +136,16 @@ export async function POST(
   });
   const { escalationMap } = selectReviewerEvidence(notes);
   const evidence = escalationMap.get(originalTask.id);
-  if (!evidence?.recommendation) {
+  if (!evidence) {
     return NextResponse.json(
-      { error: 'No open reviewer recommendation to apply for this PR' },
+      { error: 'No open reviewer escalation to apply for this PR' },
       { status: 409 },
     );
   }
 
-  const description = buildApplyDescription(originalTask.description, evidence.recommendation, corrections ?? null);
+  const hasRecommendation = Boolean(evidence.recommendation);
+  const instruction = evidence.recommendation ?? evidence.reason;
+  const description = buildApplyDescription(originalTask.description, instruction, hasRecommendation, corrections ?? null);
 
   // Dedup reuses the SAME (workspaceId, reviewerRetryPrNumber, reviewerRetryHeadSha)
   // partial unique index the automatic request-changes retry uses — escalate and
@@ -157,7 +170,7 @@ export async function POST(
         resumeBranch: worker.branch,
         lastCommitSha: headSha,
         failureContext: {
-          summary: corrections ?? evidence.recommendation,
+          summary: corrections ?? instruction,
           errorType: 'reviewer_escalation_applied',
           commitSha: headSha,
         },
@@ -165,7 +178,8 @@ export async function POST(
         prUrl: worker.prUrl,
         workerBranch: worker.branch,
         appliedBy: user.email,
-        recommendation: evidence.recommendation,
+        recommendation: evidence.recommendation ?? null,
+        instruction,
         corrections: corrections ?? null,
       },
       pathManifest: originalTask.pathManifest,
@@ -212,10 +226,12 @@ export async function POST(
       authorType: 'user',
       actorLabel: user.email,
       type: 'decision',
-      title: `PR #${prNumber}: reviewer recommendation applied by ${user.email}`,
+      title: hasRecommendation
+        ? `PR #${prNumber}: reviewer recommendation applied by ${user.email}`
+        : `PR #${prNumber}: fix dispatched for reported defect by ${user.email}`,
       body: corrections
-        ? `Applied with corrections:\n\n${corrections}\n\nReviewer's original recommendation (context):\n\n${evidence.recommendation}`
-        : `Applied verbatim:\n\n${evidence.recommendation}`,
+        ? `Applied with corrections:\n\n${corrections}\n\n${hasRecommendation ? "Reviewer's original recommendation" : 'Reported defect'} (context):\n\n${instruction}`
+        : `Applied verbatim:\n\n${instruction}`,
       status: 'open',
     });
   }

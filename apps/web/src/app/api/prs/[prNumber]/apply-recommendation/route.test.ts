@@ -86,6 +86,17 @@ const escalatedNote = {
   createdAt: new Date('2026-09-11T07:00:00Z'),
 };
 
+// No RECOMMENDATION_MARKER — a concrete defect statement with nothing
+// structured to Apply. This is the case the fix-dispatch widening covers.
+const escalatedNoteNoRecommendation = {
+  taskId: 't-1',
+  type: 'reviewer_escalated',
+  title: 'PR #42 escalated: spec conformance',
+  body: 'Spec conformance: the discrepancy ledger schema changed without a generated SQL migration',
+  status: 'open',
+  createdAt: new Date('2026-09-11T07:00:00Z'),
+};
+
 describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
   beforeEach(() => {
     mockGetCurrentUser.mockReset();
@@ -134,13 +145,51 @@ describe('POST /api/prs/[prNumber]/apply-recommendation', () => {
     expect(res.status).toBe(422);
   });
 
-  it('returns 409 when there is no open reviewer recommendation to apply', async () => {
+  it('returns 409 when there is no open reviewer escalation to apply', async () => {
     mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
     mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
     mockMissionNotesFindMany.mockResolvedValue([]);
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
     expect(res.status).toBe(409);
+  });
+
+  it('dispatches off the escalation reason when the note carries no recommendation', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    mockMissionNotesFindMany.mockResolvedValue([escalatedNoteNoRecommendation]);
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ ok: true, dispatched: true, taskId: 'apply-task-1' });
+    expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    expect(mockSupersedeAncestorEscalations).toHaveBeenCalledWith(expect.anything(), 't-1', 42);
+
+    const inserted = mockTasksValues.mock.calls[0][0];
+    expect(inserted.description).toContain(
+      'Spec conformance: the discrepancy ledger schema changed without a generated SQL migration',
+    );
+    expect(inserted.description).toContain('## Fix the reported defect');
+    expect(inserted.context.iteration).toBe(0);
+    expect(inserted.context.recommendation).toBeNull();
+    expect(inserted.context.instruction).toContain('schema changed without a generated SQL migration');
+  });
+
+  it('frames corrections as authoritative over a defect-only escalation (no recommendation)', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockResolveOpenWorkerForUser.mockResolvedValue(openWorker);
+    mockMissionNotesFindMany.mockResolvedValue([escalatedNoteNoRecommendation]);
+    const [req, ctx] = makeRequest('42', { corrections: 'Generate the migration and stop there.' });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(200);
+
+    const inserted = mockTasksValues.mock.calls[0][0];
+    const correctionIdx = inserted.description.indexOf('Generate the migration and stop there.');
+    const reasonIdx = inserted.description.indexOf('schema changed without a generated SQL migration');
+    expect(correctionIdx).toBeGreaterThan(-1);
+    expect(reasonIdx).toBeGreaterThan(-1);
+    expect(correctionIdx).toBeLessThan(reasonIdx);
   });
 
   it('dispatches a fix task carrying the recommendation verbatim and closes the escalation', async () => {

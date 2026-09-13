@@ -244,6 +244,8 @@ export default async function HomePage({
     recommendation: string | null;
     leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human';
     escalationReason: string | null;
+    /** See EscalationRawItem.hasEscalationNote — an open reviewer_escalated note exists. */
+    hasEscalationNote: boolean;
     verdictSummary: string | null;
     /** The SHA the latest reviewer verdict was made against, if any. */
     approvedSha: string | null;
@@ -1042,6 +1044,12 @@ export default async function HomePage({
             const escalatedMap = new Map(
               [...reviewerEscalationMap].map(([taskId, evidence]) => [taskId, evidence.reason]),
             );
+            // Distinguishes "an open reviewer_escalated note exists" (an agent
+            // handed this PR back with a concrete statement, dispatchable even
+            // without a structured recommendation) from resolveReviewerGate's
+            // other human-actor reasons, which are pure task-status inference
+            // with no statement to dispatch against. See EscalationRawItem.hasEscalationNote.
+            const escalationNoteTaskIds = new Set(reviewerEscalationMap.keys());
             // The reviewer's own advice on what the human should do next.
             const reviewerRecommendationMap = new Map(
               [...reviewerEscalationMap]
@@ -1344,6 +1352,11 @@ export default async function HomePage({
                   escalationReason: deadZoneInfo
                     ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
                     : (gate?.reason ?? null),
+                  // Dead-zone (conflict retries exhausted) has its own dedicated
+                  // CTA set below and is never sourced from a reviewer note —
+                  // keep it out of the fix-dispatch branch even if a stale
+                  // escalation note happens to also be open for the same task.
+                  hasEscalationNote: !deadZoneInfo && !!w.taskId && escalationNoteTaskIds.has(w.taskId),
                   verdictSummary,
                   approvedSha,
                   headSha: w.lastCommitSha ?? null,
