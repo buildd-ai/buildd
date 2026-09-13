@@ -27,9 +27,12 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
  */
 
 export type ActionChip =
-  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'APPROVE'
+  | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
   | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING';
+
+/** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
+export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
 
 /**
  * Chips an agent is already handling. They stay visible (a stuck fix must not
@@ -78,7 +81,7 @@ export function partitionEscalations<T extends { prLifecycleStatus: string | nul
 }
 
 export interface WaitingOnYouRawItem {
-  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide';
+  kind: 'merge' | 'approve' | 'answer' | 'reconnect' | 'decide' | 'discrepancy';
   prUrl?: string;
   prNumber?: number;
   prLifecycleStatus?: 'open' | 'merged' | 'closed' | 'unresolvable' | null;
@@ -118,6 +121,22 @@ export interface WaitingOnYouRawItem {
    * card must not preselect an exit from this alone.
    */
   recommendation?: string | null;
+  /** kind === 'discrepancy' — the spec_discrepancies row id (§7). */
+  discrepancyId?: string;
+  /** kind === 'discrepancy' — the spec doc the assertion lives in. */
+  specPath?: string;
+  /** kind === 'discrepancy' — the authored assertion id within specPath. */
+  assertionId?: string;
+  /** kind === 'discrepancy' — which way the gap runs (§8). */
+  direction?: DiscrepancyDirection;
+  /** kind === 'discrepancy' — when this row (or its current occurrence) first appeared. */
+  firstSeenAt?: Date;
+  /** kind === 'discrepancy' — set once `promote_discrepancy` has minted a mission. */
+  promotedMissionId?: string | null;
+  /** kind === 'discrepancy' — the discrepancy's owning workspace. */
+  workspaceId?: string;
+  /** kind === 'discrepancy' — the discrepancy's owning workspace name. */
+  workspaceName?: string | null;
 }
 
 export interface EscalationRawItem {
@@ -243,6 +262,16 @@ export interface ActionQueueItem {
   staleGate?: StaleGate | null;
   /** PR age in hours — emitted for the action_queue.card_age_hours metric. */
   cardAgeHours?: number | null;
+  /** Set when chip === 'DISCREPANCY' — the spec_discrepancies row id (§7). */
+  discrepancyId?: string;
+  /** Set when chip === 'DISCREPANCY' — the spec doc the assertion lives in. */
+  specPath?: string;
+  /** Set when chip === 'DISCREPANCY' — the authored assertion id within specPath. */
+  assertionId?: string;
+  /** Set when chip === 'DISCREPANCY' — which way the gap runs (§8). */
+  direction?: DiscrepancyDirection;
+  /** Set when chip === 'DISCREPANCY' and `promote_discrepancy` has already minted a mission. */
+  promotedMissionId?: string | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -256,10 +285,14 @@ export interface ActionQueueItem {
 // not above it — a live worker blocked on an answer is still more urgent than
 // a mission whose heartbeat has already been stood down and is going nowhere
 // regardless of when the owner looks.
+// DISCREPANCY sits immediately after DECIDE, never above it (docs/design/
+// spec-conformance.md §12): "the platform found something that needs an
+// owner call", the same tier as DECIDE, but a live mission decision always
+// outranks a doc/checker finding.
 // STALE sits below every live decision and above the agent-handled chips: it
 // still needs a human, but a 90-day-old PR must never outrank today's work.
 const CHIP_ORDER: ActionChip[] = [
-  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'APPROVE',
+  'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
   'RESOLVING', 'FIXING_CI', 'CI_RUNNING',
 ];
@@ -353,6 +386,101 @@ export function buildDecideItems(candidates: EscalatedMissionCandidate[]): Waiti
     });
   }
   return items;
+}
+
+/** A `spec_discrepancies` row (packages/core/db/schema.ts) that may belong on the queue. */
+export interface DiscrepancyCandidate {
+  id: string;
+  workspaceId: string;
+  workspaceName?: string | null;
+  specPath: string;
+  assertionId: string;
+  direction: DiscrepancyDirection;
+  status: 'open' | 'accepted' | 'resolved';
+  firstSeenAt: Date | string;
+  promotedMissionId?: string | null;
+}
+
+export interface DiscrepancyQueueResult {
+  items: WaitingOnYouRawItem[];
+  /**
+   * Rows beyond each workspace's top-`cap` — never silently dropped (§12).
+   * The DISCREPANCY-queue equivalent of `summariseActionQueueAge`: a caller
+   * must surface this count somewhere (e.g. "N discrepancies beyond the
+   * visible top 10") so a clean-looking queue can never hide a growing
+   * backlog the way the Schedules page did.
+   */
+  overflowCount: number;
+}
+
+/** §12 ranking: an owner call outranks real unbuilt work outranks a pure doc fix. */
+const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
+  contradicted: 0,
+  spec_ahead: 1,
+  code_ahead: 2,
+};
+
+/** §12: cap the queue to the top 10 DISCREPANCY rows per workspace. */
+const DEFAULT_DISCREPANCY_QUEUE_CAP = 10;
+
+/**
+ * Filters and ranks discrepancy ledger rows into `discrepancy` raw items,
+ * per docs/design/spec-conformance.md §12.
+ *
+ * `status: accepted` rows are excluded outright — accepting already recorded
+ * that an owner made the call, so re-surfacing it would recreate the
+ * Schedules-page problem this design exists to avoid. `resolved` rows have no
+ * open gap left to show. Neither is "hidden": both remain queryable via
+ * `list_discrepancies` for anyone auditing what's been deferred or fixed.
+ *
+ * Within each workspace, rows rank `contradicted` first (needs an owner call
+ * before anything else can happen), then `spec_ahead`, then `code_ahead`
+ * (lowest stakes — pure doc fix) last; within a direction, oldest
+ * `first_seen_at` first, so a row that has survived several check-runs
+ * always outranks one that appeared this week. Rows beyond the cap are
+ * dropped from `items` but counted in `overflowCount` — an `open` row is
+ * never silently dropped without that count reflecting it.
+ */
+export function buildDiscrepancyItems(
+  candidates: DiscrepancyCandidate[],
+  options: { cap?: number } = {},
+): DiscrepancyQueueResult {
+  const cap = options.cap ?? DEFAULT_DISCREPANCY_QUEUE_CAP;
+  const open = candidates.filter((c) => c.status === 'open');
+
+  const byWorkspace = new Map<string, DiscrepancyCandidate[]>();
+  for (const c of open) {
+    const group = byWorkspace.get(c.workspaceId);
+    if (group) group.push(c);
+    else byWorkspace.set(c.workspaceId, [c]);
+  }
+
+  const items: WaitingOnYouRawItem[] = [];
+  let overflowCount = 0;
+
+  for (const group of byWorkspace.values()) {
+    const ranked = [...group].sort((a, b) => {
+      const dirDiff = DISCREPANCY_DIRECTION_RANK[a.direction] - DISCREPANCY_DIRECTION_RANK[b.direction];
+      if (dirDiff !== 0) return dirDiff;
+      return new Date(a.firstSeenAt).getTime() - new Date(b.firstSeenAt).getTime();
+    });
+    overflowCount += Math.max(0, ranked.length - cap);
+    for (const c of ranked.slice(0, cap)) {
+      items.push({
+        kind: 'discrepancy',
+        discrepancyId: c.id,
+        specPath: c.specPath,
+        assertionId: c.assertionId,
+        direction: c.direction,
+        firstSeenAt: new Date(c.firstSeenAt),
+        promotedMissionId: c.promotedMissionId ?? null,
+        workspaceId: c.workspaceId,
+        workspaceName: c.workspaceName ?? undefined,
+      });
+    }
+  }
+
+  return { items, overflowCount };
 }
 
 /**
@@ -534,6 +662,29 @@ export function buildActionQueue(
           missionTitle: item.missionTitle,
         });
       }
+    } else if (item.kind === 'discrepancy') {
+      // Subject key IS the ledger row's own identity key (§7/§12) — a
+      // dedupe key that can never drift from the row it names.
+      const key = `discrepancy:${item.specPath}:${item.assertionId}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          subjectKey: key,
+          chip: 'DISCREPANCY',
+          discrepancyId: item.discrepancyId,
+          specPath: item.specPath,
+          assertionId: item.assertionId,
+          direction: item.direction,
+          // Age in hours, not the raw Date — same boundary rule every other
+          // card observes (compare STALE's cardAgeHours): a client component
+          // never receives a raw Date prop from this module.
+          cardAgeHours: item.firstSeenAt
+            ? Math.floor((now.getTime() - item.firstSeenAt.getTime()) / 3_600_000)
+            : null,
+          promotedMissionId: item.promotedMissionId ?? null,
+          workspaceId: item.workspaceId,
+          workspaceName: item.workspaceName ?? undefined,
+        });
+      }
     } else if (item.kind === 'decide') {
       // Keyed on mission + fingerprint, not note id: the escalation note is a
       // single row that stays open until the owner acts or a verdict changes,
@@ -571,6 +722,16 @@ export function buildActionQueue(
       const arcDiff = Number(!!b.missionId) - Number(!!a.missionId);
       if (arcDiff !== 0) return arcDiff;
       return (a.waitingMinutes ?? 0) - (b.waitingMinutes ?? 0);
+    }
+    // Within DISCREPANCY: §12's ranking, re-applied here (not just trusted
+    // from buildDiscrepancyItems' own per-workspace ordering) so a queue
+    // merged across several workspaces still ranks correctly as one list.
+    if (a.chip === 'DISCREPANCY') {
+      const dirDiff = (DISCREPANCY_DIRECTION_RANK[a.direction ?? 'code_ahead'] ?? 2)
+        - (DISCREPANCY_DIRECTION_RANK[b.direction ?? 'code_ahead'] ?? 2);
+      if (dirDiff !== 0) return dirDiff;
+      // Oldest (largest cardAgeHours) first within a direction.
+      return (b.cardAgeHours ?? 0) - (a.cardAgeHours ?? 0);
     }
     // Within STALE: oldest first. These are cleanup decisions, and the 90-day
     // one is the least ambiguous.
