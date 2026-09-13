@@ -944,6 +944,34 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 
+  it('refuses to merge the mission PR while a sibling task has not opened a PR at all', async () => {
+    // The gate is shared, so widening it from "are there open PRs" to "is this
+    // mission's work finished" must reach this call site with no new wiring.
+    // Asserted here rather than assumed: this is the path a CI-green webhook or
+    // a reviewer approval takes, and it is the one that runs without a human
+    // watching.
+    mockFindFirst = mock(() => missionPrTask) as any;
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+    mockTasksFindMany = mock(() => [
+      { id: 't-2', title: 'Task 2', status: 'pending', mode: 'execution', taskClass: 'work' },
+    ]) as any;
+    mockWorkersFindMany = mock(() => [] as any[]) as any;
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-owner', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
   it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
     mockFindFirst = mock(() => missionPrTask) as any;
     mockGithubApi

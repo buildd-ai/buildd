@@ -11,6 +11,7 @@ import { TIERS, type Tier } from './model-tier-defaults';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import type { Direction } from './spec-discrepancy-ledger';
 import type {
   FailureAnalytics,
   FailureSignatureFamily,
@@ -161,6 +162,9 @@ export const workerActions = [
   // so gating it to admin only meant the spec-validator role could never run its own
   // documented workflow (default-roles.ts instructs it to call spec_compare).
   'spec_compare',
+  // Discrepancy ledger reads (§13) — same reasoning as spec_compare above:
+  // read-only over rows the caller's workspace access already covers.
+  'list_discrepancies', 'get_discrepancy',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'request_pr_review', 'get_pr_review',
   'update_task', 'create_task', 'create_artifact',
@@ -192,6 +196,9 @@ export const adminActions = [
   'register_skill', 'list_skills', 'get_skill', 'update_skill', 'delete_skill',
   'manage_secrets',
   'approve_plan', 'reject_plan',
+  // Discrepancy ledger mutations (§13): adjudicate records an owner decision,
+  // promote mints a mission — same trust tier as approve_plan/manage_missions.
+  'adjudicate_discrepancy', 'promote_discrepancy',
   'manage_missions',
   'manage_initiatives',
   'link_tracker',
@@ -367,6 +374,10 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
+    list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
+    get_discrepancy: '{ discrepancyId (required) } — one ledger row, including `evidence`: the exact file/symbol/route/migration the checker read and what it found. Never a similarity score — spec_compare already covers "how related is this text."',
+    adjudicate_discrepancy: '{ discrepancyId (required), action: "accept" | "flip_direction", reason (required, non-blank), newDirection? ("spec_ahead"|"code_ahead" — required when action="flip_direction") } — accept parks the row (status=accepted) with `reason` recorded; flip_direction is the only path off a `contradicted` row and requires newDirection. [admin]',
+    promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
     manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose graded by an LLM — it needs a model reachable at the moment a verdict is owed, so it silently degrades to NOT_EVALUATED (which never counts as a pass) and therefore REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
@@ -698,6 +709,10 @@ const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
   'list_tasks',
   'claim_task',
   'create_task',
+  // Same shape as list_tasks: without an explicit workspaceId it would
+  // silently resolve to ctx.getWorkspaceId()'s pick for a multi-workspace
+  // OAuth token instead of erroring.
+  'list_discrepancies',
 ]);
 
 /**
@@ -3500,6 +3515,72 @@ export async function handleBuilddAction(
       return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
     }
 
+    // Discrepancy ledger mutations (§13).
+    case 'adjudicate_discrepancy': {
+      requireFullUuid(params.discrepancyId, 'discrepancyId');
+      const adjudicateAction = params.action as string;
+      if (adjudicateAction !== 'accept' && adjudicateAction !== 'flip_direction') {
+        throw new Error(`action must be "accept" or "flip_direction", got: ${adjudicateAction}`);
+      }
+
+      const body: Record<string, unknown> = { action: adjudicateAction, reason: params.reason };
+      if (params.newDirection !== undefined) body.newDirection = params.newDirection;
+
+      const data = await api(`/api/discrepancies/${params.discrepancyId}/adjudicate`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const d = data.discrepancy;
+      return text(
+        adjudicateAction === 'accept'
+          ? `Discrepancy accepted: ${d.specPath} \`${d.assertionId}\` — reason: ${d.acceptedReason}`
+          : `Discrepancy direction flipped: ${d.specPath} \`${d.assertionId}\` → ${d.direction}`
+      );
+    }
+
+    case 'promote_discrepancy': {
+      requireFullUuid(params.discrepancyId, 'discrepancyId');
+
+      const row = (await api(`/api/discrepancies/${params.discrepancyId}`)).discrepancy;
+
+      if (row.promotedMissionId) {
+        return text(`Already promoted — mission ${row.promotedMissionId} (${row.specPath} \`${row.assertionId}\`).`);
+      }
+      // Fail fast on the §8 gate before minting a mission nobody can link.
+      // The authoritative check still lives at the write in
+      // /api/discrepancies/[id]/promote — this is a cheaper early exit.
+      // Dynamic import: spec-discrepancy-ledger.ts pulls in the real `db`/schema
+      // module at its top level, which mcp-tools.ts otherwise never touches
+      // statically (it stays DB-free so drizzle-orm-mocking unit tests can
+      // import it safely) — load it lazily so that stays true.
+      const { assertPromotable } = await import('./spec-discrepancy-ledger');
+      assertPromotable(row.direction as Direction);
+
+      const title = (params.title as string) || `Spec discrepancy: ${row.assertionId} in ${row.specPath}`;
+      const description =
+        (params.description as string) ||
+        `Promoted from discrepancy ledger row ${row.id} (docs/design/spec-conformance.md §13).\n\n` +
+        `Spec: ${row.specPath}\nAssertion: ${row.assertionId}\nDirection: ${row.direction}\n\n` +
+        `Evidence:\n${JSON.stringify(row.evidence, null, 2)}`;
+
+      // Same primitive every other mission-creating caller uses — see
+      // manage_missions action=create above, which makes this identical call.
+      const mission = await api('/api/missions', {
+        method: 'POST',
+        body: JSON.stringify({ title, description, workspaceId: row.workspaceId }),
+      });
+
+      const linked = await api(`/api/discrepancies/${params.discrepancyId}/promote`, {
+        method: 'POST',
+        body: JSON.stringify({ missionId: mission.id }),
+      });
+
+      return text(
+        `Promoted "${row.specPath}" \`${row.assertionId}\` → mission "${mission.title}" (ID: ${mission.id})` +
+        (linked.alreadyPromoted ? '\n(row was already linked to this mission by a concurrent call)' : '')
+      );
+    }
+
     case 'manage_missions': {
 
       const missionAction = params.action as string;
@@ -4532,6 +4613,44 @@ export async function handleBuilddAction(
         `actually implement "${feature}" (a real table/route/impl), or are they only ` +
         `semantic neighbours? Rule one of: IMPLEMENTED · DOCUMENTED-NOT-BUILT · ` +
         `SHIPPED-NOT-DOCUMENTED · CONTRADICTED. The verdict is yours, not the scores'.`
+      );
+    }
+
+    // Discrepancy ledger reads (§13) — filtered list and single-row evidence
+    // read over the spec_discrepancies table Slice 2 writes.
+    case 'list_discrepancies': {
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('workspaceId is required for list_discrepancies — connect with ?workspace=<id> or pass it explicitly');
+
+      const qs = new URLSearchParams({ workspaceId: wsId });
+      if (params.direction) qs.set('direction', params.direction as string);
+      if (params.status) qs.set('status', params.status as string);
+      const data = await api(`/api/discrepancies?${qs}`);
+      const rows = data.discrepancies || [];
+      if (rows.length === 0) return text('No discrepancies found.');
+
+      const summary = rows.map((r: any) =>
+        `- **${r.specPath}** \`${r.assertionId}\` — ${r.direction} / ${r.status}` +
+        `${r.promotedMissionId ? ` (promoted → mission ${r.promotedMissionId})` : ''}\n` +
+        `  ID: ${r.id}\n  First seen: ${new Date(r.firstSeenAt).toISOString()} · Last checked: ${new Date(r.lastCheckedAt).toISOString()}`
+      ).join('\n\n');
+      return text(`${rows.length} discrepancy(ies):\n\n${summary}`);
+    }
+
+    case 'get_discrepancy': {
+      requireFullUuid(params.discrepancyId, 'discrepancyId');
+      const data = await api(`/api/discrepancies/${params.discrepancyId}`);
+      const d = data.discrepancy;
+      const acceptedLine = d.status === 'accepted' && d.acceptedReason ? `\nAccepted reason: ${d.acceptedReason}` : '';
+      const promotedLine = d.promotedMissionId ? `\nPromoted mission: ${d.promotedMissionId}` : '';
+      return text(
+        `**${d.specPath}** \`${d.assertionId}\`\n` +
+        `Direction: ${d.direction} · Status: ${d.status}\n` +
+        `First seen: ${new Date(d.firstSeenAt).toISOString()} · Last checked: ${new Date(d.lastCheckedAt).toISOString()}` +
+        `${acceptedLine}${promotedLine}\n\n` +
+        `Evidence (the exact read that produced this verdict):\n${JSON.stringify(d.evidence, null, 2)}`
       );
     }
 

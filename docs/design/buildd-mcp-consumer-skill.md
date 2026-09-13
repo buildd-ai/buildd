@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "mcp-consumer-transport"
@@ -17,7 +17,7 @@ assertions:
 ---
 # Split the MCP `instructions` block into a orientation stub + a consumer skill
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/app/api/mcp/route.ts` — the `instructions` string (today ~2.4k
   chars / ~600 tokens, lines 270–290) and the `buildd://workspace/skills`

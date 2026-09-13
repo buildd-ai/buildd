@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "drive-state"
@@ -17,7 +17,7 @@ assertions:
 ---
 # Mission State & Projected Progress
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `docs/design/task-presentation.md`, `src/lib/mission-health.ts`, `packages/core/mission-helpers.ts`
 
 ---

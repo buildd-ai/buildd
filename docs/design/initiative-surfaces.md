@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "initiative-list"
@@ -18,7 +18,7 @@ assertions:
 ---
 # Initiative Surfaces
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `apps/web/src/app/app/(protected)/home/page.tsx`, `apps/web/src/app/app/(protected)/initiatives/[id]/page.tsx`, `apps/web/src/components/MissionProgress.tsx`, `apps/web/src/components/SegmentStrip.tsx`, `packages/core/mission-helpers.ts`, `apps/web/src/app/api/initiatives/route.ts`, `docs/design/mission-state-progress.md`
 **Design artboards** (`buildd-mobile.pen`, Brutalist system — kit on board `n56H3V`): rail + arc-aware headline added to `c18a1` (Web Dashboard) & `CZXce` (Missions Feed); `Initiatives List` `jRBl7` (desktop) / `ERdN9` (mobile); `Initiative Detail` `y4vcA` (desktop) / `yOHmp` (mobile). New reusable modules: `C/InitiativeProgressBar` `jSwIH` (the shared segment primitive — the crux), `C/InitiativeCard` `qIsJa`, `C/InitiativeRail` `LbZbx`, `C/LinearBadge` `h243m`, `C/FilterChipBar` `PWTWZ`. See `docs/design/mobile-feed-spec.md` §0/§2.
 

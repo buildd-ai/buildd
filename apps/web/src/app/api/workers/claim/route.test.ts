@@ -161,7 +161,7 @@ mock.module('@buildd/core/db/schema', () => ({
   accountWorkspaces: { accountId: 'accountId', canClaim: 'canClaim', workspaceId: 'workspaceId' },
   tasks: { id: 'id', workspaceId: 'workspaceId', missionId: 'missionId', status: 'status', claimedBy: 'claimedBy', claimedAt: 'claimedAt', expiresAt: 'expiresAt', runnerPreference: 'runnerPreference', createdAt: 'createdAt', priority: 'priority', dependsOn: 'dependsOn', backend: 'backend', pathManifest: 'pathManifest' },
   workers: { id: 'id', accountId: 'accountId', status: 'status', updatedAt: 'updatedAt', createdAt: 'createdAt', taskId: 'taskId', prUrl: 'prUrl', mergedAt: 'mergedAt', workspaceId: 'workspaceId', turns: 'turns', inputTokens: 'inputTokens', outputTokens: 'outputTokens' },
-  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt' },
+  missions: { id: 'id', status: 'status', maxConcurrentTasks: 'maxConcurrentTasks', pacingMode: 'pacingMode', pacingMaxPerHour: 'pacingMaxPerHour', lastTaskStartedAt: 'lastTaskStartedAt', updatedAt: 'updatedAt', workingBranch: 'workingBranch', integrationBranchEnabled: 'integrationBranchEnabled' },
   workerHeartbeats: { accountId: 'accountId', lastHeartbeatAt: 'lastHeartbeatAt' },
   workspaces: { id: 'id', accessMode: 'accessMode' },
   workspaceSkills: { slug: 'slug', isRole: 'isRole', enabled: 'enabled', workspaceId: 'workspaceId', accountId: 'accountId', teamId: 'teamId', connectorRefs: 'connectorRefs' },
@@ -1224,6 +1224,71 @@ describe('POST /api/workers/claim', () => {
     const data = await res.json();
     expect(data.workers.length).toBe(1);
     expect(data.workers[0].taskId).toBe('task-1');
+  });
+
+  // ── Option A′: the mission integration fields must reach the runner ───────
+  //
+  // Not a gate — a delivery. The runner's Git Workflow prompt block calls
+  // `resolveTaskPrBase`, the same function `create_pr` derives the base with,
+  // and it can only do that if it is told the mission's integration fields.
+  // Without them the prompt can see nothing but the workspace's trunk, which is
+  // exactly how a worker came to be instructed "PR to <trunk>" by a server that
+  // then refused trunk for that task.
+  it("carries the mission's integration fields out on the claimed task", async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockMissionsFindMany.mockResolvedValue([
+      {
+        id: 'mission-1',
+        status: 'active',
+        maxConcurrentTasks: null,
+        pacingMode: 'eager',
+        pacingMaxPerHour: null,
+        lastTaskStartedAt: null,
+        workingBranch: 'mission/checkout-arc-1a2b3c4d',
+        integrationBranchEnabled: true,
+      },
+    ]);
+    mockTasksFindMany.mockResolvedValueOnce([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        missionId: 'mission-1',
+        title: 'Test task',
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+    mockTasksUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'task-1' }]),
+        })),
+      })),
+    });
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { runner: 'test-runner' },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers[0].task.mission).toEqual({
+      workingBranch: 'mission/checkout-arc-1a2b3c4d',
+      integrationBranchEnabled: true,
+    });
   });
 
   it('allows tasks with failed dependencies (terminal state)', async () => {

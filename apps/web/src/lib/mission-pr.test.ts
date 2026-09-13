@@ -353,6 +353,147 @@ describe('guardMissionPrMerge', () => {
     expect(await guardMissionPrMerge(null)).toEqual({ blocks: false });
     expect(await guardMissionPrMerge(undefined)).toEqual({ blocks: false });
   });
+
+  // ── unstarted work, not just open PRs ─────────────────────────────────────
+  //
+  // The gate's question is "is this mission's work finished", and it used to
+  // read only `unmergedPrCount` — the count of OPEN PRs. A mission whose
+  // remaining work existed solely as tasks that had not opened a PR yet
+  // therefore passed: the mission PR merged, `finalizeMissionPrMerge` deleted
+  // the integration branch by design, and every later worker on that mission
+  // derived a base that 404s with no route out from inside the sandbox.
+  //
+  // Note the shape of the bug: `evaluateMissionWorkState` RETURNS EARLY on
+  // unfinished tasks, so in exactly this state `unmergedPrCount` is 0. Reading
+  // that one field made the gate maximally permissive precisely when the
+  // mission was least finished.
+
+  it('refuses while a mission work task is still pending, with no PR open at all', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'pending'), ownerTask()];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    // t-2 has no worker and no PR — the state the old gate read as "nothing open".
+
+    const gate = await guardMissionPrMerge(ownerTask());
+    expect(gate.blocks).toBe(true);
+    // Names what is holding it, the way the open-PR refusal does.
+    expect((gate as { reason: string }).reason).toContain('Task t-2');
+    expect((gate as { reason: string }).reason).toContain('pending');
+  });
+
+  it('refuses while a mission work task is assigned but has not opened its PR', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'assigned'), ownerTask()];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    workerRowsByTask['t-2'] = [worker({ taskId: 't-2', id: 'w-2' })]; // claimed, no PR yet
+
+    const gate = await guardMissionPrMerge(ownerTask());
+    expect(gate.blocks).toBe(true);
+    expect((gate as { reason: string }).reason).toContain('assigned');
+  });
+
+  it('refuses while a mission work task is in progress', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'in_progress'), ownerTask()];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+
+    expect((await guardMissionPrMerge(ownerTask())).blocks).toBe(true);
+  });
+
+  it('allows the merge once that task is cancelled', async () => {
+    // Cancelling is a decision, not an absence — a cancelled task will never
+    // produce a PR, so it must not hold the mission's gate open forever.
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'cancelled'), ownerTask()];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+
+    expect(await guardMissionPrMerge(ownerTask())).toEqual({ blocks: false });
+  });
+
+  it('allows the merge when the remainder is bookkeeping only', async () => {
+    // The mission-PR owner itself is bookkeeping, and so are criteria
+    // verification rows. Counting them makes the gate self-referential: the
+    // mission PR would be waiting on the task that owns it.
+    taskRowsForMission = [
+      workTask('t-1', 'completed'),
+      ownerTask(),
+      { id: 't-book', title: 'Verify criteria', status: 'pending', mode: 'execution', taskClass: 'bookkeeping' },
+    ];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+
+    expect(await guardMissionPrMerge(ownerTask())).toEqual({ blocks: false });
+  });
+
+  it('allows the merge when the remainder is reviewer/attempt children only', async () => {
+    // Reviewer, CI-retry and conflict-retry rows are `taskClass: 'attempt'`:
+    // they carry no deliverable of their own, they re-open their parent's PR,
+    // and a review in flight on an already-merged task PR must not hold the
+    // mission PR.
+    taskRowsForMission = [
+      workTask('t-1', 'completed'),
+      ownerTask(),
+      { id: 't-rev', title: 'Review PR: task 1', status: 'in_progress', mode: 'execution', taskClass: 'attempt' },
+    ];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+
+    expect(await guardMissionPrMerge(ownerTask())).toEqual({ blocks: false });
+  });
+
+  it('allows the merge when a planning task is still open', async () => {
+    // A planning row ships no branch. It is excluded from `deliverable` for the
+    // same reason bookkeeping is.
+    taskRowsForMission = [
+      workTask('t-1', 'completed'),
+      ownerTask(),
+      { id: 't-plan', title: 'Plan the mission', status: 'pending', mode: 'planning', taskClass: 'work' },
+    ];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+
+    expect(await guardMissionPrMerge(ownerTask())).toEqual({ blocks: false });
+  });
+
+  it('names the open PR AND the unstarted task when both hold it', async () => {
+    taskRowsForMission = [
+      workTask('t-1', 'completed'),
+      workTask('t-2', 'completed'),
+      workTask('t-3', 'pending'),
+      ownerTask(),
+    ];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u1', mergedAt: T0, prBaseRef: BRANCH })];
+    workerRowsByTask['t-2'] = [worker({ taskId: 't-2', id: 'w-2', prUrl: 'u2', prNumber: 7, prBaseRef: BRANCH, prLifecycleStatus: 'pr_open' })];
+
+    const gate = await guardMissionPrMerge(ownerTask());
+    expect(gate.blocks).toBe(true);
+    const reason = (gate as { reason: string }).reason;
+    expect(reason).toContain('Task t-3');
+    expect(reason).toContain('#7');
+  });
+});
+
+// ── the same widened state, read as a work state ─────────────────────────────
+
+describe('evaluateMissionWorkState — unfinished work is enumerated, not just counted', () => {
+  it('reports which tasks are unfinished so a refusal can name them', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'pending')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u', mergedAt: T0, prBaseRef: BRANCH })];
+    const s = await evaluateMissionWorkState(MISSION_ID);
+    expect(s.unfinishedTasks).toEqual([{ id: 't-2', title: 'Task t-2', status: 'pending' }]);
+  });
+
+  it('reports the open PRs the same way', async () => {
+    taskRowsForMission = [workTask('t-1', 'completed')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u', prNumber: 7, prLifecycleStatus: 'pr_open' })];
+    const s = await evaluateMissionWorkState(MISSION_ID);
+    expect(s.unmergedPrs).toEqual([{ id: 't-1', title: 'Task t-1', prNumber: 7 }]);
+  });
+
+  it('counts open PRs even when a task is also unfinished', async () => {
+    // The early return used to zero `unmergedPrCount` in this state, which is
+    // exactly how the merge gate came to read "nothing is open" on a mission
+    // that had barely started.
+    taskRowsForMission = [workTask('t-1', 'completed'), workTask('t-2', 'pending')];
+    workerRowsByTask['t-1'] = [worker({ prUrl: 'u', prNumber: 7, prLifecycleStatus: 'pr_open' })];
+    const s = await evaluateMissionWorkState(MISSION_ID);
+    expect(s.reason).toBe('tasks_unfinished');
+    expect(s.unfinishedTaskCount).toBe(1);
+    expect(s.unmergedPrCount).toBe(1);
+  });
 });
 
 describe('finalizeMissionPrMerge', () => {

@@ -246,6 +246,20 @@ export async function describeMissionIntegrationTopology(missionId: string): Pro
   });
 }
 
+/** A deliverable task that can still produce a PR, named so a refusal can say so. */
+export interface UnfinishedMissionTask {
+  id: string;
+  title: string;
+  status: string;
+}
+
+/** A deliverable task whose PR is open and still expected to merge. */
+export interface UnmergedMissionPr {
+  id: string;
+  title: string;
+  prNumber: number | null;
+}
+
 export interface MissionWorkState {
   /** Every deliverable task has landed, and none is still waiting on a PR. */
   complete: boolean;
@@ -257,6 +271,17 @@ export interface MissionWorkState {
   reason: 'complete' | 'no_deliverable_work' | 'tasks_unfinished' | 'prs_unmerged';
   unfinishedTaskCount: number;
   unmergedPrCount: number;
+  /**
+   * Both lists are populated on EVERY answer, not only the one `reason` names.
+   *
+   * `reason` is a precedence verdict — "tasks unfinished" outranks "PRs open"
+   * because the task is the actionable blocker — and it used to zero the other
+   * side's count on the way out. A caller reading one field then saw "no PRs
+   * open" on a mission that had barely started, which is precisely how the
+   * merge gate came to allow merging a mission PR over unstarted work.
+   */
+  unfinishedTasks: UnfinishedMissionTask[];
+  unmergedPrs: UnmergedMissionPr[];
   /**
    * Deliverable tasks whose PR merged into this mission's integration branch.
    * Zero means the mission has nothing for a mission PR to carry — the honest
@@ -315,6 +340,8 @@ export async function evaluateMissionWorkState(
     complete: false as const,
     unfinishedTaskCount: 0,
     unmergedPrCount: 0,
+    unfinishedTasks: [] as UnfinishedMissionTask[],
+    unmergedPrs: [] as UnmergedMissionPr[],
     landedOnIntegrationCount: 0,
   };
   if (deliverable.length === 0) {
@@ -348,30 +375,33 @@ export async function evaluateMissionWorkState(
     return (UNFINISHED_TASK_STATUSES as readonly string[]).includes(t.status);
   });
 
-  if (unfinished.length > 0) {
-    return {
-      ...empty,
-      reason: 'tasks_unfinished',
-      unfinishedTaskCount: unfinished.length,
-      landedOnIntegrationCount,
-    };
-  }
-  if (awaitingPr.length > 0) {
-    return {
-      ...empty,
-      reason: 'prs_unmerged',
-      unmergedPrCount: awaitingPr.length,
-      landedOnIntegrationCount,
-    };
-  }
-
-  return {
-    complete: true,
-    reason: 'complete',
-    unfinishedTaskCount: 0,
-    unmergedPrCount: 0,
+  const unfinishedTasks: UnfinishedMissionTask[] = unfinished.map(t => ({
+    id: t.id,
+    title: t.title,
+    status: t.status,
+  }));
+  const unmergedPrs: UnmergedMissionPr[] = awaitingPr.map(t => ({
+    id: t.id,
+    title: t.title,
+    prNumber: latest.get(t.id)?.prNumber ?? null,
+  }));
+  // Both sides are reported on every answer — see MissionWorkState.
+  const counts = {
+    unfinishedTaskCount: unfinished.length,
+    unmergedPrCount: awaitingPr.length,
+    unfinishedTasks,
+    unmergedPrs,
     landedOnIntegrationCount,
   };
+
+  if (unfinished.length > 0) {
+    return { ...counts, complete: false, reason: 'tasks_unfinished' };
+  }
+  if (awaitingPr.length > 0) {
+    return { ...counts, complete: false, reason: 'prs_unmerged' };
+  }
+
+  return { ...counts, complete: true, reason: 'complete' };
 }
 
 export type OpenMissionPrResult =
@@ -813,38 +843,76 @@ function missionPrBody(opts: {
 /** Outcome of {@link guardMissionPrMerge}. */
 export type MissionPrMergeGate = { blocks: false } | { blocks: true; reason: string };
 
+/** How many held items a refusal names before it summarises the rest. */
+const REFUSAL_NAME_LIMIT = 5;
+
+function nameHolders(labels: string[]): string {
+  if (labels.length <= REFUSAL_NAME_LIMIT) return labels.join(', ');
+  const shown = labels.slice(0, REFUSAL_NAME_LIMIT);
+  return `${shown.join(', ')} and ${labels.length - REFUSAL_NAME_LIMIT} more`;
+}
+
 /**
  * May this task's PR merge right now?
  *
- * The merge-side counterpart to the `awaitingPr` logic in
- * `evaluateMissionWorkState`, which owns OPENING the mission PR on the same
- * condition. `openMissionIntegrationPr` never opens the mission PR while a
- * task PR is still unmerged — but nothing enforced that at MERGE time, and
- * merging is where a premature branch deletion actually happens (P3).
+ * The merge-side counterpart to `evaluateMissionWorkState`, which owns OPENING
+ * the mission PR on the same condition. `openMissionIntegrationPr` never opens
+ * the mission PR while the mission's work is unfinished — but nothing enforced
+ * that at MERGE time, and merging is where a premature branch deletion actually
+ * happens (P3).
  *
  * Returns `{ blocks: false }` for any PR that is not the mission PR itself —
- * every other merge is unaffected. For the mission PR, refuses while any
- * task PR based on the integration branch is still open: merging deletes
- * that branch (`finalizeMissionPrMerge`), which would orphan every PR still
- * targeting it — the exact production shape (six task PRs stranded by one
- * premature merge) this closes.
+ * every other merge is unaffected. For the mission PR, it asks the question the
+ * gate is actually for: **is this mission's work finished?** Two ways it is not,
+ * and both refuse:
+ *
+ *  - a task PR based on the integration branch is still OPEN. Merging deletes
+ *    that branch (`finalizeMissionPrMerge`) and orphans the PR.
+ *  - a deliverable task is still pending / assigned / in progress and has NOT
+ *    opened a PR yet. This half was missing, and it is not the same bug in a
+ *    different coat: the mission PR merged, the integration branch was deleted
+ *    by design, and every worker that later claimed one of those tasks derived
+ *    a base that 404s — `create_pr` refusing trunk because the mission has an
+ *    integration base, and GitHub refusing the derived base because it is gone.
+ *    There was no route out from inside the sandbox.
+ *
+ * Not counted, deliberately: bookkeeping rows (including the mission-PR owner
+ * itself, which would make this self-referential), `attempt` rows (reviewer,
+ * CI-retry, conflict-retry — they re-open a parent's PR rather than ship their
+ * own), planning rows, and cancelled tasks. Cancelling is a decision that the
+ * work will not happen, not an absence of one; a cancelled task holding the
+ * gate forever is how a mission becomes unmergeable by hand.
  */
 export async function guardMissionPrMerge(
   task: { title?: string | null; taskClass?: string | null; missionId?: string | null } | null | undefined,
 ): Promise<MissionPrMergeGate> {
   if (!task || !isMissionPrTask(task) || !task.missionId) return { blocks: false };
   const work = await evaluateMissionWorkState(task.missionId);
-  if (work.unmergedPrCount > 0) {
-    const plural = work.unmergedPrCount === 1;
-    return {
-      blocks: true,
-      reason:
-        `${work.unmergedPrCount} task PR(s) based on this mission's integration branch ` +
-        `${plural ? 'is' : 'are'} still open — merging the mission PR now would delete the ` +
-        `integration branch out from under ${plural ? 'it' : 'them'}`,
-    };
+
+  const holders: string[] = [];
+  if (work.unmergedPrs.length > 0) {
+    const named = nameHolders(
+      work.unmergedPrs.map(p => (p.prNumber ? `PR #${p.prNumber} (${p.title})` : `an open PR on ${p.title}`)),
+    );
+    holders.push(
+      `${work.unmergedPrCount} task PR(s) still open on the integration branch: ${named}`,
+    );
   }
-  return { blocks: false };
+  if (work.unfinishedTasks.length > 0) {
+    const named = nameHolders(work.unfinishedTasks.map(t => `${t.title} [${t.status}]`));
+    holders.push(
+      `${work.unfinishedTaskCount} mission task(s) that have not opened a PR yet: ${named}`,
+    );
+  }
+  if (holders.length === 0) return { blocks: false };
+
+  return {
+    blocks: true,
+    reason:
+      `This mission's work is not finished — ${holders.join('; and ')}. Merging the mission PR `
+      + `now would delete the integration branch out from under work that still needs it. `
+      + `Cancel the remaining task(s), or let them land, then merge.`,
+  };
 }
 
 /**

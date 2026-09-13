@@ -103,6 +103,76 @@ export function assertPromotable(direction: Direction): void {
   }
 }
 
+// ─── Adjudication (§13's `adjudicate_discrepancy`) ─────────────────────────
+
+export type AdjudicationAction = 'accept' | 'flip_direction';
+
+export interface AdjudicationInput {
+  action: AdjudicationAction;
+  reason?: string | null;
+  newDirection?: Direction;
+}
+
+export interface AdjudicationCurrent {
+  direction: Direction;
+  status: DiscrepancyStatus;
+}
+
+/** The column values `adjudicate_discrepancy`'s route should write. */
+export interface AdjudicationPatch {
+  status?: DiscrepancyStatus;
+  direction?: Direction;
+  acceptedReason?: string;
+}
+
+/**
+ * Pure validation + patch computation for §13's `adjudicate_discrepancy`,
+ * split out the same way `decideLedgerWrite` is: every branch is directly
+ * unit-testable without a DB. Throws (never returns a partial/invalid patch)
+ * on a bad request so the route can turn it into a 400 uniformly.
+ *
+ * `accept` requires a non-blank `reason` — same discipline as the assertion
+ * escape hatch's `skip_reason` (§6). `flip_direction` is "the only path off
+ * `contradicted`" (§13): it only operates on a currently-`contradicted` row,
+ * and `newDirection` must actually move it (not flip `contradicted` to
+ * itself). Accepting a `resolved` row is rejected — there is no open gap left
+ * to defer (§9: `accepted` is a parked-but-open state, not a label for a
+ * closed one).
+ */
+export function planAdjudication(current: AdjudicationCurrent, input: AdjudicationInput): AdjudicationPatch {
+  const reason = input.reason?.trim();
+
+  if (input.action === 'accept') {
+    if (!reason) {
+      throw new Error("adjudicate_discrepancy action=accept requires a non-blank 'reason'.");
+    }
+    if (current.status === 'resolved') {
+      throw new Error(
+        'Cannot accept a resolved discrepancy — the gap is already closed, so there is nothing left to defer.'
+      );
+    }
+    return { status: 'accepted', acceptedReason: reason };
+  }
+
+  if (input.action === 'flip_direction') {
+    if (current.direction !== 'contradicted') {
+      throw new Error(
+        `flip_direction only applies to 'contradicted' rows (this row is '${current.direction}') — ` +
+          `see docs/design/spec-conformance.md §13.`
+      );
+    }
+    if (!input.newDirection) {
+      throw new Error("adjudicate_discrepancy action=flip_direction requires 'newDirection'.");
+    }
+    if (input.newDirection === 'contradicted') {
+      throw new Error("newDirection must be 'spec_ahead' or 'code_ahead' — flipping 'contradicted' to itself is a no-op.");
+    }
+    return { direction: input.newDirection };
+  }
+
+  throw new Error(`Unknown adjudicate_discrepancy action: '${input.action}'. Use 'accept' or 'flip_direction'.`);
+}
+
 // ─── Closure (§9) — the write decision, computed in plain JS ───────────────
 
 export type LedgerAction = 'insert' | 'reopen' | 'refresh' | 'keep_accepted' | 'resolve' | 'noop';

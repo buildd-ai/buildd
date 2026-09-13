@@ -6,6 +6,8 @@ import {
   isPrLegalForMissionTask,
   isStackedPhaseBase,
   looksLikeMissionIntegrationBranch,
+  MISSION_PR_TASK_PREFIX,
+  resolveTaskPrBase,
   missionIntegrationBase,
 } from '../mission-integration';
 
@@ -224,5 +226,151 @@ describe('isStackedPhaseBase', () => {
     expect(
       isStackedPhaseBase({ contextBaseBranch: PREDECESSOR, head: HEAD, mission: null }),
     ).toBe(false);
+  });
+});
+
+// ── resolveTaskPrBase: the one answer both the prompt and the guard read ─────
+//
+// The divergence this closes was not a wrong predicate — it was TWO derivations.
+// The runner's Git Workflow block said "PR to <trunk>" (it never looked at the
+// mission) while create_pr derived the integration branch and refused trunk, so
+// the worker was instructed to do the exact thing the server would not accept.
+// Every assertion below is therefore about agreement, not just correctness.
+
+describe('resolveTaskPrBase', () => {
+  const TRUNK_FALLBACKS = ['dev', 'main'];
+
+  it('is the mission integration branch for an ordinary mission task', () => {
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: { title: 'Do the thing', taskClass: 'work' },
+      head: 'buildd/abc12345-do-the-thing',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got).toEqual({
+      base: OPTED_IN.workingBranch,
+      source: 'mission_integration',
+      integrationBase: OPTED_IN.workingBranch,
+      enforced: true,
+    });
+  });
+
+  it('outranks a caller-supplied base — derive, do not accept', () => {
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: { title: 'Do the thing', taskClass: 'work' },
+      head: 'buildd/abc12345-do-the-thing',
+      callerBase: 'dev',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe(OPTED_IN.workingBranch);
+    expect(got.enforced).toBe(true);
+  });
+
+  it('exempts the mission PR owner — its base is trunk by design', () => {
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: { title: `${MISSION_PR_TASK_PREFIX}Checkout arc`, taskClass: 'bookkeeping' },
+      head: OPTED_IN.workingBranch,
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got).toEqual({
+      base: 'dev',
+      source: 'workspace',
+      integrationBase: OPTED_IN.workingBranch,
+      enforced: false,
+    });
+  });
+
+  it('exempts a stacked plan phase — its base is the predecessor branch', () => {
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: {
+        title: 'Phase 2',
+        taskClass: 'work',
+        context: { baseBranch: 'buildd/99999999-phase-1' },
+      },
+      head: 'buildd/abc12345-phase-2',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe('buildd/99999999-phase-1');
+    expect(got.source).toBe('stacked_phase');
+    expect(got.enforced).toBe(false);
+  });
+
+  it('falls back to trunk for a task with no mission', () => {
+    const got = resolveTaskPrBase({
+      mission: null,
+      task: { title: 'Do the thing', taskClass: 'work' },
+      head: 'buildd/abc12345-do-the-thing',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got).toEqual({
+      base: 'dev',
+      source: 'workspace',
+      integrationBase: null,
+      enforced: false,
+    });
+  });
+
+  it('honours a caller base when there is no mission integration branch', () => {
+    const got = resolveTaskPrBase({
+      mission: null,
+      task: { title: 'Hotfix', taskClass: 'work' },
+      head: 'buildd/abc12345-hotfix',
+      callerBase: 'main',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe('main');
+    expect(got.source).toBe('caller');
+  });
+
+  it('ignores a context.baseBranch that is the recovery-task current-head marker', () => {
+    const got = resolveTaskPrBase({
+      mission: null,
+      task: { title: 'Recovery', taskClass: 'work', context: { baseBranch: 'buildd/abc12345-x' } },
+      head: 'buildd/abc12345-x',
+      fallbacks: TRUNK_FALLBACKS,
+    });
+    expect(got.base).toBe('dev');
+    expect(got.source).toBe('workspace');
+  });
+
+  // ── the route out, when the integration branch no longer exists ───────────
+  //
+  // Part 2. A mission whose PR merged early had its integration branch deleted
+  // by design; without this, every later worker on that mission derives a base
+  // that 404s and has no way to deliver its PR at all.
+
+  it('stops enforcing a mission integration base that is gone from the remote', () => {
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: { title: 'Late slice', taskClass: 'work' },
+      head: 'buildd/abc12345-late-slice',
+      fallbacks: TRUNK_FALLBACKS,
+      integrationBaseMissing: true,
+    });
+    expect(got.base).toBe('dev');
+    expect(got.enforced).toBe(false);
+    // Still reported, so a caller can say in its note WHICH branch vanished.
+    expect(got.integrationBase).toBe(OPTED_IN.workingBranch);
+  });
+
+  it('does not fall back onto the vanished branch via context.baseBranch', () => {
+    // Option A′ writes the integration branch into context.baseBranch at task
+    // creation, so the fallback chain would otherwise route straight back to the
+    // deleted ref and 422 again.
+    const got = resolveTaskPrBase({
+      mission: OPTED_IN,
+      task: {
+        title: 'Late slice',
+        taskClass: 'work',
+        context: { baseBranch: OPTED_IN.workingBranch },
+      },
+      head: 'buildd/abc12345-late-slice',
+      fallbacks: TRUNK_FALLBACKS,
+      integrationBaseMissing: true,
+    });
+    expect(got.base).toBe('dev');
   });
 });

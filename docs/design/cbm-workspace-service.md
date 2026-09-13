@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "implementation-anchor-extraction"
@@ -13,7 +13,7 @@ assertions:
 ---
 # Grounding `spec_compare` — what's actually broken, and the ~15 lines that fix it
 
-**Status:** proposed (third revision, 2026-08-29 — two earlier drafts were wrong; see §0)
+**Status:** Implemented (third revision, 2026-08-29 — two earlier drafts were wrong; see §0)
 **Follows:** [codebase-memory-mcp-integration.md](./codebase-memory-mcp-integration.md) §6, #1743, #1889
 
 ## 0. What the earlier drafts got wrong

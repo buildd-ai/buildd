@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "mission-dependency-fallback"
@@ -16,7 +16,7 @@ assertions:
 ---
 # Status Reconciliation: Derived-at-Read-Time State
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/lib/mission-dependency.ts` — dependency gate logic
 - `apps/web/src/lib/mission-helpers.ts` — `deriveHealth()`, `deriveDriveState()`

@@ -2,6 +2,7 @@ import type { query } from '@anthropic-ai/claude-agent-sdk';
 import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
+import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 import {
   assignMemoryDigestArm,
   buildMemoryBlock,
@@ -310,9 +311,28 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       gitContext.push(`- You are working in an isolated worktree — commit and push directly, do NOT switch branches`);
     }
 
-    const prTarget = gitConfig.targetBranch || gitConfig.defaultBranch;
+    // THE base this task's PR takes, from the same function `create_pr` derives
+    // it with (@buildd/core/mission-integration). This block used to read
+    // `gitConfig.targetBranch` directly — it never looked at the mission — so a
+    // task on a mission using an integration branch was told "PR to <trunk>"
+    // while the server refused trunk for exactly that task. The worker had no
+    // way to tell which side was wrong, and the only escape was a human.
+    const prBaseResolution = resolveTaskPrBase({
+      mission: task.mission,
+      task,
+      head: worker.branch,
+      fallbacks: [gitConfig.targetBranch, gitConfig.defaultBranch],
+    });
+    const prTarget = prBaseResolution.base || gitConfig.targetBranch || gitConfig.defaultBranch;
     if (gitConfig.requiresPR) {
       gitContext.push(`- Changes require PR to \`${prTarget}\``);
+      if (prBaseResolution.source === 'mission_integration') {
+        gitContext.push(
+          `- \`${prTarget}\` is this mission's integration branch, NOT trunk — the mission reaches `
+          + `trunk through a single PR from that branch. Do not retarget your PR at trunk; `
+          + `\`create_pr\` derives this base for you, so omit \`base\` entirely.`,
+        );
+      }
       if (gitConfig.autoCreatePR) {
         gitContext.push(`- Create PR when done`);
       }

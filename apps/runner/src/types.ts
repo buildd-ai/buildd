@@ -466,6 +466,18 @@ export interface BuilddTask {
   priority: number;
   mode?: string;
   dependsOn?: string[];
+  /** The mission this task belongs to, when it has one. */
+  missionId?: string | null;
+  /**
+   * Option A′ integration fields for this task's mission, sent by the claim
+   * route. They exist so `resolveTaskPrBase` can answer "what base does this
+   * task's PR take" on the runner with the SAME inputs the server uses — see
+   * prompt-builder.ts's Git Workflow block.
+   */
+  mission?: {
+    workingBranch?: string | null;
+    integrationBranchEnabled?: boolean | null;
+  } | null;
   // Role slug this task is routed to (e.g. "builder", "researcher") — drives
   // role-scoped runner behaviour such as pr-mutation-enforcement.ts.
   roleSlug?: string;
