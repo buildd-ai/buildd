@@ -240,6 +240,90 @@ describe('manage_missions — workspace resolution', () => {
   });
 });
 
+describe('manage_missions — prior work retrieval on create', () => {
+  const TEAM_ID = '00000000-0000-0000-0000-00000000000a';
+
+  it('renders a "## Prior work" block with the stale-baseline flag for a task whose PR merged in the last 14 days', async () => {
+    const api = async () => ({
+      id: 'mission-1',
+      title: 'Fix CTA state drift',
+      status: 'active',
+      priority: 5,
+      workspaceId: MOCK_WORKSPACE_ID,
+      teamId: TEAM_ID,
+    });
+    const store = {
+      query: async () => [{
+        id: 'task:prior-cta-fix',
+        namespace: `${MOCK_WORKSPACE_ID}:task`,
+        corpus: 'task',
+        sourceType: 'task',
+        sourcePath: null,
+        sourceUrl: '/app/tasks/prior-cta-fix',
+        content: '# Task: CTA derives from server state, not cached UI',
+        metadata: { success: true, prUrl: 'https://github.com/buildd-ai/buildd/pull/2361' },
+        score: 0.81,
+        createdAt: new Date(Date.now() - 5 * 86400000),
+      }],
+    };
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'manage_missions',
+      { action: 'create', title: 'Fix CTA state drift', description: 'Recurring CTA bug' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(result.content[0].text).toContain('## Prior work');
+    expect(result.content[0].text).toContain('PR #2361');
+    expect(result.content[0].text).toContain('MAY ALREADY BE SHIPPED');
+  });
+
+  it('still returns the created mission when the knowledge store query throws', async () => {
+    const api = async () => ({
+      id: 'mission-1',
+      title: 'Fix CTA state drift',
+      status: 'active',
+      priority: 5,
+      workspaceId: MOCK_WORKSPACE_ID,
+      teamId: TEAM_ID,
+    });
+    const store = {
+      query: async () => { throw new Error('knowledge store unavailable'); },
+    };
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'manage_missions',
+      { action: 'create', title: 'Fix CTA state drift' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(result.content[0].text).toContain('Mission created: "Fix CTA state drift"');
+    expect(result.content[0].text).not.toContain('## Prior work');
+  });
+
+  it('renders nothing when there is no knowledge store in context', async () => {
+    const api = async () => ({
+      id: 'mission-1',
+      title: 'Fix CTA state drift',
+      status: 'active',
+      priority: 5,
+      workspaceId: MOCK_WORKSPACE_ID,
+      teamId: TEAM_ID,
+    });
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'manage_missions',
+      { action: 'create', title: 'Fix CTA state drift' },
+      createMockContext(),
+    );
+
+    expect(result.content[0].text).not.toContain('## Prior work');
+  });
+});
+
 describe('manage_missions — branchStrategy', () => {
   let mockApi: ReturnType<typeof mock>;
 

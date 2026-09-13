@@ -527,6 +527,117 @@ describe('create_task — similar open task detection', () => {
   });
 });
 
+describe('create_task — prior work retrieval', () => {
+  const NEW_TASK_ID = 'e631d11c-0000-0000-0000-000000000002';
+
+  function buildApi() {
+    return async (path: string) => {
+      if (path.includes('status=active')) return { tasks: [] };
+      return { id: NEW_TASK_ID, title: 'CTA still shows stale state', priority: 5, status: 'pending' };
+    };
+  }
+
+  it('renders a "## Prior work" block with the stale-baseline flag for a task whose PR merged in the last 14 days', async () => {
+    const store = {
+      nearDupeCheck: async () => [],
+      upsert: async () => ({ superseded: 0 }),
+      query: async () => [{
+        id: 'task:prior-cta-fix',
+        namespace: `${MOCK_WORKSPACE_ID}:task`,
+        corpus: 'task',
+        sourceType: 'task',
+        sourcePath: null,
+        sourceUrl: '/app/tasks/prior-cta-fix',
+        content: '# Task: CTA derives from server state, not cached UI',
+        metadata: { success: true, prUrl: 'https://github.com/buildd-ai/buildd/pull/2361' },
+        score: 0.81,
+        createdAt: new Date(Date.now() - 5 * 86400000),
+      }],
+    };
+
+    const result = await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      { title: 'CTA still shows stale state', description: 'The button shows the wrong action again' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(result.content[0].text).toContain('## Prior work');
+    expect(result.content[0].text).toContain('PR #2361');
+    expect(result.content[0].text).toContain('MAY ALREADY BE SHIPPED');
+  });
+
+  it('places the prior-work block below the near-dupe warning', async () => {
+    const store = {
+      nearDupeCheck: async () => [{
+        id: `task:existing`,
+        similarity: 0.9,
+        content: '# Task: CTA still shows stale state',
+        sourceUrl: '/app/tasks/existing',
+      }],
+      upsert: async () => ({ superseded: 0 }),
+      query: async () => [{
+        id: 'task:prior-cta-fix',
+        namespace: `${MOCK_WORKSPACE_ID}:task`,
+        corpus: 'task',
+        sourceType: 'task',
+        sourcePath: null,
+        sourceUrl: '/app/tasks/prior-cta-fix',
+        content: '# Task: CTA derives from server state',
+        metadata: {},
+        score: 0.5,
+        createdAt: new Date(),
+      }],
+    };
+    const api = async (path: string) => {
+      if (path.includes('status=active')) return { tasks: [{ id: 'existing', title: 'Open', status: 'pending' }] };
+      return { id: 'existing2', title: 'CTA still shows stale state', priority: 5, status: 'pending' };
+    };
+
+    const result = await handleBuilddAction(
+      api as unknown as ApiFn,
+      'create_task',
+      { title: 'CTA still shows stale state', description: 'desc' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    const text = result.content[0].text;
+    const nearDupeIdx = text.indexOf('open task(s) with a similar subject');
+    const priorWorkIdx = text.indexOf('## Prior work');
+    expect(nearDupeIdx).toBeGreaterThan(-1);
+    expect(priorWorkIdx).toBeGreaterThan(nearDupeIdx);
+  });
+
+  it('still returns the created task when the knowledge store query throws', async () => {
+    const store = {
+      nearDupeCheck: async () => [],
+      upsert: async () => ({ superseded: 0 }),
+      query: async () => { throw new Error('knowledge store unavailable'); },
+    };
+
+    const result = await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      { title: 'CTA still shows stale state', description: 'desc' },
+      createMockContext({ knowledgeStore: store as any }),
+    );
+
+    expect(result.content[0].text).toContain(`Task created: "CTA still shows stale state" (ID: ${NEW_TASK_ID})`);
+    expect(result.content[0].text).not.toContain('## Prior work');
+  });
+
+  it('renders nothing when there is no knowledge store in context', async () => {
+    const result = await handleBuilddAction(
+      buildApi() as unknown as ApiFn,
+      'create_task',
+      { title: 'CTA still shows stale state', description: 'desc' },
+      createMockContext(),
+    );
+
+    expect(result.content[0].text).not.toContain('## Prior work');
+  });
+});
+
 describe('create_task — fileAnywayReason support', () => {
   it('passes a trimmed explicit escape-hatch reason to task intake', async () => {
     let body: any;

@@ -2046,15 +2046,20 @@ export async function handleBuilddAction(
         !!params.parentTaskId ||
         suppressedTitlePattern.test(String(params.title));
 
+      // Shared query text for both the near-dupe check (task corpus only, gates on
+      // isChildOrRetryTask) and the broader prior-work retrieval below (memory+task+pr,
+      // runs for every filing — a child/retry task benefits from prior-incident context
+      // just as much as a top-level one).
+      const authoringQueryText = [params.title, params.description]
+        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        .join('\n')
+        .slice(0, 2000);
+
       type SimilarCandidate = { id: string; similarity: number; content: string };
       let priorSimilarCandidates: SimilarCandidate[] = [];
       if (!isChildOrRetryTask && ctx.knowledgeStore?.nearDupeCheck && wsId) {
         const taskNs = buildNamespace(wsId, 'task');
-        const queryText = [params.title, params.description]
-          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-          .join('\n')
-          .slice(0, 2000);
-        priorSimilarCandidates = await ctx.knowledgeStore.nearDupeCheck(taskNs, queryText, 5).catch(() => []);
+        priorSimilarCandidates = await ctx.knowledgeStore.nearDupeCheck(taskNs, authoringQueryText, 5).catch(() => []);
       }
 
       const taskBody: Record<string, unknown> = {
@@ -2279,7 +2284,21 @@ export async function handleBuilddAction(
         : task.status === 'assigned'
           ? 'Assigned — a runner has already claimed it'
           : 'Queued — no runner has claimed it yet';
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}`);
+
+      // Surface prior incidents/lessons/PRs related to this filing so the author
+      // doesn't have to remember to run recall themselves — the CTA-derives-from-
+      // server-state defect was re-fixed 3x (PRs #1463, #2339, #2361) because this
+      // context wasn't in front of whoever was filing. Best-effort: a retrieval
+      // failure must never fail a task that already exists.
+      const priorWorkBlock = await buildAuthoringPriorWork(
+        authoringQueryText,
+        wsId,
+        ctx.teamId,
+        ctx.knowledgeStore,
+        { paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined },
+      ).catch(() => '');
+
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -3716,7 +3735,21 @@ export async function handleBuilddAction(
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
           const heldInfo = data.isHeld ? '\nStart mode: held — tasks are not claimable until armed (use action=arm)' : '';
-          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
+
+          // Same prior-work surfacing as create_task — best-effort, never fails
+          // an already-created mission.
+          const missionQueryText = [params.title, params.description]
+            .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+            .join('\n')
+            .slice(0, 2000);
+          const priorWorkBlock = await buildAuthoringPriorWork(
+            missionQueryText,
+            data.workspaceId ?? null,
+            data.teamId ?? ctx.teamId ?? null,
+            ctx.knowledgeStore,
+          ).catch(() => '');
+
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
         }
         case 'get': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -4820,6 +4853,7 @@ import { MemoryStore } from './memory-store';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
+import { buildAuthoringPriorWork } from './prior-work-render';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
