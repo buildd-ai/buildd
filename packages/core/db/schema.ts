@@ -876,6 +876,12 @@ export const missions = pgTable('missions', {
   // means "a human owes this mission a decision" — heartbeats stay off until the
   // verdict shape changes.
   criteriaEscalatedAt: timestamp('criteria_escalated_at', { withTimezone: true }),
+  // When true (default), a builder task created under this mission whose
+  // pathManifest touches a UI surface directory (apps/web/src/app/**,
+  // apps/web/src/components/**) auto-appends a `[surface audit]` task —
+  // see ensureMissionSurfaceAudit in apps/web/src/lib/mission-surface-audit.ts.
+  // Set false to opt a non-UI or intentionally-unaudited mission out.
+  autoSurfaceAudit: boolean('auto_surface_audit').default(true).notNull(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

@@ -67,6 +67,7 @@
     "./project-scope": "./project-scope.ts",
     "./path-overlap": "./path-overlap.ts",
     "./path-claim": "./path-claim.ts",
+    "./surface-audit": "./surface-audit.ts",
     "./worker-messages": "./worker-messages.ts",
     "./worker-message-format": "./worker-message-format.ts",
     "./friction-manifest": "./friction-manifest.ts",

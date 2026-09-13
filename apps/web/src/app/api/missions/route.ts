@@ -141,8 +141,12 @@ export async function POST(req: NextRequest) {
     const { title, description, workspaceId, teamId: requestedTeamId, cronExpression, priority, parentMissionId, initiativeId, skillSlugs, outputSchema, model,
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, contextArtifactIds, maxConcurrentTasks, requiresReview, backend,
       status: requestedStatus, dependsOnMission, gateCondition, mergePolicy, orchestrationMode, costBudgetUsd,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, branchStrategy, autoSurfaceAudit,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter, startMode } = body;
+
+    if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
+      return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
+    }
 
     if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
       return NextResponse.json(
@@ -324,6 +328,7 @@ export async function POST(req: NextRequest) {
         ...(pacingMode === 'paced' ? { pacingMode: 'paced', ...(pacingMaxPerHour != null ? { pacingMaxPerHour } : {}) } : {}),
         ...(goalCriteria !== undefined ? { goalCriteria: goalCriteria ?? null } : {}),
         ...(autoVerify !== undefined ? { autoVerify: autoVerify === true ? true : autoVerify === false ? false : null } : {}),
+        ...(autoSurfaceAudit !== undefined ? { autoSurfaceAudit } : {}),
         ...(deferredStart.startAt ? {
           startAt: deferredStart.startAt,
           startResolution: deferredStart.resolution,
