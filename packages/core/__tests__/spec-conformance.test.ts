@@ -355,7 +355,6 @@ describe('checkMissingAssertions', () => {
       expect(checkMissingAssertions(path, docType, status, 0, null)?.kind).toBe('missing-assertions');
     }
   });
-
 });
 
 // ─── parseFrontmatter / extractBoldStatus / declaredStatus ─────────────────
