@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, buildDecideItems, partitionEscalations, isActionableChip, summariseActionQueueAge } from './action-queue';
-import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate } from './action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, summariseActionQueueAge } from './action-queue';
+import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
 const PR_URL_B = 'https://github.com/org/repo/pull/1481';
@@ -386,6 +386,135 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
     const items = buildDecideItems([candidate()]);
     const queue = buildActionQueue(items, []);
     expect(queue[0].recommendation ?? null).toBeNull();
+  });
+});
+
+describe('buildDiscrepancyItems', () => {
+  const row = (overrides?: Partial<DiscrepancyCandidate>): DiscrepancyCandidate => ({
+    id: 'd-1',
+    workspaceId: 'ws-1',
+    workspaceName: 'buildd',
+    specPath: 'docs/design/spec-conformance.md',
+    assertionId: 'evaluate-spec-documents',
+    direction: 'code_ahead',
+    status: 'open',
+    firstSeenAt: new Date('2026-08-25T00:00:00Z'),
+    ...overrides,
+  });
+
+  it('produces one discrepancy item per open row', () => {
+    const { items, overflowCount } = buildDiscrepancyItems([row()]);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      kind: 'discrepancy',
+      discrepancyId: 'd-1',
+      specPath: 'docs/design/spec-conformance.md',
+      assertionId: 'evaluate-spec-documents',
+      direction: 'code_ahead',
+    });
+    expect(overflowCount).toBe(0);
+  });
+
+  it('excludes accepted rows outright — re-surfacing an owner call already made is the Schedules-page problem again', () => {
+    const { items } = buildDiscrepancyItems([row({ status: 'accepted' })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('excludes resolved rows — no open gap left to show', () => {
+    const { items } = buildDiscrepancyItems([row({ status: 'resolved' })]);
+    expect(items).toHaveLength(0);
+  });
+
+  it('ranks contradicted first, then spec_ahead, then code_ahead', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ id: 'code', assertionId: 'a-code', direction: 'code_ahead' }),
+      row({ id: 'spec', assertionId: 'a-spec', direction: 'spec_ahead' }),
+      row({ id: 'contra', assertionId: 'a-contra', direction: 'contradicted' }),
+    ]);
+    expect(items.map(i => i.discrepancyId)).toEqual(['contra', 'spec', 'code']);
+  });
+
+  it('within a direction, ranks oldest first_seen_at first — a row that survived several runs always outranks a fresh one', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ id: 'new', assertionId: 'a-new', firstSeenAt: new Date('2026-09-01T00:00:00Z') }),
+      row({ id: 'old', assertionId: 'a-old', firstSeenAt: new Date('2026-08-01T00:00:00Z') }),
+    ]);
+    expect(items.map(i => i.discrepancyId)).toEqual(['old', 'new']);
+  });
+
+  it('caps at the top N per workspace and reports the rest as overflow, never silently dropping them', () => {
+    const rows = Array.from({ length: 12 }, (_, i) =>
+      row({ id: `d-${i}`, assertionId: `a-${i}`, firstSeenAt: new Date(2026, 7, i + 1) }));
+    const { items, overflowCount } = buildDiscrepancyItems(rows, { cap: 10 });
+    expect(items).toHaveLength(10);
+    expect(overflowCount).toBe(2);
+    // The oldest 10 make the cut, not an arbitrary slice.
+    expect(items.map(i => i.assertionId)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `a-${i}`),
+    );
+  });
+
+  it('caps independently per workspace — one workspace\'s backlog cannot crowd out another\'s', () => {
+    const rows = [
+      ...Array.from({ length: 12 }, (_, i) => row({ id: `a-${i}`, assertionId: `a-${i}`, workspaceId: 'ws-a' })),
+      row({ id: 'b-1', assertionId: 'b-1', workspaceId: 'ws-b' }),
+    ];
+    const { items, overflowCount } = buildDiscrepancyItems(rows, { cap: 10 });
+    expect(items.filter(i => i.workspaceId === 'ws-a')).toHaveLength(10);
+    expect(items.filter(i => i.workspaceId === 'ws-b')).toHaveLength(1);
+    expect(overflowCount).toBe(2);
+  });
+});
+
+describe('buildActionQueue — discrepancy items', () => {
+  const discrepancyItem = (overrides?: Partial<WaitingOnYouRawItem>): WaitingOnYouRawItem => ({
+    kind: 'discrepancy',
+    discrepancyId: 'd-1',
+    specPath: 'docs/design/spec-conformance.md',
+    assertionId: 'evaluate-spec-documents',
+    direction: 'code_ahead',
+    firstSeenAt: new Date('2026-08-25T00:00:00Z'),
+    promotedMissionId: null,
+    workspaceId: 'ws-1',
+    workspaceName: 'buildd',
+    ...overrides,
+  });
+
+  it('builds exactly one DISCREPANCY card, keyed on specPath + assertionId', () => {
+    const queue = buildActionQueue([discrepancyItem(), discrepancyItem()], []);
+    expect(queue).toHaveLength(1);
+    expect(queue[0].chip).toBe('DISCREPANCY');
+    expect(queue[0].subjectKey).toBe('discrepancy:docs/design/spec-conformance.md:evaluate-spec-documents');
+  });
+
+  it('ranks DISCREPANCY below DECIDE but above APPROVE', () => {
+    const queue = buildActionQueue([
+      { kind: 'approve', taskId: 'plan-1', taskTitle: 'Plan A' },
+      discrepancyItem(),
+      ...buildDecideItems([{
+        missionId: 'mission-99',
+        missionTitle: 'Mission Gamma',
+        criteriaEscalatedAt: new Date(),
+        criteriaRearmFingerprint: 'fp1',
+        openNote: { id: 'note-1', title: 'Decide', body: 'body' },
+        status: 'active',
+        criteriaOverallVerdict: 'fail',
+      }]),
+    ], []);
+    expect(queue.map(i => i.chip)).toEqual(['DECIDE', 'DISCREPANCY', 'APPROVE']);
+  });
+
+  it('re-ranks a merged multi-workspace queue by direction then age', () => {
+    const queue = buildActionQueue([
+      discrepancyItem({ specPath: 'a.md', assertionId: 'a1', direction: 'code_ahead', firstSeenAt: new Date('2026-08-01T00:00:00Z') }),
+      discrepancyItem({ specPath: 'b.md', assertionId: 'b1', direction: 'contradicted', firstSeenAt: new Date('2026-09-01T00:00:00Z') }),
+    ], []);
+    expect(queue.map(i => i.assertionId)).toEqual(['b1', 'a1']);
+  });
+
+  it('carries promotedMissionId through so the card can show the link instead of a promote action', () => {
+    const queue = buildActionQueue([discrepancyItem({ promotedMissionId: 'mission-42' })], []);
+    expect(queue[0].promotedMissionId).toBe('mission-42');
   });
 });
 
