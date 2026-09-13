@@ -1,8 +1,8 @@
 import { db } from '@buildd/core/db';
-import { missions, tasks, missionNotes, taskSchedules } from '@buildd/core/db/schema';
+import { missions, tasks } from '@buildd/core/db/schema';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import type { GoalCriteriaState } from '@buildd/shared';
-import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
+import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
 import { systemActor } from '@/lib/mission-feed';
 import { CRITERIA_ESCALATION_NOTE_TITLE } from '@/lib/criteria-escalation-note';
 
@@ -258,9 +258,7 @@ export async function applyCriteriaRearm(input: {
     await resolveCriteriaEscalation(input.missionId, 'verdict_changed', systemActor('goal-criteria re-arm'));
   } else if (decision.action === 'escalate') {
     await db.update(missions).set({
-      criteriaRearmFingerprint: fingerprint,
       criteriaRearmCycles: decision.nextCycles,
-      criteriaEscalatedAt: now,
       updatedAt: now,
     }).where(eq(missions.id, input.missionId));
 
@@ -271,29 +269,28 @@ export async function applyCriteriaRearm(input: {
         ? 'Every blocking criterion is machine-checked and has failed identically across the retry budget — most likely the underlying work has no owner.\n\n'
         : '';
 
-    await db.insert(missionNotes).values({
+    // Stamps `criteriaEscalatedAt` and files the note in one atomic claim —
+    // see criteria-escalation.ts for why this must be the only writer.
+    await escalateCriteriaFailure({
       missionId: input.missionId,
-      authorType: 'system',
-      type: 'question',
-      title: CRITERIA_ESCALATION_NOTE_TITLE,
-      body:
-        `${decision.reason}.\n\n` +
-        `Completion refusal: ${input.blockReason}\n\n` +
-        `Last evaluated: ${state?.evaluatedAt ?? 'unknown'}\n\n` +
-        `Blocking criteria:\n${verdictLines || '- (no per-criterion detail recorded)'}\n\n` +
-        readingLine +
-        `The heartbeat has been stood down so this stops re-evaluating on a cadence. ` +
-        `Either the criterion is wrong or unmeasurable as written (fix it via ` +
-        `\`manage_missions action=update goalCriteria=...\`), or the work it names has no owner ` +
-        `(file it as a task). Changing any verdict re-arms the organizer automatically.`,
-      status: 'open',
-    } as any).catch(e => console.error(`[criteria-rearm] escalation note failed for ${input.missionId}:`, e));
-
-    if (input.scheduleId) {
-      await db.update(taskSchedules)
-        .set({ enabled: false, lastDeferralReason: 'criteria_escalated', updatedAt: now })
-        .where(eq(taskSchedules.id, input.scheduleId));
-    }
+      fingerprint,
+      note: {
+        type: 'question',
+        status: 'open',
+        title: CRITERIA_ESCALATION_NOTE_TITLE,
+        body:
+          `${decision.reason}.\n\n` +
+          `Completion refusal: ${input.blockReason}\n\n` +
+          `Last evaluated: ${state?.evaluatedAt ?? 'unknown'}\n\n` +
+          `Blocking criteria:\n${verdictLines || '- (no per-criterion detail recorded)'}\n\n` +
+          readingLine +
+          `The heartbeat has been stood down so this stops re-evaluating on a cadence. ` +
+          `Either the criterion is wrong or unmeasurable as written (fix it via ` +
+          `\`manage_missions action=update goalCriteria=...\`), or the work it names has no owner ` +
+          `(file it as a task). Changing any verdict re-arms the organizer automatically.`,
+      },
+      scheduleId: input.scheduleId,
+    });
   } else if (decision.nextCycles !== mission.criteriaRearmCycles) {
     await db.update(missions)
       .set({ criteriaRearmCycles: decision.nextCycles, updatedAt: now })

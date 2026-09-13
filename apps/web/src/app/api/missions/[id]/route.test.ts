@@ -45,16 +45,23 @@ let insertedNotes: any[] = [];
 let recentCollapseNote: any = null;
 const mockMissionNotesFindFirst = mock(() => Promise.resolve(recentCollapseNote));
 
-// resolveCriteriaEscalation is the single writer for un-escalating a mission —
-// tested on its own in criteria-escalation.test.ts. Here we only assert the
-// route calls it (or doesn't) at the right times, with the right reason.
+// resolveCriteriaEscalation and escalateCriteriaFailure are the single
+// writers for un-escalating / escalating a mission — each tested on its own
+// in criteria-escalation.test.ts. Here we only assert the route calls the
+// right one (or neither) at the right times, with the right arguments.
 let resolveCriteriaEscalationCalls: Array<{ missionId: string; reason: string; actor: any }> = [];
 const mockResolveCriteriaEscalation = mock((missionId: string, reason: string, actor: any) => {
   resolveCriteriaEscalationCalls.push({ missionId, reason, actor });
   return Promise.resolve({ cleared: true });
 });
+let escalateCriteriaFailureCalls: any[] = [];
+const mockEscalateCriteriaFailure = mock((input: any) => {
+  escalateCriteriaFailureCalls.push(input);
+  return Promise.resolve({ escalated: true });
+});
 mock.module('@/lib/criteria-escalation', () => ({
   resolveCriteriaEscalation: mockResolveCriteriaEscalation,
+  escalateCriteriaFailure: mockEscalateCriteriaFailure,
 }));
 
 const mockEnsureMissionIntegrationBranch = mock(() =>
@@ -172,6 +179,8 @@ describe('PATCH /api/missions/[id]', () => {
     mockEnsureMissionIntegrationBranch.mockReset();
     resolveCriteriaEscalationCalls = [];
     mockResolveCriteriaEscalation.mockClear();
+    escalateCriteriaFailureCalls = [];
+    mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
@@ -853,6 +862,8 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     mockEnsureMissionIntegrationBranch.mockReset();
     resolveCriteriaEscalationCalls = [];
     mockResolveCriteriaEscalation.mockClear();
+    escalateCriteriaFailureCalls = [];
+    mockEscalateCriteriaFailure.mockClear();
     mockEnsureMissionIntegrationBranch.mockResolvedValue({ ok: true, branch: 'mission/existing-mission-obj-1', created: true } as any);
 
     mockGetCurrentUser.mockReturnValue({ id: 'user-1' } as any);
@@ -918,7 +929,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(note.body).toBe('active → paused');
   });
 
-  it('records an override note when completed while criteria are failing', async () => {
+  it('escalates (stamp + notify) exactly once when a never-escalated mission is force-completed with a failing verdict', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
@@ -929,6 +940,8 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       priority: 0,
       goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
       goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+      // criteriaEscalatedAt intentionally omitted — the heartbeat never escalated this
+      // mission, e.g. it was force-completed before the N-cycle budget ran out.
     });
 
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
@@ -938,13 +951,19 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
 
-    const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
-    expect(note).toBeDefined();
-    expect(note.body).toContain('set to completed');
-    expect(note.body).toContain('fail');
+    expect(escalateCriteriaFailureCalls).toHaveLength(1);
+    expect(escalateCriteriaFailureCalls[0].missionId).toBe('obj-1');
+    expect(escalateCriteriaFailureCalls[0].note.title).toBe('Goal criteria gate overridden');
+    expect(escalateCriteriaFailureCalls[0].note.body).toContain('set to completed');
+    expect(escalateCriteriaFailureCalls[0].note.body).toContain('fail');
+    // Already the decision, not a question awaiting one — nothing more to answer.
+    expect(escalateCriteriaFailureCalls[0].note.status).toBe('answered');
+    // Never escalated before this request — resolveCriteriaEscalation must not also
+    // fire, or it would immediately null the column this call just stamped.
+    expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 
-  it('records an override note when archived directly while criteria are unverified — skipping "completed" must not skip the audit', async () => {
+  it('escalates when archived directly while criteria are unverified — skipping "completed" must not skip the audit', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
@@ -964,10 +983,38 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     const res = await PATCH(req, { params: makeParams('obj-1') });
     expect(res.status).toBe(200);
 
+    expect(escalateCriteriaFailureCalls).toHaveLength(1);
+    expect(escalateCriteriaFailureCalls[0].note.body).toContain('set to archived');
+    expect(escalateCriteriaFailureCalls[0].note.body).toContain('UNVERIFIED');
+  });
+
+  it('records a plain override note (no re-escalation) when completing an already-escalated mission', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
+      goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+      criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
     const note = insertedNotes.find((n) => n.title === 'Goal criteria gate overridden');
     expect(note).toBeDefined();
-    expect(note.body).toContain('set to archived');
-    expect(note.body).toContain('UNVERIFIED');
+    expect(note.body).toContain('set to completed');
+    expect(note.body).toContain('fail');
+    // Already escalated — the note is a plain audit trail, not a fresh escalation.
+    expect(escalateCriteriaFailureCalls).toHaveLength(0);
   });
 
   it('does not re-audit archiving a mission that already completed cleanly', async () => {
@@ -991,9 +1038,22 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(res.status).toBe(200);
 
     expect(insertedNotes.some((n) => n.title === 'Goal criteria gate overridden')).toBe(false);
+    expect(escalateCriteriaFailureCalls).toHaveLength(0);
   });
 
-  it('resolves the criteria escalation when a mission is completed', async () => {
+  it('resolves the criteria escalation when a previously escalated mission is completed', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: null,
+      criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'completed' }),
@@ -1005,7 +1065,19 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'mission_completed' });
   });
 
-  it('resolves the criteria escalation when a mission is archived', async () => {
+  it('resolves the criteria escalation when a previously escalated mission is archived', async () => {
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      status: 'active',
+      priority: 0,
+      goalCriteria: null,
+      criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',
       body: JSON.stringify({ status: 'archived' }),
@@ -1017,7 +1089,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
     expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'mission_completed' });
   });
 
-  it('resolves the criteria escalation with reason "waived" when completed while criteria are failing', async () => {
+  it('resolves the criteria escalation with reason "waived" when a previously escalated mission is completed while criteria are still failing', async () => {
     mockMissionsFindFirst.mockReturnValue({
       id: 'obj-1',
       teamId: 'team-1',
@@ -1028,6 +1100,7 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
       priority: 0,
       goalCriteria: [{ type: 'no_open_tasks', label: 'No open tasks' }],
       goalCriteriaState: { overall: 'fail', evaluatedAt: '2026-01-01T00:00:00.000Z', criteria: [] },
+      criteriaEscalatedAt: new Date('2026-01-01T00:00:00.000Z'),
     });
 
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
@@ -1039,6 +1112,17 @@ describe('PATCH /api/missions/[id] — mission feed', () => {
 
     expect(resolveCriteriaEscalationCalls).toHaveLength(1);
     expect(resolveCriteriaEscalationCalls[0]).toMatchObject({ missionId: 'obj-1', reason: 'waived' });
+  });
+
+  it('does not resolve a criteria escalation on completion when the mission was never escalated', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(200);
+
+    expect(resolveCriteriaEscalationCalls).toHaveLength(0);
   });
 
   it('does not resolve a criteria escalation on a status change that is not a close', async () => {

@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/mission-base-guard.ts]
@@ -773,22 +773,43 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   failure nobody can move is a decision, not a retry.
 - While work filed against the current verdict is still open, the consumer waits
   rather than re-arming — otherwise it duplicates the work in flight.
+- Escalating and un-escalating are each owned by exactly one writer, and no
+  other code path may touch `criteriaEscalatedAt` directly. `escalateCriteriaFailure()`
+  (`apps/web/src/lib/criteria-escalation.ts`) is the ONLY writer that STAMPS
+  the column: it claims the row atomically (`UPDATE ... WHERE criteriaEscalatedAt
+  IS NULL OR criteriaRearmFingerprint IS DISTINCT FROM the new fingerprint`),
+  files the owner-facing note, and stands the heartbeat schedule down — all
+  three or none, so the column and the notification can never drift apart. The
+  atomic claim is also the dedup: a mission re-evaluated with an identical
+  verdict does not file a second note, but a verdict that gets WORSE while
+  already escalated re-notifies once for the new shape. Before this existed,
+  `criteria-rearm.ts`'s escalate branch and the explicit completion override in
+  `PATCH /api/missions/[id]` each decided "has this mission escalated"
+  independently — the heartbeat path stamped the column, the completion
+  override only posted a passive warning note and never touched the column at
+  all, so a mission whose criteria were failing when a human force-completed it
+  (skipping the heartbeat's N-cycle budget entirely) left `criteriaEscalatedAt`
+  null forever with no notification ever having been sent.
 - Escalation MUST be self-clearing, but NOT via a re-arm tick alone: escalating
   disables the mission's heartbeat schedule, so no tick can ever run again to
   observe a later verdict change — the code that would clear
   `criteriaEscalatedAt` on that path is structurally unreachable from the state
   that sets it. Clearing is instead the job of `resolveCriteriaEscalation()`
-  (`apps/web/src/lib/criteria-escalation.ts`), the single writer for
-  un-escalating a mission. It nulls `criteriaEscalatedAt`, closes the open
-  `question` note as `answered` (the owner acted — never `dismissed`), and
-  re-enables the heartbeat schedule if one still exists, so a later tick CAN
-  run again. Every live exit routes through it: `applyCriteriaRearm`'s own
-  'rearm' branch (verdict genuinely changed, reason `verdict_changed` —
-  reachable again only once something else has re-enabled the schedule), a
-  mission closing to `completed`/`archived` (reason `mission_completed`), and a
+  (same module), the single writer for un-escalating a mission. It nulls
+  `criteriaEscalatedAt`, closes the open `question` note as `answered` (the
+  owner acted — never `dismissed`), and re-enables the heartbeat schedule if
+  one still exists, so a later tick CAN run again. Every live exit routes
+  through it: `applyCriteriaRearm`'s own 'rearm' branch (verdict genuinely
+  changed, reason `verdict_changed` — reachable again only once something else
+  has re-enabled the schedule), a **previously-escalated** mission closing to
+  `completed`/`archived` (reason `mission_completed`/`waived`), and a
   `goalCriteria` edit on `PATCH /api/missions/[id]` (reason `criteria_edited` —
   the exit the escalation note itself advertises). It is a no-op on a mission
-  that was never escalated and never files a task.
+  that was never escalated and never files a task. A completion/archival close
+  is routed to `resolveCriteriaEscalation()` ONLY when `criteriaEscalatedAt` was
+  already set before the request's own writes — a mission escalating for the
+  first time via the override path (previous bullet) must not have its own
+  fresh stamp erased by this same request.
 - A re-arm cycle MUST NOT write `lastHeartbeatStateHash`. Mission state is
   unchanged by construction (every deliverable is terminal), so persisting it
   would make the next tick read "no change" and suppress the cycle just
@@ -840,11 +861,22 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `infra_stalled`) WHEN the tick runs THEN no re-arm is attempted.
 - AC-11n: GIVEN a re-arm cycle WHEN the schedule row is written THEN
   `lastHeartbeatStateHash` is not among the written columns.
-- AC-11o: GIVEN an escalated mission WHEN its status is set to `completed` or
-  `archived` via `PATCH /api/missions/[id]` THEN `resolveCriteriaEscalation()`
-  clears `criteriaEscalatedAt` and closes the open question note, even though
-  the schedule row itself is deleted (not re-enabled) by the same request — a
-  terminal mission has nothing left to re-arm.
+- AC-11o: GIVEN a **previously escalated** mission WHEN its status is set to
+  `completed` or `archived` via `PATCH /api/missions/[id]` THEN
+  `resolveCriteriaEscalation()` clears `criteriaEscalatedAt` and closes the
+  open question note, even though the schedule row itself is deleted (not
+  re-enabled) by the same request — a terminal mission has nothing left to
+  re-arm.
+- AC-11o′: GIVEN a mission that was NEVER escalated (the heartbeat's N-cycle
+  budget never ran — e.g. it is force-completed immediately) WHEN its status is
+  set to `completed` or `archived` via `PATCH /api/missions/[id]` WHILE its
+  stored `goalCriteria` is non-empty and `goalCriteriaState.overall !== 'pass'`
+  THEN `escalateCriteriaFailure()` is called instead of a bare warning note —
+  `criteriaEscalatedAt` is stamped and the "Goal criteria gate overridden" note
+  is filed with `status: 'answered'` (the override already IS the decision, so
+  nothing is left open) — and `resolveCriteriaEscalation()` is NOT also called
+  for this close, since there is nothing to resolve and doing so would
+  immediately null the column this same request just stamped.
 - AC-11p: GIVEN a mission with `criteriaEscalatedAt` set WHILE `status` is
   `completed`/`archived`, or WHILE `goalCriteriaState.overall = 'pass'` WHEN
   the hourly `mission-invariants` sweep runs THEN the row is resolved through
@@ -861,16 +893,17 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   "file the work", the escalation note's first advertised exit, is reachable
   from ordinary task creation rather than requiring a bespoke endpoint. A
   no-op on a mission that was never escalated, per the helper's own contract.
-- AC-11s: GIVEN an escalated mission WHEN `PATCH /api/missions/[id]` sets
-  `status` to `completed`/`archived` WHILE its stored `goalCriteria` is
-  non-empty and `goalCriteriaState.overall !== 'pass'` THEN
+- AC-11s: GIVEN a **previously escalated** mission WHEN `PATCH
+  /api/missions/[id]` sets `status` to `completed`/`archived` WHILE its stored
+  `goalCriteria` is non-empty and `goalCriteriaState.overall !== 'pass'` THEN
   `resolveCriteriaEscalation()` is called with reason `'waived'`, not
   `'mission_completed'` — reaching this close with the flag still set can only
   happen via an override (a passing verdict would already have cleared it
   through the `'verdict_changed'` exit), and the "Goal criteria gate
   overridden" warning posted for the same condition is the audit trail that
   makes waiving safe to offer as a one-click exit on the mission-detail
-  decision sheet.
+  decision sheet. See AC-11o′ for the same condition on a mission that was
+  never escalated in the first place.
 - AC-11t: GIVEN an open `missionNotes` question row whose title is the
   escalation note's title (`CRITERIA_ESCALATION_NOTE_TITLE`) WHEN
   `MissionFeed` renders it THEN no Reply/Skip affordance is shown. Both route
@@ -886,10 +919,15 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `canCompleteMission()`, `completeMissionIfVerified()`, `isCriteriaBlockCode()`
 - Blocked-verdict consumer: `apps/web/src/lib/criteria-rearm.ts` —
   `criteriaFingerprint()`, `decideCriteriaRearm()`, `applyCriteriaRearm()`
-- Single writer for un-escalating: `apps/web/src/lib/criteria-escalation.ts` —
+- Single writer for escalating: `apps/web/src/lib/criteria-escalation.ts` —
+  `escalateCriteriaFailure()`. Called from `applyCriteriaRearm()`'s 'escalate'
+  branch and from `PATCH /api/missions/[id]` (a never-escalated mission closing
+  to completed/archived with a non-passing verdict).
+- Single writer for un-escalating: same module —
   `resolveCriteriaEscalation()`. Called from `applyCriteriaRearm()`'s 'rearm'
-  branch, from `PATCH /api/missions/[id]` (status → completed/archived; a
-  `goalCriteria` edit), and from the `stale_criteria_escalation` invariant.
+  branch, from `PATCH /api/missions/[id]` (a previously-escalated mission's
+  status → completed/archived; a `goalCriteria` edit), and from the
+  `stale_criteria_escalation` invariant.
 - Terminal-mission / passing-verdict backstop:
   `apps/web/src/lib/mission-invariants.ts` (`stale_criteria_escalation`
   invariant) + `apps/web/src/app/api/cron/mission-invariants/route.ts`
