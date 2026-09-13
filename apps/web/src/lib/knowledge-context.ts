@@ -26,6 +26,14 @@ import {
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { renderHitLines } from '@buildd/core/prior-work-render';
 
+/**
+ * Minimum score for a claim-time prior-work hit to be worth a worker's
+ * attention. A hit below this is noise: it costs prompt tokens and teaches
+ * agents to skim the section. Path-based lookups (opts.paths) are exempt —
+ * they are a structural match on the file itself, not a semantic guess.
+ */
+const PRECISION_FLOOR = 0.45;
+
 /** Minimal store shape used by buildKnowledgeContext (injectable for tests). */
 export type KnowledgeQuerier = {
   /**
@@ -112,9 +120,10 @@ export async function buildKnowledgeContext(
       ? await Promise.all(
           sources.map(async (s) => {
             const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
-            if (results.length === 0) return [];
+            const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR);
+            if (strong.length === 0) return [];
             const lines = [`\n### ${s.label}`];
-            for (const r of results) lines.push(...renderHitLines(r));
+            for (const r of strong) lines.push(...renderHitLines(r));
             return lines;
           }),
         )
