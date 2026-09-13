@@ -560,9 +560,10 @@ export interface ConformanceConfig {
  * Part C — the portability seam. Buildd's own layout (`docs/specs`,
  * `docs/design`, `packages/core/drizzle`) is the DEFAULT, supplied here as
  * plain values rather than baked into the evaluators above (which only ever
- * see fields resolved off `repoRoot`). A future per-workspace config row
- * (§14, slice 7) plugs into `specsRoot`/`designRoot`/`migrationsDir` here
- * without touching anything above this function.
+ * see fields resolved off `repoRoot`). The per-workspace config row this
+ * seam was left for (§14, slice 7) is `WorkspaceGitConfig.specConformance`
+ * (db/schema.ts) — a caller resolves it and passes the overrides straight
+ * through here; nothing above this function needed to change.
  */
 export function resolveConformanceConfig(overrides: Partial<ConformanceConfig> & { repoRoot: string }): ConformanceConfig {
   return {

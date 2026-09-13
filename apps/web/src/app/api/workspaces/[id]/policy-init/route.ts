@@ -22,6 +22,8 @@ import { verifyWorkspaceAccess } from '@/lib/team-access';
 import { githubApi } from '@/lib/github';
 import { detectAllRiskClasses, inferPolicyConfigFromLegacy } from '@/lib/workspace-policy';
 import type { WorkspacePolicyPreset, WorkspacePolicyConfig } from '@/lib/workspace-policy';
+import { detectSpecConformanceRoots } from '@buildd/core/spec-conformance-detect';
+import { buildTier3ScheduleParams } from '@buildd/core/spec-conformance-schedule';
 
 export async function POST(
   req: NextRequest,
@@ -142,11 +144,36 @@ export async function POST(
     }
   }
 
+  // Spec conformance (docs/design/spec-conformance.md §14): detect this
+  // repo's docs layout the same way risk classes are detected above — never
+  // ask the workspace owner to type a path. Falls back to buildd's own
+  // defaults (docs/specs, docs/design) when nothing is found, same as
+  // resolveConformanceConfig does for a repo with no docs/ tree at all.
+  const existingSpecConformance = workspace.gitConfig?.specConformance;
+  const detectedRoots = detectSpecConformanceRoots(files);
+  const proposedSpecConformance = {
+    specsRoot: existingSpecConformance?.specsRoot ?? detectedRoots.specsRoot ?? 'docs/specs',
+    designRoot: existingSpecConformance?.designRoot ?? detectedRoots.designRoot ?? 'docs/design',
+  };
+  const tier3ScheduleParams = buildTier3ScheduleParams({
+    specsRoot: proposedSpecConformance.specsRoot,
+    designRoot: proposedSpecConformance.designRoot,
+  });
+
   return NextResponse.json({
     proposed,
     repoFullName,
     fileCount: files.length,
     detectedClassCount: riskClasses.filter((c) => c.detectedPaths.length > 0).length,
     hint: `Apply with: PATCH /api/workspaces/${id} body: { gitConfig: { policyConfig: <proposed> } }`,
+    specConformance: {
+      detected: detectedRoots,
+      proposed: proposedSpecConformance,
+      hint: `Apply with: PATCH /api/workspaces/${id} body: { gitConfig: { specConformance: <proposed> } }`,
+      tier3Schedule: {
+        params: tier3ScheduleParams,
+        hint: `Opt into the Tier-3 weekly cron with: create_schedule workspaceId=${id} name="${tier3ScheduleParams.name}" cronExpression="${tier3ScheduleParams.cronExpression}" timezone="${tier3ScheduleParams.timezone}" title="${tier3ScheduleParams.title}" description=<description above>`,
+      },
+    },
   });
 }

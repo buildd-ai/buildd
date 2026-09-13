@@ -346,6 +346,20 @@ export interface WorkspaceGitConfig {
   // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
   dataClass?: 'standard' | 'sensitive';
 
+  // Spec conformance (docs/design/spec-conformance.md §14): where THIS
+  // workspace's checkable specs live. Absent ⇒ buildd's own layout
+  // (docs/specs, docs/design, packages/core/drizzle) — see
+  // `resolveConformanceConfig` in spec-conformance.ts, which these values
+  // feed as overrides. `manage_workspaces action=init` detects and proposes
+  // this from the repo's file tree (spec-conformance-detect.ts) the same
+  // way it proposes `policyConfig`; `spec-conformance-schedule.ts` reads it
+  // when building the Tier-3 weekly cron's `create_schedule` params.
+  specConformance?: {
+    specsRoot?: string;
+    designRoot?: string;
+    migrationsDir?: string;
+  };
+
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
