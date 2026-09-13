@@ -25,7 +25,12 @@ recall (check prior context) → claim_task → work → update_progress (milest
 3. **Work it.** Check out the returned branch and make the change.
 4. **Report progress at milestones** (roughly 25%, 50%, 75%):
    `buildd action=update_progress params={ progress, message }`.
-5. **Ship:** push commits, then `buildd action=create_pr`. Optionally
+5. **Ship:** push commits, then `buildd action=create_pr`. `lede` is required
+   there: one plain-language sentence saying what changed and why it matters
+   to a reader who was not in the task, with no file paths, endpoint names or
+   symbol names — those belong in `body`, below it. It leads the PR body and
+   is often the only thing a human reads. Nothing grades what you write; the
+   only way the field fails is by being absent. Optionally
    `action=get_pr` to check CI/review state, then `action=merge_pr` once
    green — merging is subject to the workspace's merge policy tier, and a
    403 there names the reason; don't retry blindly.

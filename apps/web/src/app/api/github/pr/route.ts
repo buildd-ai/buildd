@@ -10,6 +10,7 @@ import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMiss
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
 import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
+import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -152,7 +153,17 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workerId, title, body: prBody, head, base, draft, prUrl: existingPrUrl } = body;
+    const {
+      workerId,
+      title,
+      body: prBody,
+      lede,
+      ledeDerived,
+      head,
+      base,
+      draft,
+      prUrl: existingPrUrl,
+    } = body;
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
@@ -203,6 +214,13 @@ export async function POST(req: NextRequest) {
     // If an existing PR URL is provided, register it directly without going through GitHub API.
     // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation
     // (e.g. the PR was created via gh CLI in a different repo).
+    //
+    // LEDE ON THIS PATH: the PR body belongs to whoever opened it — buildd did
+    // not write it and, on the case this path exists for, has no installation
+    // with which to rewrite it. So nothing is prepended to GitHub here. The
+    // deterministic title-derived lede (see `deriveLedeFromTitle`, applied in
+    // the `create_pr` action) leads the record buildd stores instead, and the
+    // adoption itself never fails for want of a lede.
     if (existingPrUrl) {
       if (worker.prUrl && worker.prNumber) {
         await db
@@ -572,7 +590,32 @@ export async function POST(req: NextRequest) {
     const lineageSuffix = retryIteration > 0
       ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — resume failed; new branch._`
       : '';
-    const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
+
+    // ── The lede leads ───────────────────────────────────────────────────────
+    // Composed into the body here rather than stored in a column of its own, so
+    // every reader of the body — GitHub, `get_pr`, the `pr` knowledge corpus —
+    // gets the lede first without having to know it exists. See
+    // packages/core/pr-lede.ts for the full reasoning.
+    //
+    // `lede` is required on the agent-facing `create_pr` action, which rejects
+    // its absence before this route is ever called. Absence HERE therefore means
+    // a non-agent caller, and the answer is the same deterministic title-derived
+    // fallback the adoption path uses — never a refusal. Nothing in this feature
+    // may fail a PR over its prose, and a PR that reaches this line has already
+    // been built, committed and pushed.
+    const suppliedLede = normalizeLede(lede);
+    const effectiveLede = suppliedLede || deriveLedeFromTitle(String(title));
+    const ledeIsDerived = !suppliedLede || ledeDerived === true;
+    if (!suppliedLede) {
+      console.warn(
+        `[create_pr] no lede supplied for worker ${workerId} — deriving one from the PR title`,
+      );
+    }
+    const effectivePrBody = composeBodyWithLede(
+      effectiveLede,
+      (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix,
+      { derived: ledeIsDerived },
+    );
 
     // Mission integration guard: a task worker must NEVER open a PR with the
     // mission integration branch as its HEAD. Only the mission PR owner may do that.

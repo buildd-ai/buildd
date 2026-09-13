@@ -1749,7 +1749,8 @@ async function handleCheckSuiteFailure(
 async function maybeDispatchReviewer(
   installationId: number,
   repoFullName: string,
-  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string } },
+  // `body` is read for its lede only — see renderLedeGuidance in @/lib/reviewer.
+  pr: { number: number; head: { sha: string }; html_url: string; base?: { ref: string }; body?: string | null },
   openWorker: { id: string; workspaceId: string; taskId: string; branch: string },
 ): Promise<boolean> {
   try {
@@ -1889,6 +1890,10 @@ async function maybeDispatchReviewer(
       // Already fetched above for the policy override and the pre-flight
       // check — passing it through saves a second identical GitHub call.
       prFiles,
+      // The webhook payload already carries the body; the reviewer reads it for
+      // its lede only. Passing it saves a GET the context builder would
+      // otherwise make per reviewed PR.
+      prBody: pr.body ?? null,
     });
 
     if (reviewerTask) {

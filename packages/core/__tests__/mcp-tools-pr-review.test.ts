@@ -213,7 +213,7 @@ describe('create_pr requestReview', () => {
     const result = await handleBuilddAction(
       api,
       'create_pr',
-      { title: 'feat: thing', head: 'buildd/thing', requestReview: true, reviewerRole: 'reviewer' },
+      { title: 'feat: thing', head: 'buildd/thing', lede: 'The thing now works.', requestReview: true, reviewerRole: 'reviewer' },
       context(),
     );
 
@@ -232,7 +232,7 @@ describe('create_pr requestReview', () => {
       },
     });
 
-    await handleBuilddAction(api, 'create_pr', { title: 'feat: thing', head: 'buildd/thing' }, context());
+    await handleBuilddAction(api, 'create_pr', { title: 'feat: thing', head: 'buildd/thing', lede: 'The thing now works.' }, context());
     expect(calls.some((c) => c.endpoint === '/api/github/pr/review')).toBe(false);
   });
 
@@ -247,7 +247,7 @@ describe('create_pr requestReview', () => {
     const result = await handleBuilddAction(
       api,
       'create_pr',
-      { title: 'feat: thing', head: 'buildd/thing', requestReview: true },
+      { title: 'feat: thing', head: 'buildd/thing', lede: 'The thing now works.', requestReview: true },
       context(),
     );
 

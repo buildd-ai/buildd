@@ -11,6 +11,13 @@ import { TIERS, type Tier } from './model-tier-defaults';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import {
+  LEDE_FIELD_SPEC,
+  LEDE_REQUIRED_ERROR,
+  composeBodyWithLede,
+  deriveLedeFromTitle,
+  normalizeLede,
+} from './pr-lede';
 import type { Direction } from './spec-discrepancy-ledger';
 import type {
   FailureAnalytics,
@@ -348,7 +355,9 @@ export function buildParamsDescription(actions: readonly string[]): string {
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
-    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
+    create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
+      + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
+      + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
     get_pr: '{ workerId?, prNumber?, workspaceId? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required.',
@@ -1588,12 +1597,30 @@ export async function handleBuilddAction(
         throw new Error('title and head branch are required');
       }
 
+      // ── lede: required, and enforced HERE ────────────────────────────────
+      // Before the HTTP call, so an absent lede cannot leave a half-created PR
+      // behind: the throw happens while GitHub still knows nothing about this.
+      //
+      // The one exemption is the `prUrl` adoption path, which registers a pull
+      // request that ALREADY EXISTS on GitHub. Refusing that would strand a
+      // real PR over a missing sentence — so it gets a deterministic fallback
+      // derived from its own title instead of a hard failure.
+      const suppliedLede = normalizeLede(params.lede);
+      const isAdoption = Boolean(params.prUrl);
+      if (!suppliedLede && !isAdoption) {
+        throw new Error(LEDE_REQUIRED_ERROR);
+      }
+      const lede = suppliedLede || deriveLedeFromTitle(String(params.title));
+      const ledeIsDerived = !suppliedLede;
+
       const data = await api('/api/github/pr', {
         method: 'POST',
         body: JSON.stringify({
           workerId,
           title: params.title,
           body: params.body,
+          lede,
+          ledeDerived: ledeIsDerived,
           head: params.head,
           base: params.base,
           draft: params.draft,
@@ -1614,7 +1641,10 @@ export async function handleBuilddAction(
         const prChunk = buildPrCard({
           prNumber: data.pr.number,
           title: data.pr.title ?? (params.title as string),
-          body: (params.body as string) ?? null,
+          // The corpus gets the same lede-first body GitHub does — including on
+          // the adoption path, where buildd does not own the PR body on GitHub
+          // and the derived lede leads only the record buildd stores.
+          body: composeBodyWithLede(lede, (params.body as string) ?? null, { derived: ledeIsDerived }),
           url: data.pr.url ?? (params.prUrl as string) ?? null,
           taskId,
           missionId,

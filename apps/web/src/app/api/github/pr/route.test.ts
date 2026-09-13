@@ -148,6 +148,7 @@ mock.module('@/lib/pr-review-status', () => ({
 // Import handler AFTER mocks
 import { POST, PATCH, PUT, GET } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
+import { extractLede } from '@buildd/core/pr-lede';
 
 // Shared account + workspace defaults for most tests (same team → access granted)
 const ACCOUNT = { id: 'account-1', teamId: 'team-1' };
@@ -1225,7 +1226,8 @@ describe('POST /api/github/pr', () => {
     expect(parsedBody.head).toBe('feature-branch');
     expect(parsedBody.base).toBe('staging');
     expect(parsedBody.draft).toBe(true);
-    expect(parsedBody.body).toBe('Custom body');
+    // The lede now leads the body; the agent's own text follows it verbatim.
+    expect(extractLede(parsedBody.body)?.rest).toBe('Custom body');
   });
 
   it('uses workspace gitConfig.targetBranch when base not provided', async () => {
@@ -1429,7 +1431,7 @@ describe('POST /api/github/pr', () => {
 
     const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
-    expect(parsedBody.body).toBe('Created by buildd worker test-worker');
+    expect(extractLede(parsedBody.body)?.rest).toBe('Created by buildd worker test-worker');
   });
 
   it('deduplicates when worker already has a PR', async () => {
@@ -4214,5 +4216,171 @@ describe('Retry PR body generation', () => {
     if (patchedBody) {
       expect(uuidPattern.test(patchedBody)).toBe(false);
     }
+  });
+});
+
+// ── The lede leads the PR body ───────────────────────────────────────────────
+// `lede` is required on the agent-facing `create_pr` action, which throws before
+// this route is ever reached (see packages/core/__tests__/mcp-tools-create-pr-lede.test.ts).
+// What this route owns is COMPOSITION: the lede goes into the body itself, so
+// every reader of the body — GitHub, get_pr, the `pr` corpus — gets it first
+// without knowing the field exists. And absence here, which can only mean a
+// non-agent caller, degrades to the same deterministic title-derived fallback
+// the adoption path uses. Nothing in this feature fails a PR over its prose.
+describe('POST /api/github/pr — lede', () => {
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    mockAuthenticateApiKey.mockReset();
+    mockGithubApi.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  /** Drive a fresh PR creation and return the body sent to GitHub. */
+  async function createAndCaptureBody(requestBody: Record<string, unknown>): Promise<string> {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      branch: 'feature-branch',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: 'Task', context: null },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    let captured = '';
+    mockGithubApi.mockImplementation((_id: number, path: string, init?: any) => {
+      if (typeof path === 'string' && path.endsWith('/pulls') && init?.method === 'POST') {
+        captured = JSON.parse(init.body).body;
+        return Promise.resolve({
+          number: 42,
+          html_url: 'https://github.com/owner/repo/pull/42',
+          state: 'open',
+          title: 'My PR',
+          base: { sha: 'basesha', ref: 'main' },
+        });
+      }
+      return Promise.resolve([]); // dedup check: no existing PRs
+    });
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', head: 'feature-branch', ...requestBody },
+    }));
+    expect(res.status).toBe(200);
+    return captured;
+  }
+
+  it('leads the PR body with the lede, before anything the agent wrote', async () => {
+    const lede = 'An escalation that names a real defect can now dispatch the fix.';
+    const body = await createAndCaptureBody({
+      title: 'feat: dispatch from escalations',
+      lede,
+      body: '## What changed\n\nWidened the apply-recommendation handler.',
+    });
+
+    expect(extractLede(body)?.lede).toBe(lede);
+    expect(body.indexOf(lede)).toBeLessThan(body.indexOf('## What changed'));
+  });
+
+  it('leaves the rest of the body intact and uncapped — the corpus record is not truncated', async () => {
+    const longBody = `## Detail\n\n${'a durable paragraph worth searching later. '.repeat(400)}`;
+    const body = await createAndCaptureBody({
+      title: 'feat: x',
+      lede: 'Short and to the point.',
+      body: longBody,
+    });
+
+    expect(body).toContain(longBody.trim());
+    expect(extractLede(body)?.rest).toBe(longBody);
+  });
+
+  it('composes the lede ahead of the retry lineage stamp, not after it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      branch: 'feature-branch',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: 'Task', context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    let captured = '';
+    mockGithubApi.mockImplementation((_id: number, path: string, init?: any) => {
+      if (typeof path === 'string' && path.endsWith('/pulls') && init?.method === 'POST') {
+        captured = JSON.parse(init.body).body;
+        return Promise.resolve({
+          number: 43, html_url: 'https://github.com/owner/repo/pull/43', state: 'open', title: 'x',
+          base: { sha: 'basesha', ref: 'main' },
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'feat: x', head: 'feature-branch', lede: 'Still the point.', body: 'detail' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(extractLede(captured)?.lede).toBe('Still the point.');
+    expect(captured).toContain('Attempt 1/3');
+  });
+
+  it('falls back deterministically when no lede reaches the route — it never refuses', async () => {
+    const first = await createAndCaptureBody({ title: 'feat(specs): auto-file a friction task' });
+    const second = await createAndCaptureBody({ title: 'feat(specs): auto-file a friction task' });
+
+    expect(extractLede(first)?.lede).toBe('Auto-file a friction task.');
+    expect(first).toBe(second);
+    expect(first).toContain('derived from the PR title');
+  });
+
+  it('registers an externally-created PR with no lede instead of failing it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      branch: 'feature-branch',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: 'Task', context: null },
+    });
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'feat: opened with gh',
+        head: 'feature-branch',
+        prUrl: 'https://github.com/owner/repo/pull/99',
+      },
+    }));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(99);
+    // buildd does not own that PR's body on GitHub, so it writes nothing to it.
+    expect(mockGithubApi.mock.calls.some((c: any[]) => c[2]?.method === 'PATCH')).toBe(false);
   });
 });
