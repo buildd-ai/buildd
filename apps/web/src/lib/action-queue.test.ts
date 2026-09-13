@@ -1047,6 +1047,18 @@ describe('buildActionQueue — approvedSha / headSha pass-through', () => {
   });
 })
 
+describe('buildActionQueue — hasEscalationNote pass-through', () => {
+  it('carries hasEscalationNote through unchanged — the fix-dispatch CTA discriminator', () => {
+    const result = buildActionQueue([], [escalationItem({ hasEscalationNote: true })]);
+    expect(result[0].hasEscalationNote).toBe(true);
+  });
+
+  it('defaults to false when the caller omits it (pure task-status inference, no note)', () => {
+    const result = buildActionQueue([], [escalationItem()]);
+    expect(result[0].hasEscalationNote).toBe(false);
+  });
+})
+
 describe('buildActionQueue — snoozedSubjectKeys', () => {
   it('drops a MERGE card whose subjectKey is in the snoozed set', () => {
     const result = buildActionQueue([], [escalationItem()], {
