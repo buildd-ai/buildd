@@ -8,6 +8,8 @@ import { githubApi, mergePullRequest } from '@/lib/github';
 // the branch-name generator drifted (P8).
 import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
+import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
+import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -196,7 +198,6 @@ export async function POST(req: NextRequest) {
     const integrationBase = missionBaseGuard.integrationBase;
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
     const isStackedPhase = missionBaseGuard.isStackedPhase;
 
     // If an existing PR URL is provided, register it directly without going through GitHub API.
@@ -588,6 +589,36 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
+    // ── PART 2: the integration branch may already be GONE ──────────────────
+    //
+    // A merging mission PR deletes the integration branch by design
+    // (`finalizeMissionPrMerge`). A task of that mission claimed afterwards
+    // derives a base that does not exist, and both doors are then shut: this
+    // route refuses trunk because the mission HAS an integration base, and
+    // GitHub refuses the derived base with a 422 because it is not there. No
+    // route out from inside a worker. `guardMissionPrMerge` stops new
+    // instances; this is for the missions already in that state.
+    //
+    // `ensureIntegrationBaseForTaskPr` re-cuts the branch from trunk and
+    // records the decision as a mission note, falling back to trunk (also
+    // noted) only when it cannot. Existence is read LIVE from GitHub, never
+    // from a remote-tracking ref. See that function for why re-cutting is the
+    // right answer rather than a trunk fallback.
+    let integrationBaseMissing = false;
+    if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
+      const ready = await ensureIntegrationBaseForTaskPr({
+        missionId: worker.task.missionId,
+        integrationBase,
+        taskTitle: worker.task.title,
+        fallbackBase:
+          workspace.gitConfig?.targetBranch
+          || workspace.gitConfig?.defaultBranch
+          || repo.defaultBranch
+          || null,
+      });
+      integrationBaseMissing = !ready.usable;
+    }
+
     // ── DERIVE, DON'T ACCEPT (Option A′) ────────────────────────────────────
     // For a task whose mission has an integration base, both the head and the
     // base of its PR are already known to the server — head is the worker's
@@ -609,7 +640,9 @@ export async function POST(req: NextRequest) {
           hint: `Open the PR with head='${worker.branch}'.`,
         }, { status: 400 });
       }
-      if (typeof base === 'string' && base && base !== integrationBase) {
+      // Skipped when the integration branch is gone: refusing the caller's
+      // base there would refuse the only base that can still work.
+      if (!integrationBaseMissing && typeof base === 'string' && base && base !== integrationBase) {
         const recoveryPath = `1. This mission uses an integration branch — task PRs base on it, not on '${base}'.\n2. Open the PR with base='${integrationBase}' (or omit base and let the server derive it).`;
         return NextResponse.json({
           error: `Task PR base '${base}' disagrees with this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch, not '${base}'.`,
@@ -617,6 +650,30 @@ export async function POST(req: NextRequest) {
         }, { status: 400 });
       }
     }
+
+    // THE one answer to "what base does this task's PR take" — the same
+    // function the runner's Git Workflow prompt block calls, so the instruction
+    // the worker read and the base this route opens against cannot disagree.
+    // They did: the prompt said trunk (it never looked at the mission) while
+    // this route refused trunk, and the worker had no way to tell which side
+    // was wrong.
+    const prBase = resolveTaskPrBase({
+      mission,
+      task: worker.task,
+      head,
+      callerBase: typeof base === 'string' ? base : null,
+      fallbacks: [
+        // Stacked plan phases store a predecessor branch in context.baseBranch,
+        // and recovery tasks store the current head there — resolveTaskPrBase
+        // tells those apart; see its doc comment.
+        taskContext?.targetBranch as string | undefined,
+        workspace.gitConfig?.targetBranch,
+        workspace.gitConfig?.defaultBranch,
+        repo.defaultBranch,
+        'main',
+      ],
+      integrationBaseMissing,
+    });
 
     // Create the PR via GitHub API
     const prData = await githubApi(
@@ -629,18 +686,7 @@ export async function POST(req: NextRequest) {
           title,
           body: effectivePrBody,
           head,
-          base: (integrationBase && !isMissionPrOwner && !isStackedPhase)
-            ? integrationBase
-            : base
-              // Stacked plan phases store predecessor branch in context.baseBranch
-              // Recovery tasks may instead store the current head there, which
-              // cannot be used as a PR base.
-              || (contextBaseBranch !== head ? contextBaseBranch : undefined)
-              || taskContext?.targetBranch as string
-              || workspace.gitConfig?.targetBranch
-              || workspace.gitConfig?.defaultBranch
-              || repo.defaultBranch
-              || 'main',
+          base: prBase.base ?? 'main',
           draft: draft || false,
         }),
       }

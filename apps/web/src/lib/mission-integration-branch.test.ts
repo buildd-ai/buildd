@@ -20,6 +20,9 @@ const mockWorkspacesFindFirst = mock(() => null as any);
 const mockGithubReposFindFirst = mock(() => null as any);
 const mockGithubApi = mock(() => Promise.resolve(null as any));
 
+const noteInserts: any[] = [];
+let noteInsertThrows = false;
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -27,6 +30,13 @@ mock.module('@buildd/core/db', () => ({
       workspaces: { findFirst: mockWorkspacesFindFirst },
       githubRepos: { findFirst: mockGithubReposFindFirst },
     },
+    insert: (table: any) => ({
+      values: (v: any) => {
+        if (noteInsertThrows) return Promise.reject(new Error('mission_notes unavailable'));
+        noteInserts.push({ table, values: v });
+        return Promise.resolve();
+      },
+    }),
   },
 }));
 
@@ -36,6 +46,7 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id' },
+  missionNotes: { __name: 'missionNotes' },
   workspaces: { id: 'id' },
   githubRepos: { id: 'id' },
 }));
@@ -44,7 +55,10 @@ mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
 }));
 
-import { ensureMissionIntegrationBranch } from './mission-integration-branch';
+import {
+  ensureIntegrationBaseForTaskPr,
+  ensureMissionIntegrationBranch,
+} from './mission-integration-branch';
 
 const BRANCH = 'mission/example-slug-0a1b2c3d';
 const REPO_FULL_NAME = 'example-org/example-repo';
@@ -261,5 +275,99 @@ describe('ensureMissionIntegrationBranch', () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
     expect(result.reason).toBe('api_error');
+  });
+});
+
+
+// ── Part 2: the route out when the integration branch is already gone ───────
+//
+// A merging mission PR deletes the integration branch by design. A task of that
+// mission claimed afterwards derives a base that does not exist, and both doors
+// shut: create_pr refuses trunk (the mission HAS an integration base) and
+// GitHub refuses the derived base (it is not there). The worker cannot deliver
+// at all, and there is no owner in the loop to fix it.
+//
+// The decision here is to RE-CUT the branch from trunk and proceed, so the
+// mission keeps its one-merge-per-round shape via a second mission PR. Trunk
+// fallback survives only for when the branch can neither be found nor created.
+// Either way the choice is recorded as a mission note, never silent.
+
+describe('ensureIntegrationBaseForTaskPr', () => {
+  beforeEach(() => {
+    mockMissionsFindFirst.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockGithubApi.mockReset();
+    noteInserts.length = 0;
+    noteInsertThrows = false;
+  });
+
+  it('is a silent pass-through when the branch is still there', async () => {
+    withOptedInMission();
+    mockGithubApi.mockResolvedValue({ object: { sha: 'b'.repeat(40) } });
+
+    expect(await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-1',
+      integrationBase: BRANCH,
+      taskTitle: 'Late slice',
+    })).toEqual({ usable: true, recreated: false });
+    // No note: nothing happened worth announcing on the common path.
+    expect(noteInserts).toEqual([]);
+  });
+
+  it('re-cuts the deleted branch from trunk and records the decision', async () => {
+    withOptedInMission();
+    createPathWith({ resolves: { ref: `refs/heads/${BRANCH}` } });
+
+    const got = await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-1',
+      integrationBase: BRANCH,
+      taskTitle: 'Late slice',
+    });
+
+    expect(got).toEqual({ usable: true, recreated: true });
+    // The ref was actually created, from trunk.
+    expect(mockGithubApi).toHaveBeenCalledWith(
+      4242,
+      `/repos/${REPO_FULL_NAME}/git/refs`,
+      expect.objectContaining({ method: 'POST' }),
+    );
+    // And the choice is on the mission feed, naming the branch and the task.
+    expect(noteInserts).toHaveLength(1);
+    expect(noteInserts[0].values.missionId).toBe('m-1');
+    expect(noteInserts[0].values.title).toContain(BRANCH);
+    expect(noteInserts[0].values.body).toContain('Late slice');
+    expect(noteInserts[0].values.body).toContain('SECOND mission PR');
+  });
+
+  it('falls back to trunk — loudly — when the branch cannot be re-cut either', async () => {
+    // Last resort. A worker that cannot deliver its PR at all is strictly worse
+    // than one that delivers to trunk with the breach written down.
+    withOptedInMission();
+    createPathWith({ throws: githubError(422, { message: 'Invalid request.' }) });
+
+    const got = await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-1',
+      integrationBase: BRANCH,
+      taskTitle: 'Late slice',
+      fallbackBase: 'trunk-branch',
+    });
+
+    expect(got.usable).toBe(false);
+    expect(noteInserts).toHaveLength(1);
+    expect(noteInserts[0].values.title).toContain('trunk-branch');
+    expect(noteInserts[0].values.body).toContain('does NOT hold');
+  });
+
+  it('does not fail the PR when the note cannot be written', async () => {
+    // Best-effort bookkeeping must never be the reason a task cannot deliver.
+    withOptedInMission();
+    createPathWith({ resolves: { ref: `refs/heads/${BRANCH}` } });
+    noteInsertThrows = true;
+
+    expect(await ensureIntegrationBaseForTaskPr({
+      missionId: 'm-1',
+      integrationBase: BRANCH,
+    })).toEqual({ usable: true, recreated: true });
   });
 });

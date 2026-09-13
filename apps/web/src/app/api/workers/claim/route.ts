@@ -913,6 +913,13 @@ export async function POST(req: NextRequest) {
   //
   // These are enforced in-loop so they skip individual tasks without blocking other
   // missions or non-mission tasks in the same poll.
+  //
+  // The same read also carries the mission's Option A′ integration fields out to
+  // the runner. That is not a gate — it is what lets the runner's Git Workflow
+  // prompt block call `resolveTaskPrBase`, the same function `create_pr` uses to
+  // derive the base. Without them the prompt could only see the workspace's
+  // trunk, which is exactly how a worker came to be told "PR to <trunk>" by a
+  // server that then refused trunk for that task.
   type MissionClaimData = {
     id: string;
     status: string;
@@ -920,6 +927,8 @@ export async function POST(req: NextRequest) {
     pacingMode: 'eager' | 'paced';
     pacingMaxPerHour: number | null;
     lastTaskStartedAt: Date | null;
+    workingBranch: string | null;
+    integrationBranchEnabled: boolean | null;
   };
   const missionClaimMap = new Map<string, MissionClaimData>();
   const missionActiveCountMap = new Map<string, number>();
@@ -956,7 +965,11 @@ export async function POST(req: NextRequest) {
   if (filteredMissionIds.length > 0) {
     const missionRows = await db.query.missions.findMany({
       where: inArray(missions.id, filteredMissionIds),
-      columns: { id: true, status: true, maxConcurrentTasks: true, pacingMode: true, pacingMaxPerHour: true, lastTaskStartedAt: true },
+      columns: {
+        id: true, status: true, maxConcurrentTasks: true, pacingMode: true,
+        pacingMaxPerHour: true, lastTaskStartedAt: true,
+        workingBranch: true, integrationBranchEnabled: true,
+      },
     });
     for (const m of missionRows) {
       missionClaimMap.set(m.id, m as MissionClaimData);
@@ -1441,6 +1454,20 @@ export async function POST(req: NextRequest) {
     // returned worker payload see the patched context.
     (task as any).context = patchedContext;
     (task as any).predictedModel = resolvedModel;
+
+    // Option A′: hand the runner the two mission fields `resolveTaskPrBase`
+    // needs, so the prompt it builds and the base `create_pr` derives come out
+    // of the same function. Absent for a task with no mission, which is the
+    // "behave exactly as before" answer everywhere in A′.
+    if (taskMissionId) {
+      const missionData = missionClaimMap.get(taskMissionId);
+      if (missionData) {
+        (task as any).mission = {
+          workingBranch: missionData.workingBranch,
+          integrationBranchEnabled: missionData.integrationBranchEnabled,
+        };
+      }
+    }
 
     // Generate branch name based on workspace gitConfig
     const gitConfig = task.workspace?.gitConfig as {

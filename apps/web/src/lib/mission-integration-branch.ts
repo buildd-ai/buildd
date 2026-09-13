@@ -16,7 +16,7 @@
  */
 
 import { db } from '@buildd/core/db';
-import { githubRepos, missions, workspaces } from '@buildd/core/db/schema';
+import { githubRepos, missionNotes, missions, workspaces } from '@buildd/core/db/schema';
 import { eq } from 'drizzle-orm';
 import { githubApi } from '@/lib/github';
 import { missionIntegrationBase } from '@buildd/core/mission-integration';
@@ -167,5 +167,123 @@ export async function ensureMissionIntegrationBranch(
       return { ok: false, reason: 'empty_repo', detail: githubErrorMessage(err) };
     }
     return { ok: false, reason: 'api_error', detail: githubErrorMessage(err) };
+  }
+}
+
+/**
+ * What a mission task's PR can actually base on, right now.
+ *
+ * `usable: false` means the integration branch is neither present nor
+ * restorable, and the caller must fall back to trunk rather than refuse.
+ */
+export interface IntegrationBaseForTaskPr {
+  usable: boolean;
+  /** True when this call re-cut the branch that had been deleted. */
+  recreated: boolean;
+  detail?: string;
+}
+
+/**
+ * Make sure a mission task can actually deliver its PR — the route out of the
+ * dead end a deleted integration branch used to be.
+ *
+ * ## The dead end
+ *
+ * A mission PR merging deletes the integration branch on purpose
+ * (`finalizeMissionPrMerge`). Any task of that mission claimed afterwards then
+ * derives a base that does not exist: `create_pr` refuses trunk because the
+ * mission HAS an integration base, and GitHub refuses the derived base because
+ * it is gone. Both doors shut, from inside a sandbox, with no owner in the
+ * loop. `guardMissionPrMerge` stops new instances; it does nothing for a
+ * mission already in this state, and there was at least one.
+ *
+ * ## The choice, and why
+ *
+ * **Re-cut the branch from trunk and proceed** — rather than falling back to
+ * trunk with a note. The mission-branch strategy's whole claim is that a
+ * mission reaches trunk through exactly one merge, and trunk-fallback spends a
+ * second merge on the same mission, which is the breach `mission_merged_twice`
+ * exists to detect. Re-cutting keeps the shape: the remaining task PRs base on
+ * the restored branch and a second mission PR carries them to trunk as one
+ * merge. `openMissionIntegrationPr` is already written for exactly this — its
+ * `merged` state deliberately falls THROUGH so a recreated branch gets its
+ * second PR, with an `ahead_by === 0` check to stop an empty one.
+ *
+ * The objection to re-cutting is that a freshly cut branch carries no mission
+ * history. True, and irrelevant here: we re-cut *because* there is new work
+ * about to land on it. An empty stand-in is what you get from re-cutting a
+ * finished mission's branch, which nothing here does.
+ *
+ * Trunk fallback survives as the last resort for when the branch can neither be
+ * found nor created (`usable: false`). Delivering the PR to trunk with a loud
+ * note beats a worker that cannot deliver at all.
+ *
+ * Either way the decision is RECORDED as a mission note, never silent.
+ *
+ * Liveness: existence is checked against GitHub (`GET /git/ref/heads/<branch>`
+ * in `ensureMissionIntegrationBranch`), never against a local remote-tracking
+ * ref — those report a deleted branch as present until something prunes them,
+ * which is how this failure kept being misdiagnosed.
+ */
+export async function ensureIntegrationBaseForTaskPr(args: {
+  missionId: string;
+  integrationBase: string;
+  taskTitle?: string | null;
+  /** Where the PR would go instead, for the note. */
+  fallbackBase?: string | null;
+}): Promise<IntegrationBaseForTaskPr> {
+  const ensured = await ensureMissionIntegrationBranch(args.missionId);
+
+  if (ensured.ok && !ensured.created) {
+    return { usable: true, recreated: false };
+  }
+
+  const subject = args.taskTitle ? `\`${args.taskTitle}\`` : 'a mission task';
+
+  if (ensured.ok) {
+    await postMissionNote(args.missionId, {
+      title: `Integration branch \`${ensured.branch}\` was re-cut from trunk`,
+      body:
+        `${subject} needed this mission's integration branch to open its PR, and the branch was `
+        + `not on the remote — it is deleted when the mission PR merges, which happens before work `
+        + `filed later has landed.\n\n`
+        + `Rather than dead-end the task, buildd re-cut \`${ensured.branch}\` from trunk and let the `
+        + `PR proceed. The mission therefore gets a SECOND mission PR for this round of work, which `
+        + `is one merge for one round — not one merge per task. Nothing that already shipped is `
+        + `affected: the previous mission PR's diff is in trunk, so the new branch starts from it.`,
+    });
+    return { usable: true, recreated: true };
+  }
+
+  const fallback = args.fallbackBase ? `\`${args.fallbackBase}\`` : 'trunk';
+  await postMissionNote(args.missionId, {
+    title: `Integration branch \`${args.integrationBase}\` is unavailable — PR falls back to ${fallback}`,
+    body:
+      `${subject} could not base its PR on this mission's integration branch: the branch is absent `
+      + `from the remote and could not be re-cut (${ensured.reason}${ensured.detail ? `: ${ensured.detail}` : ''}).\n\n`
+      + `The PR was opened against ${fallback} instead, so the task could deliver. This mission's `
+      + `"one merge into trunk" guarantee does NOT hold for that PR — it reaches trunk on its own. `
+      + `If more work is coming, switch the mission to the direct strategy deliberately rather than `
+      + `letting each task discover this.`,
+  });
+  return { usable: false, recreated: false, detail: ensured.detail ?? ensured.reason };
+}
+
+/** Best-effort mission note. A failed note must never fail a PR. */
+async function postMissionNote(
+  missionId: string,
+  note: { title: string; body: string },
+): Promise<void> {
+  try {
+    await db.insert(missionNotes).values({
+      missionId,
+      authorType: 'system',
+      type: 'warning',
+      title: note.title,
+      body: note.body,
+      status: 'open',
+    });
+  } catch (err) {
+    console.error(`[mission-integration-branch] failed to record note for mission ${missionId}:`, err);
   }
 }
