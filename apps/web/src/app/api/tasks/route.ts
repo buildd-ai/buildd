@@ -10,6 +10,7 @@ import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
@@ -1056,6 +1057,33 @@ export async function POST(req: NextRequest) {
         await resolveCriteriaEscalation(missionId, 'work_filed', feedActor)
           .catch(err => console.error('[task-create] criteria escalation resolve failed:', err));
       }).catch(err => console.error('[task-create] mission-feed failed:', err));
+    }
+
+    // UI missions auto-append a per-mission surface-audit task: when this
+    // task's own pathManifest touches a UI surface directory, ensure the
+    // mission has a `[surface audit]` task gated on all its builder tasks
+    // (idempotent — extends dependsOn instead of duplicating). Never fails
+    // task creation, which has already committed by this point.
+    //
+    // Skipped on an 'attached' intake outcome — there `task` is the
+    // pre-existing canonical row (see intakeSubject), not a new filing, so
+    // there is nothing new for the mission's audit to depend on.
+    if (task.missionId && intake.outcome.action !== 'attached') {
+      try {
+        await ensureMissionSurfaceAudit({
+          missionId: task.missionId,
+          workspaceId,
+          createdTask: {
+            id: task.id,
+            title: task.title,
+            taskClass: task.taskClass,
+            pathManifest: (task.pathManifest as string[] | null) ?? null,
+          },
+          targetWorkspace,
+        });
+      } catch (err) {
+        console.error('[task-create] surface audit ensure failed:', err);
+      }
     }
 
     // Intake check (§10) — warn, never block. A retrieval failure here must

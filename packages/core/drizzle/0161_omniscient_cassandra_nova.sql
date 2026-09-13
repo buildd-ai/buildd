@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "auto_surface_audit" boolean DEFAULT true NOT NULL;

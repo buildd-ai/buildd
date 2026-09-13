@@ -208,9 +208,13 @@ export async function PATCH(
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       integrationBranchEnabled, branchStrategy,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, autoSurfaceAudit,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm, actorWorkerId } = body;
+
+    if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
+      return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
+    }
 
     // Resolved once for the whole request so every feed entry this PATCH
     // produces (status, criteria, config) attributes to the same caller.
@@ -467,6 +471,9 @@ export async function PATCH(
     }
     if (autoVerify !== undefined) {
       updateData.autoVerify = autoVerify === true ? true : autoVerify === false ? false : null;
+    }
+    if (autoSurfaceAudit !== undefined) {
+      updateData.autoSurfaceAudit = autoSurfaceAudit;
     }
 
     // Handle schedule updates
@@ -730,6 +737,7 @@ export async function PATCH(
       { key: 'defaultBackend', label: 'backend' },
       { key: 'maxConcurrentTasks', label: 'maxConcurrentTasks' },
       { key: 'autoVerify', label: 'autoVerify' },
+      { key: 'autoSurfaceAudit', label: 'autoSurfaceAudit' },
       { key: 'mergePolicy', label: 'mergePolicy', format: v => (v ? JSON.stringify(v) : 'null') },
       { key: 'integrationBranchEnabled', label: 'integrationBranchEnabled' },
     ];
