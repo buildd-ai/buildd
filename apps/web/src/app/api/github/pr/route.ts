@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
-import { githubApi, mergePullRequest } from '@/lib/github';
+import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
+import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
@@ -1263,6 +1264,7 @@ export async function GET(req: NextRequest) {
     const workerId = searchParams.get('workerId');
     const prNumberParam = searchParams.get('prNumber');
     const workspaceIdParam = searchParams.get('workspaceId');
+    const includeComments = searchParams.get('includeComments') === 'true';
 
     if (!workerId && !prNumberParam) {
       return NextResponse.json({ error: 'workerId or prNumber required' }, { status: 400 });
@@ -1334,16 +1336,26 @@ export async function GET(req: NextRequest) {
     const pr = await githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}`);
     const headSha = pr.head?.sha;
 
-    // Fetch CI checks and reviews in parallel
-    const [checksResult, reviewsResult] = await Promise.allSettled([
+    // Fetch CI checks, reviews, and (opt-in) issue comments in parallel. The
+    // comments call is skipped entirely — not even queued — when the caller
+    // didn't ask, so the default hot-path request makes exactly the same
+    // GitHub calls it always has.
+    const [checksResult, reviewsResult, commentsResult] = await Promise.allSettled([
       headSha
         ? githubApi(installationId, `/repos/${fullName}/commits/${headSha}/check-runs?per_page=100`)
         : Promise.resolve(null),
       githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}/reviews`),
+      includeComments
+        ? githubApi(installationId, `/repos/${fullName}/issues/${prNumber}/comments?per_page=100`)
+        : Promise.resolve(null),
     ]);
 
     const checksData = checksResult.status === 'fulfilled' ? checksResult.value : null;
     const reviewsData = reviewsResult.status === 'fulfilled' ? reviewsResult.value : null;
+    const commentsData = commentsResult.status === 'fulfilled' ? commentsResult.value : null;
+    const comments = includeComments
+      ? rankPrComments(Array.isArray(commentsData) ? commentsData : [], githubAppBotLogin())
+      : null;
 
     // Summarise CI checks
     const checkRuns = Array.isArray(checksData?.check_runs) ? checksData.check_runs : [];
@@ -1431,6 +1443,7 @@ export async function GET(req: NextRequest) {
       },
       checks: ciSummary,
       reviews: reviewSummary,
+      ...(comments ? { comments } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

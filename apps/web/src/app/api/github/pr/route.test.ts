@@ -72,6 +72,7 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   mergePullRequest: mockMergePullRequest,
+  githubAppBotLogin: () => 'buildd[bot]',
 }));
 
 // Mock team-access
@@ -4068,6 +4069,105 @@ describe('GET /api/github/pr', () => {
     expect(data.error).toContain('nonexistent-workspace');
     // Must not have silently fallen back to searching across all accessible workspaces.
     expect(mockWorkersFindMany).not.toHaveBeenCalled();
+  });
+
+  describe('includeComments opt-in', () => {
+    it('does not fetch issue comments when includeComments is omitted', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+
+      const res = await GET(createGetRequest('w-1', 42));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.comments).toBeUndefined();
+      // Exactly 3 calls: PR details, check-runs, reviews — no 4th comments call.
+      expect(mockGithubApi).toHaveBeenCalledTimes(3);
+    });
+
+    it('fetches and ranks issue comments when includeComments=true, buildd-authored first', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockResolvedValueOnce([
+        { id: 1, user: { login: 'github-actions[bot]', type: 'Bot' }, body: 'CI started', created_at: '2026-01-01T00:00:00Z' },
+        { id: 2, user: { login: 'buildd[bot]', type: 'Bot' }, body: 'Reviewer approved these changes.', created_at: '2026-01-02T00:00:00Z' },
+      ]);
+
+      const url = new URL('http://localhost:3000/api/github/pr');
+      url.searchParams.set('workerId', 'w-1');
+      url.searchParams.set('prNumber', '42');
+      url.searchParams.set('includeComments', 'true');
+      const res = await GET(new NextRequest(url.toString(), {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer bld_test' }),
+      }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.comments.total).toBe(2);
+      expect(data.comments.items[0].kind).toBe('buildd');
+      expect(data.comments.items[0].author).toBe('buildd[bot]');
+      expect(data.comments.items[1].kind).toBe('bot');
+      expect(mockGithubApi).toHaveBeenCalledTimes(4);
+    });
+
+    it('a comments fetch failure degrades to an empty ranked list instead of failing the whole GET', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockImplementationOnce(() => Promise.reject(new Error('rate limited')));
+
+      const url = new URL('http://localhost:3000/api/github/pr');
+      url.searchParams.set('workerId', 'w-1');
+      url.searchParams.set('prNumber', '42');
+      url.searchParams.set('includeComments', 'true');
+      const res = await GET(new NextRequest(url.toString(), {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer bld_test' }),
+      }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.comments).toEqual({ items: [], total: 0, omitted: 0 });
+    });
   });
 });
 
