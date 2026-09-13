@@ -296,6 +296,118 @@ describe('POST /api/prs/[prNumber]/merge', () => {
   });
 });
 
+// ── Indeterminate GitHub responses (empty/unparseable body, network failure) ─
+// mergePullRequest signals `indeterminate: true` instead of a rejection when
+// it cannot tell what GitHub actually did. The route must re-read the PR's
+// live state rather than assert a rejection it has no evidence for.
+describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () => {
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined);
+    mockGithubApi.mockReset();
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockCheckDependsOnResolved.mockReset();
+    mockCheckDependsOnResolved.mockResolvedValue(undefined);
+    mockCheckAndUnblockDependentMissions.mockReset();
+    mockCheckAndUnblockDependentMissions.mockResolvedValue(undefined);
+    const updateWhere = mock(() => Promise.resolve());
+    const updateSet = mock(() => ({ where: updateWhere }));
+    mockWorkersUpdate.mockReturnValue({ set: updateSet });
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkersFindMany.mockResolvedValue([openWorker]);
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+  });
+
+  it('never frames a transport failure as "GitHub rejected the merge"', async () => {
+    mockMergePullRequest.mockResolvedValue({
+      merged: false,
+      message: 'GitHub returned 502 with no readable response body',
+      indeterminate: true,
+    });
+    mockGithubApi.mockResolvedValue({ merged: false, state: 'open' });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    const body = await res.json();
+
+    expect(body.error).not.toContain('GitHub rejected the merge');
+  });
+
+  it('reconciles to a successful merge when the live PR state shows it actually landed', async () => {
+    mockMergePullRequest.mockResolvedValue({
+      merged: false,
+      message: 'GitHub returned 502 with no readable response body',
+      indeterminate: true,
+    });
+    mockGithubApi.mockResolvedValue({ merged: true, state: 'closed' });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ ok: true, merged: true });
+    // The reconciled path must run the same success side effects as a normal merge.
+    expect(mockWorkersUpdate).toHaveBeenCalled();
+  });
+
+  it('offers a safe retry when the live PR state confirms it is still open', async () => {
+    mockMergePullRequest.mockResolvedValue({
+      merged: false,
+      message: 'GitHub returned 502 with no readable response body',
+      indeterminate: true,
+    });
+    mockGithubApi.mockResolvedValue({ merged: false, state: 'open' });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.indeterminate).toBe(true);
+    expect(body.liveState).toBe('open');
+    expect(body.error).toMatch(/still open/i);
+  });
+
+  it('reports unknown state (does not invite a retry) when the live re-check itself fails', async () => {
+    mockMergePullRequest.mockResolvedValue({
+      merged: false,
+      message: 'Could not reach GitHub: fetch failed',
+      indeterminate: true,
+    });
+    mockGithubApi.mockRejectedValue(new Error('fetch failed'));
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.indeterminate).toBe(true);
+    expect(body.liveState).toBe('unknown');
+    expect(body.error).toMatch(/couldn't be confirmed/i);
+  });
+
+  it('still classifies a genuine GitHub rejection normally (regression)', async () => {
+    mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Method Not Allowed', status: 405 });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.indeterminate).toBeUndefined();
+    expect(body.error).toMatch(/mergeable state|branch protection/i);
+    // A definitive rejection never needs the live-state re-check.
+    expect(mockGithubApi).not.toHaveBeenCalled();
+  });
+});
+
 // ── P3: mission-PR branch-lifecycle gate — the human-triggered merge path ────
 describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P3)', () => {
   const BRANCH = 'mission/checkout-arc-1a2b3c4d';

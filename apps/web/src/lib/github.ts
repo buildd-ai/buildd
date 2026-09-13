@@ -252,16 +252,33 @@ export async function githubGraphQL(
   return data;
 }
 
+export interface MergePullRequestResult {
+  merged: boolean;
+  message: string;
+  /**
+   * True when GitHub's response could not be read as a definitive answer —
+   * a network failure/timeout before any response arrived, or a response
+   * whose body was empty or not parseable JSON. `merged: false` in that case
+   * means "we don't know", not "GitHub refused": the PUT may have gone
+   * through on GitHub's side even though we lost the reply. Callers must
+   * re-read the PR's live state before telling a human it failed.
+   */
+  indeterminate?: boolean;
+  /** GitHub's HTTP status, when a response was received at all. */
+  status?: number;
+}
+
 // Merge a pull request via REST API
 export async function mergePullRequest(
   installationId: number,
   repoFullName: string,
   prNumber: number,
   mergeMethod: 'merge' | 'squash' | 'rebase' = 'squash'
-): Promise<{ merged: boolean; message: string }> {
+): Promise<MergePullRequestResult> {
+  let response: Response;
   try {
     const token = await getInstallationToken(installationId);
-    const response = await fetch(
+    response = await fetch(
       `https://api.github.com/repos/${repoFullName}/pulls/${prNumber}/merge`,
       {
         method: 'PUT',
@@ -274,19 +291,43 @@ export async function mergePullRequest(
         body: JSON.stringify({ merge_method: mergeMethod }),
       }
     );
-
-    const data = await response.json();
-
-    if (response.ok) {
-      return { merged: true, message: data.message || 'Pull request merged' };
-    }
-
-    return { merged: false, message: data.message || `Merge failed: ${response.status}` };
   } catch (error) {
+    // No response reached us at all (network failure, timeout, aborted
+    // fetch). GitHub may still have processed the merge.
     const message = error instanceof Error ? error.message : 'Unknown error';
-    console.warn(`Failed to merge PR #${prNumber} on ${repoFullName}:`, message);
-    return { merged: false, message };
+    console.warn(`Failed to reach GitHub while merging PR #${prNumber} on ${repoFullName}:`, message);
+    return { merged: false, message: `Could not reach GitHub: ${message}`, indeterminate: true };
   }
+
+  const rawBody = await response.text();
+  const contentType = response.headers.get('content-type') ?? '';
+  let data: { message?: string } | null = null;
+  if (rawBody && contentType.includes('json')) {
+    try {
+      data = JSON.parse(rawBody);
+    } catch {
+      data = null;
+    }
+  }
+
+  if (response.ok) {
+    return { merged: true, message: data?.message || 'Pull request merged', status: response.status };
+  }
+
+  if (data?.message) {
+    // GitHub gave us a real, parseable reason for refusing — a definitive answer.
+    return { merged: false, message: data.message, status: response.status };
+  }
+
+  // Non-2xx with no parseable body: a proxy hop, an empty-body error, or a
+  // truncated response ate GitHub's reason. We have a status code, not a
+  // cause, and the merge itself may or may not have gone through.
+  return {
+    merged: false,
+    message: `GitHub returned ${response.status} with no readable response body`,
+    indeterminate: true,
+    status: response.status,
+  };
 }
 
 /**

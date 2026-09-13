@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import Spinner from './Spinner';
 import { AgentRecommendation } from './AgentRecommendation';
+import { resolveMergeOutcome } from '@/lib/merge-outcome';
 import type { ActionQueueItem } from '@/lib/action-queue';
 
 
@@ -25,7 +26,8 @@ type CardState =
   | 'conflict_dispatched'
   | 'conflict_exhausted'
   | 're_reviewing'
-  | 're_review_dispatched';
+  | 're_review_dispatched'
+  | 're_review_error';
 
 /**
  * Escalation card for REVIEW-chip items on the Home page.
@@ -56,6 +58,11 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   const [correctionsText, setCorrectionsText] = useState('');
   const [appliedTaskId, setAppliedTaskId] = useState<string | null>(null);
   const [conflictRetryTaskId, setConflictRetryTaskId] = useState<string | null>(null);
+  // Whether Retry in the merge-failure state can safely re-invoke the merge.
+  // False only when GitHub's response was lost AND a live re-check of the
+  // PR's state also failed — every other failure means the merge definitely
+  // did not land, so retrying cannot double-merge.
+  const [mergeRetrySafe, setMergeRetrySafe] = useState(true);
 
   const hasRecommendation = Boolean(item.recommendation);
   const isApproved = !hasRecommendation && Boolean(item.verdictSummary);
@@ -106,25 +113,36 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           escalationReason: item.escalationReason ?? null,
         }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        if (data.conflictRetryDispatched) {
-          setConflictRetryTaskId(data.conflictRetryTaskId ?? null);
+      const data = res.ok ? null : await res.json().catch(() => null);
+      const outcome = resolveMergeOutcome(res.ok, res.status, data);
+
+      switch (outcome.kind) {
+        case 'merged':
+        case 'stale':
+          setState('merged');
+          setTimeout(() => setState('idle'), 3000);
+          break;
+        case 'conflict_dispatched':
+          setConflictRetryTaskId(outcome.taskId);
           setState('conflict_dispatched');
-          return;
-        }
-        if (data.conflictExhausted) {
+          break;
+        case 'conflict_exhausted':
           setState('conflict_exhausted');
-          return;
-        }
-        setErrorMsg(data.error || 'Merge failed');
-        setState('error');
-        return;
+          break;
+        case 'indeterminate':
+          setErrorMsg(outcome.message);
+          setMergeRetrySafe(outcome.liveState === 'open');
+          setState('error');
+          break;
+        case 'error':
+          setErrorMsg(outcome.message);
+          setMergeRetrySafe(true);
+          setState('error');
+          break;
       }
-      setState('merged');
-      setTimeout(() => setState('idle'), 3000);
     } catch {
       setErrorMsg('Network error');
+      setMergeRetrySafe(true);
       setState('error');
     }
   };
@@ -141,13 +159,13 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setErrorMsg(data.error || 'Could not dispatch a new review');
-        setState('error');
+        setState('re_review_error');
         return;
       }
       setState('re_review_dispatched');
     } catch {
       setErrorMsg('Network error');
-      setState('error');
+      setState('re_review_error');
     }
   };
 
@@ -313,12 +331,20 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           {state === 'apply_error' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
               <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
-              <button
-                onClick={() => setState('idle')}
-                className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
-              >
-                Retry
-              </button>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => handleApply(correctionsText.trim() || undefined)}
+                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={() => setState('idle')}
+                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           )}
 
@@ -367,12 +393,33 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
           {state === 'error' && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
               <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
-              <button
-                onClick={() => setState('idle')}
-                className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
-              >
-                Retry
-              </button>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {mergeRetrySafe ? (
+                  <button
+                    onClick={handleMergeAnyway}
+                    className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                  >
+                    Retry
+                  </button>
+                ) : (
+                  item.prUrl && (
+                    <a
+                      href={item.prUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] font-medium text-primary hover:underline"
+                    >
+                      Check PR
+                    </a>
+                  )
+                )}
+                <button
+                  onClick={() => setState('idle')}
+                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           )}
 
@@ -380,6 +427,26 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
             <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center gap-1.5">
               <Spinner size="xs" className="text-status-success" aria-label="Dispatching review" />
               <span className="text-[12px] text-text-muted">Dispatching a new review…</span>
+            </div>
+          )}
+
+          {state === 're_review_error' && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={handleReReview}
+                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                >
+                  Retry
+                </button>
+                <button
+                  onClick={() => setState('idle')}
+                  className="text-[11px] text-text-muted hover:text-text-secondary underline"
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           )}
 

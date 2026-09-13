@@ -15,6 +15,14 @@ export type MergeOutcome =
   | { kind: 'stale' }
   | { kind: 'conflict_dispatched'; taskId: string | null }
   | { kind: 'conflict_exhausted' }
+  /**
+   * The merge request itself got no usable answer from GitHub (empty/unparseable
+   * body, timeout, network failure) — NOT a rejection. The server already
+   * re-read the PR's live state before returning this: `open` means the merge
+   * definitely didn't land and retrying is safe; `unknown` means even that
+   * re-check failed, so retrying could double-attempt an already-landed merge.
+   */
+  | { kind: 'indeterminate'; liveState: 'open' | 'unknown'; message: string }
   | { kind: 'error'; message: string };
 
 /** `/api/prs/[prNumber]/merge` returns this 404 when no unmerged worker matches. */
@@ -35,6 +43,11 @@ export function resolveMergeOutcome(
 
   const message = typeof body?.error === 'string' ? body.error : '';
   if (status === 404 && ALREADY_MERGED_RE.test(message)) return { kind: 'stale' };
+
+  if (body?.indeterminate) {
+    const liveState = body.liveState === 'open' ? 'open' : 'unknown';
+    return { kind: 'indeterminate', liveState, message: message || "Could not confirm the merge's result" };
+  }
 
   return { kind: 'error', message: message || 'Merge failed' };
 }
