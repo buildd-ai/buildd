@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "redis-due-gate"
@@ -16,7 +16,7 @@ assertions:
 ---
 # Cron Wake Windows and Redis-Gated Ticks
 
-**Status:** Accepted
+**Status:** Implemented
 **Related:** `cron-manifest.json`, `apps/web/src/lib/cron-due-queue.ts`, `apps/web/src/lib/redis.ts`, `apps/web/src/lib/cron-cadence.ts`, `docs/specs/external-cron-triggers.md`
 
 ## Problem

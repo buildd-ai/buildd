@@ -15,12 +15,18 @@ assertions:
     type: "symbol"
     name: "detectArchetype"
     path: "packages/core/release-archetype.ts"
+    skip_until: "2026-11-15"
+    skip_reason: "specs:check flags stale symbol claims elsewhere in this doc (groupMissionsByInitiative, initiativeGroups resolve nowhere) — holding at draft until the content audit lands, even though this assertion itself passes"
   - id: "initiative-pulse-tests"
     type: "test_file"
     path: "apps/web/src/lib/initiative-pulse.test.ts"
+    skip_until: "2026-11-15"
+    skip_reason: "specs:check flags stale symbol claims elsewhere in this doc (groupMissionsByInitiative, initiativeGroups resolve nowhere) — holding at draft until the content audit lands, even though this assertion itself passes"
   - id: "verdict-presentation-tests"
     type: "test_file"
     path: "apps/web/src/lib/verdict-presentation.test.ts"
+    skip_until: "2026-11-15"
+    skip_reason: "specs:check flags stale symbol claims elsewhere in this doc (groupMissionsByInitiative, initiativeGroups resolve nowhere) — holding at draft until the content audit lands, even though this assertion itself passes"
 ---
 
 # Surface IA — Home, Missions, Initiatives

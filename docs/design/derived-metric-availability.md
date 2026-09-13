@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "derived-metric-type"
@@ -20,7 +20,7 @@ assertions:
 ---
 # DerivedMetric Availability Contract
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `packages/core/derived-metric.ts` — existing type shipped by PR #1897
 - `apps/web/src/components/DerivedMetricDisplay.tsx` — existing render primitive

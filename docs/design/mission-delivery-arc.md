@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "mission-integration-pr"
@@ -16,7 +16,7 @@ assertions:
 ---
 # Mission Delivery Arc — Idea to Release
 
-**Status:** Accepted — A′ adopted and built behind a per-mission opt-in
+**Status:** Implemented — A′ adopted and built behind a per-mission opt-in
 (`missions.integrationBranchEnabled`, default false). See "Decisions taken"
 immediately below before reading the proposal as an open question.
 **Verified against:** `origin/dev` @ `f48cfbb2` (2026-09-04). Every path and line
