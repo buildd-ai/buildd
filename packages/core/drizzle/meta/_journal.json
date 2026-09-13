@@ -1121,6 +1121,13 @@
       "when": 1789212691010,
       "tag": "0160_concerned_stranger",
       "breakpoints": true
+    },
+    {
+      "idx": 161,
+      "version": "7",
+      "when": 1789315024836,
+      "tag": "0161_clever_supernaut",
+      "breakpoints": true
     }
   ]
 }

@@ -423,6 +423,14 @@ mock.module('@/lib/reviewer', () => ({
   REVIEWER_TASK_OUTPUT_SCHEMA: {},
 }));
 
+// The fold and the persistence are unit-tested in lib/criteria-reviewer-findings.test.ts.
+// Here the mock pins the WIRING: that a reviewer verdict hands its criteria
+// side report to the mission, with the reviewer's own task context attached.
+const mockRecordReviewerCriteriaFindings = mock(() => Promise.resolve({ recorded: 1 }));
+mock.module('@/lib/criteria-reviewer-findings', () => ({
+  recordReviewerCriteriaFindings: mockRecordReviewerCriteriaFindings,
+}));
+
 const mockExecuteRelease = mock(() => Promise.resolve({ status: 'skipped', message: 'no release config' }));
 mock.module('@/lib/release-executor', () => ({
   executeRelease: mockExecuteRelease,
@@ -5952,6 +5960,52 @@ describe('PATCH /api/workers/[id]', () => {
 
       expect(res.status).toBe(200);
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
+    });
+
+    it('hands the reviewer\'s mission-criteria side report to the mission, with the PR it was made on', async () => {
+      mockRecordReviewerCriteriaFindings.mockClear();
+      setupReviewerTaskCompletion('approve');
+
+      const res = await PATCH(
+        makeReviewerPatchRequest('approve', {
+          criteriaFindings: [{ index: 0, finding: 'supports', reason: 'adds the empty-state branch' }],
+        }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockRecordReviewerCriteriaFindings).toHaveBeenCalledTimes(1);
+      const call = (mockRecordReviewerCriteriaFindings.mock.calls[0] as any[])[0];
+      expect(call).toMatchObject({
+        missionId: 'mission-1',
+        reviewerTaskId: 'reviewer-task-1',
+        prNumber: 42,
+        headSha: 'abc123',
+        originalTaskId: 'original-task-1',
+        verdict: 'approve',
+      });
+      // The reviewer's own context goes along: it carries the criteria (and
+      // their fingerprints) this reviewer was actually shown, which is what
+      // stops a finding landing on a criterion that has since been edited.
+      expect((call.reviewerContext as any).reviewerFor).toBe('original-task-1');
+      expect((call.structuredOutput as any).criteriaFindings).toHaveLength(1);
+    });
+
+    it('records the side report even when the verdict is request-changes', async () => {
+      // A reviewer that read the diff read it whatever it concluded about
+      // merging. The two judgments are independent by construction.
+      mockRecordReviewerCriteriaFindings.mockClear();
+      setupReviewerTaskCompletion('request-changes');
+
+      await PATCH(
+        makeReviewerPatchRequest('request-changes', {
+          criteriaFindings: [{ index: 0, finding: 'contradicts', reason: 'removes the provider name' }],
+        }),
+        { params: mockParams },
+      );
+
+      expect(mockRecordReviewerCriteriaFindings).toHaveBeenCalledTimes(1);
+      expect((mockRecordReviewerCriteriaFindings.mock.calls[0] as any[])[0].verdict).toBe('request-changes');
     });
 
     // createReviewerTask never sets outputRequirement, so a reviewer task runs

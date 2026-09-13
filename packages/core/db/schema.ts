@@ -876,6 +876,16 @@ export const missions = pgTable('missions', {
   // means "a human owes this mission a decision" — heartbeats stay off until the
   // verdict shape changes.
   criteriaEscalatedAt: timestamp('criteria_escalated_at', { withTimezone: true }),
+  // Per-PR reviewer findings on this mission's prose criteria, newest first.
+  // Written by the reviewer-outcome handler at verdict time — the one moment a
+  // model has the diff in front of it — and read by the completion-time
+  // evaluator as first-class evidence.
+  //
+  // A sibling column for the same reason criteriaRearm* are: this accumulates
+  // across PRs over the life of the mission, and goalCriteriaState is a
+  // snapshot that every fresh evaluation overwrites wholesale.
+  criteriaReviewerFindings: jsonb('criteria_reviewer_findings')
+    .$type<import('@buildd/shared').CriteriaReviewerReport[] | null>(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
