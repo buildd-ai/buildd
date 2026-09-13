@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "evaluate-spec-documents"
@@ -24,7 +24,7 @@ assertions:
 ---
 # Machine-Checkable Spec Conformance
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `scripts/check-schema-drift.ts` — prior art: machine-readable declaration vs introspectable state
 - `apps/runner/src/env-verify.ts` — prior art: declared manifest vs phased runtime checks
