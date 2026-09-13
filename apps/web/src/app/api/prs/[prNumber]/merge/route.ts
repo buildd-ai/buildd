@@ -194,11 +194,122 @@ export async function POST(
     return NextResponse.json({ error: `cannot merge the mission PR yet: ${mergeGate.reason}` }, { status: 409 });
   }
 
+  // Finalizes a merge that GitHub has confirmed happened — either the normal
+  // success response, or a live re-check after an indeterminate one below.
+  // Every side effect after the PUT itself lives here so both paths agree.
+  const finalizeSuccessfulMerge = async () => {
+    await db
+      .update(workers)
+      .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
+      .where(eq(workers.id, worker.id));
+
+    await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
+
+    // "Merge anyway" — record the override ONLY now that the merge actually
+    // succeeded. Every guard above (branch protection's required checks, the
+    // mission-PR branch-lifecycle gate) ran unmodified; override never skips
+    // them, it just means a failure past this point would have nothing to log.
+    if (override && worker.taskId) {
+      const overriddenReason = overrideEscalationReason ?? 'reviewer escalation (reason not recorded)';
+      const missionId = (worker.task as { missionId?: string | null } | null)?.missionId;
+      if (missionId) {
+        await db.insert(missionNotes).values({
+          missionId,
+          taskId: worker.taskId,
+          authorType: 'user',
+          actorLabel: user.email,
+          type: 'decision',
+          title: `PR #${prNumber} merged despite reviewer escalation — human override`,
+          body: `${user.email} merged this PR via "Merge anyway", overriding: ${overriddenReason}`,
+          status: 'open',
+        }).catch((e: unknown) =>
+          console.error(`[pr-merge] failed to record override note for PR #${prNumber}:`, e)
+        );
+      }
+      await supersedeAncestorEscalations(db, worker.taskId, prNumber).catch((e: unknown) =>
+        console.error(`[pr-merge] failed to supersede escalation for PR #${prNumber}:`, e)
+      );
+      await appendPrActivity({
+        installationId,
+        repoFullName,
+        prNumber,
+        entry: { kind: 'human_override_merge', detail: `${user.email} overrode: ${overriddenReason}` },
+        workspaceId: worker.workspaceId,
+      }).catch((e: unknown) =>
+        console.error(`[pr-merge] failed to append override activity for PR #${prNumber}:`, e)
+      );
+    }
+
+    // Trigger real-time update
+    await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
+      taskId: worker.taskId,
+    });
+
+    // Unblock tasks that depend on this task (mergedAt now set — gate is clear)
+    if (worker.taskId) {
+      checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
+        console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
+      );
+
+      // A human just merged this PR directly — if a reviewer task was still
+      // pending or running for it, cancel it so it doesn't run against an
+      // already-merged PR (fire-and-forget: never blocks the merge response).
+      supersedeReviewerTaskOnMerge({
+        originalTaskId: worker.taskId,
+        installationId,
+        repoFullName,
+        prNumber,
+      }).catch((e: unknown) =>
+        console.error(`[pr-merge] supersedeReviewerTaskOnMerge failed for task ${worker.taskId}:`, e)
+      );
+    }
+
+    // Unblock dependent missions if this task belonged to one
+    const missionId = (worker.task as any)?.missionId;
+    if (missionId) {
+      checkAndUnblockDependentMissions(missionId, 'merged').catch((e: unknown) =>
+        console.error(`[pr-merge] unblock failed for mission ${missionId}:`, e)
+      );
+    }
+
+    return NextResponse.json({ ok: true, merged: true });
+  };
+
   // Perform the merge
   const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';
+
+    if (result.indeterminate) {
+      // GitHub's response was empty, unparseable, or never arrived — we do
+      // NOT know whether the merge happened. Re-read the PR's live state
+      // rather than assert a rejection we have no evidence for (see
+      // docs/specs/action-queue-card-state.md I-1: derive from server state,
+      // never from what a failed client-side parse guessed).
+      console.error(
+        `[pr-merge] indeterminate response merging PR #${prNumber} on ${repoFullName}: ${rawMessage}`,
+      );
+
+      let livePr: { merged?: boolean; state?: string } | null = null;
+      try {
+        livePr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      } catch (e) {
+        console.error(`[pr-merge] live-state re-check failed for PR #${prNumber}:`, e);
+      }
+
+      if (livePr?.merged) {
+        return finalizeSuccessfulMerge();
+      }
+
+      const liveState: 'open' | 'unknown' = livePr?.state === 'open' ? 'open' : 'unknown';
+      const message = liveState === 'open'
+        ? `Lost GitHub's response while merging (${rawMessage || 'empty response'}). The PR is still open, so it's safe to retry.`
+        : `Lost GitHub's response while merging (${rawMessage || 'empty response'}), and its current state couldn't be confirmed. Check the PR directly before retrying.`;
+
+      return NextResponse.json({ error: message, indeterminate: true, liveState }, { status: 502 });
+    }
+
     console.error(
       `[pr-merge] GitHub rejected merge of PR #${prNumber} on ${repoFullName}: ${rawMessage}`,
     );
@@ -287,80 +398,5 @@ export async function POST(
     return NextResponse.json({ error: userMessage }, { status: 422 });
   }
 
-  // Stamp mergedAt and update lifecycle status
-  await db
-    .update(workers)
-    .set({ mergedAt: new Date(), prLifecycleStatus: 'merged', updatedAt: new Date() })
-    .where(eq(workers.id, worker.id));
-
-  await finalizeMissionPrMerge(worker.task ?? null, installationId, repoFullName);
-
-  // "Merge anyway" — record the override ONLY now that the merge actually
-  // succeeded. Every guard above (branch protection's required checks, the
-  // mission-PR branch-lifecycle gate) ran unmodified; override never skips
-  // them, it just means a failure past this point would have nothing to log.
-  if (override && worker.taskId) {
-    const overriddenReason = overrideEscalationReason ?? 'reviewer escalation (reason not recorded)';
-    const missionId = (worker.task as { missionId?: string | null } | null)?.missionId;
-    if (missionId) {
-      await db.insert(missionNotes).values({
-        missionId,
-        taskId: worker.taskId,
-        authorType: 'user',
-        actorLabel: user.email,
-        type: 'decision',
-        title: `PR #${prNumber} merged despite reviewer escalation — human override`,
-        body: `${user.email} merged this PR via "Merge anyway", overriding: ${overriddenReason}`,
-        status: 'open',
-      }).catch((e: unknown) =>
-        console.error(`[pr-merge] failed to record override note for PR #${prNumber}:`, e)
-      );
-    }
-    await supersedeAncestorEscalations(db, worker.taskId, prNumber).catch((e: unknown) =>
-      console.error(`[pr-merge] failed to supersede escalation for PR #${prNumber}:`, e)
-    );
-    await appendPrActivity({
-      installationId,
-      repoFullName,
-      prNumber,
-      entry: { kind: 'human_override_merge', detail: `${user.email} overrode: ${overriddenReason}` },
-      workspaceId: worker.workspaceId,
-    }).catch((e: unknown) =>
-      console.error(`[pr-merge] failed to append override activity for PR #${prNumber}:`, e)
-    );
-  }
-
-  // Trigger real-time update
-  await triggerEvent(channels.workspace(worker.workspaceId), events.WORKER_PROGRESS, {
-    taskId: worker.taskId,
-  });
-
-  // Unblock tasks that depend on this task (mergedAt now set — gate is clear)
-  if (worker.taskId) {
-    checkDependsOnResolved(worker.taskId).catch((e: unknown) =>
-      console.error(`[pr-merge] checkDependsOnResolved failed for task ${worker.taskId}:`, e)
-    );
-
-    // A human just merged this PR directly — if a reviewer task was still
-    // pending or running for it, cancel it so it doesn't run against an
-    // already-merged PR (fire-and-forget: never blocks the merge response).
-    supersedeReviewerTaskOnMerge({
-      originalTaskId: worker.taskId,
-      installationId,
-      repoFullName,
-      prNumber,
-    }).catch((e: unknown) =>
-      console.error(`[pr-merge] supersedeReviewerTaskOnMerge failed for task ${worker.taskId}:`, e)
-    );
-  }
-
-  // Unblock dependent missions if this task belonged to one
-  const missionId = (worker.task as any)?.missionId;
-  if (missionId) {
-    checkAndUnblockDependentMissions(missionId, 'merged').catch((e: unknown) =>
-      console.error(`[pr-merge] unblock failed for mission ${missionId}:`, e)
-    );
-  }
-
-  return NextResponse.json({ ok: true, merged: true });
+  return finalizeSuccessfulMerge();
 }
