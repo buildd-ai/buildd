@@ -24,6 +24,16 @@ export function isGitHubAppConfigured(): boolean {
   return !!(GITHUB_APP_ID && GITHUB_APP_PRIVATE_KEY && GITHUB_APP_CLIENT_ID);
 }
 
+/**
+ * The login GitHub assigns every comment/PR the App posts as itself (not on
+ * behalf of a user) — `<slug>[bot]`. Used to tell buildd's own PR comments
+ * (activity log, conflict warnings, supersession notices) apart from human
+ * discussion and third-party CI/bot noise when ranking `get_pr` comments.
+ */
+export function githubAppBotLogin(): string {
+  return `${process.env.GITHUB_APP_SLUG || 'buildd'}[bot]`;
+}
+
 export function getGitHubAppConfig() {
   return {
     appId: GITHUB_APP_ID,

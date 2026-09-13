@@ -22,6 +22,18 @@ import type {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Default preview cap for `get_pr`'s PR-body section — deliberately smaller
+ * than the knowledge-store's `CARD_CONTENT_CAP` (8000): that cap sizes a
+ * write into a corpus read once at query time, this one sizes a response
+ * returned on every `get_pr` call inside an agent loop. A short "Problem +
+ * Changes" summary with Testing/Acceptance-criteria sections trimmed away
+ * (the common shape of this repo's own PR bodies) fits comfortably under
+ * 2000 chars; a body that runs long is exactly the case `fullBody: true`
+ * exists for, and the truncation marker always reports how much was cut.
+ */
+const GET_PR_BODY_PREVIEW_CHARS = 2000;
+
 const PRIORITY_NAMES: Record<string, number> = {
   lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
 };
@@ -351,7 +363,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber?, workspaceId? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
@@ -1701,10 +1713,13 @@ export async function handleBuilddAction(
       const workerId = String(params.workerId ?? '') || ctx.workerId || null;
       if (!workerId && !params.prNumber) throw new Error('workerId or prNumber is required');
 
+      const includeComments = params.includeComments === true;
+
       const parts: string[] = [];
       if (workerId) parts.push(`workerId=${encodeURIComponent(workerId)}`);
       if (params.prNumber) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
       if (params.workspaceId) parts.push(`workspaceId=${encodeURIComponent(String(params.workspaceId))}`);
+      if (includeComments) parts.push('includeComments=true');
 
       const data = await api(`/api/github/pr${parts.length ? '?' + parts.join('&') : ''}`);
 
@@ -1732,7 +1747,24 @@ export async function handleBuilddAction(
         : '';
 
       const bodyPreview = pr.body
-        ? `\n\n**Agent summary:**\n${pr.body.slice(0, 800)}${pr.body.length > 800 ? '\n…(truncated)' : ''}`
+        ? `\n\n**Agent summary:**\n${params.fullBody === true ? pr.body : truncate(pr.body, GET_PR_BODY_PREVIEW_CHARS)}`
+        : '';
+
+      const commentsSection = includeComments
+        ? (() => {
+            const c = data.comments as
+              | { items: Array<{ author: string; kind: string; at: string | null; body: string; url: string | null }>; total: number; omitted: number }
+              | undefined;
+            if (!c || c.total === 0) return '\n\nComments: none';
+            const lines = c.items.map((item) => {
+              const tag = item.kind === 'buildd' ? 'buildd' : item.kind === 'bot' ? 'bot' : 'human';
+              const when = item.at ? ` ${item.at}` : '';
+              const link = item.url ? ` (${item.url})` : '';
+              return `- [${tag}]${when} ${item.author}: ${item.body}${link}`;
+            });
+            const omittedNote = c.omitted > 0 ? `\n_(${c.omitted} more omitted)_` : '';
+            return `\n\n**Comments** (buildd decision-trail first, ${c.total} total):\n${lines.join('\n')}${omittedNote}`;
+          })()
         : '';
 
       return text([
@@ -1743,6 +1775,7 @@ export async function handleBuilddAction(
         statsLine,
         `URL: ${pr.url}`,
         bodyPreview,
+        commentsSection,
       ].filter(Boolean).join('\n'));
     }
 
@@ -4766,6 +4799,7 @@ import {
   buildPlanCard,
   buildInitiativeCard,
   renderPlanText,
+  truncate,
 } from './knowledge-store/cards';
 
 /**
