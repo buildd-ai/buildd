@@ -950,6 +950,21 @@ export const INVARIANTS: Invariant[] = [
     files: true,
     resolves: false,
     query: (s, now) => {
+      // A PR whose newest review verdict is 'escalate' is already in front of
+      // a human with nothing further an agent can do — rebasing again cannot
+      // unblock a hard doctrine escalation (e.g. any schema/migration touch),
+      // and self-merge is refused under this workspace's merge policy for
+      // exactly that state. Without this, the sweep re-files the same PR every
+      // hour forever, since prOpenedAt() never advances on rebase: five+
+      // remediation cycles re-verified PR #2382 in one day after it was
+      // already rebased current and terminally escalated. 'request-changes'
+      // is deliberately NOT included here — that state still expects an agent
+      // to push a fix, so it must keep firing.
+      const escalatedPrs = new Set<string>();
+      for (const r of s.reviews) {
+        if (r.verdict !== 'escalate') continue;
+        escalatedPrs.add(`${r.workspaceId} ${r.prNumber}`);
+      }
       const out: InvariantViolation[] = [];
       for (const w of s.workers) {
         if (!isOpenPrWorker(w)) continue;
@@ -961,6 +976,7 @@ export const INVARIANTS: Invariant[] = [
         // land there continuously, and the mission's single PR into trunk is
         // the gate that matters. Only ordinary bases decay.
         if (isMissionBranch(w.prBaseRef)) continue;
+        if (escalatedPrs.has(`${w.workspaceId} ${w.prNumber}`)) continue;
         const ageMs = olderThan(now, prOpenedAt(w), PR_OUTPACED_MS);
         if (ageMs === null) continue;
         const drift = countBaseDrift(s, w);

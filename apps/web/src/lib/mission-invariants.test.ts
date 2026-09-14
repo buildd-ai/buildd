@@ -1067,6 +1067,42 @@ describe('open_pr_outpaced_by_base', () => {
     expect(countBaseDrift(snapshot({ baseMerges: merges(7) }), w)).toBe(7);
     expect(countBaseDrift(emptySnapshot(), w)).toBe(0);
   });
+
+  it('stays silent on a PR whose newest review verdict is escalate', () => {
+    // Filed as friction: PR #2382 was rebased current and terminally
+    // escalated (hard schema-touch doctrine) yet the sweep re-filed a fresh
+    // remediation task on it every hour, since prOpenedAt() never advances on
+    // rebase. There is nothing left for an agent to do once a human owns it.
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(HOUR) }],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('keeps firing on a PR whose newest review verdict is request-changes', () => {
+    // Unlike escalate, request-changes still expects an agent to push a fix —
+    // suppressing here would hide a PR nobody is actually unblocking.
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'request-changes', decidedAt: ago(HOUR) }],
+    });
+    expect(reported(key, s)).toEqual(['4242']);
+  });
+
+  it('does not suppress an escalate verdict recorded for a different PR or workspace', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+      reviews: [
+        { prNumber: 9999, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(HOUR) },
+        { prNumber: 4242, workspaceId: 'ws-other', verdict: 'escalate', decidedAt: ago(HOUR) },
+      ],
+    });
+    expect(reported(key, s)).toEqual(['4242']);
+  });
 });
 
 // ── Report formatting ───────────────────────────────────────────────────────
