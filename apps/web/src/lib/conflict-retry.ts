@@ -25,6 +25,7 @@ import { dispatchNewTask } from '@/lib/task-dispatch';
 import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib/supersession-check';
 import { notify } from '@/lib/pushover';
 import { githubApi } from '@/lib/github';
+import { formatAttemptTitle } from '@/lib/task-title';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -196,12 +197,8 @@ export function buildConflictRetryTask(params: ConflictRetryInput & { prRepoUrl?
         ? ['**']
         : null;
 
-  const cleanTitle = originalTask.title
-    .replace(/^\[Conflict Retry #?\d*\]\s*/i, '')
-    .replace(/^\[CI Retry #?\d*\]\s*/i, '');
-
   return {
-    title: `[Conflict Retry #${nextIteration}] ${cleanTitle}`,
+    title: formatAttemptTitle('builder', originalTask.title, { reason: 'after conflict', iteration: nextIteration }),
     description: buildConflictDescription(originalTask, worker, repoFullName, nextIteration, maxIterations),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,
