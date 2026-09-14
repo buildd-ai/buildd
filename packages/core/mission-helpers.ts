@@ -138,6 +138,19 @@ export function validateGoalCriteria(
      * only editor that could fix it would be the one thing that cannot run.
      */
     stored?: unknown;
+    /**
+     * Skip the "at least one mechanical criterion" rule (default true — applied).
+     *
+     * That rule is a property of the WHOLE array, not of any single criterion: a
+     * lone `description` criterion always fails it, even when a caller is really
+     * validating one row of a form that, combined with the other rows, is fine.
+     * `apps/web/src/lib/goal-criteria-form.ts` validates each draft as a
+     * one-element array purely to attribute shape errors to their row, then
+     * separately validates the assembled array (default `requireMechanical:
+     * true`) for array-level faults — set this false only for that kind of
+     * single-criterion, shape-only check.
+     */
+    requireMechanical?: boolean;
   } = {},
 ): string | null {
   if (!Array.isArray(criteria)) return 'goalCriteria must be an array';
@@ -200,6 +213,24 @@ export function validateGoalCriteria(
         }
         break;
       }
+    }
+  }
+
+  // A non-empty array with zero mechanical criteria is a mission whose only
+  // completion bar is prose — every criterion NOT_EVALUATED-forever if no LLM
+  // is reachable when a verdict is owed (see recalculateOverall). An empty
+  // array is a different, legitimate case (a mission closes on task progress
+  // alone) and is intentionally exempt from this check.
+  if (criteria.length > 0 && opts.requireMechanical !== false) {
+    const hasMechanical = (criteria as Array<Record<string, unknown>>).some(
+      c => typeof c.type === 'string' && (MECHANICAL_CRITERION_TYPES as readonly string[]).includes(c.type),
+    );
+    if (!hasMechanical) {
+      return (
+        `goalCriteria must include at least one mechanical criterion — one of ` +
+        `${MECHANICAL_CRITERION_TYPES.join(', ')} — so the mission has a verdict that does not ` +
+        `depend on a live LLM. A cheap default: all_prs_merged + no_open_tasks.`
+      );
     }
   }
 

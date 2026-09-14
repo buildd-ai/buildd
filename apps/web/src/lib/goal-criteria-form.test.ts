@@ -103,15 +103,36 @@ describe('validateCriteriaDrafts — same rules as POST /api/missions, before th
     expect(validateCriteriaDrafts([draft]).ok).toBe(false);
   });
 
-  it('accepts a description criterion once the reason clears the threshold', () => {
+  it('rejects a lone description criterion, once the reason clears the threshold, as an array-level fault — not a row error', () => {
+    // The row itself is well-formed; the array as a whole still has zero
+    // mechanical criteria, which is a property of the array, not the row. Same
+    // shape as the MAX_GOAL_CRITERIA ceiling test below: surfaced via
+    // `formError`, `errors[0]` stays null so the row itself isn't flagged.
     const draft = {
       ...newCriterionDraft('description'),
       description: 'Docs read well',
       notMechanizableReason: 'Prose quality has no command that can grade it',
     };
     const result = validateCriteriaDrafts([draft]);
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
     expect(result.errors[0]).toBeNull();
+    expect(result.formError).toContain('mechanical criterion');
+  });
+
+  it('accepts a description criterion once paired with a mechanical one, with no false-positive row error', () => {
+    // Regression guard: validateCriteriaDrafts checks each draft in isolation
+    // to attribute row errors, which would otherwise make a lone description
+    // row always look invalid even when the assembled array is fine.
+    const description = {
+      ...newCriterionDraft('description'),
+      description: 'Docs read well',
+      notMechanizableReason: 'Prose quality has no command that can grade it',
+    };
+    const mechanical = newCriterionDraft('no_open_tasks');
+    const result = validateCriteriaDrafts([description, mechanical]);
+    expect(result.ok).toBe(true);
+    expect(result.errors).toEqual([null, null]);
+    expect(result.formError).toBeNull();
     expect(validateGoalCriteria(result.criteria)).toBeNull();
   });
 
