@@ -21,8 +21,21 @@ import { NextRequest } from 'next/server';
 
 // ── withCronRun's own dependencies ──────────────────────────────────────────
 
+// `__table` is a marker this file adds so the db stub can tell which table an
+// insert went to — the cleanup-task filing and the cron_runs bookkeeping share
+// one stubbed client.
 mock.module('@buildd/core/db/schema', () => ({
-  cronRuns: { id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
+  cronRuns: { __table: 'cron_runs', id: 'id', job: 'job', startedAt: 'startedAt', alertedAt: 'alertedAt' },
+  tasks: { __table: 'tasks', id: 'id' },
+  workspaces: {
+    __table: 'workspaces',
+    id: 'id',
+    name: 'name',
+    repo: 'repo',
+    webhookConfig: 'webhookConfig',
+    githubInstallationId: 'githubInstallationId',
+    githubRepoId: 'githubRepoId',
+  },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -34,10 +47,30 @@ mock.module('drizzle-orm', () => ({
 }));
 
 const insertedRuns: any[] = [];
+/**
+ * Task inserts, in order, as the real filer built them.
+ *
+ * The cleanup filer is NOT mocked out in this file. Asserting on the values it
+ * actually inserts is what ties "the route files a cleanup task" to "that task
+ * carries the prohibitions" — a stub of the filer would let the two drift and
+ * both tests would still pass.
+ */
+const insertedTasks: any[] = [];
+/** Side-effect order, for the ordering proof (claim before filing before push). */
+const sideEffects: string[] = [];
+let taskInsertThrows: Error | null = null;
+
 mock.module('@buildd/core/db', () => ({
   db: {
-    insert: () => ({
+    insert: (table: any) => ({
       values: (v: any) => {
+        const isTask = table?.__table === 'tasks';
+        if (isTask) {
+          sideEffects.push('task-insert');
+          if (taskInsertThrows) throw taskInsertThrows;
+          insertedTasks.push(v);
+          return { returning: async () => [{ id: 'cleanup-task-1' }] };
+        }
         insertedRuns.push(v);
         return { returning: async () => [{ id: 'run-1' }] };
       },
@@ -52,11 +85,21 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// Realtime fan-out for a filed task. Best-effort in the filer, stubbed here so
+// the test does not reach Pusher or the GitHub App.
+const dispatchCalls: any[] = [];
+mock.module('@/lib/task-dispatch', () => ({
+  dispatchNewTask: async (task: any, workspace: any) => {
+    dispatchCalls.push({ task, workspace });
+  },
+}));
+
 // ── The notifier ────────────────────────────────────────────────────────────
 
 const notifyCalls: any[] = [];
 mock.module('@/lib/pushover', () => ({
   notify: (opts: any) => {
+    sideEffects.push('notify');
     notifyCalls.push(opts);
   },
 }));
@@ -86,6 +129,7 @@ mock.module('@buildd/core/memory-digest-readout-source', () => ({
     persisted.push(r);
   },
   claimVerdictNotification: async (key: string, details: any = {}) => {
+    sideEffects.push('claim');
     claimCalls.push({ key, details });
     return claimResult;
   },
@@ -106,6 +150,7 @@ import {
   READOUT_POLICY_VERSION,
   terminalNotificationKeys,
 } from '@buildd/core/memory-digest-readout';
+import { experimentCleanupSignature } from '@buildd/core/experiment-cleanup';
 // The real health rules, not a restatement of them: "a retired route does not
 // read as broken" is a claim about `evaluateCronHealth`, so it is asserted
 // against `evaluateCronHealth`.
@@ -220,6 +265,10 @@ beforeEach(() => {
   claimCalls.length = 0;
   artifactCalls.length = 0;
   insertedRuns.length = 0;
+  insertedTasks.length = 0;
+  dispatchCalls.length = 0;
+  sideEffects.length = 0;
+  taskInsertThrows = null;
   claimResult = true;
   readoutThrows = null;
   readoutRuns = 0;
@@ -375,6 +424,12 @@ describe('retirement: a delivered verdict stops the work, not just the push', ()
     artifactUrl: 'https://buildd.dev/app/artifacts/artifact-1',
   };
 
+  it('files no cleanup task on a retired run — the task was filed with the claim', async () => {
+    deliveredVerdict = DELIVERED;
+    await GET(req());
+    expect(insertedTasks).toHaveLength(0);
+  });
+
   it('does NOT compute the readout once a terminal verdict has been delivered', async () => {
     // The point of retiring. `notified === false` would also be true of a route
     // that still ran the full cohort scan every morning for ever, so the
@@ -525,5 +580,243 @@ describe('the notification carries a link to the artifact', () => {
     artifactToReturn = { id: 'artifact-2', workspaceId: 'ws-1', key: 'k', type: 'analysis' };
     await GET(req());
     expect(notifyCalls[0].url).toBe('https://buildd.dev/app/artifacts/artifact-2');
+  });
+});
+
+/**
+ * A terminal verdict schedules its own cleanup WORK rather than emitting a
+ * reminder. The properties that matter:
+ *
+ *  1. Exactly once, ever — gated on the SAME claim as the notification, so
+ *     there is one dedupe mechanism and not two that can disagree.
+ *  2. Never on a non-terminal or `indeterminate` readout.
+ *  3. The description carries the prohibitions. That is the actual safety
+ *     property: "clean up the finished experiment" is an instruction an agent
+ *     can satisfy by deleting the reusable readout module, the CLI, the pin
+ *     guard or the published verdict.
+ *  4. A failed filing takes nothing else down with it.
+ */
+describe('a terminal verdict files a cleanup task', () => {
+  it('files exactly one task on the run that takes the claim', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    expect(insertedTasks).toHaveLength(1);
+    expect(insertedTasks[0].workspaceId).toBe('ws-1');
+  });
+
+  it('does NOT file one when the claim was already taken', async () => {
+    // The once-ever property. Asserted on the insert, not on a log line.
+    readoutToReturn = poweredReadout();
+    claimResult = false;
+    await GET(req());
+    expect(claimCalls).toHaveLength(1);
+    expect(insertedTasks).toHaveLength(0);
+  });
+
+  it('files at most one task across repeated runs', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    // Second morning: the claim is gone, exactly as `claimVerdictNotification`
+    // behaves in production.
+    claimResult = false;
+    await GET(req());
+    await GET(req());
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('does NOT file one while the cohort is still accruing', async () => {
+    await GET(req());
+    expect(insertedTasks).toHaveLength(0);
+  });
+
+  it('does NOT file one on an indeterminate readout', async () => {
+    // `indeterminate` is how a broken collection path looks. Filing cleanup for
+    // an experiment whose data cannot be read is the worst possible moment.
+    readoutToReturn = emptyReadout();
+    await GET(req());
+    expect(insertedTasks).toHaveLength(0);
+    expect(claimCalls).toHaveLength(0);
+  });
+
+  it('claims BEFORE filing, and files BEFORE pushing', async () => {
+    // Ordering is the dedupe. Filing before the claim would let two concurrent
+    // runs both file; pushing before filing would lose the task id from the
+    // only notification this experiment ever sends.
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    expect(sideEffects).toEqual(['claim', 'task-insert', 'notify']);
+  });
+
+  it('requires a PR, to dev', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    const task = insertedTasks[0];
+    expect(task.outputRequirement).toBe('pr_required');
+    expect(task.context.baseBranch).toBe('dev');
+  });
+
+  it('anchors the task so buildd\'s own dedupe is a second line of defence', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    const task = insertedTasks[0];
+    // `error` kind with a namespaced signature is an IDENTIFYING key type, so a
+    // live match stops a re-filing through the API or MCP.
+    expect(task.subjectKind).toBe('error');
+    expect(task.subjectErrorSignature).toBe(experimentCleanupSignature(READOUT_POLICY_VERSION));
+    expect(task.subjectDedupeScope).toBe('active');
+    expect(task.subjectAnchor.source).toBe('system');
+    expect(task.subjectAnchor.confidence).toBe('exact');
+  });
+
+  it('scopes the task to the manifest, not to the tree', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    expect(insertedTasks[0].pathManifest).toContain('cron-manifest.json');
+    expect(insertedTasks[0].pathManifest).not.toContain('**');
+  });
+
+  it('dispatches the filed task', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    expect(dispatchCalls).toHaveLength(1);
+    expect(dispatchCalls[0].task.id).toBe('cleanup-task-1');
+  });
+
+  it('reports the task id in the run result', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    expect(lastRun().result.cleanupTaskId).toBe('cleanup-task-1');
+    expect(lastRun().result.cleanupTaskError).toBeNull();
+  });
+});
+
+describe('the cleanup task description carries the prohibitions', () => {
+  /**
+   * The named assets, pinned. A future edit that drops the do-not-delete list
+   * — or replaces it with "use your judgement" — fails here. The substance is
+   * pinned, not the prose.
+   */
+  const PROTECTED = [
+    'packages/core/memory-digest-readout.ts',
+    'packages/core/memory-digest-readout-source.ts',
+    'packages/core/scripts/memory-digest-readout.ts',
+    'readout:memory-digest',
+    'packages/core/__tests__/memory-digest-readout-policy-pin.test.ts',
+    'apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts',
+    `memory-digest-readout:${READOUT_POLICY_VERSION}`,
+    'system_cache',
+    'apps/runner/src/memory-digest-policy.ts',
+  ];
+
+  async function description(): Promise<string> {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    return insertedTasks[0].description as string;
+  }
+
+  it('tells the agent to remove the manifest entry', async () => {
+    const d = await description();
+    expect(d).toContain('cron-manifest.json');
+    expect(d).toMatch(/daily tick/i);
+  });
+
+  for (const asset of PROTECTED) {
+    it(`forbids touching ${asset}`, async () => {
+      const d = await description();
+      expect(d.slice(d.indexOf('DO NOT'))).toContain(asset);
+    });
+  }
+
+  it('makes deleting the route optional rather than required', async () => {
+    const d = await description();
+    expect(d).toContain('apps/web/src/app/api/cron/memory-digest-readout');
+    expect(d.slice(d.indexOf('Optional'))).toMatch(/NOT required by this task/i);
+  });
+
+  it('states the two-stage split and that only stage one is automated', async () => {
+    const d = await description();
+    expect(d).toMatch(/stage one/i);
+    expect(d).toMatch(/stage two/i);
+    expect(d).toMatch(/only stage one/i);
+  });
+
+  it('states that the experiment\'s decision is not this task', async () => {
+    const d = await description();
+    expect(d).toMatch(/keep(ing)? or revert/i);
+    expect(d).toMatch(/do not assume/i);
+  });
+
+  it('links the artifact this run wrote, so the agent can read the verdict', async () => {
+    const d = await description();
+    expect(d).toContain('https://buildd.dev/app/artifacts/artifact-1');
+  });
+});
+
+describe('the notification says a cleanup task was filed', () => {
+  it('adds one line naming the task, and keeps the link on the artifact', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    const call = notifyCalls[0];
+    expect(call.message).toContain('cleanup-task-1');
+    // The push is about the verdict. Repointing the link at the task would
+    // bury the analysis behind a second hop.
+    expect(call.url).toBe('https://buildd.dev/app/artifacts/artifact-1');
+    expect(call.urlTitle).toBe('Open the readout');
+  });
+
+  it('still carries the readout summary, not just the cleanup line', async () => {
+    readoutToReturn = poweredReadout();
+    await GET(req());
+    expect(notifyCalls[0].message).toContain('powered');
+    expect(notifyCalls[0].message).toContain('325');
+  });
+
+  it('says plainly when NO task could be filed', async () => {
+    readoutToReturn = poweredReadout();
+    taskInsertThrows = new Error('task boom');
+    await GET(req());
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0].message).toMatch(/no cleanup task/i);
+    expect(notifyCalls[0].message).toMatch(/by hand/i);
+  });
+});
+
+describe('a failed filing takes nothing else down', () => {
+  it('still pushes the verdict', async () => {
+    readoutToReturn = poweredReadout();
+    taskInsertThrows = new Error('task boom');
+    await GET(req());
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0].url).toBe('https://buildd.dev/app/artifacts/artifact-1');
+  });
+
+  it('still publishes the artifact and persists the readout', async () => {
+    readoutToReturn = poweredReadout();
+    taskInsertThrows = new Error('task boom');
+    await GET(req());
+    expect(artifactCalls).toHaveLength(1);
+    expect(persisted).toHaveLength(1);
+  });
+
+  it('returns 200 and records the failure rather than throwing', async () => {
+    readoutToReturn = poweredReadout();
+    taskInsertThrows = new Error('task boom');
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(lastRun().result.cleanupTaskId).toBeNull();
+    expect(lastRun().result.cleanupTaskError).toBe('task boom');
+    // The verdict was still delivered, so the claim was not spent for nothing.
+    expect(lastRun().changed).toBe(1);
+  });
+
+  it('files nothing when there is no workspace to file into', async () => {
+    // `upsertReadoutArtifact` returns null when no workspace can be resolved.
+    // The task has nowhere to go; the push must still happen.
+    readoutToReturn = poweredReadout();
+    artifactToReturn = null;
+    await GET(req());
+    expect(insertedTasks).toHaveLength(0);
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0].message).toMatch(/no cleanup task/i);
   });
 });

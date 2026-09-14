@@ -11,8 +11,13 @@ import {
   runMemoryDigestReadout,
   upsertReadoutArtifact,
 } from '@buildd/core/memory-digest-readout-source';
+import {
+  cleanupNoticeLine,
+  memoryDigestCleanupSpec,
+} from '@buildd/core/experiment-cleanup';
 import { notify } from '@/lib/pushover';
 import { appBaseUrl } from '@/lib/app-url';
+import { fileExperimentCleanupTask } from '@/lib/experiment-cleanup-task';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 
 /**
@@ -90,6 +95,36 @@ import { withCronRun, type CronReport } from '@/lib/cron-run';
  * the artifact write. An artifact upsert happens on nearly every run, so
  * counting it as work would make `totalChanged > 0` permanently true and
  * suppress the alarm above for ever.
+ *
+ * ── Why the verdict files WORK and not a reminder ───────────────────────────
+ *
+ * A concluded experiment leaves scaffolding behind, and the previous plan for
+ * it was a line in this notification saying "remember to clean this up". A
+ * reminder is a task nobody owns: it is read once on a phone, and the schedule
+ * it asks about keeps ticking until somebody happens to act. So the terminal
+ * verdict files a real buildd task instead —
+ * `lib/experiment-cleanup-task.ts`, described by
+ * `@buildd/core/experiment-cleanup`, narrowly scoped and with its
+ * prohibitions spelled out rather than left to the claiming agent's judgement.
+ *
+ * ── The ordering, which is the whole dedupe ─────────────────────────────────
+ *
+ * claim → file → push, deliberately, in that order:
+ *
+ *  - **After the claim**, because the claim IS the dedupe. Filing first would
+ *    let two concurrent runs both pass the "no claim yet" test and file two
+ *    tasks; the claim is the only thing that makes this once-ever, and adding a
+ *    second check-then-act here would be a parallel mechanism that can disagree
+ *    with the first.
+ *  - **Before the push**, because the notification has to be able to name the
+ *    task. The push is read once; a task id that arrives after it does not.
+ *  - **Never load-bearing.** A filing that throws is caught: the readout is
+ *    already persisted, the artifact is already published, and the push still
+ *    goes out — carrying "no cleanup task could be filed … by hand" instead of
+ *    an id, because silence there is indistinguishable from success. The claim
+ *    is therefore never spent on a run that failed to deliver the verdict; it
+ *    is spent on a run that delivered the verdict and failed to file follow-up
+ *    work, which is recoverable by the one human reading the push.
  */
 
 export const dynamic = 'force-dynamic';
@@ -165,6 +200,8 @@ async function runJob(report: CronReport): Promise<NextResponse> {
 
   let notified = false;
   let alreadyNotified = false;
+  let cleanupTaskId: string | null = null;
+  let cleanupTaskError: string | null = null;
 
   if (readout.verdict.terminal) {
     const claimed = await claimVerdictNotification(readout.verdict.notificationKey, {
@@ -173,13 +210,45 @@ async function runJob(report: CronReport): Promise<NextResponse> {
       artifactUrl,
     });
     if (claimed) {
+      // Gated on the claim above, so this runs at most once ever — and never
+      // for an `accruing` or `indeterminate` verdict, neither of which is
+      // terminal (`buildVerdict` sets `terminal: false` for both).
+      const spec = memoryDigestCleanupSpec({
+        verdict: readout.verdict.status,
+        artifactUrl,
+      });
+      if (artifact) {
+        try {
+          const filed = await fileExperimentCleanupTask({
+            // The workspace the artifact was just written to: the cleanup task
+            // lands next to the verdict the push links, and there stays exactly
+            // one workspace-resolution rule for this experiment.
+            workspaceId: artifact.workspaceId,
+            spec,
+          });
+          cleanupTaskId = filed?.id ?? null;
+          if (!cleanupTaskId) cleanupTaskError = 'insert returned no row';
+        } catch (err) {
+          cleanupTaskError = err instanceof Error ? err.message : String(err);
+          console.warn('[cron:memory-digest-readout] failed to file cleanup task:', cleanupTaskError);
+        }
+      } else {
+        // No artifact means no resolvable workspace (or a failed write). There
+        // is nowhere to file a task; say so in the push rather than silently
+        // dropping the follow-up work.
+        cleanupTaskError = 'no workspace resolved for the readout artifact';
+      }
+
       notify({
         app: 'alerts',
         // priority 0, not the module default of -1: a silent notification for
         // a terminal experiment verdict is a notification that is not read.
         priority: 0,
         title: `memory digest experiment — ${readout.verdict.status}`,
-        message: formatReadoutSummary(readout),
+        // One extra line: what was filed to clean the experiment up, or that
+        // nothing was. Belt and braces behind the task itself — the task is the
+        // mechanism, this line is how the recipient knows it exists.
+        message: [formatReadoutSummary(readout), cleanupNoticeLine(cleanupTaskId, cleanupTaskError)].join('\n'),
         // A push is read once and gone; the link is what makes it checkable.
         // Omitted rather than faked if the artifact could not be written — a
         // dead link in the only notification this experiment ever sends is
@@ -210,6 +279,11 @@ async function runJob(report: CronReport): Promise<NextResponse> {
       artifactId: artifact?.id ?? null,
       artifactUrl,
       artifactError,
+      // Stage one of retirement, filed as work. Not counted in `changed`:
+      // `changed` means "delivered the verdict", and a filing that failed must
+      // not read as a run that accomplished nothing.
+      cleanupTaskId,
+      cleanupTaskError,
       // True from the NEXT run onwards: this run took the terminal claim.
       retiresFromNextRun: notified || alreadyNotified,
     },
@@ -223,6 +297,8 @@ async function runJob(report: CronReport): Promise<NextResponse> {
     persistError,
     artifact: artifact ? { ...artifact, url: artifactUrl } : null,
     artifactError,
+    cleanupTaskId,
+    cleanupTaskError,
     readout,
     // The rendered report, so curling the endpoint by hand is the same
     // experience as running the CLI.
