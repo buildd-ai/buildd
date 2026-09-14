@@ -168,6 +168,8 @@ mock.module('@buildd/core/db/schema', () => ({
   systemCache: { key: 'key', expiresAt: 'expiresAt' },
   missions: { id: 'id' },
   workspaceSkills: { id: 'id', slug: 'slug', workspaceId: 'workspaceId', enabled: 'enabled' },
+  workers: { id: 'id', taskId: 'taskId' },
+  artifacts: { id: 'id', workerId: 'workerId' },
   // taskSubjectReports is imported by @/lib/subject-anchor-observer, which loads
   // for real (no stub mock). Without this entry Bun throws a SyntaxError on the
   // dynamic import chain even though the runtime value is never dereferenced by
@@ -334,5 +336,52 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
     const lastArg = rowsOrderByArgs[rowsOrderByArgs.length - 1];
     // The tiebreak must be an asc() expression on the id field
     expect(lastArg).toMatchObject({ type: 'asc', f: 'id' });
+  });
+
+  describe('terminal-status audit mode (?status=completed|failed|cancelled)', () => {
+    it('filters by exact status instead of the notInArray "active" predicate', async () => {
+      const req = makeRequest({ limit: '5', status: 'completed', workspaceId: 'ws-1' });
+      await GET(req);
+
+      // Audit mode uses eq(), not notInArray() — the 24h-windowed OR branch never fires.
+      expect(notInArrayCalls.length).toBe(0);
+    });
+
+    it('exposes updatedAt/summarySource/prNumber/hasArtifact on each row', async () => {
+      mockSelectResult = [{ total: 1, pendingCount: 0 }];
+      mockSelectRowsResult = [
+        {
+          id: 't1', workspaceId: 'ws-1', title: 'Fallback completion', status: 'completed',
+          priority: 0, category: 'bug', descriptionPreview: 'desc',
+          updatedAt: new Date('2026-09-14T00:00:00Z'), summarySource: 'fallback', prNumber: null, hasArtifact: false,
+        },
+      ];
+
+      const req = makeRequest({ limit: '5', status: 'completed' });
+      const res = await GET(req);
+      const body = await res.json();
+
+      expect(body.tasks[0].summarySource).toBe('fallback');
+      expect(body.tasks[0].prNumber).toBeNull();
+      expect(body.tasks[0].hasArtifact).toBe(false);
+      expect(body.tasks[0].updatedAt).toBeDefined();
+    });
+
+    it('orders by updatedAt desc with an id tiebreak, not the active-mode CASE/priority order', async () => {
+      const req = makeRequest({ limit: '5', status: 'failed' });
+      await GET(req);
+
+      const rowsOrderByArgs = orderByCalls[orderByCalls.length - 1];
+      expect(rowsOrderByArgs[0]).toMatchObject({ type: 'desc', f: 'updatedAt' });
+      expect(rowsOrderByArgs[rowsOrderByArgs.length - 1]).toMatchObject({ type: 'asc', f: 'id' });
+    });
+
+    it('is not triggered by an unrecognized status value (falls through to default 24h-window branch)', async () => {
+      const req = makeRequest({ limit: '5', status: 'bogus' });
+      await GET(req);
+
+      // Falls into the default branch, which still calls notInArray for the OR condition.
+      expect(notInArrayCalls.length).toBeGreaterThan(0);
+    });
   });
 });
