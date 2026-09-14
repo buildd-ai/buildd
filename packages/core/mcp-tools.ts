@@ -630,7 +630,7 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
 
 /** One gate's outcome mix, compacted: "12 rejected · 3 bypassed". */
 function formatGateOutcomes(outcomes: GateRow['outcomes']): string {
-  return (['rejected', 'deferred', 'bypassed', 'warned'] as const)
+  return (['rejected', 'deferred', 'bypassed', 'warned', 'stranded'] as const)
     .filter(k => outcomes[k] > 0)
     .map(k => `${outcomes[k]} ${k}`)
     .join(' · ');

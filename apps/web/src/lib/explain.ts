@@ -21,7 +21,7 @@
  * it only supplies the accessor's inputs and turns its answer into evidence.
  */
 import { db } from '@buildd/core/db';
-import { missions, tasks, workers } from '@buildd/core/db/schema';
+import { missions, tasks, workers, gateEvents } from '@buildd/core/db/schema';
 import { and, desc, eq, gt, inArray, isNotNull, ne } from 'drizzle-orm';
 import { deriveCriteriaGatePresentation, attachAttempts, isDeliverableTask } from '@buildd/core/mission-helpers';
 import { deriveTaskHealthSignal } from '@/lib/mission-helpers';
@@ -44,7 +44,37 @@ import {
   type ExplainAnswer,
   type ExplainResult,
   type HistoryNode,
+  type GateHistoryEntry,
 } from '@/lib/explain-types';
+
+/** How many recent gate_events rows a task's `explain` answer carries. */
+const GATE_HISTORY_LIMIT = 10;
+
+/**
+ * Recent gate_events rows for a task — deferrals, rejections, warnings, and
+ * strandings, newest first. This is the durable half of the claim loop's
+ * per-poll `deferrals` counters (which die with the response object) made
+ * readable without SQL.
+ */
+async function loadGateHistory(taskId: string): Promise<GateHistoryEntry[]> {
+  const rows = await db.query.gateEvents.findMany({
+    where: eq(gateEvents.taskId, taskId),
+    orderBy: [desc(gateEvents.occurredAt)],
+    limit: GATE_HISTORY_LIMIT,
+    columns: { occurredAt: true, gate: true, outcome: true, reason: true, detail: true },
+  });
+  return rows.map(r => {
+    const detail = r.detail as Record<string, unknown> | null;
+    return {
+      occurredAt: r.occurredAt.toISOString(),
+      gate: r.gate,
+      outcome: r.outcome as GateHistoryEntry['outcome'],
+      reason: r.reason,
+      consecutiveDeferrals: typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null,
+      firstDeferredAt: typeof detail?.firstDeferredAt === 'string' ? detail.firstDeferredAt : null,
+    };
+  });
+}
 
 /** Cap on how many gated subjects a workspace answer returns. */
 const WORKSPACE_SUBJECT_LIMIT = 12;
@@ -320,6 +350,7 @@ function answerFrom(
   subject: ExplainAnswer['subject'],
   history: HistoryNode[],
   because: ExplainAnswer['because'],
+  gateHistory: GateHistoryEntry[] = [],
 ): ExplainAnswer {
   return {
     subject,
@@ -328,12 +359,14 @@ function answerFrom(
     because,
     history,
     nextAction: view.nextAction,
+    gateHistory,
     derivedFrom: {
       state: view.derivedFrom.kind,
       waitingOn: view.derivedFrom.waitingOn,
       because: [...new Set(because.map(b => b.derivedFrom))],
       history: history.length > 0 ? 'tasks.parentTaskId + tasks.taskClass (attachAttempts)' : null,
       nextAction: view.derivedFrom.nextAction,
+      gateHistory: gateHistory.length > 0 ? 'gate_events.taskId' : null,
     },
   };
 }
@@ -479,7 +512,8 @@ export async function explainTask(taskId: string): Promise<ExplainResult | null>
   };
 
   const because = buildStateBecause(view, { taskId, missionId, workspaceId }, answerExtras);
-  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(family), because)] };
+  const gateHistory = await loadGateHistory(taskId);
+  return { scope: 'task', subjects: [answerFrom(view, subject, buildHistory(family), because, gateHistory)] };
 }
 
 // ─── PR scope ─────────────────────────────────────────────────────────────────

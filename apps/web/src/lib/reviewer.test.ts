@@ -817,6 +817,148 @@ describe('buildReviewerContext — generated paths are marked, not dropped', () 
   });
 });
 
+// ── Prompt reads resolved policy, not a literal path ─────────────────────────
+
+describe('buildReviewerContext — no hardcoded schema.ts path rule', () => {
+  const BASE = {
+    originalTaskId: 'original-policy',
+    originalTask: {
+      title: 'Widen a JSONB union type',
+      description: 'TaskResult gets a new optional field',
+      pathManifest: ['packages/core/db/schema.ts'],
+    },
+    prNumber: 2388,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/2388',
+    headSha: 'sha2388',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prFiles: [{ filename: 'packages/core/db/schema.ts', status: 'modified', additions: 3, deletions: 0 }],
+  };
+
+  it('renders the resolved policy intent sentence when a policyConfig is set (AC-5)', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      policyConfig: {
+        preset: 'balanced' as const,
+        riskClasses: [
+          { name: 'destructive_schema_change', detectedPaths: ['packages/core/db/schema.ts'] },
+        ],
+      },
+    });
+
+    expect(prompt).toContain('Balanced policy —');
+    expect(prompt).not.toContain('Escalate if the diff touches `drizzle/*.sql`');
+    expect(prompt).not.toMatch(/touches `packages\/core\/db\/schema\.ts`/);
+  });
+
+  it('never renders the retired literal path rule even without a policyConfig (AC-5)', async () => {
+    const prompt = await buildReviewerContext(BASE);
+
+    expect(prompt).not.toContain('Escalate if the diff touches `drizzle/*.sql`');
+    expect(prompt).not.toContain('packages/core/db/schema.ts` (schema changes need human review)');
+    expect(prompt).toContain('Schema/migration risk is classified mechanically by the platform');
+  });
+
+  it('never renders the retired literal path rule in a delta re-review either', async () => {
+    const prompt = await buildDeltaReviewerContext({
+      originalTask: BASE.originalTask,
+      prNumber: BASE.prNumber,
+      prUrl: BASE.prUrl,
+      headSha: 'sha2388-new',
+      installationId: 1,
+      repoFullName: BASE.repoFullName,
+      priorVerdict: {
+        headSha: 'sha2388-old',
+        verdict: 'approve',
+        confidence: 0.9,
+        summary: 'Looked fine',
+      },
+      deltaFiles: [],
+    });
+
+    expect(prompt).not.toContain('Escalate if the delta touches `drizzle/*.sql`');
+  });
+
+  it('tells the reviewer the classifier already cleared an EXPAND-only schema change (no reviewer discretion)', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      migrationSafety: { safe: true, operationClass: 'EXPAND' },
+    });
+
+    expect(prompt).toContain('Migration classifier verdict: EXPAND');
+    expect(prompt).toContain('Do not re-assess schema risk yourself');
+  });
+
+  it('surfaces the classifier CONTRACT reason instead of asking the reviewer to judge it', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      migrationSafety: { safe: false, operationClass: 'CONTRACT', reason: 'drops column missions.legacy' },
+    });
+
+    expect(prompt).toContain('Migration classifier verdict: CONTRACT — drops column missions.legacy');
+  });
+});
+
+// ── Security escalation is split by whether a decision exists (Part 4) ───────
+
+describe('buildReviewerContext — security escalation discriminator', () => {
+  const BASE = {
+    originalTaskId: 'original-security',
+    originalTask: {
+      title: 'Scratch-cleanup exemption guard',
+      description: 'rm -rf on a claimed /tmp scratch dir, exempted from the destructive-path check',
+      pathManifest: ['apps/runner/src/scratch-cleanup.ts'],
+    },
+    prNumber: 9001,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/9001',
+    headSha: 'sha9001',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prFiles: [{ filename: 'apps/runner/src/scratch-cleanup.ts', status: 'modified', additions: 4, deletions: 1 }],
+  };
+
+  it('gives a named-fix, named-tests discriminator for request-changes vs. escalate (AC-7, no policyConfig)', async () => {
+    const prompt = await buildReviewerContext(BASE);
+
+    expect(prompt).toContain('REQUEST CHANGES (do NOT escalate) when a security-shaped defect has a fix AND regression');
+    expect(prompt).toContain('ESCALATE a security-shaped defect only when the right fix is itself the open question');
+    expect(prompt).toContain('auth/authz boundary change');
+    // No longer a single unconditional line that overrides confidence regardless of severity.
+    expect(prompt).not.toContain('Escalate if you detect a possible security issue');
+  });
+
+  it('renders the same two-branch discriminator with a policyConfig set (AC-9: neither branch skips review)', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      policyConfig: { preset: 'balanced' as const, riskClasses: [] },
+    });
+
+    expect(prompt).toContain('REQUEST CHANGES (do NOT escalate) when a security-shaped defect has a fix AND regression');
+    expect(prompt).toContain('ESCALATE a security-shaped defect only when the right fix is itself the open question');
+  });
+
+  it('renders the same discriminator in a delta re-review', async () => {
+    const prompt = await buildDeltaReviewerContext({
+      originalTask: BASE.originalTask,
+      prNumber: BASE.prNumber,
+      prUrl: BASE.prUrl,
+      headSha: 'sha9001-new',
+      installationId: 1,
+      repoFullName: BASE.repoFullName,
+      priorVerdict: {
+        headSha: 'sha9001-old',
+        verdict: 'approve',
+        confidence: 0.9,
+        summary: 'Looked fine',
+      },
+      deltaFiles: [],
+    });
+
+    expect(prompt).toContain('ESCALATE a security-shaped defect only when the right fix is itself the open question');
+    expect(prompt).not.toContain('Escalate if the delta touches `drizzle/*.sql`');
+  });
+});
+
 // ── Server-side escalation enforcement (T5) ──────────────────────────────────
 
 describe('enforceServerSideEscalation', () => {

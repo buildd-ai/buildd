@@ -40,6 +40,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { reconcileStalePrWorkers, sweepMissionIntegrationPrs } from '@/lib/pr-reconcile';
 import { sweepDeadZonePrs } from '@/lib/dead-zone-sweep';
+import { sweepStrandedTasks } from '@/lib/stranded-tasks-sweep';
 import { withCronRun } from '@/lib/cron-run';
 
 export const maxDuration = 60;
@@ -51,13 +52,19 @@ export async function GET(req: NextRequest) {
   const job = mergeStateOnly ? 'pr-reconcile:merge-state' : 'pr-reconcile';
 
   return withCronRun(job, req, async (report) => {
-    const [reconcile, deadZone, missionPrs] = await Promise.all([
+    const [reconcile, deadZone, missionPrs, stranded] = await Promise.all([
       reconcileStalePrWorkers(),
       mergeStateOnly ? Promise.resolve(null) : sweepDeadZonePrs(),
       // Isolated, unlike the other two: healing merge state is the time-critical
       // half of this route, and a mission-sweep failure must not throw away
       // reconcile work that already landed in the database.
       sweepMissionIntegrationPrs().catch(err => ({
+        error: err instanceof Error ? err.message : String(err),
+      })),
+      // Stranded-task detection has nothing to do with PRs — it rides this
+      // route's hourly cadence (the merge-state scope) rather than a new cron.
+      // Isolated for the same reason as the mission sweep above.
+      sweepStrandedTasks().catch(err => ({
         error: err instanceof Error ? err.message : String(err),
       })),
     ]);
@@ -77,18 +84,25 @@ export async function GET(req: NextRequest) {
     if ('error' in missionPrs) {
       console.error('[MissionPrSweep] error:', missionPrs.error);
     }
+    if ('error' in stranded) {
+      console.error('[StrandedSweep] error:', stranded.error);
+    } else {
+      console.log(`[StrandedSweep] scanned=${stranded.scanned} stranded=${stranded.stranded} cleared=${stranded.cleared}`);
+    }
     // `changed` is what separates a healthy idle sweep from a dead one. Rows
     // stamped merged or closed are the only real work this route does; a
     // "skipped" row is a PR that is simply still open.
     const missionPrErrors = 'error' in missionPrs ? 1 : (missionPrs.errors ?? 0);
+    const strandedErrors = 'error' in stranded ? 1 : 0;
     report({
       processed: reconcile.total + (deadZone?.total ?? 0) + ('error' in missionPrs ? 0 : missionPrs.total),
       changed:
         reconcile.stamped + reconcile.closed + reconcile.unresolvable
         + (deadZone?.sparked ?? 0) + (deadZone?.exhausted ?? 0)
-        + ('error' in missionPrs ? 0 : missionPrs.opened),
-      errors: reconcile.errors + missionPrErrors,
-      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs },
+        + ('error' in missionPrs ? 0 : missionPrs.opened)
+        + ('error' in stranded ? 0 : stranded.stranded + stranded.cleared),
+      errors: reconcile.errors + missionPrErrors + strandedErrors,
+      result: { scope: mergeStateOnly ? 'merge-state' : 'full', reconcile, deadZone, missionPrs, stranded },
     });
 
     return NextResponse.json({
@@ -97,6 +111,7 @@ export async function GET(req: NextRequest) {
       reconcile,
       deadZone,
       missionPrs,
+      stranded,
     });
   });
 }

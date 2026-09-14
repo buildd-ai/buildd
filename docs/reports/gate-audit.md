@@ -30,6 +30,7 @@ helper that follow give every one of them a row.
 | `deferred` | the request was accepted but not acted on yet — a wait, a queue, a single-flight |
 | `bypassed` | a gate fired but the caller carried an explicit escape hatch and the work proceeded |
 | `warned` | advisory only — the response carries a warning and the work proceeded |
+| `stranded` | a task deferred long enough that the sweep flagged it; excluded from the bypass-rate denominator, same as `deferred` |
 
 `bypassed` is the load-bearing one. A lint's bypass rate over its total fire
 count *is* its false-positive rate, measured directly instead of inferred from
@@ -111,9 +112,37 @@ regression without a human noticing nine dead runs.
 | 31 | `pr/review/route.ts:204` | `reviewer_single_flight` | deferred | one reviewer per PR at a time; `force` never stacks a second |
 | 32 | `re-review/route.ts:131` | `reviewer_single_flight` | deferred | same guard on the delta re-review path |
 
-## Deliberately not wired here
+### POST /api/workers/claim — `apps/web/src/app/api/workers/claim/route.ts`
 
-The claim loop's per-reason deferrals, the runner's mirrored `claim_rejected`,
-criteria evaluations that resolve to a non-verdict, and stranded-task
-detection. Those belong to the sibling dispatch-ledger work, which consumes
-this table rather than defining a second one.
+The dispatch-ledger follow-up (task b2d38227) to the audit above: the claim
+loop's per-reason deferrals (previously an unpersisted `deferrals` object that
+died with the response — #1510), the auth/validation refusals a runner sees as
+a thrown `claim_rejected` client-side (#1511), and the stranded-task sweep's
+`outcome: 'stranded'` rows all share one gate, `claim_loop_deferral`, so the
+whole claim-loop decision surface aggregates as one thing in `get_failure_
+analytics family='gate'` and the health page's Gates block.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 33 | `claim/route.ts` (invalid API key) | `claim_loop_deferral` | rejected | mirrors the runner's local `claim_rejected` log |
+| 34 | `claim/route.ts` (trigger-level token) | `claim_loop_deferral` | rejected | trigger tokens cannot claim |
+| 35 | `claim/route.ts` (`runner` field missing) | `claim_loop_deferral` | rejected | malformed claim request |
+| 36 | `claim/route.ts` `deferTask()` — 12 dispatch-loop sites (`connector_mismatch`, `subject_dead`, `path_overlap` ×2, `mission_budget`, `mission_concurrent`, `mission_paced`, `advisory_manifest`, `workspace_cap`, `provider_unavailable`, `budget_paused` ×2, `routing_paused`, `duplicate_worker`) | `claim_loop_deferral` | deferred | one row per (taskId, reason) per tick, coalesced across polls via `recordOrCoalesceDeferral` into a `detail.consecutiveDeferrals` counter with a `detail.firstDeferredAt` floor |
+| 37 | `stranded-tasks-sweep.ts:sweepStrandedTasks` | `claim_loop_deferral` | stranded | pending past `startAt` by 2h, or the same deferral reason for `STRAND_CONSECUTIVE_THRESHOLD` consecutive polls; posts one open `mission_notes` warning per task, cleared when the task re-arms |
+
+### Mission goal-criteria evaluation — `apps/web/src/lib/mission-criteria-eval.ts`, `mission-criteria-verify.ts`, `mission-criteria-worker-eval.ts`
+
+The counterpart to criteria escalation: escalation decides what to do about a
+non-verdict, this counts how often one was needed and why.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 38 | `mission-criteria-eval.ts` (worker-eval unavailable) | `criteria_not_evaluated` | warned | reason `evaluator_unavailable` |
+| 39 | `mission-criteria-eval.ts` (evaluator returned nothing) | `criteria_not_evaluated` | warned | reason `evaluator_no_output` |
+| 40 | `mission-criteria-eval.ts` (inline inference error) | `criteria_not_evaluated` | warned | reason = the raw `inferenceError.kind` |
+| 41 | `mission-criteria-eval.ts` `setAll('NOT_EVALUATED', ...)` ×3 (read-only, already-failing, dispatch failed) | `criteria_not_evaluated` | warned | reason `no_api_key` / `unsupported_provider` / `capability_disabled` |
+| 42 | `mission-criteria-verify.ts:handleCriteriaVerificationOutcome` (no run evidence) | `criteria_not_evaluated` | warned | reason `evaluator_no_output` |
+| 43 | `mission-criteria-verify.ts:handleCriteriaVerificationOutcome` (UNVERIFIED verdict) | `criteria_not_evaluated` | warned | reason `timeout` / `exec_error` |
+| 44 | `mission-criteria-worker-eval.ts:handleCriteriaWorkerEvalOutcome` (criterion edited mid-flight) | `criteria_not_evaluated` | warned | reason `criterion_changed` |
+| 45 | `mission-criteria-worker-eval.ts:handleCriteriaWorkerEvalOutcome` (no verdict returned) | `criteria_not_evaluated` | warned | reason `evaluator_no_output` |
+| 46 | `mission-criteria-worker-eval.ts:handleCriteriaWorkerEvalOutcome` (fail downgraded to UNVERIFIED) | `criteria_not_evaluated` | warned | reason `exec_error` / `exit_126_127` |

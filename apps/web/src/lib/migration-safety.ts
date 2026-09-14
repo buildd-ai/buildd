@@ -168,12 +168,13 @@ export function classifyPullRequestMigrations(
   openPullRequestMigrationPaths: string[],
 ): MigrationSafety {
   const migrations = files.filter((file) => isGeneratedMigrationPath(file.filename));
-  const touchesSchema = files.some((file) => file.filename === 'packages/core/db/schema.ts');
 
-  if (touchesSchema && migrations.length === 0) {
-    return { safe: false, operationClass: 'CONTRACT', reason: 'schema changed without a generated SQL migration' };
-  }
-
+  // schema.ts touched with zero generated migrations is NOT a destructive schema
+  // change — it covers TS-only edits ($type<>() union widening, JSONB-shaped
+  // interface fields, type aliases) that alter no table shape. Falls through to
+  // the EXPAND default below. The `schema-drift` CI job is what catches a real
+  // structural change whose migration was never generated — this classifier is
+  // about irreversibility, not about whether `bun db:generate` was run.
   const results: MigrationSafety[] = [];
 
   for (const migration of migrations) {

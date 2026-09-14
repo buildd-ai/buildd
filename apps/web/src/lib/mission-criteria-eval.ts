@@ -15,6 +15,7 @@ import { resolveProseCriteria } from './mission-criteria-prose';
 import { resolveEvaluationStrategy } from './mission-criteria-strategy';
 import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './mission-criteria-worker-eval';
 import { applyReviewerFindings } from './criteria-reviewer-findings';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
  * Producer of goal-criteria verdicts.
@@ -245,6 +246,19 @@ export async function evaluateCriteriaNow(
   });
   if (!mission) return null;
 
+  const fireNotEvaluated = (index: number, reason: string, detail?: Record<string, unknown>) => {
+    fireGateEvent({
+      gate: GATE_SLUGS.CRITERIA_NOT_EVALUATED,
+      surface: 'evaluateCriteriaNow',
+      outcome: 'warned',
+      reason,
+      workspaceId: mission.workspaceId ?? null,
+      missionId,
+      callerOrigin: 'system',
+      detail: { criterionIndex: index, ...detail },
+    });
+  };
+
   const criteria = Array.isArray(mission.goalCriteria) ? (mission.goalCriteria as GoalCriterion[]) : [];
   if (criteria.length === 0) return null;
 
@@ -399,6 +413,7 @@ export async function evaluateCriteriaNow(
         for (const cs of workerBound) {
           cs.verdict = 'NOT_EVALUATED';
           cs.evidence = resolution.evidence;
+          fireNotEvaluated(cs.index, 'evaluator_unavailable', { resolutionEvidence: resolution.evidence });
         }
       }
     }
@@ -505,6 +520,7 @@ export async function evaluateCriteriaNow(
           const cs = state.criteria.find(s => s.index === c.index);
           if (cs && cs.verdict === 'NOT_EVALUATED') {
             cs.evidence = 'The evaluator returned no verdict for this criterion';
+            fireNotEvaluated(cs.index, 'evaluator_no_output');
           }
         }
       }
@@ -527,6 +543,7 @@ export async function evaluateCriteriaNow(
         if (cs) {
           cs.verdict = 'NOT_EVALUATED';
           cs.evidence = `Not graded: ${describeInferenceError(inferenceError)}`;
+          fireNotEvaluated(cs.index, inferenceError.kind);
         }
       }
     } else if (needsDispatch) {
@@ -536,6 +553,11 @@ export async function evaluateCriteriaNow(
         fingerprint: c.fingerprint,
       }));
 
+      // NO_INFERENCE_PATH's kind, normalized to the dispatch-ledger's cause
+      // vocabulary — every setAll('NOT_EVALUATED', ...) below only runs because
+      // inferenceError.kind was already one of these three.
+      const dispatchCause = inferenceError!.kind === 'missing_key' ? 'no_api_key' : inferenceError!.kind;
+
       const setAll = (verdict: CriterionVerdict, evidence: string, taskId?: string) => {
         for (const c of toJudge) {
           const cs = state.criteria.find(s => s.index === c.index);
@@ -543,6 +565,7 @@ export async function evaluateCriteriaNow(
           cs.verdict = verdict;
           cs.evidence = evidence;
           if (taskId) cs.workerTaskId = taskId;
+          if (verdict === 'NOT_EVALUATED') fireNotEvaluated(cs.index, dispatchCause);
         }
       };
 
