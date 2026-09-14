@@ -2490,35 +2490,35 @@ describe('POST /api/tasks', () => {
   }
 
   describe('prose-gate lint', () => {
-    it('rejects task 222e9216 description with empty dependsOn (verbatim incident)', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    it('surfaces a prose-gate warning for task 222e9216 description with empty dependsOn (verbatim incident)', async () => {
+      setupBasicCreation();
 
       const response = await POST(createMockRequest({
         method: 'POST',
         body: { workspaceId: 'ws-1', title: 'Gated task', description: INCIDENT_222e9216 },
       }));
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.error).toContain('dependsOn');
-      expect(data.error).toContain('Gated on');
+      expect(data.proseGateWarning.message).toContain('dependsOn');
+      expect(data.proseGateWarning.message).toContain('Gated on');
     });
 
-    it('rejects task ca0b692e description with empty dependsOn (verbatim incident)', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    it('surfaces a prose-gate warning for task ca0b692e description with empty dependsOn (verbatim incident)', async () => {
+      setupBasicCreation();
 
       const response = await POST(createMockRequest({
         method: 'POST',
         body: { workspaceId: 'ws-1', title: 'Spec gate', description: INCIDENT_ca0b692e },
       }));
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.error).toContain('dependsOn');
+      expect(data.proseGateWarning.message).toContain('dependsOn');
     });
 
-    it('rejects gate phrase with empty dependsOn and names extracted task IDs in error', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    it('surfaces a prose-gate warning with empty dependsOn and names extracted task IDs', async () => {
+      setupBasicCreation();
 
       const response = await POST(createMockRequest({
         method: 'POST',
@@ -2529,10 +2529,10 @@ describe('POST /api/tasks', () => {
         },
       }));
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.error).toContain('deadbeef');
-      expect(data.error).toContain('cafebabe');
+      expect(data.proseGateWarning.taskIds).toContain('deadbeef');
+      expect(data.proseGateWarning.taskIds).toContain('cafebabe');
     });
 
     it('gate phrase + dependsOn → created', async () => {
