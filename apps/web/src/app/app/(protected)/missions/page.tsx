@@ -9,7 +9,8 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeMissionSkyline } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeMissionSkyline, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
+import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { resolvePolicy } from '@/lib/merge-policy';
@@ -113,12 +114,12 @@ export default async function MissionsPage({
   const allMissions = await db.query.missions.findMany({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true, completedAt: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
       initiative: { columns: { id: true, title: true } },
       tasks: {
-        columns: { id: true, title: true, status: true, result: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true },
+        columns: { id: true, title: true, status: true, result: true, createdAt: true, updatedAt: true, kind: true, mode: true, creationSource: true, category: true, parentTaskId: true, dependsOn: true, scheduleId: true, startAt: true, loopIteration: true, taskClass: true, createdByWorkerId: true, createdByAccountId: true },
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
         with: {
           workers: {
@@ -169,9 +170,23 @@ export default async function MissionsPage({
     }),
   );
 
+  // Steering-cost visibility: one batched query for every mission's
+  // post-completion follow-ups, so N missions cost one extra query instead of
+  // N. Missions with no completedAt are skipped inside — their metric renders
+  // `no_baseline`, not zero.
+  const followupsByMission = await loadMissionFollowupTasks(
+    allMissions.map(m => ({ id: m.id, completedAt: (m as any).completedAt ?? null, taskIds: (m.tasks || []).map(t => t.id) })),
+  );
+
   // Compute mission data
   const missionsList = allMissions.map((obj) => {
     const { totalTasks, completedTasks, progress, segments } = computeMissionProgress(obj.tasks || []);
+    const authorshipHealth = computeMissionAuthorshipHealth({
+      tasks: obj.tasks || [],
+      missionCreatedAt: (obj as any).createdAt,
+      missionCompletedAt: (obj as any).completedAt ?? null,
+      followupTasks: followupsByMission.get(obj.id) ?? [],
+    });
     const activeAgents = obj.tasks
       ?.flatMap((t: any) => t.workers || [])
       .filter((w: any) => w.status === 'running').length || 0;
@@ -329,6 +344,7 @@ export default async function MissionsPage({
       priority: obj.priority ?? 0,
       goalCriteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
       goalCriteriaOverall: ((obj.goalCriteriaState as any)?.overall ?? null) as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null,
+      authorshipHealth,
       skyline,
       normalizationSlots: 0, // patched below after all missions are computed
       releaseFooter: obj.workspaceId ? (releaseFooterMap.get(obj.workspaceId) ?? null) : null,

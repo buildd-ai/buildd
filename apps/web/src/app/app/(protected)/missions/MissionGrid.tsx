@@ -4,8 +4,9 @@ import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import type { MissionSegment, MissionSkylineData } from '@buildd/core/mission-helpers';
-import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS } from '@buildd/core/mission-helpers';
+import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, type MissionAuthorshipHealth } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
+import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { MissionSkylineChart } from '@/components/MissionSkylineChart';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
@@ -78,6 +79,7 @@ export interface MissionItem {
   priority: number;
   goalCriteriaCount: number;
   goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
+  authorshipHealth: MissionAuthorshipHealth;
   skyline: MissionSkylineData | null;
   normalizationSlots: number;
   releaseFooter: ReleaseFooterData;
@@ -521,6 +523,7 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
             </span>
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
+          <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
 
@@ -677,6 +680,7 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
             </span>
           )}
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
+          <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
         {group === 'completed' && mission.skyline ? (
           <div className="mt-2">
