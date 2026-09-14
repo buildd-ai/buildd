@@ -159,13 +159,32 @@ describe('classifyPullRequestMigrations', () => {
     });
   });
 
-  it('escalates schema.ts without a generated migration (CONTRACT)', () => {
+  it('does not escalate schema.ts touched with zero generated migrations (EXPAND — TS-only edit)', () => {
+    // Covers $type<>() union widening, JSONB-shaped interface fields (e.g.
+    // TaskResult), and type aliases — none of which alter table shape. A real
+    // structural change with a forgotten migration is caught by the
+    // `schema-drift` CI job, not by this classifier.
     expect(
       classifyPullRequestMigrations([{ filename: 'packages/core/db/schema.ts' }], []),
+    ).toEqual({ safe: true, operationClass: 'EXPAND' });
+  });
+
+  it('still classifies CONTRACT when schema.ts is touched alongside an unparseable migration statement', () => {
+    expect(
+      classifyPullRequestMigrations(
+        [
+          { filename: 'packages/core/db/schema.ts' },
+          {
+            filename: 'packages/core/drizzle/0094_weird.sql',
+            content: 'DO $$ BEGIN RAISE NOTICE \'hi\'; END $$;',
+          },
+        ],
+        [],
+      ),
     ).toEqual({
       safe: false,
       operationClass: 'CONTRACT',
-      reason: 'schema changed without a generated SQL migration',
+      reason: expect.stringMatching(/^ambiguous migration statement:/),
     });
   });
 
