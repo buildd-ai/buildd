@@ -978,7 +978,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       expect(insertCalls.length).toBe(1);
       const inserted = insertCalls[0].values;
-      expect(inserted.title).toBe('[CI Retry #1] Fix the thing');
+      expect(inserted.title).toBe('[builder · after CI #1] Fix the thing');
       expect(inserted.parentTaskId).toBe('t1');
       expect(inserted.missionId).toBe('m1');
       expect(inserted.ciRetryPrNumber).toBe(42);
@@ -1325,7 +1325,7 @@ describe('POST /api/github/webhook', () => {
       // 2 adoption inserts (task, worker) + 1 CI retry task insert.
       expect(insertCalls.length).toBe(3);
       const retryInsert = insertCalls[2].values;
-      expect(retryInsert.title).toBe('[CI Retry #1] PR #42: Release v1.2.3');
+      expect(retryInsert.title).toBe('[builder · after CI #1] PR #42: Release v1.2.3');
       expect(retryInsert.parentTaskId).toBe('adopted-t1');
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
     });
@@ -1366,7 +1366,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
       // Only the retry task insert — no adoption task/worker rows created again.
       expect(insertCalls.length).toBe(1);
-      expect(insertCalls[0].values.title).toBe('[CI Retry #2] PR #42: Release v1.2.3');
+      expect(insertCalls[0].values.title).toBe('[builder · after CI #2] PR #42: Release v1.2.3');
       expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
     });
 
