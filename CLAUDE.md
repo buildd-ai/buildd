@@ -214,8 +214,10 @@ Worker sandboxes never get a production `DATABASE_URL` — that's a deliberate s
 boundary (no DB-credential purpose in the `secrets` table), not a bug; use seed scripts above
 for real-shaped data instead. A headless browser works via `npx playwright install-deps
 chromium` — just never type the literal word `sudo` in a Bash command, it's blocked outright
-by the harness safety policy even though the underlying escalation works. See
-`docs/testing.md` → "Worker Sandbox Constraints".
+by the harness safety policy even though the underlying escalation works. This also means
+root `bun run build` fails in a sandbox (it runs `db:migrate` first) — use `cd apps/web &&
+bun run build:only` (same command CI's `Build` step uses) to verify compilation with no DB
+and no extra flags. See `docs/testing.md` → "Worker Sandbox Constraints".
 
 ### UI Fixtures
 View worker UI states in isolation: `http://localhost:3001/app/dev/fixtures?state=waiting-input`
