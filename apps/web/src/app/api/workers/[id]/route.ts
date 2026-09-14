@@ -39,7 +39,7 @@ import { enforceServerSideEscalation } from '@/lib/reviewer';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
-import { reviewerRetryTitle } from '@/lib/task-title';
+import { formatAttemptTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
@@ -3746,7 +3746,10 @@ async function handleReviewerOutcomeIfNeeded(
         .insert(tasks)
         .values({
           workspaceId,
-          title: reviewerRetryTitle(currentIteration + 1, originalTask.title),
+          title: formatAttemptTitle('builder', originalTask.title, {
+            reason: 'after review',
+            iteration: currentIteration + 1,
+          }),
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,

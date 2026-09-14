@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { stripTaskTitlePrefixes, reviewerTitle, reviewerRetryTitle, applyRecommendationTitle, formatAttemptTitle } from './task-title';
+import { stripTaskTitlePrefixes, reviewerTitle, applyRecommendationTitle, formatAttemptTitle } from './task-title';
 
 describe('stripTaskTitlePrefixes', () => {
   it('returns a plain title unchanged', () => {
@@ -32,7 +32,7 @@ describe('stripTaskTitlePrefixes', () => {
   });
 });
 
-describe('reviewerTitle / reviewerRetryTitle — no stacking', () => {
+describe('reviewerTitle / formatAttemptTitle(reviewer) — no stacking', () => {
   it('reviewerTitle wraps a plain title with exactly one prefix', () => {
     expect(reviewerTitle(1469, 'Narrow the rule')).toBe('[reviewer] PR #1469: Narrow the rule');
   });
@@ -41,14 +41,14 @@ describe('reviewerTitle / reviewerRetryTitle — no stacking', () => {
     expect(reviewerTitle(1469, '[reviewer retry #1] Narrow the rule')).toBe('[reviewer] PR #1469: Narrow the rule');
   });
 
-  it('reviewerRetryTitle does NOT stack on an already-reviewer title', () => {
-    expect(reviewerRetryTitle(1, '[reviewer] PR #1469: Narrow the rule')).toBe('[reviewer #1] Narrow the rule');
+  it('formatAttemptTitle(reviewer) does NOT stack on an already-reviewer title', () => {
+    expect(formatAttemptTitle('reviewer', '[reviewer] PR #1469: Narrow the rule', { iteration: 1 })).toBe('[reviewer #1] Narrow the rule');
   });
 
   it('round-trips without growth across repeated wraps', () => {
     let t = 'Narrow the rule';
     t = reviewerTitle(1469, t); // [reviewer] PR #1469: Narrow the rule
-    t = reviewerRetryTitle(1, t); // [reviewer #1] Narrow the rule
+    t = formatAttemptTitle('reviewer', t, { iteration: 1 }); // [reviewer #1] Narrow the rule
     t = reviewerTitle(1470, t); // [reviewer] PR #1470: Narrow the rule
     expect(t).toBe('[reviewer] PR #1470: Narrow the rule');
   });

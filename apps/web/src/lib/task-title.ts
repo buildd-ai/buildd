@@ -71,11 +71,6 @@ export function reviewerTitle(prNumber: number, baseTitle: string | null | undef
   return `[reviewer] PR #${prNumber}: ${stripTaskTitlePrefixes(baseTitle)}`;
 }
 
-/** Title for a reviewer retry (iteration k) — exactly one prefix, no stacking. */
-export function reviewerRetryTitle(iteration: number, baseTitle: string | null | undefined): string {
-  return formatAttemptTitle('reviewer', baseTitle, { iteration });
-}
-
 /** Title for a human-initiated Apply/Apply-with-corrections dispatch — exactly one prefix, no stacking. */
 export function applyRecommendationTitle(baseTitle: string | null | undefined): string {
   return `[apply recommendation] ${stripTaskTitlePrefixes(baseTitle)}`;
