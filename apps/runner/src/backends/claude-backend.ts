@@ -5,7 +5,7 @@ import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 export interface ClaudeBackendConfig {
   /** Pre-built query options from workers.ts (excludes sessionId, cwd, model, maxTurns, env — those come from RunStreamedOpts) */
   options: Record<string, unknown>;
-  /** Multi-turn input stream (ralph loop, user responses, nudges) */
+  /** Multi-turn input stream (output-requirement nudges, user responses, steering) */
   inputStream: AsyncIterable<unknown>;
   /** Called once with queryInstance immediately after query() is created */
   onInit?: (queryInstance: ReturnType<typeof query>) => void;
@@ -61,7 +61,7 @@ export class ClaudeBackend implements AgentBackend {
 
     this.queryInstance = queryInstance;
 
-    // Connect multi-turn input stream (allows ralph loop and user responses)
+    // Connect multi-turn input stream (allows output-requirement nudges and user responses)
     queryInstance.streamInput(this.config.inputStream as any);
 
     // Notify caller with the query instance so they can set up discovery/rewindFiles

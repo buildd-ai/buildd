@@ -8,7 +8,6 @@ import {
   restoreCodexAgentsMd,
   BUILDD_AGENTS_BEGIN,
   BUILDD_AGENTS_END,
-  DONE_SENTINEL,
 } from '../../src/codex-instructions';
 import { buildCbmGuidanceBody } from '../../src/cbm-enforcement';
 
@@ -38,7 +37,7 @@ describe('buildCodexInstructionDoc', () => {
     const doc = buildCodexInstructionDoc({
       rolePersona: 'Persona.',
       skillBundles: [
-        { slug: 'ralph-loop', name: 'Ralph Loop', content: '# Ralph Loop\nRun gates locally until green.' },
+        { slug: 'gate-check', name: 'Gate Check', content: '# Gate Check\nRun gates locally until green.' },
         { slug: 'ui-audit', name: 'UI Audit', content: '# UI Audit\nEvaluate against UX heuristics.' },
       ],
     });
@@ -46,10 +45,10 @@ describe('buildCodexInstructionDoc', () => {
     expect(doc).toContain('Run gates locally until green.');
     expect(doc).toContain('Evaluate against UX heuristics.');
     // Skill name shows up as a heading so the agent can tell them apart
-    expect(doc).toContain('Ralph Loop');
+    expect(doc).toContain('Gate Check');
     expect(doc).toContain('UI Audit');
     // It must NOT instruct invoking a Skill tool — that tool does not exist in Codex
-    expect(doc).not.toContain('Skill(ralph-loop)');
+    expect(doc).not.toContain('Skill(gate-check)');
     expect(doc).not.toContain('Skill tool');
   });
 
@@ -63,14 +62,6 @@ describe('buildCodexInstructionDoc', () => {
     expect(doc).toContain('Real instructions.');
     // Empty skill produces no heading
     expect(doc).not.toContain('## Skill: A');
-  });
-
-  test('includes the DONE-sentinel completion instruction', () => {
-    const doc = buildCodexInstructionDoc({ rolePersona: 'Persona.', skillBundles: [] });
-    expect(doc).toContain(DONE_SENTINEL);
-    expect(DONE_SENTINEL).toBe('<promise>DONE</promise>');
-    // The instruction should tell the agent to EMIT the sentinel when complete.
-    expect(doc.toLowerCase()).toContain('complete');
   });
 
   test('includes project CLAUDE.md content when provided', () => {
@@ -87,10 +78,9 @@ describe('buildCodexInstructionDoc', () => {
     expect(doc).not.toContain('Project Instructions');
   });
 
-  test('produces a non-empty doc even with no persona and no skills (DONE instruction always present)', () => {
+  test('produces an empty doc when there is no persona, skills, project instructions, or CBM guidance', () => {
     const doc = buildCodexInstructionDoc({ skillBundles: [] });
-    expect(doc.trim().length).toBeGreaterThan(0);
-    expect(doc).toContain(DONE_SENTINEL);
+    expect(doc.trim().length).toBe(0);
   });
 
   test('carries the codebase-graph guidance when CBM is mounted for this task', () => {
@@ -115,12 +105,13 @@ describe('buildCodexInstructionDoc', () => {
     expect(doc).not.toContain('codebase-memory');
   });
 
-  test('the graph section precedes the Completion contract', () => {
+  test('the graph section follows the project instructions section', () => {
     const doc = buildCodexInstructionDoc({
       skillBundles: [],
+      projectInstructions: '# Project Rules\nAlways run bun test before finishing.',
       cbmGuidance: buildCbmGuidanceBody({ dialect: 'codex' }),
     });
-    expect(doc.indexOf('# Codebase graph')).toBeLessThan(doc.indexOf('# Completion'));
+    expect(doc.indexOf('Project Instructions')).toBeLessThan(doc.indexOf('# Codebase graph'));
   });
 });
 
