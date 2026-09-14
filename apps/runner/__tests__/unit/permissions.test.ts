@@ -89,6 +89,14 @@ describe('DANGEROUS_PATTERNS', () => {
     test('still blocks rm -rf on a look-alike top-level path', () => {
       expect(isDangerousCommand('rm -rf /tmpfoo')).toBe(true);
     });
+
+    test('blocks path traversal out of /tmp via ..', () => {
+      expect(isDangerousCommand('rm -rf /tmp/../etc/passwd')).toBe(true);
+    });
+
+    test('blocks path traversal out of /var/tmp via ..', () => {
+      expect(isDangerousCommand('rm -rf /var/tmp/../etc/passwd')).toBe(true);
+    });
   });
 
   describe('sudo blocking', () => {
