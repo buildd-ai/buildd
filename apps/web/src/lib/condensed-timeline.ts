@@ -342,19 +342,29 @@ export function deriveBandLabel(ts: number, now: Date): string {
 
   if (ts >= todayStart.getTime()) return 'Today';
   if (ts >= yesterdayStart.getTime()) return 'Yesterday';
-  if (ts >= weekStart.getTime()) return new Date(ts).toLocaleDateString('en-US', { weekday: 'long' });
+  if (ts >= weekStart.getTime()) {
+    const d = new Date(ts);
+    const date = d.getDate();
+    return new Date(ts).toLocaleDateString('en-US', { weekday: 'short' }) + ` ${date}`;
+  }
 
   const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
   if (ts >= yearStart) return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+/** Get the calendar day key in local timezone (YYYY-MM-DD). */
+function getLocalDateKey(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /**
  * Gap-cluster items by completionTs into wave bands for §3.8.
  *
- * Items are sorted ascending by completionTs; any gap ≥ 4 h opens a new band.
- * The band label derives from the first item's timestamp relative to now.
- * Duplicate labels (e.g. two "Yesterday" bands) get ordinal suffixes.
+ * Groups items by calendar day first (to prevent same-day splits), then applies
+ * 4-hour gap clustering within each day. The band label derives from the first
+ * item's timestamp relative to now, and includes the date to distinguish bands.
  * Bands are returned newest-first for display.
  */
 export function deriveBandKey<T extends { id: string; completionTs: number }>(
@@ -366,26 +376,34 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
   const sorted = [...items].sort((a, b) => a.completionTs - b.completionTs);
   const GAP_MS = 4 * 60 * 60 * 1000;
 
-  const rawBands: Array<{ firstTs: number; items: T[] }> = [];
-  let currentBand: { firstTs: number; items: T[] } | null = null;
-  let prevTs = 0;
-
+  // Group by calendar day first
+  const byDay = new Map<string, T[]>();
   for (const item of sorted) {
-    if (!currentBand || item.completionTs - prevTs >= GAP_MS) {
-      currentBand = { firstTs: item.completionTs, items: [] };
-      rawBands.push(currentBand);
-    }
-    currentBand.items.push(item);
-    prevTs = item.completionTs;
+    const dayKey = getLocalDateKey(item.completionTs);
+    const bucket = byDay.get(dayKey);
+    if (bucket) bucket.push(item);
+    else byDay.set(dayKey, [item]);
   }
 
-  // Assign labels, appending ordinals for duplicate label strings
-  const labelCounts = new Map<string, number>();
-  const labeled = rawBands.map(band => {
-    const base = deriveBandLabel(band.firstTs, now);
-    const seen = labelCounts.get(base) ?? 0;
-    labelCounts.set(base, seen + 1);
-    const label = seen === 0 ? base : `${base} (${seen + 1})`;
+  // Within each day, apply gap clustering
+  const allBands: Array<{ firstTs: number; items: T[] }> = [];
+  for (const dayItems of byDay.values()) {
+    let currentBand: { firstTs: number; items: T[] } | null = null;
+    let prevTs = 0;
+
+    for (const item of dayItems) {
+      if (!currentBand || item.completionTs - prevTs >= GAP_MS) {
+        currentBand = { firstTs: item.completionTs, items: [] };
+        allBands.push(currentBand);
+      }
+      currentBand.items.push(item);
+      prevTs = item.completionTs;
+    }
+  }
+
+  // Assign labels (no ordinal suffixes — date in label prevents collisions)
+  const labeled = allBands.map(band => {
+    const label = deriveBandLabel(band.firstTs, now);
     return { label, items: [...band.items].reverse() };
   });
 
