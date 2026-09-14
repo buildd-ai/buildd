@@ -254,6 +254,11 @@ describe('runMission', () => {
     expect(insertCall.creationSource).toBe('orchestrator');
     expect(insertCall.missionId).toBe('obj-1');
     expect(insertCall.mode).toBe('planning');
+    expect(insertCall.taskClass).toBe('bookkeeping');
+    // The organizer reports its outcome via complete_task's summary/
+    // structuredOutput, never a PR or artifact — left unset this defaults to
+    // 'auto', which the completion gate reads as builder semantics.
+    expect(insertCall.outputRequirement).toBe('none');
 
     // Verify dispatch was called
     expect(mockDispatchNewTask).toHaveBeenCalledWith(createdTask, { id: 'ws-1', name: 'Test WS' });
