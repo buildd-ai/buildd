@@ -6,7 +6,9 @@ import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
+import { loadMissionFollowupTasks } from '@/lib/mission-followups';
+import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
@@ -111,6 +113,9 @@ export default async function MissionDetailPage({
           ciRetryPrNumber: true,
           conflictRetryPrNumber: true,
           context: true,
+          // Authorship: computeMissionAuthorshipHealth's human-task-share input.
+          createdByWorkerId: true,
+          createdByAccountId: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -194,7 +199,7 @@ export default async function MissionDetailPage({
                   creationSource: true, dependsOn: true, parentTaskId: true, category: true,
                   taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
                   reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
-                  context: true,
+                  context: true, createdByWorkerId: true, createdByAccountId: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -324,6 +329,21 @@ export default async function MissionDetailPage({
   });
   const progressMetric = deriveMissionProgressMetric(mission.tasks || []);
   const progress = progressMetric.kind === 'value' ? progressMetric.value : undefined;
+
+  // Steering-cost visibility: how much of this mission a human had to write
+  // directly, and how much leaked in after it was marked done. One accessor
+  // computes both — see computeMissionAuthorshipHealth's docstring.
+  const missionFollowupTasks = await loadMissionFollowupTasks([{
+    id: mission.id,
+    completedAt: (mission as any).completedAt ?? null,
+    taskIds: (mission.tasks || []).map(t => t.id),
+  }]);
+  const authorshipHealth = computeMissionAuthorshipHealth({
+    tasks: mission.tasks || [],
+    missionCreatedAt: (mission as any).createdAt,
+    missionCompletedAt: (mission as any).completedAt ?? null,
+    followupTasks: missionFollowupTasks.get(mission.id) ?? [],
+  });
   // Invariant: PRs ≤ totalTasks when totalTasks > 0. A violation means the attempt
   // filter is still overcollapsing or the PR counter is double-counting.
   if (process.env.NODE_ENV === 'development' && totalTasks > 0) {
@@ -863,6 +883,7 @@ export default async function MissionDetailPage({
                   {hasPolicyOverride && <span className="opacity-60">·override</span>}
                 </Link>
               )}
+              <MissionAuthorshipStats health={authorshipHealth} />
             </span>
           }
         />

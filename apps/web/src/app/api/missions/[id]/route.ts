@@ -309,6 +309,13 @@ export async function PATCH(
         return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
       }
       updateData.status = status;
+      // Stamp once, on the transition INTO 'completed' — never on 'archived'
+      // (which can also mean "abandoned incomplete," not "done") and never
+      // overwritten once set, so a later completed→archived→completed loop
+      // keeps the original completion boundary for the follow-up metric.
+      if (status === 'completed' && existing.status !== 'completed' && !existing.completedAt) {
+        updateData.completedAt = new Date();
+      }
 
       // An explicit status write bypasses the goal-criteria gate on purpose — a
       // person may always override. But this endpoint is also reachable with an
