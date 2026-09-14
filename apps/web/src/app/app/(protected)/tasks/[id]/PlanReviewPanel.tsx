@@ -21,6 +21,34 @@ interface PlanReviewPanelProps {
   result: Record<string, unknown> | null;
 }
 
+/**
+ * What a rejection actually did, read from the response rather than assumed.
+ *
+ * An ordinary plan rejection respawns a revised planning task and the reviewer
+ * is sent to it. A doc-fix task's plan is an optional net-enhancement proposal:
+ * rejecting it creates nothing — the docs-only PR shipped independently — and
+ * the reason is retained on the discrepancy rows instead. Announcing a revised
+ * task there would be untrue, and navigating to `taskId` would land on
+ * /app/tasks/null.
+ */
+export function resolveRejectOutcome(data: {
+  taskId?: string | null;
+  proposalRejected?: boolean;
+}): { text: string; navigateTo: string | null } {
+  if (!data.taskId) {
+    return {
+      text:
+        'Proposal rejected — the reason is kept on the discrepancy it was about, ' +
+        'and the documentation fix already shipped is unaffected.',
+      navigateTo: null,
+    };
+  }
+  return {
+    text: 'Plan rejected, revised task created. Redirecting...',
+    navigateTo: data.taskId,
+  };
+}
+
 export default function PlanReviewPanel({ taskId, mode, status, result }: PlanReviewPanelProps) {
   const router = useRouter();
   const [approving, setApproving] = useState(false);
@@ -91,12 +119,19 @@ export default function PlanReviewPanel({ taskId, mode, status, result }: PlanRe
       }
 
       const data = await res.json();
-      setMessage({ type: 'success', text: 'Plan rejected, revised task created. Redirecting...' });
+      const outcome = resolveRejectOutcome(data);
+      setMessage({ type: 'success', text: outcome.text });
 
-      // Navigate to the new revised task
-      setTimeout(() => {
-        router.push(`/app/tasks/${data.taskId}`);
-      }, 1000);
+      if (outcome.navigateTo) {
+        // Navigate to the new revised task
+        setTimeout(() => {
+          router.push(`/app/tasks/${outcome.navigateTo}`);
+        }, 1000);
+      } else {
+        // Nothing was created to navigate to — re-read this task so the panel
+        // reflects the recorded rejection.
+        router.refresh();
+      }
     } catch (err: any) {
       setMessage({ type: 'error', text: err.message });
     } finally {

@@ -24,16 +24,54 @@ function ageLabel(hours: number | null | undefined): string | null {
   return days === 1 ? '1 day old' : `${days} days old`;
 }
 
+const PRIMARY_BTN =
+  'text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
+const SECONDARY_BTN =
+  'text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1.5 whitespace-nowrap disabled:opacity-60';
+
 /**
  * DISCREPANCY card for Home (docs/design/spec-conformance.md §12).
  *
- * Unlike WaitingOnYouDecideCard, the three exits (promote / accept / flip
- * direction) live directly on this card rather than a detail page — a
- * `spec_ahead` row has no mission to link to yet, so there is no "detail
- * page" to defer to until promote has already run. All three call the
- * §13 REST routes that back the equivalent MCP actions, so there is exactly
- * one mutation path whether a human clicks here or an agent calls the MCP
- * tool directly.
+ * ── One card per spec doc ──
+ * The card is a group: every open ledger row sharing a spec path and a
+ * direction. A stale document fails every assertion in it at once, so the
+ * per-assertion card rendered the same doc fix four times and crowded out
+ * everything else in the queue. The assertion ids are still all here, one tap
+ * away, because the count is the summary and the list is the evidence.
+ *
+ * ── The CTA set per direction ──
+ * Derived from server state, never from what looks tidy — the same discipline
+ * docs/specs/action-queue-card-state.md I-1 applies to rendered text. Each
+ * direction gets exactly the actions §8 says are valid for it:
+ *
+ *  - `code_ahead`  — Dispatch doc fix (primary), Accept (secondary). §8: "the
+ *    only valid actions on a code_ahead row are accept or a docs-only
+ *    follow-up task." Promote is absent because the promotion rule forbids it
+ *    (and must keep forbidding it); flip direction is absent because
+ *    `adjudicate_discrepancy`'s flip is "the only path off `contradicted`"
+ *    (§13) and would be rejected here — a CTA the server refuses is the dead
+ *    button this file already learned not to render.
+ *  - `spec_ahead`  — Promote (primary, or the minted mission's link), Accept.
+ *  - `contradicted` — Flip direction, Accept. Unchanged.
+ *
+ * A group with a doc fix actively running renders no buttons at all: it is
+ * agent-handled (chip FIXING_SPEC), and the only thing left to do is read the
+ * task. The rows still close mechanically on the next checker re-run — never
+ * because that task said it was done.
+ *
+ * Once that task has COMPLETED and the rows are still open, Accept comes back
+ * as the one exit. Closure is still the checker's word, so the card cannot say
+ * the finding is settled — but a docs PR that was never merged, or one that
+ * did not actually discharge the claim, would otherwise leave this card
+ * agent-handled forever with no action on it at all: the finding would be
+ * parked by accident instead of by a decision. Accept is the action §8 allows
+ * on the row in any state, and it records a reason.
+ *
+ * All three mutations call the §13 REST routes that back the equivalent MCP
+ * actions, so there is exactly one mutation path whether a human taps here or
+ * an agent calls the MCP tool directly. Accept and flip are per-row by
+ * contract, so a grouped card applies them across the group one row at a time
+ * rather than teaching those routes a second, group-shaped vocabulary.
  */
 export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCardProps) {
   const router = useRouter();
@@ -45,18 +83,53 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
 
   if (!item.discrepancyId) return null;
 
-  async function adjudicate(body: Record<string, unknown>) {
+  const rowIds = item.discrepancyIds?.length ? item.discrepancyIds : [item.discrepancyId];
+  const assertionIds = item.assertionIds?.length
+    ? item.assertionIds
+    : item.assertionId
+      ? [item.assertionId]
+      : [];
+
+  async function adjudicateAll(body: Record<string, unknown>) {
     setBusy(true);
     setErrorMsg('');
     try {
-      const res = await fetch(`/api/discrepancies/${item.discrepancyId}/adjudicate`, {
+      for (const rowId of rowIds) {
+        const res = await fetch(`/api/discrepancies/${rowId}/adjudicate`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not update the discrepancy');
+      }
+      setMode('idle');
+      router.refresh();
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Network error');
+      setMode('error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // One task for the whole spec path. The route re-derives the group from the
+  // row's own spec path and claims it atomically, so a double-tap — or a
+  // sibling row tapped a second later — attaches to the task that already
+  // exists instead of filing another.
+  async function dispatchDocFix() {
+    setBusy(true);
+    setErrorMsg('');
+    try {
+      const res = await fetch(`/api/discrepancies/${item.discrepancyId}/dispatch-doc-fix`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify({}),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not update the discrepancy');
+      if (!res.ok) throw new Error(data.error || 'Could not dispatch the doc fix');
       setMode('idle');
       router.refresh();
     } catch (err: any) {
@@ -111,73 +184,117 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
 
   const direction = item.direction ?? 'code_ahead';
   const age = ageLabel(item.cardAgeHours);
+  const claimCount = assertionIds.length || rowIds.length;
+  const inFlight = Boolean(item.docFixTaskId);
+  // The fix has been written and the rows are waiting on the checker. Nothing
+  // is running any more, so the card owes the human an exit again — see the
+  // note on Accept at the top of this file.
+  const docFixShipped = inFlight && item.docFixTaskStatus === 'completed';
+  const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
-    <div className="border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-0.5 flex-wrap">
-            <span className="text-[10px] font-mono font-medium text-status-warning tracking-wide uppercase">
-              Discrepancy
-            </span>
-            <span className="text-[11px] text-text-muted">{DIRECTION_LABEL[direction]}</span>
-            {age && <span className="text-[10px] text-text-muted">· {age}</span>}
-          </div>
-          <div className="text-[13px] font-medium text-text-primary truncate mb-0.5">
-            {item.specPath}
-          </div>
-          <div className="text-[12px] text-text-secondary font-mono truncate">
-            {item.assertionId}
-          </div>
+    <div
+      className={
+        inFlight
+          ? 'border-l-2 border-text-muted bg-surface-2 rounded-r-[10px] px-4 py-3'
+          : 'border-l-2 border-status-warning bg-status-warning/5 rounded-r-[10px] px-4 py-3'
+      }
+    >
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 mb-0.5 flex-wrap">
+          <span className={`text-[10px] font-mono font-medium ${accent} tracking-wide uppercase`}>
+            {inFlight ? 'Doc fix' : 'Discrepancy'}
+          </span>
+          <span className="text-[11px] text-text-muted">{DIRECTION_LABEL[direction]}</span>
+          {age && <span className="text-[10px] text-text-muted">· {age}</span>}
         </div>
 
-        {mode === 'idle' && (
-          <div className="flex-shrink-0 flex items-center gap-2">
-            {item.promotedMissionId ? (
-              <Link
-                href={`/app/missions/${item.promotedMissionId}`}
-                className="text-[12px] font-medium text-primary hover:underline whitespace-nowrap"
-              >
-                View mission →
-              </Link>
-            ) : direction === 'spec_ahead' ? (
-              <button
-                type="button"
-                onClick={promote}
-                disabled={busy}
-                className="text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors rounded-md px-2.5 py-1 whitespace-nowrap disabled:opacity-60"
-              >
-                {busy ? 'Promoting…' : 'Promote'}
-              </button>
-            ) : null}
-            {direction === 'contradicted' && (
-              <button
-                type="button"
-                onClick={() => setMode('flipping')}
-                disabled={busy}
-                className="text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap disabled:opacity-60"
-              >
-                Flip direction
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setMode('accepting')}
-              disabled={busy}
-              className="text-[12px] font-medium text-text-secondary hover:text-text-primary border border-border rounded-md px-2.5 py-1 whitespace-nowrap disabled:opacity-60"
-            >
-              Accept
-            </button>
-          </div>
+        {/* The spec path is the identity of this card — it wraps rather than
+            truncating. At 393pt a truncated doc path is unidentifiable, which
+            is the whole failure the Home mobile work already fixed once. */}
+        <div className="text-[13px] font-medium text-text-primary break-all mb-1">
+          {item.specPath}
+        </div>
+
+        {claimCount > 0 && (
+          <details className="mb-2">
+            <summary className="text-[12px] text-text-secondary cursor-pointer list-none marker:content-none">
+              <span className="underline decoration-dotted underline-offset-2">
+                {claimCount} claim{claimCount === 1 ? '' : 's'}
+              </span>
+            </summary>
+            <ul className="mt-1 space-y-0.5">
+              {assertionIds.map((a) => (
+                <li key={a} className="text-[11px] text-text-secondary font-mono break-all">
+                  {a}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
+
+        {inFlight && (
+          <Link
+            href={`/app/tasks/${item.docFixTaskId}`}
+            className="text-[12px] font-medium text-primary hover:underline"
+          >
+            {item.docFixTaskStatus === 'completed'
+              ? 'Doc fix shipped — awaiting the conformance re-run →'
+              : 'Fix in flight →'}
+          </Link>
         )}
       </div>
+
+      {(!inFlight || docFixShipped) && mode === 'idle' && (
+        <div className={`flex items-center gap-2 flex-wrap${docFixShipped ? ' mt-2' : ''}`}>
+          {!inFlight && direction === 'code_ahead' && (
+            <button type="button" onClick={dispatchDocFix} disabled={busy} className={PRIMARY_BTN}>
+              {busy ? 'Dispatching…' : 'Dispatch doc fix'}
+            </button>
+          )}
+          {inFlight ? null : item.promotedMissionId ? (
+            <Link
+              href={`/app/missions/${item.promotedMissionId}`}
+              className="text-[12px] font-medium text-primary hover:underline whitespace-nowrap"
+            >
+              View mission →
+            </Link>
+          ) : direction === 'spec_ahead' ? (
+            <button type="button" onClick={promote} disabled={busy} className={PRIMARY_BTN}>
+              {busy ? 'Promoting…' : 'Promote'}
+            </button>
+          ) : null}
+          {!inFlight && direction === 'contradicted' && (
+            <button
+              type="button"
+              onClick={() => setMode('flipping')}
+              disabled={busy}
+              className={SECONDARY_BTN}
+            >
+              Flip direction
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setMode('accepting')}
+            disabled={busy}
+            className={SECONDARY_BTN}
+          >
+            Accept
+          </button>
+        </div>
+      )}
 
       {mode === 'accepting' && (
         <div className="mt-2 pt-2 border-t border-status-warning/20 space-y-2">
           <textarea
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="Reason for accepting (required)…"
+            placeholder={
+              claimCount === 1
+                ? 'Reason for accepting (required)…'
+                : `Reason for accepting all ${claimCount} claims (required)…`
+            }
             rows={2}
             className="w-full px-2.5 py-1.5 rounded-sm bg-surface-1 border border-border-default text-[12px] text-text-primary placeholder:text-text-muted focus:border-accent focus:outline-none"
           />
@@ -192,7 +309,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             <button
               type="button"
               disabled={busy || !reason.trim()}
-              onClick={() => adjudicate({ action: 'accept', reason: reason.trim() })}
+              onClick={() => adjudicateAll({ action: 'accept', reason: reason.trim() })}
               className="text-[12px] font-medium text-white bg-status-warning hover:bg-status-warning/90 transition-colors rounded-md px-2.5 py-1 disabled:opacity-60"
             >
               {busy ? 'Accepting…' : 'Confirm accept'}
@@ -207,7 +324,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             <label className="flex items-center gap-1.5">
               <input
                 type="radio"
-                name={`flip-${item.discrepancyId}`}
+                name={`flip-${item.subjectKey}`}
                 checked={newDirection === 'spec_ahead'}
                 onChange={() => setNewDirection('spec_ahead')}
               />
@@ -216,7 +333,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             <label className="flex items-center gap-1.5">
               <input
                 type="radio"
-                name={`flip-${item.discrepancyId}`}
+                name={`flip-${item.subjectKey}`}
                 checked={newDirection === 'code_ahead'}
                 onChange={() => setNewDirection('code_ahead')}
               />
@@ -234,7 +351,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             <button
               type="button"
               disabled={busy}
-              onClick={() => adjudicate({ action: 'flip_direction', newDirection })}
+              onClick={() => adjudicateAll({ action: 'flip_direction', newDirection })}
               className="text-[12px] font-medium text-white bg-status-warning hover:bg-status-warning/90 transition-colors rounded-md px-2.5 py-1 disabled:opacity-60"
             >
               {busy ? 'Updating…' : 'Confirm flip'}

@@ -1737,6 +1737,7 @@ export default async function HomePage({
             columns: {
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
+              docFixTaskId: true,
             },
           });
           if (discrepancyRows.length > 0) {
@@ -1746,6 +1747,20 @@ export default async function HomePage({
               .from(workspacesTable)
               .where(inArray(workspacesTable.id, discrepancyWsIds));
             const wsNameById = new Map(discrepancyWsRows.map((w) => [w.id, w.name]));
+            // The doc-fix claim is a stored id, so it is read against the
+            // task's CURRENT status rather than trusted as "a fix is running"
+            // — the queue freshness rule at the top of lib/action-queue.ts. A
+            // claim held by a failed task releases the CTA again.
+            const docFixTaskIds = [...new Set(
+              discrepancyRows.map((r) => r.docFixTaskId).filter(Boolean) as string[],
+            )];
+            const docFixTasks = docFixTaskIds.length > 0
+              ? await db.query.tasks.findMany({
+                  where: inArray(tasks.id, docFixTaskIds),
+                  columns: { id: true, status: true },
+                })
+              : [];
+            const docFixStatusById = new Map(docFixTasks.map((t) => [t.id, t.status]));
             const { items: discrepancyItems, overflowCount } = buildDiscrepancyItems(
               discrepancyRows.map((r) => ({
                 id: r.id,
@@ -1757,6 +1772,8 @@ export default async function HomePage({
                 status: r.status,
                 firstSeenAt: r.firstSeenAt,
                 promotedMissionId: r.promotedMissionId,
+                docFixTaskId: r.docFixTaskId,
+                docFixTaskStatus: r.docFixTaskId ? docFixStatusById.get(r.docFixTaskId) ?? null : null,
               })),
             );
             waitingOnYou.push(...discrepancyItems);
@@ -1991,7 +2008,11 @@ export default async function HomePage({
                     if (item.chip === 'DECIDE') {
                       return <WaitingOnYouDecideCard key={item.subjectKey} item={item} />;
                     }
-                    if (item.chip === 'DISCREPANCY') {
+                    if (item.chip === 'DISCREPANCY' || item.chip === 'FIXING_SPEC') {
+                      // Same card either way: FIXING_SPEC is the same finding
+                      // with a doc fix already dispatched against it, so it
+                      // renders the link instead of the CTA set rather than
+                      // becoming a different-looking row.
                       return <WaitingOnYouDiscrepancyCard key={item.subjectKey} item={item} />;
                     }
                     if (item.chip === 'RECONNECT') {
@@ -2206,7 +2227,7 @@ export default async function HomePage({
                     to hide a growing backlog the way the Schedules page did. */}
                 {discrepancyOverflowCount > 0 && (
                   <p className="text-[11px] text-text-muted mt-2">
-                    +{discrepancyOverflowCount} more discrepanc{discrepancyOverflowCount === 1 ? 'y' : 'ies'} beyond the visible top 10
+                    +{discrepancyOverflowCount} more spec{discrepancyOverflowCount === 1 ? '' : 's'} with open discrepancies beyond the visible top 10
                   </p>
                 )}
                 {resolvedEscalations.length > 0 && (

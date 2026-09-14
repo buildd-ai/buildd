@@ -1226,12 +1226,27 @@ export const specDiscrepancies = pgTable('spec_discrepancies', {
   // hatch's skip_reason) — enforced by the adjudication path, not here.
   acceptedReason: text('accepted_reason'),
   promotedMissionId: uuid('promoted_mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // §8: the docs-only follow-up task dispatched to reconcile this spec with the
+  // shipped code. THE dedupe key for "Dispatch doc fix": claimed by an atomic
+  // `UPDATE ... WHERE doc_fix_task_id IS NULL`, so a double-tap (or a sibling
+  // row on the same spec path) attaches to the task that already exists instead
+  // of filing a second one. Never a closure signal — a row still closes only
+  // when a checker re-run resolves its assertion (§9).
+  docFixTaskId: uuid('doc_fix_task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  // The human's reason for rejecting a doc-fixer's net-enhancement proposal,
+  // retained on the row so the next reader sees that the enhancement was
+  // considered and declined rather than never noticed.
+  proposalRejectedReason: text('proposal_rejected_reason'),
   // The exact read that produced the current verdict — never a similarity score.
   evidence: jsonb('evidence').$type<Record<string, unknown>>(),
 }, (t) => ({
   workspaceIdx: index('spec_discrepancies_workspace_idx').on(t.workspaceId),
   // THE identity constraint (§7): exactly one row per (workspace, spec, assertion).
   identityUnique: uniqueIndex('spec_discrepancies_identity_unique').on(t.workspaceId, t.specPath, t.assertionId),
+  // The doc-fix claim is read per spec path, not per assertion — the grouped
+  // card and the dispatch route both resolve "is a fix already in flight for
+  // this doc" before offering the CTA.
+  specPathIdx: index('spec_discrepancies_spec_path_idx').on(t.workspaceId, t.specPath),
 }));
 
 export const workers = pgTable('workers', {
@@ -2358,6 +2373,7 @@ export const taskSubjectClaimsRelations = relations(taskSubjectClaims, ({ one })
 export const specDiscrepanciesRelations = relations(specDiscrepancies, ({ one }) => ({
   workspace: one(workspaces, { fields: [specDiscrepancies.workspaceId], references: [workspaces.id] }),
   promotedMission: one(missions, { fields: [specDiscrepancies.promotedMissionId], references: [missions.id] }),
+  docFixTask: one(tasks, { fields: [specDiscrepancies.docFixTaskId], references: [tasks.id] }),
 }));
 
 export const workersRelations = relations(workers, ({ one, many }) => ({
