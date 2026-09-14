@@ -11,6 +11,7 @@ import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
 import { mergePolicySchema } from '@/lib/merge-policy';
+import { GATE_SLUGS, fireGateEvent, gateCallerOrigin } from '@/lib/gate-ledger';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
 import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-strategy';
 import { getTeamTimezone } from '@/lib/team-timezone';
@@ -220,11 +221,21 @@ export async function PATCH(
     // produces (status, criteria, config) attributes to the same caller.
     const actor = await resolveFeedActor({ user, apiAccount, actorWorkerId });
 
+    const gateCaller = gateCallerOrigin({ apiAccount, user, workerId: actorWorkerId });
+
     if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
-      return NextResponse.json(
-        { error: `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}` },
-        { status: 400 },
-      );
+      const error = `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}`;
+      fireGateEvent({
+        gate: GATE_SLUGS.BRANCH_STRATEGY,
+        surface: 'PATCH /api/missions/[id]',
+        outcome: 'rejected',
+        reason: error,
+        workspaceId: existing.workspaceId,
+        missionId: existing.id,
+        callerOrigin: gateCaller,
+        detail: { op: 'update', value: String(branchStrategy).slice(0, 80) },
+      });
+      return NextResponse.json({ error }, { status: 400 });
     }
 
     if (maxConcurrentTasks !== undefined && maxConcurrentTasks !== null && (!Number.isInteger(maxConcurrentTasks) || maxConcurrentTasks < 1 || maxConcurrentTasks > 20)) {
@@ -298,6 +309,13 @@ export async function PATCH(
         return NextResponse.json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, { status: 400 });
       }
       updateData.status = status;
+      // Stamp once, on the transition INTO 'completed' — never on 'archived'
+      // (which can also mean "abandoned incomplete," not "done") and never
+      // overwritten once set, so a later completed→archived→completed loop
+      // keeps the original completion boundary for the follow-up metric.
+      if (status === 'completed' && existing.status !== 'completed' && !existing.completedAt) {
+        updateData.completedAt = new Date();
+      }
 
       // An explicit status write bypasses the goal-criteria gate on purpose — a
       // person may always override. But this endpoint is also reachable with an
@@ -464,6 +482,19 @@ export async function PATCH(
         // every edit — including the edit that would fix it.
         const criteriaError = validateGoalCriteria(goalCriteria, { stored: existing.goalCriteria });
         if (criteriaError) {
+          fireGateEvent({
+            gate: GATE_SLUGS.GOAL_CRITERIA,
+            surface: 'PATCH /api/missions/[id]',
+            outcome: 'rejected',
+            reason: criteriaError,
+            workspaceId: existing.workspaceId,
+            missionId: existing.id,
+            callerOrigin: gateCaller,
+            detail: {
+              op: 'update',
+              criteriaCount: Array.isArray(goalCriteria) ? goalCriteria.length : null,
+            },
+          });
           return NextResponse.json({ error: criteriaError }, { status: 400 });
         }
       }

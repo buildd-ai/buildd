@@ -21,6 +21,7 @@ import { wouldCreateCycle } from '@/lib/mission-dependency';
 import { maybePostWorkTrackerNote } from '@/lib/work-tracker';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { getTeamTimezone } from '@/lib/team-timezone';
+import { GATE_SLUGS, fireGateEventForWorkspaceRef, gateCallerOrigin } from '@/lib/gate-ledger';
 
 // GET /api/missions — list missions for the user's team(s)
 export async function GET(req: NextRequest) {
@@ -148,11 +149,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
     }
 
+    const gateCaller = gateCallerOrigin({ apiAccount, user });
+
     if (branchStrategy !== undefined && branchStrategy !== null && !isValidBranchStrategy(branchStrategy)) {
-      return NextResponse.json(
-        { error: `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}` },
-        { status: 400 },
-      );
+      const error = `Invalid branchStrategy: must be one of ${BRANCH_STRATEGIES.join(', ')}`;
+      fireGateEventForWorkspaceRef(workspaceId, {
+        gate: GATE_SLUGS.BRANCH_STRATEGY,
+        surface: 'POST /api/missions',
+        outcome: 'rejected',
+        reason: error,
+        callerOrigin: gateCaller,
+        detail: { op: 'create', value: String(branchStrategy).slice(0, 80) },
+      });
+      return NextResponse.json({ error }, { status: 400 });
     }
 
     let deferredStart;
@@ -218,6 +227,19 @@ export async function POST(req: NextRequest) {
     if (goalCriteria !== undefined && goalCriteria !== null) {
       const criteriaError = validateGoalCriteria(goalCriteria);
       if (criteriaError) {
+        // Includes the notMechanizableReason requirement on prose criteria —
+        // the gate most likely to be rewriting how people phrase a mission.
+        fireGateEventForWorkspaceRef(workspaceId, {
+          gate: GATE_SLUGS.GOAL_CRITERIA,
+          surface: 'POST /api/missions',
+          outcome: 'rejected',
+          reason: criteriaError,
+          callerOrigin: gateCaller,
+          detail: {
+            op: 'create',
+            criteriaCount: Array.isArray(goalCriteria) ? goalCriteria.length : null,
+          },
+        });
         return NextResponse.json({ error: criteriaError }, { status: 400 });
       }
     }

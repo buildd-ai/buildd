@@ -17,14 +17,15 @@ export type TaskType = 'retry' | 'review' | 'review-retry';
  * Derive a task's display type from its title prefix, parentTaskId, and mode.
  *
  * Taxonomy:
- * - prefix match ([CI Retry], [reviewer], [reviewer retry]) → attempt, regardless of mode
+ * - prefix match ([builder · after *], [reviewer #N]) → attempt, regardless of mode
  * - parentTaskId IS NOT NULL + mode='execution' + no prefix → spawned builder (distinct deliverable) → null
  * - parentTaskId IS NOT NULL + no prefix + any other mode → legacy/unlabeled retry attempt → 'retry'
  * - parentTaskId IS NULL → root task → null
  *
  * Recognized prefixes are detected regardless of parentTaskId — this covers legacy
  * attempt tasks that predate the parentTaskId column and therefore have
- * parentTaskId IS NULL despite being retries.
+ * parentTaskId IS NULL despite being retries. Also recognizes legacy formats:
+ * [reviewer retry #N], [CI Retry #N], [Conflict Retry #N].
  */
 export function deriveTaskType(task: {
   title?: string | null;
@@ -33,9 +34,13 @@ export function deriveTaskType(task: {
 }): TaskType | null {
   const title = task.title ?? '';
   // Check recognized prefixes first — these always classify the task as an attempt.
+  // New format: [builder · after *], [reviewer #N]
+  if (/^\[builder\s+·/i.test(title)) return 'retry';
+  if (/^\[reviewer\s+#\d+\]/i.test(title)) return 'review-retry';
+  // Legacy formats still supported for backwards compatibility
   if (/^\[reviewer retry/i.test(title)) return 'review-retry';
   if (/^\[reviewer\]/i.test(title)) return 'review';
-  if (/^\[(?:CI )?retry/i.test(title)) return 'retry';
+  if (/^\[(?:CI |Conflict )?retry/i.test(title)) return 'retry';
   // No recognized prefix.
   if (!task.parentTaskId) return null;
   // Spawned execution children (created by approve_plan) are distinct units of work.
@@ -833,6 +838,117 @@ export function deriveMissionProgressMetric(
   const { totalTasks, completedTasks } = computeMissionProgress(tasks);
   if (totalTasks === 0) return derivedUnavailable('no_scope');
   return derivedValue(Math.round((completedTasks / totalTasks) * 100));
+}
+
+// ─── Authorship health: human task share + post-completion follow-ups ─────────
+
+/** Only these two classes count toward either metric — attempts (CI/reviewer/conflict retries) are noise, not steering cost. */
+function isCountableForAuthorship(t: { taskClass?: string | null }): boolean {
+  return t.taskClass === 'work' || t.taskClass === 'bookkeeping';
+}
+
+/** True for `created_by_worker_id IS NULL AND created_by_account_id IS NOT NULL` — a person filed this, no agent did. */
+export function isHumanAuthored(t: { createdByWorkerId?: string | null; createdByAccountId?: string | null }): boolean {
+  return !t.createdByWorkerId && !!t.createdByAccountId;
+}
+
+const HUMAN_TASK_AT_START_WINDOW_MS = 2 * 60 * 60 * 1000;
+
+export interface HumanTaskShareValue {
+  /** Human-authored, countable tasks. */
+  humanCount: number;
+  /** All countable (work + bookkeeping, non-attempt) tasks — the shared denominator. */
+  totalCount: number;
+  /** Rounded 0-100. */
+  pct: number;
+  /** Of `humanCount`, filed within 2h of the mission's `createdAt`. */
+  atStart: number;
+  /** Of `humanCount`, filed 2h+ after the mission's `createdAt`. */
+  midFlight: number;
+}
+
+export interface MissionAuthorshipTask {
+  taskClass?: string | null;
+  createdByWorkerId?: string | null;
+  createdByAccountId?: string | null;
+  createdAt: string | Date;
+}
+
+/**
+ * Share of a mission's countable tasks a human had to file directly, split by
+ * whether it was filed at mission start (plan-time, expected) or mid-flight
+ * (the mission's own agents left a gap a person had to fill). `no_scope` when
+ * there is nothing countable yet — never a bare 0/0.
+ */
+export function deriveHumanTaskShareMetric(
+  tasks: MissionAuthorshipTask[],
+  missionCreatedAt: string | Date,
+): DerivedMetric<HumanTaskShareValue> {
+  const countable = tasks.filter(isCountableForAuthorship);
+  if (countable.length === 0) return derivedUnavailable('no_scope');
+
+  const startMs = new Date(missionCreatedAt).getTime();
+  let humanCount = 0;
+  let atStart = 0;
+  let midFlight = 0;
+  for (const t of countable) {
+    if (!isHumanAuthored(t)) continue;
+    humanCount++;
+    if (new Date(t.createdAt).getTime() - startMs < HUMAN_TASK_AT_START_WINDOW_MS) atStart++;
+    else midFlight++;
+  }
+
+  return derivedValue({
+    humanCount,
+    totalCount: countable.length,
+    pct: Math.round((humanCount / countable.length) * 100),
+    atStart,
+    midFlight,
+  });
+}
+
+export interface MissionFollowupTask {
+  id: string;
+  createdAt: string | Date;
+}
+
+/**
+ * Count of countable tasks created after this mission closed that still
+ * reference it (by `missionId`, `parentTaskId` onto one of its own tasks, or a
+ * `failureContext` mention) — the leakage the mission's "done" state hid.
+ *
+ * `callers` pre-filter to `isCountableForAuthorship` and the reference match;
+ * this function only applies the `no_baseline` rule (no completion timestamp
+ * recorded — cannot be 0 unmeasured tasks) and counts what it's given.
+ */
+export function deriveMissionFollowupMetric(
+  followupTasks: MissionFollowupTask[],
+  missionCompletedAt: string | Date | null | undefined,
+): DerivedMetric<{ count: number }> {
+  if (!missionCompletedAt) return derivedUnavailable('no_baseline');
+  return derivedValue({ count: followupTasks.length });
+}
+
+export interface MissionAuthorshipHealth {
+  humanShare: DerivedMetric<HumanTaskShareValue>;
+  followups: DerivedMetric<{ count: number }>;
+}
+
+/**
+ * The one accessor for both mission health card / detail header numbers —
+ * callers on either surface pass what they've loaded and get back both
+ * verdicts, so neither surface invents its own denominator or window.
+ */
+export function computeMissionAuthorshipHealth(input: {
+  tasks: MissionAuthorshipTask[];
+  missionCreatedAt: string | Date;
+  missionCompletedAt: string | Date | null | undefined;
+  followupTasks: MissionFollowupTask[];
+}): MissionAuthorshipHealth {
+  return {
+    humanShare: deriveHumanTaskShareMetric(input.tasks, input.missionCreatedAt),
+    followups: deriveMissionFollowupMetric(input.followupTasks, input.missionCompletedAt),
+  };
 }
 
 // ─── Initiative rollup ────────────────────────────────────────────────────────

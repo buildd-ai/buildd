@@ -97,7 +97,7 @@ an enum) to allow extension without migrations.
   `apps/web/src/lib/reviewer.ts`) is exempt from this entire check: see AC-3f.
   Its contract is judged on `structuredOutput.verdict` instead, by the
   review-contract guard in `apps/web/src/app/api/workers/[id]/route.ts`.
-  A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c) persists the
+  A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c/AC-3g) persists the
   agent's `summary`/`structuredOutput`/`resultMeta` verbatim onto
   `workers.rejectedCompletionPayload` before returning the 400 — a 60-turn
   run's only output must not evaporate along with the 400.
@@ -169,6 +169,24 @@ an enum) to allow extension without migrations.
   `escalateReviewContractFailure`) — nothing else re-dispatches a reviewer for
   an existing PR/head SHA outside the webhook's `opened` action, so a silent
   permanent failure here would strand the PR unreviewed forever.
+- AC-3g: GIVEN `outputRequirement = 'none'` and `tasks.taskClass != 'bookkeeping'`,
+  `commitCount > 0` or `workers.dirtyWorktree = true`, no PR detected, and no
+  deliverable artifact WHEN `complete_task` is called THEN the server returns a
+  400 with `hint: 'create_pr'` — the task is NOT completed. `'none'` means "no
+  deliverable required," which is correct for a `taskClass = 'bookkeeping'` row
+  (every creation site that sets `outputRequirement: 'none'` explicitly is
+  bookkeeping: heartbeats, criteria evaluators, the mission-PR owner task —
+  those are exempt from this AC entirely, matching AC-3c's bookkeeping
+  carve-out) and correct for a genuine investigation/diagnosis task that
+  concludes with nothing to ship, including via a bare fallback summary alone
+  — unlike AC-3c, `summarySource = 'fallback'` by itself does NOT trigger this
+  AC, only real commit/dirty-worktree evidence does. A non-bookkeeping task
+  that actually committed code has no legitimate reason to have declared
+  `'none'`; before this AC, that declaration silently skipped every
+  deliverable check regardless of commits, which is how a task with real,
+  unreviewed changes reached `completed` on a fallback summary. The same
+  cross-branch-deliverable (`workers.mergedAt`) and `discardEdits`
+  satisfiers from AC-3d/AC-3e apply here too.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`
@@ -669,6 +687,32 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
 - No prose criterion is dispatched while another criterion already reads `fail`,
   and a finished grading run that returned no verdicts is not retried until it
   ages past `PROSE_VERDICT_TTL_MS` — the same economics as the command path.
+- A prose criterion is graded at PR review time wherever it can be, BEFORE the
+  standalone evaluator is chosen. A reviewer task dispatched for a PR whose task
+  belongs to a mission with `description` criteria carries those criteria in its
+  prompt and returns, per criterion, `supports | contradicts | not_applicable`
+  with a one-line cited reason. That section is strictly ADDITIVE: it MUST NOT
+  change `verdict` or `confidence`, and a mission criterion is never grounds to
+  approve, request changes on, or escalate one PR.
+- Reviewer findings are appended to `missions.criteriaReviewerFindings`
+  (newest-first, capped, one report per reviewer task) — a sibling column, NOT
+  `goalCriteriaState`, for the same reason the `criteriaRearm*` columns are
+  siblings: findings accumulate over the life of the mission and every fresh
+  evaluation overwrites `goalCriteriaState` wholesale.
+- The fold from findings to a verdict counts only MERGED PRs — a `supports` on a
+  branch that was closed or is still open is a statement about code that is not
+  in the product. Reports are read newest-first and one PR gets one voice, its
+  most recent reading. Any `contradicts` on a merged PR grades the criterion
+  `fail`; otherwise ≥1 `supports` and no `contradicts` grades it `pass` with the
+  reviewer citations as evidence. A criterion every reviewer called
+  `not_applicable`, or that no merged PR spoke to, falls through untouched and
+  the standalone evaluator runs for it exactly as before.
+- A finding is matched to its criterion by `criterionFingerprint`, captured on
+  the reviewer task's `context.missionCriteria` at dispatch. A finding whose
+  fingerprint no longer matches is discarded, never transplanted.
+- Reviewer findings MUST NOT decide a `command` or structural criterion. A model
+  cannot know whether a command exits 0, and only prose criteria are ever put in
+  front of a reviewer.
 - The release trigger keeps one additional bar above the predicate: no task of
   the mission in `pending`, `assigned`, or `in_progress`, housekeeping rows
   included (`countPendingTasksForMission`). It MUST NOT be loosened to match a
@@ -739,6 +783,20 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   without merging (`prLifecycleStatus = 'closed'`, `mergedAt` null) WHEN
   completion is attempted THEN it is refused with `code = 'awaiting_merge'` —
   a closed-unmerged PR is not a passing outcome either.
+- AC-11r: GIVEN a mission with a `description` criterion WHEN a reviewer task is
+  dispatched for one of its task PRs THEN the reviewer prompt carries that
+  criterion with its index, the reviewer task's `context.missionCriteria` carries
+  its fingerprint, and the prompt states the criteria do not change the verdict —
+  and GIVEN a task in no mission, the assembled prompt is byte-identical to the
+  pre-criteria one.
+- AC-11s: GIVEN that reviewer completes with
+  `criteriaFindings: [{ index, finding: 'supports', reason }]` and its PR
+  subsequently merges WHEN criteria are evaluated THEN the criterion reads `pass`
+  with evidence citing `PR #<n>`, and NO prose grading task is dispatched.
+- AC-11t: GIVEN the same shape with `finding: 'contradicts'` on a merged PR THEN
+  the criterion reads `fail`; GIVEN `supports` on a PR that never merged, or
+  `not_applicable` from every reviewer, THEN the criterion is untouched and the
+  standalone evaluator is dispatched as before.
 
 ### Blocked-Verdict Consumer
 
@@ -954,6 +1012,14 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `resolveCommandCriterion()`, `handleCriteriaVerificationOutcome()`
 - Prose criteria: `apps/web/src/lib/mission-criteria-prose.ts` —
   `resolveProseCriteria()`, `handleProseEvalOutcome()`
+- Prose criteria graded at review time:
+  `apps/web/src/lib/criteria-reviewer-findings.ts` —
+  `loadMissionProseCriteria()`, `renderMissionCriteriaGuidance()`,
+  `recordReviewerCriteriaFindings()`, `applyReviewerFindings()`; injected by
+  `apps/web/src/lib/reviewer.ts` (`buildReviewerContext()`,
+  `REVIEWER_TASK_OUTPUT_SCHEMA.criteriaFindings`) and recorded from
+  `apps/web/src/app/api/workers/[id]/route.ts`
+  (`handleReviewerOutcomeIfNeeded()`)
 - Pure evaluator + form validation: `packages/core/mission-helpers.ts` —
   `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`,
   `computeMissionProgress()` (`awaitingMerge` count, `MissionSegmentState`

@@ -23,6 +23,7 @@ import { resolvePolicy } from '@/lib/merge-policy';
 import { createReviewerTask, resolvePriorVerdict, type PriorVerdict } from '@/lib/reviewer';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import {
   findPrOwningWorker,
   findReviewTaskForPr,
@@ -197,6 +198,22 @@ export async function POST(req: NextRequest) {
   // on one PR race each other's verdicts.
   if (existingReview && (inFlight || !force)) {
     const policy = await resolveEffectivePolicy(workspace, null);
+    // Deferred, not rejected: the caller's request is honoured by the reviewer
+    // already running. The count answers "how often is a second review asked
+    // for", which is the signal that a review is stuck without failing.
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEWER_SINGLE_FLIGHT,
+      surface: 'POST /api/github/pr/review',
+      outcome: 'deferred',
+      reason: inFlight
+        ? 'a reviewer is already working this PR'
+        : 'this PR already has a review; pass force to re-review',
+      workspaceId: workspace.id,
+      taskId: existingWorker?.taskId ?? null,
+      workerId: existingWorker?.id ?? null,
+      callerOrigin: 'api',
+      detail: { prNumber, inFlight, force, reviewTaskId: existingReview.id },
+    });
     return NextResponse.json({
       ok: true,
       alreadyRequested: true,

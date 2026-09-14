@@ -423,6 +423,14 @@ mock.module('@/lib/reviewer', () => ({
   REVIEWER_TASK_OUTPUT_SCHEMA: {},
 }));
 
+// The fold and the persistence are unit-tested in lib/criteria-reviewer-findings.test.ts.
+// Here the mock pins the WIRING: that a reviewer verdict hands its criteria
+// side report to the mission, with the reviewer's own task context attached.
+const mockRecordReviewerCriteriaFindings = mock(() => Promise.resolve({ recorded: 1 }));
+mock.module('@/lib/criteria-reviewer-findings', () => ({
+  recordReviewerCriteriaFindings: mockRecordReviewerCriteriaFindings,
+}));
+
 const mockExecuteRelease = mock(() => Promise.resolve({ status: 'skipped', message: 'no release config' }));
 mock.module('@/lib/release-executor', () => ({
   executeRelease: mockExecuteRelease,
@@ -2207,6 +2215,308 @@ describe('PATCH /api/workers/[id]', () => {
       const data = await res.json();
       expect(data.error).toContain('no confirmed outcome');
       expect(data.hint).toBe('create_pr');
+    });
+
+    it('refuses a bookkeeping task with a clear "organizer did not report" error, not the create_pr hint', async () => {
+      // Same shape as the fallback-provenance incident above, but for a
+      // heartbeat/organizer task (taskClass='bookkeeping'). It will never open
+      // a PR or artifact, so the create_pr hint is actively wrong advice —
+      // the fix is for the session to actually call complete_task.
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here and wait for direction.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+      const data = await res.json();
+      expect(data.error).toContain('no confirmed outcome');
+      expect(data.error).not.toContain('create_pr');
+      expect(data.hint).toBe('organizer_did_not_report');
+    });
+
+    it('completes a bookkeeping task with no PR/artifact when the agent actually called complete_task (auto mode)', async () => {
+      // A heartbeat/organizer task never ships a PR or artifact — the auto
+      // gate's commit/dirty-worktree/PR demand must not apply to it at all, as
+      // long as the summary is agent-authored (not a fallback capture).
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Nothing to do this cycle — mission is idle.', structuredOutput: { status: 'ok' } },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a bookkeeping task with artifact_required + a satisfied artifact even on a fallback summary', async () => {
+      // The completed-work aggregator (packages/core/task-dependencies.ts) is
+      // taskClass='bookkeeping' + outputRequirement='artifact_required'. If it
+      // produces its synthesis artifact but the session ends (e.g. max turns)
+      // before the agent calls complete_task itself, summarySource is
+      // 'fallback'. The bookkeeping-fallback check must not override an
+      // already-satisfied artifact_required outcome — that would discard a
+      // confirmed deliverable, the exact failure the surrounding code's
+      // top-of-function comment warns against.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-aggregator',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'artifact_required', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'artifact-1', workerId: 'worker-1' }]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Synthesis artifact produced.', summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('refuses a non-bookkeeping outputRequirement=none task with real commits, a fallback summary, and no PR/artifact', async () => {
+      // The false-completion shape this task closes: a mis-declared 'none'
+      // work task (not taskClass='bookkeeping') committed real code changes,
+      // the session ended without the agent calling complete_task
+      // (summarySource='fallback'), and there was no PR or artifact to point
+      // at those commits. 'none' must not be a blanket exemption for a task
+      // shape that actually produces code.
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 4,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', taskClass: 'work' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here and wait for the test suite.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+      const data = await res.json();
+      expect(data.error).toContain('4 commit(s)');
+      expect(data.hint).toBe('create_pr');
+    });
+
+    it('completes a non-bookkeeping outputRequirement=none task with real commits when a deliverable artifact exists', async () => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 2,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', taskClass: 'work' });
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'artifact-1', workerId: 'worker-1' }]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here and wait for the test suite.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a non-bookkeeping outputRequirement=none task with real commits under an explicit discardEdits acknowledgement', async () => {
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'feature/test',
+        commitCount: 2,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', taskClass: 'work' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Scratch spike, discarding.',
+          discardEdits: 'exploratory commits only, not meant to ship',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a bookkeeping outputRequirement=none task with real commits without inspection (fast path unaffected)', async () => {
+      // Bookkeeping tasks skip this entire block regardless of commits — a
+      // heartbeat/organizer row should never carry real commits in practice,
+      // but the fast-path exemption itself must stay untouched by the new
+      // non-bookkeeping 'none' check added alongside it.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 5,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Nothing to do this cycle.', structuredOutput: { status: 'ok' } },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
     });
 
     it('completes normally with a fallback summary when a PR exists (auto mode)', async () => {
@@ -5954,6 +6264,52 @@ describe('PATCH /api/workers/[id]', () => {
       expect(mockTryAutoMergeWorkerPr).not.toHaveBeenCalled();
     });
 
+    it('hands the reviewer\'s mission-criteria side report to the mission, with the PR it was made on', async () => {
+      mockRecordReviewerCriteriaFindings.mockClear();
+      setupReviewerTaskCompletion('approve');
+
+      const res = await PATCH(
+        makeReviewerPatchRequest('approve', {
+          criteriaFindings: [{ index: 0, finding: 'supports', reason: 'adds the empty-state branch' }],
+        }),
+        { params: mockParams },
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockRecordReviewerCriteriaFindings).toHaveBeenCalledTimes(1);
+      const call = (mockRecordReviewerCriteriaFindings.mock.calls[0] as any[])[0];
+      expect(call).toMatchObject({
+        missionId: 'mission-1',
+        reviewerTaskId: 'reviewer-task-1',
+        prNumber: 42,
+        headSha: 'abc123',
+        originalTaskId: 'original-task-1',
+        verdict: 'approve',
+      });
+      // The reviewer's own context goes along: it carries the criteria (and
+      // their fingerprints) this reviewer was actually shown, which is what
+      // stops a finding landing on a criterion that has since been edited.
+      expect((call.reviewerContext as any).reviewerFor).toBe('original-task-1');
+      expect((call.structuredOutput as any).criteriaFindings).toHaveLength(1);
+    });
+
+    it('records the side report even when the verdict is request-changes', async () => {
+      // A reviewer that read the diff read it whatever it concluded about
+      // merging. The two judgments are independent by construction.
+      mockRecordReviewerCriteriaFindings.mockClear();
+      setupReviewerTaskCompletion('request-changes');
+
+      await PATCH(
+        makeReviewerPatchRequest('request-changes', {
+          criteriaFindings: [{ index: 0, finding: 'contradicts', reason: 'removes the provider name' }],
+        }),
+        { params: mockParams },
+      );
+
+      expect(mockRecordReviewerCriteriaFindings).toHaveBeenCalledTimes(1);
+      expect((mockRecordReviewerCriteriaFindings.mock.calls[0] as any[])[0].verdict).toBe('request-changes');
+    });
+
     // createReviewerTask never sets outputRequirement, so a reviewer task runs
     // under the schema default ('auto') — not the 'none' most fixtures above
     // use to dodge the PR/artifact gate. A reviewer session that ends without
@@ -6364,6 +6720,51 @@ describe('PATCH /api/workers/[id]', () => {
       // Dedup key fields must be set so a second reviewer completion is a no-op
       expect(lastInsertValues.reviewerRetryPrNumber).toBe(42);
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
+    });
+
+    it('request-changes: titles the retry task as a builder attempt, not a reviewer one', async () => {
+      // This retry is a builder re-running with reviewer feedback on the same
+      // branch — the title must say "builder", never "reviewer", or the UI
+      // reads it as the review itself being retried.
+      setupReviewerTaskCompletion('request-changes');
+      // Distinguish the two lookups by requested columns instead of call order —
+      // several unrelated tasks.findFirst calls happen earlier in the generic
+      // PATCH flow, so a fixed once()/once() queue lands on the wrong calls.
+      mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        if (opts_?.columns?.pathManifest) {
+          return Promise.resolve({
+            id: 'original-task-1',
+            title: 'fix(timeline): duplicate day header',
+            description: 'Description',
+            missionId: 'mission-1',
+            pathManifest: ['apps/web/src/lib/feature-x.ts'],
+          });
+        }
+        return Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        });
+      });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeDefined();
+      expect(lastInsertValues.title).toBe('[builder · after review #1] fix(timeline): duplicate day header');
     });
 
     it('escalate: sends Pushover and does not create retry task', async () => {
@@ -7049,6 +7450,7 @@ describe('PATCH /api/workers/[id]', () => {
       mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
       setupSensitiveWorker({
         branch: 'buildd/test-branch',
+        prUrl: 'https://github.com/org/repo/pull/42',
         prNumber: 42,
         costUsd: '1.25',
         turns: 10,

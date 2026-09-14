@@ -15,9 +15,11 @@ import type {
   BudgetForecast,
   FailureAnalytics,
   FailureWindow,
+  GateAnalytics,
   CbmHealthSummary,
   OrphanedPrRow,
   SubagentDelegationPanel,
+  ErrorPatternPanel,
 } from './page';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
@@ -190,10 +192,12 @@ interface Props {
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
+  gateAnalytics: GateAnalytics | null;
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
   cbm: CbmHealthSummary | null;
   subagentDelegation: SubagentDelegationPanel | null;
+  errorPatterns: ErrorPatternPanel | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -236,9 +240,11 @@ export function HealthClient({
   wsFilter,
   budgetForecast,
   failureAnalytics,
+  gateAnalytics,
   window: activeWindow,
   cbm,
   subagentDelegation,
+  errorPatterns,
   now,
 }: Props) {
   const router = useRouter();
@@ -1045,6 +1051,8 @@ export function HealthClient({
           <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} now={now} />
         )}
 
+        {gateAnalytics && <GatesSection gates={gateAnalytics} window={activeWindow} />}
+
         {usageStats && usageStats.total > 0 && (
           <TaskOutcomesSection stats={usageStats} window={activeWindow} />
         )}
@@ -1057,6 +1065,10 @@ export function HealthClient({
 
         {subagentDelegation && (
           <SubagentDelegationSection panel={subagentDelegation} window={activeWindow} />
+        )}
+
+        {errorPatterns && (
+          <ErrorPatternSection panel={errorPatterns} window={activeWindow} />
         )}
       </section>
 
@@ -1625,6 +1637,94 @@ function SubagentDelegationSection({
   );
 }
 
+// ── Error trace patterns ─────────────────────────────────────────────────────
+
+/**
+ * Which scanned error pattern (`worker_error_traces.pattern`) is costing us
+ * the most, over the page window. See `error-pattern-cost.ts` for the ranking
+ * argument — the header line below states the ranking key inline, not just in
+ * the PR that shipped it.
+ */
+function ErrorPatternSection({
+  panel,
+  window,
+}: {
+  panel: ErrorPatternPanel;
+  window: FailureWindow;
+}) {
+  return (
+    <div data-testid="health-section-error-patterns" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Error trace patterns</h3>
+        <span className="text-[11px] text-text-muted">
+          {panel.kind === 'value'
+            ? sectionDenominator(panel.value.scannedWorkers, panel.value.scannedWorkers === 1 ? 'worker' : 'workers')
+            : sectionDenominator(0, 'workers')} ({window})
+        </span>
+      </div>
+      <div className="card p-4 space-y-2">
+        {panel.kind === 'value' ? (
+          panel.value.patterns.length === 0 ? (
+            <p className="text-xs text-text-muted">No error-trace pattern fired in this window.</p>
+          ) : (
+            <>
+              <p
+                className="text-[11px] text-text-muted"
+                title="Raw occurrence count is not used: a pattern that fires repeatedly on output that never hurt anything would outrank a rare one that always coincides with a dead worker."
+              >
+                Ranked by distinct workers whose session ended in failure while this pattern fired — not raw occurrence count.
+              </p>
+              <div className="divide-y divide-border-default">
+                {panel.value.patterns.map((p) => {
+                  const topFailedWorkers = panel.value.patterns[0]?.failedWorkers ?? 0;
+                  return (
+                    <div key={p.pattern} className="py-2.5 first:pt-0 last:pb-0">
+                      <div className="flex items-start gap-3">
+                        <span className="text-xs font-mono font-bold tabular-nums text-text-primary shrink-0 w-8 text-right">
+                          {p.failedWorkers}
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-xs font-mono text-text-primary truncate" title={p.pattern}>
+                            {p.pattern}
+                          </span>
+                          <span className="block text-xs text-text-muted mt-0.5">
+                            {countOf(p.workers, 'worker')} hit it · {countOf(p.occurrences, 'occurrence')}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1 bg-surface-3 overflow-hidden">
+                        <div
+                          className="h-full bg-primary"
+                          style={{ width: `${topFailedWorkers > 0 ? Math.round((p.failedWorkers / topFailedWorkers) * 100) : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )
+        ) : (
+          <p data-testid="error-patterns-unavailable" className="text-xs text-text-muted">
+            {panel.detail}
+          </p>
+        )}
+        {panel.kind === 'value' && panel.value.windowPredatesCapture && (
+          <p className="text-[11px] text-text-muted pt-2 border-t border-border-default">
+            The scanner's false-positive gating was only completed on {panel.value.gatedSince}; this panel
+            counts only traces from on/after that date, excluding earlier ones rather than counting them as zero.
+          </p>
+        )}
+        {panel.kind === 'value' && panel.value.truncated && (
+          <p className="text-[11px] text-text-muted">
+            Reads the newest traces in the window up to a cap — counts above are a floor.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Budget Forecast ───────────────────────────────────────────────────────────
 
 function confidenceClass(c: string | null): string {
@@ -2039,6 +2139,123 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The gate ledger, as a compact trend block.
+ *
+ * Sits next to Worker failures on purpose: the two answer the same question
+ * ("what is the platform doing badly?") over populations that do not overlap at
+ * all. A worker that fails is in the section above. A caller the platform
+ * REFUSED never became a worker, so it appears here and nowhere else — which is
+ * how a creation-time lint could misfire for three weeks with every dashboard
+ * reporting healthy.
+ *
+ * Bypass % leads each row because it is the number that needs no interpretation:
+ * a gate being overridden most of the time is wrong about something.
+ */
+function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; window: FailureWindow }) {
+  const { totals } = gates;
+
+  return (
+    <div data-testid="health-section-gates" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Gates</h3>
+        <span data-testid="gate-denominator" className="text-[11px] text-text-muted">
+          {sectionDenominator(totals.events, 'gate decisions')} ({activeWindow})
+        </span>
+      </div>
+
+      {totals.events === 0 ? (
+        <div className="card px-4 py-3">
+          <p className="text-sm text-text-muted">
+            Nothing was refused, deferred, warned or bypassed in this window.
+          </p>
+        </div>
+      ) : (
+        <div className="card divide-y divide-border-default">
+          <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="gate-headline">
+            {([
+              ['Rejected', totals.rejected, 'Requests the platform refused outright — a 4xx the caller had to act on.'],
+              ['Deferred', totals.deferred, 'Accepted but not acted on yet: a wait, a queue, a single-flight. Not an error.'],
+              ['Bypassed', totals.bypassed, 'A gate fired and the caller carried an explicit escape hatch. Over a lint, this IS its false-positive rate.'],
+              ['Warned', totals.warned, 'Advisory only — the response carried a warning and the work proceeded.'],
+              ['Stranded', totals.stranded, 'A task deferred long enough that the sweep flagged it — nothing re-arms it on its own; it needs a look.'],
+            ] as const).map(([label, value, title]) => (
+              <div key={label}>
+                <span
+                  className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  title={title}
+                >
+                  {label}
+                </span>
+                <p
+                  className={`text-xl font-bold tabular-nums leading-tight ${label === 'Stranded' && value > 0 ? 'text-status-error' : ''}`}
+                >
+                  {value}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <div className="px-4 py-3">
+            <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+              By gate
+            </p>
+            <ul className="space-y-1.5">
+              {gates.gates.slice(0, 6).map(g => (
+                <li key={g.gate} className="flex items-baseline justify-between gap-3 text-sm">
+                  <span className="font-mono text-xs text-text-secondary truncate" title={g.surfaces.join(', ')}>
+                    {g.gate}
+                  </span>
+                  <span className="text-[11px] text-text-muted whitespace-nowrap tabular-nums">
+                    {g.count}× · bypass {g.bypassRatePct}%
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {gates.truncatedGates > 0 && (
+              <p className="text-[11px] text-text-muted mt-2">
+                … {gates.truncatedGates} more gate(s)
+              </p>
+            )}
+          </div>
+
+          <ClaimDeferralsSubsection gates={gates} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The claim loop's per-reason deferral breakdown, read off the same
+ * `claim_loop_deferral` gate row's `topReasons` — no separate query. Absent
+ * entirely when the claim loop hasn't fired the gate yet (a clean workspace,
+ * or before this shipped).
+ */
+function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
+  const claimGate = gates.gates.find(g => g.gate === 'claim_loop_deferral');
+  if (!claimGate || claimGate.topReasons.length === 0) return null;
+
+  return (
+    <div className="px-4 py-3" data-testid="gate-claim-deferrals">
+      <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+        Claim-loop deferrals by reason
+      </p>
+      <ul className="space-y-1.5">
+        {claimGate.topReasons.map(r => (
+          <li key={r.reason} className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="font-mono text-xs text-text-secondary truncate">{r.reason}</span>
+            <span className="text-[11px] text-text-muted whitespace-nowrap tabular-nums">
+              {r.outcomes.deferred > 0 ? `${r.outcomes.deferred} deferred` : ''}
+              {r.outcomes.stranded > 0 ? `${r.outcomes.deferred > 0 ? ' · ' : ''}${r.outcomes.stranded} stranded` : ''}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

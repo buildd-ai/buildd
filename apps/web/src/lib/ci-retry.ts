@@ -9,6 +9,8 @@
  * and dispatched to a connected runner via pusher.
  */
 
+import { formatAttemptTitle } from '@/lib/task-title';
+
 /** Default CI fix attempts per PR when the workspace sets no gitConfig.maxCiRetries. */
 export const DEFAULT_MAX_CI_RETRIES = 3;
 
@@ -93,13 +95,8 @@ export function buildCIRetryTask(params: CIRetryParams): CIRetryTask | null {
   // context.iteration tracks actual agent-authored attempts.
   const displayIteration = currentIteration + 1;
 
-  // Strip any existing retry prefix so the title doesn't accumulate them.
-  const cleanTitle = originalTask.title
-    .replace(/^\[CI Retry #?\d*\]\s*/i, '')
-    .replace(/^retry:\s*/i, '');
-
   return {
-    title: `[CI Retry #${displayIteration}] ${cleanTitle}`,
+    title: formatAttemptTitle('builder', originalTask.title, { reason: 'after CI', iteration: displayIteration }),
     description: buildRetryDescription(originalTask, failureContext, repoFullName, displayIteration, maxIterations, ciRunId ?? null, ciRunUrl ?? null, foreignHeadSha, foreignCommitAuthor, nextIteration >= maxIterations, ciFailedJobId ?? null),
     workspaceId: originalTask.workspaceId,
     parentTaskId: originalTask.id,

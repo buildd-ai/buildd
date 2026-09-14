@@ -12,6 +12,7 @@ import {
   registerWaiter,
 } from '@buildd/core/path-claim';
 import { isAdvisoryManifest } from '@buildd/core/path-overlap';
+import { GATE_SLUGS, fireGateEvent, gateCallerOrigin } from '@/lib/gate-ledger';
 
 const FULL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -81,17 +82,30 @@ export async function POST(
   // become a held lock that blocks the entire workspace. isAdvisoryManifest is
   // the single definition of "scope not declared" (packages/core/path-overlap.ts);
   // a local includes('**') here would be a fourth copy of that rule.
-  if (isAdvisoryManifest(paths)) {
-    return NextResponse.json(
-      { error: 'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.' },
-      { status: 400 }
-    );
-  }
+  const wildcardRejection = isAdvisoryManifest(paths);
 
   const currentTask = await db.query.tasks.findFirst({
     where: eq(tasks.id, id),
     columns: { id: true, workspaceId: true, missionId: true, pathManifest: true, status: true, title: true },
   });
+
+  const callerOrigin = gateCallerOrigin({ apiAccount, user });
+
+  if (wildcardRejection) {
+    const error = 'Wildcard claims are not supported. Declare specific paths. Use maxConcurrentTasks=1 at the mission level to serialize broad tasks.';
+    fireGateEvent({
+      gate: GATE_SLUGS.PATH_CLAIM,
+      surface: 'POST /api/tasks/[id]/path-claim',
+      outcome: 'rejected',
+      reason: error,
+      workspaceId: currentTask?.workspaceId ?? null,
+      missionId: currentTask?.missionId ?? null,
+      taskId: currentTask?.id ?? null,
+      callerOrigin,
+      detail: { pathCount: paths.length },
+    });
+    return NextResponse.json({ error }, { status: 400 });
+  }
 
   if (!currentTask) {
     return NextResponse.json({ error: 'Task not found' }, { status: 404 });
@@ -172,6 +186,26 @@ export async function POST(
         } catch { /* non-fatal */ }
       }
     }
+
+    // The 409 this route returns could not tell a real blocker apart from a
+    // circular wait, which is what made it unreadable in the first place. The
+    // ledger row carries both, so the distinction survives past the response.
+    fireGateEvent({
+      gate: GATE_SLUGS.PATH_CLAIM,
+      surface: 'POST /api/tasks/[id]/path-claim',
+      outcome: 'deferred',
+      reason: 'paths overlap an active claim held by another task',
+      workspaceId: currentTask.workspaceId,
+      missionId: currentTask.missionId,
+      taskId: currentTask.id,
+      callerOrigin,
+      detail: {
+        blockingTaskId: conflict.blockingTaskId,
+        blockingPath: conflict.blockingPath,
+        crossMission: isCrossMission,
+        deadlock: response.deadlock === true,
+      },
+    });
 
     return NextResponse.json(response, { status: 409 });
   }
