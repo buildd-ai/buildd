@@ -850,6 +850,126 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
   });
 });
 
+// ── The release PR (releaseBranch → prodBranch) and the aggregate size gate ──
+//
+// A release PR bundles every commit merged since the last release, each of
+// which was already size-gated on its own way into the release branch.
+// Re-applying the aggregate cap at the release PR makes every release
+// structurally unmergeable by policy regardless of review outcome — see
+// friction task 4337f0aa (PR #2402, 4396 source lines > 800-line cap).
+
+const RELEASE_BRANCH = 'dev';
+const PROD_BRANCH = 'main';
+const releaseConfig = { enabled: true, releaseBranch: RELEASE_BRANCH, prodBranch: PROD_BRANCH };
+
+describe('evaluateAutoMergeSafety — release branch PR', () => {
+  beforeEach(() => {
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+  });
+
+  it('does not apply the aggregate line threshold to the release PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({
+        mergeable_state: 'clean',
+        head: { ref: RELEASE_BRANCH },
+        base: { ref: PROD_BRANCH },
+      });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig }),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('still applies it when the base ref is not the configured prod branch', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({
+        mergeable_state: 'clean',
+        head: { ref: RELEASE_BRANCH },
+        base: { ref: 'some-other-branch' },
+      });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('still applies it when the head ref is not the configured release branch', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({
+        mergeable_state: 'clean',
+        head: { ref: 'feature/some-task' },
+        base: { ref: PROD_BRANCH },
+      });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('still applies it when the workspace has no release config', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({
+        mergeable_state: 'clean',
+        head: { ref: RELEASE_BRANCH },
+        base: { ref: PROD_BRANCH },
+      });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig: null }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
+  it('CI must still be green for the release PR', async () => {
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }],
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('build') });
+  });
+
+  it('a CONTRACT migration still blocks the release PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'packages/core/drizzle/0001_drop_column.sql', additions: 2, deletions: 0 }]);
+    mockInspectPullRequestMigrations.mockResolvedValue({
+      safe: false,
+      operationClass: 'CONTRACT',
+      reason: 'drops a column',
+    });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig }),
+    ).resolves.toEqual({ ok: false, reason: 'drops a column' });
+  });
+
+  it('conflicts still block the release PR', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({
+        mergeable_state: 'dirty',
+        head: { ref: RELEASE_BRANCH },
+        base: { ref: PROD_BRANCH },
+      });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, { releaseConfig }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('dirty') });
+  });
+});
+
 describe("tryAutoMergeWorkerPr — Option A' mission integration PR", () => {
   beforeEach(() => {
     mockGithubApi.mockReset();
