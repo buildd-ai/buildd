@@ -27,6 +27,8 @@ import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
+import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 
 /**
@@ -37,18 +39,27 @@ import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  *
- * ## The one exemption (Option A′)
+ * ## The exemptions from the aggregate line threshold
  *
  * `opts.mission` is the calling worker's mission, and it is read for two
  * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
  * shape test:
  *
- *  - whether this PR is the mission's integration PR, in which case the
- *    AGGREGATE LINE THRESHOLD does not apply. Nothing else is relaxed — see the
- *    comment at the size check;
+ *  - whether this PR is the mission's integration PR (Option A′), in which
+ *    case the AGGREGATE LINE THRESHOLD does not apply. Nothing else is
+ *    relaxed — see the comment at the size check;
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
- * Omit `opts` and this behaves exactly as it did before Option A′ existed.
+ * `opts.releaseConfig` is the workspace's release config, read for the same
+ * AGGREGATE LINE THRESHOLD decision via `isReleaseBranchPr`: a PR from the
+ * configured release branch into the configured prod branch (e.g. dev → main)
+ * is a rollup of every commit since the last release, each of which was
+ * already size-gated on its own way into the release branch — re-applying the
+ * cap to the union would make every release unmergeable by policy regardless
+ * of review outcome. Nothing else is relaxed, same as Option A′.
+ *
+ * Omit `opts` and this behaves exactly as it did before either exemption
+ * existed.
  *
  * ## The bound (`opts.bound`)
  *
@@ -68,7 +79,11 @@ export async function evaluateAutoMergeSafety(
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
   // carry a duplicate of what `opts` already holds.
-  opts?: { mission?: MissionIntegrationFields | null; bound?: ModelApproveBound },
+  opts?: {
+    mission?: MissionIntegrationFields | null;
+    bound?: ModelApproveBound;
+    releaseConfig?: WorkspaceReleaseConfig | null;
+  },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
 
@@ -204,6 +219,15 @@ export async function evaluateAutoMergeSafety(
     mission: opts?.mission ?? null,
   });
 
+  // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
+  // Unlike the mission check above, this compares BOTH refs — a release PR's
+  // own head and base are both configured (releaseBranch, prodBranch), so
+  // there is no single trunk-base assumption to lean on.
+  const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
+    headRef: prData?.head?.ref ?? null,
+    baseRef: prData?.base?.ref ?? null,
+  });
+
   const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
   const sourceFiles = files.filter(
     (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
@@ -219,14 +243,21 @@ export async function evaluateAutoMergeSafety(
   // and reduce "the tier applies at the mission PR" to a claim that only holds
   // for operators who explicitly configured a tier.
   //
-  // ONLY the aggregate size gate is exempt. Everything else in this function
-  // still runs for a mission PR, unchanged and in the same order: CI-green
+  // The same reasoning applies to the workspace's release PR (dev → main):
+  // it bundles every commit merged since the last release, each already
+  // size-gated on its own way into the release branch, so the union is over
+  // the cap essentially by construction and every release would otherwise
+  // need a human to merge_pr regardless of review outcome.
+  //
+  // ONLY the aggregate size gate is exempt for either. Everything else in this
+  // function still runs, unchanged and in the same order: CI-green
   // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
   // operation-class inspector, and the conflict / branch-protection checks.
-  if (isMissionIntegrationPr && totalLines > maxLines) {
+  if ((isMissionIntegrationPr || isReleasePr) && totalLines > maxLines) {
+    const exemption = isMissionIntegrationPr ? 'mission integration PR' : 'release PR';
     console.log(
-      `[auto-merge] ${repoFullName}#${prNumber}: mission integration PR — aggregate size gate not applied ` +
-        `(${totalLines} source lines > limit ${maxLines}); each task PR was size-gated on the way in`,
+      `[auto-merge] ${repoFullName}#${prNumber}: ${exemption} — aggregate size gate not applied ` +
+        `(${totalLines} source lines > limit ${maxLines}); each underlying commit was size-gated on the way in`,
     );
   } else if (totalLines > maxLines) {
     return {
