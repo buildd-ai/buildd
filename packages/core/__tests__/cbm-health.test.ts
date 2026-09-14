@@ -47,6 +47,10 @@ function makeBinaryAbsentRow() {
   return { resultMeta: { cbm: { outcome: 'disabled', disableReason: 'binary_absent' } } };
 }
 
+function makeNoWorktreeRow() {
+  return { resultMeta: { cbm: { outcome: 'disabled', disableReason: 'no_worktree' } } };
+}
+
 function makeEnforcedRow() {
   return { resultMeta: { cbm: { outcome: 'enforced' } } };
 }
@@ -59,15 +63,9 @@ describe('detectCbmFleetDisabled', () => {
     process.env.OPS_ALERTS_ENABLED = '1';
   });
 
-  it('does nothing when current worker is not binary_absent', async () => {
+  it('does nothing when current worker is not disabled', async () => {
     findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBinaryAbsentRow());
     await detectCbmFleetDisabled(WS, { outcome: 'enforced' });
-    expect(reportOpsCalls).toHaveLength(0);
-  });
-
-  it('does nothing when current worker is disabled but not binary_absent', async () => {
-    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeBinaryAbsentRow());
-    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'codex_task' });
     expect(reportOpsCalls).toHaveLength(0);
   });
 
@@ -77,7 +75,7 @@ describe('detectCbmFleetDisabled', () => {
     expect(reportOpsCalls).toHaveLength(0);
   });
 
-  it('does nothing when one of the prior workers has a non-binary_absent outcome', async () => {
+  it('does nothing when one of the prior workers is not disabled (enforced breaks the streak)', async () => {
     findManyResult = [
       makeEnforcedRow(),
       ...Array(CBM_FLEET_THRESHOLD - 2).fill(makeBinaryAbsentRow()),
@@ -94,6 +92,32 @@ describe('detectCbmFleetDisabled', () => {
     expect(call.source).toBe('cbm-health');
     expect(call.severity).toBe('error');
     expect(String(call.dedupeKey)).toContain(WS);
+    expect(String(call.detail)).toContain('binary_absent');
+  });
+
+  it('fires alert on a streak of no_worktree, not just binary_absent', async () => {
+    findManyResult = Array(CBM_FLEET_THRESHOLD - 1).fill(makeNoWorktreeRow());
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'no_worktree' });
+    expect(reportOpsCalls).toHaveLength(1);
+    const call = reportOpsCalls[0] as Record<string, unknown>;
+    expect(String(call.message)).toContain('no_worktree');
+    // Not the binary_absent-specific remediation text when no worker in the
+    // streak reported binary_absent.
+    expect(String(call.detail)).not.toContain('codebase-memory-mcp missing');
+  });
+
+  it('fires on a mixed streak of disable reasons, naming all of them', async () => {
+    findManyResult = [
+      makeNoWorktreeRow(),
+      ...Array(CBM_FLEET_THRESHOLD - 2).fill(makeBinaryAbsentRow()),
+    ];
+    await detectCbmFleetDisabled(WS, { outcome: 'disabled', disableReason: 'no_worktree' });
+    expect(reportOpsCalls).toHaveLength(1);
+    const call = reportOpsCalls[0] as Record<string, unknown>;
+    expect(String(call.message)).toContain('no_worktree');
+    expect(String(call.message)).toContain('binary_absent');
+    expect(String(call.detail)).toContain('codebase-memory-mcp missing');
+    expect(String(call.dedupeKey)).toBe(`cbm-fleet-disabled:${WS}`);
   });
 
 
