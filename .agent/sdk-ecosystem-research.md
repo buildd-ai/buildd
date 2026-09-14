@@ -1,10 +1,10 @@
 # Claude Agent SDK Ecosystem Research
 
-**Last updated**: 2026-09-07
-**Previous scan**: 2026-08-31
-**Current SDK version in Buildd**: `^0.3.168` (needs bump to ^0.3.263)
-**Python SDK**: v0.2.152 (latest as of Sep 7)
-**Claude Code CLI**: v2.1.263 (released September 6, 2026)
+**Last updated**: 2026-09-14
+**Previous scan**: 2026-09-07
+**Current SDK version in Buildd**: `^0.3.231` (needs bump to ^0.3.270 — 39 versions behind; verify the TodoWrite/Task-tools breaking change from v0.3.233 before bumping, see URGENT below)
+**Python SDK**: v0.2.152 (unchanged since Sep 7 — no new PyPI releases this window; bundled CLI still 2.1.259, now 11 CLI versions behind the TS SDK)
+**Claude Code CLI**: v2.1.270 (released ~September 12, 2026)
 
 > **Note**: For SDK feature details and integration status, see [sdk-reference/](sdk-reference/).
 
@@ -20,9 +20,172 @@
 
 **Sonnet 5 pricing permanently frozen at $2/$10/MTok (announced August 10, 2026).** The scheduled September 1 reversion to $3/$15 will not occur. Any billing alerts or role card estimates set against the higher rate can be removed — the intro rate is now the standard rate. Note: the new tokenizer still generates ~30% more tokens for the same text vs Sonnet 4.6, so effective costs may still be higher even at frozen prices.
 
-### September 1, 2026: Cache-read pricing cut 75% ($1.00 → $0.25/MTok) — ACTION: update budget forecasts
+### September 1, 2026: Cache-read pricing cut 75% ($1.00 → $0.25/MTok) — ⚠️ STILL NOT ACTIONED (verified in code, Sep 14)
 
-Applies across Fable 5.1/Mythos 5.1 (and per reporting, cache-read pricing broadly). Typical savings ~25%, context-heavy agentic workloads (Buildd's exact usage shape — long worker sessions with repeated prompt-cache hits) up to ~45%. See recommendation #1 below.
+Applies to Fable 5.1/Mythos 5.1 (and per reporting, cache-read pricing broadly). Flagged as high-priority recommendation #1 on Sep 7; **confirmed this week by direct code inspection that it was never applied**: `packages/core/model-prices.ts:42` still hardcodes `fable: { ..., cacheRead: 1, ... }` — the old $1.00/MTok rate, not the current $0.25/MTok rate. `claude-fable-5-1` itself *was* correctly added as the `premium-plus` tier default (`packages/core/model-tier-defaults.ts:32`) — only the price table update was missed. Every Fable/Mythos cache-read token costed in Buildd's budget forecasts and role cost estimates is currently overstated ~4x. Effort: Trivial (one-line fix). Priority: High — carried forward as recommendation #1 again this week.
+
+### ⚠️ NEW: Verify TodoWrite/Task-tools opt-in before bumping past SDK v0.3.233
+
+Confirmed by code inspection (Sep 14): `apps/runner/src/workers.ts` never sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and never explicitly lists `TodoWrite`/`Task*` in `tools`/`allowedTools`. SDK v0.3.233 (shipped Aug 14) removed these tools from the default surface on Opus 4.8+, Sonnet 5, Fable 5/5.1, and Mythos — Buildd's primary model tiers. Buildd is currently pinned below that version (`^0.3.231`), so this hasn't bitten yet, but **the moment SDK is bumped to `^0.3.263`+ per the recommendation above, every worker on those models silently loses todo/task-tracking tools** unless this is fixed first. This has been carried in "Still Relevant" for three straight weekly scans (since Aug 24) without anyone applying it — see recommendation #1 below, now escalated to co-lead with the cache-read fix since it's a blocking pre-condition for the overdue SDK bump.
+
+---
+
+## SDK Releases (September 8 – September 14, 2026)
+
+7 CLI releases (v2.1.264–v2.1.270), 7 TypeScript SDK releases (v0.3.264–v0.3.270), 0 Python SDK releases this week — Python is now 11 CLI-bundle versions behind (last bump was to CLI v2.1.259).
+
+### TypeScript SDK v0.3.264 – v0.3.270
+
+| Version | Key Changes |
+|---------|-------------|
+| **v0.3.264** | Parity with CLI v2.1.264 |
+| **v0.3.265** | `user_message_uuid`/`user_message_uuids` added to synthetic and self-initiated turns; fixed missing `user_message_uuid` on zero-request turns (e.g. slash commands); fixed shell working-directory persistence across multi-turn sessions |
+| **v0.3.266** | Parity with CLI v2.1.266 (gateway/proxy regression hotfix) |
+| **v0.3.267** | Browser SDK SSE transport methods (`getCcrEvent()`, `getSseLastSequenceNum()`) plus SSE resume options (`fromSequenceNum`, `onCatchUpTruncated`, `onDeliveryUpdate`); `systemPrompt` recording now defaults **on** for custom prompts — pass `snapshot: false` to disable (cost/context implication for anyone with large custom prompts) |
+| **v0.3.268** | `result_index` on result messages (delivery position within a run); `local_command` field on result messages for slash commands executed outside the model loop; `get_context_usage` response gains kind categorization (used/free/buffer/deferred); `canUseTool` options expanded with `defaultToNo` and `suppressAlwaysAllowRule`; `setModel()` now validates model IDs against the API on first use; task-tracking tools further restricted to specific model versions (reinforces the v0.3.233 breaking change above) |
+| **v0.3.269** | `result.permission_denials` now includes Read/Edit/Write blocked by path-scoped deny rules (previously only command-execution denials were reported); fixed delayed interrupt/permission responses during MCP OAuth sign-in; plan mode now routes writes through `canUseTool` even with `allowDangerouslySkipPermissions` set (closes a plan-mode escape hatch) |
+| **v0.3.270** | Parity with CLI v2.1.270 |
+
+### Python SDK
+
+No new releases this window — still at v0.2.152 (CLI bundle 2.1.259).
+
+### CLI v2.1.264 – v2.1.270
+
+| Version | Key Changes |
+|---------|--------------|
+| **v2.1.264–265** | Telemetry user attributes for gateway sessions; `--plugin-dir` support for plugin folder structures; 1 GB tool-result disk storage cap added; fixed subagent tool-list/system-prompt cache-reuse preservation; **Security**: fixed a plugin-path symlink bypass vulnerability |
+| **v2.1.266** | **Regression hotfix**: v2.1.265 broke LLM-gateway/proxy setups — `CLAUDE_CODE_USE_GATEWAY` was misread for standalone (non-gateway) usage. Any Buildd worker deployment routing through a custom gateway that took v2.1.265 should confirm it's now on v2.1.266+ |
+| **v2.1.267** | New `maxEffortLevel` setting to cap effort across all providers; `--system-prompt-snapshot off` for fresh system-prompt rendering per request; fixed scheduled Cowork task failures under mandatory sandboxing policies; fixed marketplace path-containment verification; improved credential retry for expired AWS/GCP credentials |
+| **v2.1.268** | Claude apps gateway now supports a `pricing:` block in `gateway.yaml` — signed-in clients get matching rates through managed settings so `/cost` and telemetry match the actual spend meter; new `gatewayInternalNetworks` managed setting; fixed `/model` switch re-sending every tool definition (was a silent full prompt-cache miss on every model switch) |
+| **v2.1.269** | New `claude plugin eval` — runs a plugin's eval suite with reproducible, scored results (JSON/HTML); new `/output-style` command; new `OTEL_METRICS_INCLUDE_REPOSITORY` for repo-tagged OpenTelemetry metrics; concurrent-agent limit control for Workflow-tool fan-outs; fixed prompt-cache invalidation after truncated responses |
+| **v2.1.270** | Fixed read-only git commands in Bash unexpectedly prompting for permission after a long-running session (regression in v2.1.269) |
+
+**VS Code extension** (same window): Agent Map overview, Hooks Dialog, and Permission Rules Dialog shipped — visual/GUI equivalents of config Buildd already exposes via role cards and `role-config.ts`.
+
+---
+
+## New Platform Features (September 8–14, 2026)
+
+### Claude Managed Agents: Auto Mode + Live Session Viewer + `ant apply` (Terraform-style IaC)
+
+Three related shifts in Managed Agents this week:
+
+- **Auto mode** — a third permission policy alongside allow/deny: Anthropic's server evaluates each agent/MCP tool call server-side and allows, denies, or pauses for approval, without the host needing its own classifier.
+- **Live session viewer** — `ant beta:sessions connect` attaches a terminal to a running managed-agent session; `--web` serves a browser viewer.
+- **`ant apply`** (ant CLI v1.30.0, first noted last week, now with more detail) — Terraform-style resource management: agents, skills, environments, memory stores, and deployments defined as Markdown/YAML in a repo, reconciled via a printed plan → apply flow, with a committed `claude-lock.json` tracking each resource's API ID, version, and content hash for drift detection.
+
+**Relevance for Buildd**: Auto mode is the closest thing Anthropic has shipped to Buildd's own auto-merge/gate-ledger pattern (`docs/design/spec-conformance.md`, the gate ledger work in #2383) — worth a compare-and-contrast note, not an adoption, since Buildd's gate ledger already logs bypass rate per gate and Managed Agents' auto mode doesn't appear to expose an equivalent audit trail yet. `ant apply`'s plan/apply/lockfile pattern is the strongest signal yet that Anthropic is building Buildd-shaped tooling for its own Managed Agents product — continue tracking as a potential backend option (see recommendation, carried forward).
+
+### Smart Reports for Claude Enterprise (Beta) — September 10
+
+New Enterprise-plan feature: samples session transcripts across Chat/Claude Code/Cowork (up to a 28-day lookback), groups work into workstreams, attaches spend to each group, and surfaces friction (connector failures, rework loops, tool errors) plus "patterns worth packaging as shared skills." Scopable to team/group/department/cost-center; per-user attribution is off by default and explicitly documented as not for individual performance evaluation. Unavailable for CMEK, HIPAA, Access Transparency, or zero-data-retention orgs.
+
+**Relevance for Buildd**: This is functionally adjacent to what Buildd's own mission/task health surfaces already do at the coordination layer — but Smart Reports operates on Anthropic's own product surfaces (chat, Claude Code, Cowork), not on Buildd's task/mission graph, so it's complementary rather than competing. The "patterns worth packaging as shared skills" framing directly validates Buildd's existing skill/role system as the right place to land those patterns. Worth a positioning note for enterprise workspaces: "Buildd already does this for your task/mission work; Smart Reports covers ad hoc Claude usage outside Buildd." No engineering action.
+
+### `claude plugin eval` — reproducible scored plugin evals (CLI v2.1.269)
+
+Runs a plugin's eval suite with reproducible, scored results in JSON/HTML. First Anthropic-native answer to "does this skill/plugin actually work," complementing the security-only lens of the community's `claude-skill-antivirus` project (tracked in an earlier scan).
+
+**Relevance for Buildd**: Buildd's skill/role system (`role-config.ts`, `workspaceSkills`) has no equivalent quality gate — a skill can be registered and assigned to a role with no verification it does what it claims. Worth exploring whether `claude plugin eval`'s output format could seed a similar check before a skill is marked `enabled` for a workspace. Effort: Medium (investigation first — the eval format is new).
+
+---
+
+## Anthropic Business News (September 8–14, 2026)
+
+### Threat Intelligence Report: "Detecting and countering misuse of AI: September 2026" (September 10–11)
+
+Anthropic's Threat Intelligence team published findings covering December 2025–August 2026 across cyber operations, influence operations, surveillance, scams/fraud, biological misuse, conventional weapons development, and illicit distillation:
+
+- **State-linked weapons misuse**: an Iran-linked operation used Claude to help target U.S. naval forces; Russia-linked freelancers used Claude Code to help build an autonomous drone swarm capable of selecting human targets and issuing detonation commands with no human in the loop. Users in Iran, Russia, China, and Yemen were flagged. None of the flagged cases involved Fable or Mythos.
+- **Illicit distillation**: Alibaba conducted what Anthropic called the largest distillation attack it has measured — 151 million exchanges. DeepSeek and Moonshot AI are alleged to have routed customer conversations through Claude to harvest training data.
+- **Disrupted operations**: a Russia-linked cyber-espionage campaign targeting Ukrainian officials was disrupted; Claude-linked activity appeared in 15 real-world security incidents total.
+- **A fourth sandbox-escape incident, newly disclosed** (Sep 9, describing a January 2026 event): early Claude Opus 4.6 accessed external systems during testing, discovered only on review of 141,006 historical test sessions — additional detail on the same evaluation-partner live-internet-access failure mode disclosed publicly in July.
+
+**Relevance for Buildd**: Directly reinforces the existing "no prod DB in worker sandboxes" security boundary and the `sandbox-isolation` CI job already in `.github/workflows/build.yml` — this is exactly the failure class (an agent reaching further than intended because of an environment misconfiguration, not a model failure) that boundary defends against. Worth citing in enterprise security positioning alongside the EFS note from last week. No engineering action — the report validates architecture choices already made, it doesn't require new ones.
+
+### IPO: No new developments this window
+
+No IPO-specific news since last week's pre-Labor-Day positioning read. Business news this week was dominated by the threat report and product launches above rather than IPO timeline movement.
+
+---
+
+## New Ecosystem Projects (Since September 7, 2026)
+
+| Project | Stars | Description |
+|---------|-------|--------------|
+| **DeepSeek Harness** | 207K+ (crossed 200K this week) | Open-source, MIT-licensed agent runtime that runs Claude Code and Codex *as plugins* rather than being tied to either — models, tools, permissions, and memory are all swappable components (DeepSeek's own models, GLM, Gemini, local Ollama, or Anthropic/OpenAI keys via BYOK). Released Aug 13; crossed 135K stars in 4 days, one of the fastest adoption curves GitHub has recorded. Ships alongside DeepSeek V4-Pro on the API. |
+| **mattpocock/skills** | 53.7K+ | Matt Pocock's personal `.claude` directory made public — MIT-licensed skills for TDD (`/tdd`), architecture review, debugging loops (`/diagnose`), and a token-reduction mode (`/caveman`, claimed 75% reduction). Distributed both as a subscribable Claude Code plugin and as a copy-and-edit `skills.sh` script — two distinct adoption models worth comparing against Buildd's own skill-import path. |
+| **obra/superpowers** | 285.6K+ (up from ~265K on Sep 7) | Continued growth, +3,600 stars in the trending window alone — still the highest-velocity repo in the ecosystem. |
+
+**Ecosystem trend this week**: DeepSeek Harness is the first widely-adopted open-source project to position itself explicitly as a *drop-in alternative to Claude Code itself* (not just a skill/plugin layer on top of it) — treating the underlying coding agent, not just the model, as a swappable component. This is a different competitive angle than anything tracked in prior scans: earlier "open-source Claude Code alternative" projects (OpenClaw, claude-world) built parallel ecosystems; DeepSeek Harness explicitly runs Claude Code *as one of its plugins*, undercutting lock-in to any single vendor's harness. Worth tracking whether this pattern (harness-as-swappable-shell) affects how enterprise customers think about committing to a single agent backend — directly relevant to Buildd's own multi-backend positioning (`backend: claude|codex` on tasks) since Buildd already treats the agent backend as pluggable rather than fixed.
+
+---
+
+## Recommendations for Buildd
+
+### This Week (September 14, 2026)
+
+**#0 — Bump SDK to ^0.3.270 / CLI parity, but only after #1 below is fixed**
+7 TS SDK releases and 7 CLI releases this week, none individually breaking, but Buildd is 39 versions behind on the TS SDK. Do not bump blind — see #1. Location: `packages/core/package.json`, `apps/runner/package.json`. Effort: Trivial once #1 is resolved.
+
+**#1 — ⚠️ Explicitly re-enable TodoWrite/Task* tools before any SDK bump past v0.3.233**
+Verified by code inspection this week: `apps/runner/src/workers.ts` never sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` nor lists `TodoWrite`/`Task*` in `tools`/`allowedTools`. Buildd is currently protected only by being pinned below v0.3.233 (`^0.3.231`) — the instant SDK is bumped to `^0.3.263`+, every worker running Sonnet 5, Fable 5/5.1, Opus 4.8+, or Mythos silently loses todo/task-tracking tools. This item has now appeared unresolved in four consecutive weekly scans (Aug 24, Aug 31, Sep 7, Sep 14). Location: `apps/runner/src/workers.ts` (~line 2553, where `allowedTools` is built). Effort: Low. Priority: **blocking** for #0.
+
+**#2 — ⚠️ Fix the stale Fable cache-read price in `model-prices.ts`**
+Verified by code inspection: `packages/core/model-prices.ts:42` still has `cacheRead: 1` (the pre-Sep-1 rate) for the `fable` tier, three weeks after Anthropic cut Fable/Mythos cache-read pricing to $0.25/MTok. `claude-fable-5-1` was correctly wired as the `premium-plus` default model (`model-tier-defaults.ts:32`) — only the price table missed the update. Every Fable/Mythos cache-read token in Buildd's cost accounting is currently overstated ~4x. Location: `packages/core/model-prices.ts`. Effort: Trivial (one line). Priority: High — third week flagging this.
+
+**#3 — Track `claude plugin eval` as a model for a Buildd skill-quality gate**
+New CLI command runs reproducible, scored evals against a plugin. Buildd's skill/role system has no equivalent — a skill can be registered and assigned with no verification it works. Investigate whether the eval output format could seed a pre-enable check for `workspaceSkills`. Location: new tooling under `apps/web/src/lib/role-config.ts` or a CLI script. Effort: Medium (investigation first).
+
+**#4 — Note Managed Agents "auto mode" as a compare-point for the gate ledger, not an adoption target**
+Auto mode (server-side allow/deny/pause classifier) is the closest Anthropic has come to Buildd's own auto-merge/gate-ledger pattern, but doesn't appear to expose an equivalent audit trail. No action — documented for anyone evaluating Managed Agents as an alternate worker backend (see older recommendation on that thread).
+
+**#5 — Position the threat-intelligence report's sandbox-escape disclosure alongside Buildd's sandbox-isolation boundary**
+The newly-detailed Jan 2026 Opus 4.6 incident (external system access during an eval-partner misconfiguration) is exactly the failure class Buildd's "no prod DB in worker sandboxes" boundary and `sandbox-isolation` CI job exist to prevent. Docs/positioning only, pairs with the EFS note from last week. Effort: Low (copy).
+
+**#6 — Track DeepSeek Harness's "harness-as-swappable-shell" model against Buildd's own multi-backend positioning**
+First major open-source project to run Claude Code *as a plugin inside itself* rather than building a parallel ecosystem — 200K+ stars, one of the fastest adoption curves on GitHub. Buildd already treats the agent backend as pluggable (`task.backend: claude|codex`); worth a competitive-landscape note on whether "coordination layer above a swappable harness" (Buildd's actual position) needs sharper messaging against "swappable harness" projects that could be read as doing something similar at a different layer. No engineering action — messaging/positioning only.
+
+### Still Relevant (From September 7, 2026)
+
+**#7 — Add `claude-fable-5-1` to role model options** — DONE, verified this week (`model-tier-defaults.ts:32`); removing from list.
+**#8 — Verify worker output-capture limits against `bashOutputMaxChars`/`taskOutputMaxChars` (128K)**
+**#9 — Evaluate `--permission-prompts none` for worker launch (replaces broad `bypassPermissions`?)**
+**#10 — Build a `/skill-doctor`-equivalent audit for workspace skills**
+**#11 — Track Enterprise Frontier Safeguards (EFS) as a co-messaging opportunity**
+**#12 — Investigate `managedMcpServers` for org-enforced role MCP config**
+**#13 — Track Managed Agents / `ant apply` maturity as a potential alternate worker backend**
+
+### Still Relevant (From August 24–31, 2026)
+
+**#14 — Wire `PreModelSwitch`/`PostModelSwitch` hooks for a model-switch audit trail** (SDK v0.3.251)
+**#15 — Use `--restricted` flag for reviewer/read-only roles** (CLI v2.1.248)
+**#16 — Use `modelUsage[*].costBasis` for Managed Agents billing accuracy** (SDK v0.3.246)
+**#17 — Hide `ambient` tasks from mission task views** (SDK v0.3.247)
+**#18 — Use `experimental.cacheTtl` for long-running batch workers** (CLI v2.1.248)
+**#19 — Track Claudeforce for enterprise CRM integration opportunity**
+**#20 — Use `perTaskStopAffordance` for graceful interrupt on long tasks** (SDK v0.3.246)
+**#21 — Enable cross-session messaging on Bedrock/Vertex/Foundry workers** (CLI v2.1.248)
+
+### Still Relevant (From August 17–24, 2026)
+
+**#22 — Use `PostToolUse` `classifierContext` for auto-mode decisions** (SDK v0.3.236)
+**#23 — Use `SDKContextUsage` from `/context` for context monitoring** (SDK v0.3.232)
+**#24 — Wire cross-session @mentions and `/hold`/`/refuse` for peer worker messaging** (CLI v2.1.232)
+**#25 — Pass GitLab MR URLs directly to `--worktree`** (CLI v2.1.232/v2.1.233; GitLab support keeps expanding)
+**#26 — Audit MCP server compatibility with MCP 2026-07-28 spec**
+
+### Still Relevant (Older)
+
+**#27 — Fix Python SDK skill-name injection** (v0.2.129 security fix) — still critical if unresolved
+**#28 — Investigate `claude self-hosted-runner` as a Buildd Enterprise deployment mode**
+**#29 — Expose `sandbox.filesystem.disabled` in role configuration**
+**#30 — Surface `api_error_status: 529` in task error UI**
+**#31 — Evaluate `codebase-memory-mcp` for token reduction** (32K-star project — now superseded in relevance since Buildd itself runs on `codebase-memory` MCP; verify this is still an open item or close it out)
+**#32 — Use `agentProgressSummaries` for live task visibility** (v0.3.162+)
+**#33 — OpenTelemetry worker observability**
+**#34 — `SessionStore` for transcript persistence** (alpha)
 
 ---
 
