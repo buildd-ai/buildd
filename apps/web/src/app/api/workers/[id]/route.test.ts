@@ -2800,6 +2800,51 @@ describe('PATCH /api/workers/[id]', () => {
       expect(capturedTaskSet?.result?.prNumber).toBe(77);
     });
 
+    it.each([false, true])('completes a none work task after a verified sibling merge (dirtyWorktree=%s)', async (dirtyWorktree) => {
+      // A conflict-resolution/coordination task ships nothing on its own
+      // branch by design — its deliverable is a merge_pr call against a
+      // sibling PR. That call stamps mergedAt on THIS worker's row on a
+      // GitHub-confirmed merge (apps/web/src/app/api/github/pr/route.ts PUT
+      // handler), regardless of whose PR was merged, so mergedAt is a real,
+      // verified signal rather than a self-reported claim.
+      const updatedWorker = { id: 'worker-3', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-3',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/coordination-task',
+        commitCount: 2,
+        dirtyWorktree,
+        prUrl: null,
+        prNumber: null,
+        mergedAt: new Date('2026-09-10T00:00:00Z'),
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'none', taskClass: 'work', category: 'bug' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summarySource: 'fallback', summary: 'Session ended.' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
     it('completes a dirty-worktree worker with no PR that merged a sibling PR during its run (cross-branch deliverable)', async () => {
       // A conflict-resolution/coordination task ships nothing on its own
       // branch by design — its deliverable is a merge_pr call against a
