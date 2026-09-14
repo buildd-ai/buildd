@@ -4,12 +4,10 @@
  * Codex has no Claude Stop hook (hook-factory.ts:381) — its assistant text
  * arrives only through the channel-2 adapter (mapCodexEventToSdkMessages →
  * handleMessage). Without setting worker.lastAssistantMessage there, the
- * review-loop DONE gate (workers.ts ~1567) and completion summary (~1758) are
- * dead for Codex.
+ * fallback completion summary (~1758) is dead for Codex.
  *
  * Strategy: drive the real handleMessage with the SAME Claude-shaped SDKMessages
- * the Codex adapter produces, then assert the field is populated and the DONE
- * sentinel check the gate uses can observe it.
+ * the Codex adapter produces, then assert the field is populated.
  *
  * Run: bun test apps/runner/__tests__/unit/codex-last-assistant-message.test.ts
  */
@@ -178,25 +176,6 @@ describe('R1 — Codex agent_message populates worker.lastAssistantMessage', () 
     expect(worker.lastAssistantMessage).toBe('second');
   });
 
-  test('the DONE-gate substring check observes a DONE sentinel once emitted', () => {
-    // Mirrors workers.ts ~1567: const lastMsg = worker.lastAssistantMessage || '';
-    // if (lastMsg.includes('<promise>DONE</promise>')) break;
-    feed(manager, worker, {
-      type: 'item.completed',
-      item: { id: 'a1', type: 'agent_message', text: 'Reviewed everything. <promise>DONE</promise>' },
-    });
-    const lastMsg = worker.lastAssistantMessage || '';
-    expect(lastMsg.includes('<promise>DONE</promise>')).toBe(true);
-  });
-
-  test('without a DONE sentinel the gate does not trip', () => {
-    feed(manager, worker, {
-      type: 'item.completed',
-      item: { id: 'a1', type: 'agent_message', text: 'Still working on it.' },
-    });
-    const lastMsg = worker.lastAssistantMessage || '';
-    expect(lastMsg.includes('<promise>DONE</promise>')).toBe(false);
-  });
 });
 
 describe('Phase 1C — Codex thread.started captured into codexThreadId (R5)', () => {

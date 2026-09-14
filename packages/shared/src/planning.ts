@@ -20,6 +20,8 @@
 // forever. Keep this contract here, imported by both the runner and the web
 // app, so the boundaries cannot drift apart again.
 
+import type { GoalCriterion } from './types';
+
 /**
  * A single step in an orchestrator plan. Superset of the fields the agent can
  * emit under {@link planningOutputSchema} plus fields only set programmatically
@@ -36,6 +38,8 @@ export interface PlanStep {
   requiredCapabilities?: string[];
   outputRequirement?: string;
   priority?: number;
+  /** Declared files/globs this step expects to create or modify — see Task.pathManifest. */
+  pathManifest?: string[];
   /** Smart-routing hint — see plans/buildd/smart-model-routing.md */
   kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
   /** Smart-routing hint — see plans/buildd/smart-model-routing.md */
@@ -64,6 +68,8 @@ export interface PlanningStructuredOutput {
   summary: string;
   missionComplete: boolean;
   questions?: PlanQuestion[];
+  /** Mission-level completion gates the agent proposes — see manage_missions goalCriteria. */
+  goalCriteria?: GoalCriterion[];
 }
 
 /**
@@ -121,6 +127,14 @@ export const planningOutputSchema = {
               'What this step must deliver: "pr_required" (code change), "artifact_required" (report/analysis), or "none".',
           },
           priority: { type: 'integer', description: 'Higher runs sooner among steps that are all unblocked.' },
+          pathManifest: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Files/globs this step expects to create or modify. Declaring it lets the platform detect path ' +
+              'overlap with concurrently claimable steps before either starts, instead of after both open ' +
+              'conflicting PRs.',
+          },
           // Smart-routing hints. Optional — router falls back to defaults
           // when absent. See plans/buildd/smart-model-routing.md.
           kind: {
@@ -156,6 +170,37 @@ export const planningOutputSchema = {
           defaultChoice: { type: 'string' },
         },
         required: ['ref', 'question'],
+      },
+    },
+    goalCriteria: {
+      type: 'array',
+      description:
+        'Mission-level completion gates this plan proposes — see manage_missions goalCriteria. At least one ' +
+        'MECHANICAL criterion (command / all_prs_merged / no_open_tasks / artifact_exists) is required; ' +
+        '"metric" has no evaluator yet and "description" requires notMechanizableReason.',
+      items: {
+        type: 'object',
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['all_prs_merged', 'command', 'no_open_tasks', 'artifact_exists', 'metric', 'description'],
+          },
+          label: { type: 'string' },
+          command: { type: 'string', description: 'Required when type is "command": a shell command that must exit 0.' },
+          requireBranchDeleted: { type: 'boolean', description: 'Used with type "all_prs_merged".' },
+          key: { type: 'string', description: 'Used with type "artifact_exists".' },
+          artifactType: { type: 'string', description: 'Used with type "artifact_exists".' },
+          query: { type: 'string', description: 'Used with type "metric" (reserved — do not use as a gate).' },
+          operator: { type: 'string', enum: ['gt', 'gte', 'lt', 'lte', 'eq', 'neq'], description: 'Used with type "metric".' },
+          threshold: { type: 'number', description: 'Used with type "metric".' },
+          unit: { type: 'string', description: 'Used with type "metric".' },
+          description: { type: 'string', description: 'Required when type is "description": free-form criterion graded by an LLM.' },
+          notMechanizableReason: {
+            type: 'string',
+            description: 'Required when type is "description": why no mechanical form could express this.',
+          },
+        },
+        required: ['type'],
       },
     },
   },

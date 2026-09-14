@@ -5,6 +5,59 @@ import { missionIntegrationBase } from '@buildd/core/mission-integration';
 import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/branch-names';
 import type { PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
+import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
+
+/**
+ * `tasks.context.specDocFix` — written by the doc-fix dispatch
+ * (api/discrepancies/[id]/dispatch-doc-fix) and carried onto whatever the
+ * human approves, so the code task that finalizes a proposal names the ledger
+ * rows it exists to settle.
+ */
+export interface SpecDocFixContext {
+  specPath: string;
+  assertionIds?: string[];
+  discrepancyIds?: string[];
+  workspaceId?: string;
+}
+
+/**
+ * A doc-fixer's net-enhancement proposal approves as exactly ONE child task.
+ *
+ * The proposal is a list of items about one document; approving it is one
+ * decision, and the work it describes has to land together with the spec text
+ * that will then describe the finished state — split across N tasks, N-1 of
+ * them would re-open the discrepancy the doc fix just closed. The worker is
+ * told to return a single step, and this makes that mechanical rather than a
+ * matter of it complying: whatever shape the plan comes back in, one child is
+ * minted and every item survives in its description. Nothing is dropped.
+ */
+export function collapseProposalPlan(plan: PlanStep[], docFix: SpecDocFixContext): PlanStep[] {
+  if (plan.length === 0) return plan;
+
+  const proposal = plan
+    .map((step) => {
+      const body = step.description?.trim();
+      return body ? `### ${step.title}\n\n${body}` : `### ${step.title}`;
+    })
+    .join('\n\n');
+
+  return [
+    {
+      ...plan[0],
+      ref: 'proposal',
+      title: proposalChildTaskTitle(docFix.specPath),
+      description: buildProposalChildDescription({
+        specPath: docFix.specPath,
+        assertionIds: docFix.assertionIds ?? [],
+        proposal,
+      }),
+      // Refs from the submitted steps no longer resolve once they are one step,
+      // and a single child has nothing to depend on or stack behind anyway.
+      dependsOn: undefined,
+      baseBranch: undefined,
+    },
+  ];
+}
 
 // PlanStep is defined once in @buildd/shared (the planning contract). Re-exported
 // here for the existing internal importers (task-dependencies, mission-loop, etc.).
@@ -50,7 +103,7 @@ export async function approvePlan(
   // Fetch the planning task for workspace/mission context
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, planningTaskId),
-    columns: { id: true, workspaceId: true, missionId: true },
+    columns: { id: true, workspaceId: true, missionId: true, context: true, pathManifest: true },
   });
 
   if (!task) {
@@ -167,6 +220,17 @@ export async function approvePlan(
     survivingPlan = kept;
   }
 
+  // A doc-fix task's plan is a net-enhancement PROPOSAL about one spec doc, not
+  // a decomposition — it approves as exactly one child, carrying the ledger
+  // rows it settles. Applied here (not only in the route) so the same rule
+  // holds on every path into approvePlan.
+  const docFix = ((task.context as Record<string, unknown> | null) ?? {}).specDocFix as
+    | SpecDocFixContext
+    | undefined;
+  if (docFix?.specPath) {
+    survivingPlan = collapseProposalPlan(survivingPlan, docFix);
+  }
+
   // First pass: create all tasks with empty dependsOn to get their IDs
   const refToId: Record<string, string> = {};
   const refToTitle: Record<string, string> = {};
@@ -190,6 +254,9 @@ export async function approvePlan(
         roleSlug: step.roleSlug || null,
         requiredCapabilities: step.requiredCapabilities ?? [],
         outputRequirement: step.outputRequirement as 'pr_required' | 'artifact_required' | 'none' | 'auto' | undefined,
+        // A proposal child inherits the doc-fix task's scope so the §11
+        // dispatch injection fires on the same document it is finalizing.
+        ...(docFix?.specPath ? { pathManifest: task.pathManifest ?? [docFix.specPath] } : {}),
         dependsOn: [], // Updated in second pass
         ...(intentInfo ? {
           kind: 'coordination' as const,
@@ -207,6 +274,9 @@ export async function approvePlan(
           ...(step.model ? { model: step.model } : {}),
           ...(step.skillSlugs?.length ? { skillSlugs: step.skillSlugs } : {}),
           ...(options?.autoApproved ? { autoApproved: true } : {}),
+          // The link back to the ledger: this child exists to settle these rows,
+          // and the spec text it updates is the one they name.
+          ...(docFix?.specPath ? { specDocFix: docFix, finalizesProposal: true } : {}),
           ...(mission?.integrationBranchEnabled && mission?.workingBranch ? { headBranch: mission.workingBranch } : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
         },

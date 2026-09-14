@@ -394,3 +394,86 @@ describe('approvePlan — coordination-task dedup (subject anchor + intent, not 
     expect(followUpCall?.set?.dependsOn).toBeUndefined();
   });
 });
+
+/**
+ * A doc-fix task's plan is a net-enhancement PROPOSAL about one spec doc, not a
+ * decomposition. Approving it mints exactly ONE child that lands the code AND
+ * the spec text describing the finished state — split across N tasks, N-1 of
+ * them would leave the spec describing the old behaviour and re-open the
+ * discrepancy the doc fix just closed.
+ */
+describe('approvePlan — doc-fix proposal approves as exactly one linked child', () => {
+  beforeEach(reset);
+
+  const SPEC = 'docs/design/runner-oauth-broker.md';
+  const DOC_FIX = {
+    specPath: SPEC,
+    assertionIds: ['broker-daemon', 'broker-route'],
+    discrepancyIds: ['d-1', 'd-2'],
+    workspaceId: 'ws-1',
+  };
+
+  function withDocFix() {
+    planningTaskRow.context = { specDocFix: DOC_FIX, planOptional: true };
+    planningTaskRow.pathManifest = [SPEC];
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+  }
+
+  it('collapses a multi-item proposal into ONE child, losing no item', async () => {
+    withDocFix();
+    const result = await approvePlan(PLANNING_TASK_ID, [
+      { ref: 's1', title: 'Refresh the broker token proactively', description: 'Gap: only on 401.' },
+      { ref: 's2', title: 'Record broker refresh latency', description: 'Gap: no metric.' },
+    ] as any);
+
+    expect(result.taskIds).toHaveLength(1);
+    expect(insertedValues).toHaveLength(1);
+    const child = insertedValues[0];
+    expect(child.description).toContain('Refresh the broker token proactively');
+    expect(child.description).toContain('Record broker refresh latency');
+    expect(child.description).toContain('Gap: only on 401.');
+    expect(child.description).toContain('Gap: no metric.');
+  });
+
+  it('links the child back to the ledger rows it exists to settle', async () => {
+    withDocFix();
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 's1', title: 'Do the thing', description: 'x' }] as any);
+    const child = insertedValues[0];
+    expect(child.context.specDocFix).toEqual(DOC_FIX);
+    expect(child.context.finalizesProposal).toBe(true);
+    expect(child.parentTaskId).toBe(PLANNING_TASK_ID);
+  });
+
+  it('tells the child to finalize the spec in the same PR, naming the assertions', async () => {
+    withDocFix();
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 's1', title: 'Do the thing', description: 'x' }] as any);
+    const child = insertedValues[0];
+    expect(child.title).toContain(SPEC);
+    expect(child.description).toContain(SPEC);
+    expect(child.description).toContain('broker-daemon');
+    expect(child.description).toContain('broker-route');
+  });
+
+  it('inherits the doc-fix scope so the dispatch injection fires on the same document', async () => {
+    withDocFix();
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 's1', title: 'Do the thing', description: 'x' }] as any);
+    expect(insertedValues[0].pathManifest).toEqual([SPEC]);
+  });
+
+  it('an empty proposal mints nothing at all — no noise', async () => {
+    withDocFix();
+    const result = await approvePlan(PLANNING_TASK_ID, [] as any);
+    expect(result.taskIds).toHaveLength(0);
+    expect(insertedValues).toHaveLength(0);
+  });
+
+  it('an ordinary plan is unaffected — no collapse, no specDocFix on the children', async () => {
+    const result = await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Step A' },
+      { ref: 'b', title: 'Step B' },
+    ] as any);
+    expect(result.taskIds).toHaveLength(2);
+    expect(insertedValues[0].context.specDocFix).toBeUndefined();
+    expect(insertedValues[0].pathManifest).toBeUndefined();
+  });
+});

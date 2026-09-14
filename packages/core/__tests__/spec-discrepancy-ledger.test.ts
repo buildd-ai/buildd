@@ -205,6 +205,46 @@ describe('writeLedgerFromEvaluations', () => {
     expect(row.lastCheckedAt).toEqual(run2); // but freshness does move
   });
 
+  test('reopen releases the doc-fix claim — a new occurrence needs a new fix, not the old task', async () => {
+    const firstFix = new Date('2026-09-01T00:00:00Z');
+    const reopenRun = new Date('2026-09-14T00:00:00Z');
+    // A row that a doc fix already settled once: resolved, and still carrying
+    // the claim of the task that settled it. The document has now drifted
+    // again, so the checker reopens it.
+    store.set('ws-1::docs/design/drifted-twice.md::broker-route', {
+      workspaceId: 'ws-1',
+      specPath: 'docs/design/drifted-twice.md',
+      assertionId: 'broker-route',
+      direction: 'code_ahead',
+      status: 'resolved',
+      firstSeenAt: firstFix,
+      lastCheckedAt: firstFix,
+      docFixTaskId: 'task-the-first-doc-fix',
+    });
+
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [
+        doc({
+          path: 'docs/design/drifted-twice.md',
+          docType: 'design',
+          declaredStatus: 'proposed',
+          results: [result({ id: 'broker-route', outcome: 'pass' })],
+        }),
+      ],
+      reopenRun,
+    );
+
+    expect(summary.reopened).toBe(1);
+    const row = [...store.values()][0];
+    expect(row.status).toBe('open');
+    expect(row.firstSeenAt).toEqual(reopenRun);
+    // Without this the card would show "fix in flight" pointing at a task that
+    // finished a fortnight ago, and the dispatch CTA would never come back for
+    // a finding that is genuinely new.
+    expect(row.docFixTaskId).toBeNull();
+  });
+
   test('direction is computed correctly end-to-end from checker output', async () => {
     const now = new Date('2026-09-11T00:00:00Z');
     const evaluations = [

@@ -87,3 +87,69 @@ describe('list_artifacts — missionId filter', () => {
     expect(result.content[0].text).toContain('No artifacts found');
   });
 });
+
+describe('list_artifacts — review filter', () => {
+  let mockApi: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockApi = mock();
+  });
+
+  it('passes review=true so the API applies the prominence rule in SQL', async () => {
+    mockApi.mockResolvedValue({ artifacts: [] });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'list_artifacts',
+      { review: true },
+      createMockContext(),
+    );
+
+    const [endpoint] = mockApi.mock.calls[0];
+    const url = new URL(endpoint, 'http://localhost');
+    expect(url.searchParams.get('review')).toBe('true');
+  });
+
+  it('accepts the string "true" (MCP clients that stringify booleans)', async () => {
+    mockApi.mockResolvedValue({ artifacts: [] });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'list_artifacts',
+      { review: 'true' },
+      createMockContext(),
+    );
+
+    const url = new URL(mockApi.mock.calls[0][0], 'http://localhost');
+    expect(url.searchParams.get('review')).toBe('true');
+  });
+
+  it.each([undefined, false, 'false'])('omits the param entirely for %p', async (review) => {
+    mockApi.mockResolvedValue({ artifacts: [] });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'list_artifacts',
+      { review },
+      createMockContext(),
+    );
+
+    const url = new URL(mockApi.mock.calls[0][0], 'http://localhost');
+    expect(url.searchParams.has('review')).toBe(false);
+  });
+
+  it('composes with missionId', async () => {
+    mockApi.mockResolvedValue({ artifacts: [] });
+
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'list_artifacts',
+      { missionId: MOCK_MISSION_ID, review: true },
+      createMockContext(),
+    );
+
+    const url = new URL(mockApi.mock.calls[0][0], 'http://localhost');
+    expect(url.searchParams.get('missionId')).toBe(MOCK_MISSION_ID);
+    expect(url.searchParams.get('review')).toBe('true');
+  });
+});

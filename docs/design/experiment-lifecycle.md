@@ -1,7 +1,7 @@
 # Experiment Lifecycle
 
 **Status:** Proposed
-**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts`, `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c)
+**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts`, `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c), `packages/core/experiment-cleanup.ts`, `apps/web/src/lib/experiment-cleanup-task.ts`, `apps/web/src/app/api/cron/memory-digest-readout/route.ts`, `packages/core/memory-digest-readout-source.ts`, `cron-manifest.json`
 
 ---
 
@@ -143,6 +143,45 @@ enforced at the write boundary, following `mission-helpers.ts:173`.
 | `frozen` | Assignment stopped, data complete, analysis open | Entered automatically when a stopping rule fires, or manually |
 | `concluded` | A decision is recorded | A non-empty decision with a verdict and a rationale |
 | `retired` | The losing code path is gone, or the winner is now default | The arm code is deleted or the treatment is unconditional |
+
+**`retired` emits a scoped cleanup task, not a reminder.** A concluded
+experiment leaves scaffolding behind — a schedule that still ticks, a guard
+that still pins a version, a CLI, a published artifact. A notification saying
+"remember to clean this up" is a task nobody owns: it is read once, and the
+schedule keeps ticking until somebody happens to act. So entering the terminal
+verdict files real work, gated on the same once-ever claim that gates the
+verdict notification, so it happens at most once ever and never on a
+non-terminal or indeterminate readout. Shipped for the live experiment in
+`apps/web/src/app/api/cron/memory-digest-readout/route.ts` via
+`apps/web/src/lib/experiment-cleanup-task.ts`, described by
+`packages/core/experiment-cleanup.ts`.
+
+The task's description is the safety property, so it is generated rather than
+written. "Clean up the finished experiment" is an instruction an agent can
+satisfy by deleting the readout module, the CLI, the pin guard and the
+published artifact, so every cleanup task states, as named assets with reasons:
+
+- **DO** remove the experiment's schedule entry, and open a PR.
+- **DO NOT** remove or modify: the readout computation or its CLI and package
+  script (the *reusable* half — the next experiment needs it); the
+  policy-version pin guard; the published artifact; the claim row in
+  `system_cache`; or the arm-assignment code.
+- **Optional, and the PR author's call:** code that becomes unreferenced once
+  the schedule entry is gone. Not required by the task.
+- **This task does not decide the experiment.** Keeping or reverting the
+  treatment is a separate human call; the cleanup must not make it, assume it,
+  or change run-time behaviour on the strength of the verdict.
+
+**Retirement is two stages, and only the first is automatable.** The
+*schedule* can retire the moment the verdict is terminal: the stopping rule is
+satisfied, more data cannot move the answer, and every further tick is pure
+cost. The *pin guard* cannot. It is what makes the cohort's rows comparable, so
+a later change to the measured path that did not bump the policy version would
+silently rebase a cohort someone may still re-analyse — turning a reproducible
+analysis into an unreproducible one. The guard therefore stays until the
+`concluded` decision is recorded, which is gated on a human writing it down and
+so cannot be derived from a verdict. The cleanup task says which stage it is,
+rather than implying the experiment is tidied up once the cron is gone.
 
 **Mandatory before enrolment opens** — the list is the point of the whole
 design, because every item on it is something the live experiment lacks:

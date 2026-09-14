@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import {
   resolveReleaseStrategy,
   effectiveStrategy,
+  isReleaseBranchPr,
   type ResolvedReleaseStrategy,
 } from '../release-strategy';
 import type { WorkspaceReleaseConfig } from '../db/schema';
@@ -125,5 +126,35 @@ describe('resolveReleaseStrategy — script', () => {
     const r = resolveReleaseStrategy({ enabled: true, strategy: 'script' });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe('invalid');
+  });
+});
+
+describe('isReleaseBranchPr', () => {
+  const config = branchMerge({ releaseBranch: 'dev', prodBranch: 'main' });
+
+  it('matches a PR from the configured release branch into the configured prod branch', () => {
+    expect(isReleaseBranchPr(config, { headRef: 'dev', baseRef: 'main' })).toBe(true);
+  });
+
+  it('is config-driven regardless of the configured dispatch strategy — workflow_dispatch still carries the ref pair', () => {
+    const dispatched = workflowDispatch({ releaseBranch: 'dev', prodBranch: 'main' });
+    expect(isReleaseBranchPr(dispatched, { headRef: 'dev', baseRef: 'main' })).toBe(true);
+  });
+
+  it('rejects a mismatched head ref', () => {
+    expect(isReleaseBranchPr(config, { headRef: 'feature/x', baseRef: 'main' })).toBe(false);
+  });
+
+  it('rejects a mismatched base ref', () => {
+    expect(isReleaseBranchPr(config, { headRef: 'dev', baseRef: 'staging' })).toBe(false);
+  });
+
+  it('is false when releaseBranch is not configured', () => {
+    expect(isReleaseBranchPr(branchMerge({ prodBranch: 'main' }), { headRef: 'dev', baseRef: 'main' })).toBe(false);
+  });
+
+  it('is false for a null or absent config', () => {
+    expect(isReleaseBranchPr(null, { headRef: 'dev', baseRef: 'main' })).toBe(false);
+    expect(isReleaseBranchPr(undefined, { headRef: 'dev', baseRef: 'main' })).toBe(false);
   });
 });

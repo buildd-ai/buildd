@@ -168,13 +168,16 @@ export interface CriteriaDraftValidation {
  *
  * Each draft is validated as a one-element array so the returned message can be
  * attributed to its row; the assembled array is then validated as a whole to
- * catch array-level rules (the `MAX_GOAL_CRITERIA` ceiling). Nothing here
+ * catch array-level rules (the `MAX_GOAL_CRITERIA` ceiling and the "at least
+ * one mechanical criterion" rule — `requireMechanical: false` on the per-row
+ * call, since a lone criterion checked in isolation always fails that rule
+ * trivially even when the other rows in the form satisfy it). Nothing here
  * decides whether a criterion is acceptable — `validateGoalCriteria` does.
  */
 export function validateCriteriaDrafts(drafts: CriterionDraft[]): CriteriaDraftValidation {
   const criteria = drafts.map(draftToCriterion);
   const errors = criteria.map(c => {
-    const message = validateGoalCriteria([c]);
+    const message = validateGoalCriteria([c], { requireMechanical: false });
     return message === null ? null : localise(message);
   });
 

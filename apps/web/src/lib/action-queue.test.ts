@@ -415,6 +415,73 @@ describe('buildDiscrepancyItems', () => {
     expect(overflowCount).toBe(0);
   });
 
+  it('groups N rows on one spec path into ONE card carrying all N assertion ids', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ id: 'd-1', assertionId: 'a-1', firstSeenAt: new Date('2026-08-03T00:00:00Z') }),
+      row({ id: 'd-2', assertionId: 'a-2', firstSeenAt: new Date('2026-08-01T00:00:00Z') }),
+      row({ id: 'd-3', assertionId: 'a-3', firstSeenAt: new Date('2026-08-02T00:00:00Z') }),
+      row({ id: 'd-4', assertionId: 'a-4', firstSeenAt: new Date('2026-08-04T00:00:00Z') }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].assertionIds).toEqual(['a-2', 'a-3', 'a-1', 'a-4']);
+    expect(items[0].discrepancyIds).toEqual(['d-2', 'd-3', 'd-1', 'd-4']);
+    // Representative row + first-seen are the OLDEST in the group, so the card
+    // reports the age of the finding rather than of its newest sighting.
+    expect(items[0].discrepancyId).toBe('d-2');
+    expect(items[0].assertionId).toBe('a-2');
+    expect(items[0].firstSeenAt).toEqual(new Date('2026-08-01T00:00:00Z'));
+  });
+
+  it('does not merge two directions on one spec path — direction decides the whole CTA set', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ id: 'd-1', assertionId: 'a-1', direction: 'code_ahead' }),
+      row({ id: 'd-2', assertionId: 'a-2', direction: 'contradicted' }),
+    ]);
+    expect(items).toHaveLength(2);
+    expect(items.map(i => i.direction)).toEqual(['contradicted', 'code_ahead']);
+  });
+
+  it('does not merge the same spec path across workspaces', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ id: 'd-1', workspaceId: 'ws-a' }),
+      row({ id: 'd-2', workspaceId: 'ws-b' }),
+    ]);
+    expect(items).toHaveLength(2);
+  });
+
+  it('marks the whole group in-flight when any row carries a live doc-fix task', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ id: 'd-1', assertionId: 'a-1', docFixTaskId: 'task-1', docFixTaskStatus: 'in_progress' }),
+      row({ id: 'd-2', assertionId: 'a-2' }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].docFixTaskId).toBe('task-1');
+    expect(items[0].docFixTaskStatus).toBe('in_progress');
+  });
+
+  it('a completed doc-fix task still owns the path — the rows wait on the checker re-run, not on a second dispatch', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ docFixTaskId: 'task-1', docFixTaskStatus: 'completed' }),
+    ]);
+    expect(items[0].docFixTaskId).toBe('task-1');
+  });
+
+  it('a failed doc-fix task releases the claim — nothing is coming, so the CTA comes back', () => {
+    const { items } = buildDiscrepancyItems([
+      row({ docFixTaskId: 'task-1', docFixTaskStatus: 'failed' }),
+    ]);
+    expect(items[0].docFixTaskId).toBeNull();
+  });
+
+  it('ranks an in-flight card below every card still waiting on a human', () => {
+    const { items } = buildDiscrepancyItems([
+      // contradicted normally outranks everything — but not once it is agent-handled.
+      row({ id: 'busy', specPath: 'busy.md', direction: 'contradicted', docFixTaskId: 't', docFixTaskStatus: 'in_progress' }),
+      row({ id: 'open', specPath: 'open.md', direction: 'code_ahead' }),
+    ]);
+    expect(items.map(i => i.specPath)).toEqual(['open.md', 'busy.md']);
+  });
+
   it('excludes accepted rows outright — re-surfacing an owner call already made is the Schedules-page problem again', () => {
     const { items } = buildDiscrepancyItems([row({ status: 'accepted' })]);
     expect(items).toHaveLength(0);
@@ -434,17 +501,17 @@ describe('buildDiscrepancyItems', () => {
     expect(items.map(i => i.discrepancyId)).toEqual(['contra', 'spec', 'code']);
   });
 
-  it('within a direction, ranks oldest first_seen_at first — a row that survived several runs always outranks a fresh one', () => {
+  it('within a direction, ranks oldest first_seen_at first — a spec that survived several runs always outranks a fresh one', () => {
     const { items } = buildDiscrepancyItems([
-      row({ id: 'new', assertionId: 'a-new', firstSeenAt: new Date('2026-09-01T00:00:00Z') }),
-      row({ id: 'old', assertionId: 'a-old', firstSeenAt: new Date('2026-08-01T00:00:00Z') }),
+      row({ id: 'new', specPath: 'new.md', assertionId: 'a-new', firstSeenAt: new Date('2026-09-01T00:00:00Z') }),
+      row({ id: 'old', specPath: 'old.md', assertionId: 'a-old', firstSeenAt: new Date('2026-08-01T00:00:00Z') }),
     ]);
     expect(items.map(i => i.discrepancyId)).toEqual(['old', 'new']);
   });
 
-  it('caps at the top N per workspace and reports the rest as overflow, never silently dropping them', () => {
+  it('caps at the top N SPECS per workspace and reports the rest as overflow, never silently dropping them', () => {
     const rows = Array.from({ length: 12 }, (_, i) =>
-      row({ id: `d-${i}`, assertionId: `a-${i}`, firstSeenAt: new Date(2026, 7, i + 1) }));
+      row({ id: `d-${i}`, specPath: `docs/design/s-${i}.md`, assertionId: `a-${i}`, firstSeenAt: new Date(2026, 7, i + 1) }));
     const { items, overflowCount } = buildDiscrepancyItems(rows, { cap: 10 });
     expect(items).toHaveLength(10);
     expect(overflowCount).toBe(2);
@@ -454,10 +521,29 @@ describe('buildDiscrepancyItems', () => {
     );
   });
 
+  it('the cap counts SPECS, not rows — 40 stale claims across 4 docs is four cards, not an overflowing queue', () => {
+    const rows = Array.from({ length: 4 }).flatMap((_, doc) =>
+      Array.from({ length: 10 }, (_, i) =>
+        row({ id: `d-${doc}-${i}`, specPath: `docs/design/s-${doc}.md`, assertionId: `a-${doc}-${i}` })));
+    const { items, overflowCount } = buildDiscrepancyItems(rows, { cap: 10 });
+    expect(items).toHaveLength(4);
+    expect(overflowCount).toBe(0);
+    expect(items.every(i => i.assertionIds?.length === 10)).toBe(true);
+  });
+
+  it('overflow is counted in specs too — 12 docs over a cap of 10 is 2, whatever each doc\'s row count is', () => {
+    const rows = Array.from({ length: 12 }).flatMap((_, doc) =>
+      Array.from({ length: 3 }, (_, i) =>
+        row({ id: `d-${doc}-${i}`, specPath: `docs/design/s-${doc}.md`, assertionId: `a-${doc}-${i}`, firstSeenAt: new Date(2026, 7, doc + 1) })));
+    const { items, overflowCount } = buildDiscrepancyItems(rows, { cap: 10 });
+    expect(items).toHaveLength(10);
+    expect(overflowCount).toBe(2);
+  });
+
   it('caps independently per workspace — one workspace\'s backlog cannot crowd out another\'s', () => {
     const rows = [
-      ...Array.from({ length: 12 }, (_, i) => row({ id: `a-${i}`, assertionId: `a-${i}`, workspaceId: 'ws-a' })),
-      row({ id: 'b-1', assertionId: 'b-1', workspaceId: 'ws-b' }),
+      ...Array.from({ length: 12 }, (_, i) => row({ id: `a-${i}`, specPath: `a-${i}.md`, assertionId: `a-${i}`, workspaceId: 'ws-a' })),
+      row({ id: 'b-1', specPath: 'b-1.md', assertionId: 'b-1', workspaceId: 'ws-b' }),
     ];
     const { items, overflowCount } = buildDiscrepancyItems(rows, { cap: 10 });
     expect(items.filter(i => i.workspaceId === 'ws-a')).toHaveLength(10);
@@ -480,11 +566,37 @@ describe('buildActionQueue — discrepancy items', () => {
     ...overrides,
   });
 
-  it('builds exactly one DISCREPANCY card, keyed on specPath + assertionId', () => {
+  it('builds exactly one DISCREPANCY card, keyed on workspace + specPath + direction', () => {
     const queue = buildActionQueue([discrepancyItem(), discrepancyItem()], []);
     expect(queue).toHaveLength(1);
     expect(queue[0].chip).toBe('DISCREPANCY');
-    expect(queue[0].subjectKey).toBe('discrepancy:docs/design/spec-conformance.md:evaluate-spec-documents');
+    expect(queue[0].subjectKey).toBe('discrepancy:ws-1:docs/design/spec-conformance.md:code_ahead');
+  });
+
+  it('a dispatched doc fix flips the card to FIXING_SPEC — agent-handled, so it leaves Waiting-on-You', () => {
+    const queue = buildActionQueue([
+      discrepancyItem({ docFixTaskId: 'task-7', docFixTaskStatus: 'in_progress' }),
+    ], []);
+    expect(queue[0].chip).toBe('FIXING_SPEC');
+    expect(queue[0].docFixTaskId).toBe('task-7');
+    expect(isActionableChip(queue[0].chip)).toBe(false);
+  });
+
+  it('a FIXING_SPEC card sorts below every actionable chip but stays in the queue', () => {
+    const queue = buildActionQueue([
+      discrepancyItem({ specPath: 'busy.md', docFixTaskId: 'task-7', docFixTaskStatus: 'in_progress' }),
+      discrepancyItem({ specPath: 'open.md' }),
+      { kind: 'approve', taskId: 'plan-1', taskTitle: 'Plan A' },
+    ], []);
+    expect(queue.map(i => i.chip)).toEqual(['DISCREPANCY', 'APPROVE', 'FIXING_SPEC']);
+  });
+
+  it('carries the grouped assertion + row ids through to the card', () => {
+    const queue = buildActionQueue([
+      discrepancyItem({ assertionIds: ['a-1', 'a-2'], discrepancyIds: ['d-1', 'd-2'] }),
+    ], []);
+    expect(queue[0].assertionIds).toEqual(['a-1', 'a-2']);
+    expect(queue[0].discrepancyIds).toEqual(['d-1', 'd-2']);
   });
 
   it('ranks DISCREPANCY below DECIDE but above APPROVE', () => {

@@ -403,7 +403,13 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
 
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
-  if (task.mode === 'planning') {
+  // A planning task whose plan is a PROPOSAL SLOT rather than its deliverable
+  // (context.planOptional) — the doc-fix dispatch is the first of these. Its
+  // real output is the docs-only PR named by outputRequirement, and returning
+  // no plan at all is the expected outcome, so the standard planning block's
+  // "an empty plan stalls the mission" rule would be exactly backwards here.
+  const planIsOptional = (task.context as { planOptional?: boolean } | undefined)?.planOptional === true;
+  if (task.mode === 'planning' && !planIsOptional) {
     promptParts.push(
       '## Output Requirement\n' +
       'This is a **planning task**. Your final output is validated against a fixed JSON schema and returned as structured output — the system creates tasks directly from your `plan` array. Free-form text or a fenced ```json block is NOT read; only the structured output is.\n' +
@@ -422,11 +428,25 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   } else {
     // 'auto' (the default). Announce the obligation up front — this used to
     // surface only as a 400 on the final complete_task call, after the work
-    // was already spent.
+    // was already spent. The gate that enforces this (apps/web/src/app/api/
+    // workers/[id]/route.ts, outputReq === 'auto') fires on a fallback
+    // summary (the session ending without an agent-authored complete_task
+    // call) independently of commit count — so the obligation below is
+    // stated the same way, not conditioned on "if you finish with commits".
     promptParts.push(
       '## Output Requirement\n' +
-      'This task has no fixed output requirement, but if you finish with commits or uncommitted changes in the worktree, you must do ONE of: open a PR (`create_pr`) for the branch; create an artifact recording the deliverable; or call `complete_task` with `discardEdits` stating why those edits are intentionally being thrown away. ' +
+      'This task has no fixed output requirement, but you must always call `complete_task` yourself before the session ends — a session that just stops, even with zero commits, is treated as an unconfirmed outcome, not a completion. ' +
+      'If you finish with commits or uncommitted changes in the worktree, `complete_task` must additionally be paired with ONE of: an open PR (`create_pr`) for the branch; an artifact recording the deliverable; or `discardEdits` stating why those edits are intentionally being thrown away. ' +
       'A coordination task whose deliverable is action taken against OTHER PRs (merging one via `merge_pr`, or dispatching a release) satisfies this automatically — it does not need a PR of its own.'
+    );
+  }
+
+  if (planIsOptional) {
+    promptParts.push(
+      '## Optional Plan\n' +
+      'Your structured output may ALSO carry a `plan` array. It is optional here: the deliverable above is what this task is for, and returning no plan is a valid, expected outcome that creates no follow-up and no noise.\n' +
+      'Use it only when the task description asks you to propose follow-up work. When you do, each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
+      'Nothing in the plan is dispatched automatically — a human approves or rejects it. Do NOT call create_task to file the work yourself.'
     );
   }
 

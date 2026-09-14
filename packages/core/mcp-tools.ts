@@ -366,7 +366,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    list_tasks: '{ offset? }',
+    list_tasks: '{ offset?, status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
@@ -384,7 +384,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
-    list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
+    list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -1218,14 +1218,24 @@ export async function handleBuilddAction(
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
+      // status was hardcoded to 'active' — a caller auditing completed work had no
+      // way to reach it through this action at all, and had to detour through
+      // get_task/get_artifact one row at a time. A terminal status here switches
+      // the REST route into its audit mode: exact-status match, no 24h window,
+      // fully paginated, with per-row deliverable attribution.
+      const validStatuses = ['active', 'completed', 'failed', 'cancelled'];
+      const requestedStatus = typeof params.status === 'string' ? params.status : 'active';
+      const status = validStatuses.includes(requestedStatus) ? requestedStatus : 'active';
+      const isTerminalAudit = status !== 'active';
       // Server handles status filter, workspace scoping, sort (pending-first /
-      // priority-desc), and pagination — no client-side fan-out needed.
-      const query = new URLSearchParams({ status: 'active', limit: String(limit), offset: String(offset) });
+      // priority-desc, or updatedAt-desc for a terminal audit), and pagination —
+      // no client-side fan-out needed.
+      const query = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
       if (wsId) query.set('workspaceId', wsId);
       const data = await api(`/api/tasks?${query.toString()}`);
       const paginated: any[] = data.tasks || [];
 
-      if (paginated.length === 0 && offset === 0) return text('No active tasks found.');
+      if (paginated.length === 0 && offset === 0) return text(`No ${status} tasks found.`);
 
       const total: number = data.total ?? paginated.length;
       const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
@@ -1235,12 +1245,25 @@ export async function handleBuilddAction(
         const catPrefix = t.category ? `[${t.category}] ` : '';
         const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
         const desc = t.descriptionPreview || 'No description';
-        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
+        if (!isTerminalAudit) {
+          return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
+        }
+        // Deliverable attribution: what a completed/failed/cancelled row actually
+        // shipped, so a fallback summary with nothing merged doesn't read as a
+        // real outcome (see the AC-3 completion-gate false-positive class).
+        const provenance = t.summarySource ? ` summary:${t.summarySource}` : '';
+        const deliverable = t.prNumber ? ` PR #${t.prNumber}` : t.hasArtifact ? ' artifact' : ' no-deliverable';
+        const updated = t.updatedAt ? ` (updated ${new Date(t.updatedAt).toISOString()})` : '';
+        return `- ${catPrefix}${t.title}${statusSuffix}${updated} (id: ${t.id})${provenance}${deliverable}\n  ${desc}`;
       }).join('\n\n');
 
-      const header = `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
+      const header = isTerminalAudit
+        ? `${total} ${status} task${total === 1 ? '' : 's'}:`
+        : `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
-      const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
+      const claimHint = isTerminalAudit
+        ? ''
+        : `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 
@@ -2101,7 +2124,18 @@ export async function handleBuilddAction(
         'kind', 'complexity',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
-      if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
+      if (unknownParams.length > 0) {
+        // taskClass is a common guess (it gates completion behavior elsewhere —
+        // see the bookkeeping exemptions in PR #2380/#2386) but it is stamped
+        // server-side per creation path, never client-settable. Naming the
+        // real fix inline saves the caller a round trip.
+        const hints = unknownParams.map(key =>
+          key === 'taskClass'
+            ? `${key} (not settable — taskClass is stamped server-side; use outputRequirement instead)`
+            : key
+        );
+        throw new Error(`Unknown create_task parameter(s): ${hints.join(', ')}`);
+      }
 
       // Routing inputs: kind × complexity feed the claim-time model matrix.
       // Validated up front and rejected — never dropped — because a silently
@@ -3156,6 +3190,10 @@ export async function handleBuilddAction(
       if (params.missionId) searchParams.set('missionId', params.missionId as string);
       if (params.key) searchParams.set('key', params.key as string);
       if (params.type) searchParams.set('type', params.type as string);
+      // Server-side prominence filter — the rule lives in the API, not here,
+      // so the dashboard and this action cannot disagree about what "review"
+      // means. Anything other than an explicit true is left off entirely.
+      if (params.review === true || params.review === 'true') searchParams.set('review', 'true');
       if (params.limit) searchParams.set('limit', String(params.limit));
 
       if (wsId) {

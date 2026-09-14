@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.214.0",
+  "version": "0.215.0",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -38,6 +38,7 @@
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",
     "./memory-digest-readout-source": "./memory-digest-readout-source.ts",
+    "./experiment-cleanup": "./experiment-cleanup.ts",
     "./task-path-inference": "./task-path-inference.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
@@ -53,6 +54,7 @@
     "./spec-discrepancy-intake": "./spec-discrepancy-intake.ts",
     "./spec-discrepancy-dispatch": "./spec-discrepancy-dispatch.ts",
     "./spec-discrepancy-ledger": "./spec-discrepancy-ledger.ts",
+    "./spec-doc-fix": "./spec-doc-fix.ts",
     "./release-strategy": "./release-strategy.ts",
     "./branch-strategy": "./branch-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts",

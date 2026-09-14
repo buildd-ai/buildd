@@ -307,7 +307,19 @@ export async function writeLedgerFromEvaluations(
           }
           await db
             .update(specDiscrepancies)
-            .set({ direction: classification, status: 'open', firstSeenAt: now, lastCheckedAt: now, evidence })
+            .set({
+              direction: classification,
+              status: 'open',
+              firstSeenAt: now,
+              lastCheckedAt: now,
+              evidence,
+              // A reopen is a NEW occurrence (§9: fresh first_seen_at), so the
+              // doc-fix claim from the occurrence that was already settled is
+              // released with it. Left behind, it would render the new finding
+              // as "fix in flight" pointing at a task that finished long ago,
+              // and the dispatch CTA would never come back for it.
+              docFixTaskId: null,
+            })
             .where(identityFilter(workspaceId, evalDoc.path, result.id));
           summary.reopened++;
           summary.byDirection[classification]++;

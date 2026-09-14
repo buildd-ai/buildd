@@ -20,6 +20,7 @@ import type { LocalUIConfig } from '../../src/types';
 // ─── Mocks (same shape as session-model-cost.test.ts / terminal-metrics-patch.test.ts) ──
 
 let mockMessages: any[] = [];
+const followUpMessages: any[] = [];
 
 mock.module('pusher-js', () => ({
   default: class {
@@ -35,7 +36,13 @@ mock.module('@anthropic-ai/claude-agent-sdk', () => ({
     const msgs = [...mockMessages];
     let idx = 0;
     return {
-      streamInput: () => {},
+      streamInput: (stream: any) => {
+        const enqueue = stream.enqueue.bind(stream);
+        stream.enqueue = (message: any) => {
+          followUpMessages.push(message);
+          enqueue(message);
+        };
+      },
       supportedModels: async () => [],
       [Symbol.asyncIterator]() {
         return {
@@ -156,8 +163,9 @@ function makeTask() {
 async function runSession(
   manager: InstanceType<typeof WorkerManager>,
   workerId: string,
+  overrides: Record<string, unknown> = {},
 ) {
-  const task = makeTask();
+  const task = { ...makeTask(), ...overrides };
   mockClaimTask.mockImplementation(async () => ({ workers: [{ id: workerId, branch: 'buildd/test', task }] }));
   await manager.claimAndStart(task);
   await new Promise(r => setTimeout(r, 300));
@@ -189,6 +197,7 @@ function completionCall() {
 function resetAll() {
   updateCalls.length = 0;
   mockMessages = [];
+  followUpMessages.length = 0;
   mockUpdateWorker.mockClear();
   mockClaimTask.mockReset();
   mockClaimTask.mockImplementation(async () => ({ workers: [] }));
@@ -199,6 +208,45 @@ describe('completion summary provenance', () => {
 
   beforeEach(resetAll);
   afterEach(() => { manager?.destroy(); });
+
+  for (const [shape, overrides] of Object.entries({
+    implementation: {},
+    review: { category: 'review' },
+    bookkeeping: { taskClass: 'bookkeeping' },
+    investigation: { category: 'chore', roleSlug: 'researcher', description: 'Investigate the failure without changing files.' },
+  })) {
+    test(`${shape} finishes without sentinel-driven self-review turns`, async () => {
+      mockMessages = [
+        assistantText('Work finished; no sentinel emitted.'),
+        successResult(),
+        assistantText('This would be an unnecessary review turn.'),
+        successResult(),
+        successResult(),
+      ];
+      manager = new WorkerManager(makeConfig());
+      await runSession(manager, 'w-no-self-review', {
+        ...overrides,
+        context: { maxReviewIterations: 2 },
+      });
+
+      expect(followUpMessages).toEqual([]);
+      expect(completionCall()?.payload.summary).toBe('Work finished; no sentinel emitted.');
+      // Ending the loop does not turn the runner's fallback into an authored report.
+      expect(completionCall()?.payload.summarySource).toBe('fallback');
+    });
+  }
+
+  test('removing self-review preserves bounded PR-required nudges', async () => {
+    mockMessages = [assistantText('Work finished.'), successResult(), successResult(), successResult()];
+    manager = new WorkerManager(makeConfig());
+    await runSession(manager, 'w-pr-required', { outputRequirement: 'pr_required' });
+
+    expect(followUpMessages).toHaveLength(2);
+    for (const message of followUpMessages) {
+      expect(JSON.stringify(message)).toContain('create_pr');
+      expect(JSON.stringify(message)).toContain('complete_task');
+    }
+  });
 
   // The bug: the SDK loop ends with no complete_task call, and the agent's last
   // words were an aside about its own tooling, not a report of what it did.
