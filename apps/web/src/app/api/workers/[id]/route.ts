@@ -41,6 +41,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -1001,6 +1002,18 @@ export async function PATCH(
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
 
+    // A bookkeeping task (heartbeats, criteria evaluators, plan-rejection
+    // replans — see packages/core/db/schema.ts taskClass) reports its outcome
+    // via complete_task's summary/structuredOutput. It never ships a PR or
+    // artifact of its own, so the commits/dirty-worktree/PR machinery below
+    // was built for a different task shape entirely. Most bookkeeping
+    // creation sites already say so explicitly (outputRequirement: 'none'),
+    // but several default to unset/'auto' and inherited builder semantics by
+    // accident. An explicit pr_required/artifact_required is still honored —
+    // e.g. the completed-work aggregator in task-dependencies.ts — this only
+    // widens what 'auto' means for this task shape.
+    const isBookkeepingTask = terminalTaskRow[0]?.taskClass === 'bookkeeping';
+
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       // Same precedence as effectiveCommits: this request's own report wins,
@@ -1083,6 +1096,17 @@ export async function PATCH(
         } catch { /* non-fatal — fall through to normal validation */ }
       }
       if (autoDetectRefusal) {
+        fireGateEvent({
+          gate: GATE_SLUGS.MISSION_BASE_ADOPTION,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: autoDetectRefusal.error,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+        });
         return NextResponse.json(autoDetectRefusal, { status: 400 });
       }
 
@@ -1124,6 +1148,26 @@ export async function PATCH(
       // row before refusing it; each rejection is its own worker row, so
       // there is nothing to reconcile against a later, successful attempt.
       const persistRejectedCompletionPayload = async (reason: string) => {
+        // The gate row and the preserved payload are written from the same
+        // place on purpose: every arm of this gate refuses through here, so a
+        // future arm cannot be added that persists the payload and forgets the
+        // ledger (or the reverse).
+        fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: outputRequirement ${reason} not satisfied`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: {
+            outputRequirement: reason,
+            category: terminalTaskRow[0]?.category ?? null,
+            summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+          },
+        });
         await db.update(workers).set({
           rejectedCompletionPayload: {
             reason,
@@ -1181,7 +1225,31 @@ export async function PATCH(
       // apps/runner/src/git-operations.ts), so they must not be the only gate
       // for this outcome.
       const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
-      if (outputReq === 'auto' && !isReviewerTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
+
+      // A bookkeeping task's only confirmed outcome is a real complete_task
+      // call — it has no PR/artifact to fall back on, so a fallback-provenance
+      // summary here means the session ended with nothing to show at all.
+      // Fail with a message this task shape can act on (the session needs to
+      // actually report), not the create_pr hint below, which asks a task
+      // that will never open a PR to open one.
+      //
+      // This only widens what a MISSING confirmed outcome looks like for
+      // 'auto' bookkeeping tasks — it must not override an already-satisfied
+      // pr_required/artifact_required outcome. Those modes returned earlier
+      // in this function when unsatisfied, so by the time we get here a task
+      // with one of those requirements has already proven hasPR or an
+      // artifact; re-checking both here keeps this branch from discarding a
+      // confirmed deliverable just because the session's own complete_task
+      // call never landed.
+      if (isBookkeepingTask && isFallbackSummary && !hasPR && !(await hasDeliverableArtifact())) {
+        await persistRejectedCompletionPayload('bookkeeping_no_report');
+        return NextResponse.json({
+          error: 'Task has no confirmed outcome — the session ended without the agent calling complete_task to report its status. This is a bookkeeping/organizer task: report the outcome via complete_task (summary or structuredOutput), not a pull request or artifact.',
+          hint: 'organizer_did_not_report',
+        }, { status: 400 });
+      }
+
+      if (outputReq === 'auto' && !isReviewerTask && !isBookkeepingTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
         // A coordination/conflict-resolution task legitimately ships nothing on
         // its own branch — its deliverable is action taken against OTHER PRs
         // (a merge, a dispatched release). merge_pr stamps mergedAt on the
@@ -1206,6 +1274,32 @@ export async function PATCH(
             error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
           }, { status: 400 });
+        }
+        // `discardEdits` is the caller talking the gate out of a refusal it
+        // would otherwise have made — the same shape as a lint bypass, and the
+        // number that says whether the `auto` gate is asking for a deliverable
+        // this class of task can never produce. (A cross-branch deliverable is
+        // NOT a bypass: merge_pr verified it against GitHub, so the gate was
+        // satisfied rather than overridden.)
+        if (discardReason && !hasCrossBranchDeliverable) {
+          fireGateEvent({
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            surface: 'PATCH /api/workers/[id]',
+            outcome: 'bypassed',
+            reason: 'completion accepted under auto: edits discarded by explicit acknowledgement',
+            workspaceId: worker.workspaceId,
+            missionId: taskMissionId,
+            taskId: worker.taskId,
+            workerId: worker.id,
+            callerOrigin: 'worker',
+            detail: {
+              outputRequirement: 'auto',
+              category: terminalTaskRow[0]?.category ?? null,
+              commits: effectiveCommits,
+              dirtyWorktree: effectiveDirtyWorktree,
+              discardEdits: discardReason.slice(0, 500),
+            },
+          });
         }
         // Neither satisfier put anything on this worker's own branch — a
         // branch-merge release would find nothing of this worker's own to ship.

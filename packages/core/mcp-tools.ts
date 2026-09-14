@@ -22,6 +22,10 @@ import type { Direction } from './spec-discrepancy-ledger';
 import type {
   FailureAnalytics,
   FailureSignatureFamily,
+  GateAnalytics,
+  GateReasonFamily,
+  GateRow,
+  GateWindow,
   FailureSignatureLookup,
   FailureSignatureRow,
   FailureWindow,
@@ -414,7 +418,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_error_traces: '{ workerId?, taskId?, since? (ISO date), limit? (default 50, max 500) } — returns pattern-matched errors caught from agent tool output (cd: No such file, git fatal, OOM, etc.). Defaults to the caller worker\'s task. Use this when debugging why a task failed.',
     get_budget_forecast: '{ workspaceId? } — returns the current budget forecast for the caller\'s team: Claude/Codex session pressure (% used, resets in, confidence), monthly dollar budget (spent/cap, burn rate, depletion estimate), and top mission budgets by % spent. Use before dispatching heavy task chains — if pressurePct is high or daysToDepletion is low, consider startAfter: "budget_reset" on the new task.',
     get_usage_stats: '{ workspaceId?, window? ("24h"|"7d"|"30d", default 7d), groupBy? ("role"|"workspace"|"none", default role) } — read-only consumption stats for the caller\'s team: tokens/cost/turns/tool-calls per task (median and p90, not just mean — token spend is heavily skewed), the tool histogram (which tools agents actually reach for, and which MCP servers), per-model token split, and per-group success rate. Use it to answer "what does a task from this role cost" or "which tool is eating the context window" before optimizing a prompt or role. Tool numbers carry a coverage line: exact histograms exist only for workers that ran after the histogram shipped; older tasks are reconstructed from a capped MCP call log and are a floor.',
-    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
+    get_failure_analytics: '{ workspaceId?, window? (24h|7d|30d — default 7d), error? (raw error text; switches to signature-lookup mode), errorPrefix? (literal prefix, e.g. "needs_input:"; switches to signature-family rollup mode), family? ("gate" — switches to the GATE LEDGER), limit? (top signatures, default 5, max 15) } — read-only worker-failure aggregation for the caller\'s team. Without error/errorPrefix: totals, failure rate, died-early count, top exit causes and top error signatures. With error: normalizes your error the same way the aggregation does and answers whether it is an already-known pattern, with count and first/last seen, plus a frictionSignature you pass as create_task context.frictionSignature so your friction report appends to the existing one instead of filing a duplicate. With errorPrefix: same frictionSignature handoff, but aggregated across every normalized signature sharing that literal prefix — use this for a failure family whose free-text tail (e.g. the embedded question in `needs_input: <question>`) makes each occurrence its own singleton signature invisible to both the overview and an exact error= lookup. With family="gate": the GATE LEDGER instead — every server-side refusal, deferral, advisory warning and explicit BYPASS, ranked by gate with a bypass rate each. A creation-time 400 never becomes a failed worker, so none of this is visible in any other mode; bypass rate over a lint IS its false-positive rate. Combine family="gate" with errorPrefix to roll up gate reasons sharing a literal prefix. Call this before filing friction — it is the difference between "new bug" and "the 30th occurrence this week".',
     list_connectors: '{ workspaceId? } — list connectors visible to the caller\'s workspace with live health status. Returns connectors owned by the team or shared to it that have been explicitly mounted for this workspace (connectorWorkspaces row present). Never-mounted connectors are excluded. Status: ok (mounted + healthy), auth_expired (credential missing or token expired), unreachable (credential revoked/degraded), disabled (connectorWorkspaces.enabled=false). Use this to diagnose why a task is degraded — if a required MCP tool is unavailable, check whether its connector shows auth_expired or disabled.',
     list_releases: '{ workspaceId?, missionId?, state?, limit? (default 10) } — list releases for a workspace or mission. Returns id, archetype, state, headSha, previousSha, dispatchedAt, deployedAt, runUrl, triggeredBy.',
     get_release: '{ releaseId (required) } — fetch a single release with attributed task edges. Returns all releases fields plus workspaceName, commitRangeUrl, degradationTaskId, attributedTasks (task title, status, prNumber, missionId), and attributedMissions.',
@@ -621,6 +625,81 @@ function formatFailureOverview(analytics: FailureAnalytics, limit: number): stri
     }
   }
 
+  return lines.join('\n');
+}
+
+/** One gate's outcome mix, compacted: "12 rejected · 3 bypassed". */
+function formatGateOutcomes(outcomes: GateRow['outcomes']): string {
+  return (['rejected', 'deferred', 'bypassed', 'warned', 'stranded'] as const)
+    .filter(k => outcomes[k] > 0)
+    .map(k => `${outcomes[k]} ${k}`)
+    .join(' · ');
+}
+
+/**
+ * The gate ledger overview.
+ *
+ * Leads with the bypass rate rather than the raw count, because that is the
+ * number this whole table exists to publish: a gate whose refusals are mostly
+ * being overridden is a gate that is wrong about something, and it used to take
+ * several friction reports and a human reading logs to notice.
+ */
+function formatGateOverview(gates: GateAnalytics, limit: number): string {
+  const { totals, window } = gates;
+  if (totals.events === 0) {
+    return `No gate events in the last ${window}. Gates record server-side refusals, deferrals, advisory warnings and explicit bypasses — a quiet table means nothing was refused, not that nothing was checked.`;
+  }
+
+  const lines: string[] = [];
+  lines.push(
+    `**Gates — last ${window}**: ${totals.events} event(s) across ${totals.distinctGates} gate(s) · `
+    + `${totals.rejected} rejected · ${totals.deferred} deferred · ${totals.bypassed} bypassed · ${totals.warned} warned`,
+  );
+  lines.push('');
+  lines.push('Top gates:');
+  gates.gates.slice(0, limit).forEach(g => {
+    lines.push(`  ${g.count}× **${g.gate}** — ${formatGateOutcomes(g.outcomes)} · bypass ${g.bypassRatePct}% · last ${g.lastSeen}`);
+    lines.push(`      ${g.surfaces.join(', ')} · first seen ${g.firstSeen} · ${g.distinctReasons} distinct reason(s)`);
+    g.topReasons.slice(0, 3).forEach(r => {
+      lines.push(`      ${r.count}× ${truncateTo(r.reason, FAILURE_SIGNATURE_LINE_MAX)}`);
+    });
+  });
+  const omitted = gates.truncatedGates + Math.max(0, gates.gates.length - limit);
+  if (omitted > 0) lines.push(`  … ${omitted} more gate(s) (raise limit, max ${FAILURE_SIGNATURES_MAX})`);
+  lines.push('');
+  lines.push('Bypass % = bypassed / (bypassed + rejected + warned). For a lint, that IS its false-positive rate.');
+  return lines.join('\n');
+}
+
+/** Prefix rollup over gate reasons — the gate-ledger twin of formatFailureFamily. */
+function formatGateFamily(family: GateReasonFamily, window: GateWindow): string {
+  const nextCall = `context: { frictionSignature: "${family.frictionSignature}", frictionExcerpt: "<the refusal you saw>" }`;
+  if (!family.known) {
+    return [
+      `No gate reason starts with "${truncateTo(family.prefix, 200)}" in the last ${window}.`,
+      `Next: file a friction report with ${nextCall} so later occurrences dedupe onto it.`,
+    ].join('\n');
+  }
+  const lines: string[] = [];
+  lines.push(
+    `Gate reason family "${truncateTo(family.prefix, 200)}" — ${family.count} event(s) across `
+    + `${family.distinctReasons} distinct reason(s) in the last ${window}.`,
+  );
+  lines.push([
+    `gates: ${family.gates.join(', ')}`,
+    formatGateOutcomes(family.outcomes),
+    `bypass ${family.bypassRatePct}%`,
+    `first seen ${family.firstSeen}`,
+    `last seen ${family.lastSeen}`,
+  ].join(' · '));
+  if (family.exampleTaskId) lines.push(`example task: ${family.exampleTaskId}`);
+  if (family.topReasons.length > 0) {
+    lines.push('Top variants:');
+    family.topReasons.forEach(r => {
+      lines.push(`  ${r.count}× ${truncateTo(r.reason, FAILURE_SIGNATURE_LINE_MAX)}`);
+    });
+  }
+  lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
   return lines.join('\n');
 }
 
@@ -3489,14 +3568,33 @@ export async function handleBuilddAction(
         ? params.errorPrefix.trim()
         : null;
 
+      // family='gate' switches to the GATE LEDGER — refusals, deferrals,
+      // advisory warnings and bypasses that never became a failed worker and
+      // are therefore structurally invisible to every other mode here.
+      const rawFamily = typeof params.family === 'string' && params.family.trim()
+        ? params.family.trim()
+        : null;
+      if (rawFamily !== null && rawFamily !== 'gate') {
+        return errorResult(`Invalid family "${rawFamily}". The only supported value is "gate".`);
+      }
+
       const qs = [`window=${window}`];
       if (wsId) qs.push(`workspaceId=${encodeURIComponent(wsId)}`);
       if (rawError) qs.push(`error=${encodeURIComponent(rawError.slice(0, FAILURE_LOOKUP_INPUT_MAX))}`);
       if (rawErrorPrefix) qs.push(`errorPrefix=${encodeURIComponent(rawErrorPrefix.slice(0, FAILURE_PREFIX_INPUT_MAX))}`);
+      if (rawFamily) qs.push(`family=${encodeURIComponent(rawFamily)}`);
 
       const data = await api(`/api/health/failures?${qs.join('&')}`);
       const analytics = data?.analytics as FailureAnalytics | undefined;
       if (!analytics) return text('No failure analytics available.');
+
+      if (rawFamily === 'gate') {
+        const gateFamily = data?.gateFamily as GateReasonFamily | undefined;
+        if (gateFamily) return text(formatGateFamily(gateFamily, window));
+        const gates = data?.gates as GateAnalytics | undefined;
+        if (!gates) return text('No gate analytics available.');
+        return text(formatGateOverview(gates, limit));
+      }
 
       const lookup = data?.lookup as FailureSignatureLookup | undefined;
       if (lookup) return text(formatFailureLookup(lookup, window, analytics.totals.failed));

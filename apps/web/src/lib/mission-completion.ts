@@ -539,7 +539,7 @@ export async function completeMissionIfVerified(
   // and only the winner disables the schedule and announces completion.
   const [claimed] = await db
     .update(missions)
-    .set({ status: 'completed', updatedAt: new Date() })
+    .set({ status: 'completed', completedAt: new Date(), updatedAt: new Date() })
     .where(and(eq(missions.id, missionId), eq(missions.status, 'active')))
     .returning({ id: missions.id, scheduleId: missions.scheduleId });
 

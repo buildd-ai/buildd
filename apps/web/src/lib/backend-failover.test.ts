@@ -89,6 +89,28 @@ describe('getActiveBackendPauses', () => {
     expect((await getActiveBackendPauses(scope)).size).toBe(0);
   });
 
+  for (const budgetResetsAt of [null, 'invalid-reset']) {
+    it(`parks failover during the fallback session window when reset is ${budgetResetsAt}`, async () => {
+      const exhaustedAt = new Date(Date.now() - HOUR);
+      const fallbackReset = new Date(exhaustedAt.getTime() + 5 * HOUR);
+      mockAccountsFindFirst.mockResolvedValue({ budgetExhaustedAt: exhaustedAt, budgetResetsAt });
+
+      const decision = await resolveFailoverBackend({ from: 'codex', scope });
+      expect(decision.backend).toBeNull();
+      expect(decision.blocked).toEqual([
+        { backend: 'claude', reason: 'paused', pausedUntil: fallbackReset },
+      ]);
+    });
+
+    it(`allows failover after the fallback session window when reset is ${budgetResetsAt}`, async () => {
+      mockAccountsFindFirst.mockResolvedValue({
+        budgetExhaustedAt: new Date(Date.now() - 6 * HOUR),
+        budgetResetsAt,
+      });
+      expect((await resolveFailoverBackend({ from: 'codex', scope })).backend).toBe('claude');
+    });
+  }
+
   it('uses the tenant budget row instead of the account flag in multi-tenant mode', async () => {
     const resetsAt = new Date(Date.now() + 3 * HOUR);
     mockTenantBudgetsFindFirst.mockResolvedValue({ budgetResetsAt: resetsAt });

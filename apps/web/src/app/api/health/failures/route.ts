@@ -10,8 +10,15 @@ import {
   parseFailureWindow,
   FAILURE_WINDOWS,
 } from '@/lib/failure-analytics';
+import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
-import type { FailureAnalytics, FailureSignatureFamily, FailureSignatureLookup } from '@buildd/shared';
+import type {
+  FailureAnalytics,
+  FailureSignatureFamily,
+  FailureSignatureLookup,
+  GateAnalytics,
+  GateReasonFamily,
+} from '@buildd/shared';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -80,8 +87,17 @@ function lookupSignature(analytics: FailureAnalytics, rawError: string): Failure
  *                 whose free-text tail makes each occurrence its own singleton
  *                 signature and invisible to both the overview and `error=`.
  *                 Blank values are treated as absent.
+ *   family      — optional, currently only 'gate'. Switches the report to the
+ *                 GATE LEDGER: server-side refusals, deferrals, advisory
+ *                 warnings and explicit bypasses, which are invisible to every
+ *                 param above because a creation-time 400 never becomes a
+ *                 failed worker. Combine with `errorPrefix` to roll up gate
+ *                 reasons sharing a literal prefix.
  *
- * Response: { analytics: FailureAnalytics, lookup?: FailureSignatureLookup, family?: FailureSignatureFamily }
+ * Response: { analytics, lookup?, family?, gates?, gateFamily? }
+ *
+ * `analytics` is always present, including under `family=gate` — the gate block
+ * is additive, so an existing caller's parse never breaks.
  */
 export async function GET(req: NextRequest) {
   try {
@@ -143,10 +159,32 @@ export async function GET(req: NextRequest) {
     const rawPrefix = searchParams.get('errorPrefix');
     const prefixInput = rawPrefix?.trim() ? rawPrefix.trim().slice(0, MAX_PREFIX_INPUT) : null;
 
-    if (lookupInput || prefixInput) {
-      const body: { analytics: FailureAnalytics; lookup?: FailureSignatureLookup; family?: FailureSignatureFamily } = { analytics };
+    const rawFamily = searchParams.get('family');
+    if (rawFamily !== null && rawFamily !== 'gate') {
+      return NextResponse.json(
+        { error: `Invalid family: "${rawFamily}". The only supported value is "gate".` },
+        { status: 400 },
+      );
+    }
+    const gateMode = rawFamily === 'gate';
+
+    if (lookupInput || prefixInput || gateMode) {
+      const body: {
+        analytics: FailureAnalytics;
+        lookup?: FailureSignatureLookup;
+        family?: FailureSignatureFamily;
+        gates?: GateAnalytics;
+        gateFamily?: GateReasonFamily;
+      } = { analytics };
       if (lookupInput) body.lookup = lookupSignature(analytics, lookupInput);
-      if (prefixInput) body.family = await getFailureSignatureFamily(scopedWsIds, window, prefixInput);
+      // `errorPrefix` means different things on the two families, so it is
+      // routed to exactly one of them rather than answered twice: over gate
+      // reasons under family=gate, over worker error signatures otherwise.
+      if (prefixInput && !gateMode) body.family = await getFailureSignatureFamily(scopedWsIds, window, prefixInput);
+      if (gateMode) {
+        body.gates = await getGateAnalytics(scopedWsIds, window);
+        if (prefixInput) body.gateFamily = await getGateReasonFamily(scopedWsIds, window, prefixInput);
+      }
       return NextResponse.json(body);
     }
 

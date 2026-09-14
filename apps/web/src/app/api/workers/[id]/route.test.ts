@@ -2209,6 +2209,139 @@ describe('PATCH /api/workers/[id]', () => {
       expect(data.hint).toBe('create_pr');
     });
 
+    it('refuses a bookkeeping task with a clear "organizer did not report" error, not the create_pr hint', async () => {
+      // Same shape as the fallback-provenance incident above, but for a
+      // heartbeat/organizer task (taskClass='bookkeeping'). It will never open
+      // a PR or artifact, so the create_pr hint is actively wrong advice —
+      // the fix is for the session to actually call complete_task.
+      let taskUpdateCalled = false;
+      mockTasksUpdate.mockReturnValue({
+        set: mock(() => {
+          taskUpdateCalled = true;
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: "I'll pause here and wait for direction.", summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(taskUpdateCalled).toBe(false);
+      const data = await res.json();
+      expect(data.error).toContain('no confirmed outcome');
+      expect(data.error).not.toContain('create_pr');
+      expect(data.hint).toBe('organizer_did_not_report');
+    });
+
+    it('completes a bookkeeping task with no PR/artifact when the agent actually called complete_task (auto mode)', async () => {
+      // A heartbeat/organizer task never ships a PR or artifact — the auto
+      // gate's commit/dirty-worktree/PR demand must not apply to it at all, as
+      // long as the summary is agent-authored (not a fallback capture).
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-heartbeat',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'auto', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Nothing to do this cycle — mission is idle.', structuredOutput: { status: 'ok' } },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('completes a bookkeeping task with artifact_required + a satisfied artifact even on a fallback summary', async () => {
+      // The completed-work aggregator (packages/core/task-dependencies.ts) is
+      // taskClass='bookkeeping' + outputRequirement='artifact_required'. If it
+      // produces its synthesis artifact but the session ends (e.g. max turns)
+      // before the agent calls complete_task itself, summarySource is
+      // 'fallback'. The bookkeeping-fallback check must not override an
+      // already-satisfied artifact_required outcome — that would discard a
+      // confirmed deliverable, the exact failure the surrounding code's
+      // top-of-function comment warns against.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-aggregator',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'artifact_required', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'artifact-1', workerId: 'worker-1' }]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Synthesis artifact produced.', summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
     it('completes normally with a fallback summary when a PR exists (auto mode)', async () => {
       // The fallback-summary check must not override the normal hasPR
       // satisfier — a session that ends right after create_pr but before the

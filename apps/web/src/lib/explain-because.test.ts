@@ -215,7 +215,8 @@ describe('workspace ranking', () => {
     because: [],
     history: [],
     nextAction: 'x',
-    derivedFrom: { state: 'mission.status', waitingOn: null, because: [], history: null, nextAction: null },
+    gateHistory: [],
+    derivedFrom: { state: 'mission.status', waitingOn: null, because: [], history: null, nextAction: null, gateHistory: null },
   });
 
   it('drops quiet subjects entirely', () => {

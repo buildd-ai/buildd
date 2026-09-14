@@ -93,6 +93,18 @@ mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMissionIfVerified,
 }));
 
+// gate-ledger pulls in @buildd/core/gate-events, which imports `gateEvents`
+// from the real db/schema — a module the mock above deliberately replaces
+// without it. Stub the ledger directly and capture calls so NOT_EVALUATED/
+// UNVERIFIED causes can be asserted on.
+const firedGateEvents: Array<{ reason: string; outcome: string; detail?: Record<string, unknown> }> = [];
+mock.module('@/lib/gate-ledger', () => ({
+  fireGateEvent: (input: { reason: string; outcome: string; detail?: Record<string, unknown> }) => {
+    firedGateEvents.push(input);
+  },
+  GATE_SLUGS: new Proxy({}, { get: (_t, prop) => String(prop).toLowerCase() }),
+}));
+
 const {
   resolveCriteriaWorkerEval,
   handleCriteriaWorkerEvalOutcome,
@@ -112,6 +124,7 @@ function resetAll() {
   updateCalls.length = 0;
   mockDispatchNewTask.mockClear();
   mockCompleteMissionIfVerified.mockClear();
+  firedGateEvents.length = 0;
 }
 
 // ── isCriteriaWorkerEvalTask ──────────────────────────────────────────────────
@@ -406,6 +419,7 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     }
     // overall must NOT be pass
     expect(saved.overall).not.toBe('pass');
+    expect(firedGateEvents.some(e => e.outcome === 'warned' && e.reason === 'evaluator_no_output')).toBe(true);
   });
 
   it('sets NOT_EVALUATED when structuredOutput is empty array', async () => {
@@ -429,6 +443,7 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
       expect(cs.verdict).toBe('NOT_EVALUATED');
     }
     expect(saved.overall).not.toBe('pass');
+    expect(firedGateEvents.some(e => e.reason === 'evaluator_no_output')).toBe(true);
   });
 
   it('downgrades a command criterion\'s fail to UNVERIFIED when evidence shows the command never ran', async () => {
@@ -457,6 +472,7 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     const c1 = saved.criteria.find((c: any) => c.index === 1);
     expect(c1.verdict).toBe('UNVERIFIED');
     expect(c1.evidence).toContain('corrected to UNVERIFIED');
+    expect(firedGateEvents.some(e => e.reason === 'exit_126_127')).toBe(true);
   });
 
   it('leaves a genuine command failure as fail', async () => {
@@ -481,6 +497,8 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     const saved = updateCalls[0].goalCriteriaState;
     const c1 = saved.criteria.find((c: any) => c.index === 1);
     expect(c1.verdict).toBe('fail');
+    // A genuine failure is not a non-verdict — no gate event for it.
+    expect(firedGateEvents).toHaveLength(0);
   });
 
   it('does not downgrade a failing prose criterion that happens to mention "permission denied"', async () => {
@@ -544,5 +562,6 @@ describe('handleCriteriaWorkerEvalOutcome', () => {
     // Fingerprint mismatch — verdict discarded, set to NOT_EVALUATED
     expect(c0.verdict).toBe('NOT_EVALUATED');
     expect(c0.verdict).not.toBe('pass');
+    expect(firedGateEvents.some(e => e.reason === 'criterion_changed')).toBe(true);
   });
 });
