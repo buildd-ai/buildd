@@ -31,17 +31,21 @@
  * the join in memory is not a consideration.
  */
 
-import { and, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { db } from './db';
-import { systemCache, workerPromptCompositionEvents, workers } from './db/schema';
+import { artifacts, systemCache, workerPromptCompositionEvents, workers } from './db/schema';
 import {
   DEFAULT_BACKEND,
   computeReadout,
+  formatReadoutText,
+  terminalNotificationKeys,
+  terminalStatusFromNotificationKey,
   type CompositionRow,
   type MemoryDigestArm,
   type Readout,
   type ReadoutOptions,
   type SessionRow,
+  type TerminalVerdictStatus,
 } from './memory-digest-readout';
 
 /**
@@ -297,16 +301,278 @@ export async function readPersistedReadout(): Promise<Readout | null> {
  * readable); a notification loop is not, because by the time anyone looks they
  * have already muted the channel.
  */
-export async function claimVerdictNotification(notificationKey: string, now = new Date()): Promise<boolean> {
+export async function claimVerdictNotification(
+  notificationKey: string,
+  details: VerdictClaimDetails = {},
+  now = new Date(),
+): Promise<boolean> {
   const claimed = await db
     .insert(systemCache)
     .values({
       key: notifiedKey(notificationKey),
-      value: { notificationKey, claimedAt: now.toISOString() },
+      value: { notificationKey, claimedAt: now.toISOString(), ...details },
       updatedAt: now,
       expiresAt: null,
     })
     .onConflictDoNothing()
     .returning({ key: systemCache.key });
   return claimed.length > 0;
+}
+
+/**
+ * What the claim row records alongside the fact of the claim.
+ *
+ * Written at claim time so the retired route can answer "what was delivered,
+ * when, and where can I read it" from the same single row it already has to
+ * read to know it is retired — no second query, and no dependence on the
+ * notification itself having been seen.
+ */
+export interface VerdictClaimDetails {
+  status?: string;
+  artifactId?: string | null;
+  artifactUrl?: string | null;
+}
+
+// ── Retirement: has a terminal verdict already been delivered? ───────────────
+
+/**
+ * Scope matching the claim row of ANY terminal verdict for a policy version.
+ *
+ * The keys are enumerated from `terminalNotificationKeys`, which is also what
+ * `buildVerdict` stamps its keys with — so this cannot drift into matching a
+ * key nothing writes, nor into missing one that is written. Two keys, primary
+ * key lookup: cheaper than the readout by orders of magnitude, which is the
+ * point.
+ */
+export function deliveredVerdictScope(policyVersion: string) {
+  return inArray(systemCache.key, terminalNotificationKeys(policyVersion).map(notifiedKey));
+}
+
+export interface DeliveredVerdict {
+  notificationKey: string;
+  status: TerminalVerdictStatus | string | null;
+  claimedAt: string | null;
+  artifactId: string | null;
+  artifactUrl: string | null;
+}
+
+/**
+ * The terminal verdict already delivered for this policy version, or null.
+ *
+ * This is what lets the job retire itself. Flipping `enabled` in
+ * `cron-manifest.json` cannot do it — that is a build-time declaration synced
+ * by CI, so a runtime event cannot reach it, and the next `cron:sync` would
+ * undo a schedule disabled out-of-band at the scheduler. So the route stops
+ * doing the work instead, on the strength of the claim row that already exists
+ * for the notification. One indexed lookup on a primary key and nothing else.
+ */
+export async function findDeliveredVerdict(policyVersion: string): Promise<DeliveredVerdict | null> {
+  const [row] = await db
+    .select({ key: systemCache.key, value: systemCache.value })
+    .from(systemCache)
+    .where(deliveredVerdictScope(policyVersion))
+    .limit(1);
+  if (!row) return null;
+
+  const value = (row.value ?? {}) as Record<string, unknown>;
+  const notificationKey =
+    typeof value.notificationKey === 'string'
+      ? value.notificationKey
+      : row.key.slice(READOUT_NOTIFIED_KEY_PREFIX.length);
+  return {
+    notificationKey,
+    // Prefer the key's own meaning over a stored label: rows claimed before
+    // `status` was written carry no label, and the key is authoritative anyway.
+    status: terminalStatusFromNotificationKey(policyVersion, notificationKey)
+      ?? (typeof value.status === 'string' ? value.status : null),
+    claimedAt: typeof value.claimedAt === 'string' ? value.claimedAt : null,
+    artifactId: typeof value.artifactId === 'string' ? value.artifactId : null,
+    artifactUrl: typeof value.artifactUrl === 'string' ? value.artifactUrl : null,
+  };
+}
+
+// ── The verdict as a first-class artifact ───────────────────────────────────
+
+/**
+ * `artifacts.key` prefix for the readout.
+ *
+ * The policy version is part of the key on purpose. A version bump redefines
+ * the arms and re-randomises assignment, so the next experiment's verdict must
+ * not overwrite this one's — the durability of a concluded verdict is the whole
+ * reason this is an artifact rather than a notification.
+ *
+ * A key at all (rather than a keyless row per run) because `(workspaceId, key)`
+ * is a unique index: keyed means upsert, keyless means a new row every morning.
+ * It is also the signal the artifacts UI uses to tell a deliberately-created,
+ * re-addressable artifact from an incidental one.
+ */
+export const READOUT_ARTIFACT_KEY_PREFIX = 'memory-digest-readout:';
+
+export function readoutArtifactKey(policyVersion: string): string {
+  return `${READOUT_ARTIFACT_KEY_PREFIX}${policyVersion}`;
+}
+
+/**
+ * `analysis`, not `report`.
+ *
+ * Both are in the shared vocabulary. `report` is what agents write as prose
+ * about work they did; this is a statistical analysis of stored rows — effect
+ * sizes with intervals, a covariate-balance check and a power position — and it
+ * is regenerated by arithmetic rather than authored. Typing it `analysis` keeps
+ * the distinction available to anyone filtering the artifacts list, and nothing
+ * downstream treats the two differently today.
+ */
+export const READOUT_ARTIFACT_TYPE = 'analysis';
+
+/**
+ * The conflict target for the upsert: exactly the columns of the
+ * `artifacts_workspace_key_idx` unique index.
+ *
+ * Exported so a test can assert it against the index as declared in the schema.
+ * If the two ever diverge the upsert silently degrades into an insert that
+ * throws — or worse, into a duplicate row per run, which is the failure this
+ * whole key exists to avoid.
+ */
+export const READOUT_ARTIFACT_CONFLICT_TARGET = [artifacts.workspaceId, artifacts.key];
+
+/**
+ * Env override naming the workspace the readout artifact lives in.
+ *
+ * This repo is public, so a workspace id cannot be committed; and the readout
+ * is fleet-wide while an artifact is workspace-scoped, so *some* workspace has
+ * to be named. Unset, the placement is derived from the cohort — see below.
+ */
+export const READOUT_WORKSPACE_ENV = 'MEMORY_DIGEST_READOUT_WORKSPACE_ID';
+
+/** Cohort-workspace scope: the policy version's builds, workspace recorded. */
+export function cohortWorkspaceScope(policyVersion: string) {
+  return and(
+    eq(workerPromptCompositionEvents.policyVersion, policyVersion),
+    isNotNull(workers.workspaceId),
+  );
+}
+
+/**
+ * The workspace contributing the most prompt builds to the cohort.
+ *
+ * Ties broken by the lowest id so the answer is deterministic for a given set
+ * of rows rather than dependent on scan order.
+ */
+export async function modalCohortWorkspaceId(policyVersion: string): Promise<string | null> {
+  const rows = await db
+    .select({ workspaceId: workers.workspaceId, builds: count() })
+    .from(workerPromptCompositionEvents)
+    .innerJoin(workers, eq(workers.id, workerPromptCompositionEvents.workerId))
+    .where(cohortWorkspaceScope(policyVersion))
+    .groupBy(workers.workspaceId)
+    .orderBy(desc(count()), asc(workers.workspaceId))
+    .limit(1);
+  return rows[0]?.workspaceId ?? null;
+}
+
+/** Scope matching the readout artifact for a policy version, in any workspace. */
+export function readoutArtifactScope(policyVersion: string) {
+  return eq(artifacts.key, readoutArtifactKey(policyVersion));
+}
+
+/**
+ * The workspace the readout artifact already lives in, if it exists.
+ *
+ * Read before deriving a placement, so the artifact never migrates: the modal
+ * workspace can change as rows accrue, and a placement that follows it would
+ * leave one artifact per workspace it ever passed through, each frozen at the
+ * verdict of the day it stopped being modal. Oldest row wins for the same
+ * reason.
+ */
+export async function boundArtifactWorkspaceId(policyVersion: string): Promise<string | null> {
+  const [row] = await db
+    .select({ workspaceId: artifacts.workspaceId })
+    .from(artifacts)
+    .where(readoutArtifactScope(policyVersion))
+    .orderBy(asc(artifacts.createdAt))
+    .limit(1);
+  return row?.workspaceId ?? null;
+}
+
+/** Env override → where the artifact already is → the cohort's modal workspace. */
+export async function resolveReadoutArtifactWorkspaceId(policyVersion: string): Promise<string | null> {
+  const configured = process.env[READOUT_WORKSPACE_ENV];
+  if (configured) return configured;
+  return (await boundArtifactWorkspaceId(policyVersion)) ?? (await modalCohortWorkspaceId(policyVersion));
+}
+
+export interface ReadoutArtifact {
+  id: string;
+  workspaceId: string;
+  key: string;
+  type: string;
+}
+
+/**
+ * Publish the readout as a keyed artifact, upserting in place.
+ *
+ * Upsert via `ON CONFLICT (workspace_id, key) DO UPDATE` rather than
+ * select-then-insert: two concurrent runs would both see no row and both
+ * insert, and the neon-http driver has no interactive transaction to serialise
+ * them with. The conflict target is the unique index itself, so "one artifact
+ * per policy version, updated in place" is enforced by Postgres and not by this
+ * function getting the ordering right.
+ *
+ * Returns null rather than throwing when no workspace can be resolved: an
+ * unplaceable artifact must not be able to take the verdict's notification down
+ * with it.
+ */
+export async function upsertReadoutArtifact(
+  readout: Readout,
+  now = new Date(),
+): Promise<ReadoutArtifact | null> {
+  const workspaceId = await resolveReadoutArtifactWorkspaceId(readout.policyVersion);
+  if (!workspaceId) return null;
+
+  const key = readoutArtifactKey(readout.policyVersion);
+  const title = `Memory digest experiment readout — ${readout.verdict.status}`;
+  // Fenced, because the artifact page renders `content` as markdown and this
+  // report is column-aligned monospace: unfenced, react-markdown collapses the
+  // alignment and folds the whole thing into paragraphs. The report itself is
+  // still in there verbatim, which is what makes the artifact checkable against
+  // `bun run readout:memory-digest`.
+  const content = ['```', formatReadoutText(readout), '```'].join('\n');
+  // Every figure here is computed from rows at run time; none is a constant.
+  const metadata: Record<string, unknown> = {
+    source: 'cron:memory-digest-readout',
+    policyVersion: readout.policyVersion,
+    backend: readout.backend,
+    verdict: readout.verdict.status,
+    terminal: readout.verdict.terminal,
+    nPerArm: readout.verdict.nPerArm,
+    requiredNPerArm: readout.verdict.requiredNPerArm,
+    fractionOfRequired: readout.verdict.fractionOfRequired,
+    cohortRows: readout.cohortRows,
+    boundaryAt: readout.boundary?.at ?? null,
+    generatedAt: readout.generatedAt,
+    // The analysis spans the fleet; the row has to live in one workspace
+    // because that is what the unique index is on. Said out loud here so the
+    // placement is never read as "this workspace's experiment".
+    scope: 'fleet',
+  };
+
+  const [row] = await db
+    .insert(artifacts)
+    .values({
+      workspaceId,
+      key,
+      type: READOUT_ARTIFACT_TYPE,
+      title,
+      content,
+      metadata,
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: READOUT_ARTIFACT_CONFLICT_TARGET,
+      set: { type: READOUT_ARTIFACT_TYPE, title, content, metadata, updatedAt: now },
+    })
+    .returning({ id: artifacts.id, workspaceId: artifacts.workspaceId, key: artifacts.key, type: artifacts.type });
+
+  if (!row?.id) return null;
+  return { id: row.id, workspaceId: row.workspaceId ?? workspaceId, key: row.key ?? key, type: row.type };
 }

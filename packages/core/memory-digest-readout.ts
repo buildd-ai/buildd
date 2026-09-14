@@ -571,6 +571,49 @@ export interface EraReadout {
 
 export type VerdictStatus = 'indeterminate' | 'accruing' | 'powered' | 'stalled';
 
+/**
+ * The statuses that mean "stop waiting and look".
+ *
+ * Enumerated here rather than inferred from a computed verdict because a caller
+ * has to be able to ask "has a terminal verdict already been delivered for this
+ * policy version" WITHOUT computing the readout — that is the whole point of a
+ * job that retires itself. `buildVerdict` derives every key it stamps from
+ * `verdictNotificationKey`, so this list and the keys actually emitted cannot
+ * drift apart silently.
+ */
+export const TERMINAL_VERDICT_STATUSES = ['powered', 'stalled'] as const;
+
+export type TerminalVerdictStatus = (typeof TERMINAL_VERDICT_STATUSES)[number];
+
+/** The one place a notification key is spelled. */
+export function verdictNotificationKey(policyVersion: string, status: string): string {
+  return `${policyVersion}:${status}`;
+}
+
+/**
+ * Every notification key a terminal verdict for this policy version can carry.
+ *
+ * Deliberately does NOT include `accruing` or `indeterminate`: a job that
+ * retired itself on those would stop reading an experiment that is still
+ * running, or on a broken collection path, which are the two states that most
+ * need to keep being looked at.
+ */
+export function terminalNotificationKeys(policyVersion: string): string[] {
+  return TERMINAL_VERDICT_STATUSES.map(status => verdictNotificationKey(policyVersion, status));
+}
+
+/** The status a terminal notification key belongs to, or null if it is not one. */
+export function terminalStatusFromNotificationKey(
+  policyVersion: string,
+  notificationKey: string,
+): TerminalVerdictStatus | null {
+  return (
+    TERMINAL_VERDICT_STATUSES.find(
+      status => verdictNotificationKey(policyVersion, status) === notificationKey,
+    ) ?? null
+  );
+}
+
 export interface Verdict {
   status: VerdictStatus;
   /** Terminal means "stop waiting and look" — the only state that notifies. */
@@ -863,7 +906,7 @@ function decideVerdict(args: {
       headline: 'Indeterminate — no prompt-composition rows for this policy version.',
       reason:
         'No rows in the cohort. Either nobody is enrolled, or the collection path from the runner to worker_prompt_composition_events is broken. Check the runner is emitting [prompt-composition] and that PATCH /api/workers/[id] is inserting.',
-      notificationKey: `${policyVersion}:indeterminate:no-rows`,
+      notificationKey: verdictNotificationKey(policyVersion, 'indeterminate:no-rows'),
     };
   }
   if (boundary === null) {
@@ -874,7 +917,7 @@ function decideVerdict(args: {
       indeterminate: true,
       headline: 'Indeterminate — the contamination boundary cannot be derived from the rows.',
       reason: `No row carries task_match_derived_by='${CONTAMINATION_MARKER}', so the cohort cannot be split at the mid-enrolment retrieval change. Reporting a single pooled cohort here would be reporting the contamination. Refusing.`,
-      notificationKey: `${policyVersion}:indeterminate:no-boundary`,
+      notificationKey: verdictNotificationKey(policyVersion, 'indeterminate:no-boundary'),
     };
   }
 
@@ -888,7 +931,7 @@ function decideVerdict(args: {
       reason: `The smaller post-boundary arm has reached the exposure the design requires to detect d=${DESIGN_MDE} at ${Math.round(
         DESIGN_POWER * 100,
       )}% power. Read the effect sizes and their intervals.`,
-      notificationKey: `${policyVersion}:powered`,
+      notificationKey: verdictNotificationKey(policyVersion, 'powered'),
     };
   }
 
@@ -902,7 +945,7 @@ function decideVerdict(args: {
       indeterminate: false,
       headline: `Terminal — accrual stalled at n per arm ${nPerArm} of ${required}.`,
       reason: `No new post-boundary prompt build in ${hours}h. Accrual has stalled short of power, so waiting longer will not resolve it: either enrolment stopped (check BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION on every runner) or the experiment is over and this is the most it will ever have.`,
-      notificationKey: `${policyVersion}:stalled`,
+      notificationKey: verdictNotificationKey(policyVersion, 'stalled'),
     };
   }
 
@@ -914,7 +957,7 @@ function decideVerdict(args: {
     headline: `Accruing — not yet conclusive (n per arm ${nPerArm} of ${required}).`,
     reason:
       'The post-boundary cohort is still growing and has not reached the exposure the design requires. This is the expected steady state, not a problem.',
-    notificationKey: `${policyVersion}:accruing`,
+    notificationKey: verdictNotificationKey(policyVersion, 'accruing'),
   };
 }
 
