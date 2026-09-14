@@ -876,6 +876,11 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues.mode).toBe('planning');
     expect(tasksInsertValues.taskClass).toBe('bookkeeping');
     expect(tasksInsertValues.creationSource).toBe('orchestrator');
+    // A heartbeat/organizer cycle reports its outcome via complete_task's
+    // summary/structuredOutput, never a PR or artifact — left unset this
+    // defaults to 'auto', which the completion gate reads as builder
+    // semantics and 400s a session that ends without commits or an artifact.
+    expect(tasksInsertValues.outputRequirement).toBe('none');
   });
 
   // A bare (non-mission) schedule with no explicit mode still defaults to
@@ -898,6 +903,10 @@ describe('GET /api/cron/schedules', () => {
     expect(tasksInsertValues).not.toBeNull();
     expect(tasksInsertValues.mode).toBe('execution');
     expect(tasksInsertValues.creationSource).toBe('schedule');
+    expect(tasksInsertValues.taskClass).toBe('work');
+    // A bare schedule's task is real work, not bookkeeping — it must not pick
+    // up the planning-cycle 'none' output requirement above.
+    expect(tasksInsertValues.outputRequirement).toBeUndefined();
   });
 
   it('should record lastDeferralReason=concurrent_cap when maxConcurrentFromSchedule is hit', async () => {

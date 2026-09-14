@@ -1001,6 +1001,18 @@ export async function PATCH(
     const isReviewerTask = terminalTaskRow[0]?.category === 'review'
       && Boolean((terminalTaskRow[0]?.context as Record<string, unknown> | undefined)?.reviewerFor);
 
+    // A bookkeeping task (heartbeats, criteria evaluators, plan-rejection
+    // replans — see packages/core/db/schema.ts taskClass) reports its outcome
+    // via complete_task's summary/structuredOutput. It never ships a PR or
+    // artifact of its own, so the commits/dirty-worktree/PR machinery below
+    // was built for a different task shape entirely. Most bookkeeping
+    // creation sites already say so explicitly (outputRequirement: 'none'),
+    // but several default to unset/'auto' and inherited builder semantics by
+    // accident. An explicit pr_required/artifact_required is still honored —
+    // e.g. the completed-work aggregator in task-dependencies.ts — this only
+    // widens what 'auto' means for this task shape.
+    const isBookkeepingTask = terminalTaskRow[0]?.taskClass === 'bookkeeping';
+
     if (outputReq !== 'none') {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       // Same precedence as effectiveCommits: this request's own report wins,
@@ -1181,7 +1193,22 @@ export async function PATCH(
       // apps/runner/src/git-operations.ts), so they must not be the only gate
       // for this outcome.
       const isFallbackSummary = !isSensitive && body.summarySource === 'fallback';
-      if (outputReq === 'auto' && !isReviewerTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
+
+      // A bookkeeping task's only confirmed outcome is a real complete_task
+      // call — it has no PR/artifact to fall back on, so a fallback-provenance
+      // summary here means the session ended with nothing to show at all.
+      // Fail with a message this task shape can act on (the session needs to
+      // actually report), not the create_pr hint below, which asks a task
+      // that will never open a PR to open one.
+      if (isBookkeepingTask && isFallbackSummary) {
+        await persistRejectedCompletionPayload('bookkeeping_no_report');
+        return NextResponse.json({
+          error: 'Task has no confirmed outcome — the session ended without the agent calling complete_task to report its status. This is a bookkeeping/organizer task: report the outcome via complete_task (summary or structuredOutput), not a pull request or artifact.',
+          hint: 'organizer_did_not_report',
+        }, { status: 400 });
+      }
+
+      if (outputReq === 'auto' && !isReviewerTask && !isBookkeepingTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree || isFallbackSummary)) {
         // A coordination/conflict-resolution task legitimately ships nothing on
         // its own branch — its deliverable is action taken against OTHER PRs
         // (a merge, a dispatched release). merge_pr stamps mergedAt on the

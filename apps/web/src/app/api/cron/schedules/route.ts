@@ -734,6 +734,12 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             status: 'pending',
             mode: resolvedMode,
             taskClass: (resolvedMode === 'planning') ? 'bookkeeping' : 'work',
+            // A planning/heartbeat cycle reports its outcome via complete_task's
+            // summary/structuredOutput, never a PR or artifact — it must not
+            // inherit the default 'auto' output requirement, which the
+            // completion gate reads as builder semantics (see the taskClass
+            // check in apps/web/src/app/api/workers/[id]/route.ts).
+            ...(resolvedMode === 'planning' ? { outputRequirement: 'none' as const } : {}),
             runnerPreference: template.runnerPreference || 'any',
             requiredCapabilities: template.requiredCapabilities || [],
             context: taskContext,
