@@ -3096,6 +3096,67 @@ export const memoriesRelations = relations(memories, ({ one }) => ({
 export type Memory = typeof memories.$inferSelect;
 export type NewMemory = typeof memories.$inferInsert;
 
+// ── Gate ledger ───────────────────────────────────────────────────────────────
+//
+// One row per server-side gate decision that a caller can hit WITHOUT a worker
+// failing: a refusal, a deferral, an advisory warning, or an explicit bypass.
+//
+// This class of decision was the only one buildd never wrote down. Six separate
+// point fixes were needed before anyone could see a rate, because
+// `get_failure_analytics` reads terminal worker rows and a creation-time 400 is
+// not a worker failure — it is a decision about a request that never became a
+// worker at all. The three-week false-positive lint is the canonical case: it
+// took four friction reports (each of which had to bypass the same lint) before
+// the frequency was visible, and the analytics table showed zero rows for it
+// the whole time.
+//
+// Writes are fire-and-forget (see packages/core/gate-events.ts). A ledger that
+// can fail a request is worse than no ledger — it turns an observability miss
+// into an outage — so `recordGateEvent` swallows everything and the gate's own
+// behaviour never depends on the insert landing.
+export const gateEvents = pgTable('gate_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  occurredAt: timestamp('occurred_at', { withTimezone: true }).defaultNow().notNull(),
+  // Stable slug naming the RULE, not the message — e.g. 'manifest_required',
+  // 'merge_policy', 'prose_gate'. Rename it and you fork the history, so treat
+  // it like a migration: see GATE_SLUGS in packages/core/gate-events.ts.
+  gate: text('gate').notNull(),
+  // Where the decision was made: 'POST /api/tasks', 'PUT /api/github/pr', …
+  surface: text('surface').notNull(),
+  // Nullable: a handful of gates fire before the route has resolved a
+  // workspace. Those rows are unattributable to a team and drop out of every
+  // scoped aggregation, which is why the task-creation wrapper resolves the
+  // caller's raw workspace reference in the background rather than giving up.
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }),
+  missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
+  workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
+  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned'>(),
+  // normalizeErrorSignature() of the caller-facing message — the SAME
+  // normalizer get_failure_analytics clusters worker errors with, so a family
+  // whose message embeds a branch name or an id collapses to one row here too.
+  reason: text('reason').notNull(),
+  detail: jsonb('detail').$type<Record<string, unknown>>(),
+  // 'api' | 'dashboard' | 'worker' | 'system'. Which door the call came in.
+  callerOrigin: text('caller_origin'),
+}, (t) => ({
+  // The aggregation's access pattern: one workspace (or a team's set), one
+  // window, grouped by gate.
+  workspaceOccurredIdx: index('gate_events_workspace_occurred_idx').on(t.workspaceId, t.occurredAt),
+  gateOccurredIdx: index('gate_events_gate_occurred_idx').on(t.gate, t.occurredAt),
+  taskIdx: index('gate_events_task_idx').on(t.taskId),
+}));
+
+export const gateEventsRelations = relations(gateEvents, ({ one }) => ({
+  workspace: one(workspaces, { fields: [gateEvents.workspaceId], references: [workspaces.id] }),
+  mission: one(missions, { fields: [gateEvents.missionId], references: [missions.id] }),
+  task: one(tasks, { fields: [gateEvents.taskId], references: [tasks.id] }),
+  worker: one(workers, { fields: [gateEvents.workerId], references: [workers.id] }),
+}));
+
+export type GateEvent = typeof gateEvents.$inferSelect;
+export type NewGateEvent = typeof gateEvents.$inferInsert;
+
 // smoke-test-3-ci-retry-1 20260725
 
 export type CronRun = typeof cronRuns.$inferSelect;

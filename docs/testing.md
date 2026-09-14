@@ -59,7 +59,7 @@ bun run seed:reset
 
 ## Worker Sandbox Constraints (Live Browser & Production Data)
 
-Two things agents doing UI/browser-bug tasks routinely get wrong about the worker sandbox:
+Three things agents doing UI/browser-bug tasks routinely get wrong about the worker sandbox:
 
 **No production `DATABASE_URL` — by design.** Worker sandboxes are never handed a raw
 production DB credential. The `secrets` table (see `docs/credentials-architecture.md`) has
@@ -85,6 +85,21 @@ install ...`): the harness's Bash-tool safety policy blocks any command containi
 substring `sudo` outright, before it ever runs, which reads as "no root in this sandbox" but
 isn't — the underlying privilege escalation works fine when a subprocess (like Playwright's
 installer) invokes it itself. Don't type `sudo` in a Bash command; let the tool do it.
+
+**`bun run build` fails here — use `build:only` for local compile verification.**
+`apps/web`'s `build` script runs `db:migrate` (`packages/core/db/migrate.ts`) before
+`next build`, and that step needs a real `DATABASE_URL`, which the sandbox intentionally
+doesn't have (see above). This is deliberate — `packages/core/__tests__/prod-build-runs-migrations.test.ts`
+guards against silently dropping the migration step from the production build, so don't
+"fix" it by editing `apps/web/package.json`. To verify a change compiles without a database,
+run the same command CI's `Build` step uses:
+
+```bash
+cd apps/web && bun run build:only   # next build only, no migration, no DATABASE_URL needed
+```
+
+No dummy env vars or extra flags (`--webpack` etc.) are required — `build:only` compiles
+cleanly on its own.
 
 ## UI Fixtures
 

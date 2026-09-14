@@ -77,6 +77,33 @@ export function stripTrailingSep(path: string): string {
 }
 
 /**
+ * True when a single manifest entry names a real scope: not the repo-wide
+ * sentinel, not a bare `'*'`, and not a glob that spans an entire monorepo
+ * root (`apps/**`, `packages/**` — every package in that root, not one of
+ * them). `apps/web/**` is fine: it is wide, but bounded to one package.
+ */
+function isManifestEntryTooWide(entry: string): boolean {
+  if (entry === REPO_WIDE_SENTINEL || entry === '*') return true;
+  const [root, pkg] = entry.split('/').filter(Boolean);
+  if ((root === 'apps' || root === 'packages') && (!pkg || pkg.includes('*'))) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Creation-time bar for "did the caller declare a real scope?" — stricter
+ * than `isAdvisoryManifest`, which only catches the literal `'**'` sentinel.
+ * A manifest of `['apps/**']` or `['*']` has told the overlap detector
+ * nothing useful either, so it must not satisfy the mandatory-manifest gate
+ * in `POST /api/tasks`. True when at least one entry is concrete.
+ */
+export function hasConcretePathManifest(manifest: string[] | null | undefined): boolean {
+  if (!manifest || manifest.length === 0) return false;
+  return manifest.some(entry => !isManifestEntryTooWide(entry));
+}
+
+/**
  * Returns true if the two path manifests share at least one entry.
  *
  * Matching rules (in order):
