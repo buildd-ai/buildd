@@ -97,7 +97,7 @@ an enum) to allow extension without migrations.
   `apps/web/src/lib/reviewer.ts`) is exempt from this entire check: see AC-3f.
   Its contract is judged on `structuredOutput.verdict` instead, by the
   review-contract guard in `apps/web/src/app/api/workers/[id]/route.ts`.
-  A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c) persists the
+  A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c/AC-3g) persists the
   agent's `summary`/`structuredOutput`/`resultMeta` verbatim onto
   `workers.rejectedCompletionPayload` before returning the 400 — a 60-turn
   run's only output must not evaporate along with the 400.
@@ -169,6 +169,24 @@ an enum) to allow extension without migrations.
   `escalateReviewContractFailure`) — nothing else re-dispatches a reviewer for
   an existing PR/head SHA outside the webhook's `opened` action, so a silent
   permanent failure here would strand the PR unreviewed forever.
+- AC-3g: GIVEN `outputRequirement = 'none'` and `tasks.taskClass != 'bookkeeping'`,
+  `commitCount > 0` or `workers.dirtyWorktree = true`, no PR detected, and no
+  deliverable artifact WHEN `complete_task` is called THEN the server returns a
+  400 with `hint: 'create_pr'` — the task is NOT completed. `'none'` means "no
+  deliverable required," which is correct for a `taskClass = 'bookkeeping'` row
+  (every creation site that sets `outputRequirement: 'none'` explicitly is
+  bookkeeping: heartbeats, criteria evaluators, the mission-PR owner task —
+  those are exempt from this AC entirely, matching AC-3c's bookkeeping
+  carve-out) and correct for a genuine investigation/diagnosis task that
+  concludes with nothing to ship, including via a bare fallback summary alone
+  — unlike AC-3c, `summarySource = 'fallback'` by itself does NOT trigger this
+  AC, only real commit/dirty-worktree evidence does. A non-bookkeeping task
+  that actually committed code has no legitimate reason to have declared
+  `'none'`; before this AC, that declaration silently skipped every
+  deliverable check regardless of commits, which is how a task with real,
+  unreviewed changes reached `completed` on a fallback summary. The same
+  cross-branch-deliverable (`workers.mergedAt`) and `discardEdits`
+  satisfiers from AC-3d/AC-3e apply here too.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`

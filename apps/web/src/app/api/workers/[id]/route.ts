@@ -1014,7 +1014,20 @@ export async function PATCH(
     // widens what 'auto' means for this task shape.
     const isBookkeepingTask = terminalTaskRow[0]?.taskClass === 'bookkeeping';
 
-    if (outputReq !== 'none') {
+    // 'none' means "no deliverable required" — correct for a bookkeeping task
+    // (every creation site that sets outputRequirement='none' explicitly is
+    // taskClass='bookkeeping': heartbeats, criteria evaluators, the mission-PR
+    // owner task) and also correct for a genuine investigation/diagnosis task
+    // that concludes with nothing to ship. It is NOT a license for a
+    // non-bookkeeping task to strand real code changes: a 'work' task has no
+    // legitimate reason to declare 'none' while actually committing/dirtying
+    // the worktree, since nothing in this codebase creates that combination on
+    // purpose. Only the bookkeeping case skips this block outright; a
+    // non-bookkeeping 'none' task still runs it so the commits-with-no-PR
+    // check further below (which requires real commit/dirty-worktree evidence,
+    // not just a fallback summary — see its own comment) can catch it.
+    const bookkeepingSkipsGate = outputReq === 'none' && isBookkeepingTask;
+    if (!bookkeepingSkipsGate) {
       const effectiveCommits = commitCount ?? worker.commitCount ?? 0;
       // Same precedence as effectiveCommits: this request's own report wins,
       // falling back to the worker row's last-synced value (kept fresh by the
@@ -1304,6 +1317,54 @@ export async function PATCH(
         // Neither satisfier put anything on this worker's own branch — a
         // branch-merge release would find nothing of this worker's own to ship.
         if ((hasCrossBranchDeliverable || discardReason) && !hasPR) skipRelease = true;
+      }
+
+      // A non-bookkeeping task declaring outputRequirement='none' (see
+      // bookkeepingSkipsGate above — every intentional 'none' creation site is
+      // taskClass='bookkeeping') is trusted to conclude with nothing to ship,
+      // including via a bare fallback summary: unlike the `auto` arm, a
+      // fallback summary ALONE is not the trigger here, because a genuine
+      // investigation/diagnosis task ending without complete_task is exactly
+      // what 'none' is for. What 'none' never licenses is stranding REAL code
+      // changes — a commit or a dirty worktree is concrete evidence of work
+      // that needs to land somewhere, and no legitimate 'none' task produces
+      // one. A mis-declared 'none' work task that commits real changes and
+      // ends on a fallback summary with no PR used to sail through here
+      // entirely uninspected, because the whole block used to be skipped for
+      // any 'none' task regardless of taskClass.
+      if (outputReq === 'none' && !isReviewerTask && !isBookkeepingTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
+        const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
+        if (!discardReason && !(await hasDeliverableArtifact())) {
+          const workDescription = effectiveCommits > 0
+            ? `${effectiveCommits} commit(s) on branch`
+            : 'uncommitted changes in the worktree';
+          await persistRejectedCompletionPayload('none');
+          return NextResponse.json({
+            error: `Task has ${workDescription} but no pull request or artifact, and outputRequirement is 'none'. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
+            hint: 'create_pr',
+          }, { status: 400 });
+        }
+        if (discardReason) {
+          fireGateEvent({
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            surface: 'PATCH /api/workers/[id]',
+            outcome: 'bypassed',
+            reason: 'completion accepted under none: edits discarded by explicit acknowledgement',
+            workspaceId: worker.workspaceId,
+            missionId: taskMissionId,
+            taskId: worker.taskId,
+            workerId: worker.id,
+            callerOrigin: 'worker',
+            detail: {
+              outputRequirement: 'none',
+              category: terminalTaskRow[0]?.category ?? null,
+              commits: effectiveCommits,
+              dirtyWorktree: effectiveDirtyWorktree,
+              discardEdits: discardReason.slice(0, 500),
+            },
+          });
+          skipRelease = true;
+        }
       }
     }
   }
