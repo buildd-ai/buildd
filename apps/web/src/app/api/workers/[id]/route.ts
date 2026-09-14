@@ -1334,8 +1334,9 @@ export async function PATCH(
       // entirely uninspected, because the whole block used to be skipped for
       // any 'none' task regardless of taskClass.
       if (outputReq === 'none' && !isReviewerTask && !isBookkeepingTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
+        const hasCrossBranchDeliverable = !!worker.mergedAt;
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
-        if (!discardReason && !(await hasDeliverableArtifact())) {
+        if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
             : 'uncommitted changes in the worktree';
@@ -1345,7 +1346,7 @@ export async function PATCH(
             hint: 'create_pr',
           }, { status: 400 });
         }
-        if (discardReason) {
+        if (discardReason && !hasCrossBranchDeliverable) {
           fireGateEvent({
             gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
             surface: 'PATCH /api/workers/[id]',
@@ -1364,8 +1365,8 @@ export async function PATCH(
               discardEdits: discardReason.slice(0, 500),
             },
           });
-          skipRelease = true;
         }
+        if (hasCrossBranchDeliverable || discardReason) skipRelease = true;
       }
     }
   }
