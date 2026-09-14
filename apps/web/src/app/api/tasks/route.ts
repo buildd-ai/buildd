@@ -16,7 +16,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
-import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveAnchorInjections } from '@/lib/change-intent';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -838,6 +838,34 @@ export async function POST(req: NextRequest) {
       if (!resolvedBackend && mission?.defaultBackend) resolvedBackend = mission.defaultBackend;
       missionStartAt = mission?.startAt ?? null;
       missionIntegrationBaseBranch = missionIntegrationBase(mission);
+    }
+
+    // Manifest gate: a mission task whose deliverable is a PR — explicit
+    // 'pr_required', or 'auto' (the default, which resolves to a PR for an
+    // ordinary builder task) — must declare a concrete pathManifest.
+    // shouldSerializeByManifest/computeOverlapEdges can only serialize
+    // concrete manifests (see isAdvisoryManifest); an undeclared scope makes
+    // a sibling task race instead of wait, which is the exact failure mode
+    // #1759/#1763 hit. 'artifact_required' and 'none' mission tasks, and any
+    // non-mission task, are exempt — they carry no PR-overlap risk.
+    if (
+      missionId &&
+      (outputRequirement === 'pr_required' || outputRequirement === 'auto') &&
+      !hasConcretePathManifest(pathManifest)
+    ) {
+      // TODO(gate ledger): no ledger helper exists yet (checked — no
+      // gate-ledger module, table, or failure-analytics read path as of this
+      // task). Once the sibling 'Gate ledger' task lands, write this
+      // rejection through its helper instead of just returning 400, with
+      // event shape:
+      //   { gate: 'manifest_required', route: 'POST /api/tasks', reason: 'missing_or_wildcard_manifest', bypassed: false }
+      return NextResponse.json(
+        {
+          error:
+            'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]',
+        },
+        { status: 400 },
+      );
     }
 
     // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace

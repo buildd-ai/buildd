@@ -4,6 +4,7 @@ import {
   findBlockingPr,
   isAdvisoryManifest,
   declaresNoScope,
+  hasConcretePathManifest,
   shouldSerializeByManifest,
   stripTrailingSep,
   intersectPaths,
@@ -237,6 +238,46 @@ describe('isAdvisoryManifest', () => {
     expect(isAdvisoryManifest(null)).toBe(false);
     expect(isAdvisoryManifest(undefined)).toBe(false);
     expect(isAdvisoryManifest([])).toBe(false);
+  });
+});
+
+describe('hasConcretePathManifest', () => {
+  it('is false for null / undefined / empty manifests', () => {
+    expect(hasConcretePathManifest(null)).toBe(false);
+    expect(hasConcretePathManifest(undefined)).toBe(false);
+    expect(hasConcretePathManifest([])).toBe(false);
+  });
+
+  it('is false for the bare repo-wide sentinel', () => {
+    expect(hasConcretePathManifest(['**'])).toBe(false);
+  });
+
+  it('is false for a bare "*"', () => {
+    expect(hasConcretePathManifest(['*'])).toBe(false);
+  });
+
+  it('is false for a glob that spans an entire monorepo root', () => {
+    expect(hasConcretePathManifest(['apps/**'])).toBe(false);
+    expect(hasConcretePathManifest(['packages/**'])).toBe(false);
+    expect(hasConcretePathManifest(['apps/*'])).toBe(false);
+  });
+
+  it('is true for a glob scoped to one package', () => {
+    expect(hasConcretePathManifest(['apps/web/**'])).toBe(true);
+    expect(hasConcretePathManifest(['packages/core/**'])).toBe(true);
+  });
+
+  it('is true for a concrete file or directory path', () => {
+    expect(hasConcretePathManifest(['apps/web/src/lib/foo.ts'])).toBe(true);
+    expect(hasConcretePathManifest(['docs/specs/foo.md'])).toBe(true);
+  });
+
+  it('is true when at least one entry is concrete, even alongside the sentinel', () => {
+    expect(hasConcretePathManifest(['**', 'apps/web/src/lib/foo.ts'])).toBe(true);
+  });
+
+  it('is false when every entry is too wide', () => {
+    expect(hasConcretePathManifest(['**', '*', 'apps/**'])).toBe(false);
   });
 });
 
