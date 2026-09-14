@@ -416,10 +416,10 @@ describe('deriveBandLabel', () => {
     expect(deriveBandLabel(ts, now)).toBe('Yesterday');
   });
 
-  it('returns weekday name for within last 7 days', () => {
+  it('returns weekday + date for within last 7 days', () => {
     const ts = new Date('2026-08-14T10:00:00Z').getTime(); // Friday
     const label = deriveBandLabel(ts, now);
-    expect(label).toBe('Friday');
+    expect(label).toBe('Fri 14');
   });
 
   it('returns Mon D format for within current year', () => {
@@ -459,12 +459,15 @@ describe('deriveBandKey', () => {
     expect(bands[0].items).toHaveLength(2);
   });
 
-  it('splits two items exactly 4h apart into separate bands', () => {
+  it('splits two items on same day exactly 4h apart into separate bands', () => {
     const bands = deriveBandKey([
       mk('t1', '2026-08-17T06:00:00Z'),
       mk('t2', '2026-08-17T10:00:00Z'),
     ], now);
     expect(bands).toHaveLength(2);
+    // Both on same day, so same label
+    expect(bands[0].label).toBe('Yesterday');
+    expect(bands[1].label).toBe('Yesterday');
   });
 
   it('returns bands newest-first', () => {
@@ -473,7 +476,7 @@ describe('deriveBandKey', () => {
       mk('new', '2026-08-18T10:00:00Z'),
     ], now);
     expect(bands[0].label).toBe('Today');
-    expect(bands[1].label).toBe('Sunday');
+    expect(bands[1].label).toBe('Sun 16');
   });
 
   it('within a band items are newest-first', () => {
@@ -485,16 +488,41 @@ describe('deriveBandKey', () => {
     expect(bands[0].items[1].id).toBe('t1');
   });
 
-  it('appends ordinal suffix to duplicate band labels', () => {
-    // Two bands, both "Yesterday", separated by >= 4h
+  it('keeps same-day items in separate gap-clustered bands (same label for now)', () => {
+    // Two bands on the same day, separated by >= 4h
     const bands = deriveBandKey([
       mk('t1', '2026-08-17T01:00:00Z'),
       mk('t2', '2026-08-17T06:00:00Z'),
     ], now);
     expect(bands).toHaveLength(2);
+    // Both should be on the same day (Yesterday), so both labels are the same
     const labels = bands.map(b => b.label);
-    expect(labels).toContain('Yesterday');
-    expect(labels).toContain('Yesterday (2)');
+    expect(labels[0]).toBe('Yesterday');
+    expect(labels[1]).toBe('Yesterday');
+  });
+
+  it('regression: same calendar day split across UTC midnight should not create duplicate labels', () => {
+    // Sep 11 2026 7:00 AM UTC = Sep 11 2026 3:00 AM ET (Friday morning)
+    // Sep 12 2026 4:00 AM UTC = Sep 11 2026 12:00 PM ET (Friday afternoon) — same calendar day in ET
+    // Gap is 21 hours (> 4h), so they'd normally split into separate bands
+    // But both are "Friday" in local time, causing duplicate labels
+    const now = new Date('2026-09-12T12:00:00Z'); // Sep 12 2026 8:00 AM ET
+    const bands = deriveBandKey([
+      mk('t1', '2026-09-11T07:00:00Z'), // Friday early morning
+      mk('t2', '2026-09-12T04:00:00Z'), // Friday afternoon
+    ], now);
+    // Should not have two bands with same label
+    const labels = bands.map(b => b.label);
+    const labelCounts = new Map<string, number>();
+    for (const label of labels) {
+      labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+    }
+    // Check that no non-suffixed label appears more than once
+    for (const [label, count] of labelCounts.entries()) {
+      if (!label.includes('(') && count > 1) {
+        throw new Error(`Duplicate label "${label}" appears ${count} times without ordinal suffix`);
+      }
+    }
   });
 });
 
@@ -534,7 +562,7 @@ describe('deriveDayBands', () => {
       mk('mid', '2026-08-17T12:00:00Z'),
       mk('new', '2026-08-18T12:00:00Z'),
     ], now);
-    expect(bands.map(b => b.label)).toEqual(['Today', 'Yesterday', 'Sunday']);
+    expect(bands.map(b => b.label)).toEqual(['Today', 'Yesterday', 'Sun 16']);
   });
 
   it('orders items newest-first within a band', () => {
