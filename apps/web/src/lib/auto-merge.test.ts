@@ -914,6 +914,23 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
     ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
   });
 
+  it('still applies it when the release config is disabled, even though releaseBranch/prodBranch match', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({
+        mergeable_state: 'clean',
+        head: { ref: RELEASE_BRANCH },
+        base: { ref: PROD_BRANCH },
+      });
+
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy, {
+        releaseConfig: { ...releaseConfig, enabled: false },
+      }),
+    ).resolves.toEqual({ ok: false, reason: expect.stringContaining('2500') });
+  });
+
   it('still applies it when the workspace has no release config', async () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
