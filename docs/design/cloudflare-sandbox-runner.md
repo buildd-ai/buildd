@@ -1,3 +1,16 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "runner-substrate-interface"
+    type: "symbol"
+    name: "RunnerSubstrate"
+    path: "apps/runner/src/substrates/types.ts"
+  - id: "agent-backend-interface"
+    type: "symbol"
+    name: "AgentBackend"
+    path: "apps/runner/src/backends/types.ts"
+---
 # Cloudflare Sandbox Runner — Design Spec
 
 > **Status:** Proposed — awaiting approval before any implementation begins.

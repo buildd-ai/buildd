@@ -1,6 +1,22 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mission-integration-pr"
+    type: "symbol"
+    name: "openMissionIntegrationPr"
+    path: "apps/web/src/lib/mission-pr.ts"
+  - id: "release-attribution"
+    type: "symbol"
+    name: "attributeRelease"
+    path: "packages/core/release-attribution.ts"
+  - id: "release-attribution-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/release-attribution.test.ts"
+---
 # Mission Delivery Arc — Idea to Release
 
-**Status:** Accepted — A′ adopted and built behind a per-mission opt-in
+**Status:** Implemented — A′ adopted and built behind a per-mission opt-in
 (`missions.integrationBranchEnabled`, default false). See "Decisions taken"
 immediately below before reading the proposal as an open question.
 **Verified against:** `origin/dev` @ `f48cfbb2` (2026-09-04). Every path and line

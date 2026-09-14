@@ -1,6 +1,23 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "drive-state"
+    type: "symbol"
+    name: "deriveDriveState"
+    path: "apps/web/src/lib/mission-helpers.ts"
+  - id: "task-health"
+    type: "symbol"
+    name: "deriveTaskHealthSignal"
+    path: "apps/web/src/lib/mission-helpers.ts"
+  - id: "mission-progress"
+    type: "symbol"
+    name: "computeMissionProgress"
+    path: "packages/core/mission-helpers.ts"
+---
 # Mission State & Projected Progress
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `docs/design/task-presentation.md`, `src/lib/mission-health.ts`, `packages/core/mission-helpers.ts`
 
 ---

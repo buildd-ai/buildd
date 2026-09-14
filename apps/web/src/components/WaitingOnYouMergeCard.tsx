@@ -43,6 +43,12 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
 
   const [mergeState, setMergeState] = useState<MergeState>('idle');
   const [errorMsg, setErrorMsg] = useState('');
+  // Whether Retry can safely re-invoke the merge without risking a double
+  // merge. False only when GitHub's live PR state couldn't be confirmed
+  // after an indeterminate response — every other error kind (a real GitHub
+  // rejection, or a confirmed-still-open indeterminate) means the merge
+  // definitely did not land, so retrying is safe.
+  const [retrySafe, setRetrySafe] = useState(true);
   const [optimistic, setOptimistic] = useState<Optimistic | null>(null);
 
   // The moment fresh server props land, whatever `optimistic` was covering is
@@ -96,13 +102,20 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           setOptimistic({ kind: 'conflict_exhausted' });
           router.refresh();
           break;
+        case 'indeterminate':
+          setErrorMsg(outcome.message);
+          setRetrySafe(outcome.liveState === 'open');
+          setMergeState('error');
+          break;
         case 'error':
           setErrorMsg(outcome.message);
+          setRetrySafe(true);
           setMergeState('error');
           break;
       }
     } catch {
       setErrorMsg('Network error');
+      setRetrySafe(true);
       setMergeState('error');
     }
   };
@@ -300,12 +313,33 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
       {!optimistic && mergeState === 'error' && (
         <div className="mt-2 flex items-center justify-between gap-2">
           <span className="text-[11px] text-status-error min-w-0">{errorMsg}</span>
-          <button
-            onClick={() => setMergeState('idle')}
-            className="text-[11px] text-text-muted hover:text-text-secondary underline flex-shrink-0"
-          >
-            Retry
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {retrySafe ? (
+              <button
+                onClick={handleMerge}
+                className="text-[11px] text-text-muted hover:text-text-secondary underline"
+              >
+                Retry
+              </button>
+            ) : (
+              item.prUrl && (
+                <a
+                  href={item.prUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] font-medium text-primary hover:underline"
+                >
+                  Check PR
+                </a>
+              )
+            )}
+            <button
+              onClick={() => setMergeState('idle')}
+              className="text-[11px] text-text-muted hover:text-text-secondary underline"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 

@@ -1,6 +1,24 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "shared-connectors"
+    type: "symbol"
+    name: "connectorShares"
+    path: "packages/core/db/schema.ts"
+  - id: "workspace-connectors"
+    type: "symbol"
+    name: "connectorWorkspaces"
+    path: "packages/core/db/schema.ts"
+  - id: "connector-share-api"
+    type: "route"
+    method: "POST"
+    path: "/api/connectors/[id]/shares"
+    file: "apps/web/src/app/api/connectors/[id]/shares/route.ts"
+---
 # Unified Team/Workspace Sharing Across Credentials, Connectors & Roles
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `apps/web/src/app/app/(protected)/settings/AgentBackendsSection.tsx`, `apps/web/src/app/app/(protected)/connections/{ConnectionsClient,AddConnectionModal}.tsx`, `apps/web/src/app/api/connectors/route.ts`, `packages/core/db/schema.ts` (`secrets`, `connectors`, `connectorWorkspaces`, `connectorShares`, `workspaceSkills`), `docs/credentials-architecture.md`
 
 ## Problem

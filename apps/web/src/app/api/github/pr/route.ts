@@ -2,12 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
 import { workers, githubRepos, missions, tasks, workspaces } from '@buildd/core/db/schema';
 import { eq, and, isNull, isNotNull, inArray } from 'drizzle-orm';
-import { githubApi, mergePullRequest } from '@/lib/github';
+import { githubApi, githubAppBotLogin, mergePullRequest } from '@/lib/github';
+import { rankPrComments } from '@/lib/pr-comments';
 // One implementation of the primary-PR claim and of "what counts as trunk",
 // shared with the mission-PR opener. Two copies of a base-ref rule is how
 // the branch-name generator drifted (P8).
 import { claimMissionPrimaryPr, trunkBranches, MISSION_PR_TASK_PREFIX, guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { buildMissionBaseGuard } from '@/lib/mission-base-guard';
+import { ensureIntegrationBaseForTaskPr } from '@/lib/mission-integration-branch';
+import { resolveTaskPrBase } from '@buildd/core/mission-integration';
+import { composeBodyWithLede, deriveLedeFromTitle, normalizeLede } from '@buildd/core/pr-lede';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getTeamWorkspaceIds } from '@/lib/team-access';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
@@ -150,7 +154,17 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { workerId, title, body: prBody, head, base, draft, prUrl: existingPrUrl } = body;
+    const {
+      workerId,
+      title,
+      body: prBody,
+      lede,
+      ledeDerived,
+      head,
+      base,
+      draft,
+      prUrl: existingPrUrl,
+    } = body;
 
     if (!workerId) {
       return NextResponse.json({ error: 'workerId required' }, { status: 400 });
@@ -196,12 +210,18 @@ export async function POST(req: NextRequest) {
     const integrationBase = missionBaseGuard.integrationBase;
     const isMissionPrOwner = missionBaseGuard.isMissionPrOwner;
     const taskContext = worker.task?.context as Record<string, unknown> | null;
-    const contextBaseBranch = taskContext?.baseBranch as string | undefined;
     const isStackedPhase = missionBaseGuard.isStackedPhase;
 
     // If an existing PR URL is provided, register it directly without going through GitHub API.
     // This allows agents to satisfy pr_required even when the workspace has no GitHub App installation
     // (e.g. the PR was created via gh CLI in a different repo).
+    //
+    // LEDE ON THIS PATH: the PR body belongs to whoever opened it — buildd did
+    // not write it and, on the case this path exists for, has no installation
+    // with which to rewrite it. So nothing is prepended to GitHub here. The
+    // deterministic title-derived lede (see `deriveLedeFromTitle`, applied in
+    // the `create_pr` action) leads the record buildd stores instead, and the
+    // adoption itself never fails for want of a lede.
     if (existingPrUrl) {
       if (worker.prUrl && worker.prNumber) {
         await db
@@ -571,7 +591,32 @@ export async function POST(req: NextRequest) {
     const lineageSuffix = retryIteration > 0
       ? `\n\n---\n_Attempt ${retryIteration}/${maxIterations} — resume failed; new branch._`
       : '';
-    const effectivePrBody = (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix;
+
+    // ── The lede leads ───────────────────────────────────────────────────────
+    // Composed into the body here rather than stored in a column of its own, so
+    // every reader of the body — GitHub, `get_pr`, the `pr` knowledge corpus —
+    // gets the lede first without having to know it exists. See
+    // packages/core/pr-lede.ts for the full reasoning.
+    //
+    // `lede` is required on the agent-facing `create_pr` action, which rejects
+    // its absence before this route is ever called. Absence HERE therefore means
+    // a non-agent caller, and the answer is the same deterministic title-derived
+    // fallback the adoption path uses — never a refusal. Nothing in this feature
+    // may fail a PR over its prose, and a PR that reaches this line has already
+    // been built, committed and pushed.
+    const suppliedLede = normalizeLede(lede);
+    const effectiveLede = suppliedLede || deriveLedeFromTitle(String(title));
+    const ledeIsDerived = !suppliedLede || ledeDerived === true;
+    if (!suppliedLede) {
+      console.warn(
+        `[create_pr] no lede supplied for worker ${workerId} — deriving one from the PR title`,
+      );
+    }
+    const effectivePrBody = composeBodyWithLede(
+      effectiveLede,
+      (prBody || `Created by buildd worker ${worker.name}`) + lineageSuffix,
+      { derived: ledeIsDerived },
+    );
 
     // Mission integration guard: a task worker must NEVER open a PR with the
     // mission integration branch as its HEAD. Only the mission PR owner may do that.
@@ -586,6 +631,36 @@ export async function POST(req: NextRequest) {
         error: `Task PR cannot target the mission integration branch (${integrationBase}) as its HEAD. The mission PR is the coordination unit between trunk and the integration branch. Task PRs must be based on the integration branch, not be the integration branch itself.`,
         hint: `Cut a task branch FROM the mission integration branch and open the PR from there. Recovery: ${recoveryPath}`,
       }, { status: 400 });
+    }
+
+    // ── PART 2: the integration branch may already be GONE ──────────────────
+    //
+    // A merging mission PR deletes the integration branch by design
+    // (`finalizeMissionPrMerge`). A task of that mission claimed afterwards
+    // derives a base that does not exist, and both doors are then shut: this
+    // route refuses trunk because the mission HAS an integration base, and
+    // GitHub refuses the derived base with a 422 because it is not there. No
+    // route out from inside a worker. `guardMissionPrMerge` stops new
+    // instances; this is for the missions already in that state.
+    //
+    // `ensureIntegrationBaseForTaskPr` re-cuts the branch from trunk and
+    // records the decision as a mission note, falling back to trunk (also
+    // noted) only when it cannot. Existence is read LIVE from GitHub, never
+    // from a remote-tracking ref. See that function for why re-cutting is the
+    // right answer rather than a trunk fallback.
+    let integrationBaseMissing = false;
+    if (missionBaseGuard.enforced && worker.task?.missionId && integrationBase) {
+      const ready = await ensureIntegrationBaseForTaskPr({
+        missionId: worker.task.missionId,
+        integrationBase,
+        taskTitle: worker.task.title,
+        fallbackBase:
+          workspace.gitConfig?.targetBranch
+          || workspace.gitConfig?.defaultBranch
+          || repo.defaultBranch
+          || null,
+      });
+      integrationBaseMissing = !ready.usable;
     }
 
     // ── DERIVE, DON'T ACCEPT (Option A′) ────────────────────────────────────
@@ -609,7 +684,9 @@ export async function POST(req: NextRequest) {
           hint: `Open the PR with head='${worker.branch}'.`,
         }, { status: 400 });
       }
-      if (typeof base === 'string' && base && base !== integrationBase) {
+      // Skipped when the integration branch is gone: refusing the caller's
+      // base there would refuse the only base that can still work.
+      if (!integrationBaseMissing && typeof base === 'string' && base && base !== integrationBase) {
         const recoveryPath = `1. This mission uses an integration branch — task PRs base on it, not on '${base}'.\n2. Open the PR with base='${integrationBase}' (or omit base and let the server derive it).`;
         return NextResponse.json({
           error: `Task PR base '${base}' disagrees with this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch, not '${base}'.`,
@@ -617,6 +694,30 @@ export async function POST(req: NextRequest) {
         }, { status: 400 });
       }
     }
+
+    // THE one answer to "what base does this task's PR take" — the same
+    // function the runner's Git Workflow prompt block calls, so the instruction
+    // the worker read and the base this route opens against cannot disagree.
+    // They did: the prompt said trunk (it never looked at the mission) while
+    // this route refused trunk, and the worker had no way to tell which side
+    // was wrong.
+    const prBase = resolveTaskPrBase({
+      mission,
+      task: worker.task,
+      head,
+      callerBase: typeof base === 'string' ? base : null,
+      fallbacks: [
+        // Stacked plan phases store a predecessor branch in context.baseBranch,
+        // and recovery tasks store the current head there — resolveTaskPrBase
+        // tells those apart; see its doc comment.
+        taskContext?.targetBranch as string | undefined,
+        workspace.gitConfig?.targetBranch,
+        workspace.gitConfig?.defaultBranch,
+        repo.defaultBranch,
+        'main',
+      ],
+      integrationBaseMissing,
+    });
 
     // Create the PR via GitHub API
     const prData = await githubApi(
@@ -629,18 +730,7 @@ export async function POST(req: NextRequest) {
           title,
           body: effectivePrBody,
           head,
-          base: (integrationBase && !isMissionPrOwner && !isStackedPhase)
-            ? integrationBase
-            : base
-              // Stacked plan phases store predecessor branch in context.baseBranch
-              // Recovery tasks may instead store the current head there, which
-              // cannot be used as a PR base.
-              || (contextBaseBranch !== head ? contextBaseBranch : undefined)
-              || taskContext?.targetBranch as string
-              || workspace.gitConfig?.targetBranch
-              || workspace.gitConfig?.defaultBranch
-              || repo.defaultBranch
-              || 'main',
+          base: prBase.base ?? 'main',
           draft: draft || false,
         }),
       }
@@ -1217,6 +1307,7 @@ export async function GET(req: NextRequest) {
     const workerId = searchParams.get('workerId');
     const prNumberParam = searchParams.get('prNumber');
     const workspaceIdParam = searchParams.get('workspaceId');
+    const includeComments = searchParams.get('includeComments') === 'true';
 
     if (!workerId && !prNumberParam) {
       return NextResponse.json({ error: 'workerId or prNumber required' }, { status: 400 });
@@ -1288,16 +1379,26 @@ export async function GET(req: NextRequest) {
     const pr = await githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}`);
     const headSha = pr.head?.sha;
 
-    // Fetch CI checks and reviews in parallel
-    const [checksResult, reviewsResult] = await Promise.allSettled([
+    // Fetch CI checks, reviews, and (opt-in) issue comments in parallel. The
+    // comments call is skipped entirely — not even queued — when the caller
+    // didn't ask, so the default hot-path request makes exactly the same
+    // GitHub calls it always has.
+    const [checksResult, reviewsResult, commentsResult] = await Promise.allSettled([
       headSha
         ? githubApi(installationId, `/repos/${fullName}/commits/${headSha}/check-runs?per_page=100`)
         : Promise.resolve(null),
       githubApi(installationId, `/repos/${fullName}/pulls/${prNumber}/reviews`),
+      includeComments
+        ? githubApi(installationId, `/repos/${fullName}/issues/${prNumber}/comments?per_page=100`)
+        : Promise.resolve(null),
     ]);
 
     const checksData = checksResult.status === 'fulfilled' ? checksResult.value : null;
     const reviewsData = reviewsResult.status === 'fulfilled' ? reviewsResult.value : null;
+    const commentsData = commentsResult.status === 'fulfilled' ? commentsResult.value : null;
+    const comments = includeComments
+      ? rankPrComments(Array.isArray(commentsData) ? commentsData : [], githubAppBotLogin())
+      : null;
 
     // Summarise CI checks
     const checkRuns = Array.isArray(checksData?.check_runs) ? checksData.check_runs : [];
@@ -1385,6 +1486,7 @@ export async function GET(req: NextRequest) {
       },
       checks: ciSummary,
       reviews: reviewSummary,
+      ...(comments ? { comments } : {}),
     });
   } catch (error) {
     console.error('Get PR error:', error);

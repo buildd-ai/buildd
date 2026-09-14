@@ -1,6 +1,29 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "path-claim-api"
+    type: "route"
+    method: "POST"
+    path: "/api/tasks/[id]/path-claim"
+    file: "apps/web/src/app/api/tasks/[id]/path-claim/route.ts"
+  - id: "path-claims-table"
+    type: "symbol"
+    name: "pathClaims"
+    path: "packages/core/db/schema.ts"
+  - id: "path-waiters-table"
+    type: "symbol"
+    name: "pathClaimWaiters"
+    path: "packages/core/db/schema.ts"
+  - id: "worker-message-tool"
+    type: "symbol_reachable"
+    symbol: "send_worker_message"
+    entry: "apps/web/src/app/api/mcp/route.ts"
+    as: "read"
+---
 # Path Claims as a Coordination Primitive
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/path-claim/route.ts` (PR #1774 — current implementation)
 - `apps/web/src/app/api/mcp/route.ts` (`check_path_claim` tool block)

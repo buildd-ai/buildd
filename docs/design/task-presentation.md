@@ -1,6 +1,22 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "task-phase"
+    type: "symbol"
+    name: "deriveTaskPhase"
+    path: "apps/web/src/lib/task-presentation.ts"
+  - id: "task-intensity"
+    type: "symbol"
+    name: "deriveIntensity"
+    path: "apps/web/src/lib/task-presentation.ts"
+  - id: "task-presentation-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/task-presentation.test.ts"
+---
 # Unified Task Presentation
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:** `apps/web/src/lib/task-timestamps.ts` (PR #1163), Knowledge Layer Elevation mission, `docs/design/mission-state-progress.md`
 
 ---

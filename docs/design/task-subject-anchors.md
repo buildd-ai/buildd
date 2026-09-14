@@ -1,6 +1,22 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "subject-extractor"
+    type: "symbol"
+    name: "extractSubjectAnchor"
+    path: "packages/core/subject-anchor-extractor.ts"
+  - id: "subject-claims-table"
+    type: "symbol"
+    name: "taskSubjectClaims"
+    path: "packages/core/db/schema.ts"
+  - id: "subject-claim-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/app/api/workers/claim/subject-gate.test.ts"
+---
 # Task Subject Anchors and Liveness
 
-**Status:** Accepted (§6 partially implemented — see Implementation status)
+**Status:** Implemented (§6 partially implemented — see Implementation status)
 **Related:** `docs/design/loop-until-verified.md`,
 `docs/design/friction-dedup-serialization.md`,
 `docs/design/merge-policy.md`, `packages/core/db/schema.ts`,

@@ -1,6 +1,23 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "mcp-consumer-transport"
+    type: "route"
+    method: "POST"
+    path: "/api/mcp"
+    file: "apps/web/src/app/api/mcp/route.ts"
+  - id: "consumer-skill-resource"
+    type: "config_key"
+    key: "buildd-mcp-consumer"
+    file: "apps/web/src/app/api/mcp/route.ts"
+  - id: "tracked-skill-catalog-tests"
+    type: "test_file"
+    path: "scripts/skills-listed.test.ts"
+---
 # Split the MCP `instructions` block into a orientation stub + a consumer skill
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/app/api/mcp/route.ts` — the `instructions` string (today ~2.4k
   chars / ~600 tokens, lines 270–290) and the `buildd://workspace/skills`

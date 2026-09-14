@@ -1,6 +1,32 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+# failure-classification-contract intentionally fails: the packages/core two-arg
+# classifyFailure(error, pattern) contract this doc specifies was never built.
+# apps/web/src/lib/failure-classifier.ts is a pre-existing, unrelated single-arg
+# classifier — it does not satisfy this assertion. Fix the assertion only once
+# the §1 primitive actually ships.
+assertions:
+  - id: "select-failover"
+    type: "symbol"
+    name: "pickFailoverBackend"
+    path: "packages/core/backend-policy.ts"
+  - id: "manual-provider-switch"
+    type: "route"
+    method: "POST"
+    path: "/api/tasks/[id]/reassign"
+    file: "apps/web/src/app/api/tasks/[id]/reassign/route.ts"
+  - id: "backend-policy-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/backend-policy.test.ts"
+  - id: "failure-classification-contract"
+    type: "symbol"
+    name: "classifyFailure"
+    path: "packages/core/failure-classification.ts"
+---
 # Backend Failover Policy
 
-**Status:** Implemented
+**Status:** Proposed (existing budget/rate-limit-only flips below are pre-existing, not this design's proposal — see Gaps)
 **Related:** `packages/core/backend-policy.ts`, `apps/web/src/app/api/workers/[id]/route.ts`, `apps/web/src/app/api/workers/claim/route.ts`, `apps/web/src/app/api/tasks/[id]/reassign/route.ts`, `docs/design/retry-continuity.md`
 
 ---

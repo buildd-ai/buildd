@@ -52,6 +52,42 @@ describe('resolveMergeOutcome', () => {
   it('unparseable body → generic error', () => {
     expect(resolveMergeOutcome(false, 500, null)).toEqual({ kind: 'error', message: 'Merge failed' });
   });
+
+  it('indeterminate + confirmed-open live state → safe-to-retry outcome', () => {
+    expect(
+      resolveMergeOutcome(false, 502, {
+        error: "Lost GitHub's response while merging. The PR is still open, so it's safe to retry.",
+        indeterminate: true,
+        liveState: 'open',
+      }),
+    ).toEqual({
+      kind: 'indeterminate',
+      liveState: 'open',
+      message: "Lost GitHub's response while merging. The PR is still open, so it's safe to retry.",
+    });
+  });
+
+  it('indeterminate + unconfirmable live state → unknown, not safe to retry', () => {
+    expect(
+      resolveMergeOutcome(false, 502, {
+        error: "Lost GitHub's response while merging, and its current state couldn't be confirmed.",
+        indeterminate: true,
+        liveState: 'unknown',
+      }),
+    ).toEqual({
+      kind: 'indeterminate',
+      liveState: 'unknown',
+      message: "Lost GitHub's response while merging, and its current state couldn't be confirmed.",
+    });
+  });
+
+  it('indeterminate with no liveState defaults to unknown, never assumes open', () => {
+    expect(resolveMergeOutcome(false, 502, { indeterminate: true })).toEqual({
+      kind: 'indeterminate',
+      liveState: 'unknown',
+      message: "Could not confirm the merge's result",
+    });
+  });
 });
 
 describe('shouldRefreshOnVisible', () => {

@@ -171,3 +171,110 @@ export function isStackedPhaseBase(args: {
   if (base === args.head) return false;
   return true;
 }
+
+/** Which input decided a task PR's base. Reported so a caller can say why. */
+export type TaskPrBaseSource =
+  | 'mission_integration'
+  | 'stacked_phase'
+  | 'caller'
+  | 'task_context'
+  | 'workspace';
+
+export interface TaskPrBaseResolution {
+  /** The base this task's PR takes. Null only when no fallback was supplied. */
+  base: string | null;
+  source: TaskPrBaseSource;
+  /** The mission's integration branch, whether or not it is being used. */
+  integrationBase: string | null;
+  /** Is the mission-integration base the answer for this task? */
+  enforced: boolean;
+}
+
+export interface TaskPrBaseTask {
+  title?: string | null;
+  taskClass?: string | null;
+  context?: unknown;
+}
+
+/**
+ * **The** answer to "what base does this task's PR take" — one function, so the
+ * prompt a worker reads and the guard that accepts its PR cannot disagree.
+ *
+ * They did disagree, and it cost a mission: the runner's Git Workflow block told
+ * the agent to target `gitConfig.targetBranch` (trunk) because it never looked
+ * at the mission, while `create_pr` derived the mission's integration branch and
+ * refused trunk. The worker was instructed to do the one thing the server would
+ * not accept, with no way to tell which side was wrong from inside the sandbox.
+ *
+ * Precedence, in order:
+ *  1. the mission's integration branch, when it is being enforced for this task;
+ *  2. an explicit `callerBase` (`create_pr`'s `base` argument);
+ *  3. `context.baseBranch`, when it names something other than this task's own
+ *     head — a stacked plan phase's predecessor branch, or a legacy CI-retry
+ *     base. A value equal to the head is the recovery-task marker, not a base;
+ *  4. the supplied `fallbacks`, most specific first.
+ *
+ * `integrationBaseMissing` is the escape hatch for the state this closes: the
+ * integration branch was deleted (its mission PR merged early) and cannot be
+ * restored, so enforcing it would send every later worker at a ref that 404s.
+ * Saying so here — rather than at each call site — keeps the prompt and the
+ * guard in agreement through the failure case too, and it also drops
+ * `context.baseBranch` when that is the vanished branch.
+ */
+export function resolveTaskPrBase(args: {
+  mission?: MissionIntegrationFields | null;
+  task?: TaskPrBaseTask | null;
+  /** The branch the PR is opened FROM (the worker's own branch). */
+  head?: string | null;
+  /** A base the caller asked for explicitly. Omitted when nobody asked. */
+  callerBase?: string | null;
+  /** Trunk-ward fallbacks, most specific first. */
+  fallbacks?: Array<string | null | undefined>;
+  /** True when the integration branch is known to be absent on the remote. */
+  integrationBaseMissing?: boolean;
+}): TaskPrBaseResolution {
+  const integrationBase = missionIntegrationBase(args.mission);
+  const rawContextBase = (args.task?.context as Record<string, unknown> | null | undefined)
+    ?.baseBranch;
+  const contextBaseBranch = typeof rawContextBase === 'string' ? rawContextBase : undefined;
+  const isMissionPrOwner = args.task ? isMissionPrTask(args.task) : false;
+  const isStackedPhase = isStackedPhaseBase({
+    contextBaseBranch,
+    head: args.head ?? null,
+    mission: args.mission,
+  });
+  const enforced =
+    !!integrationBase && !isMissionPrOwner && !isStackedPhase && !args.integrationBaseMissing;
+
+  if (enforced) {
+    return { base: integrationBase, source: 'mission_integration', integrationBase, enforced: true };
+  }
+
+  const caller = args.callerBase?.trim();
+  if (caller) {
+    return { base: caller, source: 'caller', integrationBase, enforced: false };
+  }
+
+  const ctxBase = contextBaseBranch?.trim();
+  // A `context.baseBranch` equal to the head is the recovery-task current-head
+  // marker, and one equal to a vanished integration branch is the very ref we
+  // are routing around — neither is a base.
+  const usableCtxBase =
+    ctxBase && ctxBase !== args.head && !(args.integrationBaseMissing && ctxBase === integrationBase)
+      ? ctxBase
+      : undefined;
+  if (usableCtxBase) {
+    return {
+      base: usableCtxBase,
+      source: isStackedPhase ? 'stacked_phase' : 'task_context',
+      integrationBase,
+      enforced: false,
+    };
+  }
+
+  for (const candidate of args.fallbacks ?? []) {
+    const value = candidate?.trim();
+    if (value) return { base: value, source: 'workspace', integrationBase, enforced: false };
+  }
+  return { base: null, source: 'workspace', integrationBase, enforced: false };
+}

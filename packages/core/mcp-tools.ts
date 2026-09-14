@@ -11,6 +11,14 @@ import { TIERS, type Tier } from './model-tier-defaults';
 import type { MissionControlCapability } from './mission-control-capabilities';
 import { ARTIFACT_TYPES, isArtifactType, parseMergePolicy } from '@buildd/shared';
 import { formatWorkerMessages, type WorkerMessage } from './worker-message-format';
+import {
+  LEDE_FIELD_SPEC,
+  LEDE_REQUIRED_ERROR,
+  composeBodyWithLede,
+  deriveLedeFromTitle,
+  normalizeLede,
+} from './pr-lede';
+import type { Direction } from './spec-discrepancy-ledger';
 import type {
   FailureAnalytics,
   FailureSignatureFamily,
@@ -20,6 +28,18 @@ import type {
 } from '@buildd/shared';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Default preview cap for `get_pr`'s PR-body section — deliberately smaller
+ * than the knowledge-store's `CARD_CONTENT_CAP` (8000): that cap sizes a
+ * write into a corpus read once at query time, this one sizes a response
+ * returned on every `get_pr` call inside an agent loop. A short "Problem +
+ * Changes" summary with Testing/Acceptance-criteria sections trimmed away
+ * (the common shape of this repo's own PR bodies) fits comfortably under
+ * 2000 chars; a body that runs long is exactly the case `fullBody: true`
+ * exists for, and the truncation marker always reports how much was cut.
+ */
+const GET_PR_BODY_PREVIEW_CHARS = 2000;
 
 const PRIORITY_NAMES: Record<string, number> = {
   lowest: 1, low: 3, medium: 5, high: 7, highest: 9, critical: 10, urgent: 10,
@@ -161,6 +181,9 @@ export const workerActions = [
   // so gating it to admin only meant the spec-validator role could never run its own
   // documented workflow (default-roles.ts instructs it to call spec_compare).
   'spec_compare',
+  // Discrepancy ledger reads (§13) — same reasoning as spec_compare above:
+  // read-only over rows the caller's workspace access already covers.
+  'list_discrepancies', 'get_discrepancy',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'request_pr_review', 'get_pr_review',
   'update_task', 'create_task', 'create_artifact',
@@ -192,6 +215,9 @@ export const adminActions = [
   'register_skill', 'list_skills', 'get_skill', 'update_skill', 'delete_skill',
   'manage_secrets',
   'approve_plan', 'reject_plan',
+  // Discrepancy ledger mutations (§13): adjudicate records an owner decision,
+  // promote mints a mission — same trust tier as approve_plan/manage_missions.
+  'adjudicate_discrepancy', 'promote_discrepancy',
   'manage_missions',
   'manage_initiatives',
   'link_tracker',
@@ -341,10 +367,12 @@ export function buildParamsDescription(actions: readonly string[]): string {
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
     complete_task: '{ workerId?, summary?, error?, structuredOutput?, nextSuggestion?, discardEdits? (string), entities? (EntityRef[]), relations? (RelationRef[]), supersedes? (string[]) } — if error present, marks task as failed. discardEdits is for a task ending with commits or uncommitted worktree changes that are intentionally scratch and not meant to ship: state why (e.g. "conflict resolution attempts, no longer needed") and completion succeeds normally instead of being refused by the output-requirement gate — the reason is recorded on the task result for audit. Do not use it to paper over unfinished real work. entities/relations are optional Layer 2 metadata for the knowledge graph; response includes entity binding counts. supersedes lists knowledge source_ids this outcome REPLACES — accepted forms: "task:<taskId>" (earlier task outcome), "pr:<number>", "plan:<taskId>", "artifact:<artifactId>"; matched chunks are marked superseded and drop out of default retrieval (response includes "Superseded: n"). workerId auto-resolved from context if omitted',
-    create_pr: '{ workerId?, title (required), head (required), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation.',
+    create_pr: '{ workerId?, title (required), head (required), lede (required — see below), body?, base?, draft?, prUrl?, requestReview? (boolean — hand the PR straight to a reviewer agent, same as calling request_pr_review afterwards), reviewerRole?, callbackUrl?, callbackOn? } — workerId auto-resolved from context if omitted. Pass prUrl to register an externally-created PR (e.g. via gh CLI) when the workspace has no GitHub App installation; on that path a missing lede is derived from the title instead of refused, because the PR already exists.\n\n'
+      + `lede (required) — ${LEDE_FIELD_SPEC}\n\n`
+      + 'The lede leads the PR body; `body` follows it, unchanged and uncapped, under its own headings. Nothing inspects or grades what you write — the only way `lede` can fail is by being absent, and then no PR is created and you simply call again.',
     close_pr: '{ workerId?, prNumber (required) } — Close a pull request via the workspace\'s GitHub App installation. Use this instead of the GitHub connector\'s update_pull_request to avoid 403 permission gaps — the buildd App token already holds pull_requests: write.',
     merge_pr: '{ workerId?, prNumber (required), mergeMethod? (merge|squash|rebase — default squash), workspaceId? } — Merge a PR via the workspace\'s GitHub App installation token (pull_requests:write + contents:write). workerId is optional — the route resolves the worker from prNumber across the account\'s accessible workspaces. Pass workspaceId to disambiguate when the same prNumber appears in multiple repos. Updates worker mergedAt on success. Returns { ok, merged, message }. **Subject to the workspace merge policy:** under tier `agent-review` a self-merge is refused — the reviewer decides, so use request_pr_review and let an approve merge it; under `human` it is refused outright; under `auto-threshold` it merges only if the same safety check auto-merge uses passes (CI green, no deny paths, size cap, migration inspector). A 403 carries the reason and the tier — read it rather than retrying. If the App lacks contents:write, returns 403 with a hint to update permissions at github.com/settings/apps.',
-    get_pr: '{ workerId?, prNumber?, workspaceId? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required.',
+    get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
@@ -367,9 +395,13 @@ export function buildParamsDescription(actions: readonly string[]): string {
     update_skill: '{ slug (required), workspaceId?, name?, description?, content?, model? (recommended: "premium-plus"|"premium"|"standard"|"budget" for tier-driven dispatch — tier-first is the preferred path; "inherit" to follow team default; exact model IDs like "claude-sonnet-5"|"claude-fable-5" are valid for pinning; legacy shorthands "opus"|"sonnet"|"haiku" still accepted), allowedTools?, canDelegateTo?, background?, maxTurns?, color?, mcpServers? (Record<string, McpServerConfig>), requiredEnvVars? (Record<string, string>), connectorRefs? (string[] of connector IDs this role mounts), isRole?, repoUrl?, enabled?, defaultBackend? (claude|codex|null) } — update skill by slug [admin]',
     delete_skill: '{ slug (required), workspaceId? } — delete skill by slug [admin]',
     manage_secrets: '{ action: "list" | "set" | "delete", label? (required for set — env var name), value? (required for set — the secret value), purpose? (default: mcp_credential), secretId? (required for delete) } — manage encrypted MCP credential secrets [admin]',
+    list_discrepancies: '{ workspaceId?, direction? ("spec_ahead"|"code_ahead"|"contradicted"), status? ("open"|"accepted"|"resolved") } — spec_discrepancies ledger rows (docs/design/spec-conformance.md §7/§13), oldest first. workspaceId resolves the same way as other workspace-scoped actions (UUID, repo name, or falls back to context).',
+    get_discrepancy: '{ discrepancyId (required) } — one ledger row, including `evidence`: the exact file/symbol/route/migration the checker read and what it found. Never a similarity score — spec_compare already covers "how related is this text."',
+    adjudicate_discrepancy: '{ discrepancyId (required), action: "accept" | "flip_direction", reason (required, non-blank), newDirection? ("spec_ahead"|"code_ahead" — required when action="flip_direction") } — accept parks the row (status=accepted) with `reason` recorded; flip_direction is the only path off a `contradicted` row and requires newDirection. [admin]',
+    promote_discrepancy: '{ discrepancyId (required), title?, description? } — mints a mission via the same POST /api/missions primitive manage_missions action=create uses, then links it back onto the row. Only `spec_ahead` rows (confirmed by the Tier-3 cron, not a bare CI `contradicted`) may be promoted — a `code_ahead` or `contradicted` row is rejected per docs/design/spec-conformance.md §8\'s promotion table. Calling this on an already-promoted row returns the existing mission instead of minting a second one. [admin]',
     approve_plan: '{ taskId (required) } — approve planning task, create child execution tasks [admin]',
     reject_plan: '{ taskId (required), feedback (required) } — reject plan with feedback, create revised planning task [admin]',
-    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose graded by an LLM — it needs a model reachable at the moment a verdict is owed, so it silently degrades to NOT_EVALUATED (which never counts as a pass) and therefore REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
+    manage_missions: '{ action: "list" | "create" | "get" | "update" | "arm" | "delete" | "link_task" | "unlink_task" | "evaluate" | "get_criteria_state", missionId?, title?, description?, workspaceId?, initiativeId? (parent initiative; null unlinks), cronExpression?, priority?, status?, taskId?, startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"), skillSlugs?, model?, isHeartbeat?: boolean, heartbeatChecklist?: string, activeHoursStart?: number, activeHoursEnd?: number, activeHoursTimezone?: string, maxConcurrentTasks?: number (mission-level parallel cap, integer 1–20; RAISES the effective workspace cap when larger — e.g. a mission set to 6 under a workspace default of 3 runs up to 6 concurrent tasks; it can also LOWER the cap for missions that need serialization; the workspace cap is still the floor for tasks not in any mission), dependsOnMission?: string, gateCondition?: "merged" | "completed", orchestrationMode?: "auto" | "manual", costBudgetUsd?: number (pause and notify when cumulative worker spend reaches this threshold), pacingMode?: "eager" | "paced" (default "eager" — "paced" enforces a minimum interval between task starts), pacingMaxPerHour?: number (tasks per hour when pacingMode="paced"; default 1), startMode?: "armed" | "held" (default "armed" — held missions block all task claims until armed; arm action or startMode=armed releases them; force-starting a single task bypasses the gate), goalCriteria?: GoalCriterion[] (outcome-oriented completion gates that BLOCK mission completion until they pass; null clears; each criterion MUST have type (required) — one of: "command" | "all_prs_merged" | "no_open_tasks" | "artifact_exists" | "metric" | "description"; all types accept optional label:string. PREFER A MECHANICAL FORM: "command" runs a real command in the mission workspace (buildd dispatches a verification task and the exit code IS the verdict), and all_prs_merged / no_open_tasks / artifact_exists are read from DB state. "description" is prose graded by an LLM — it needs a model reachable at the moment a verdict is owed, so it silently degrades to NOT_EVALUATED (which never counts as a pass) and therefore REQUIRES notMechanizableReason:string (10+ chars) saying why no mechanical form fits; writes without it are rejected 400. "metric" has no evaluator yet, so it stays UNVERIFIED and blocks completion — do not use it as a gate. Type-specific required fields: command→command:string, description→description:string+notMechanizableReason:string, metric→query:string+operator:"gt"|"gte"|"lt"|"lte"|"eq"|"neq"+threshold:number+unit?:string, artifact_exists→key?:string+artifactType?:string. Example: [{type:"command",command:"bun run scripts/run-unit-tests.ts packages/core/__tests__/foo.test.ts",label:"no double-fire"},{type:"all_prs_merged"}]), autoVerify?: boolean (default true — when false, organizer never auto-evaluates criteria; on-demand still works; evaluation also fires automatically on mission completion when all tasks are done), autoSurfaceAudit?: boolean (default true — when a builder task under this mission declares a pathManifest touching apps/web/src/app/** or apps/web/src/components/**, a `[surface audit]` task is auto-appended, gated on every builder task in the mission; idempotent, re-runs extend its dependsOn instead of duplicating it. Set false to opt a non-UI or intentionally-unaudited mission out), branchStrategy?: "mission-branch" | "direct" (create: omitted defaults to the workspace configured default; update: omitted means no change. "mission-branch" gives the mission one shared integration branch — every task PR bases on it instead of trunk, and the merge-policy tier applies once, to the single mission-to-trunk PR, when the mission work is done; the integration branch is created on the remote automatically, in the same call that sets this. "direct" is the current per-task behaviour — each task PR bases on and targets trunk directly, so the merge-policy tier applies once per task PR. Invalid values are rejected, not coerced). action=evaluate triggers on-demand criteria evaluation (rate-limited 6/hour) and returns GoalCriteriaState. action=get_criteria_state returns last GoalCriteriaState without re-evaluating. } — deferred missions are active but inert until resolved startAt; held missions have tasks that are not claimable [admin]',
     manage_initiatives: '{ action: "list" | "create" | "get" | "update" | "delete" | "link_mission" | "unlink_mission" | "evaluate" | "get_kpi_state", initiativeId?, missionId? (for link/unlink), title?, description?, workspaceId?, status?: "active" | "paused" | "completed" | "archived", priority?: number, kpis?: InitiativeKPI[] (outcome-oriented KPIs; blocking KPIs gate completion; null clears), autoVerify?: boolean (default true). action=evaluate triggers on-demand KPI evaluation (rate-limited 6/hour) and returns InitiativeKPIState. action=get_kpi_state returns last InitiativeKPIState without re-evaluating. } — an initiative is an execution-free planning container above missions (initiative → mission → task). "get" returns a KB-optimized brief: rolled-up progress + child missions + initiative-level artifacts. Create/update auto-index the initiative into the team knowledge base (recall/query_knowledge corpus=initiative). [admin]',
     link_tracker: '{ entityType: "mission", entityId (required), url (required — a Linear project/issue URL) } — link a buildd entity to an external work tracker so task completions post back automatically. Phase 1 supports entityType="mission" (mission ↔ Linear project); the workspace must have a Linear connector configured. The external id is parsed deterministically from the URL, so re-linking the same URL is idempotent. [admin]',
     manage_workspaces: '{ action: "list" | "get" | "create" | "update" | "create_repo" | "init", workspaceId? (required for get/update/create_repo/init), name?, repoUrl?, defaultBranch?, accessMode?, org?, private? (default true), description?, autoMergePR? (boolean — enable auto-merge of worker PRs), autoMergeMaxLines? (number), autoMergeDenyPaths? (string[]), maxConcurrentTasks? (number — update action only: workspace-level parallel worker cap; default 3; this is the floor — missions may raise the effective cap above it; action=get returns maxConcurrentTasks and maxConcurrentTasksSource ("default"|"explicit") so you can distinguish 3-by-default from 3-set-deliberately without a write), gitConfig? (object — partial gitConfig fields, shallow-merged server-side; to apply a detected policyConfig from action=init, use gitConfig.policyConfig), releaseConfig?: { enabled: boolean, strategy?: "workflow_dispatch"|"branch_merge"|"script" (absent ⇒ branch_merge), workflowFile? (workflow_dispatch — e.g. "release.yml"), ref? (workflow_dispatch/script — e.g. "dev"), inputs? (workflow_dispatch — string-valued workflow inputs), prodBranch? (branch_merge — e.g. "main"), releaseBranch? (branch_merge — e.g. "dev"; when set, releases promote an open releaseBranch→prodBranch PR instead of merging the completing task\'s own branch directly; distinct from prodBranch, and NOT the same field as ref, which only applies to workflow_dispatch/script), deployTarget?: { type: "vercel", projectId?: string, teamId?: string }, postDeployHooks?: Array<{ type: "http"|"buildd_mcp", description: string, url?: string, action?: string, params?: object, headers?: object }>, verificationUrl?: string, command? (script — e.g. "bun run release") }, preset? ("cautious"|"balanced"|"autonomous" — only for action=init; default "balanced"), reviewerRole? (skill slug — only for action=init; which reviewer agent to use for agent-review escalations) } — manage workspaces and bootstrap new projects. Use get to retrieve the current gitConfig, configStatus, releaseConfig, and maxConcurrentTasks before making temporary changes. The releaseConfig.strategy decides how releases run: "workflow_dispatch" dispatches the repo\'s own release workflow (most general), "branch_merge" merges into prodBranch on task completion + verifies deploy (or, when releaseBranch is set, promotes releaseBranch to prodBranch via an open release PR instead), "script" runs a release command (not yet implemented). New project flow: 1) manage_workspaces action=create (name + optional repoUrl) to create workspace under your team, 2) Agent claims task in that workspace, 3) If no repo yet: manage_workspaces action=create_repo to create GitHub repo, or action=update to link existing repo, 4) Agent scaffolds project, commits, pushes, 5) Future tasks automatically resolve to the repo directory. action=init scans the repo and proposes a semantic risk-class policy (policyConfig) — paths are auto-detected from the repo structure, never hand-typed. Returns the proposed config for confirmation; apply with action=update gitConfig.policyConfig=<proposed>. Replaces escalateToPaths with named risk classes (destructive_schema_change, ci_deploy_config, auth_and_secrets, dependency_bump, public_api_contract). [admin]',
@@ -698,6 +730,10 @@ const AMBIGUOUS_WORKSPACE_ACTIONS = new Set<string>([
   'list_tasks',
   'claim_task',
   'create_task',
+  // Same shape as list_tasks: without an explicit workspaceId it would
+  // silently resolve to ctx.getWorkspaceId()'s pick for a multi-workspace
+  // OAuth token instead of erroring.
+  'list_discrepancies',
 ]);
 
 /**
@@ -1573,12 +1609,30 @@ export async function handleBuilddAction(
         throw new Error('title and head branch are required');
       }
 
+      // ── lede: required, and enforced HERE ────────────────────────────────
+      // Before the HTTP call, so an absent lede cannot leave a half-created PR
+      // behind: the throw happens while GitHub still knows nothing about this.
+      //
+      // The one exemption is the `prUrl` adoption path, which registers a pull
+      // request that ALREADY EXISTS on GitHub. Refusing that would strand a
+      // real PR over a missing sentence — so it gets a deterministic fallback
+      // derived from its own title instead of a hard failure.
+      const suppliedLede = normalizeLede(params.lede);
+      const isAdoption = Boolean(params.prUrl);
+      if (!suppliedLede && !isAdoption) {
+        throw new Error(LEDE_REQUIRED_ERROR);
+      }
+      const lede = suppliedLede || deriveLedeFromTitle(String(params.title));
+      const ledeIsDerived = !suppliedLede;
+
       const data = await api('/api/github/pr', {
         method: 'POST',
         body: JSON.stringify({
           workerId,
           title: params.title,
           body: params.body,
+          lede,
+          ledeDerived: ledeIsDerived,
           head: params.head,
           base: params.base,
           draft: params.draft,
@@ -1599,7 +1653,10 @@ export async function handleBuilddAction(
         const prChunk = buildPrCard({
           prNumber: data.pr.number,
           title: data.pr.title ?? (params.title as string),
-          body: (params.body as string) ?? null,
+          // The corpus gets the same lede-first body GitHub does — including on
+          // the adoption path, where buildd does not own the PR body on GitHub
+          // and the derived lede leads only the record buildd stores.
+          body: composeBodyWithLede(lede, (params.body as string) ?? null, { derived: ledeIsDerived }),
           url: data.pr.url ?? (params.prUrl as string) ?? null,
           taskId,
           missionId,
@@ -1686,10 +1743,13 @@ export async function handleBuilddAction(
       const workerId = String(params.workerId ?? '') || ctx.workerId || null;
       if (!workerId && !params.prNumber) throw new Error('workerId or prNumber is required');
 
+      const includeComments = params.includeComments === true;
+
       const parts: string[] = [];
       if (workerId) parts.push(`workerId=${encodeURIComponent(workerId)}`);
       if (params.prNumber) parts.push(`prNumber=${encodeURIComponent(String(params.prNumber))}`);
       if (params.workspaceId) parts.push(`workspaceId=${encodeURIComponent(String(params.workspaceId))}`);
+      if (includeComments) parts.push('includeComments=true');
 
       const data = await api(`/api/github/pr${parts.length ? '?' + parts.join('&') : ''}`);
 
@@ -1717,7 +1777,24 @@ export async function handleBuilddAction(
         : '';
 
       const bodyPreview = pr.body
-        ? `\n\n**Agent summary:**\n${pr.body.slice(0, 800)}${pr.body.length > 800 ? '\n…(truncated)' : ''}`
+        ? `\n\n**Agent summary:**\n${params.fullBody === true ? pr.body : truncate(pr.body, GET_PR_BODY_PREVIEW_CHARS)}`
+        : '';
+
+      const commentsSection = includeComments
+        ? (() => {
+            const c = data.comments as
+              | { items: Array<{ author: string; kind: string; at: string | null; body: string; url: string | null }>; total: number; omitted: number }
+              | undefined;
+            if (!c || c.total === 0) return '\n\nComments: none';
+            const lines = c.items.map((item) => {
+              const tag = item.kind === 'buildd' ? 'buildd' : item.kind === 'bot' ? 'bot' : 'human';
+              const when = item.at ? ` ${item.at}` : '';
+              const link = item.url ? ` (${item.url})` : '';
+              return `- [${tag}]${when} ${item.author}: ${item.body}${link}`;
+            });
+            const omittedNote = c.omitted > 0 ? `\n_(${c.omitted} more omitted)_` : '';
+            return `\n\n**Comments** (buildd decision-trail first, ${c.total} total):\n${lines.join('\n')}${omittedNote}`;
+          })()
         : '';
 
       return text([
@@ -1728,6 +1805,7 @@ export async function handleBuilddAction(
         statsLine,
         `URL: ${pr.url}`,
         bodyPreview,
+        commentsSection,
       ].filter(Boolean).join('\n'));
     }
 
@@ -1968,15 +2046,20 @@ export async function handleBuilddAction(
         !!params.parentTaskId ||
         suppressedTitlePattern.test(String(params.title));
 
+      // Shared query text for both the near-dupe check (task corpus only, gates on
+      // isChildOrRetryTask) and the broader prior-work retrieval below (memory+task+pr,
+      // runs for every filing — a child/retry task benefits from prior-incident context
+      // just as much as a top-level one).
+      const authoringQueryText = [params.title, params.description]
+        .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+        .join('\n')
+        .slice(0, 2000);
+
       type SimilarCandidate = { id: string; similarity: number; content: string };
       let priorSimilarCandidates: SimilarCandidate[] = [];
       if (!isChildOrRetryTask && ctx.knowledgeStore?.nearDupeCheck && wsId) {
         const taskNs = buildNamespace(wsId, 'task');
-        const queryText = [params.title, params.description]
-          .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-          .join('\n')
-          .slice(0, 2000);
-        priorSimilarCandidates = await ctx.knowledgeStore.nearDupeCheck(taskNs, queryText, 5).catch(() => []);
+        priorSimilarCandidates = await ctx.knowledgeStore.nearDupeCheck(taskNs, authoringQueryText, 5).catch(() => []);
       }
 
       const taskBody: Record<string, unknown> = {
@@ -2201,7 +2284,21 @@ export async function handleBuilddAction(
         : task.status === 'assigned'
           ? 'Assigned — a runner has already claimed it'
           : 'Queued — no runner has claimed it yet';
-      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}`);
+
+      // Surface prior incidents/lessons/PRs related to this filing so the author
+      // doesn't have to remember to run recall themselves — the CTA-derives-from-
+      // server-state defect was re-fixed 3x (PRs #1463, #2339, #2361) because this
+      // context wasn't in front of whoever was filing. Best-effort: a retrieval
+      // failure must never fail a task that already exists.
+      const priorWorkBlock = await buildAuthoringPriorWork(
+        authoringQueryText,
+        wsId,
+        ctx.teamId,
+        ctx.knowledgeStore,
+        { paths: Array.isArray(taskBody.pathManifest) ? taskBody.pathManifest as string[] : undefined },
+      ).catch(() => '');
+
+      return text(`Task created: "${task.title}" (ID: ${task.id})\nStatus: ${statusLabel}; follow progress with get_task (taskId ${task.id}).\nPriority: ${task.priority}\nTask URL: ${createdTaskUrl}${task.startAt ? `\nStart at: ${new Date(task.startAt).toISOString()}\nResolution: ${task.context?.startResolution || 'mission_floor'}` : ''}${taskBody.parentTaskId ? `\nParent: ${taskBody.parentTaskId}` : ''}${taskBody.missionId ? `\nLinked to mission: ${taskBody.missionId}` : ''}${ctx.workerId ? `\nCreated by worker: ${ctx.workerId}` : ''}${subjectSuggestion}${similarTasksWarning}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
     }
 
     case 'create_schedule': {
@@ -3500,6 +3597,72 @@ export async function handleBuilddAction(
       return text(`Plan rejected. Revised planning task created: ${data.taskId}`);
     }
 
+    // Discrepancy ledger mutations (§13).
+    case 'adjudicate_discrepancy': {
+      requireFullUuid(params.discrepancyId, 'discrepancyId');
+      const adjudicateAction = params.action as string;
+      if (adjudicateAction !== 'accept' && adjudicateAction !== 'flip_direction') {
+        throw new Error(`action must be "accept" or "flip_direction", got: ${adjudicateAction}`);
+      }
+
+      const body: Record<string, unknown> = { action: adjudicateAction, reason: params.reason };
+      if (params.newDirection !== undefined) body.newDirection = params.newDirection;
+
+      const data = await api(`/api/discrepancies/${params.discrepancyId}/adjudicate`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      const d = data.discrepancy;
+      return text(
+        adjudicateAction === 'accept'
+          ? `Discrepancy accepted: ${d.specPath} \`${d.assertionId}\` — reason: ${d.acceptedReason}`
+          : `Discrepancy direction flipped: ${d.specPath} \`${d.assertionId}\` → ${d.direction}`
+      );
+    }
+
+    case 'promote_discrepancy': {
+      requireFullUuid(params.discrepancyId, 'discrepancyId');
+
+      const row = (await api(`/api/discrepancies/${params.discrepancyId}`)).discrepancy;
+
+      if (row.promotedMissionId) {
+        return text(`Already promoted — mission ${row.promotedMissionId} (${row.specPath} \`${row.assertionId}\`).`);
+      }
+      // Fail fast on the §8 gate before minting a mission nobody can link.
+      // The authoritative check still lives at the write in
+      // /api/discrepancies/[id]/promote — this is a cheaper early exit.
+      // Dynamic import: spec-discrepancy-ledger.ts pulls in the real `db`/schema
+      // module at its top level, which mcp-tools.ts otherwise never touches
+      // statically (it stays DB-free so drizzle-orm-mocking unit tests can
+      // import it safely) — load it lazily so that stays true.
+      const { assertPromotable } = await import('./spec-discrepancy-ledger');
+      assertPromotable(row.direction as Direction);
+
+      const title = (params.title as string) || `Spec discrepancy: ${row.assertionId} in ${row.specPath}`;
+      const description =
+        (params.description as string) ||
+        `Promoted from discrepancy ledger row ${row.id} (docs/design/spec-conformance.md §13).\n\n` +
+        `Spec: ${row.specPath}\nAssertion: ${row.assertionId}\nDirection: ${row.direction}\n\n` +
+        `Evidence:\n${JSON.stringify(row.evidence, null, 2)}`;
+
+      // Same primitive every other mission-creating caller uses — see
+      // manage_missions action=create above, which makes this identical call.
+      const mission = await api('/api/missions', {
+        method: 'POST',
+        body: JSON.stringify({ title, description, workspaceId: row.workspaceId }),
+      });
+
+      const linked = await api(`/api/discrepancies/${params.discrepancyId}/promote`, {
+        method: 'POST',
+        body: JSON.stringify({ missionId: mission.id }),
+      });
+
+      return text(
+        `Promoted "${row.specPath}" \`${row.assertionId}\` → mission "${mission.title}" (ID: ${mission.id})` +
+        (linked.alreadyPromoted ? '\n(row was already linked to this mission by a concurrent call)' : '')
+      );
+    }
+
     case 'manage_missions': {
 
       const missionAction = params.action as string;
@@ -3562,6 +3725,7 @@ export async function handleBuilddAction(
           if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (params.branchStrategy !== undefined) body.branchStrategy = params.branchStrategy;
+          if (params.autoSurfaceAudit !== undefined) body.autoSurfaceAudit = params.autoSurfaceAudit;
           const data = await api('/api/missions', {
             method: 'POST',
             body: JSON.stringify(body),
@@ -3572,7 +3736,21 @@ export async function handleBuilddAction(
               ? `Orchestration: auto — ${data.heartbeatInfo}`
               : 'Orchestration: auto';
           const heldInfo = data.isHeld ? '\nStart mode: held — tasks are not claimable until armed (use action=arm)' : '';
-          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}`);
+
+          // Same prior-work surfacing as create_task — best-effort, never fails
+          // an already-created mission.
+          const missionQueryText = [params.title, params.description]
+            .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+            .join('\n')
+            .slice(0, 2000);
+          const priorWorkBlock = await buildAuthoringPriorWork(
+            missionQueryText,
+            data.workspaceId ?? null,
+            data.teamId ?? ctx.teamId ?? null,
+            ctx.knowledgeStore,
+          ).catch(() => '');
+
+          return text(`Mission created: "${data.title}" (ID: ${data.id})\nStatus: ${data.status}\nPriority: ${data.priority}\n${modeInfo}${heldInfo}${data.startAt ? `\nStarts at: ${new Date(data.startAt).toISOString()}\nResolution: ${data.startResolution}` : ''}${data.organizerTask ? `\nOrganizer task: ${data.organizerTask.id}` : ''}${priorWorkBlock ? `\n\n${priorWorkBlock}` : ''}`);
         }
         case 'get': {
           if (!params.missionId) throw new Error('missionId is required');
@@ -3660,6 +3838,7 @@ export async function handleBuilddAction(
           if (params.goalCriteria !== undefined) body.goalCriteria = params.goalCriteria;
           if (params.autoVerify !== undefined) body.autoVerify = params.autoVerify;
           if (params.branchStrategy !== undefined) body.branchStrategy = params.branchStrategy;
+          if (params.autoSurfaceAudit !== undefined) body.autoSurfaceAudit = params.autoSurfaceAudit;
           if (Object.keys(body).length === 0) throw new Error('At least one field to update is required');
           // Names the calling worker's task on the mission-feed entry this PATCH
           // produces, so an in-task agent's edit reads as "agent (task X)"
@@ -4071,6 +4250,12 @@ export async function handleBuilddAction(
             fileCount: number;
             detectedClassCount: number;
             hint: string;
+            specConformance: {
+              detected: { specsRoot: string | null; designRoot: string | null };
+              proposed: { specsRoot: string; designRoot: string };
+              hint: string;
+              tier3Schedule: { params: Record<string, unknown>; hint: string };
+            };
           } | null = null;
           try {
             scanResult = await api(`/api/workspaces/${wsId}/policy-init`, {
@@ -4095,7 +4280,7 @@ export async function handleBuilddAction(
             return text(`policy-init scan returned no result for workspace ${wsId}`);
           }
 
-          const { proposed, repoFullName, fileCount, detectedClassCount } = scanResult;
+          const { proposed, repoFullName, fileCount, detectedClassCount, specConformance } = scanResult;
 
           // Format proposed policy for human confirmation
           const riskClasses = (proposed as any).riskClasses ?? [];
@@ -4103,6 +4288,10 @@ export async function handleBuilddAction(
             .filter((c: any) => c.detectedPaths?.length > 0)
             .map((c: any) => `  - ${c.name}: ${(c.detectedPaths as string[]).join(', ')}`)
             .join('\n');
+
+          const specRootsLine = specConformance.detected.specsRoot || specConformance.detected.designRoot
+            ? `detected specsRoot=${specConformance.detected.specsRoot ?? '(none — using default)'}, designRoot=${specConformance.detected.designRoot ?? '(none — using default)'}`
+            : `no docs/ tree detected — proposing buildd's own defaults`;
 
           return text(
             `## Proposed Policy for ${repoFullName}\n\n` +
@@ -4116,7 +4305,18 @@ export async function handleBuilddAction(
             `\`\`\`\n\n` +
             `This replaces hand-authored escalateToPaths. Paths are derived from the repo — never type them manually.\n` +
             `To change the preset: re-run with preset=cautious or preset=autonomous.\n` +
-            `To add paths: set userPaths on any risk class entry after applying.`,
+            `To add paths: set userPaths on any risk class entry after applying.\n\n` +
+            `## Proposed Spec Conformance Setup (docs/design/spec-conformance.md §14)\n\n` +
+            `${specRootsLine}.\n\n` +
+            `**To apply:** manage_workspaces action=update workspaceId=${wsId} gitConfig={ "specConformance": ${JSON.stringify(specConformance.proposed)} }\n\n` +
+            `**To opt into the weekly Tier-3 cron** (specs with zero assertions only — never a hardcoded schedule ID, one row per workspace that opts in):\n` +
+            `\`\`\`\n` +
+            `create_schedule workspaceId=${wsId} name="${specConformance.tier3Schedule.params.name}" ` +
+            `cronExpression="${specConformance.tier3Schedule.params.cronExpression}" ` +
+            `timezone="${specConformance.tier3Schedule.params.timezone}" ` +
+            `title="${specConformance.tier3Schedule.params.title}" ` +
+            `description=<the generated description in the tool result>\n` +
+            `\`\`\``,
           );
         }
         default:
@@ -4535,6 +4735,44 @@ export async function handleBuilddAction(
       );
     }
 
+    // Discrepancy ledger reads (§13) — filtered list and single-row evidence
+    // read over the spec_discrepancies table Slice 2 writes.
+    case 'list_discrepancies': {
+      const wsId = params.workspaceId
+        ? await resolveWorkspaceId(api, params.workspaceId, ctx)
+        : await ctx.getWorkspaceId();
+      if (!wsId) throw new Error('workspaceId is required for list_discrepancies — connect with ?workspace=<id> or pass it explicitly');
+
+      const qs = new URLSearchParams({ workspaceId: wsId });
+      if (params.direction) qs.set('direction', params.direction as string);
+      if (params.status) qs.set('status', params.status as string);
+      const data = await api(`/api/discrepancies?${qs}`);
+      const rows = data.discrepancies || [];
+      if (rows.length === 0) return text('No discrepancies found.');
+
+      const summary = rows.map((r: any) =>
+        `- **${r.specPath}** \`${r.assertionId}\` — ${r.direction} / ${r.status}` +
+        `${r.promotedMissionId ? ` (promoted → mission ${r.promotedMissionId})` : ''}\n` +
+        `  ID: ${r.id}\n  First seen: ${new Date(r.firstSeenAt).toISOString()} · Last checked: ${new Date(r.lastCheckedAt).toISOString()}`
+      ).join('\n\n');
+      return text(`${rows.length} discrepancy(ies):\n\n${summary}`);
+    }
+
+    case 'get_discrepancy': {
+      requireFullUuid(params.discrepancyId, 'discrepancyId');
+      const data = await api(`/api/discrepancies/${params.discrepancyId}`);
+      const d = data.discrepancy;
+      const acceptedLine = d.status === 'accepted' && d.acceptedReason ? `\nAccepted reason: ${d.acceptedReason}` : '';
+      const promotedLine = d.promotedMissionId ? `\nPromoted mission: ${d.promotedMissionId}` : '';
+      return text(
+        `**${d.specPath}** \`${d.assertionId}\`\n` +
+        `Direction: ${d.direction} · Status: ${d.status}\n` +
+        `First seen: ${new Date(d.firstSeenAt).toISOString()} · Last checked: ${new Date(d.lastCheckedAt).toISOString()}` +
+        `${acceptedLine}${promotedLine}\n\n` +
+        `Evidence (the exact read that produced this verdict):\n${JSON.stringify(d.evidence, null, 2)}`
+      );
+    }
+
     case 'manage_model_tiers': {
 
       const wsId = params.workspaceId
@@ -4617,6 +4855,7 @@ import { MemoryStore } from './memory-store';
 import type { KnowledgeStore, QueryResult, Embedder, Corpus, UpsertChunk, UpsertResult, EntityRef, RelationRef, EntityBinding } from './knowledge-store/types';
 import { PgVectorStore, buildNamespace } from './knowledge-store/pg-vector-store';
 import { getVoyageReranker } from './knowledge-store/reranker';
+import { buildAuthoringPriorWork } from './prior-work-render';
 import { findNearDuplicates, findDecayedUnused, archiveChunks } from './knowledge-store/consolidation';
 import {
   buildTaskCard,
@@ -4626,6 +4865,7 @@ import {
   buildPlanCard,
   buildInitiativeCard,
   renderPlanText,
+  truncate,
 } from './knowledge-store/cards';
 
 /**

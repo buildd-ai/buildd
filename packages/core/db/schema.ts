@@ -346,6 +346,20 @@ export interface WorkspaceGitConfig {
   // TODO: migrate to a first-class workspaces.data_class column (task cb34697b).
   dataClass?: 'standard' | 'sensitive';
 
+  // Spec conformance (docs/design/spec-conformance.md §14): where THIS
+  // workspace's checkable specs live. Absent ⇒ buildd's own layout
+  // (docs/specs, docs/design, packages/core/drizzle) — see
+  // `resolveConformanceConfig` in spec-conformance.ts, which these values
+  // feed as overrides. `manage_workspaces action=init` detects and proposes
+  // this from the repo's file tree (spec-conformance-detect.ts) the same
+  // way it proposes `policyConfig`; `spec-conformance-schedule.ts` reads it
+  // when building the Tier-3 weekly cron's `create_schedule` params.
+  specConformance?: {
+    specsRoot?: string;
+    designRoot?: string;
+    migrationsDir?: string;
+  };
+
 }
 
 // How a workspace performs a release. buildd owns the envelope (resolve →
@@ -862,6 +876,12 @@ export const missions = pgTable('missions', {
   // means "a human owes this mission a decision" — heartbeats stay off until the
   // verdict shape changes.
   criteriaEscalatedAt: timestamp('criteria_escalated_at', { withTimezone: true }),
+  // When true (default), a builder task created under this mission whose
+  // pathManifest touches a UI surface directory (apps/web/src/app/**,
+  // apps/web/src/components/**) auto-appends a `[surface audit]` task —
+  // see ensureMissionSurfaceAudit in apps/web/src/lib/mission-surface-audit.ts.
+  // Set false to opt a non-UI or intentionally-unaudited mission out.
+  autoSurfaceAudit: boolean('auto_surface_audit').default(true).notNull(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

@@ -218,7 +218,7 @@ describe('knowledge mirror — create_pr', () => {
     await handleBuilddAction(
       api,
       'create_pr',
-      { title: 'feat: x', head: 'feature', body: 'the body' },
+      { title: 'feat: x', head: 'feature', lede: 'X now happens on its own.', body: 'the body' },
       ctxWith(store),
     );
 
@@ -239,7 +239,7 @@ describe('knowledge mirror — create_pr', () => {
     const res = await handleBuilddAction(
       api,
       'create_pr',
-      { title: 'feat: x', head: 'feature' },
+      { title: 'feat: x', head: 'feature', lede: 'X now happens on its own.' },
       ctxWith(makeThrowingStore()),
     );
     expect(res.isError).toBeFalsy();

@@ -490,6 +490,7 @@ mock.module('@buildd/core/path-claim', () => ({
 }));
 
 import { GET, PATCH } from './route';
+import { composeBodyWithLede, extractLede } from '@buildd/core/pr-lede';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
 
 function createMockRequest(options: {
@@ -5744,6 +5745,147 @@ describe('PATCH /api/workers/[id]', () => {
       expect(body).toContain('<!-- buildd-activity -->');
       expect(body).toContain('Review passed');
       expect(body).toContain('confidence 0.90');
+    });
+
+    // ── Corrected lede ────────────────────────────────────────────────────
+    // The reviewer PROPOSES a replacement lede; this handler APPLIES it — the
+    // same division as the verdict itself. Applying it must never gate, delay
+    // or alter that verdict, and the author's original must survive.
+    describe('corrected lede', () => {
+      const AUTHORED = 'This change deletes the retry loop.';
+      const CORRECTED = 'This change adds a retry loop; it does not delete one.';
+      const PR_PATH = '/repos/org/repo/pulls/42';
+
+      /** Serve a PR whose body already carries a lede block. */
+      function serveLedeBody(opts: { patchFails?: boolean } = {}) {
+        mockGithubApi.mockImplementation((_id: number, path: string, init?: any) => {
+          if (path === PR_PATH && init?.method === 'PATCH') {
+            if (opts.patchFails) return Promise.reject(new Error('422 could not update the body'));
+            return Promise.resolve({});
+          }
+          if (path === PR_PATH) {
+            return Promise.resolve({
+              body: composeBodyWithLede(AUTHORED, '## Detail\n\nwhat actually happened'),
+            });
+          }
+          if (/\/pulls\/\d+\/files/.test(path)) {
+            return Promise.resolve([
+              { filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1, status: 'modified' },
+            ]);
+          }
+          return Promise.resolve([]);
+        });
+      }
+
+      function bodyPatch() {
+        return (mockGithubApi.mock.calls as any[]).find(
+          (c) => c[1] === PR_PATH && c[2]?.method === 'PATCH',
+        );
+      }
+
+      it('the common case — no correction — leaves the PR body completely untouched', async () => {
+        setupReviewerTaskCompletion('approve');
+        serveLedeBody();
+        mockGithubApi.mockClear();
+
+        const res = await PATCH(makeReviewerPatchRequest('approve'), { params: mockParams });
+
+        expect(res.status).toBe(200);
+        expect(bodyPatch()).toBeUndefined();
+        // Not even a read of the PR body: a review that says nothing about the
+        // lede costs nothing.
+        expect((mockGithubApi.mock.calls as any[]).some((c) => c[1] === PR_PATH)).toBe(false);
+      });
+
+      it('applies a correction, preserving the author’s original in the body', async () => {
+        setupReviewerTaskCompletion('approve');
+        serveLedeBody();
+        mockGithubApi.mockClear();
+
+        const res = await PATCH(
+          makeReviewerPatchRequest('approve', { correctedLede: CORRECTED }),
+          { params: mockParams },
+        );
+
+        expect(res.status).toBe(200);
+        const patched = JSON.parse(bodyPatch()[2].body).body as string;
+        expect(extractLede(patched)?.lede).toBe(CORRECTED);
+        // Never a silent overwrite — the author's own sentence stays readable,
+        // and the rest of their account of the work is untouched.
+        expect(patched).toContain(AUTHORED);
+        expect(patched).toContain('corrected by the buildd reviewer');
+        expect(patched).toContain('## Detail\n\nwhat actually happened');
+      });
+
+      it('surfaces the correction as signal on the decision note, not as a quiet patch', async () => {
+        setupReviewerTaskCompletion('approve');
+        serveLedeBody();
+
+        await PATCH(
+          makeReviewerPatchRequest('approve', { correctedLede: CORRECTED }),
+          { params: mockParams },
+        );
+
+        const note = missionNoteInserts.find((n) => n.type === 'reviewer_approved');
+        expect(note.body).toContain('Lede corrected');
+        expect(note.body).toContain('contradicted the diff');
+        expect(note.body).toContain(AUTHORED);
+      });
+
+      it('the verdict still lands, unchanged, when the body edit fails', async () => {
+        setupReviewerTaskCompletion('approve');
+        serveLedeBody({ patchFails: true });
+
+        const res = await PATCH(
+          makeReviewerPatchRequest('approve', { correctedLede: CORRECTED }),
+          { params: mockParams },
+        );
+
+        // A failed body edit is logged and dropped. The approve is processed
+        // exactly as it would have been with no correction at all.
+        expect(res.status).toBe(200);
+        expect(mockTryAutoMergeWorkerPr).toHaveBeenCalled();
+        expect(mockPostPrReview).toHaveBeenCalled();
+        const note = missionNoteInserts.find((n) => n.type === 'reviewer_approved');
+        expect(note).toBeDefined();
+        expect(note.body).not.toContain('Lede corrected');
+      });
+
+      it('does not touch a PR that has no lede block to correct', async () => {
+        setupReviewerTaskCompletion('approve');
+        mockGithubApi.mockImplementation((_id: number, path: string) => {
+          if (path === PR_PATH) return Promise.resolve({ body: 'A body opened outside buildd.' });
+          if (/\/pulls\/\d+\/files/.test(path)) {
+            return Promise.resolve([
+              { filename: 'apps/web/src/lib/foo.ts', additions: 3, deletions: 1, status: 'modified' },
+            ]);
+          }
+          return Promise.resolve([]);
+        });
+        mockGithubApi.mockClear();
+
+        const res = await PATCH(
+          makeReviewerPatchRequest('approve', { correctedLede: CORRECTED }),
+          { params: mockParams },
+        );
+
+        expect(res.status).toBe(200);
+        expect(bodyPatch()).toBeUndefined();
+      });
+
+      it('applies a correction on a request-changes verdict too — it is not approve-only', async () => {
+        setupReviewerTaskCompletion('request-changes');
+        serveLedeBody();
+        mockGithubApi.mockClear();
+
+        const res = await PATCH(
+          makeReviewerPatchRequest('request-changes', { correctedLede: CORRECTED }),
+          { params: mockParams },
+        );
+
+        expect(res.status).toBe(200);
+        expect(extractLede(JSON.parse(bodyPatch()[2].body).body)?.lede).toBe(CORRECTED);
+      });
     });
 
     it('request-changes: tells the PR that buildd is applying the feedback', async () => {

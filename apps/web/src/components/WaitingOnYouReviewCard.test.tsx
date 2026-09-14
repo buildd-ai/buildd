@@ -151,22 +151,27 @@ describe('WaitingOnYouReviewCard — CTA set derives from server state, per revi
     });
   });
 
-  it('request-changes exhausted: an escalation note exists but carries no recommendation — same CTA set as review_failed', () => {
+  it('request-changes exhausted: an open escalation note exists but carries no recommendation — dispatch-fix, not Merge/Re-review', () => {
+    // Superseded by the fix-dispatch rule below: escalateReviewerExhaustion DOES
+    // write a real reviewer_escalated note (see hasEscalationNote), so this is
+    // dispatchable off its free-text reason, unlike a pure no-verdict inference.
     const html = renderToStaticMarkup(
       <WaitingOnYouReviewCard
         item={item({
           escalationReason: 'Reviewer requested changes 3 times — automated fix attempts exhausted. Human review required.',
           recommendation: null,
+          hasEscalationNote: true,
         })}
       />,
     );
     expect(ctas(html)).toEqual({
       apply: false,
       applyWithCorrections: false,
-      mergeAnywayLink: false,
-      mergePrimary: true,
-      reReview: true,
+      mergeAnywayLink: true,
+      mergePrimary: false,
+      reReview: false,
     });
+    expect(html).toContain('Dispatch fix');
   });
 
   it('no reviewer task exists (stalled past the grace period): same CTA set as review_failed', () => {
@@ -202,6 +207,94 @@ describe('WaitingOnYouReviewCard — CTA set derives from server state, per revi
       mergePrimary: true,
       reReview: false,
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// An escalation carrying a concrete defect statement but no reviewer
+// recommendation still gets a dispatch CTA — the gap this fix closes. The
+// discriminator is `hasEscalationNote`: a genuine open reviewer_escalated note
+// exists (an agent handed the PR back with something to act on), as opposed
+// to resolveReviewerGate synthesizing a reason from pure task-status
+// inference (review_failed, cancelled, no reviewer task — covered above,
+// unaffected since those never set hasEscalationNote).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('WaitingOnYouReviewCard — escalation with a concrete defect but no recommendation', () => {
+  function ctas(html: string) {
+    return {
+      dispatchFix: html.includes('>Dispatch fix<'),
+      dispatchFixWithCorrections: html.includes('Dispatch fix with corrections'),
+      mergeAnywayLink: html.includes('Merge anyway'),
+      mergePrimary: /class="[^"]*bg-accent[^"]*"[^>]*>\s*Merge\s*</.test(html),
+      reReview: html.includes('>Re-review<'),
+    };
+  }
+
+  it('spec-conformance escalation (schema changed without a generated migration): Dispatch fix is primary, Merge demoted, no plain Re-review', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Spec conformance: the discrepancy ledger schema changed without a generated SQL migration',
+          recommendation: null,
+          hasEscalationNote: true,
+        })}
+      />,
+    );
+    expect(ctas(html)).toEqual({
+      dispatchFix: true,
+      dispatchFixWithCorrections: true,
+      mergeAnywayLink: true,
+      mergePrimary: false,
+      reReview: false,
+    });
+    expect(html).toContain('Spec conformance: the discrepancy ledger schema changed without a generated SQL migration');
+  });
+
+  it('regression: an escalation-shaped reason with NO open note (e.g. a stall/no-task inference) still gets plain Merge + Re-review, not dispatch', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'No reviewer will run for this PR — manual merge required',
+          recommendation: null,
+          hasEscalationNote: false,
+        })}
+      />,
+    );
+    expect(ctas(html)).toEqual({
+      dispatchFix: false,
+      dispatchFixWithCorrections: false,
+      mergeAnywayLink: false,
+      mergePrimary: true,
+      reReview: true,
+    });
+  });
+
+  it('regression: escalate-with-recommendation still renders Apply, not Dispatch fix, even if hasEscalationNote is also true', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Touches schema.ts',
+          recommendation: 'Guard the null-overwrite.',
+          hasEscalationNote: true,
+        })}
+      />,
+    );
+    expect(html).toContain('>Apply<');
+    expect(html).not.toContain('Dispatch fix');
+  });
+
+  it('dead-zone exhausted conflict retries take priority over a stale escalation note — no dispatch CTA', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: '3 conflict-resolution attempts failed — human action required',
+          recommendation: null,
+          hasEscalationNote: true,
+          deadZoneExhausted: true,
+        })}
+      />,
+    );
+    expect(html).not.toContain('Dispatch fix');
   });
 });
 

@@ -85,15 +85,31 @@ jobs:
         id: migration_check
         run: |
           cd packages/core
-          # drizzle-kit prints `Error: ... is a collision.` and STILL EXITS 0 when
-          # the snapshot chain is forked — and a failed generate writes nothing,
-          # which the porcelain check below cannot tell apart from "no changes
-          # needed". So this step reported success over a db:generate that never
-          # ran. Check the output explicitly; do not trust the exit code.
+          # drizzle-kit aborts without generating anything and STILL EXITS 0. A
+          # generate that aborts writes nothing, which the porcelain check below
+          # cannot tell apart from "no changes needed" — so this step used to
+          # report success over a db:generate that never ran.
+          #
+          # The collision/malformed branch is fixed at the root by
+          # patches/drizzle-kit@*.patch (exit 0 -> exit 1), guarded by
+          # packages/core/__tests__/drizzle-kit-patch.test.ts. This output check
+          # stays for the abort paths the patch does NOT cover: the
+          # "snapshot is not of the latest version" branch still exits 0, and it
+          # prints via console.log rather than as an Error.
+          # Capture before asserting: the step runs under `bash -e`, so letting a
+          # now-nonzero db:generate fail the assignment would kill the step before
+          # its output is ever echoed, leaving no diagnosis in the log.
+          set +e
           out=$(bun db:generate 2>&1)
+          code=$?
+          set -e
           echo "$out"
-          if grep -qE '^Error:' <<<"$out"; then
-            echo "::error::bun db:generate failed (see output above). It exits 0 on failure, so this is asserted on its output instead."
+          if [ "$code" -ne 0 ]; then
+            echo "::error::bun db:generate exited $code (see output above)."
+            exit 1
+          fi
+          if grep -qE '^Error:|is not of the latest version' <<<"$out"; then
+            echo "::error::bun db:generate aborted without generating, yet exited 0 (see output above)."
             exit 1
           fi
           if [ -n "$(git status --porcelain drizzle/)" ]; then

@@ -1,6 +1,24 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "connector-routing-gate"
+    type: "symbol"
+    name: "checkConnectorRouting"
+    path: "apps/web/src/app/api/workers/claim/connector-gate.ts"
+  - id: "required-connector-opt-in"
+    type: "config_key"
+    key: "requiredConnectors"
+    file: "packages/core/db/schema.ts"
+  - id: "degraded-claim-context"
+    type: "symbol_reachable"
+    symbol: "degradedConnectors"
+    entry: "apps/web/src/app/api/workers/claim/route.ts"
+    as: "read"
+---
 # Connector Availability: Degrade, Don't Block
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `apps/web/src/app/api/workers/claim/route.ts` — connector pre-filter (lines 480–636) and injection block (lines 1791–2029)
 - `apps/web/src/app/api/workers/claim/connector-gate.ts` — `checkConnectorRouting`

@@ -1,3 +1,18 @@
+---
+status: proposed
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "github-comment-ingest"
+    type: "route"
+    method: "POST"
+    path: "/api/github/webhook"
+    file: "apps/web/src/app/api/github/webhook/route.ts"
+  - id: "issue-comment-dispatch"
+    type: "symbol_reachable"
+    symbol: "issue_comment"
+    entry: "apps/web/src/app/api/github/webhook/route.ts"
+    as: "read"
+---
 # `@buildd` Mentions in GitHub Comments
 
 **Status:** Proposed

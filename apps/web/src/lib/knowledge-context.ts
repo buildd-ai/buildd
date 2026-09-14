@@ -24,6 +24,15 @@ import {
   type StrengthSignal,
 } from '@buildd/core/retrieval-clusters';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import { renderHitLines } from '@buildd/core/prior-work-render';
+
+/**
+ * Minimum score for a claim-time prior-work hit to be worth a worker's
+ * attention. A hit below this is noise: it costs prompt tokens and teaches
+ * agents to skim the section. Path-based lookups (opts.paths) are exempt —
+ * they are a structural match on the file itself, not a semantic guess.
+ */
+const PRECISION_FLOOR = 0.45;
 
 /** Minimal store shape used by buildKnowledgeContext (injectable for tests). */
 export type KnowledgeQuerier = {
@@ -37,52 +46,6 @@ export type KnowledgeQuerier = {
   /** Optional — used to build the corpora availability hint in claim payloads. */
   countNamespace?: (ns: string) => Promise<number>;
 };
-
-const STALE_BASELINE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-
-function ageLabel(date: Date | null | undefined): string {
-  if (!date) return '';
-  const days = Math.floor((Date.now() - new Date(date).getTime()) / 86400000);
-  if (days < 1) return 'today';
-  if (days < 7) return `${days}d ago`;
-  if (days < 30) return `${Math.floor(days / 7)}w ago`;
-  return `${Math.floor(days / 30)}mo ago`;
-}
-
-function renderHit(r: QueryResult): string {
-  const firstLine = r.content.split('\n').find(l => l.trim()) ?? '';
-  const title = firstLine.replace(/^#+\s*/, '').slice(0, 100);
-  const parts: string[] = [`[${r.score.toFixed(2)}]`, title];
-
-  if (r.sourceType === 'task') {
-    const success = r.metadata?.success;
-    parts.push(success === true ? 'completed' : success === false ? 'failed' : 'task');
-  } else if (r.sourceType === 'pr') {
-    const prNum = r.metadata?.prNumber;
-    parts.push(prNum ? `PR #${prNum}` : 'PR');
-  }
-
-  // For task hits: surface PR reference from metadata
-  const prUrl = r.metadata?.prUrl as string | undefined;
-  if (prUrl && r.sourceType === 'task') {
-    const match = /[/#](\d+)$/.exec(prUrl);
-    parts.push(match ? `PR #${match[1]}` : 'has PR');
-  }
-
-  const age = ageLabel(r.createdAt);
-  if (age) parts.push(age);
-
-  const link = r.sourceUrl ? ` (${r.sourceUrl})` : '';
-  return `- ${parts.join(' | ')}${link}`;
-}
-
-function isStaleBaseline(r: QueryResult): boolean {
-  if (r.sourceType !== 'task') return false;
-  if (r.metadata?.success !== true) return false;
-  if (!r.metadata?.prUrl) return false;
-  if (!r.createdAt) return false;
-  return Date.now() - new Date(r.createdAt).getTime() < STALE_BASELINE_WINDOW_MS;
-}
 
 /**
  * Retrieve relevant prior work from the KnowledgeStore and format it for the
@@ -157,9 +120,10 @@ export async function buildKnowledgeContext(
       ? await Promise.all(
           sources.map(async (s) => {
             const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
-            if (results.length === 0) return [];
+            const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR);
+            if (strong.length === 0) return [];
             const lines = [`\n### ${s.label}`];
-            for (const r of results) lines.push(...renderHitLines(r));
+            for (const r of strong) lines.push(...renderHitLines(r));
             return lines;
           }),
         )
@@ -195,24 +159,6 @@ export async function buildKnowledgeContext(
 }
 
 // ── Clustered retrieval ───────────────────────────────────────────────────────
-
-/**
- * Render a hit and, where it applies, the stale-baseline warning underneath it.
- *
- * Returned as a group and kept as a group: the budget below drops whole groups,
- * because truncating between a hit and its "MAY ALREADY BE SHIPPED" warning
- * would show the hit while silently dropping the reason not to trust it.
- */
-function renderHitLines(r: QueryResult): string[] {
-  const lines = [renderHit(r)];
-  if (isStaleBaseline(r)) {
-    lines.push(
-      '  ⚠ MAY ALREADY BE SHIPPED — read the merged diff before specing.' +
-      ' Merged code may not be released, so the UI is not evidence.',
-    );
-  }
-  return lines;
-}
 
 /** Search keys a recipe step can be fed. Deterministically derived; see DerivedBy. */
 export type ClusterKeys = {

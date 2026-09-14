@@ -22,14 +22,26 @@ mock.module('@buildd/core/db/schema', () => ({
   githubInstallations: { installationId: 'installationId' },
 }));
 
-import { postPrReview } from './github';
+import { postPrReview, mergePullRequest } from './github';
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json; charset=utf-8' : null) },
     json: async () => body,
     text: async () => JSON.stringify(body),
+  } as unknown as Response;
+}
+
+/** A response GitHub (or a proxy in front of it) returned with no readable body. */
+function emptyResponse(status: number, contentType: string | null = null): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? contentType : null) },
+    json: async () => { throw new SyntaxError('Unexpected end of JSON input'); },
+    text: async () => '',
   } as unknown as Response;
 }
 
@@ -138,5 +150,71 @@ describe('postPrReview', () => {
 
     expect(result.posted).toBe(false);
     expect(result.reason).toBeTruthy();
+  });
+});
+
+describe('mergePullRequest', () => {
+  it('returns merged on a 200 with a parseable body', async () => {
+    global.fetch = mock(async () => jsonResponse(200, { message: 'Pull Request successfully merged' })) as unknown as typeof fetch;
+
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+
+    expect(result).toEqual({ merged: true, message: 'Pull Request successfully merged', status: 200 });
+  });
+
+  it('carries GitHub\'s real reason as a definitive (non-indeterminate) rejection', async () => {
+    global.fetch = mock(async () => jsonResponse(405, { message: 'Method Not Allowed' })) as unknown as typeof fetch;
+
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+
+    expect(result.merged).toBe(false);
+    expect(result.message).toBe('Method Not Allowed');
+    expect(result.indeterminate).toBeFalsy();
+  });
+
+  it('marks an empty-body failure response as indeterminate instead of surfacing a JSON parse error', async () => {
+    global.fetch = mock(async () => emptyResponse(502)) as unknown as typeof fetch;
+
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+
+    expect(result.merged).toBe(false);
+    expect(result.indeterminate).toBe(true);
+    expect(result.message).not.toMatch(/unexpected end of json/i);
+    expect(result.message).toContain('502');
+  });
+
+  it('marks an empty-body 409 as indeterminate rather than a real conflict rejection', async () => {
+    global.fetch = mock(async () => emptyResponse(409)) as unknown as typeof fetch;
+
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+
+    expect(result.merged).toBe(false);
+    expect(result.indeterminate).toBe(true);
+  });
+
+  it('marks a network failure (no response at all) as indeterminate', async () => {
+    global.fetch = mock(async () => { throw new Error('fetch failed'); }) as unknown as typeof fetch;
+
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+
+    expect(result.merged).toBe(false);
+    expect(result.indeterminate).toBe(true);
+    expect(result.message).toContain('Could not reach GitHub');
+  });
+
+  it('treats a non-JSON body on a non-2xx response as indeterminate (e.g. an HTML proxy error page)', async () => {
+    global.fetch = mock(async () => ({
+      ok: false,
+      status: 504,
+      headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? 'text/html' : null) },
+      text: async () => '<html>Gateway Timeout</html>',
+      json: async () => { throw new SyntaxError('Unexpected token <'); },
+    })) as unknown as typeof fetch;
+
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+
+    expect(result.merged).toBe(false);
+    expect(result.indeterminate).toBe(true);
+    expect(result.message).not.toMatch(/unexpected token/i);
   });
 });

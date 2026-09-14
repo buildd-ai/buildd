@@ -1,6 +1,27 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "ingest-jobs-table"
+    type: "symbol"
+    name: "knowledgeIngestJobs"
+    path: "packages/core/db/schema.ts"
+  - id: "merged-pr-ingestion"
+    type: "symbol"
+    name: "enqueueMergedPrIngestJobs"
+    path: "apps/web/src/lib/knowledge-ingest.ts"
+  - id: "entity-records"
+    type: "symbol"
+    name: "knowledgeEntities"
+    path: "packages/core/db/schema.ts"
+  - id: "knowledge-edges"
+    type: "symbol"
+    name: "knowledgeEdges"
+    path: "packages/core/db/schema.ts"
+---
 # Workspace Knowledge Management v2 — Per-PR Ingestion, Code Graph, Semantic Supersession, Distillation
 
-**Status:** Accepted — Wave 1 shipped (#1179, #1180, #1181); Wave 2 in flight (see §7)
+**Status:** Implemented — Wave 1 shipped (#1179, #1180, #1181); Wave 2 in flight (see §7)
 **Date:** 2026-07-12
 **Scope:** `packages/core/knowledge-store/`, GitHub webhook, runner, MCP tooling
 **Prior art:** `docs/knowledge-store.md` (implemented), `docs/design/knowledge-graph-retrieval.md` (partially implemented)

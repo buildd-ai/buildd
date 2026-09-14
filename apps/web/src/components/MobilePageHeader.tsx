@@ -37,7 +37,12 @@ export default function MobilePageHeader({
           switcher (turbopuffer/Vercel pattern) rather than a separate glyph in the
           right-hand cluster. Anchoring the menu here also keeps it on-screen. */}
       <div className="flex-1 min-w-0 flex items-center gap-1.5 text-[13px] font-normal">
-        <span className="truncate font-semibold text-text-primary">{title}</span>
+        {/* The page name never truncates: it is the shortest string in the
+            cluster and the one that says where you are. A long team name is the
+            segment that gives way (TeamSwitcher caps itself at 140px), which is
+            why this is `shrink-0` — as a flex sibling it used to surrender
+            characters first and render `Initiativ…`. */}
+        <span className="shrink-0 font-semibold text-text-primary">{title}</span>
         {currentTeam && (
           <>
             <span className="text-text-muted shrink-0" aria-hidden="true">·</span>

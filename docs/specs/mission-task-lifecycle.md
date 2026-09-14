@@ -2,13 +2,31 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-12
+last_verified: 2026-09-13
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/mission-base-guard.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
 keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "claim-task"
+    type: "route"
+    method: "POST"
+    path: "/api/workers/claim"
+    file: "apps/web/src/app/api/workers/claim/route.ts"
+  - id: "completion-gate"
+    type: "symbol"
+    name: "canCompleteMission"
+    path: "apps/web/src/lib/mission-completion.ts"
+  - id: "criteria-evaluation"
+    type: "symbol"
+    name: "evaluateGoalCriteria"
+    path: "packages/core/mission-helpers.ts"
+  - id: "completion-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/mission-completion.test.ts"
 ---
 # Mission and Task Lifecycle
 
@@ -430,6 +448,35 @@ stored — it is derived on read from the state of associated tasks via
   owner task (`MISSION_PR_TASK_PREFIX`, whose base IS trunk by design), a
   stacked-plan phase (`isStackedPhaseBase`), a mission with no integration base,
   and a task with no mission.
+- **The mission PR MUST NOT merge while the mission's work is unfinished.**
+  Merging it deletes the integration branch deliberately
+  (`finalizeMissionPrMerge`), so the gate in front of that merge
+  (`guardMissionPrMerge`, shared by all three merge call sites) asks whether the
+  mission's work is finished — NOT merely whether any task PR is open. It MUST
+  refuse while any deliverable task of the mission is in a non-terminal state
+  (`pending` / `assigned` / `in_progress`) and has not landed a PR, as well as
+  while a deliverable PR is open, and the refusal MUST name what holds it.
+  Bookkeeping rows (including the mission-PR owner itself, which would make the
+  gate self-referential), `attempt` rows (reviewer / CI-retry / conflict-retry),
+  planning rows and cancelled tasks MUST NOT hold the gate — cancelling is a
+  decision that the work will not happen, not an absence of one.
+- **A task whose integration base no longer exists MUST still be able to
+  deliver.** When a mission task's PR is created and the mission's integration
+  branch is absent from the remote, buildd MUST re-cut that branch from trunk
+  and proceed, so the mission keeps reaching trunk through one merge per round
+  of work (a second mission PR, which `openMissionIntegrationPr` already
+  supports by design). Only when the branch can neither be found nor created
+  MAY the PR fall back to trunk. Either outcome MUST be recorded as a mission
+  note; neither may be silent, and neither may leave the worker with no way to
+  open its PR. Existence MUST be read live from GitHub (`GET
+  /repos/{repo}/git/ref/heads/{branch}`), never from a local remote-tracking
+  ref, which reports a deleted branch as present until something prunes it.
+- **The prompt and the guard MUST read the same source for the delivery base.**
+  One function — `resolveTaskPrBase` in `packages/core/mission-integration.ts` —
+  answers "what base does this task's PR take", and both the runner's Git
+  Workflow prompt block and the `create_pr` derivation MUST call it. A worker
+  cannot tell a wrong instruction from a wrong refusal from inside its sandbox,
+  so a divergence there is unrecoverable without a human.
 - `missions.primaryPrNumber`/`primaryPrUrl` MUST only ever be claimed by a PR
   whose base ref is a trunk branch of the workspace (`gitConfig.targetBranch`,
   `gitConfig.defaultBranch`, or the repo default). A PR based on the mission
@@ -461,6 +508,22 @@ stored — it is derived on read from the state of associated tasks via
   registration with a base ref of the workspace trunk and `primaryPrNumber`
   still null THEN the slot is claimed.
 
+- AC-11u: GIVEN an opted-in mission with zero open task PRs and one deliverable
+  task still `pending` WHEN the mission PR merge is attempted at any of the
+  three merge call sites THEN it is refused, naming that task and its status;
+  GIVEN the same mission with that task `cancelled` THEN the merge proceeds.
+- AC-11v: GIVEN an opted-in mission whose only non-terminal rows are
+  bookkeeping, `attempt` or planning tasks WHEN the mission PR merge is
+  attempted THEN it proceeds.
+- AC-11w: GIVEN a task whose mission has an integration base that is absent
+  from the remote WHEN `create_pr` runs THEN the branch is re-cut from trunk,
+  a mission note records it, and the PR opens against the integration branch;
+  GIVEN the branch cannot be created either THEN the PR opens against trunk, a
+  mission note records the breach, and the call does NOT fail.
+- AC-11x: GIVEN any task WHEN the runner builds its Git Workflow prompt and
+  `create_pr` derives the PR base THEN both report the same base, because both
+  call `resolveTaskPrBase` with the same mission and task.
+
 **Code surface**:
 - Mission helpers: `packages/core/mission-helpers.ts` — `isDeliverableTask()`
 - Mission context: `apps/web/src/lib/mission-context.ts`
@@ -476,7 +539,16 @@ stored — it is derived on read from the state of associated tasks via
   `openMissionIntegrationPr` creates the `bookkeeping` task and worker row that
   own it, so every worker-keyed merge surface can see and merge it
 - Option A′ predicates: `packages/core/mission-integration.ts` —
-  `missionIntegrationBase`, `isMissionIntegrationBase`
+  `missionIntegrationBase`, `isMissionIntegrationBase`, `resolveTaskPrBase`
+  (the one delivery-base answer, called by both the guard and the prompt)
+- Mission-PR merge gate + branch lifecycle: `apps/web/src/lib/mission-pr.ts` —
+  `evaluateMissionWorkState`, `guardMissionPrMerge`, `finalizeMissionPrMerge`
+- Integration-branch existence + re-cut:
+  `apps/web/src/lib/mission-integration-branch.ts` —
+  `ensureMissionIntegrationBranch`, `ensureIntegrationBaseForTaskPr`
+- Delivery-base prompt block: `apps/runner/src/prompt-builder.ts` (Git Workflow
+  section), fed the mission's integration fields by
+  `apps/web/src/app/api/workers/claim/route.ts`
 - Seeded planner rules for both shapes: `apps/web/src/lib/default-roles.ts`
   (Organizer, "Sequencing Rules")
 - Schema: `packages/core/db/schema.ts` — `missions` table
@@ -701,22 +773,43 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   failure nobody can move is a decision, not a retry.
 - While work filed against the current verdict is still open, the consumer waits
   rather than re-arming — otherwise it duplicates the work in flight.
+- Escalating and un-escalating are each owned by exactly one writer, and no
+  other code path may touch `criteriaEscalatedAt` directly. `escalateCriteriaFailure()`
+  (`apps/web/src/lib/criteria-escalation.ts`) is the ONLY writer that STAMPS
+  the column: it claims the row atomically (`UPDATE ... WHERE criteriaEscalatedAt
+  IS NULL OR criteriaRearmFingerprint IS DISTINCT FROM the new fingerprint`),
+  files the owner-facing note, and stands the heartbeat schedule down — all
+  three or none, so the column and the notification can never drift apart. The
+  atomic claim is also the dedup: a mission re-evaluated with an identical
+  verdict does not file a second note, but a verdict that gets WORSE while
+  already escalated re-notifies once for the new shape. Before this existed,
+  `criteria-rearm.ts`'s escalate branch and the explicit completion override in
+  `PATCH /api/missions/[id]` each decided "has this mission escalated"
+  independently — the heartbeat path stamped the column, the completion
+  override only posted a passive warning note and never touched the column at
+  all, so a mission whose criteria were failing when a human force-completed it
+  (skipping the heartbeat's N-cycle budget entirely) left `criteriaEscalatedAt`
+  null forever with no notification ever having been sent.
 - Escalation MUST be self-clearing, but NOT via a re-arm tick alone: escalating
   disables the mission's heartbeat schedule, so no tick can ever run again to
   observe a later verdict change — the code that would clear
   `criteriaEscalatedAt` on that path is structurally unreachable from the state
   that sets it. Clearing is instead the job of `resolveCriteriaEscalation()`
-  (`apps/web/src/lib/criteria-escalation.ts`), the single writer for
-  un-escalating a mission. It nulls `criteriaEscalatedAt`, closes the open
-  `question` note as `answered` (the owner acted — never `dismissed`), and
-  re-enables the heartbeat schedule if one still exists, so a later tick CAN
-  run again. Every live exit routes through it: `applyCriteriaRearm`'s own
-  'rearm' branch (verdict genuinely changed, reason `verdict_changed` —
-  reachable again only once something else has re-enabled the schedule), a
-  mission closing to `completed`/`archived` (reason `mission_completed`), and a
+  (same module), the single writer for un-escalating a mission. It nulls
+  `criteriaEscalatedAt`, closes the open `question` note as `answered` (the
+  owner acted — never `dismissed`), and re-enables the heartbeat schedule if
+  one still exists, so a later tick CAN run again. Every live exit routes
+  through it: `applyCriteriaRearm`'s own 'rearm' branch (verdict genuinely
+  changed, reason `verdict_changed` — reachable again only once something else
+  has re-enabled the schedule), a **previously-escalated** mission closing to
+  `completed`/`archived` (reason `mission_completed`/`waived`), and a
   `goalCriteria` edit on `PATCH /api/missions/[id]` (reason `criteria_edited` —
   the exit the escalation note itself advertises). It is a no-op on a mission
-  that was never escalated and never files a task.
+  that was never escalated and never files a task. A completion/archival close
+  is routed to `resolveCriteriaEscalation()` ONLY when `criteriaEscalatedAt` was
+  already set before the request's own writes — a mission escalating for the
+  first time via the override path (previous bullet) must not have its own
+  fresh stamp erased by this same request.
 - A re-arm cycle MUST NOT write `lastHeartbeatStateHash`. Mission state is
   unchanged by construction (every deliverable is terminal), so persisting it
   would make the next tick read "no change" and suppress the cycle just
@@ -768,11 +861,22 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `infra_stalled`) WHEN the tick runs THEN no re-arm is attempted.
 - AC-11n: GIVEN a re-arm cycle WHEN the schedule row is written THEN
   `lastHeartbeatStateHash` is not among the written columns.
-- AC-11o: GIVEN an escalated mission WHEN its status is set to `completed` or
-  `archived` via `PATCH /api/missions/[id]` THEN `resolveCriteriaEscalation()`
-  clears `criteriaEscalatedAt` and closes the open question note, even though
-  the schedule row itself is deleted (not re-enabled) by the same request — a
-  terminal mission has nothing left to re-arm.
+- AC-11o: GIVEN a **previously escalated** mission WHEN its status is set to
+  `completed` or `archived` via `PATCH /api/missions/[id]` THEN
+  `resolveCriteriaEscalation()` clears `criteriaEscalatedAt` and closes the
+  open question note, even though the schedule row itself is deleted (not
+  re-enabled) by the same request — a terminal mission has nothing left to
+  re-arm.
+- AC-11o′: GIVEN a mission that was NEVER escalated (the heartbeat's N-cycle
+  budget never ran — e.g. it is force-completed immediately) WHEN its status is
+  set to `completed` or `archived` via `PATCH /api/missions/[id]` WHILE its
+  stored `goalCriteria` is non-empty and `goalCriteriaState.overall !== 'pass'`
+  THEN `escalateCriteriaFailure()` is called instead of a bare warning note —
+  `criteriaEscalatedAt` is stamped and the "Goal criteria gate overridden" note
+  is filed with `status: 'answered'` (the override already IS the decision, so
+  nothing is left open) — and `resolveCriteriaEscalation()` is NOT also called
+  for this close, since there is nothing to resolve and doing so would
+  immediately null the column this same request just stamped.
 - AC-11p: GIVEN a mission with `criteriaEscalatedAt` set WHILE `status` is
   `completed`/`archived`, or WHILE `goalCriteriaState.overall = 'pass'` WHEN
   the hourly `mission-invariants` sweep runs THEN the row is resolved through
@@ -789,16 +893,17 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   "file the work", the escalation note's first advertised exit, is reachable
   from ordinary task creation rather than requiring a bespoke endpoint. A
   no-op on a mission that was never escalated, per the helper's own contract.
-- AC-11s: GIVEN an escalated mission WHEN `PATCH /api/missions/[id]` sets
-  `status` to `completed`/`archived` WHILE its stored `goalCriteria` is
-  non-empty and `goalCriteriaState.overall !== 'pass'` THEN
+- AC-11s: GIVEN a **previously escalated** mission WHEN `PATCH
+  /api/missions/[id]` sets `status` to `completed`/`archived` WHILE its stored
+  `goalCriteria` is non-empty and `goalCriteriaState.overall !== 'pass'` THEN
   `resolveCriteriaEscalation()` is called with reason `'waived'`, not
   `'mission_completed'` — reaching this close with the flag still set can only
   happen via an override (a passing verdict would already have cleared it
   through the `'verdict_changed'` exit), and the "Goal criteria gate
   overridden" warning posted for the same condition is the audit trail that
   makes waiving safe to offer as a one-click exit on the mission-detail
-  decision sheet.
+  decision sheet. See AC-11o′ for the same condition on a mission that was
+  never escalated in the first place.
 - AC-11t: GIVEN an open `missionNotes` question row whose title is the
   escalation note's title (`CRITERIA_ESCALATION_NOTE_TITLE`) WHEN
   `MissionFeed` renders it THEN no Reply/Skip affordance is shown. Both route
@@ -814,10 +919,15 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `canCompleteMission()`, `completeMissionIfVerified()`, `isCriteriaBlockCode()`
 - Blocked-verdict consumer: `apps/web/src/lib/criteria-rearm.ts` —
   `criteriaFingerprint()`, `decideCriteriaRearm()`, `applyCriteriaRearm()`
-- Single writer for un-escalating: `apps/web/src/lib/criteria-escalation.ts` —
+- Single writer for escalating: `apps/web/src/lib/criteria-escalation.ts` —
+  `escalateCriteriaFailure()`. Called from `applyCriteriaRearm()`'s 'escalate'
+  branch and from `PATCH /api/missions/[id]` (a never-escalated mission closing
+  to completed/archived with a non-passing verdict).
+- Single writer for un-escalating: same module —
   `resolveCriteriaEscalation()`. Called from `applyCriteriaRearm()`'s 'rearm'
-  branch, from `PATCH /api/missions/[id]` (status → completed/archived; a
-  `goalCriteria` edit), and from the `stale_criteria_escalation` invariant.
+  branch, from `PATCH /api/missions/[id]` (a previously-escalated mission's
+  status → completed/archived; a `goalCriteria` edit), and from the
+  `stale_criteria_escalation` invariant.
 - Terminal-mission / passing-verdict backstop:
   `apps/web/src/lib/mission-invariants.ts` (`stale_criteria_escalation`
   invariant) + `apps/web/src/app/api/cron/mission-invariants/route.ts`
@@ -1101,3 +1211,69 @@ dump on every pass.
   `buildHeartbeatContext()`
 - `apps/web/src/lib/workspace-state-context.test.ts` — 25 tests covering all causes,
   degradation, and budget enforcement
+
+---
+
+## Per-mission surface-audit contract
+
+**Capability statement**: A mission whose builder tasks touch a UI surface
+directory MUST get its own `[surface audit]` task, gated on every builder task
+in the mission, without relying on the separate recurring `Weekly mobile UI
+audit` mission to eventually catch what it missed.
+
+**Trigger**: `POST /api/tasks` (the single creation choke point for the
+dashboard, the API, and MCP `create_task` — including organizer/heartbeat
+decomposition passes, since all three route through this endpoint) calls
+`ensureMissionSurfaceAudit` after every task insert that carries a `missionId`.
+
+**UI surface directories**: `apps/web/src/app/` and `apps/web/src/components/`
+(see `SURFACE_AUDIT_UI_PATH_PREFIXES`). The repo-wide sentinel (`['**']`) never
+counts — it means "scope undeclared", not "touches the UI" (see the
+Manifests-are-the-enforcement contract above).
+
+**Behavior**:
+- Only `taskClass = 'work'` tasks (real builder deliverables, not bookkeeping
+  rows or the audit task itself) can trigger or extend an audit.
+- No existing `[surface audit]` task for the mission, and this task's
+  `pathManifest` touches a UI surface directory → mint one, `dependsOn` = every
+  `taskClass = 'work'` task currently in the mission (including this one).
+- An audit task already exists → append this task's id to its `dependsOn`
+  (deduplicated), regardless of whether this particular task's manifest is
+  UI-scoped — the audit reviews the mission's whole shipped surface, and a
+  backend-only task can still change what renders.
+- Mission has `autoSurfaceAudit = false` → no-op entirely.
+
+**Checklist** (reused from the Weekly mobile UI audit, scoped to the paths
+declared by the mission's own builder tasks instead of the whole app): 390pt/320pt
+viewport walk, the CTA set derived from live server state for every state the
+mission introduced, empty/error/loading rendering, no duplicate chrome titles.
+The audit task files defects as tasks in the **same mission** (not friction
+reports) and completes with an artifact.
+
+**Idempotency**: Re-running decomposition (the organizer creating tasks again)
+never creates a second audit task — the existing-task lookup is by title prefix
+within the mission, so a repeat pass only extends `dependsOn`. Best-effort under
+concurrent task creation (check-then-act, matching this codebase's other
+neon-http non-transactional patterns) — not a hard concurrency guarantee.
+
+**Non-goals**: The recurring workspace-wide `Weekly mobile UI audit` mission is
+unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
+
+**Acceptance criteria**:
+- AC-29: GIVEN a mission with no existing audit task WHEN a `taskClass = 'work'`
+  task is created with a `pathManifest` entry under `apps/web/src/app/` or
+  `apps/web/src/components/` THEN exactly one `[surface audit]` task is created,
+  `dependsOn` including the triggering task.
+- AC-30: GIVEN a mission that already has a `[surface audit]` task WHEN another
+  `taskClass = 'work'` task is created in that mission THEN no second audit task
+  is created and the existing one's `dependsOn` gains the new task's id.
+- AC-31: GIVEN a mission whose tasks only declare non-UI paths (or the `['**']`
+  sentinel) THEN no audit task is ever created.
+- AC-32: GIVEN a mission with `autoSurfaceAudit = false` THEN no audit task is
+  created or extended regardless of what paths its tasks declare.
+
+**Code surface**:
+- `packages/core/surface-audit.ts` — pure predicates and checklist content
+- `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`
+- `apps/web/src/app/api/tasks/route.ts` — trigger point (`POST` handler)
+- `packages/core/db/schema.ts` — `missions.autoSurfaceAudit` (default `true`)

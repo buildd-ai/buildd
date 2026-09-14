@@ -45,6 +45,16 @@ const mockReadPrReviewStatus = mock(() => Promise.resolve({
   mergeBlocked: null,
 }));
 
+// Part 2: the live GitHub existence check + re-cut of a deleted integration
+// branch. Mocked here so this file can drive the three answers it returns; the
+// behaviour itself is covered in mission-integration-branch.test.ts.
+const mockEnsureIntegrationBaseForTaskPr = mock(
+  () => Promise.resolve({ usable: true, recreated: false }) as any,
+);
+mock.module('@/lib/mission-integration-branch', () => ({
+  ensureIntegrationBaseForTaskPr: mockEnsureIntegrationBaseForTaskPr,
+}));
+
 // Mocks for the mission-integration-branch auto-review feature
 const mockCreateReviewerTask = mock(() => Promise.resolve({ id: 'reviewer-task-1' }) as any);
 const mockFindLiveReviewerTaskForHead = mock(() => Promise.resolve(null) as any);
@@ -62,6 +72,7 @@ mock.module('@/lib/api-auth', () => ({
 mock.module('@/lib/github', () => ({
   githubApi: mockGithubApi,
   mergePullRequest: mockMergePullRequest,
+  githubAppBotLogin: () => 'buildd[bot]',
 }));
 
 // Mock team-access
@@ -138,6 +149,7 @@ mock.module('@/lib/pr-review-status', () => ({
 // Import handler AFTER mocks
 import { POST, PATCH, PUT, GET } from './route';
 import { MISSION_PR_TASK_PREFIX } from '@buildd/core/mission-integration';
+import { extractLede } from '@buildd/core/pr-lede';
 
 // Shared account + workspace defaults for most tests (same team → access granted)
 const ACCOUNT = { id: 'account-1', teamId: 'team-1' };
@@ -176,6 +188,8 @@ describe('POST /api/github/pr', () => {
     mockMissionsFindFirst.mockResolvedValue(null);
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
+    mockEnsureIntegrationBaseForTaskPr.mockReset();
+    mockEnsureIntegrationBaseForTaskPr.mockResolvedValue({ usable: true, recreated: false });
     mockCreateReviewerTask.mockReset();
     mockCreateReviewerTask.mockResolvedValue({ id: 'reviewer-task-1' });
     mockFindLiveReviewerTaskForHead.mockReset();
@@ -737,6 +751,102 @@ describe('POST /api/github/pr', () => {
       expect(res.status).toBe(200);
     });
 
+    // ── Part 2: the integration branch is already GONE ────────────────────
+    //
+    // The production dead end. A mission PR merged while later-filed work was
+    // still pending, which deleted the integration branch by design. Every
+    // worker that then claimed one of those tasks found both doors shut: this
+    // route refused trunk because the mission has an integration base, and
+    // GitHub refused the derived base with a 422 because it no longer exists.
+    // No route out from inside a worker, and no owner in the loop.
+
+    it('consults the live branch check for a mission task, then proceeds on the re-cut branch', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockEnsureIntegrationBaseForTaskPr.mockResolvedValue({ usable: true, recreated: true });
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      expect(mockEnsureIntegrationBaseForTaskPr).toHaveBeenCalledWith(
+        expect.objectContaining({ missionId: 'obj-1', integrationBase: INTEGRATION_BRANCH }),
+      );
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe(INTEGRATION_BRANCH);
+    });
+
+    it('opens the PR against trunk instead of dead-ending when the branch cannot be restored', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockEnsureIntegrationBaseForTaskPr.mockResolvedValue({ usable: false, recreated: false, detail: 'api_error' });
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      const res = await POST(req);
+
+      // The PR is delivered — not a 400 and not a 500 on a base that 404s.
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe('dev');
+    });
+
+    it('stops refusing an explicit trunk base once the integration branch is unrecoverable', async () => {
+      // This exact 400 is what three workers hit in production: they were told
+      // by their own prompt to target trunk, and refused for naming it.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockEnsureIntegrationBaseForTaskPr.mockResolvedValue({ usable: false, recreated: false });
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH, base: 'dev' },
+      });
+      const res = await POST(req);
+
+      expect(res.status).toBe(200);
+      const createCall = mockGithubApi.mock.calls.find((c: any[]) => c[2]?.method === 'POST');
+      const body = JSON.parse((createCall as any[])[2].body);
+      expect(body.base).toBe('dev');
+    });
+
+    it('does not touch the branch check for a task with no mission integration base', async () => {
+      // One extra GitHub round-trip per PR is cheap; one per PR for every
+      // workspace that never opted into A′ is not.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker({ task: { id: 't-1', missionId: null, title: 'Do thing', taskClass: 'work', context: null } }));
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({ number: 42, html_url: 'https://github.com/owner/repo/pull/42', state: 'open', title: 'My PR' });
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'My PR', head: WORKER_BRANCH },
+      });
+      await POST(req);
+
+      expect(mockEnsureIntegrationBaseForTaskPr).not.toHaveBeenCalled();
+    });
+
     it('respects a stacked-phase task’s predecessor base instead of forcing the integration branch', async () => {
       const predecessorBranch = 'buildd/predecessor00-earlier-thing';
       mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
@@ -1117,7 +1227,8 @@ describe('POST /api/github/pr', () => {
     expect(parsedBody.head).toBe('feature-branch');
     expect(parsedBody.base).toBe('staging');
     expect(parsedBody.draft).toBe(true);
-    expect(parsedBody.body).toBe('Custom body');
+    // The lede now leads the body; the agent's own text follows it verbatim.
+    expect(extractLede(parsedBody.body)?.rest).toBe('Custom body');
   });
 
   it('uses workspace gitConfig.targetBranch when base not provided', async () => {
@@ -1321,7 +1432,7 @@ describe('POST /api/github/pr', () => {
 
     const [, , options] = mockGithubApi.mock.calls[1];
     const parsedBody = JSON.parse(options.body);
-    expect(parsedBody.body).toBe('Created by buildd worker test-worker');
+    expect(extractLede(parsedBody.body)?.rest).toBe('Created by buildd worker test-worker');
   });
 
   it('deduplicates when worker already has a PR', async () => {
@@ -3254,6 +3365,25 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
 
+    it('refuses to merge the mission PR while a sibling task has not opened a PR at all', async () => {
+      // The widened gate, at the worker-facing merge_pr call site. Zero open
+      // PRs used to be read as "the mission is done"; a mission whose remaining
+      // work was still unclaimed passed straight through and lost its branch.
+      missionPrWorkerOk();
+      mockTasksFindMany.mockResolvedValue([
+        { id: 't-2', title: 'Task 2', status: 'pending', mode: 'execution', taskClass: 'work' },
+      ]);
+      mockWorkersFindMany.mockResolvedValue([]);
+
+      const res = await put();
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.error).toContain('Task 2');
+      expect(data.error).toContain('pending');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
     it('merges the mission PR and deletes the integration branch once every task PR has landed', async () => {
       missionPrWorkerOk();
       mockTasksFindMany.mockResolvedValue([
@@ -3942,6 +4072,105 @@ describe('GET /api/github/pr', () => {
     // Must not have silently fallen back to searching across all accessible workspaces.
     expect(mockWorkersFindMany).not.toHaveBeenCalled();
   });
+
+  describe('includeComments opt-in', () => {
+    it('does not fetch issue comments when includeComments is omitted', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+
+      const res = await GET(createGetRequest('w-1', 42));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.comments).toBeUndefined();
+      // Exactly 3 calls: PR details, check-runs, reviews — no 4th comments call.
+      expect(mockGithubApi).toHaveBeenCalledTimes(3);
+    });
+
+    it('fetches and ranks issue comments when includeComments=true, buildd-authored first', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockResolvedValueOnce([
+        { id: 1, user: { login: 'github-actions[bot]', type: 'Bot' }, body: 'CI started', created_at: '2026-01-01T00:00:00Z' },
+        { id: 2, user: { login: 'buildd[bot]', type: 'Bot' }, body: 'Reviewer approved these changes.', created_at: '2026-01-02T00:00:00Z' },
+      ]);
+
+      const url = new URL('http://localhost:3000/api/github/pr');
+      url.searchParams.set('workerId', 'w-1');
+      url.searchParams.set('prNumber', '42');
+      url.searchParams.set('includeComments', 'true');
+      const res = await GET(new NextRequest(url.toString(), {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer bld_test' }),
+      }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.comments.total).toBe(2);
+      expect(data.comments.items[0].kind).toBe('buildd');
+      expect(data.comments.items[0].author).toBe('buildd[bot]');
+      expect(data.comments.items[1].kind).toBe('bot');
+      expect(mockGithubApi).toHaveBeenCalledTimes(4);
+    });
+
+    it('a comments fetch failure degrades to an empty ranked list instead of failing the whole GET', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', prNumber: 42,
+        prUrl: 'https://github.com/owner/repo/pull/42', lastCommitSha: null,
+        workspace: WORKSPACE_OK,
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42, title: 'test', body: null, state: 'open',
+        mergeable: true, mergeable_state: 'clean',
+        html_url: 'https://github.com/owner/repo/pull/42',
+        head: { sha: 'abc123' }, additions: null, deletions: null, changed_files: null,
+      });
+      mockGithubApi.mockResolvedValueOnce({ check_runs: [] });
+      mockGithubApi.mockResolvedValueOnce([]);
+      mockGithubApi.mockImplementationOnce(() => Promise.reject(new Error('rate limited')));
+
+      const url = new URL('http://localhost:3000/api/github/pr');
+      url.searchParams.set('workerId', 'w-1');
+      url.searchParams.set('prNumber', '42');
+      url.searchParams.set('includeComments', 'true');
+      const res = await GET(new NextRequest(url.toString(), {
+        method: 'GET',
+        headers: new Headers({ Authorization: 'Bearer bld_test' }),
+      }));
+      const data = await res.json();
+
+      expect(res.status).toBe(200);
+      expect(data.comments).toEqual({ items: [], total: 0, omitted: 0 });
+    });
+  });
 });
 
 describe('Retry PR body generation', () => {
@@ -4087,5 +4316,171 @@ describe('Retry PR body generation', () => {
     if (patchedBody) {
       expect(uuidPattern.test(patchedBody)).toBe(false);
     }
+  });
+});
+
+// ── The lede leads the PR body ───────────────────────────────────────────────
+// `lede` is required on the agent-facing `create_pr` action, which throws before
+// this route is ever reached (see packages/core/__tests__/mcp-tools-create-pr-lede.test.ts).
+// What this route owns is COMPOSITION: the lede goes into the body itself, so
+// every reader of the body — GitHub, get_pr, the `pr` corpus — gets it first
+// without knowing the field exists. And absence here, which can only mean a
+// non-agent caller, degrades to the same deterministic title-derived fallback
+// the adoption path uses. Nothing in this feature fails a PR over its prose.
+describe('POST /api/github/pr — lede', () => {
+  beforeEach(() => {
+    process.env.NODE_ENV = 'production';
+    mockAuthenticateApiKey.mockReset();
+    mockGithubApi.mockReset();
+    mockWorkersFindFirst.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockGithubReposFindFirst.mockReset();
+    mockWorkersUpdate.mockReset();
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({ where: mock(() => Promise.resolve()) })),
+    });
+  });
+
+  /** Drive a fresh PR creation and return the body sent to GitHub. */
+  async function createAndCaptureBody(requestBody: Record<string, unknown>): Promise<string> {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      branch: 'feature-branch',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: 'Task', context: null },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    let captured = '';
+    mockGithubApi.mockImplementation((_id: number, path: string, init?: any) => {
+      if (typeof path === 'string' && path.endsWith('/pulls') && init?.method === 'POST') {
+        captured = JSON.parse(init.body).body;
+        return Promise.resolve({
+          number: 42,
+          html_url: 'https://github.com/owner/repo/pull/42',
+          state: 'open',
+          title: 'My PR',
+          base: { sha: 'basesha', ref: 'main' },
+        });
+      }
+      return Promise.resolve([]); // dedup check: no existing PRs
+    });
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', head: 'feature-branch', ...requestBody },
+    }));
+    expect(res.status).toBe(200);
+    return captured;
+  }
+
+  it('leads the PR body with the lede, before anything the agent wrote', async () => {
+    const lede = 'An escalation that names a real defect can now dispatch the fix.';
+    const body = await createAndCaptureBody({
+      title: 'feat: dispatch from escalations',
+      lede,
+      body: '## What changed\n\nWidened the apply-recommendation handler.',
+    });
+
+    expect(extractLede(body)?.lede).toBe(lede);
+    expect(body.indexOf(lede)).toBeLessThan(body.indexOf('## What changed'));
+  });
+
+  it('leaves the rest of the body intact and uncapped — the corpus record is not truncated', async () => {
+    const longBody = `## Detail\n\n${'a durable paragraph worth searching later. '.repeat(400)}`;
+    const body = await createAndCaptureBody({
+      title: 'feat: x',
+      lede: 'Short and to the point.',
+      body: longBody,
+    });
+
+    expect(body).toContain(longBody.trim());
+    expect(extractLede(body)?.rest).toBe(longBody);
+  });
+
+  it('composes the lede ahead of the retry lineage stamp, not after it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      branch: 'feature-branch',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: 'Task', context: { iteration: 1, maxIterations: 3 } },
+    });
+    mockGithubReposFindFirst.mockResolvedValue(REPO);
+
+    let captured = '';
+    mockGithubApi.mockImplementation((_id: number, path: string, init?: any) => {
+      if (typeof path === 'string' && path.endsWith('/pulls') && init?.method === 'POST') {
+        captured = JSON.parse(init.body).body;
+        return Promise.resolve({
+          number: 43, html_url: 'https://github.com/owner/repo/pull/43', state: 'open', title: 'x',
+          base: { sha: 'basesha', ref: 'main' },
+        });
+      }
+      return Promise.resolve([]);
+    });
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', title: 'feat: x', head: 'feature-branch', lede: 'Still the point.', body: 'detail' },
+    }));
+
+    expect(res.status).toBe(200);
+    expect(extractLede(captured)?.lede).toBe('Still the point.');
+    expect(captured).toContain('Attempt 1/3');
+  });
+
+  it('falls back deterministically when no lede reaches the route — it never refuses', async () => {
+    const first = await createAndCaptureBody({ title: 'feat(specs): auto-file a friction task' });
+    const second = await createAndCaptureBody({ title: 'feat(specs): auto-file a friction task' });
+
+    expect(extractLede(first)?.lede).toBe('Auto-file a friction task.');
+    expect(first).toBe(second);
+    expect(first).toContain('derived from the PR title');
+  });
+
+  it('registers an externally-created PR with no lede instead of failing it', async () => {
+    mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'w-1',
+      accountId: 'account-1',
+      taskId: 'task-1',
+      name: 'test-worker',
+      prUrl: null,
+      prNumber: null,
+      branch: 'feature-branch',
+      workspace: WORKSPACE_OK,
+      task: { missionId: null, parentTaskId: null, title: 'Task', context: null },
+    });
+
+    const res = await POST(createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        workerId: 'w-1',
+        title: 'feat: opened with gh',
+        head: 'feature-branch',
+        prUrl: 'https://github.com/owner/repo/pull/99',
+      },
+    }));
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.pr.number).toBe(99);
+    // buildd does not own that PR's body on GitHub, so it writes nothing to it.
+    expect(mockGithubApi.mock.calls.some((c: any[]) => c[2]?.method === 'PATCH')).toBe(false);
   });
 });

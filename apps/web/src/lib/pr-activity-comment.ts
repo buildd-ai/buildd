@@ -53,6 +53,7 @@ export type PrActivityKind =
   | 'review_approved_awaiting_human'
   | 'review_changes_requested'
   | 'review_escalated'
+  | 'lede_corrected'
   | 'human_review_required'
   | 'ci_fixing'
   | 'ci_exhausted'
@@ -117,6 +118,14 @@ const PRESENTATION: Record<PrActivityKind, Presentation> = {
     working: false,
     label: 'Escalated to a human',
     status: 'The reviewer stopped and handed this PR to a human.',
+  },
+  // Not a lifecycle state — the review carries on either side of it — so this
+  // keeps `working: true` and never stops the spinner on its own.
+  lede_corrected: {
+    icon: '✍️',
+    working: true,
+    label: 'Opening line corrected',
+    status: 'The reviewer found the PR\'s opening sentence contradicted the diff and replaced it. The original is kept in the body.',
   },
   human_review_required: {
     icon: '👀',

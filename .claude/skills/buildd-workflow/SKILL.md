@@ -177,6 +177,7 @@ Create the PR through buildd (never `gh pr create`):
 buildd action=create_pr params={
   "title": "feat: description of changes",
   "head": "<branch-name>",
+  "lede": "One plain sentence: what changed and why it matters to someone who was not in this task",
   "body": "## Changes\n- What changed and why\n\n## Testing\n- Tests added/modified\n- Verification commands run and their output"
 }
 ```
@@ -185,6 +186,13 @@ buildd action=create_pr params={
 - Conventional title format: `feat:`, `fix:`, `refactor:`, `ci:`, `docs:`
 - Target `dev` for features, `main` only for hotfixes
 - Keep PRs under 400 lines when possible — split larger changes
+- `lede` is **required** and leads the PR body. One sentence, plain language,
+  for a reader who was not in the task. No file paths, no endpoint names, no
+  symbol names — those go in `body`, below it. Nothing grades what you write;
+  the only way it fails is by being missing, and then no PR is created and you
+  simply call again. The owner reads this on a phone.
+  - BAD: `Widened POST /api/prs/[prNumber]/apply-recommendation to accept an open reviewer_escalated note free-text reason as the dispatch instruction`
+  - GOOD: `An escalation that names a real defect can now dispatch the fix, instead of only offering to merge past it`
 
 ## Step 7: Document What You Did
 

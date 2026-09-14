@@ -1,5 +1,5 @@
 import { db } from '@buildd/core/db';
-import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes } from '@buildd/core/db/schema';
+import { tasks, workers, missions as missionsTable, taskSchedules, workspaceSkills, workspaces as workspacesTable, missionNotes, initiativeProgressSeen, secrets, connectors, actionQueueSnoozes, specDiscrepancies } from '@buildd/core/db/schema';
 import { eq, and, inArray, desc, gte, gt, sql, isNotNull, or, isNull, ne, like } from 'drizzle-orm';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import type { ReleaseReadinessItem } from '@/lib/release-readiness';
@@ -15,7 +15,8 @@ import { Greeting } from './greeting';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
-import { buildActionQueue, buildDecideItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, summariseActionQueueAge } from '@/lib/action-queue';
+import { WaitingOnYouDiscrepancyCard } from '@/components/WaitingOnYouDiscrepancyCard';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { WaitingOnYouDecideCard } from '@/components/WaitingOnYouDecideCard';
 import { resolveActionCardContext } from '@/lib/action-card-context';
@@ -243,6 +244,8 @@ export default async function HomePage({
     recommendation: string | null;
     leaseState: 'agent_approved' | 'agent_flagged' | 'pending_human';
     escalationReason: string | null;
+    /** See EscalationRawItem.hasEscalationNote — an open reviewer_escalated note exists. */
+    hasEscalationNote: boolean;
     verdictSummary: string | null;
     /** The SHA the latest reviewer verdict was made against, if any. */
     approvedSha: string | null;
@@ -297,6 +300,9 @@ export default async function HomePage({
   let reviewerGateMap = new Map<string, import('@/lib/reviewer-gate').ReviewerGateResult>();
 
   let actionQueue: import('@/lib/action-queue').ActionQueueItem[] = [];
+  // Open discrepancy rows beyond each workspace's visible top-10 (§12) — never
+  // silently dropped, always surfaced as a count alongside the capped cards.
+  let discrepancyOverflowCount = 0;
 
   let releaseReadinessItems: ReleaseReadinessItem[] = [];
 
@@ -1038,6 +1044,12 @@ export default async function HomePage({
             const escalatedMap = new Map(
               [...reviewerEscalationMap].map(([taskId, evidence]) => [taskId, evidence.reason]),
             );
+            // Distinguishes "an open reviewer_escalated note exists" (an agent
+            // handed this PR back with a concrete statement, dispatchable even
+            // without a structured recommendation) from resolveReviewerGate's
+            // other human-actor reasons, which are pure task-status inference
+            // with no statement to dispatch against. See EscalationRawItem.hasEscalationNote.
+            const escalationNoteTaskIds = new Set(reviewerEscalationMap.keys());
             // The reviewer's own advice on what the human should do next.
             const reviewerRecommendationMap = new Map(
               [...reviewerEscalationMap]
@@ -1340,6 +1352,11 @@ export default async function HomePage({
                   escalationReason: deadZoneInfo
                     ? `${DEFAULT_MAX_CONFLICT_ITERATIONS} conflict-resolution attempts failed — human action required`
                     : (gate?.reason ?? null),
+                  // Dead-zone (conflict retries exhausted) has its own dedicated
+                  // CTA set below and is never sourced from a reviewer note —
+                  // keep it out of the fix-dispatch branch even if a stale
+                  // escalation note happens to also be open for the same task.
+                  hasEscalationNote: !deadZoneInfo && !!w.taskId && escalationNoteTaskIds.has(w.taskId),
                   verdictSummary,
                   approvedSha,
                   headSha: w.lastCommitSha ?? null,
@@ -1708,6 +1725,45 @@ export default async function HomePage({
           }
         }
 
+        // 6. Open spec discrepancy ledger rows (docs/design/spec-conformance.md
+        // §7/§12) — the same table Slice 3's MCP surface (list/get/adjudicate/
+        // promote_discrepancy) reads and writes. buildDiscrepancyItems is the
+        // §12 re-derivation: it drops `accepted`/`resolved` rows itself rather
+        // than trusting this query to have already scoped to `open`, and caps
+        // + ranks per workspace so this query can stay a simple unfiltered read.
+        if (wsIds.length > 0) {
+          const discrepancyRows = await db.query.specDiscrepancies.findMany({
+            where: inArray(specDiscrepancies.workspaceId, wsIds),
+            columns: {
+              id: true, workspaceId: true, specPath: true, assertionId: true,
+              direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
+            },
+          });
+          if (discrepancyRows.length > 0) {
+            const discrepancyWsIds = [...new Set(discrepancyRows.map((r) => r.workspaceId))];
+            const discrepancyWsRows = await db
+              .select({ id: workspacesTable.id, name: workspacesTable.name })
+              .from(workspacesTable)
+              .where(inArray(workspacesTable.id, discrepancyWsIds));
+            const wsNameById = new Map(discrepancyWsRows.map((w) => [w.id, w.name]));
+            const { items: discrepancyItems, overflowCount } = buildDiscrepancyItems(
+              discrepancyRows.map((r) => ({
+                id: r.id,
+                workspaceId: r.workspaceId,
+                workspaceName: wsNameById.get(r.workspaceId) ?? null,
+                specPath: r.specPath,
+                assertionId: r.assertionId,
+                direction: r.direction,
+                status: r.status,
+                firstSeenAt: r.firstSeenAt,
+                promotedMissionId: r.promotedMissionId,
+              })),
+            );
+            waitingOnYou.push(...discrepancyItems);
+            discrepancyOverflowCount = overflowCount;
+          }
+        }
+
         // This user's active gate-card snoozes (SwipeableRow's snooze-24h/3d/7d
         // on a MERGE/REVIEW card) — re-checked against `now` here, not trusted
         // as a standing flag, per the freshness invariant at the top of
@@ -1739,6 +1795,13 @@ export default async function HomePage({
               + `stale_unverified=${age.staleUnverified} stale_ancient=${age.staleAncient} measured=${age.measured}`,
             );
           }
+        }
+
+        // Discrepancy overflow telemetry — the DISCREPANCY-queue equivalent of
+        // the age metric above (§12): a clean-looking top-10 must never hide a
+        // growing backlog the way the Schedules page did.
+        if (discrepancyOverflowCount > 0) {
+          console.log(`[home] discrepancy_queue.overflow_count=${discrepancyOverflowCount}`);
         }
 
         // Tag each item with its mission's initiative and collect the distinct
@@ -1927,6 +1990,9 @@ export default async function HomePage({
                     }
                     if (item.chip === 'DECIDE') {
                       return <WaitingOnYouDecideCard key={item.subjectKey} item={item} />;
+                    }
+                    if (item.chip === 'DISCREPANCY') {
+                      return <WaitingOnYouDiscrepancyCard key={item.subjectKey} item={item} />;
                     }
                     if (item.chip === 'RECONNECT') {
                       return (
@@ -2135,6 +2201,14 @@ export default async function HomePage({
                     return null;
                   })}
                 </div>
+                {/* §12: overflow past the top-10-per-workspace cap is never
+                    silently dropped — a clean-looking queue must not be able
+                    to hide a growing backlog the way the Schedules page did. */}
+                {discrepancyOverflowCount > 0 && (
+                  <p className="text-[11px] text-text-muted mt-2">
+                    +{discrepancyOverflowCount} more discrepanc{discrepancyOverflowCount === 1 ? 'y' : 'ies'} beyond the visible top 10
+                  </p>
+                )}
                 {resolvedEscalations.length > 0 && (
                   <ResolvedEscalationsGroup items={resolvedEscalations} />
                 )}

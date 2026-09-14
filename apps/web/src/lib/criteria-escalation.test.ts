@@ -7,13 +7,23 @@ let missionUpdateSetData: any = null;
 let noteUpdateSetData: any = null;
 let scheduleUpdateSetData: any = null;
 
+// Controls the outcome of escalateCriteriaFailure's atomic UPDATE ... RETURNING
+// claim: non-empty = claimed (proceed), empty = another caller already holds
+// this exact fingerprint (no-op).
+let missionUpdateReturning: any[] = [{ id: 'm-1' }];
+let insertedNotes: any[] = [];
+
 const mockMissionsFindFirst = mock(() => Promise.resolve(missionRow));
 const mockScheduleFindFirst = mock(() => Promise.resolve(scheduleRow));
 
 const mockMissionsUpdate = mock(() => ({
   set: mock((data: any) => {
     missionUpdateSetData = data;
-    return { where: mock(() => Promise.resolve()) };
+    return {
+      where: mock(() => ({
+        returning: mock(() => Promise.resolve(missionUpdateReturning)),
+      })),
+    };
   }),
 }));
 const mockNotesUpdate = mock(() => ({
@@ -28,10 +38,11 @@ const mockScheduleUpdate = mock(() => ({
     return { where: mock(() => Promise.resolve()) };
   }),
 }));
+const mockNotesInsert = mock((vals: any) => {
+  insertedNotes.push(vals);
+  return Promise.resolve([{ id: `note-${insertedNotes.length}`, ...vals }]);
+});
 
-// No `insert` is provided here on purpose: resolveCriteriaEscalation must
-// never file a task, so a stray db.insert() call fails the test suite loudly
-// (TypeError) instead of silently succeeding.
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
@@ -42,6 +53,13 @@ mock.module('@buildd/core/db', () => ({
       if (table === 'taskSchedules') return mockScheduleUpdate();
       if (table === 'missionNotes') return mockNotesUpdate();
       return mockMissionsUpdate();
+    },
+    // Only `missionNotes` inserts are supported — resolveCriteriaEscalation
+    // must never file a task, so an insert on any other table fails the test
+    // suite loudly (TypeError) instead of silently succeeding.
+    insert: (table: any) => {
+      if (table === 'missionNotes') return { values: mockNotesInsert };
+      throw new Error(`unexpected db.insert(${table}) in criteria-escalation`);
     },
   },
 }));
@@ -55,6 +73,7 @@ mock.module('@buildd/core/db/schema', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...args: any[]) => ({ args, type: 'and' }),
+  sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 let feedEvents: any[] = [];
@@ -66,7 +85,7 @@ mock.module('@/lib/mission-feed', () => ({
   postMissionFeedEvent: mockPostMissionFeedEvent,
 }));
 
-import { resolveCriteriaEscalation } from './criteria-escalation';
+import { resolveCriteriaEscalation, escalateCriteriaFailure } from './criteria-escalation';
 
 const systemActor = { kind: 'system' as const, id: null, label: 'test' };
 
@@ -138,5 +157,77 @@ describe('resolveCriteriaEscalation', () => {
   it('names the exit reason in the feed note', async () => {
     await resolveCriteriaEscalation('m-1', 'work_filed', systemActor);
     expect(feedEvents[0].body).toMatch(/work was filed against the blocking criteria/i);
+  });
+});
+
+describe('escalateCriteriaFailure', () => {
+  const baseInput = {
+    missionId: 'm-1',
+    fingerprint: 'fail|c0=fail',
+    note: { type: 'question' as const, status: 'open' as const, title: 'Blocked', body: 'body text' },
+    scheduleId: 'sched-1',
+  };
+
+  beforeEach(() => {
+    missionUpdateSetData = null;
+    missionUpdateReturning = [{ id: 'm-1' }];
+    insertedNotes = [];
+    scheduleUpdateSetData = null;
+    mockMissionsUpdate.mockClear();
+    mockNotesInsert.mockClear();
+    mockScheduleUpdate.mockClear();
+  });
+
+  it('stamps criteriaEscalatedAt + the fingerprint, files the note, and stands the schedule down — one notification', async () => {
+    const result = await escalateCriteriaFailure(baseInput);
+
+    expect(result.escalated).toBe(true);
+    expect(missionUpdateSetData.criteriaEscalatedAt).toBeInstanceOf(Date);
+    expect(missionUpdateSetData.criteriaRearmFingerprint).toBe('fail|c0=fail');
+    expect(insertedNotes).toHaveLength(1);
+    expect(insertedNotes[0]).toMatchObject({
+      missionId: 'm-1',
+      type: 'question',
+      status: 'open',
+      title: 'Blocked',
+      body: 'body text',
+    });
+    expect(scheduleUpdateSetData.enabled).toBe(false);
+    expect(scheduleUpdateSetData.lastDeferralReason).toBe('criteria_escalated');
+  });
+
+  it('does not touch a schedule when none is given', async () => {
+    await escalateCriteriaFailure({ ...baseInput, scheduleId: null });
+    expect(mockScheduleUpdate).not.toHaveBeenCalled();
+  });
+
+  it('does not re-notify when the atomic claim is not won — repeated identical verdicts do not re-notify', async () => {
+    // Empty RETURNING simulates the WHERE clause excluding the row: already
+    // escalated with this exact fingerprint.
+    missionUpdateReturning = [];
+
+    const result = await escalateCriteriaFailure(baseInput);
+
+    expect(result.escalated).toBe(false);
+    expect(insertedNotes).toHaveLength(0);
+    expect(mockScheduleUpdate).not.toHaveBeenCalled();
+  });
+
+  it('attributes the note to the given actor', async () => {
+    await escalateCriteriaFailure({
+      ...baseInput,
+      scheduleId: null,
+      actor: { kind: 'user', id: 'u-1', label: 'alice' },
+    });
+
+    expect(insertedNotes[0].authorType).toBe('user');
+    expect(insertedNotes[0].actorLabel).toBe('alice');
+  });
+
+  it('defaults the note author to system when no actor is given', async () => {
+    await escalateCriteriaFailure({ ...baseInput, scheduleId: null });
+
+    expect(insertedNotes[0].authorType).toBe('system');
+    expect(insertedNotes[0].actorLabel).toBeNull();
   });
 });

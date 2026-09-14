@@ -1,6 +1,27 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "cbm-activation"
+    type: "symbol"
+    name: "buildCbmActivation"
+    path: "apps/runner/src/cbm-enforcement.ts"
+  - id: "cbm-tool-boundary"
+    type: "symbol"
+    name: "CBM_BLOCKED_TOOLS"
+    path: "apps/runner/src/cbm-enforcement.ts"
+  - id: "cbm-bootstrap-tests"
+    type: "test_file"
+    path: "apps/runner/__tests__/unit/cbm-bootstrap.test.ts"
+  - id: "worker-activates-cbm"
+    type: "symbol_reachable"
+    symbol: "buildCbmActivation"
+    entry: "apps/runner/src/workers.ts"
+    as: "read"
+---
 # Codebase-Memory-MCP: Structural Code Intelligence Layer for Buildd Workers
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `docs/design/knowledge-graph-retrieval.md` — offline entity/graph layer for KnowledgeStore (distinct, complementary)
 - `packages/shared/src/types.ts:658` — `McpServerConfig` type

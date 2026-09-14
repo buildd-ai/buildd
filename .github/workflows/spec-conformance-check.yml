@@ -24,6 +24,18 @@
 # context where "last fully-checked commit" is a meaningful, serialized,
 # linear pointer. Both subcommands fail open (never skip, never error the
 # build) when WORKSPACE_ID/BUILDD_API_KEY are unavailable.
+#
+# Contradiction watch: a PR that flips a doc's derived status without
+# updating its declared frontmatter can merge to dev without itself failing
+# this check (see PR #2352 — the doc wasn't in that PR's own failure path),
+# leaving dev's own tip red for whichever unrelated PR merges next to
+# diagnose. scripts/spec-conformance-contradiction-watch.ts runs only on push
+# to dev, after the checker, and diffs the freshly evaluated contradiction
+# set against the last-recorded one (`spec-conformance-contradiction-docs`
+# artifact) — a NEW contradiction files a `[friction]` task immediately
+# instead of waiting on the next PR author to notice. Best-effort only: never
+# fails the build, no-ops on missing WORKSPACE_ID/BUILDD_API_KEY, and a cold
+# start (no prior recorded set) just records state without alerting.
 name: Spec Conformance Check
 
 on:
@@ -64,6 +76,10 @@ jobs:
       - name: Run spec conformance checker
         if: steps.gate.outputs.skip != 'true'
         run: bun run specs:conformance -- --fail-on-contradiction
+
+      - name: Alert on new spec-conformance contradictions (push to dev only)
+        if: always() && github.event_name == 'push' && steps.gate.outputs.skip != 'true'
+        run: bun run scripts/spec-conformance-contradiction-watch.ts
 
       - name: Delta gate — record HEAD as last-checked (push to dev only)
         if: always() && github.event_name == 'push'

@@ -8,6 +8,7 @@ import {
   buildSignatureFamily,
   type FailureWorkerRow,
 } from './failure-analytics';
+import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 // Error strings are real observations from prod. All IDs below are synthetic.
@@ -176,6 +177,29 @@ describe('normalizeErrorSignature', () => {
   it('leaves a short hex value in unrelated text alone', () => {
     // Guard the opposite direction: the ID rule must not claim arbitrary short hex.
     expect(normalizeErrorSignature('config key deadbe missing')).toBe('config key deadbe missing');
+  });
+
+  it('collapses quoted branch-shaped tokens so create_pr rejections share one signature', () => {
+    // Regression: four workers hitting the exact same create_pr branch-mismatch
+    // rejection each embed a different branch name in the quoted head/branch
+    // pair, so four singleton signatures fired instead of one dedupe-able family.
+    const a = "Task PR head 'buildd_ed211c59-consolidate-the-create-pr-bran' does not match this worker's own branch ('buildd_ed211c59-consolidate-the-create-pr-bran-wf4817cb0'). A task PR's head must be the branch this worker actually committed to.";
+    const b = "Task PR head 'mission/spec-conformance-the-ledger-f02e0dc0-wcda33d93' does not match this worker's own branch ('mission/spec-conformance-the-ledger-f02e0dc0'). A task PR's head must be the branch this worker actually committed to.";
+    const expected = "Task PR head '<id>' does not match this worker's own branch ('<id>'). A task PR's head must be the branch this worker actually committed to.";
+    expect(normalizeErrorSignature(a)).toBe(expected);
+    expect(normalizeErrorSignature(b)).toBe(expected);
+    expect(normalizeErrorSignature(a)).toBe(normalizeErrorSignature(b));
+  });
+
+  it('does not collapse a plain quoted field name with no separator', () => {
+    // Guard the opposite direction: a single-word quoted value ('workspaceId')
+    // must stay distinct from another single-word quoted value ('apiKey') —
+    // only slug/path-shaped tokens (with a '-', '_' or '/') are volatile IDs.
+    const a = normalizeErrorSignature("Missing required field 'workspaceId'");
+    const b = normalizeErrorSignature("Missing required field 'apiKey'");
+    expect(a).toBe("Missing required field 'workspaceId'");
+    expect(b).toBe("Missing required field 'apiKey'");
+    expect(a).not.toBe(b);
   });
 
   it('collapses decimal and integer numbers to one placeholder', () => {
@@ -628,5 +652,46 @@ describe('buildSignatureFamily', () => {
     expect(family.topSignatures).toHaveLength(5);
     expect(family.topSignatures[0].signature).toContain('alpha');
     expect(family.topSignatures[0].count).toBe(8);
+  });
+});
+
+// ── create_pr branch-mismatch friction family ─────────────────────────────────
+// Four workers self-filed separate [friction] tasks for the identical create_pr
+// "head does not match this worker's own branch" rejection because each one's
+// embedded branch name normalized to its own signature, so create_task's
+// dedupe-by-frictionSignature (a literal string match — see POST /api/tasks)
+// never saw a repeat. RE_QUOTED_SLUG in error-signature.ts fixes this at the
+// normalizer, so the two friction reports below collapse to one signature —
+// and therefore one frictionSignature — without either caller needing to know
+// about errorPrefix-style family rollup at all.
+describe('create_pr branch-mismatch friction family', () => {
+  const rejection = (head: string, workerBranch: string) =>
+    `Task PR head '${head}' does not match this worker's own branch ('${workerBranch}'). A task PR's head must be the branch this worker actually committed to.`;
+
+  it('two create_pr rejections with different branch tails share one frictionSignature', () => {
+    const first = rejection(
+      'buildd_ed211c59-consolidate-the-create-pr-bran',
+      'buildd_ed211c59-consolidate-the-create-pr-bran-wf4817cb0',
+    );
+    const second = rejection(
+      'mission/spec-conformance-the-ledger-f02e0dc0-wcda33d93',
+      'mission/spec-conformance-the-ledger-f02e0dc0',
+    );
+
+    const sigA = normalizeErrorSignature(first);
+    const sigB = normalizeErrorSignature(second);
+    expect(sigA).toBe(sigB);
+    expect(toFrictionSignature(sigA)).toBe(toFrictionSignature(sigB));
+  });
+
+  it('rolls the family up into one bucket in buildSignatureFamily too', () => {
+    const rows = [
+      worker({ status: 'failed', error: rejection('branch-one', 'branch-one-w1') }),
+      worker({ status: 'failed', error: rejection('mission/branch-two', 'mission/branch-two-w2') }),
+      worker({ status: 'failed', error: TERMINATED }), // unrelated — excluded
+    ];
+    const family = buildSignatureFamily(rows, "Task PR head '");
+    expect(family.count).toBe(2);
+    expect(family.distinctSignatures).toBe(1);
   });
 });

@@ -1,6 +1,30 @@
+---
+status: implemented
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "evaluate-spec-documents"
+    type: "symbol"
+    name: "evaluateAllDocs"
+    path: "packages/core/spec-conformance.ts"
+  - id: "discrepancy-ledger-table"
+    type: "symbol"
+    name: "specDiscrepancies"
+    path: "packages/core/db/schema.ts"
+  - id: "checker-regression-tests"
+    type: "test_file"
+    path: "packages/core/__tests__/spec-conformance.test.ts"
+  - id: "delta-gate-tests"
+    type: "test_file"
+    path: "scripts/spec-conformance-delta-gate.test.ts"
+  - id: "promote-discrepancy-action"
+    type: "symbol_reachable"
+    symbol: "promote_discrepancy"
+    entry: "packages/core/mcp-tools.ts"
+    as: "read"
+---
 # Machine-Checkable Spec Conformance
 
-**Status:** Proposed
+**Status:** Implemented
 **Related:**
 - `scripts/check-schema-drift.ts` — prior art: machine-readable declaration vs introspectable state
 - `apps/runner/src/env-verify.ts` — prior art: declared manifest vs phased runtime checks
@@ -303,7 +327,8 @@ Budget: ~30 s per affected spec, parallelizable. Spec docs that are NOT touched
 by the PR and whose `path`/`file` references are not in the changed set are
 skipped (delta gate, §4).
 
-**Tier 3 — weekly LLM cron (schedule `ecc45c47`)**
+**Tier 3 — weekly LLM cron** (one `create_schedule` row per opted-in
+workspace, per §14 — buildd's own row is `ecc45c47`)
 
 Scope: specs with **zero assertions declared only**. Specs with at least one
 assertion (passing or failing) are out of scope for the cron; CI covers them.
@@ -651,21 +676,32 @@ out. Concretely:
 Nothing about symbol/route/migration resolution is buildd-specific: the
 checker resolves claims against whatever repository a workspace owns via
 `workspaces.repoUrl` (`packages/core/db/schema.ts:1790`) — that anchor already
-exists and needs no new work. What is currently buildd-hardcoded, and must be
-parameterized before another workspace gets this for free:
+exists and needs no new work. Slice 7 closed the two items below; items 3-4
+were already true by construction and are stated for completeness.
 
-1. **The weekly Tier-3 cron is a single hardcoded schedule row** (`ecc45c47`)
-   that exists only in the buildd workspace. Fix: creating the Tier-3 cron
-   becomes a workspace-onboarding step (`create_schedule`), one row per
-   workspace that opts in — never a single ID referenced by name.
-2. **The watch-set roots `docs/design/**` and `docs/specs/**`** are this
+1. **Was:** the weekly Tier-3 cron was a single hand-created schedule row
+   (`ecc45c47`, name `weekly-spec-status-drift`) that existed only in the
+   buildd workspace, with buildd's own paths written into its task prompt.
+   **Now:** `packages/core/spec-conformance-schedule.ts`'s
+   `buildTier3ScheduleParams({ specsRoot, designRoot })` generates
+   `create_schedule`-ready params (name/cron/timezone/title/description) as a
+   pure function of a workspace's own doc roots. Creating the Tier-3 cron is
+   a workspace-onboarding step — `manage_workspaces action=init` now proposes
+   it alongside the risk-class policy scan — not a schedule ID referenced by
+   name. One row per workspace that opts in.
+2. **Was:** the watch-set roots `docs/design/**` and `docs/specs/**` were this
    repo's own documentation layout convention (see this file's own CLAUDE.md
-   "Specs & Docs Layout" section), not a universal one. Fix: a per-workspace
-   `specsRoot` / `designRoot` config, naturally alongside the existing
-   per-workspace `watchedProjects` row (`manage_watched_projects`,
-   `packages/core/db/schema.ts:1726`, which already scopes `repo`, `roleSlug`,
-   and notes per project). Default to buildd's own paths only for the buildd
-   workspace.
+   "Specs & Docs Layout" section), not a universal one.
+   **Now:** `WorkspaceGitConfig.specConformance` (`packages/core/db/schema.ts`)
+   holds `specsRoot`/`designRoot`/`migrationsDir` per workspace — a jsonb
+   field alongside `policyConfig`/`mergePolicy`, not a new table, since the
+   value is free-form config rather than a monitored external resource like
+   `watchedProjects`. Absent ⇒ buildd's own defaults, per
+   `resolveConformanceConfig` in `packages/core/spec-conformance.ts`.
+   `packages/core/spec-conformance-detect.ts`'s `detectSpecConformanceRoots`
+   proposes values from the repo's own file tree (mirrors
+   `detectAllRiskClasses`) via the same `policy-init` scan endpoint that
+   already proposes `policyConfig`.
 3. **The delta gate's keyed artifact, `spec-conformance-last-sha`**, must stay
    workspace-scoped (it already is "per-repo" per §4's original design;
    `create_artifact`'s workspace scoping gives this for free) — stated
@@ -677,10 +713,17 @@ parameterized before another workspace gets this for free:
 
 A new workspace gets machine-checkable spec conformance by: adopting
 SPEC-FORMAT.md-style frontmatter (or an equivalent) in its own `docs/`,
-setting its `specsRoot`/`designRoot`, and opting into the Tier-3 cron via
-`create_schedule`. No buildd-specific code changes for a new workspace to use
-this — only configuration. This is the difference between an internal
-convenience and a reason to run a codebase through buildd at all.
+running `manage_workspaces action=init` to detect and apply its
+`specConformance` roots, and opting into the Tier-3 cron via the
+`create_schedule` call `init` proposes. Its own Tier-1/Tier-2 CI wiring
+(`.github/workflows/spec-conformance-check.yml` and
+`spec-discrepancy-ledger.yml` in this repo) is a template to copy and point
+at the same roots — those workflow files run in the workspace's own CI, not
+through buildd's API, so they stay a per-repo copy rather than something
+buildd injects. No buildd-specific *application* code changes for a new
+workspace to use this — only configuration and a copied workflow file. This
+is the difference between an internal convenience and a reason to run a
+codebase through buildd at all.
 
 ### 15. Ownership: No New Agent Role
 

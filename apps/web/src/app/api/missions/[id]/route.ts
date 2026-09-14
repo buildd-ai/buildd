@@ -16,7 +16,9 @@ import { isValidBranchStrategy, BRANCH_STRATEGIES } from '@buildd/core/branch-st
 import { getTeamTimezone } from '@/lib/team-timezone';
 import { resolveTimezone } from '@buildd/core/timezone';
 import { resolveFeedActor, postMissionFeedEvent, diffGoalCriteria, criterionLabel } from '@/lib/mission-feed';
-import { resolveCriteriaEscalation } from '@/lib/criteria-escalation';
+import { resolveCriteriaEscalation, escalateCriteriaFailure } from '@/lib/criteria-escalation';
+import { criteriaFingerprint } from '@/lib/criteria-rearm';
+import type { GoalCriteriaState } from '@buildd/shared';
 
 const resolveTeamIds = resolveAccountTeamIds;
 
@@ -206,9 +208,13 @@ export async function PATCH(
       isHeartbeat, heartbeatChecklist, activeHoursStart, activeHoursEnd, activeHoursTimezone, maxConcurrentTasks, backend,
       dependsOnMission, gateCondition, mergePolicy, orchestrationMode, externalIssueId, externalIssueUrl, costBudgetUsd,
       integrationBranchEnabled, branchStrategy,
-      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify,
+      pacingMode, pacingMaxPerHour, goalCriteria, autoVerify, autoSurfaceAudit,
       startAt: rawStartAt, startIn: rawStartIn, startAfter: rawStartAfter,
       startMode, arm, actorWorkerId } = body;
+
+    if (autoSurfaceAudit !== undefined && typeof autoSurfaceAudit !== 'boolean') {
+      return NextResponse.json({ error: 'autoSurfaceAudit must be a boolean' }, { status: 400 });
+    }
 
     // Resolved once for the whole request so every feed entry this PATCH
     // produces (status, criteria, config) attributes to the same caller.
@@ -310,15 +316,42 @@ export async function PATCH(
         const storedCriteria = Array.isArray(existing.goalCriteria) ? existing.goalCriteria : [];
         const storedVerdict = (existing.goalCriteriaState as { overall?: string } | null)?.overall ?? null;
         if (storedCriteria.length > 0 && storedVerdict !== 'pass') {
-          await postMissionFeedEvent({
-            missionId: id,
-            type: 'warning',
-            title: 'Goal criteria gate overridden',
-            body:
-              `Mission was set to ${status} while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
-              `${storedCriteria.length} criteria were not satisfied at the time of the override.`,
-            actor,
-          }).catch(e => console.error('[missions] override note failed:', e));
+          const overrideBody =
+            `Mission was set to ${status} while its goal criteria verdict was ${storedVerdict ?? 'not evaluated'}. ` +
+            `${storedCriteria.length} criteria were not satisfied at the time of the override.`;
+
+          if (existing.criteriaEscalatedAt) {
+            // The heartbeat already escalated this exact gate — the status
+            // transition below resolves it (reason 'waived'), which is the
+            // notification. This note is purely the audit trail of the close.
+            await postMissionFeedEvent({
+              missionId: id,
+              type: 'warning',
+              title: 'Goal criteria gate overridden',
+              body: overrideBody,
+              actor,
+            }).catch(e => console.error('[missions] override note failed:', e));
+          } else {
+            // Never escalated: an explicit override can close a mission
+            // before the heartbeat's N-cycle budget ever runs, so this
+            // completion IS the first (and only) chance to tell the owner.
+            // Stamp + notify through the single escalation writer instead of
+            // a passive note — see criteria-escalation.ts's module docstring
+            // for the bug this replaces (criteriaEscalatedAt staying null
+            // forever on every mission closed this way).
+            await escalateCriteriaFailure({
+              missionId: id,
+              fingerprint: criteriaFingerprint(existing.goalCriteriaState as GoalCriteriaState | null),
+              note: {
+                type: 'warning',
+                status: 'answered',
+                title: 'Goal criteria gate overridden',
+                body: overrideBody,
+              },
+              scheduleId: null,
+              actor,
+            }).catch(e => console.error('[missions] override escalation failed:', e));
+          }
         }
       }
 
@@ -438,6 +471,9 @@ export async function PATCH(
     }
     if (autoVerify !== undefined) {
       updateData.autoVerify = autoVerify === true ? true : autoVerify === false ? false : null;
+    }
+    if (autoSurfaceAudit !== undefined) {
+      updateData.autoSurfaceAudit = autoSurfaceAudit;
     }
 
     // Handle schedule updates
@@ -619,8 +655,14 @@ export async function PATCH(
 
       // A completed/archived mission cannot owe anyone a live decision — an
       // escalation left standing here is exactly the dead-card bug this closes.
-      // No-op when the mission was never escalated.
-      if (status === 'completed' || status === 'archived') {
+      // Only fires when `existing` — the row read BEFORE this request's own
+      // writes — already carried an escalation. That guard matters: the
+      // override block above may have just escalated THIS mission moments ago
+      // (a never-escalated mission closing on a fresh failing verdict), and
+      // resolving unconditionally here would immediately null the column it
+      // just stamped, erasing the notification in the same request that sent
+      // it. A pre-existing escalation still resolves exactly as before.
+      if ((status === 'completed' || status === 'archived') && existing.criteriaEscalatedAt) {
         // An escalation can only still be set here if the criteria never
         // passed — a passing verdict would already have cleared it via the
         // 'verdict_changed' exit. So reaching this close with the flag still
@@ -695,6 +737,7 @@ export async function PATCH(
       { key: 'defaultBackend', label: 'backend' },
       { key: 'maxConcurrentTasks', label: 'maxConcurrentTasks' },
       { key: 'autoVerify', label: 'autoVerify' },
+      { key: 'autoSurfaceAudit', label: 'autoSurfaceAudit' },
       { key: 'mergePolicy', label: 'mergePolicy', format: v => (v ? JSON.stringify(v) : 'null') },
       { key: 'integrationBranchEnabled', label: 'integrationBranchEnabled' },
     ];
