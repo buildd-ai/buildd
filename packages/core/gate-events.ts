@@ -20,17 +20,18 @@
  *    row instead of one row per occurrence — the exact failure mode that made
  *    four identical create_pr rejections look like four unrelated events.
  */
+import { eq, desc } from 'drizzle-orm';
 import { db } from './db/client';
 import { gateEvents } from './db/schema';
 import { normalizeErrorSignature } from './error-signature';
 
 /** What the gate decided. */
-export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned';
+export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded';
 
 /** Which door the call came in. */
 export type GateCallerOrigin = 'api' | 'dashboard' | 'worker' | 'system';
 
-export const GATE_OUTCOMES: readonly GateOutcome[] = ['rejected', 'deferred', 'bypassed', 'warned'];
+export const GATE_OUTCOMES: readonly GateOutcome[] = ['rejected', 'deferred', 'bypassed', 'warned', 'stranded'];
 
 /**
  * The gate vocabulary.
@@ -73,6 +74,10 @@ export const GATE_SLUGS = {
   PATH_CLAIM: 'path_claim',
   /** request_pr_review — one reviewer per PR at a time. */
   REVIEWER_SINGLE_FLIGHT: 'reviewer_single_flight',
+  /** POST /api/workers/claim — a candidate task examined and deferred in the dispatch loop, or a claim attempt itself refused. Also carries the stranded-task sweep's `outcome: 'stranded'` rows. */
+  CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral',
+  /** Mission goal-criteria evaluation resolving to NOT_EVALUATED/UNVERIFIED instead of a real verdict. */
+  CRITERIA_NOT_EVALUATED: 'criteria_not_evaluated',
 } as const;
 
 export type GateSlug = (typeof GATE_SLUGS)[keyof typeof GATE_SLUGS];
@@ -150,6 +155,67 @@ export async function recordGateEvent(input: RecordGateEventInput): Promise<stri
     // Deliberately swallowed. A console line is the whole escalation path: the
     // alternative is a ledger that can fail the very request it is observing.
     console.error(`[gate-ledger] failed to record ${input.gate}/${input.outcome}:`, err);
+    return null;
+  }
+}
+
+/**
+ * Write a deferral event, coalescing repeats.
+ *
+ * The claim loop re-examines every pending task on every poll (seconds apart),
+ * so a task stuck behind the same gate for hours would otherwise write one row
+ * per poll forever. Instead: if the task's most recent gate event is a
+ * `deferred` row with the SAME reason, bump its `detail.consecutiveDeferrals`
+ * and `occurredAt` in place rather than inserting a new row. A different
+ * reason (or no prior row) starts a fresh streak at 1 — the reason change
+ * itself is the signal worth a new row for.
+ *
+ * `outcome` is required in `input` so this same coalescing shape can also
+ * record `stranded` rows from the sweep (also collapsed by (taskId, reason)),
+ * not just `deferred` ones from the claim loop.
+ *
+ * Falls back to a plain `recordGateEvent` insert when there's no `taskId` to
+ * key the lookup on.
+ */
+export async function recordOrCoalesceDeferral(input: RecordGateEventInput): Promise<string | null> {
+  const taskId = uuidOrNull(input.taskId);
+  if (!taskId) return recordGateEvent(input);
+
+  const normalizedReason = normalizeErrorSignature(input.reason);
+
+  try {
+    const [latest] = await db
+      .select({ id: gateEvents.id, reason: gateEvents.reason, outcome: gateEvents.outcome, detail: gateEvents.detail })
+      .from(gateEvents)
+      .where(eq(gateEvents.taskId, taskId))
+      .orderBy(desc(gateEvents.occurredAt))
+      .limit(1);
+
+    if (latest && latest.outcome === input.outcome && latest.reason === normalizedReason) {
+      const priorDetail = (latest.detail as Record<string, unknown> | null) ?? {};
+      const priorCount = typeof priorDetail.consecutiveDeferrals === 'number' ? priorDetail.consecutiveDeferrals : 1;
+      // `occurredAt` moves forward on every coalesced poll, so it can never
+      // answer "how long has this been stuck" — `firstDeferredAt` is the one
+      // field that must survive every update untouched (spread order below:
+      // priorDetail first, so a `firstDeferredAt` already on the row wins over
+      // anything `input.detail` might carry).
+      const firstDeferredAt = typeof priorDetail.firstDeferredAt === 'string' ? priorDetail.firstDeferredAt : new Date().toISOString();
+      await db
+        .update(gateEvents)
+        .set({
+          occurredAt: new Date(),
+          detail: boundDetail({ ...priorDetail, ...(input.detail ?? {}), firstDeferredAt, consecutiveDeferrals: priorCount + 1 }),
+        })
+        .where(eq(gateEvents.id, latest.id));
+      return latest.id;
+    }
+
+    return recordGateEvent({
+      ...input,
+      detail: { ...(input.detail ?? {}), firstDeferredAt: new Date().toISOString(), consecutiveDeferrals: 1 },
+    });
+  } catch (err) {
+    console.error(`[gate-ledger] failed to coalesce ${input.gate}/${input.outcome}:`, err);
     return null;
   }
 }

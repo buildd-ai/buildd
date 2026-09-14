@@ -3,10 +3,18 @@
  *
  * Fires an ops alert when the last N terminal workers (completed / failed /
  * error — see CBM_HEALTH_TERMINAL_STATUSES) in a workspace all report
- * cbmOutcome='disabled' with disableReason='binary_absent'. This condition means
- * the codebase-memory-mcp binary is missing from the runner image — a broken
- * platform capability that silently degrades every agent session without any
- * per-task signal surfacing it.
+ * cbmOutcome='disabled', regardless of *why*. It used to gate on
+ * disableReason='binary_absent' specifically — the failure mode the detector
+ * was built for (the codebase-memory-mcp binary missing from the runner
+ * image) — but disableReason also covers 'no_worktree', 'role_opt_out',
+ * 'codex_task' and 'mount_unavailable' (apps/runner/src/types.ts), and a
+ * sustained streak of any of those is exactly as silent without this alert.
+ * A real incident (worktree-creation branch collision producing
+ * 'no_worktree') proved the narrower predicate blind: see task ddf2f3c0.
+ *
+ * The specific disableReason(s) observed in the streak are named in the
+ * alert body — binary_absent keeps its known remediation (the image pin)
+ * called out explicitly, since that one case has an established fix.
  *
  * The check is best-effort: never throws, never blocks the caller. The dedupeKey
  * ensures one alert per workspace per reportOps throttle window (default 1h).
@@ -40,10 +48,14 @@ function opsEnabled(): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-function isBinaryAbsent(cbm: unknown): boolean {
+function isDisabled(cbm: unknown): boolean {
   if (!cbm || typeof cbm !== 'object') return false;
   const c = cbm as Record<string, unknown>;
-  return c.outcome === 'disabled' && c.disableReason === 'binary_absent';
+  return c.outcome === 'disabled';
+}
+
+function disableReasonOf(cbm: Record<string, unknown>): string {
+  return typeof cbm.disableReason === 'string' ? cbm.disableReason : 'unknown';
 }
 
 /**
@@ -92,8 +104,8 @@ export async function detectCbmFleetDisabled(
   try {
     if (!opsEnabled()) return;
 
-    // Short-circuit: current worker is not binary_absent, so the streak is broken.
-    if (!isBinaryAbsent(currentCbm)) return;
+    // Short-circuit: current worker is not disabled at all, so the streak is broken.
+    if (!isDisabled(currentCbm)) return;
 
     // Query the last (N-1) completed workers with CBM metrics.
     const rows = await db.query.workers.findMany({
@@ -111,14 +123,23 @@ export async function detectCbmFleetDisabled(
     const prior = cbmWindow(rows, CBM_FLEET_THRESHOLD - 1);
     if (prior.length < CBM_FLEET_THRESHOLD - 1) return; // not enough history yet
 
-    const allPriorBinaryAbsent = prior.every(isBinaryAbsent);
-    if (!allPriorBinaryAbsent) return;
+    const allPriorDisabled = prior.every(isDisabled);
+    if (!allPriorDisabled) return;
+
+    const reasons = new Set<string>([
+      disableReasonOf(currentCbm as Record<string, unknown>),
+      ...prior.map(disableReasonOf),
+    ]);
+    const reasonList = [...reasons].sort().join(', ');
+    const remediation = reasons.has('binary_absent')
+      ? ' /opt/buildd/bin/codebase-memory-mcp missing from runner image for at least one worker in the streak — re-run install.sh or rebuild the worker image.'
+      : '';
 
     await reportOps({
       source: 'cbm-health',
       severity: 'error',
-      message: `CBM disabled (binary_absent) on last ${CBM_FLEET_THRESHOLD} workers`,
-      detail: `workspace=${workspaceId} — /opt/buildd/bin/codebase-memory-mcp missing from runner image. Re-run install.sh or rebuild the worker image.`,
+      message: `CBM disabled on last ${CBM_FLEET_THRESHOLD} workers (${reasonList})`,
+      detail: `workspace=${workspaceId} — disableReason(s) across the streak: ${reasonList}.${remediation}`,
       dedupeKey: `cbm-fleet-disabled:${workspaceId}`,
     });
   } catch {

@@ -162,6 +162,36 @@ describe('DEFAULT_ROLES', () => {
     });
   });
 
+  describe('Reviewer escalation doctrine', () => {
+    const c = () => bySlug.reviewer.content;
+
+    it('does not hardcode the retired schema.ts path rule', () => {
+      expect(c()).not.toContain('drizzle/*.sql, packages/core/db/schema.ts');
+      expect(c()).not.toContain('Do NOT approve a PR that touches the DB schema. Escalate it.');
+    });
+
+    it('defers schema/migration risk to the mechanical policy verdict, not reviewer discretion', () => {
+      expect(c()).toMatch(/mechanical/);
+      expect(c()).toMatch(/no generated migration is not a schema change/);
+    });
+
+    it('splits security findings into a request-changes branch and an escalate branch', () => {
+      // Escalate branch: the fix itself is the open question.
+      expect(c()).toMatch(/auth\/authz boundary/);
+      expect(c()).toMatch(/cannot name a concrete fix/);
+      // Request-changes branch: fix and tests are nameable.
+      expect(c()).toContain('REQUEST CHANGES (do NOT escalate) when you find a security-shaped defect');
+      expect(c()).toMatch(/can name the\s+concrete fix/);
+      expect(c()).toMatch(/can name the regression test/);
+      // No longer a single unconditional line.
+      expect(c()).not.toContain('You detect a possible security issue');
+    });
+
+    it('never lets either security branch merge without review', () => {
+      expect(c()).toMatch(/Both paths block the merge/);
+    });
+  });
+
   it('Organizer prompt names roleSlug as the real routing lever and documents tier', () => {
     const c = bySlug.organizer.content;
     // roleSlug is what actually selects a model for a planned task.

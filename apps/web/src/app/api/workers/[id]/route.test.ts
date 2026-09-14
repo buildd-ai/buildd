@@ -2296,6 +2296,52 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
     });
 
+    it('completes a bookkeeping task with artifact_required + a satisfied artifact even on a fallback summary', async () => {
+      // The completed-work aggregator (packages/core/task-dependencies.ts) is
+      // taskClass='bookkeeping' + outputRequirement='artifact_required'. If it
+      // produces its synthesis artifact but the session ends (e.g. max turns)
+      // before the agent calls complete_task itself, summarySource is
+      // 'fallback'. The bookkeeping-fallback check must not override an
+      // already-satisfied artifact_required outcome — that would discard a
+      // confirmed deliverable, the exact failure the surrounding code's
+      // top-of-function comment warns against.
+      const updatedWorker = { id: 'worker-1', status: 'completed', accountId: 'account-1', workspaceId: 'ws-1' };
+      mockWorkersUpdate.mockReturnValue({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => [updatedWorker]),
+          })),
+        })),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/task-1-aggregator',
+        commitCount: 0,
+        dirtyWorktree: false,
+        prUrl: null,
+        prNumber: null,
+        pendingInstructions: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', outputRequirement: 'artifact_required', taskClass: 'bookkeeping' });
+      mockArtifactsFindMany.mockResolvedValue([{ id: 'artifact-1', workerId: 'worker-1' }]);
+      mockWorkspacesFindFirst.mockResolvedValue(null);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'completed', summary: 'Synthesis artifact produced.', summarySource: 'fallback' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+    });
+
     it('completes normally with a fallback summary when a PR exists (auto mode)', async () => {
       // The fallback-summary check must not override the normal hasPR
       // satisfier — a session that ends right after create_pr but before the

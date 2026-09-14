@@ -23,6 +23,9 @@ interface InsertedRow {
 
 let inserted: InsertedRow[] = [];
 let insertShouldThrow = false;
+/** What `recordOrCoalesceDeferral`'s lookup SELECT should return — the "latest row for this task" fixture. */
+let latestRow: { id: string; reason: string; outcome: string; detail: Record<string, unknown> | null } | undefined;
+let updateCalls: Array<{ id: string; set: Record<string, unknown> }> = [];
 
 mock.module('../db/client', () => ({
   db: {
@@ -35,16 +38,35 @@ mock.module('../db/client', () => ({
         },
       }),
     }),
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: async () => (latestRow ? [latestRow] : []),
+          }),
+        }),
+      }),
+    }),
+    update: () => ({
+      set: (set: Record<string, unknown>) => ({
+        where: async () => {
+          updateCalls.push({ id: latestRow!.id, set });
+        },
+      }),
+    }),
   },
 }));
 
-const { recordGateEvent, GATE_SLUGS } = await import('../gate-events');
+const { recordGateEvent, recordOrCoalesceDeferral, GATE_SLUGS } = await import('../gate-events');
 
 const WS = '11111111-2222-4333-8444-555555555555';
+const TASK = '99999999-8888-4777-8666-555555555555';
 
 beforeEach(() => {
   inserted = [];
   insertShouldThrow = false;
+  latestRow = undefined;
+  updateCalls = [];
 });
 
 describe('recordGateEvent', () => {
@@ -133,5 +155,94 @@ describe('recordGateEvent', () => {
     });
     expect(inserted).toHaveLength(1);
     expect(inserted[0].detail).toEqual({ unserializable: true });
+  });
+});
+
+describe('recordOrCoalesceDeferral', () => {
+  it('inserts a fresh row at consecutiveDeferrals=1 when there is no prior row', async () => {
+    latestRow = undefined;
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'workspace_cap',
+      taskId: TASK,
+    });
+
+    expect(inserted).toHaveLength(1);
+    expect(updateCalls).toHaveLength(0);
+    expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
+    expect(typeof inserted[0].detail?.firstDeferredAt).toBe('string');
+  });
+
+  it('coalesces a repeat of the SAME (taskId, outcome, reason) into the latest row instead of inserting a new one', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'workspace_cap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 3, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
+    };
+
+    const id = await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'workspace_cap',
+      taskId: TASK,
+    });
+
+    expect(id).toBe('row-existing');
+    expect(inserted).toHaveLength(0);
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0].id).toBe('row-existing');
+    expect((updateCalls[0].set.detail as Record<string, unknown>).consecutiveDeferrals).toBe(4);
+    // firstDeferredAt must survive untouched — it is the one field a coalesced
+    // update is not allowed to move forward, or "how long has this been stuck"
+    // becomes unanswerable.
+    expect((updateCalls[0].set.detail as Record<string, unknown>).firstDeferredAt).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('starts a fresh streak when the reason changes, even for the same task', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'workspace_cap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 10, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
+    };
+
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: 'mission_paced',
+      taskId: TASK,
+    });
+
+    expect(updateCalls).toHaveLength(0);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].reason).toBe('mission_paced');
+    expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
+  });
+
+  it('starts a fresh streak when the outcome changes (deferred → stranded) even with the same reason', async () => {
+    latestRow = {
+      id: 'row-existing',
+      reason: 'workspace_cap',
+      outcome: 'deferred',
+      detail: { consecutiveDeferrals: 50, firstDeferredAt: '2026-01-01T00:00:00.000Z' },
+    };
+
+    await recordOrCoalesceDeferral({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'sweepStrandedTasks',
+      outcome: 'stranded',
+      reason: 'workspace_cap',
+      taskId: TASK,
+    });
+
+    expect(updateCalls).toHaveLength(0);
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0].outcome).toBe('stranded');
+    expect(inserted[0].detail?.consecutiveDeferrals).toBe(1);
   });
 });

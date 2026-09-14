@@ -882,6 +882,12 @@ export const missions = pgTable('missions', {
   // see ensureMissionSurfaceAudit in apps/web/src/lib/mission-surface-audit.ts.
   // Set false to opt a non-UI or intentionally-unaudited mission out.
   autoSurfaceAudit: boolean('auto_surface_audit').default(true).notNull(),
+  // Stamped once, the first time status transitions to 'completed' (the
+  // automated predicate in mission-completion.ts, or an explicit human PATCH).
+  // Never reset. Null means "not completed, or completed before this column
+  // existed" — both read as no-baseline, never as "just now", to a derived
+  // metric keyed off it (docs/design/derived-metric-availability.md).
+  completedAt: timestamp('completed_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -3125,7 +3131,7 @@ export const gateEvents = pgTable('gate_events', {
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
-  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned'>(),
+  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded'>(),
   // normalizeErrorSignature() of the caller-facing message — the SAME
   // normalizer get_failure_analytics clusters worker errors with, so a family
   // whose message embeds a branch name or an id collapses to one row here too.

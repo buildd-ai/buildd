@@ -14,6 +14,7 @@ import { workspaces } from '@buildd/core/db/schema';
 import { eq, or } from 'drizzle-orm';
 import {
   recordGateEvent,
+  recordOrCoalesceDeferral,
   GATE_SLUGS,
   type GateCallerOrigin,
   type RecordGateEventInput,
@@ -49,6 +50,16 @@ export function gateCallerOrigin(input: {
  */
 export function fireGateEvent(input: RecordGateEventInput): void {
   void recordGateEvent(input).catch(() => {});
+}
+
+/**
+ * Record a `deferred`/`stranded` gate event without awaiting it, coalescing
+ * repeats for the same (taskId, reason) into one row's `consecutiveDeferrals`
+ * counter instead of inserting a fresh row every poll. See
+ * `recordOrCoalesceDeferral` for the coalescing rule.
+ */
+export function fireDeferralEvent(input: RecordGateEventInput): void {
+  void recordOrCoalesceDeferral(input).catch(() => {});
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

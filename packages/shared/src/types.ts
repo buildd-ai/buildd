@@ -1351,11 +1351,12 @@ export const DANGEROUS_PATTERNS = [
   // Excludes a subdirectory of /tmp or /var/tmp (optionally quoted) — the
   // `$(mktemp -d)` scratch-directory cleanup pattern is a safe, isolated
   // backup/test/restore idiom, not a destructive command. The bare root
-  // (`rm -rf /tmp`) and everything else under [/~] is still blocked. The
-  // exemption checks the literal string only, so it must also reject any
-  // `..` segment in the tail (e.g. `rm -rf /tmp/../etc`) — otherwise a
-  // traversal component walks the resolved path straight out of /tmp.
-  /rm\s+-rf\s+["']?(?!(?:\/tmp\/|\/var\/tmp\/)(?!.*\.\.))[\/~]/,
+  // (`rm -rf /tmp`) and everything else under [/~] is still blocked.
+  /rm\s+-rf\s+["']?(?!\/tmp\/|\/var\/tmp\/)[\/~]/,
+  // The exemption above only checks the literal prefix, not where the path
+  // actually resolves — `/tmp/../etc` starts with `/tmp/` but escapes it.
+  // Re-block any /tmp or /var/tmp path containing a `..` segment.
+  /rm\s+-rf\s+["']?\/(?:tmp|var\/tmp)\/[^\s"']*\.\.[^\s"']*/,
   /sudo\s+/,
   />\s*\/dev\/(?!null)/,
   /mkfs\./,
@@ -1744,13 +1745,15 @@ export interface FailureAnalyticsResponse {
 /** Shares the failure vocabulary — one window concept across both surfaces. */
 export type GateWindow = FailureWindow;
 
-export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned';
+export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded';
 
 export interface GateOutcomeCounts {
   rejected: number;
   deferred: number;
   bypassed: number;
   warned: number;
+  /** A task deferred long enough to be flagged by the stranded-task sweep. Excluded from bypassRatePct's denominator, same as `deferred`. */
+  stranded: number;
 }
 
 /** One normalized reason within a gate. */

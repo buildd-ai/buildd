@@ -5,6 +5,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
  * `command` goal criteria: verified by running the command, never by asking a
@@ -358,7 +359,7 @@ export async function handleCriteriaVerificationOutcome(
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, task.missionId),
-    columns: { id: true, goalCriteria: true, goalCriteriaState: true },
+    columns: { id: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
   });
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;
   if (!state) return { applied: false };
@@ -391,10 +392,13 @@ export async function handleCriteriaVerificationOutcome(
   const ev = (evidence && typeof evidence === 'object' ? evidence as Record<string, unknown> : null);
   const ran = classifyCommandRun(task.result as Record<string, unknown> | null);
   let verdict: 'pass' | 'fail' | 'UNVERIFIED';
+  let unverifiedCause: string | null = null;
   if (ev && typeof ev.outcome === 'string') {
     verdict = ev.outcome === 'ok' ? 'pass' : ev.outcome === 'timeout' || ev.outcome === 'exec_error' ? 'UNVERIFIED' : 'fail';
+    if (verdict === 'UNVERIFIED') unverifiedCause = ev.outcome;
   } else if (ran !== null) {
     verdict = ran === 'ok' ? 'pass' : ran === 'unresolved' ? 'UNVERIFIED' : 'fail';
+    if (verdict === 'UNVERIFIED') unverifiedCause = 'exec_error';
   } else {
     // Neither the runner's evidence nor the loop history says the command ever
     // ran. That holds even when the task itself reached `failed`/`cancelled` —
@@ -407,7 +411,32 @@ export async function handleCriteriaVerificationOutcome(
     console.warn(
       `[criteria-verify] verification task ${task.id} finished with no command evidence — criterion ${marker.criterionIndex} left unresolved`
     );
+    fireGateEvent({
+      gate: GATE_SLUGS.CRITERIA_NOT_EVALUATED,
+      surface: 'handleCriteriaVerificationOutcome',
+      outcome: 'warned',
+      reason: 'evaluator_no_output',
+      workspaceId: mission?.workspaceId ?? null,
+      missionId: task.missionId,
+      taskId: task.id,
+      callerOrigin: 'system',
+      detail: { criterionIndex: marker.criterionIndex, taskStatus: task.status },
+    });
     return { applied: false };
+  }
+
+  if (verdict === 'UNVERIFIED') {
+    fireGateEvent({
+      gate: GATE_SLUGS.CRITERIA_NOT_EVALUATED,
+      surface: 'handleCriteriaVerificationOutcome',
+      outcome: 'warned',
+      reason: unverifiedCause ?? 'exec_error',
+      workspaceId: mission?.workspaceId ?? null,
+      missionId: task.missionId,
+      taskId: task.id,
+      callerOrigin: 'system',
+      detail: { criterionIndex: marker.criterionIndex, command: marker.command },
+    });
   }
 
   criterion.verdict = verdict;
