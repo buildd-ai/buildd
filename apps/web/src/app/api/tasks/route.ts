@@ -937,21 +937,31 @@ export async function POST(req: NextRequest) {
       missionIntegrationBaseBranch = missionIntegrationBase(mission);
     }
 
-    // Manifest gate: a mission task whose deliverable is a PR — explicit
-    // 'pr_required', or 'auto' (the default, which resolves to a PR for an
-    // ordinary builder task) — must declare a concrete pathManifest.
+    // Manifest gate: a mission task whose deliverable is EXPLICITLY declared
+    // as a PR ('pr_required') must declare a concrete pathManifest.
     // shouldSerializeByManifest/computeOverlapEdges can only serialize
     // concrete manifests (see isAdvisoryManifest); an undeclared scope makes
     // a sibling task race instead of wait, which is the exact failure mode
     // #1759/#1763 hit. 'artifact_required' and 'none' mission tasks, and any
     // non-mission task, are exempt — they carry no PR-overlap risk.
+    //
+    // Deliberately does NOT fire on 'auto' (the default): auto has no
+    // creation-time resolution — whether it ends up needing a PR is decided
+    // at completion from actual worker behaviour (commit count + PR/artifact
+    // presence), not at filing time. Gating on it made the manifest demand
+    // fire for the common case of investigation/friction/bookkeeping-shaped
+    // mission tasks that never intend to produce a PR (see the friction
+    // report this comment accompanies). Callers that already know they'll
+    // ship a PR should still declare outputRequirement: 'pr_required'
+    // explicitly, which keeps this gate in effect for them.
     if (
       missionId &&
-      (outputRequirement === 'pr_required' || outputRequirement === 'auto') &&
+      outputRequirement === 'pr_required' &&
       !hasConcretePathManifest(pathManifest)
     ) {
       const error =
-        'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]';
+        'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
+        "If this task won't produce a PR, set outputRequirement: 'none' instead.";
       fireGateEvent({
         gate: GATE_SLUGS.MANIFEST_REQUIRED,
         surface: 'POST /api/tasks',

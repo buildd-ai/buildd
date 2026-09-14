@@ -2124,7 +2124,18 @@ export async function handleBuilddAction(
         'kind', 'complexity',
       ]);
       const unknownParams = Object.keys(params).filter(key => !allowedCreateTaskParams.has(key));
-      if (unknownParams.length > 0) throw new Error(`Unknown create_task parameter(s): ${unknownParams.join(', ')}`);
+      if (unknownParams.length > 0) {
+        // taskClass is a common guess (it gates completion behavior elsewhere —
+        // see the bookkeeping exemptions in PR #2380/#2386) but it is stamped
+        // server-side per creation path, never client-settable. Naming the
+        // real fix inline saves the caller a round trip.
+        const hints = unknownParams.map(key =>
+          key === 'taskClass'
+            ? `${key} (not settable — taskClass is stamped server-side; use outputRequirement instead)`
+            : key
+        );
+        throw new Error(`Unknown create_task parameter(s): ${hints.join(', ')}`);
+      }
 
       // Routing inputs: kind × complexity feed the claim-time model matrix.
       // Validated up front and rejected — never dropped — because a silently

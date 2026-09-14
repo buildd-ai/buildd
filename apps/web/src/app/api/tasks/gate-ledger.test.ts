@@ -177,6 +177,7 @@ describe('POST /api/tasks — gate ledger wiring', () => {
       title: 'Do a thing',
       description: 'x',
       missionId: MISSION,
+      outputRequirement: 'pr_required',
     }));
     await settle();
 
@@ -272,7 +273,13 @@ describe('POST /api/tasks — gate ledger wiring', () => {
   it('leaves the response untouched when the ledger itself is down', async () => {
     ledgerShouldReject = true;
 
-    const refused = await POST(post({ workspaceId: WS, title: 'x', description: 'y', missionId: MISSION }));
+    const refused = await POST(post({
+      workspaceId: WS,
+      title: 'x',
+      description: 'y',
+      missionId: MISSION,
+      outputRequirement: 'pr_required',
+    }));
     await settle();
     expect(refused.status).toBe(400);
 
