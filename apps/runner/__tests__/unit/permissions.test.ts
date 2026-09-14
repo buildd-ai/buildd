@@ -94,12 +94,20 @@ describe('DANGEROUS_PATTERNS', () => {
       expect(isDangerousCommand('rm -rf /tmp/../etc')).toBe(true);
     });
 
+    test('blocks path traversal out of /tmp via .. to a specific file', () => {
+      expect(isDangerousCommand('rm -rf /tmp/../etc/passwd')).toBe(true);
+    });
+
     test('blocks path traversal out of /tmp via nested ..', () => {
       expect(isDangerousCommand('rm -rf /tmp/foo/../../home/user')).toBe(true);
     });
 
     test('blocks path traversal out of /var/tmp via ..', () => {
       expect(isDangerousCommand('rm -rf /var/tmp/../etc')).toBe(true);
+    });
+
+    test('blocks path traversal out of /var/tmp via .. to a specific file', () => {
+      expect(isDangerousCommand('rm -rf /var/tmp/../etc/passwd')).toBe(true);
     });
 
     test('blocks quoted path traversal out of /tmp via ..', () => {
