@@ -301,6 +301,16 @@ describe('create_task — parentTaskId support', () => {
     )).rejects.toThrow('Unknown create_task parameter(s): startTomorrow');
     expect(mockApi).not.toHaveBeenCalled();
   });
+
+  it('rejects taskClass with a hint pointing to outputRequirement instead of a bare unknown-param error', async () => {
+    expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'Test', taskClass: 'bookkeeping' },
+      createMockContext(),
+    )).rejects.toThrow('taskClass is stamped server-side; use outputRequirement instead');
+    expect(mockApi).not.toHaveBeenCalled();
+  });
 });
 
 describe('create_task — similar open task detection', () => {
