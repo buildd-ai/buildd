@@ -966,8 +966,13 @@ export const INVARIANTS: Invariant[] = [
         const drift = countBaseDrift(s, w);
         if (drift < PR_OUTPACED_DRIFT) continue;
         out.push({
-          entityId: w.id,
-          entityKind: 'worker',
+          // The PR, not the worker row, is what's decaying, and it's the PR
+          // that must dedupe: a worker id is not guaranteed stable across two
+          // sweep runs against what is, to a human, the same breach — see
+          // `orphaned_integration_base` just above, which dedupes the same way
+          // for the same reason.
+          entityId: String(w.prNumber),
+          entityKind: 'pull_request',
           workspaceId: w.workspaceId,
           detail:
             `PR #${w.prNumber} open ${Math.round(ageMs / HOUR)}h; ` +

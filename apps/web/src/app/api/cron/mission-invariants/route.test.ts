@@ -329,7 +329,7 @@ describe('staging', () => {
     expect(inserted).toHaveLength(1);
     expect(inserted[0].title).toStartWith('[friction] open_pr_outpaced_by_base');
     expect(inserted[0].context.frictionSignature).toBe(
-      invariantFrictionSignature('open_pr_outpaced_by_base', 'w-outpaced'),
+      invariantFrictionSignature('open_pr_outpaced_by_base', '7777'),
     );
     // The evidence a claiming agent acts on: which PR, how old, how far behind.
     expect(inserted[0].description).toContain('#7777');

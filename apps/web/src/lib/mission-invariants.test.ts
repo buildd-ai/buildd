@@ -906,7 +906,7 @@ describe('open_pr_outpaced_by_base', () => {
       workers: [openPr(20 * HOUR)],
       baseMerges: merges(PR_OUTPACED_DRIFT),
     });
-    expect(reported(key, s)).toEqual(['w-open']);
+    expect(reported(key, s)).toEqual(['4242']);
   });
 
   it('stays silent one merge below the drift threshold', () => {
@@ -1000,7 +1000,7 @@ describe('open_pr_outpaced_by_base', () => {
       workers: [openPr(20 * HOUR, { status: 'running', completedAt: null, createdAt: ago(20 * HOUR) })],
       baseMerges: merges(PR_OUTPACED_DRIFT),
     });
-    expect(reported(key, s)).toEqual(['w-open']);
+    expect(reported(key, s)).toEqual(['4242']);
 
     // …and createdAt is a real anchor, not a stand-in for "very old": the same
     // worker an hour into its run is young and must stay silent however much
@@ -1036,9 +1036,27 @@ describe('open_pr_outpaced_by_base', () => {
     expect(v.detail).toContain('#4242');
     expect(v.detail).toContain(String(PR_OUTPACED_DRIFT));
     expect(v.detail).toContain('dev');
-    expect(v.entityKind).toBe('worker');
+    expect(v.entityKind).toBe('pull_request');
     expect(v.workspaceId).toBe('ws-1');
     expect(Math.round(v.ageMs / HOUR)).toBe(20);
+  });
+
+  it('keys the violation on the PR, not the worker row, so a worker-id change does not dodge dedupe', () => {
+    // Filed as friction: the sweep dispatched two remediation tasks for the
+    // same PR because the two breaches carried different worker ids and the
+    // route's dedupe signature is keyed on entityId. The PR is the thing that
+    // is actually decaying and the thing a human/agent acts on — it must be
+    // the stable half of the signature, same as `orphaned_integration_base`.
+    const s = snapshot({
+      workers: [openPr(20 * HOUR, { id: 'w-first-sighting' })],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+    });
+    const later = snapshot({
+      workers: [openPr(24 * HOUR, { id: 'w-second-sighting' })],
+      baseMerges: merges(PR_OUTPACED_DRIFT + 3),
+    });
+    expect(reported(key, s)).toEqual(['4242']);
+    expect(reported(key, later)).toEqual(['4242']);
   });
 
   it('counts drift with countBaseDrift, which is the only reader of baseMerges', () => {
