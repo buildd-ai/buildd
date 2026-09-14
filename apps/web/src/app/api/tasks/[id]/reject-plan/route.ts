@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks } from '@buildd/core/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { tasks, specDiscrepancies } from '@buildd/core/db/schema';
+import { eq, and, sql, inArray } from 'drizzle-orm';
+import type { SpecDocFixContext } from '@/lib/approve-plan';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
@@ -89,6 +90,29 @@ export async function POST(
     if (!rejected) {
       // Someone else rejected this plan between our read and our write.
       return NextResponse.json({ error: 'Plan already rejected' }, { status: 409 });
+    }
+
+    // A doc-fix task's plan is an OPTIONAL net-enhancement proposal, not the
+    // task's deliverable — the docs-only PR already shipped independently of
+    // it. So rejecting one closes the proposal and keeps the reason on the
+    // ledger rows it was about; it does NOT respawn a planning task, which
+    // would re-dispatch a worker against a document that is already fixed.
+    const docFix = existingContext.specDocFix as SpecDocFixContext | undefined;
+    if (docFix?.specPath) {
+      const ids = docFix.discrepancyIds ?? [];
+      const updated = ids.length
+        ? await db
+            .update(specDiscrepancies)
+            .set({ proposalRejectedReason: feedback })
+            .where(inArray(specDiscrepancies.id, ids))
+            .returning({ id: specDiscrepancies.id })
+        : [];
+      return NextResponse.json({
+        taskId: null,
+        proposalRejected: true,
+        specPath: docFix.specPath,
+        discrepancyIds: updated.map((r) => r.id),
+      });
     }
 
     // Create a new planning task with feedback context
