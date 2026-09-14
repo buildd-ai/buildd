@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { isDeliverableTask, computeMissionProgress, deriveMissionProgressMetric, computeMissionSkyline, deriveTaskType, deriveCriteriaGatePresentation, type MissionSegmentState } from '../mission-helpers';
+import { isDeliverableTask, computeMissionProgress, deriveMissionProgressMetric, computeMissionSkyline, deriveTaskType, deriveCriteriaGatePresentation, deriveHumanTaskShareMetric, deriveMissionFollowupMetric, computeMissionAuthorshipHealth, type MissionSegmentState } from '../mission-helpers';
 
 // ── deriveTaskType ─────────────────────────────────────────────────────────────
 
@@ -687,6 +687,121 @@ describe('deriveMissionProgressMetric', () => {
     const result = deriveMissionProgressMetric([work('completed'), work('pending'), work('pending')]);
     expect(result.kind).toBe('value');
     if (result.kind === 'value') expect(result.value).toBe(33);
+  });
+});
+
+// ── Authorship health: human task share + post-completion follow-ups ──────────
+
+describe('deriveHumanTaskShareMetric', () => {
+  const MISSION_START = '2025-01-01T00:00:00Z';
+  const agentTask = (createdAt: string) => ({
+    taskClass: 'work' as const, createdByWorkerId: 'worker-1', createdByAccountId: null, createdAt,
+  });
+  const humanTask = (createdAt: string) => ({
+    taskClass: 'work' as const, createdByWorkerId: null, createdByAccountId: 'account-1', createdAt,
+  });
+
+  it('returns unavailable with reason no_scope when there are no countable tasks', () => {
+    const result = deriveHumanTaskShareMetric([], MISSION_START);
+    expect(result.kind).toBe('unavailable');
+    if (result.kind === 'unavailable') expect(result.reason).toBe('no_scope');
+  });
+
+  it('excludes attempt tasks from the denominator', () => {
+    const attempt = { taskClass: 'attempt' as const, createdByWorkerId: null, createdByAccountId: 'account-1', createdAt: MISSION_START };
+    const result = deriveHumanTaskShareMetric([attempt], MISSION_START);
+    expect(result.kind).toBe('unavailable');
+  });
+
+  it('counts bookkeeping tasks toward the denominator alongside work', () => {
+    const bookkeeping = { taskClass: 'bookkeeping' as const, createdByWorkerId: 'worker-1', createdByAccountId: null, createdAt: MISSION_START };
+    const result = deriveHumanTaskShareMetric([bookkeeping], MISSION_START);
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value.totalCount).toBe(1);
+  });
+
+  it('splits human tasks into at-start (<2h) and mid-flight (>=2h)', () => {
+    const tasks = [
+      agentTask(MISSION_START),
+      humanTask('2025-01-01T00:30:00Z'), // 30 min after start — at start
+      humanTask('2025-01-01T05:00:00Z'), // 5h after start — mid-flight
+    ];
+    const result = deriveHumanTaskShareMetric(tasks, MISSION_START);
+    expect(result.kind).toBe('value');
+    if (result.kind !== 'value') return;
+    expect(result.value.humanCount).toBe(2);
+    expect(result.value.totalCount).toBe(3);
+    expect(result.value.atStart).toBe(1);
+    expect(result.value.midFlight).toBe(1);
+    expect(result.value.pct).toBe(67);
+  });
+
+  it('reports 0% when every countable task is agent-authored', () => {
+    const result = deriveHumanTaskShareMetric([agentTask(MISSION_START), agentTask(MISSION_START)], MISSION_START);
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value.pct).toBe(0);
+  });
+});
+
+describe('deriveMissionFollowupMetric', () => {
+  it('returns unavailable with reason no_baseline when the mission has no completedAt', () => {
+    const result = deriveMissionFollowupMetric([], null);
+    expect(result.kind).toBe('unavailable');
+    if (result.kind === 'unavailable') expect(result.reason).toBe('no_baseline');
+  });
+
+  it('counts 0 as a real measured value once completedAt is known', () => {
+    const result = deriveMissionFollowupMetric([], '2025-01-02T00:00:00Z');
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value.count).toBe(0);
+  });
+
+  it('counts pre-filtered follow-up tasks', () => {
+    const result = deriveMissionFollowupMetric(
+      [{ id: 't1', createdAt: '2025-01-03T00:00:00Z' }, { id: 't2', createdAt: '2025-01-04T00:00:00Z' }],
+      '2025-01-02T00:00:00Z',
+    );
+    expect(result.kind).toBe('value');
+    if (result.kind === 'value') expect(result.value.count).toBe(2);
+  });
+});
+
+describe('computeMissionAuthorshipHealth', () => {
+  it('computes both metrics from one call, on a mixed-authorship mission with a post-completion follow-up', () => {
+    const missionCreatedAt = '2025-01-01T00:00:00Z';
+    const missionCompletedAt = '2025-01-05T00:00:00Z';
+    const tasks = [
+      { taskClass: 'work' as const, createdByWorkerId: 'worker-1', createdByAccountId: null, createdAt: missionCreatedAt },
+      { taskClass: 'work' as const, createdByWorkerId: null, createdByAccountId: 'account-1', createdAt: '2025-01-01T00:15:00Z' },
+      { taskClass: 'work' as const, createdByWorkerId: null, createdByAccountId: 'account-1', createdAt: '2025-01-02T00:00:00Z' },
+      { taskClass: 'attempt' as const, createdByWorkerId: null, createdByAccountId: 'account-1', createdAt: missionCreatedAt },
+    ];
+    const followupTasks = [{ id: 'followup-1', createdAt: '2025-01-06T00:00:00Z' }];
+
+    const health = computeMissionAuthorshipHealth({ tasks, missionCreatedAt, missionCompletedAt, followupTasks });
+
+    expect(health.humanShare.kind).toBe('value');
+    if (health.humanShare.kind === 'value') {
+      expect(health.humanShare.value.totalCount).toBe(3); // attempt excluded
+      expect(health.humanShare.value.humanCount).toBe(2);
+      expect(health.humanShare.value.atStart).toBe(1);
+      expect(health.humanShare.value.midFlight).toBe(1);
+    }
+
+    expect(health.followups.kind).toBe('value');
+    if (health.followups.kind === 'value') expect(health.followups.value.count).toBe(1);
+  });
+
+  it('renders followups as no_baseline while humanShare still resolves, for an active mission', () => {
+    const health = computeMissionAuthorshipHealth({
+      tasks: [{ taskClass: 'work' as const, createdByWorkerId: 'worker-1', createdByAccountId: null, createdAt: '2025-01-01T00:00:00Z' }],
+      missionCreatedAt: '2025-01-01T00:00:00Z',
+      missionCompletedAt: null,
+      followupTasks: [],
+    });
+    expect(health.humanShare.kind).toBe('value');
+    expect(health.followups.kind).toBe('unavailable');
+    if (health.followups.kind === 'unavailable') expect(health.followups.reason).toBe('no_baseline');
   });
 });
 

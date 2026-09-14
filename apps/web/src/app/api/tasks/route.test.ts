@@ -1,4 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+// The gate ledger shares the `db` handle with the route, so an unstubbed
+// `recordGateEvent` shows up as an extra `db.insert` in the table-agnostic
+// mocks below. Stubbed here because this file asserts route BEHAVIOUR; the
+// ledger's own wiring is covered by gate-ledger.test.ts / the gate-events and
+// gate-analytics suites in packages/core.
+mock.module('@buildd/core/gate-events', () => ({
+  GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+  recordGateEvent: async () => null,
+}));
 import { NextRequest } from 'next/server';
 
 // Mock functions
@@ -1242,7 +1251,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('codex');
@@ -1256,7 +1265,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('codex');
@@ -1269,7 +1278,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', backend: 'claude' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', backend: 'claude', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('claude');
@@ -1283,7 +1292,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder' },
+      body: { workspaceId: 'ws-1', title: 'T', missionId: 'm-1', roleSlug: 'builder', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
     expect(captured().backend).toBe('codex');
@@ -1349,7 +1358,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
 
@@ -1428,7 +1437,7 @@ describe('POST /api/tasks', () => {
     const request = createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1' },
+      body: { workspaceId: 'ws-1', title: 'Test Task', missionId: 'obj-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
     });
     await POST(request);
 
@@ -2297,7 +2306,10 @@ describe('POST /api/tasks', () => {
       parentTaskId: null,
     });
     mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', gitConfig: {} });
-    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'pr_required', defaultBackend: null, startAt: null });
+    // 'none' keeps these tests on the exempt path — they exercise the ['**']
+    // sentinel-default and overlap-serialization behavior, not the mandatory-
+    // manifest gate (covered separately below for 'pr_required'/'auto').
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: 'none', defaultBackend: null, startAt: null });
     let capturedValues: any = null;
     const mockValues = mock((values: any) => {
       capturedValues = values;
@@ -2472,6 +2484,135 @@ describe('POST /api/tasks', () => {
     expect(captured().dependsOn).toEqual(['explicit-dep']);
   });
 
+  // ── Mandatory pathManifest gate (pr-producing mission tasks) ───────────────
+
+  it('rejects a mission task with pr_required output and no pathManifest', async () => {
+    missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Build feature X',
+        missionId: 'mission-1',
+        outputRequirement: 'pr_required',
+      },
+    }));
+
+    expect(response.status).toBe(400);
+    const json = await response.json();
+    expect(json.error).toContain('pathManifest');
+  });
+
+  it('rejects a mission task with pr_required output and only the ["**"] sentinel', async () => {
+    missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Build feature X',
+        missionId: 'mission-1',
+        outputRequirement: 'pr_required',
+        pathManifest: ['**'],
+      },
+    }));
+
+    expect(response.status).toBe(400);
+  });
+
+  it('rejects a mission task defaulting to auto output requirement with no pathManifest', async () => {
+    const captured = missionPathManifestSetup();
+    mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null, defaultBackend: null, startAt: null });
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+    }));
+
+    expect(response.status).toBe(400);
+    expect(captured()).toBeNull();
+  });
+
+  it('rejects a mission task whose manifest is only a repo-root-wide glob wider than one package', async () => {
+    missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Build feature X',
+        missionId: 'mission-1',
+        outputRequirement: 'pr_required',
+        pathManifest: ['apps/**'],
+      },
+    }));
+
+    expect(response.status).toBe(400);
+  });
+
+  it('accepts a mission task with pr_required output and a concrete pathManifest', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Build feature X',
+        missionId: 'mission-1',
+        outputRequirement: 'pr_required',
+        pathManifest: ['apps/web/src/lib/feature.ts'],
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toEqual(['apps/web/src/lib/feature.ts']);
+  });
+
+  it('exempts artifact_required and none mission tasks from the manifest gate', async () => {
+    const captured = missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Write the report',
+        missionId: 'mission-1',
+        outputRequirement: 'artifact_required',
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toEqual(['**']);
+  });
+
+  it('exempts non-mission tasks from the manifest gate even with pr_required output', async () => {
+    const captured = missionPathManifestSetup();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: { workspaceId: 'ws-1', title: 'Standalone task', outputRequirement: 'pr_required' },
+    }));
+
+    expect(response.status).toBe(200);
+    expect(captured().pathManifest).toBeUndefined();
+  });
+
   // ── Prose-gate lint ────────────────────────────────────────────────────────
   // Verbatim descriptions from the motivating incidents (mission 6dc41ced)
   const INCIDENT_222e9216 =
@@ -2490,35 +2631,35 @@ describe('POST /api/tasks', () => {
   }
 
   describe('prose-gate lint', () => {
-    it('rejects task 222e9216 description with empty dependsOn (verbatim incident)', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    it('surfaces a prose-gate warning for task 222e9216 description with empty dependsOn (verbatim incident)', async () => {
+      setupBasicCreation();
 
       const response = await POST(createMockRequest({
         method: 'POST',
         body: { workspaceId: 'ws-1', title: 'Gated task', description: INCIDENT_222e9216 },
       }));
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.error).toContain('dependsOn');
-      expect(data.error).toContain('Gated on');
+      expect(data.proseGateWarning.message).toContain('dependsOn');
+      expect(data.proseGateWarning.message).toContain('Gated on');
     });
 
-    it('rejects task ca0b692e description with empty dependsOn (verbatim incident)', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    it('surfaces a prose-gate warning for task ca0b692e description with empty dependsOn (verbatim incident)', async () => {
+      setupBasicCreation();
 
       const response = await POST(createMockRequest({
         method: 'POST',
         body: { workspaceId: 'ws-1', title: 'Spec gate', description: INCIDENT_ca0b692e },
       }));
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.error).toContain('dependsOn');
+      expect(data.proseGateWarning.message).toContain('dependsOn');
     });
 
-    it('rejects gate phrase with empty dependsOn and names extracted task IDs in error', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1', email: 'test@test.com' });
+    it('surfaces a prose-gate warning with empty dependsOn and names extracted task IDs', async () => {
+      setupBasicCreation();
 
       const response = await POST(createMockRequest({
         method: 'POST',
@@ -2529,10 +2670,10 @@ describe('POST /api/tasks', () => {
         },
       }));
 
-      expect(response.status).toBe(400);
+      expect(response.status).toBe(200);
       const data = await response.json();
-      expect(data.error).toContain('deadbeef');
-      expect(data.error).toContain('cafebabe');
+      expect(data.proseGateWarning.taskIds).toContain('deadbeef');
+      expect(data.proseGateWarning.taskIds).toContain('cafebabe');
     });
 
     it('gate phrase + dependsOn → created', async () => {
@@ -3031,7 +3172,7 @@ describe('POST /api/tasks — resolves criteria escalation on mission-scoped tas
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1' },
+      body: { workspaceId: 'ws-1', title: 'Task', missionId: 'mission-1', pathManifest: ['apps/web/src/lib/foo.ts'] },
     }));
     expect(response.status).toBe(200);
 

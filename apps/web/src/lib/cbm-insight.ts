@@ -41,6 +41,22 @@ export interface CbmRow {
  * fallback rate. Genuine breakage on Codex was therefore invisible here. The
  * reason is now decided once, in `buildCbmActivation`, with `codex_task` last but
  * for the kill switch.
+ *
+ * `no_worktree` staying in this set is a deliberate decision, not an oversight,
+ * even though `cbm-health.ts`'s fleet-disabled alert now treats `no_worktree` as
+ * just as alertable as `binary_absent` (a real incident proved a worktree-creation
+ * crash can produce it, see that file's header). The two consumers answer
+ * different questions: the alert is "did disablement of any kind just streak",
+ * which only needs the reason string for the message body. This aggregate is
+ * "what's the graph's steady-state fallback rate", which needs disableReason
+ * partitioned into decisions vs failures — and `CbmMetrics` carries no field that
+ * distinguishes "no repo to index" from "worktree creation crashed", both of
+ * which produce identical `no_worktree` rows. Folding `no_worktree` into the
+ * fallback numerator here would count every legitimate coordination task as
+ * platform breakage, which is a worse misreading than the one being fixed.
+ * Making that distinction properly needs a new signal from the runner (e.g. did
+ * this task even request a worktree), not a reclassification of the existing
+ * reason string — scoped as its own follow-up, not folded into this change.
  */
 export const BY_DESIGN_SKIP_REASONS: ReadonlySet<string> = new Set([
   'codex_task',

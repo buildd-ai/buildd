@@ -25,6 +25,7 @@ import {
   type FailoverDecision,
 } from '@buildd/core/backend-policy';
 import { hasCodexCredential } from './codex-credential';
+import { effectiveBudgetResetAt, isBudgetExhausted } from './budget-errors';
 
 export type PauseReason = 'budget' | 'auth';
 
@@ -151,8 +152,10 @@ async function legacyClaudePauseResetsAt(scope: BackendScope, now: Date): Promis
         where: eq(accounts.id, scope.accountId),
         columns: { budgetExhaustedAt: true, budgetResetsAt: true },
       });
-      if (row?.budgetExhaustedAt && row.budgetResetsAt && new Date(row.budgetResetsAt) > now) {
-        return new Date(row.budgetResetsAt);
+      if (row?.budgetExhaustedAt && isBudgetExhausted(row.budgetExhaustedAt, row.budgetResetsAt, now)) {
+        // Match the claim gate: a missing reset still parks the exhausted seat
+        // for one session window, then recovers without manual intervention.
+        return effectiveBudgetResetAt(row.budgetExhaustedAt, row.budgetResetsAt);
       }
     }
   } catch (err) {

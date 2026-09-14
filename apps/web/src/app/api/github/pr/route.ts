@@ -33,6 +33,7 @@ import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { pickReviewerRole } from '@/lib/pr-review-status';
 // One resolver for "which worker owns PR #N", shared with the `explain` MCP read.
 import { resolveWorkerByPrNumber } from '@/lib/pr-resolve';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 
 
 /**
@@ -679,17 +680,41 @@ export async function POST(req: NextRequest) {
     // sibling task's own branch, not the integration branch).
     if (integrationBase && !isMissionPrOwner && !isStackedPhase) {
       if (worker.branch && head !== worker.branch) {
-        return NextResponse.json({
-          error: `Task PR head '${head}' does not match this worker's own branch ('${worker.branch}'). A task PR's head must be the branch this worker actually committed to.`,
-          hint: `Open the PR with head='${worker.branch}'.`,
-        }, { status: 400 });
+        const error = `Task PR head '${head}' does not match this worker's own branch ('${worker.branch}'). A task PR's head must be the branch this worker actually committed to.`;
+        // The embedded branch names are exactly what normalizeErrorSignature
+        // collapses, so four workers hitting this refusal land on one row
+        // instead of four singletons nobody can count.
+        fireGateEvent({
+          gate: GATE_SLUGS.PR_HEAD_MISMATCH,
+          surface: 'POST /api/github/pr',
+          outcome: 'rejected',
+          reason: error,
+          workspaceId: worker.workspaceId,
+          missionId: worker.task?.missionId ?? null,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+        });
+        return NextResponse.json({ error, hint: `Open the PR with head='${worker.branch}'.` }, { status: 400 });
       }
       // Skipped when the integration branch is gone: refusing the caller's
       // base there would refuse the only base that can still work.
       if (!integrationBaseMissing && typeof base === 'string' && base && base !== integrationBase) {
         const recoveryPath = `1. This mission uses an integration branch — task PRs base on it, not on '${base}'.\n2. Open the PR with base='${integrationBase}' (or omit base and let the server derive it).`;
+        const error = `Task PR base '${base}' disagrees with this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch, not '${base}'.`;
+        fireGateEvent({
+          gate: GATE_SLUGS.PR_BASE_MISMATCH,
+          surface: 'POST /api/github/pr',
+          outcome: 'rejected',
+          reason: error,
+          workspaceId: worker.workspaceId,
+          missionId: worker.task?.missionId ?? null,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+        });
         return NextResponse.json({
-          error: `Task PR base '${base}' disagrees with this mission's integration branch (${integrationBase}). A mission task PR must target the mission's integration branch, not '${base}'.`,
+          error,
           hint: `Drop the explicit base (the server derives it), or pass base='${integrationBase}'. Recovery: ${recoveryPath}`,
         }, { status: 400 });
       }
@@ -988,6 +1013,29 @@ export async function PUT(req: NextRequest) {
     }
 
     const workspace = worker.workspace;
+
+    // Every merge-policy decision on this handler goes through here, so a new
+    // refusal arm cannot be added without a ledger row. `mergePolicyTier` is
+    // only known after the policy resolves, hence the optional extras bag.
+    const recordMergeGate = (
+      outcome: 'rejected' | 'deferred' | 'bypassed',
+      reason: string,
+      detail?: Record<string, unknown>,
+      gate: string = GATE_SLUGS.MERGE_POLICY,
+    ) => {
+      fireGateEvent({
+        gate,
+        surface: 'PUT /api/github/pr',
+        outcome,
+        reason,
+        workspaceId: worker.workspaceId ?? null,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: account.level === 'admin' ? 'api' : 'worker',
+        detail: { prNumber, ...(detail ?? {}) },
+      });
+    };
+
     if (!workspace?.githubRepoId || !workspace?.githubInstallationId) {
       return NextResponse.json({ error: 'Workspace not linked to GitHub repo' }, { status: 400 });
     }
@@ -1061,10 +1109,17 @@ export async function PUT(req: NextRequest) {
     //   human          — refused, which is what the tier means.
     const force = body.force === true;
     if (force && account.level !== 'admin') {
+      recordMergeGate('rejected', 'force merge requires an admin token', { force: true });
       return NextResponse.json({
         error: 'force merge requires an admin token',
         hint: '`force` bypasses the workspace merge policy, so it is reserved for a human-held admin token. Drop `force` to merge under policy.',
       }, { status: 403 });
+    }
+    if (force) {
+      // An accepted `force` is a policy bypass, and the count of them is the
+      // honest read on whether the configured tier matches how the team
+      // actually ships. It is not an error, so nothing else would record it.
+      recordMergeGate('bypassed', 'merge policy skipped by admin force', { force: true });
     }
 
     if (!force) {
@@ -1083,6 +1138,7 @@ export async function PUT(req: NextRequest) {
         // Fail closed. This read is what identifies the commit the policy is
         // evaluated against; merging without it would be a merge with no
         // policy, which is the hole this gate closes.
+        recordMergeGate('rejected', 'could not read the PR head to evaluate merge policy — refusing the merge');
         return NextResponse.json({
           error: 'could not read the PR head to evaluate merge policy — refusing the merge',
           hint: 'Retry, or have a human merge from the escalation inbox.',
@@ -1107,6 +1163,7 @@ export async function PUT(req: NextRequest) {
       });
 
       if (policy.tier === 'human') {
+        recordMergeGate('rejected', `merge policy tier is 'human' — this PR must be merged by a person`, { tier: policy.tier });
         return NextResponse.json({
           error: `merge policy tier is 'human' — this PR must be merged by a person`,
           tier: policy.tier,
@@ -1133,6 +1190,11 @@ export async function PUT(req: NextRequest) {
           );
 
         if (!selfMergeable) {
+          recordMergeGate(
+            'rejected',
+            `merge policy tier is 'agent-review' — a reviewer decides this PR, so it cannot be self-merged`,
+            { tier: policy.tier, reviewState: reviewStatus.state },
+          );
           return NextResponse.json({
             error: `merge policy tier is 'agent-review' — a reviewer decides this PR, so it cannot be self-merged`,
             tier: policy.tier,
@@ -1149,6 +1211,7 @@ export async function PUT(req: NextRequest) {
         policy,
       );
       if (!safety.ok) {
+        recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });
         return NextResponse.json({
           error: `merge policy refused this merge: ${safety.reason}`,
           tier: policy.tier,
@@ -1169,6 +1232,13 @@ export async function PUT(req: NextRequest) {
       : null;
     const mergeGate = await guardMissionPrMerge(mergingTask);
     if (mergeGate.blocks) {
+      // Deferred, not rejected: the merge is correct and simply not yet due.
+      recordMergeGate(
+        'deferred',
+        `cannot merge the mission PR yet: ${mergeGate.reason}`,
+        { missionId: mergingTask?.missionId ?? null },
+        GATE_SLUGS.MISSION_PR_LIFECYCLE,
+      );
       return NextResponse.json({
         error: `cannot merge the mission PR yet: ${mergeGate.reason}`,
         hint: 'Wait for the remaining task PRs to merge into the integration branch, then retry.',

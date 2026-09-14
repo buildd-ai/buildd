@@ -586,6 +586,12 @@ export async function runMission(
       status: 'pending',
       mode: template?.mode || 'planning',
       taskClass: 'bookkeeping',
+      // This is the organizer's heartbeat/planning cycle — it reports its
+      // outcome via complete_task's summary/structuredOutput, never a PR or
+      // artifact. Left unset it defaults to 'auto', which the completion gate
+      // reads as builder semantics (see the taskClass check in
+      // apps/web/src/app/api/workers/[id]/route.ts).
+      outputRequirement: 'none',
       roleSlug,
       runnerPreference: template?.runnerPreference || 'any',
       requiredCapabilities: template?.requiredCapabilities || [],

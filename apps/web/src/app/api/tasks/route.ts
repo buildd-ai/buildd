@@ -16,7 +16,7 @@ import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
 import { TaskCategory } from '@buildd/shared';
 import { resolveWorkspace, autoResolveAccountWorkspace } from '@/lib/workspace-resolver';
-import { isAdvisoryManifest, shouldSerializeByManifest } from '@buildd/core/path-overlap';
+import { isAdvisoryManifest, shouldSerializeByManifest, hasConcretePathManifest } from '@buildd/core/path-overlap';
 import { inferFrictionManifest } from '@buildd/core/friction-manifest';
 import { resolveAnchorInjections } from '@/lib/change-intent';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
@@ -33,6 +33,12 @@ import { intakeSubject } from '@/lib/subject-intake';
 import { createSubjectIntakeRepository } from '@/lib/subject-intake-db';
 import { detectProseGate } from '@buildd/core/prose-gate';
 import { findIntakeWarnings } from '@buildd/core/spec-discrepancy-intake';
+import {
+  GATE_SLUGS,
+  fireGateEvent,
+  fireGateEventForWorkspaceRef,
+  gateCallerOrigin,
+} from '@/lib/gate-ledger';
 // From `model-tier-defaults`, not `model-tier-registry`: the registry imports
 // the db client, and this route only needs the tier vocabulary. Pulling the
 // registry in here would add a DB dependency to task creation for a constant.
@@ -322,6 +328,11 @@ export async function POST(req: NextRequest) {
   // Declared outside the try block so the catch below can reference it in the
   // file_anyway_not_allowed error — it's assigned partway through the try body.
   let subjectOriginForError: SubjectFilingOrigin | undefined;
+  // Same reason, for the gate-ledger rows the catch block writes: by the time
+  // a fileAnyway refusal surfaces as a thrown sentinel, the resolved workspace
+  // is no longer in scope.
+  let gateWorkspaceId: string | null = null;
+  let gateCaller = gateCallerOrigin({ apiAccount, user });
 
   try {
     const body = await req.json();
@@ -381,6 +392,8 @@ export async function POST(req: NextRequest) {
       fileAnywayReason,
     } = body;
 
+    gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
+
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
     }
@@ -389,17 +402,33 @@ export async function POST(req: NextRequest) {
     // schema and as classifyScheduleCadence writes on the schedules path.
     // An out-of-vocabulary value is a 400, not a silent drop — a hint the caller
     // believes was applied but wasn't is worse than an error.
+    //
+    // These two fire ABOVE the workspace lookup, so the ledger resolves the raw
+    // reference in the background rather than reordering the validation (which
+    // would change which error a doubly-invalid request gets back).
     if (rawKind !== undefined && !TASK_KINDS.includes(rawKind)) {
-      return NextResponse.json(
-        { error: `kind must be one of: ${TASK_KINDS.join(', ')}` },
-        { status: 400 },
-      );
+      const error = `kind must be one of: ${TASK_KINDS.join(', ')}`;
+      fireGateEventForWorkspaceRef(rawWorkspaceId, {
+        gate: GATE_SLUGS.TASK_PARAM_VOCABULARY,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: error,
+        callerOrigin: gateCaller,
+        detail: { param: 'kind', value: String(rawKind).slice(0, 80) },
+      });
+      return NextResponse.json({ error }, { status: 400 });
     }
     if (rawComplexity !== undefined && !TASK_COMPLEXITIES.includes(rawComplexity)) {
-      return NextResponse.json(
-        { error: `complexity must be one of: ${TASK_COMPLEXITIES.join(', ')}` },
-        { status: 400 },
-      );
+      const error = `complexity must be one of: ${TASK_COMPLEXITIES.join(', ')}`;
+      fireGateEventForWorkspaceRef(rawWorkspaceId, {
+        gate: GATE_SLUGS.TASK_PARAM_VOCABULARY,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: error,
+        callerOrigin: gateCaller,
+        detail: { param: 'complexity', value: String(rawComplexity).slice(0, 80) },
+      });
+      return NextResponse.json({ error }, { status: 400 });
     }
 
     // Prose-gate lint: advisory only. If description declares a dependency gate in prose
@@ -410,7 +439,7 @@ export async function POST(req: NextRequest) {
     if (description) {
       const gate = detectProseGate(description);
       if (gate.phrase !== null && (!Array.isArray(dependsOn) || dependsOn.length === 0)) {
-        proseGateWarning = gate;
+        proseGateWarning = { phrase: gate.phrase, taskIds: gate.taskIds };
       }
     }
 
@@ -452,6 +481,7 @@ export async function POST(req: NextRequest) {
     if (!workspaceId) {
       return NextResponse.json({ error: 'workspaceId is required' }, { status: 400 });
     }
+    gateWorkspaceId = workspaceId;
 
     // Validate workspace exists and fetch webhook config in one query
     const targetWorkspace = await db.query.workspaces.findFirst({
@@ -525,6 +555,17 @@ export async function POST(req: NextRequest) {
             },
           });
         }
+
+        fireGateEvent({
+          gate: GATE_SLUGS.FRICTION_DEDUPE,
+          surface: 'POST /api/tasks',
+          outcome: 'rejected',
+          reason: 'friction report appended to an open task with the same signature',
+          workspaceId,
+          taskId: existing.id,
+          callerOrigin: gateCaller,
+          detail: { frictionSignature },
+        });
 
         const { creationSource: _creationSource, ...existingResponse } = existing;
         return NextResponse.json({ ...existingResponse, deduplicated: true }, { status: 200 });
@@ -678,13 +719,33 @@ export async function POST(req: NextRequest) {
     //     origins only. A human filing is never silently swallowed; it gets the
     //     suggestion below instead.
     const fileAnywayText = typeof fileAnywayReason === 'string' ? fileAnywayReason.trim() : '';
-    const attachTarget = subjectObservation.match
+    const attachEligible = Boolean(
+      subjectObservation.match
       && subjectObservation.anchor
       && subjectObservation.match.outcome === 'attach'
-      && isIdentifyingSubjectKeyType(subjectObservation.match.keyType)
-      && !fileAnywayText
-      ? subjectObservation.match
-      : null;
+      && isIdentifyingSubjectKeyType(subjectObservation.match.keyType),
+    );
+    const attachTarget = attachEligible && !fileAnywayText ? subjectObservation.match! : null;
+
+    // The bypass is the measurement. A dedupe that keeps getting overridden is
+    // matching things that are not the same thing, and this row is the only
+    // place that shows up before someone gets annoyed enough to file friction.
+    if (attachEligible && fileAnywayText) {
+      fireGateEvent({
+        gate: GATE_SLUGS.SUBJECT_DEDUPE,
+        surface: 'POST /api/tasks',
+        outcome: 'bypassed',
+        reason: `subject dedupe overridden by fileAnywayReason on ${subjectObservation.match!.keyType}`,
+        workspaceId,
+        taskId: subjectObservation.match!.taskId,
+        callerOrigin: gateCaller,
+        detail: {
+          keyType: subjectObservation.match!.keyType,
+          origin: subjectOrigin,
+          fileAnywayReason: fileAnywayText.slice(0, 500),
+        },
+      });
+    }
 
     if (attachTarget) {
       await recordSubjectMatchObserved({
@@ -698,6 +759,16 @@ export async function POST(req: NextRequest) {
       console.log(
         `[subject-dedupe] ${subjectOrigin} filing attached to live task ${attachTarget.taskId} on ${attachTarget.keyType}`,
       );
+      fireGateEvent({
+        gate: GATE_SLUGS.SUBJECT_DEDUPE,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: `filing attached to a live task on ${attachTarget.keyType}`,
+        workspaceId,
+        taskId: attachTarget.taskId,
+        callerOrigin: gateCaller,
+        detail: { keyType: attachTarget.keyType, origin: subjectOrigin },
+      });
       return NextResponse.json({
         id: attachTarget.taskId,
         title: attachTarget.title,
@@ -838,6 +909,39 @@ export async function POST(req: NextRequest) {
       if (!resolvedBackend && mission?.defaultBackend) resolvedBackend = mission.defaultBackend;
       missionStartAt = mission?.startAt ?? null;
       missionIntegrationBaseBranch = missionIntegrationBase(mission);
+    }
+
+    // Manifest gate: a mission task whose deliverable is a PR — explicit
+    // 'pr_required', or 'auto' (the default, which resolves to a PR for an
+    // ordinary builder task) — must declare a concrete pathManifest.
+    // shouldSerializeByManifest/computeOverlapEdges can only serialize
+    // concrete manifests (see isAdvisoryManifest); an undeclared scope makes
+    // a sibling task race instead of wait, which is the exact failure mode
+    // #1759/#1763 hit. 'artifact_required' and 'none' mission tasks, and any
+    // non-mission task, are exempt — they carry no PR-overlap risk.
+    if (
+      missionId &&
+      (outputRequirement === 'pr_required' || outputRequirement === 'auto') &&
+      !hasConcretePathManifest(pathManifest)
+    ) {
+      const error =
+        'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]';
+      fireGateEvent({
+        gate: GATE_SLUGS.MANIFEST_REQUIRED,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: error,
+        workspaceId,
+        missionId,
+        callerOrigin: gateCaller,
+        detail: {
+          outputRequirement,
+          // Distinguishes "declared nothing" from "declared the repo-wide
+          // sentinel" — two different filer mistakes with the same 400.
+          manifest: pathManifest ? 'wildcard' : 'absent',
+        },
+      });
+      return NextResponse.json({ error }, { status: 400 });
     }
 
     // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace
@@ -1012,6 +1116,25 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // The enforcing-policy counterpart to the observe-mode bypass above:
+    // intakeSubject found a canonical task and the filer overrode it anyway.
+    if (intake.outcome.action === 'filed_anyway') {
+      fireGateEvent({
+        gate: GATE_SLUGS.SUBJECT_DEDUPE,
+        surface: 'POST /api/tasks',
+        outcome: 'bypassed',
+        reason: 'subject intake overridden by fileAnywayReason',
+        workspaceId,
+        taskId: task.id,
+        callerOrigin: gateCaller,
+        detail: {
+          origin: subjectOrigin,
+          relatedTaskId: intake.outcome.relatedTaskId,
+          fileAnywayReason: String(intake.outcome.reason ?? '').slice(0, 500),
+        },
+      });
+    }
+
     if (intake.outcome.action !== 'attached') {
       await dispatchNewTask(task, targetWorkspace, {
         assignToLocalUiUrl,
@@ -1088,6 +1211,24 @@ export async function POST(req: NextRequest) {
       console.error('[task-create] spec discrepancy intake check failed:', err);
     }
 
+    // Recorded HERE, not where the lint runs: `detectProseGate` fires above the
+    // workspace lookup, and an unattributable row is invisible to every scoped
+    // aggregation — which is precisely how this lint stayed a mystery for three
+    // weeks. The lint's own behaviour is untouched; only the bookkeeping moved.
+    if (proseGateWarning) {
+      fireGateEvent({
+        gate: GATE_SLUGS.PROSE_GATE,
+        surface: 'POST /api/tasks',
+        outcome: 'warned',
+        reason: `description declares a dependency gate ("${proseGateWarning.phrase}") with no dependsOn edges`,
+        workspaceId,
+        missionId: task.missionId,
+        taskId: task.id,
+        callerOrigin: gateCaller,
+        detail: { phrase: proseGateWarning.phrase, taskIdsFound: proseGateWarning.taskIds.length },
+      });
+    }
+
     return NextResponse.json({
       ...task,
       subjectIntakeOutcome: intake.outcome,
@@ -1103,13 +1244,30 @@ export async function POST(req: NextRequest) {
     });
   } catch (error) {
     if (error instanceof Error && error.message === 'file_anyway_reason_required') {
-      return NextResponse.json({ error: 'fileAnywayReason must be nonblank' }, { status: 400 });
+      const message = 'fileAnywayReason must be nonblank';
+      fireGateEvent({
+        gate: GATE_SLUGS.FILE_ANYWAY,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: message,
+        workspaceId: gateWorkspaceId,
+        callerOrigin: gateCaller,
+        detail: { origin: subjectOriginForError ?? null },
+      });
+      return NextResponse.json({ error: message }, { status: 400 });
     }
     if (error instanceof Error && error.message === 'file_anyway_not_allowed') {
-      return NextResponse.json(
-        { error: `fileAnywayReason is not allowed for origin "${subjectOriginForError}" filings (only dashboard, api, mcp, and friction filings may bypass).` },
-        { status: 400 },
-      );
+      const message = `fileAnywayReason is not allowed for origin "${subjectOriginForError}" filings (only dashboard, api, mcp, and friction filings may bypass).`;
+      fireGateEvent({
+        gate: GATE_SLUGS.FILE_ANYWAY,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: message,
+        workspaceId: gateWorkspaceId,
+        callerOrigin: gateCaller,
+        detail: { origin: subjectOriginForError ?? null },
+      });
+      return NextResponse.json({ error: message }, { status: 400 });
     }
     console.error('Create task error:', error);
     const detail = error instanceof Error ? error.message : String(error);

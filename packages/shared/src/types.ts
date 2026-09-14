@@ -1348,7 +1348,15 @@ export type SubjectIntakeOutcome =
 // ============================================================================
 
 export const DANGEROUS_PATTERNS = [
-  /rm\s+-rf\s+[\/~]/,
+  // Excludes a subdirectory of /tmp or /var/tmp (optionally quoted) — the
+  // `$(mktemp -d)` scratch-directory cleanup pattern is a safe, isolated
+  // backup/test/restore idiom, not a destructive command. The bare root
+  // (`rm -rf /tmp`) and everything else under [/~] is still blocked.
+  /rm\s+-rf\s+["']?(?!\/tmp\/|\/var\/tmp\/)[\/~]/,
+  // The exemption above only checks the literal prefix, not where the path
+  // actually resolves — `/tmp/../etc` starts with `/tmp/` but escapes it.
+  // Re-block any /tmp or /var/tmp path containing a `..` segment.
+  /rm\s+-rf\s+["']?\/(?:tmp|var\/tmp)\/[^\s"']*\.\.[^\s"']*/,
   /sudo\s+/,
   />\s*\/dev\/(?!null)/,
   /mkfs\./,
@@ -1768,4 +1776,95 @@ export interface FailureAnalyticsResponse {
   lookup?: FailureSignatureLookup;
   /** Present only when the request carried an `errorPrefix` param. */
   family?: FailureSignatureFamily;
+  /** Present only when the request carried `family=gate`. */
+  gates?: GateAnalytics;
+  /** Present only when the request carried `family=gate` AND `errorPrefix`. */
+  gateFamily?: GateReasonFamily;
+}
+
+// ── Gate ledger analytics ─────────────────────────────────────────────────────
+//
+// The gate ledger answers a question the failure table structurally cannot:
+// how often does the platform REFUSE, DEFER, WARN or get TALKED OUT OF a
+// decision, for a caller that never became a failed worker? Same windows and
+// the same first/last-seen framing as `FailureAnalytics`, deliberately.
+
+/** Shares the failure vocabulary — one window concept across both surfaces. */
+export type GateWindow = FailureWindow;
+
+export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned';
+
+export interface GateOutcomeCounts {
+  rejected: number;
+  deferred: number;
+  bypassed: number;
+  warned: number;
+}
+
+/** One normalized reason within a gate. */
+export interface GateReasonRow {
+  /** Already normalized on write — never re-normalized by the aggregation. */
+  reason: string;
+  count: number;
+  outcomes: GateOutcomeCounts;
+  /** See `bypassRatePct` — deferrals are excluded from the denominator. */
+  bypassRatePct: number;
+  firstSeen: string;
+  lastSeen: string;
+}
+
+export interface GateRow {
+  /** Stable rule slug, e.g. 'manifest_required'. */
+  gate: string;
+  /** Every route/tool that fired this gate in the window. */
+  surfaces: string[];
+  count: number;
+  outcomes: GateOutcomeCounts;
+  /**
+   * bypassed / (bypassed + rejected + warned). For a lint, this IS its
+   * false-positive rate — measured, not inferred from friction reports.
+   */
+  bypassRatePct: number;
+  firstSeen: string;
+  lastSeen: string;
+  /** A task from this gate's events, for drill-down. Null when unknown. */
+  exampleTaskId: string | null;
+  distinctReasons: number;
+  topReasons: GateReasonRow[];
+}
+
+export interface GateAnalytics {
+  window: GateWindow;
+  generatedAt: string;
+  windowStart: string;
+  totals: GateOutcomeCounts & {
+    events: number;
+    distinctGates: number;
+  };
+  /** Ranked by count. */
+  gates: GateRow[];
+  /** How many gates ranked out of `gates`. Zero means the list is exhaustive. */
+  truncatedGates: number;
+}
+
+/**
+ * A rollup across every gate reason sharing a literal prefix — the gate-ledger
+ * counterpart to `FailureSignatureFamily`, for a reason family whose surviving
+ * free text makes each occurrence its own singleton.
+ */
+export interface GateReasonFamily {
+  prefix: string;
+  known: boolean;
+  count: number;
+  distinctReasons: number;
+  /** Gates that produced a reason in this family — usually one. */
+  gates: string[];
+  outcomes: GateOutcomeCounts;
+  bypassRatePct: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  exampleTaskId: string | null;
+  /** Dedupe key derived from the prefix, for friction reports. */
+  frictionSignature: string;
+  topReasons: { reason: string; count: number }[];
 }

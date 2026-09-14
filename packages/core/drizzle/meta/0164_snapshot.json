@@ -1,6 +1,6 @@
 {
-  "id": "9d738e4c-0fe3-4e61-b0f4-88ac6c3596fd",
-  "prevId": "3880fd64-cce5-4626-a7b8-ded8b3f106c9",
+  "id": "51f16f6b-ed13-4f7d-a23e-1f1a23047ea2",
+  "prevId": "05cd23b6-8194-422c-9a84-b9add29ac42b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4490,12 +4490,24 @@
           "primaryKey": false,
           "notNull": false
         },
+        "criteria_reviewer_findings": {
+          "name": "criteria_reviewer_findings",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "auto_surface_audit": {
           "name": "auto_surface_audit",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "created_by_user_id": {
           "name": "created_by_user_id",
