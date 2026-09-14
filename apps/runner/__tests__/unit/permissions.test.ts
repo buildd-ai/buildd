@@ -65,6 +65,30 @@ describe('DANGEROUS_PATTERNS', () => {
     test('allows rm without -rf', () => {
       expect(isDangerousCommand('rm file.txt')).toBe(false);
     });
+
+    test('allows rm -rf on a mktemp -d scratch directory (unquoted)', () => {
+      expect(isDangerousCommand('rm -rf /tmp/tmp.AbCdEf1234')).toBe(false);
+    });
+
+    test('allows rm -rf on a mktemp -d scratch directory (quoted)', () => {
+      expect(isDangerousCommand('rm -rf "/tmp/tmp.AbCdEf1234"')).toBe(false);
+    });
+
+    test('allows rm -rf on a /var/tmp scratch directory', () => {
+      expect(isDangerousCommand('rm -rf /var/tmp/scratch.AbCdEf1234')).toBe(false);
+    });
+
+    test('still blocks rm -rf on /tmp itself (not a subdirectory)', () => {
+      expect(isDangerousCommand('rm -rf /tmp')).toBe(true);
+    });
+
+    test('still blocks rm -rf on /var/tmp itself (not a subdirectory)', () => {
+      expect(isDangerousCommand('rm -rf /var/tmp')).toBe(true);
+    });
+
+    test('still blocks rm -rf on a look-alike top-level path', () => {
+      expect(isDangerousCommand('rm -rf /tmpfoo')).toBe(true);
+    });
   });
 
   describe('sudo blocking', () => {

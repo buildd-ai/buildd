@@ -1348,7 +1348,11 @@ export type SubjectIntakeOutcome =
 // ============================================================================
 
 export const DANGEROUS_PATTERNS = [
-  /rm\s+-rf\s+[\/~]/,
+  // Excludes a subdirectory of /tmp or /var/tmp (optionally quoted) — the
+  // `$(mktemp -d)` scratch-directory cleanup pattern is a safe, isolated
+  // backup/test/restore idiom, not a destructive command. The bare root
+  // (`rm -rf /tmp`) and everything else under [/~] is still blocked.
+  /rm\s+-rf\s+["']?(?!\/tmp\/|\/var\/tmp\/)[\/~]/,
   /sudo\s+/,
   />\s*\/dev\/(?!null)/,
   /mkfs\./,
