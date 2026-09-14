@@ -410,7 +410,7 @@ export async function POST(req: NextRequest) {
     if (description) {
       const gate = detectProseGate(description);
       if (gate.phrase !== null && (!Array.isArray(dependsOn) || dependsOn.length === 0)) {
-        proseGateWarning = gate;
+        proseGateWarning = { phrase: gate.phrase, taskIds: gate.taskIds };
       }
     }
 
