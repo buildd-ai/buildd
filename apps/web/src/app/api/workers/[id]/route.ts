@@ -1232,7 +1232,16 @@ export async function PATCH(
       // Fail with a message this task shape can act on (the session needs to
       // actually report), not the create_pr hint below, which asks a task
       // that will never open a PR to open one.
-      if (isBookkeepingTask && isFallbackSummary) {
+      //
+      // This only widens what a MISSING confirmed outcome looks like for
+      // 'auto' bookkeeping tasks — it must not override an already-satisfied
+      // pr_required/artifact_required outcome. Those modes returned earlier
+      // in this function when unsatisfied, so by the time we get here a task
+      // with one of those requirements has already proven hasPR or an
+      // artifact; re-checking both here keeps this branch from discarding a
+      // confirmed deliverable just because the session's own complete_task
+      // call never landed.
+      if (isBookkeepingTask && isFallbackSummary && !hasPR && !(await hasDeliverableArtifact())) {
         await persistRejectedCompletionPayload('bookkeeping_no_report');
         return NextResponse.json({
           error: 'Task has no confirmed outcome — the session ended without the agent calling complete_task to report its status. This is a bookkeeping/organizer task: report the outcome via complete_task (summary or structuredOutput), not a pull request or artifact.',
