@@ -25,7 +25,7 @@ export interface CodexBackendConfig {
    * initial prompt then parks on `inputStream.next()` between turns: each
    * message that arrives (a Claude-shaped SDKUserMessage) is run as another
    * turn on the SAME persistent Codex `Thread`; when the stream ends the
-   * backend yields `complete`. This is how workers.ts's review/nudge/steering
+   * backend yields `complete`. This is how workers.ts's nudge/steering
    * enqueues reach Codex, mirroring the Claude path's `streamInput`.
    */
   inputStream?: AsyncIterable<unknown>;
@@ -267,7 +267,7 @@ export class CodexBackend implements AgentBackend {
         break;
       }
 
-      // R6: park here until workers.ts enqueues a review/nudge/steering message
+      // R6: park here until workers.ts enqueues a nudge/steering message
       // (drives another turn) or ends the stream (we complete). If workers.ts
       // has already `break`ed its consuming loop, the runtime calls this
       // generator's `.return()` and execution unwinds from this await — it does

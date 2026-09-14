@@ -18,22 +18,13 @@ import { join } from 'path';
  * working directory. We compose a single instruction document and write it into
  * the repo cwd as `AGENTS.md`.
  *
- * Why AGENTS.md over a prompt preamble: the worker run is multi-turn (PR2 turn
- * loop — review prompts, output-requirement nudges, steering follow-ups all run
- * additional turns on the same thread). A prompt preamble would only be attached
- * to the *first* turn's input string; AGENTS.md is re-read by Codex on every
- * turn, so the persona + skills + DONE convention persist for the whole session.
- * (We still prepend a one-line pointer to the prompt itself — see workers.ts.)
- *
- * The DONE-sentinel instruction is load-bearing: PR2 wired Codex's
- * `agent_message` text into `worker.lastAssistantMessage`, and the review-loop
- * exit gate (`workers.ts` ~1576) only releases when that text contains
- * `<promise>DONE</promise>`. Codex is never *told* to emit it unless we say so
- * here, so without 2A every Codex task burns all review iterations and exits
- * "exhausted". This file is what unblocks PR2's R1 gate.
+ * Why AGENTS.md over a prompt preamble: the worker run is multi-turn
+ * (output-requirement nudges and steering follow-ups all run additional turns
+ * on the same thread). A prompt preamble would only be attached to the
+ * *first* turn's input string; AGENTS.md is re-read by Codex on every turn,
+ * so the persona + skills persist for the whole session. (We still prepend a
+ * one-line pointer to the prompt itself — see workers.ts.)
  */
-
-export const DONE_SENTINEL = '<promise>DONE</promise>';
 
 export const BUILDD_AGENTS_BEGIN = '<!-- BEGIN buildd agent instructions (auto-generated; do not edit) -->';
 export const BUILDD_AGENTS_END = '<!-- END buildd agent instructions -->';
@@ -77,8 +68,8 @@ export interface BuildCodexInstructionDocInput {
 }
 
 /**
- * Compose the Codex instruction document: role persona + inlined skill content +
- * optional project instructions + the DONE-sentinel completion convention.
+ * Compose the Codex instruction document: role persona + inlined skill content
+ * + optional project instructions.
  *
  * Pure and unit-testable. The returned string is the *body* that
  * `writeCodexAgentsMd` wraps in the delimited buildd section.
@@ -108,18 +99,12 @@ export function buildCodexInstructionDoc(input: BuildCodexInstructionDocInput): 
     sections.push(`# Project Instructions\n\n${project}`);
   }
 
-  // Before Completion, after the project context: the guidance is procedural
-  // ("your FIRST navigation step"), so it belongs with the how-to-work sections
-  // rather than trailing the exit contract.
+  // After the project context: the guidance is procedural ("your FIRST
+  // navigation step"), so it belongs with the how-to-work sections.
   const cbm = input.cbmGuidance?.trim();
   if (cbm) {
     sections.push(`# Codebase graph (codebase-memory)\n\n${cbm}`);
   }
-
-  // Always present — this is the review-loop exit contract.
-  sections.push(
-    `# Completion\n\nWhen the task is fully complete and your own self-review passes, respond with exactly this sentinel on its own line:\n\n${DONE_SENTINEL}\n\nOnly emit ${DONE_SENTINEL} once everything the task asked for is done with no shortcuts, stubs, or TODOs left behind. If work remains, keep going instead of emitting it.`,
-  );
 
   return sections.join('\n\n');
 }
