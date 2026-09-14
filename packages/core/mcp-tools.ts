@@ -366,7 +366,7 @@ export function buildToolDescription(actions: readonly string[]): string {
 
 export function buildParamsDescription(actions: readonly string[]): string {
   const descriptions: Record<string, string> = {
-    list_tasks: '{ offset? }',
+    list_tasks: '{ offset?, status? ("active"|"completed"|"failed"|"cancelled", default "active") } — "active" lists claimable/in-progress work. A terminal status switches to audit mode: ALL matching tasks in the workspace, fully paginated (no 24h window), each row tagged with summarySource (agent vs fallback) and PR/artifact attribution so a fallback summary with nothing shipped doesn\'t read as a real completion.',
     get_task: '{ taskId (required), include? (array of "workers"|"artifacts", default both) } — read-only status check. Returns task fields, loop configuration/state/history, latest workers, and artifacts. Use this to follow a task to completion after create_task.',
     claim_task: '{ maxTasks?, workspaceId? } — returns the current assignment when worker context is present; otherwise auto-assigns the highest-priority pending task',
     update_progress: '{ workerId?, progress (required), message?, plan?, inputTokens?, outputTokens?, lastCommitSha?, commitCount?, filesChanged?, linesAdded?, linesRemoved? } — workerId auto-resolved from context if omitted',
@@ -1218,14 +1218,24 @@ export async function handleBuilddAction(
       const wsId = ctx.workspaceId || await ctx.getWorkspaceId();
       const limit = 5;
       const offset = Math.max((params.offset as number) || 0, 0);
+      // status was hardcoded to 'active' — a caller auditing completed work had no
+      // way to reach it through this action at all, and had to detour through
+      // get_task/get_artifact one row at a time. A terminal status here switches
+      // the REST route into its audit mode: exact-status match, no 24h window,
+      // fully paginated, with per-row deliverable attribution.
+      const validStatuses = ['active', 'completed', 'failed', 'cancelled'];
+      const requestedStatus = typeof params.status === 'string' ? params.status : 'active';
+      const status = validStatuses.includes(requestedStatus) ? requestedStatus : 'active';
+      const isTerminalAudit = status !== 'active';
       // Server handles status filter, workspace scoping, sort (pending-first /
-      // priority-desc), and pagination — no client-side fan-out needed.
-      const query = new URLSearchParams({ status: 'active', limit: String(limit), offset: String(offset) });
+      // priority-desc, or updatedAt-desc for a terminal audit), and pagination —
+      // no client-side fan-out needed.
+      const query = new URLSearchParams({ status, limit: String(limit), offset: String(offset) });
       if (wsId) query.set('workspaceId', wsId);
       const data = await api(`/api/tasks?${query.toString()}`);
       const paginated: any[] = data.tasks || [];
 
-      if (paginated.length === 0 && offset === 0) return text('No active tasks found.');
+      if (paginated.length === 0 && offset === 0) return text(`No ${status} tasks found.`);
 
       const total: number = data.total ?? paginated.length;
       const pendingCount: number = data.pendingCount ?? paginated.filter((t: any) => t.status === 'pending').length;
@@ -1235,12 +1245,25 @@ export async function handleBuilddAction(
         const catPrefix = t.category ? `[${t.category}] ` : '';
         const statusSuffix = t.status !== 'pending' ? ` [${t.status}]` : '';
         const desc = t.descriptionPreview || 'No description';
-        return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
+        if (!isTerminalAudit) {
+          return `- ${catPrefix}${t.title}${statusSuffix} (id: ${t.id})\n  ${desc}`;
+        }
+        // Deliverable attribution: what a completed/failed/cancelled row actually
+        // shipped, so a fallback summary with nothing merged doesn't read as a
+        // real outcome (see the AC-3 completion-gate false-positive class).
+        const provenance = t.summarySource ? ` summary:${t.summarySource}` : '';
+        const deliverable = t.prNumber ? ` PR #${t.prNumber}` : t.hasArtifact ? ' artifact' : ' no-deliverable';
+        const updated = t.updatedAt ? ` (updated ${new Date(t.updatedAt).toISOString()})` : '';
+        return `- ${catPrefix}${t.title}${statusSuffix}${updated} (id: ${t.id})${provenance}${deliverable}\n  ${desc}`;
       }).join('\n\n');
 
-      const header = `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
+      const header = isTerminalAudit
+        ? `${total} ${status} task${total === 1 ? '' : 's'}:`
+        : `${total} active task${total === 1 ? '' : 's'} (${pendingCount} pending, ${total - pendingCount} in progress):`;
       const moreHint = hasMore ? `\n\nCall with offset=${offset + limit} to see more.` : '';
-      const claimHint = `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
+      const claimHint = isTerminalAudit
+        ? ''
+        : `\n\nTo claim a task, call action=claim_task (it auto-assigns the highest-priority pending task — you don't pick by ID).`;
       return text(`${header}\n\n${summary}${moreHint}${claimHint}`);
     }
 

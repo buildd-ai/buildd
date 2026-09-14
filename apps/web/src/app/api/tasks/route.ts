@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, artifacts } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { jsonResponse } from '@/lib/api-response';
@@ -121,6 +121,10 @@ export async function GET(req: NextRequest) {
     // Optional query filters to scope the list and shrink the payload.
     //   ?workspaceId=<id>  — restrict to a single accessible workspace
     //   ?status=active     — only non-terminal tasks (drops the 24h terminal window)
+    //   ?status=completed|failed|cancelled — audit mode: ALL matching tasks, fully
+    //     paginated, no 24h window. Row shape gains updatedAt/summarySource/prNumber/
+    //     hasArtifact so a caller can tell a real deliverable from a fallback summary
+    //     with nothing shipped. Requires ?limit — this mode only exists on the lean path.
     //   ?limit=N&offset=M  — OPT-IN pagination; returns lean row shape + total/pendingCount/hasMore
     // Both workspaceId and status are used by the dependency picker so it stops
     // fetching every workspace's task and filtering client-side (see DependencySelector).
@@ -139,6 +143,7 @@ export async function GET(req: NextRequest) {
     const terminalStatuses = ['completed', 'failed', 'cancelled'];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
+    const isTerminalAudit = statusFilter !== null && terminalStatuses.includes(statusFilter);
 
     // ── Paginated lean path (OPT-IN when ?limit=N is present) ──────────────
     // Returns only the columns list consumers need, sorted pending-first /
@@ -156,13 +161,17 @@ export async function GET(req: NextRequest) {
         inArray(tasks.workspaceId, workspaceIds),
         activeOnly
           ? notInArray(tasks.status, terminalStatuses)
-          : or(
-              notInArray(tasks.status, terminalStatuses),
-              and(
-                inArray(tasks.status, terminalStatuses),
-                gte(tasks.updatedAt, oneDayAgo),
+          : isTerminalAudit
+            // Audit mode: exact status, no 24h cutoff — the whole terminal history,
+            // paginated by the caller instead of silently windowed.
+            ? eq(tasks.status, statusFilter as string)
+            : or(
+                notInArray(tasks.status, terminalStatuses),
+                and(
+                  inArray(tasks.status, terminalStatuses),
+                  gte(tasks.updatedAt, oneDayAgo),
+                ),
               ),
-            ),
       );
 
       const [countsResult, leanTasks] = await Promise.all([
@@ -178,14 +187,31 @@ export async function GET(req: NextRequest) {
           priority: tasks.priority,
           category: tasks.category,
           descriptionPreview: sql<string | null>`left(${tasks.description}, 150)`,
+          // Deliverable attribution — only worth the extra columns/join in audit
+          // mode, where the whole point is telling a real completion from a
+          // fallback summary with nothing shipped.
+          ...(isTerminalAudit ? {
+            updatedAt: tasks.updatedAt,
+            summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
+            prNumber: sql<number | null>`(${tasks.result}->>'prNumber')::int`,
+            hasArtifact: sql<boolean>`EXISTS (
+              SELECT 1 FROM ${workers} w
+              JOIN ${artifacts} a ON a.worker_id = w.id
+              WHERE w.task_id = ${tasks.id}
+            )`,
+          } : {}),
         })
         .from(tasks)
         .where(where)
         .orderBy(
-          // Claimable (pending) first, then running, then other active
-          sql`CASE WHEN ${tasks.status} = 'pending' THEN 0 WHEN ${tasks.status} = 'assigned' THEN 1 WHEN ${tasks.status} = 'in_progress' THEN 2 ELSE 3 END`,
-          desc(tasks.priority),
-          asc(tasks.id),
+          ...(isTerminalAudit
+            ? [desc(tasks.updatedAt), asc(tasks.id)]
+            : [
+                // Claimable (pending) first, then running, then other active
+                sql`CASE WHEN ${tasks.status} = 'pending' THEN 0 WHEN ${tasks.status} = 'assigned' THEN 1 WHEN ${tasks.status} = 'in_progress' THEN 2 ELSE 3 END`,
+                desc(tasks.priority),
+                asc(tasks.id),
+              ]),
         )
         .limit(limit)
         .offset(offset),
