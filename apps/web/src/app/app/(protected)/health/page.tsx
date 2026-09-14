@@ -23,6 +23,7 @@ import {
   type FailureAnalytics,
   type FailureWindow,
 } from '@/lib/failure-analytics';
+import { getGateAnalytics } from '@/lib/gate-analytics-query';
 import { getBackendStrandSummary } from '@/lib/backend-strand';
 import type { CbmHealthSummary } from '@/lib/cbm-insight';
 import { fetchCbmSummary } from '@/lib/cbm-insight-query';
@@ -33,6 +34,7 @@ import { HealthClient } from './HealthClient';
 import Link from 'next/link';
 
 export type { BudgetForecast, FailureAnalytics, FailureWindow };
+export type { GateAnalytics } from '@buildd/shared';
 export type { CbmHealthSummary };
 export type { SubagentMetrics };
 export type SubagentDelegationPanel = DerivedMetric<SubagentMetrics>;
@@ -234,6 +236,7 @@ export default async function HealthPage({
     budgetForecast,
     consumption,
     failureAnalytics,
+    gateAnalytics,
     strandSummary,
     cbmSummary,
     subagentDelegation,
@@ -404,6 +407,12 @@ export default async function HealthPage({
     // Aggregated worker failure analytics for the selected window
     getFailureAnalytics(scopedWsIds, window).catch(() => null as FailureAnalytics | null),
 
+    // The gate ledger over the same window — server-side refusals, deferrals,
+    // advisory warnings and bypasses. Disjoint from the failures above by
+    // construction: a caller the platform refused never became a worker, so it
+    // can never appear in both.
+    getGateAnalytics(scopedWsIds, window).catch(() => null),
+
     // Backends stranding pending work: a credential nobody configured means
     // those tasks can never be claimed, and the Problems list would otherwise
     // read "All systems healthy" while the queue can never drain.
@@ -520,6 +529,7 @@ export default async function HealthPage({
       wsFilter={wsFilter ?? null}
       budgetForecast={budgetForecast ?? null}
       failureAnalytics={failureAnalytics ?? null}
+      gateAnalytics={gateAnalytics ?? null}
       window={window}
       cbm={cbmSummary ?? null}
       subagentDelegation={subagentDelegation ?? null}

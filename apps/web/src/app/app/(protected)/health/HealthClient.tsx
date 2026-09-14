@@ -15,6 +15,7 @@ import type {
   BudgetForecast,
   FailureAnalytics,
   FailureWindow,
+  GateAnalytics,
   CbmHealthSummary,
   OrphanedPrRow,
   SubagentDelegationPanel,
@@ -190,6 +191,7 @@ interface Props {
   wsFilter: string | null;
   budgetForecast: BudgetForecast | null;
   failureAnalytics: FailureAnalytics | null;
+  gateAnalytics: GateAnalytics | null;
   /** The one page window (`?window=`) every TREND section reads. */
   window: FailureWindow;
   cbm: CbmHealthSummary | null;
@@ -236,6 +238,7 @@ export function HealthClient({
   wsFilter,
   budgetForecast,
   failureAnalytics,
+  gateAnalytics,
   window: activeWindow,
   cbm,
   subagentDelegation,
@@ -1044,6 +1047,8 @@ export function HealthClient({
         {failureAnalytics && (
           <FailureAnalyticsSection analytics={failureAnalytics} window={activeWindow} now={now} />
         )}
+
+        {gateAnalytics && <GatesSection gates={gateAnalytics} window={activeWindow} />}
 
         {usageStats && usageStats.total > 0 && (
           <TaskOutcomesSection stats={usageStats} window={activeWindow} />
@@ -2039,6 +2044,86 @@ function WindowPicker({ window: current }: { window: FailureWindow }) {
           {o.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+/**
+ * The gate ledger, as a compact trend block.
+ *
+ * Sits next to Worker failures on purpose: the two answer the same question
+ * ("what is the platform doing badly?") over populations that do not overlap at
+ * all. A worker that fails is in the section above. A caller the platform
+ * REFUSED never became a worker, so it appears here and nowhere else — which is
+ * how a creation-time lint could misfire for three weeks with every dashboard
+ * reporting healthy.
+ *
+ * Bypass % leads each row because it is the number that needs no interpretation:
+ * a gate being overridden most of the time is wrong about something.
+ */
+function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; window: FailureWindow }) {
+  const { totals } = gates;
+
+  return (
+    <div data-testid="health-section-gates" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Gates</h3>
+        <span data-testid="gate-denominator" className="text-[11px] text-text-muted">
+          {sectionDenominator(totals.events, 'gate decisions')} ({activeWindow})
+        </span>
+      </div>
+
+      {totals.events === 0 ? (
+        <div className="card px-4 py-3">
+          <p className="text-sm text-text-muted">
+            Nothing was refused, deferred, warned or bypassed in this window.
+          </p>
+        </div>
+      ) : (
+        <div className="card divide-y divide-border-default">
+          <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="gate-headline">
+            {([
+              ['Rejected', totals.rejected, 'Requests the platform refused outright — a 4xx the caller had to act on.'],
+              ['Deferred', totals.deferred, 'Accepted but not acted on yet: a wait, a queue, a single-flight. Not an error.'],
+              ['Bypassed', totals.bypassed, 'A gate fired and the caller carried an explicit escape hatch. Over a lint, this IS its false-positive rate.'],
+              ['Warned', totals.warned, 'Advisory only — the response carried a warning and the work proceeded.'],
+            ] as const).map(([label, value, title]) => (
+              <div key={label}>
+                <span
+                  className="text-[10px] font-mono uppercase tracking-widest text-text-muted"
+                  title={title}
+                >
+                  {label}
+                </span>
+                <p className="text-xl font-bold tabular-nums leading-tight">{value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="px-4 py-3">
+            <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+              By gate
+            </p>
+            <ul className="space-y-1.5">
+              {gates.gates.slice(0, 6).map(g => (
+                <li key={g.gate} className="flex items-baseline justify-between gap-3 text-sm">
+                  <span className="font-mono text-xs text-text-secondary truncate" title={g.surfaces.join(', ')}>
+                    {g.gate}
+                  </span>
+                  <span className="text-[11px] text-text-muted whitespace-nowrap tabular-nums">
+                    {g.count}× · bypass {g.bypassRatePct}%
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {gates.truncatedGates > 0 && (
+              <p className="text-[11px] text-text-muted mt-2">
+                … {gates.truncatedGates} more gate(s)
+              </p>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

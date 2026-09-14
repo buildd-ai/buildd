@@ -16,6 +16,10 @@
 scripts/always-run-tests.test.ts
 scripts/collector-coverage.test.ts
 scripts/cron-instrumentation.test.ts
+# Enumerates every tracked source file to check that each declared gate slug
+# is actually fired somewhere and named in the gate audit. Adding a slug is a
+# packages/core change; forgetting to wire it is a change nowhere near this file.
+packages/core/__tests__/gate-slug-coverage.test.ts
 # Asserts .github/workflows/release-tag.yml. It reads a fixed path rather than
 # enumerating the repo, so the ls-files heuristic does not flag it — but a change
 # to that workflow still selects no test beside it, which is the same hole.

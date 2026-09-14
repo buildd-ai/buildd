@@ -1,4 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
+// The gate ledger shares the `db` handle with the route, so an unstubbed
+// `recordGateEvent` shows up as an extra `db.insert` in the table-agnostic
+// mocks below. Stubbed here because this file asserts route BEHAVIOUR; the
+// ledger's own wiring is covered by gate-ledger.test.ts / the gate-events and
+// gate-analytics suites in packages/core.
+mock.module('@buildd/core/gate-events', () => ({
+  GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
+  recordGateEvent: async () => null,
+}));
 import { NextRequest } from 'next/server';
 
 // Mock functions
