@@ -886,6 +886,12 @@ export const missions = pgTable('missions', {
   // snapshot that every fresh evaluation overwrites wholesale.
   criteriaReviewerFindings: jsonb('criteria_reviewer_findings')
     .$type<import('@buildd/shared').CriteriaReviewerReport[] | null>(),
+  // When true (default), a builder task created under this mission whose
+  // pathManifest touches a UI surface directory (apps/web/src/app/**,
+  // apps/web/src/components/**) auto-appends a `[surface audit]` task —
+  // see ensureMissionSurfaceAudit in apps/web/src/lib/mission-surface-audit.ts.
+  // Set false to opt a non-UI or intentionally-unaudited mission out.
+  autoSurfaceAudit: boolean('auto_surface_audit').default(true).notNull(),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

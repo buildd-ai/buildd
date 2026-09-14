@@ -10,6 +10,7 @@ import { validateRequiredConnectors } from '@/lib/required-connectors';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { getAccountWorkspacePermissions } from '@/lib/account-workspace-cache';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { ensureMissionSurfaceAudit } from '@/lib/mission-surface-audit';
 import { getUserWorkspaceIds, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { isOwnedStorageKey } from '@/lib/storage-keys';
 import { classifyTask } from '@/lib/task-category';
@@ -401,22 +402,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Prose-gate lint: reject if description declares a dependency gate in prose but dependsOn
-    // is empty. This catches descriptions like "Gated on task X merging" with no dependsOn edges.
-    // fileAnywayReason (non-blank) bypasses the lint, matching the existing dedupe-bypass convention,
-    // and is forwarded unchanged to the subject intake handler so both bypasses work from one param.
-    if (description && !(typeof fileAnywayReason === 'string' && fileAnywayReason.trim())) {
+    // Prose-gate lint: advisory only. If description declares a dependency gate in prose
+    // (e.g., "Gated on task X merging") but dependsOn is empty, surface a warning suggestion
+    // to the response. The lint is informational, not a rejection — task descriptions
+    // naturally contain gate/merge/task/PR language since they describe coordination.
+    let proseGateWarning: { phrase: string; taskIds: string[] } | null = null;
+    if (description) {
       const gate = detectProseGate(description);
       if (gate.phrase !== null && (!Array.isArray(dependsOn) || dependsOn.length === 0)) {
-        const idHint = gate.taskIds.length > 0
-          ? ` Task IDs found near the gate: ${gate.taskIds.join(', ')}.`
-          : '';
-        return NextResponse.json(
-          {
-            error: `Description declares a dependency gate ("${gate.phrase}" matched) but dependsOn is empty.${idHint} Express this gate as dependsOn edges, or pass fileAnywayReason to bypass.`,
-          },
-          { status: 400 },
-        );
+        proseGateWarning = gate;
       }
     }
 
@@ -1058,6 +1052,33 @@ export async function POST(req: NextRequest) {
       }).catch(err => console.error('[task-create] mission-feed failed:', err));
     }
 
+    // UI missions auto-append a per-mission surface-audit task: when this
+    // task's own pathManifest touches a UI surface directory, ensure the
+    // mission has a `[surface audit]` task gated on all its builder tasks
+    // (idempotent — extends dependsOn instead of duplicating). Never fails
+    // task creation, which has already committed by this point.
+    //
+    // Skipped on an 'attached' intake outcome — there `task` is the
+    // pre-existing canonical row (see intakeSubject), not a new filing, so
+    // there is nothing new for the mission's audit to depend on.
+    if (task.missionId && intake.outcome.action !== 'attached') {
+      try {
+        await ensureMissionSurfaceAudit({
+          missionId: task.missionId,
+          workspaceId,
+          createdTask: {
+            id: task.id,
+            title: task.title,
+            taskClass: task.taskClass,
+            pathManifest: (task.pathManifest as string[] | null) ?? null,
+          },
+          targetWorkspace,
+        });
+      } catch (err) {
+        console.error('[task-create] surface audit ensure failed:', err);
+      }
+    }
+
     // Intake check (§10) — warn, never block. A retrieval failure here must
     // never fail task creation, which has already committed by this point.
     let specWarnings: Awaited<ReturnType<typeof findIntakeWarnings>> = [];
@@ -1070,6 +1091,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       ...task,
       subjectIntakeOutcome: intake.outcome,
+      ...(proseGateWarning ? {
+        proseGateWarning: {
+          message: `Description mentions a gate ("${proseGateWarning.phrase}") near ${proseGateWarning.taskIds.length > 0 ? `task IDs: ${proseGateWarning.taskIds.join(', ')}` : 'potential dependencies'}; no dependsOn edges set. If this is a real dependency, add dependsOn.`,
+          phrase: proseGateWarning.phrase,
+          taskIds: proseGateWarning.taskIds,
+        },
+      } : {}),
       ...(duplicateSuggestion ? { duplicateSuggestion } : {}),
       ...(specWarnings.length > 0 ? { specWarnings } : {}),
     });

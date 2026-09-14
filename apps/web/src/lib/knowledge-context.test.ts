@@ -192,6 +192,35 @@ describe('buildKnowledgeContext', () => {
     expect(text).toContain('PR #777');
   });
 
+  it('drops hits scoring below the precision floor and suppresses the empty section', async () => {
+    const store = mockStore({
+      'ws-1:task': [{ content: '# Task: weak match', score: 0.2 }],
+    });
+    const text = (await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).not.toContain('weak match');
+    expect(text).not.toContain('Past task outcomes');
+  });
+
+  it('keeps hits at or above the precision floor', async () => {
+    const store = mockStore({
+      'ws-1:task': [{ content: '# Task: strong match', score: 0.45 }],
+    });
+    const text = (await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store)).join('\n');
+    expect(text).toContain('strong match');
+    expect(text).toContain('Past task outcomes');
+  });
+
+  it('exempts path-based lookups from the precision floor', async () => {
+    const store = mockStore({
+      'ws-1:pr': [{ content: '# PR #42: touches the file', score: 0.1, metadata: { prNumber: 42 } }],
+    });
+    const text = (await buildKnowledgeContext('unrelated goal text', 'ws-1', 'team-1', store, {
+      paths: ['apps/web/src/lib/auth.ts'],
+    })).join('\n');
+    expect(text).toContain('Recent work on relevant paths');
+    expect(text).toContain('PR #42');
+  });
+
   it('skips path-based lookup when paths array is empty', async () => {
     const seen: string[] = [];
     const store: KnowledgeQuerier = {

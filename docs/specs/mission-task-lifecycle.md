@@ -1259,3 +1259,69 @@ dump on every pass.
   `buildHeartbeatContext()`
 - `apps/web/src/lib/workspace-state-context.test.ts` — 25 tests covering all causes,
   degradation, and budget enforcement
+
+---
+
+## Per-mission surface-audit contract
+
+**Capability statement**: A mission whose builder tasks touch a UI surface
+directory MUST get its own `[surface audit]` task, gated on every builder task
+in the mission, without relying on the separate recurring `Weekly mobile UI
+audit` mission to eventually catch what it missed.
+
+**Trigger**: `POST /api/tasks` (the single creation choke point for the
+dashboard, the API, and MCP `create_task` — including organizer/heartbeat
+decomposition passes, since all three route through this endpoint) calls
+`ensureMissionSurfaceAudit` after every task insert that carries a `missionId`.
+
+**UI surface directories**: `apps/web/src/app/` and `apps/web/src/components/`
+(see `SURFACE_AUDIT_UI_PATH_PREFIXES`). The repo-wide sentinel (`['**']`) never
+counts — it means "scope undeclared", not "touches the UI" (see the
+Manifests-are-the-enforcement contract above).
+
+**Behavior**:
+- Only `taskClass = 'work'` tasks (real builder deliverables, not bookkeeping
+  rows or the audit task itself) can trigger or extend an audit.
+- No existing `[surface audit]` task for the mission, and this task's
+  `pathManifest` touches a UI surface directory → mint one, `dependsOn` = every
+  `taskClass = 'work'` task currently in the mission (including this one).
+- An audit task already exists → append this task's id to its `dependsOn`
+  (deduplicated), regardless of whether this particular task's manifest is
+  UI-scoped — the audit reviews the mission's whole shipped surface, and a
+  backend-only task can still change what renders.
+- Mission has `autoSurfaceAudit = false` → no-op entirely.
+
+**Checklist** (reused from the Weekly mobile UI audit, scoped to the paths
+declared by the mission's own builder tasks instead of the whole app): 390pt/320pt
+viewport walk, the CTA set derived from live server state for every state the
+mission introduced, empty/error/loading rendering, no duplicate chrome titles.
+The audit task files defects as tasks in the **same mission** (not friction
+reports) and completes with an artifact.
+
+**Idempotency**: Re-running decomposition (the organizer creating tasks again)
+never creates a second audit task — the existing-task lookup is by title prefix
+within the mission, so a repeat pass only extends `dependsOn`. Best-effort under
+concurrent task creation (check-then-act, matching this codebase's other
+neon-http non-transactional patterns) — not a hard concurrency guarantee.
+
+**Non-goals**: The recurring workspace-wide `Weekly mobile UI audit` mission is
+unaffected and still runs as a backstop. Desktop-only concerns are out of scope.
+
+**Acceptance criteria**:
+- AC-29: GIVEN a mission with no existing audit task WHEN a `taskClass = 'work'`
+  task is created with a `pathManifest` entry under `apps/web/src/app/` or
+  `apps/web/src/components/` THEN exactly one `[surface audit]` task is created,
+  `dependsOn` including the triggering task.
+- AC-30: GIVEN a mission that already has a `[surface audit]` task WHEN another
+  `taskClass = 'work'` task is created in that mission THEN no second audit task
+  is created and the existing one's `dependsOn` gains the new task's id.
+- AC-31: GIVEN a mission whose tasks only declare non-UI paths (or the `['**']`
+  sentinel) THEN no audit task is ever created.
+- AC-32: GIVEN a mission with `autoSurfaceAudit = false` THEN no audit task is
+  created or extended regardless of what paths its tasks declare.
+
+**Code surface**:
+- `packages/core/surface-audit.ts` — pure predicates and checklist content
+- `apps/web/src/lib/mission-surface-audit.ts` — `ensureMissionSurfaceAudit()`
+- `apps/web/src/app/api/tasks/route.ts` — trigger point (`POST` handler)
+- `packages/core/db/schema.ts` — `missions.autoSurfaceAudit` (default `true`)

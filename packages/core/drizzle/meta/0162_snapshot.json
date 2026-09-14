@@ -1,6 +1,6 @@
 {
-  "id": "3880fd64-cce5-4626-a7b8-ded8b3f106c9",
-  "prevId": "20399b26-b59a-4d38-afe2-f17875db5c11",
+  "id": "f1354cca-bffc-4c4f-9c6a-2b4d24e93db9",
+  "prevId": "3880fd64-cce5-4626-a7b8-ded8b3f106c9",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -4289,6 +4289,12 @@
         "criteria_escalated_at": {
           "name": "criteria_escalated_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "criteria_reviewer_findings": {
+          "name": "criteria_reviewer_findings",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

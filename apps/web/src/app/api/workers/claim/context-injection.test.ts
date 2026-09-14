@@ -238,3 +238,76 @@ describe('attachKnowledgeContext — key derivation', () => {
     }
   });
 });
+
+describe('attachKnowledgeContext — fan-out seed query (spec f14a3d02 items A+B)', () => {
+  it('wires the task pathManifest into buildKnowledgeContext as opts.paths', async () => {
+    const { workers, tasks } = claim({ pathManifest: ['apps/web/src/lib/auth.ts', 'apps/web/src/lib/session.ts'] });
+    await attachKnowledgeContext(workers, tasks);
+
+    expect(mockFanOut).toHaveBeenCalledTimes(1);
+    const opts = mockFanOut.mock.calls[0]![4] as any;
+    expect(opts.paths).toEqual(['apps/web/src/lib/auth.ts', 'apps/web/src/lib/session.ts']);
+  });
+
+  it('drops the scope-undeclared sentinel and non-string entries from pathManifest', async () => {
+    const { workers, tasks } = claim({ pathManifest: ['**', 42, null, 'apps/web/src/lib/auth.ts'] as any });
+    await attachKnowledgeContext(workers, tasks);
+
+    const opts = mockFanOut.mock.calls[0]![4] as any;
+    expect(opts.paths).toEqual(['apps/web/src/lib/auth.ts']);
+  });
+
+  it('passes an empty paths array when the task has no pathManifest', async () => {
+    const { workers, tasks } = claim({});
+    await attachKnowledgeContext(workers, tasks);
+
+    const opts = mockFanOut.mock.calls[0]![4] as any;
+    expect(opts.paths).toEqual([]);
+  });
+
+  it('strips a [CI Retry #N] prefix from the title before it seeds the query', async () => {
+    const { workers, tasks } = claim({ title: '[CI Retry #3] Fix the sandbox' });
+    await attachKnowledgeContext(workers, tasks);
+
+    const seedQuery = mockFanOut.mock.calls[0]![0] as string;
+    expect(seedQuery).toBe('Fix the sandbox');
+  });
+
+  it('strips stacked [CI Retry #N] and [reviewer] prefixes', async () => {
+    const { workers, tasks } = claim({ title: '[CI Retry #2] [reviewer] Fix the sandbox' });
+    await attachKnowledgeContext(workers, tasks);
+
+    const seedQuery = mockFanOut.mock.calls[0]![0] as string;
+    expect(seedQuery).toBe('Fix the sandbox');
+  });
+
+  it('strips [reviewer retry #N] and [friction] prefixes', async () => {
+    for (const [title, expected] of [
+      ['[reviewer retry #2] Fix the sandbox', 'Fix the sandbox'],
+      ['[friction] Claim route returns 404', 'Claim route returns 404'],
+    ]) {
+      mockFanOut.mockClear();
+      const { workers, tasks } = claim({ title });
+      await attachKnowledgeContext(workers, tasks);
+      expect(mockFanOut.mock.calls[0]![0]).toBe(expected);
+    }
+  });
+
+  it('truncates the description to 600 chars before it seeds the query', async () => {
+    const longDescription = 'x'.repeat(900);
+    const { workers, tasks } = claim({ description: longDescription });
+    await attachKnowledgeContext(workers, tasks);
+
+    const seedQuery = mockFanOut.mock.calls[0]![0] as string;
+    const [, description] = seedQuery.split('\n');
+    expect(description!.length).toBe(600);
+  });
+
+  it('leaves an untitled, plain task unaffected', async () => {
+    const { workers, tasks } = claim({ title: 'Fix the sandbox', description: 'short body' });
+    await attachKnowledgeContext(workers, tasks);
+
+    const seedQuery = mockFanOut.mock.calls[0]![0] as string;
+    expect(seedQuery).toBe('Fix the sandbox\nshort body');
+  });
+});
