@@ -41,6 +41,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { reviewerRetryTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS, WORKERS_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { recordCredentialAuthFailure, recordCredentialAuthSuccess, getActiveClaudeSecretId } from '@/lib/credential-health';
@@ -1083,6 +1084,17 @@ export async function PATCH(
         } catch { /* non-fatal — fall through to normal validation */ }
       }
       if (autoDetectRefusal) {
+        fireGateEvent({
+          gate: GATE_SLUGS.MISSION_BASE_ADOPTION,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: autoDetectRefusal.error,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+        });
         return NextResponse.json(autoDetectRefusal, { status: 400 });
       }
 
@@ -1124,6 +1136,26 @@ export async function PATCH(
       // row before refusing it; each rejection is its own worker row, so
       // there is nothing to reconcile against a later, successful attempt.
       const persistRejectedCompletionPayload = async (reason: string) => {
+        // The gate row and the preserved payload are written from the same
+        // place on purpose: every arm of this gate refuses through here, so a
+        // future arm cannot be added that persists the payload and forgets the
+        // ledger (or the reverse).
+        fireGateEvent({
+          gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+          surface: 'PATCH /api/workers/[id]',
+          outcome: 'rejected',
+          reason: `completion refused: outputRequirement ${reason} not satisfied`,
+          workspaceId: worker.workspaceId,
+          missionId: taskMissionId,
+          taskId: worker.taskId,
+          workerId: worker.id,
+          callerOrigin: 'worker',
+          detail: {
+            outputRequirement: reason,
+            category: terminalTaskRow[0]?.category ?? null,
+            summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+          },
+        });
         await db.update(workers).set({
           rejectedCompletionPayload: {
             reason,
@@ -1206,6 +1238,32 @@ export async function PATCH(
             error: `Task has ${workDescription} but no pull request or artifact. Use create_pr to open one for the branch (committing first if needed), or call complete_task with \`discardEdits\` explaining why these edits are being intentionally discarded.`,
             hint: 'create_pr',
           }, { status: 400 });
+        }
+        // `discardEdits` is the caller talking the gate out of a refusal it
+        // would otherwise have made — the same shape as a lint bypass, and the
+        // number that says whether the `auto` gate is asking for a deliverable
+        // this class of task can never produce. (A cross-branch deliverable is
+        // NOT a bypass: merge_pr verified it against GitHub, so the gate was
+        // satisfied rather than overridden.)
+        if (discardReason && !hasCrossBranchDeliverable) {
+          fireGateEvent({
+            gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
+            surface: 'PATCH /api/workers/[id]',
+            outcome: 'bypassed',
+            reason: 'completion accepted under auto: edits discarded by explicit acknowledgement',
+            workspaceId: worker.workspaceId,
+            missionId: taskMissionId,
+            taskId: worker.taskId,
+            workerId: worker.id,
+            callerOrigin: 'worker',
+            detail: {
+              outputRequirement: 'auto',
+              category: terminalTaskRow[0]?.category ?? null,
+              commits: effectiveCommits,
+              dirtyWorktree: effectiveDirtyWorktree,
+              discardEdits: discardReason.slice(0, 500),
+            },
+          });
         }
         // Neither satisfier put anything on this worker's own branch — a
         // branch-merge release would find nothing of this worker's own to ship.

@@ -29,6 +29,7 @@ import { pickReviewerRole } from '@/lib/pr-review-status';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
 import { resolveReReviewPlan } from '@/lib/pr-re-review';
+import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 
 export async function POST(
   req: NextRequest,
@@ -127,6 +128,18 @@ export async function POST(
     currentHeadSha: headSha,
   });
   if (plan.kind === 'in_flight') {
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEWER_SINGLE_FLIGHT,
+      surface: 'POST /api/prs/[prNumber]/re-review',
+      outcome: 'deferred',
+      reason: 'a reviewer is already working this PR',
+      workspaceId: worker.workspaceId,
+      missionId: originalTask.missionId,
+      taskId: originalTask.id,
+      workerId: worker.id,
+      callerOrigin: 'dashboard',
+      detail: { prNumber, reviewTaskId: plan.reviewTaskId },
+    });
     return NextResponse.json({ ok: true, alreadyRequested: true, reviewTaskId: plan.reviewTaskId });
   }
 
