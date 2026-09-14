@@ -1067,6 +1067,76 @@ describe('open_pr_outpaced_by_base', () => {
     expect(countBaseDrift(snapshot({ baseMerges: merges(7) }), w)).toBe(7);
     expect(countBaseDrift(emptySnapshot(), w)).toBe(0);
   });
+
+  // Filed as friction: a PR that gets rebased and re-escalated to a human
+  // every few hours kept re-firing this invariant every single hourly sweep,
+  // forever, because age and drift were both measured from the PR's original
+  // open time and nothing ever advanced that anchor on rebase. A review only
+  // completes against the PR's CURRENT head, so its decidedAt is used as a
+  // "someone just looked at this" reset instead.
+
+  it('stays silent shortly after a review, however stale the PR looks from its original open time', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT * 2),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(30 * MIN) }],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('fires again once enough time and drift accumulate after the last review', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      // All land well after the review anchor (10h ago), so every one counts.
+      baseMerges: merges(PR_OUTPACED_DRIFT).map(m => ({ ...m, mergedAt: ago(HOUR) })),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(10 * HOUR) }],
+    });
+    expect(reported(key, s)).toEqual(['4242']);
+  });
+
+  it('does not count merges before the review as drift once a review anchors the clock', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      // All merges landed before the review — none of them are drift under it.
+      baseMerges: merges(PR_OUTPACED_DRIFT * 2).map((m, i) => ({ ...m, mergedAt: ago((i + 11) * HOUR) })),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(5 * HOUR) }],
+    });
+    expect(reported(key, s)).toEqual([]);
+    expect(countBaseDrift(s, s.workers[0], ago(5 * HOUR))).toBe(0);
+  });
+
+  it('ignores a review decided before the PR opened, e.g. a stale row for a reused PR number', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(30 * HOUR) }],
+    });
+    expect(reported(key, s)).toEqual(['4242']);
+  });
+
+  it('ignores a review for a different PR or workspace', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT * 2),
+      reviews: [
+        { prNumber: 9999, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(30 * MIN) },
+        { prNumber: 4242, workspaceId: 'ws-other', verdict: 'escalate', decidedAt: ago(30 * MIN) },
+      ],
+    });
+    expect(reported(key, s)).toEqual(['4242']);
+  });
+
+  it('names the review, not the open time, as the evidence once it is the anchor', () => {
+    const s = snapshot({
+      workers: [openPr(20 * HOUR)],
+      baseMerges: merges(PR_OUTPACED_DRIFT).map(m => ({ ...m, mergedAt: ago(HOUR) })),
+      reviews: [{ prNumber: 4242, workspaceId: 'ws-1', verdict: 'escalate', decidedAt: ago(10 * HOUR) }],
+    });
+    const [v] = evaluateInvariants(s, NOW).find(r => r.key === key)!.violations;
+    expect(v.detail).toContain('last reviewed');
+    expect(v.detail).toContain('since that review');
+    expect(Math.round(v.ageMs / HOUR)).toBe(10);
+  });
 });
 
 // ── Report formatting ───────────────────────────────────────────────────────
