@@ -19,6 +19,7 @@ import type {
   CbmHealthSummary,
   OrphanedPrRow,
   SubagentDelegationPanel,
+  ErrorPatternPanel,
 } from './page';
 import { getModelDisplayName } from '@buildd/core/model-display';
 import { Stat } from '@/components/StatTile';
@@ -196,6 +197,7 @@ interface Props {
   window: FailureWindow;
   cbm: CbmHealthSummary | null;
   subagentDelegation: SubagentDelegationPanel | null;
+  errorPatterns: ErrorPatternPanel | null;
   /**
    * The instant the server rendered this page, in epoch ms.
    *
@@ -242,6 +244,7 @@ export function HealthClient({
   window: activeWindow,
   cbm,
   subagentDelegation,
+  errorPatterns,
   now,
 }: Props) {
   const router = useRouter();
@@ -1063,6 +1066,10 @@ export function HealthClient({
         {subagentDelegation && (
           <SubagentDelegationSection panel={subagentDelegation} window={activeWindow} />
         )}
+
+        {errorPatterns && (
+          <ErrorPatternSection panel={errorPatterns} window={activeWindow} />
+        )}
       </section>
 
       {/* Delete schedule confirm modal */}
@@ -1623,6 +1630,94 @@ function SubagentDelegationSection({
         {panel.kind === 'value' && panel.value.truncated && (
           <p className="text-[11px] text-text-muted">
             Reads the newest sessions in the window up to a cap — figures above are a floor.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Error trace patterns ─────────────────────────────────────────────────────
+
+/**
+ * Which scanned error pattern (`worker_error_traces.pattern`) is costing us
+ * the most, over the page window. See `error-pattern-cost.ts` for the ranking
+ * argument — the header line below states the ranking key inline, not just in
+ * the PR that shipped it.
+ */
+function ErrorPatternSection({
+  panel,
+  window,
+}: {
+  panel: ErrorPatternPanel;
+  window: FailureWindow;
+}) {
+  return (
+    <div data-testid="health-section-error-patterns" className="mb-6">
+      <div className="flex items-baseline justify-between gap-3 mb-3">
+        <h3 className="text-xs font-medium text-text-secondary">Error trace patterns</h3>
+        <span className="text-[11px] text-text-muted">
+          {panel.kind === 'value'
+            ? sectionDenominator(panel.value.scannedWorkers, panel.value.scannedWorkers === 1 ? 'worker' : 'workers')
+            : sectionDenominator(0, 'workers')} ({window})
+        </span>
+      </div>
+      <div className="card p-4 space-y-2">
+        {panel.kind === 'value' ? (
+          panel.value.patterns.length === 0 ? (
+            <p className="text-xs text-text-muted">No error-trace pattern fired in this window.</p>
+          ) : (
+            <>
+              <p
+                className="text-[11px] text-text-muted"
+                title="Raw occurrence count is not used: a pattern that fires repeatedly on output that never hurt anything would outrank a rare one that always coincides with a dead worker."
+              >
+                Ranked by distinct workers whose session ended in failure while this pattern fired — not raw occurrence count.
+              </p>
+              <div className="divide-y divide-border-default">
+                {panel.value.patterns.map((p) => {
+                  const topFailedWorkers = panel.value.patterns[0]?.failedWorkers ?? 0;
+                  return (
+                    <div key={p.pattern} className="py-2.5 first:pt-0 last:pb-0">
+                      <div className="flex items-start gap-3">
+                        <span className="text-xs font-mono font-bold tabular-nums text-text-primary shrink-0 w-8 text-right">
+                          {p.failedWorkers}
+                        </span>
+                        <span className="flex-1 min-w-0">
+                          <span className="block text-xs font-mono text-text-primary truncate" title={p.pattern}>
+                            {p.pattern}
+                          </span>
+                          <span className="block text-xs text-text-muted mt-0.5">
+                            {countOf(p.workers, 'worker')} hit it · {countOf(p.occurrences, 'occurrence')}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1 bg-surface-3 overflow-hidden">
+                        <div
+                          className="h-full bg-primary"
+                          style={{ width: `${topFailedWorkers > 0 ? Math.round((p.failedWorkers / topFailedWorkers) * 100) : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )
+        ) : (
+          <p data-testid="error-patterns-unavailable" className="text-xs text-text-muted">
+            {panel.detail}
+          </p>
+        )}
+        {panel.kind === 'value' && panel.value.windowPredatesCapture && (
+          <p className="text-[11px] text-text-muted pt-2 border-t border-border-default">
+            The scanner's false-positive gating was only completed on {panel.value.gatedSince}; this panel
+            counts only traces from on/after that date, excluding earlier ones rather than counting them as zero.
+          </p>
+        )}
+        {panel.kind === 'value' && panel.value.truncated && (
+          <p className="text-[11px] text-text-muted">
+            Reads the newest traces in the window up to a cap — counts above are a floor.
           </p>
         )}
       </div>

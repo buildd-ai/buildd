@@ -30,6 +30,14 @@ import { fetchCbmSummary } from '@/lib/cbm-insight-query';
 import { buildSubagentDelegationPanel, type SubagentMetrics } from '@/lib/subagent-time';
 import type { DerivedMetric } from '@buildd/core/derived-metric';
 import { fetchSubagentTimeRows, SUBAGENT_TIME_CAPTURED_SINCE, SUBAGENT_TIME_ROW_LIMIT } from '@/lib/subagent-time-query';
+import { buildErrorPatternPanel, type ErrorPatternMetrics } from '@/lib/error-pattern-cost';
+import {
+  fetchErrorPatternRows,
+  errorPatternEffectiveStart,
+  ERROR_TRACE_GATED_SINCE,
+  ERROR_PATTERN_ROW_LIMIT,
+} from '@/lib/error-pattern-cost-query';
+import { countWorkersInWindow } from '@/lib/action-events';
 import { HealthClient } from './HealthClient';
 import Link from 'next/link';
 
@@ -38,6 +46,8 @@ export type { GateAnalytics } from '@buildd/shared';
 export type { CbmHealthSummary };
 export type { SubagentMetrics };
 export type SubagentDelegationPanel = DerivedMetric<SubagentMetrics>;
+export type { ErrorPatternMetrics };
+export type ErrorPatternPanel = DerivedMetric<ErrorPatternMetrics>;
 
 export const dynamic = 'force-dynamic';
 
@@ -240,6 +250,7 @@ export default async function HealthPage({
     strandSummary,
     cbmSummary,
     subagentDelegation,
+    errorPatterns,
   ] = await Promise.all([
     // Runner heartbeats relevant to the scoped workspaces
     getRunnerHeartbeats(activeTeamId, scopedWsIds)
@@ -445,6 +456,33 @@ export default async function HealthPage({
         capturedSince: SUBAGENT_TIME_CAPTURED_SINCE,
       });
     })().catch(() => null as SubagentDelegationPanel | null),
+
+    // Error-trace pattern rollup TREND: which scanned error pattern
+    // (`worker_error_traces.pattern`) is costing us the most, ranked by
+    // distinct workers whose session ended in failure while it fired — not
+    // raw occurrence count, which a chatty-but-harmless pattern would win.
+    // Computed, stored, and read by nobody outside ad-hoc SQL until now — see
+    // error-pattern-cost.ts for the ranking argument and the scanner-gating
+    // discontinuity this clamps around.
+    (async (): Promise<ErrorPatternPanel | null> => {
+      const windowStart = new Date(Date.now() - parseWindowMs(window));
+      const effectiveStart = errorPatternEffectiveStart(windowStart);
+      const [rows, scannedWorkers] = await Promise.all([
+        fetchErrorPatternRows({ workspaceIds: scopedWsIds, windowStart }),
+        // Population is workers COMPLETED in the (gate-clamped) window — same
+        // terminal-only convention subagent-time and failure-analytics use on
+        // this page, and the same reasoning: an in-flight worker's traces are
+        // provisional the way its outcome is.
+        countWorkersInWindow({ workspaceIds: scopedWsIds, windowStart: effectiveStart }),
+      ]);
+      return buildErrorPatternPanel({
+        rows,
+        scannedWorkers,
+        windowStart,
+        rowLimit: ERROR_PATTERN_ROW_LIMIT,
+        gatedSince: ERROR_TRACE_GATED_SINCE,
+      });
+    })().catch(() => null as ErrorPatternPanel | null),
   ]);
 
   const strandedBackends: StrandedBackendRow[] = (strandSummary?.backends ?? [])
@@ -533,6 +571,7 @@ export default async function HealthPage({
       window={window}
       cbm={cbmSummary ?? null}
       subagentDelegation={subagentDelegation ?? null}
+      errorPatterns={errorPatterns ?? null}
       now={now}
     />
   );
