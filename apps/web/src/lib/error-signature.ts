@@ -23,6 +23,7 @@ const RE_ISO_TS = /\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[
 const RE_DATE = /\b\d{4}-\d{2}-\d{2}\b/g;
 const RE_CLOCK = /\b\d{1,2}:\d{2}(?::\d{2})?\s?(?:[ap]m)?|\b\d{1,2}\s?[ap]m\b/gi;
 const RE_PATH = /(?:\/[\w.@+-]+){2,}\/?/g;
+const RE_QUOTED_SLUG = /'([\w.]+(?:[-_/][\w.]+)+)'/g;
 const RE_HEX_ID = /\b[0-9a-f]{7,}\b/gi;
 const RE_NUMBER = /\d+(?:\.\d+)?/g;
 
@@ -55,6 +56,20 @@ const RE_NUMBER = /\d+(?:\.\d+)?/g;
  *
  * RE_UUID must stay AHEAD of RE_HEX_ID: the hex rule would otherwise eat the
  * first group out of a full UUID and leave `<id>-0be1-4d2c-b10d-<id>`.
+ *
+ * RE_QUOTED_SLUG collapses single-quoted multi-segment tokens — branch names
+ * (`buildd_ed211c59-consolidate-the-create-pr-bran`), mission-branch names
+ * (`mission/spec-conformance-the-ledger-f02e0dc0-wcda33d93`), and similar
+ * slug/path-shaped identifiers a route embeds verbatim in a 400 body (e.g.
+ * "Task PR head '<branch>' does not match this worker's own branch
+ * ('<branch>')"). Without it, four workers hitting the exact same
+ * create_pr rejection produced four distinct signatures — one per embedded
+ * branch name — invisible to both the ranked signature table and an exact
+ * `error=` lookup, so the friction dedupe never fired. Matching requires a
+ * `-`, `_`, or `/` separator inside the quotes, which is what distinguishes
+ * a slug from a plain quoted field name like 'workspaceId' or 'apiKey' — the
+ * character classes also exclude whitespace, so a contraction's apostrophe
+ * (`You've`) can never pair with a later one across prose text.
  */
 export function normalizeErrorSignature(error: string | null | undefined): string {
   if (!error) return EMPTY_SIGNATURE;
@@ -71,6 +86,7 @@ export function normalizeErrorSignature(error: string | null | undefined): strin
   s = s.replace(RE_DATE, '<ts>');
   s = s.replace(RE_CLOCK, '<time>');
   s = s.replace(RE_PATH, '<path>');
+  s = s.replace(RE_QUOTED_SLUG, "'<id>'");
   s = s.replace(RE_HEX_ID, '<id>');
   s = s.replace(RE_NUMBER, '<n>');
   // Runs of placeholders (e.g. "<n> <n> <n>") add no signal.
