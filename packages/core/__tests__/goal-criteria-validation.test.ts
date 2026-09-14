@@ -81,6 +81,63 @@ describe('validateGoalCriteria — mechanical types', () => {
   });
 });
 
+describe('validateGoalCriteria — at least one mechanical criterion required', () => {
+  // A mission with goalCriteria is not allowed to gate completion on prose
+  // alone — see MECHANICAL_CRITERION_TYPES's doc comment. An empty array is a
+  // different case (no stated goal at all) and is exempt — see the "accepts
+  // an empty array" test above.
+
+  it('passes an omitted/empty goalCriteria through unchanged', () => {
+    expect(validateGoalCriteria([])).toBeNull();
+  });
+
+  it('rejects description-only criteria, even with a valid notMechanizableReason, naming the accepted types', () => {
+    const err = validateGoalCriteria([{
+      type: 'description',
+      description: 'The team feels good about the release',
+      notMechanizableReason: 'Sentiment is a human judgement; no mechanical check can assert it.',
+    }]);
+    expect(err).toContain('mechanical criterion');
+    for (const t of MECHANICAL_CRITERION_TYPES) expect(err).toContain(t);
+    expect(err).toContain('all_prs_merged + no_open_tasks');
+  });
+
+  it('accepts description paired with a mechanical criterion', () => {
+    expect(validateGoalCriteria([
+      {
+        type: 'description',
+        description: 'The team feels good about the release',
+        notMechanizableReason: 'Sentiment is a human judgement; no mechanical check can assert it.',
+      },
+      { type: 'all_prs_merged' },
+    ])).toBeNull();
+  });
+
+  it('rejects an update that would remove the last mechanical criterion, leaving only description-type ones', () => {
+    const description = {
+      type: 'description',
+      description: 'The team feels good about the release',
+      notMechanizableReason: 'Sentiment is a human judgement; no mechanical check can assert it.',
+    };
+    const stored = [description, { type: 'all_prs_merged' }];
+    // Author drops the mechanical criterion, keeping only the (still grandfathered) prose one.
+    const err = validateGoalCriteria([description], { stored });
+    expect(err).toContain('mechanical criterion');
+  });
+
+  it('requireMechanical: false skips the rule — for per-row form validation, not a write-boundary bypass', () => {
+    // apps/web/src/lib/goal-criteria-form.ts validates one draft at a time to
+    // attribute shape errors to their row; a lone non-mechanical criterion
+    // must not fail THAT check just because it's alone in a 1-item array.
+    const description = {
+      type: 'description',
+      description: 'The team feels good about the release',
+      notMechanizableReason: 'Sentiment is a human judgement; no mechanical check can assert it.',
+    };
+    expect(validateGoalCriteria([description], { requireMechanical: false })).toBeNull();
+  });
+});
+
 describe('validateGoalCriteria — prose criteria must justify themselves', () => {
   it('rejects a description criterion with no notMechanizableReason', () => {
     const err = validateGoalCriteria([{ type: 'description', description: 'No double-fire' }]);
@@ -96,12 +153,15 @@ describe('validateGoalCriteria — prose criteria must justify themselves', () =
     ])).toContain('notMechanizableReason');
   });
 
-  it('accepts a description criterion with a stated reason', () => {
-    expect(validateGoalCriteria([{
-      type: 'description',
-      description: 'The onboarding copy reads as welcoming rather than clinical',
-      notMechanizableReason: 'Tone is a human judgement; no command or artifact check can assert it.',
-    }])).toBeNull();
+  it('accepts a description criterion with a stated reason when paired with a mechanical one', () => {
+    expect(validateGoalCriteria([
+      {
+        type: 'description',
+        description: 'The onboarding copy reads as welcoming rather than clinical',
+        notMechanizableReason: 'Tone is a human judgement; no command or artifact check can assert it.',
+      },
+      { type: 'all_prs_merged' },
+    ])).toBeNull();
   });
 
   it('rejects a description criterion with a blank description', () => {
@@ -113,9 +173,13 @@ describe('validateGoalCriteria — prose criteria must justify themselves', () =
   it('grandfathers an unchanged criterion so history does not block every edit', () => {
     // The dashboard PATCHes the whole array. A mission holding a pre-gate prose
     // criterion would otherwise 400 on every edit — including the edit that
-    // would fix it.
+    // would fix it. Paired with a mechanical criterion so this isolates the
+    // grandfather behavior from the separate mechanical-type requirement below.
     const legacy = { type: 'description', description: 'Rows exist' };
-    expect(validateGoalCriteria([legacy], { stored: [legacy] })).toBeNull();
+    expect(validateGoalCriteria(
+      [legacy, { type: 'all_prs_merged' }],
+      { stored: [legacy, { type: 'all_prs_merged' }] },
+    )).toBeNull();
   });
 
   it('still rejects a NEW prose criterion added alongside a grandfathered one', () => {
