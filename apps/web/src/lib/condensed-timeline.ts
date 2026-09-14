@@ -360,12 +360,8 @@ function getLocalDateKey(ts: number): string {
 }
 
 /**
- * Gap-cluster items by completionTs into wave bands for §3.8.
- *
- * Groups items by calendar day first (to prevent same-day splits), then applies
- * 4-hour gap clustering within each day. The band label derives from the first
- * item's timestamp relative to now, and includes the date to distinguish bands.
- * Bands are returned newest-first for display.
+ * Group items by local calendar day, with one label per day.
+ * Bands and their items are returned newest-first for display.
  */
 export function deriveBandKey<T extends { id: string; completionTs: number }>(
   items: T[],
@@ -374,7 +370,6 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
   if (items.length === 0) return [];
 
   const sorted = [...items].sort((a, b) => a.completionTs - b.completionTs);
-  const GAP_MS = 4 * 60 * 60 * 1000;
 
   // Group by calendar day first
   const byDay = new Map<string, T[]>();
@@ -385,27 +380,10 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
     else byDay.set(dayKey, [item]);
   }
 
-  // Within each day, apply gap clustering
-  const allBands: Array<{ firstTs: number; items: T[] }> = [];
-  for (const dayItems of byDay.values()) {
-    let currentBand: { firstTs: number; items: T[] } | null = null;
-    let prevTs = 0;
-
-    for (const item of dayItems) {
-      if (!currentBand || item.completionTs - prevTs >= GAP_MS) {
-        currentBand = { firstTs: item.completionTs, items: [] };
-        allBands.push(currentBand);
-      }
-      currentBand.items.push(item);
-      prevTs = item.completionTs;
-    }
-  }
-
-  // Assign labels (no ordinal suffixes — date in label prevents collisions)
-  const labeled = allBands.map(band => {
-    const label = deriveBandLabel(band.firstTs, now);
-    return { label, items: [...band.items].reverse() };
-  });
+  const labeled = [...byDay.values()].map(dayItems => ({
+    label: deriveBandLabel(dayItems[0].completionTs, now),
+    items: [...dayItems].reverse(),
+  }));
 
   // Return newest band first
   return labeled.reverse();
@@ -416,8 +394,7 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
  *
  * The Activity list groups by day, not by burst: gap-clustering a single day
  * into multiple waves renders as "Today" followed by "Today (2)", which reads
- * as a duplicated header rather than two waves. Wave banding (deriveBandKey)
- * stays on the mission timeline, where the burst is the point.
+ * as a duplicated header rather than two waves.
  */
 export function deriveDayBands<T extends { id: string; completionTs: number }>(
   items: T[],
