@@ -42,6 +42,7 @@ per task.
 | 9 | Section labels | Only "waiting on you" and "running" survive as muted labels (§8). |
 | 10 | New components | Zero. Every rail element is a prop/variant on `SegmentStrip`, `DependencyRail`, `StageChip`, or an inline `<div>`/`<hr>` matching the existing inline-divider pattern (§10). |
 | 11 | Desktop | Unchanged (§9). |
+| 12 | Reference layouts | Five ASCII 360px diagrams — linear chain (collapsed + expanded), fan-out with pathManifest sibling, retry lineage, day/now tick, goal root (§11). |
 
 ### 0.1 Companion file vs amendment — justified
 
@@ -534,6 +535,159 @@ because none exists to extend; every glyph decision in §10.2 targets
 `SegmentStrip`'s actual internal glyph machinery instead. Per `SPEC-FORMAT.md`
 rule 7, `TypeGlyph` is written here in plain text, not backticks, because it
 names something absent, not a live code surface.
+
+---
+
+## 11. Reference layouts (360px)
+
+These are the layouts an implementer checks a build against — the spatial
+proof that the 2-lane rail, fork glyph, tick row, and goal root actually fit
+and stay legible at a 360px width, reusing the field observation mock's
+visual vocabulary (§ field observation). ASCII cannot encode colour, so each
+diagram is followed by a one-line legend naming the colour/dash pairing from
+§3.4 and §7 that a real render would carry; the glyph and position are the
+part that must match exactly, the annotations are non-normative.
+
+Glyph key used below: `●` done, `◉` running (ring), `○` queued (hollow),
+`◯` waiting-on-you (amber ring), `◌` dashed-hollow (pathManifest-gated /
+STRANDED), `▣N` collapsed terminal chain badge, `▢` goal root, `├╮`/`├╯`
+fork open/close, `─`/`┄┄` day tick / now tick, `✗` retry-stub terminator.
+
+### 11.1 Linear chain in history (Rule D1-4, AC-1, AC-2)
+
+**(a) Collapsed — default posture, independent of chain length:**
+
+```
+360px ─────────────────────────────────────────────
+ │
+ ─  Sat 12
+ ▣3 Ledger slice 2                  #2295 merged  ⌃
+ │
+ ─  Fri 11
+```
+
+Legend: `▣3` badge — plain text, no colour; `⌃` is the collapsed-state
+affordance (tap to expand, §1.3).
+
+**(b) Expanded — same row, tapped open:**
+
+```
+360px ─────────────────────────────────────────────
+ │
+ ─  Sat 12
+ ▣3 Ledger slice 2                  #2295 merged  ⌄
+ ├─●  1 SPEC                              #2270
+ ├─●  2 BUILD                              #2287
+ ├─●  3 REVIEW  0.78                       #2295
+ │
+ ─  Fri 11
+```
+
+Legend: `●` fill is `DONE` per §7; the `├─` connector is the solid amber
+`dependsOn` rail line (§3.1) turned sideways to letter the ordinal sub-rows;
+`0.78` renders on REVIEW because it is below the 0.85 threshold (Rule D6-2) —
+contrast with AC-9, where a 0.94 confidence would print nothing.
+
+### 11.2 Fan-out with pathManifest sibling (Rule D2-2, D3-2/D3-3, AC-4, AC-10)
+
+**(a) Width 2 — both siblings render, one soft-ordered:**
+
+```
+360px ─────────────────────────────────────────────
+ ◉  BUILD: slice 3 dedupe index      running 12m
+ ├╮
+ │ ○  REVIEW: slice 3 dedupe index          queued
+ │ ◌  Backfill assertions into tests   after ↑ paths
+ ├╯
+```
+
+Legend: `├╮`/`├╯` is Lane 2 opening/closing on the fork glyph (§2.2); the
+second sibling's `◌` border and `after ↑ paths` label are the dashed
+soft-ordering edge (§3.2) — grey/muted, never the amber hard-dependency line,
+and never a `BLOCKED` stage chip (Rule D3-4).
+
+**(b) Width 4 — collapses to a fork glyph with count (Rule D2-2, AC-10):**
+
+```
+360px ─────────────────────────────────────────────
+ ◉  BUILD: slice 3 dedupe index      running 12m
+ ├╮ +2
+```
+
+Legend: 2 siblings render individually as in (a); the remaining 2 collapse
+behind the `+2` count on the same fork glyph, expandable on tap — Lane 2
+never exceeds 2 visible rows at once (Rule D2-2).
+
+### 11.3 Retry lineage (Rule D3-3/D3-5/D3-6, AC-3)
+
+```
+360px ─────────────────────────────────────────────
+ ○  BUILD: dedupe index (attempt 2)       running
+ ├┄╮
+ │ ┆✗  attempt 1                       CI failed
+ ├┄╯
+ ─  Sat 12
+```
+
+Legend: `├┄╮`/`├┄╯` and the `┆` stub are dashed **red** (`text-status-error`,
+§3.3) — the only edge class permitted that colour, distinct from the amber
+solid `dependsOn` line in §11.1(b) and the grey dashed pathManifest border in
+§11.2(a). The stub replaces the old `●● 2 attempts · CI ×1` text row (Rule
+D3-5); tapping it still opens `AttemptStrip`'s existing detail view. The
+retry is NOT an ordinal chain member — it never gets a `1 SPEC`/`2 BUILD`
+label (Rule D1-2).
+
+### 11.4 Day tick + now tick (Rule D4-3/D4-4/D4-5, AC-5)
+
+```
+360px ─────────────────────────────────────────────
+ ◯  Approve plan: ledger slice 3               plan
+ ┄┄ now · Sun 13
+ ◉  BUILD: slice 3 dedupe index      running 12m
+ ├╮
+ │ ○  REVIEW: slice 3 dedupe index          queued
+ ├╯
+ ─  Sat 12
+ ▣3 Ledger slice 2                  #2295 merged
+ ─  Fri 11
+ ●  Wire the §4 delta gate           #2289 merged
+```
+
+Legend: `┄┄ now · Sun 13` renders once, dashed, and doubles as that day's
+tick (no separate `Sat 13`/`now · Sat 13` pair, Rule D4-5); nodes above it
+(older) are filled/ringed per §7, nodes below are hollow. `─ Sat 12` and
+`─ Fri 11` are plain 22px tick rows — weekday + date only, no count, no
+`Collapse` footer (Rule D4-3). No `Today`/`Yesterday`/`Friday (2)` section
+header appears anywhere in this render (AC-5).
+
+### 11.5 Goal root (Rule D5-1..D5-4, AC-6, AC-7)
+
+**(a) With `goalCriteria` set — square node, pass count:**
+
+```
+360px ─────────────────────────────────────────────
+ ─  Fri 11
+ ●  Wire the §4 delta gate           #2289 merged
+ ▢  Goal: all PRs merged · tests green      2 / 3
+```
+
+Legend: `▢` is the one deliberate break from the circular node vocabulary
+(Rule D5-1); `2 / 3` is `criteria.filter(pass).length / criteria.length`
+(Rule D5-2) — renders `?/N`, never `0/N`, when `goalCriteriaState` is null
+(Rule D5-3).
+
+**(b) Rejection — no `goalCriteria` set, rail simply ends (Rule D5-4, AC-7):**
+
+```
+360px ─────────────────────────────────────────────
+ ─  Fri 11
+ ●  Wire the §4 delta gate           #2289 merged
+                                          (end of rail)
+```
+
+Legend: `(end of rail)` is not rendered chrome — it marks where the last
+real node's row is the final thing on screen; no root node, no placeholder,
+no "no goal set" message (Rule D5-4).
 
 ---
 
