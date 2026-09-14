@@ -305,6 +305,13 @@ export interface CreateReviewerTaskParams {
   repoFullName: string;
   /** When set, the reviewer context uses intent sentences instead of raw glob lists. */
   policyConfig?: WorkspacePolicyConfig;
+  /**
+   * The mechanical EXPAND/CONTRACT verdict for this PR's migrations, when the
+   * caller already computed one (currently only the webhook's pre-flight path,
+   * via `inspectPullRequestMigrations`). Surfaced in the prompt so the reviewer
+   * is told the verdict rather than asked to assess schema risk itself.
+   */
+  migrationSafety?: MigrationSafety;
   /** The PR's files, when the caller already fetched them. See BuildContextParams. */
   prFiles?: GithubPrFile[];
   /** The PR's body, when the caller already has it. Read for its lede only. */
@@ -446,6 +453,7 @@ export async function createReviewerTask(
         installationId,
         repoFullName,
         policyConfig: params.policyConfig,
+        migrationSafety: params.migrationSafety,
         prFiles: params.prFiles,
         prBody: params.prBody,
       });
@@ -515,6 +523,8 @@ interface BuildContextParams {
   installationId: number;
   repoFullName: string;
   policyConfig?: WorkspacePolicyConfig;
+  /** See `CreateReviewerTaskParams.migrationSafety`. */
+  migrationSafety?: MigrationSafety;
   /**
    * The PR's files, when the caller already fetched them. The webhook fetches
    * this exact endpoint for the policy override and the pre-flight check, so
@@ -620,6 +630,39 @@ export function renderManifestGuidance(
       .map((p) => `- ${p}`)
       .join('\n')}`,
   };
+}
+
+/**
+ * Security escalation doctrine, split by whether a decision actually exists —
+ * not by severity. A security-shaped defect with a nameable fix and nameable
+ * regression tests goes through `request-changes` and the builder retry loop;
+ * only a defect whose correct fix is itself the open question (auth/authz
+ * boundary, secret handling/exposure, credential/token flow, or anything
+ * trading security against product behavior) escalates to a human. Both
+ * branches block the merge — only which queue resolves it first differs.
+ */
+const SECURITY_ESCALATION_RULES = [
+  '- REQUEST CHANGES (do NOT escalate) when a security-shaped defect has a fix AND regression',
+  '  tests you can name — e.g. an unresolved path that lets a traversal bypass a guard, fixed by',
+  '  resolving/normalizing before matching. The builder retry loop handles it from there.',
+  '- ESCALATE a security-shaped defect only when the right fix is itself the open question: an',
+  '  auth/authz boundary change, secret handling or exposure, credential/token flow, anything',
+  '  trading security against product behavior, or any finding you cannot name a concrete fix for.',
+].join('\n');
+
+/**
+ * Render the mechanical migration classifier's verdict, when the caller
+ * already computed one. The reviewer is told the verdict, not asked to judge
+ * schema risk itself — that discriminator stays server-side (EXPAND/CONTRACT
+ * classification + risk-class resolution), which is the whole point of
+ * splitting it out of reviewer discretion.
+ */
+function renderMigrationClassifierNote(migrationSafety: MigrationSafety | undefined): string {
+  if (!migrationSafety) return '';
+  if (migrationSafety.operationClass === 'EXPAND') {
+    return '\nMigration classifier verdict: EXPAND (additive-only) — this PR\'s schema change already passed the mechanical migration classifier. Do not re-assess schema risk yourself; judge the diff on its other merits.';
+  }
+  return `\nMigration classifier verdict: CONTRACT — ${migrationSafety.reason}. This is a non-additive schema change; a human-review escalation for it is enforced server-side regardless of your verdict.`;
 }
 
 /** @internal exported for tests — the assembled prompt is the unit under test. */
@@ -729,11 +772,27 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
     ? `Iteration: ${originalTask.iteration}/${originalTask.maxIterations ?? 3}`
     : '';
 
-  // Build policy context section
+  // Build policy context section. The resolved policy INTENT drives this, never
+  // a literal path: `buildPolicyClassPaths` already renders `buildPolicyIntentSentence`
+  // (see PR #1809 AC-5). The mechanical migration classifier verdict — when the
+  // caller computed one — is appended so the reviewer is told the schema-risk
+  // discriminator's answer instead of being asked to judge it itself.
+  const classifierNote = renderMigrationClassifierNote(params.migrationSafety);
   let policySection: string;
   let uncoveredSection = '';
   if (policyConfig) {
-    policySection = buildPolicyClassPaths(policyConfig);
+    // Workspace risk-class paths cover the schema/migration discriminator, but
+    // confidence and security are universal rules a policyConfig never encodes
+    // — append them so a configured workspace's reviewer sees the same
+    // request-changes-vs-escalate split as an unconfigured one (AC-9: neither
+    // branch of the security split may skip review in either code path).
+    policySection = [
+      buildPolicyClassPaths(policyConfig),
+      '',
+      '## Escalation Rules (hard — these override your confidence)',
+      '- Escalate if your confidence is below the workspace threshold (default 0.6)',
+      SECURITY_ESCALATION_RULES,
+    ].join('\n') + classifierNote;
 
     // Self-healing: find files not covered by any risk class but risk-adjacent.
     // Read from the file list, never by re-parsing the rendered prompt: patch
@@ -750,10 +809,14 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
       uncoveredSection = `\n## Proposed Policy Additions (self-healing)\nThe following files are risk-adjacent but not covered by any policy class.\nInclude in your escalationReason so the human can add them to the workspace policy:\n\n${lines.join('\n')}`;
     }
   } else {
+    // No workspace policyConfig: schema/migration risk is still classified and
+    // gated mechanically server-side (see `preflightEscalationCheck`), so this
+    // fallback never re-derives a path-based schema rule for the reviewer to
+    // apply itself.
     policySection = `## Escalation Rules (hard — these override your confidence)
-- Escalate if the diff touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
 - Escalate if your confidence is below the workspace threshold (default 0.6)
-- Escalate if you detect a possible security issue`;
+- Schema/migration risk is classified mechanically by the platform before you are dispatched — you do not need to flag schema changes yourself.
+${SECURITY_ESCALATION_RULES}${classifierNote}`;
   }
 
   return `# Reviewer Task
@@ -874,11 +937,17 @@ export async function buildDeltaReviewerContext(params: BuildDeltaContextParams)
   const patchBlock = patchSection ? `\n\n${patchSection}` : '';
 
   const policySection = policyConfig
-    ? buildPolicyClassPaths(policyConfig)
+    ? [
+        buildPolicyClassPaths(policyConfig),
+        '',
+        '## Escalation Rules (hard — these override your confidence)',
+        '- Escalate if your confidence is below the workspace threshold (default 0.6)',
+        SECURITY_ESCALATION_RULES,
+      ].join('\n')
     : `## Escalation Rules (hard — these override your confidence)
-- Escalate if the delta touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
 - Escalate if your confidence is below the workspace threshold (default 0.6)
-- Escalate if you detect a possible security issue`;
+- Schema/migration risk is classified mechanically by the platform before you are dispatched — you do not need to flag schema changes yourself.
+${SECURITY_ESCALATION_RULES}`;
 
   const feedbackLine = priorVerdict.feedback
     ? `\n- **Feedback given:** ${sanitizeUntrustedText(priorVerdict.feedback).text}`

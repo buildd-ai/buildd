@@ -1887,6 +1887,7 @@ async function maybeDispatchReviewer(
       installationId,
       repoFullName,
       policyConfig: policyConfig ?? undefined,
+      migrationSafety,
       // Already fetched above for the policy override and the pre-flight
       // check — passing it through saves a second identical GitHub call.
       prFiles,
