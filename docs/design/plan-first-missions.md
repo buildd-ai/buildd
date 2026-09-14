@@ -2,6 +2,7 @@
 
 **Status:** Proposed
 **Related:** `apps/web/src/app/api/missions/route.ts`, `apps/web/src/lib/mission-run.ts`,
+`apps/web/src/lib/mission-loop.ts` (`maybeRetriggerMission`, `retriggerMissionOnFailure`),
 `apps/web/src/lib/task-dependencies.ts` (`shouldAutoApprovePlan`/`resolveCompletedTask`),
 `apps/web/src/lib/approve-plan.ts`, `apps/web/src/app/api/tasks/[id]/approve-plan/route.ts`,
 `apps/web/src/app/api/tasks/[id]/reject-plan/route.ts`,
@@ -51,21 +52,29 @@ around that one flag.
 ### 1. Trigger
 
 The gate applies to the mission's first-ever organizer cycle, and only that
-cycle. Concretely: `runMission` is called from exactly three places
-(`apps/web/src/lib/mission-run.ts` callers) — the create-time auto-start in
-`POST /api/missions`, the manual "Run now" endpoint
-(`POST /api/missions/[id]/run`), and nowhere in the recurring cron dispatcher
+cycle. Concretely: `runMission` is called from four places across three
+files — the create-time auto-start in `POST /api/missions`
+(`apps/web/src/app/api/missions/route.ts:423`), the manual "Run now" endpoint
+(`apps/web/src/app/api/missions/[id]/run/route.ts:65`), and two call sites
+inside `apps/web/src/lib/mission-loop.ts`: `maybeRetriggerMission` (line 301,
+fires after a planning task *completes*) and the failure-retry path inside
+`retriggerMissionOnFailure` (line 478, fires after a planning task *fails*).
+The recurring cron dispatcher itself never calls `runMission`
 (`apps/web/src/app/api/cron/schedules/route.ts` creates heartbeat tasks
 directly, comment at `mission-run.ts:279-283` confirms: "cron path creates
-tasks directly (not via runMission)"). That already gives "recurring/heartbeat
-missions keep today's behaviour" for free — the heartbeat engine never goes
-through this code path, so there is nothing to gate.
+tasks directly (not via runMission)") — so heartbeat-created tasks are outside
+this code path entirely, independent of the gate.
 
 What needs to change is narrower than "which endpoint called it": key the gate
 on **mission has no prior planning task and no pre-filed tasks** (i.e.
 `decompositionSkipped` is false and this is genuinely cycle 1), not on which of
-the three call sites fired. A "Run now" click on a mission whose first plan was
-already approved must not re-trigger the gate — the owner already exercised
+the four call sites fired. Both `mission-loop.ts` call sites only run once a
+mission already has a planning task — `maybeRetriggerMission` takes a
+`completedPlanningTaskId`, and `retriggerMissionOnFailure` takes a
+`failedTaskId` for an already-failed planning task — so "no prior planning
+task" excludes both of them by construction, without needing to special-case
+the caller. A "Run now" click on a mission whose first plan was already
+approved must not re-trigger the gate either — the owner already exercised
 their one review.
 
 Opt-out: extend `orchestrationMode`'s TypeScript union in
@@ -150,8 +159,9 @@ reuses the existing `previousPlanTaskId` chain and rejection audit fields
 *exactly* today's pre-feature behaviour — the organizer's own plan runs
 unreviewed, no worse than before this design existed. The worst case of staying
 held forever is a mission that does nothing, silently, indefinitely — and the
-cited evidence (19/21 question notes never closed) says that is the likely
-outcome for a forgotten mission, not a tail case. A stalled mission is strictly
+cited evidence (the large majority of question-type mission notes on this
+workspace go unanswered) says that is the likely outcome for a forgotten
+mission, not a tail case. A stalled mission is strictly
 worse than an unreviewed-but-organizer-authored one, because the pre-feature
 mission at least produces something for the owner to react to later.
 
