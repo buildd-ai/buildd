@@ -3,13 +3,19 @@
 import Link from 'next/link';
 import type { BlockRef } from '@/lib/task-presentation';
 
+/**
+ * Edge classes the rail draws (timeline-mobile-rail.md §3). Each survives
+ * greyscale on its own: solid line / dashed line / dashed stub with a ✗.
+ */
+export type RailEdgeKind = 'hard' | 'soft' | 'retry' | 'none';
+
 interface DependencyRailProps {
   /**
    * The blockers to name — pass `chain.blockedByFrontier`, not `chain.blockedBy`.
    * The frontier is already transitively reduced, so these are the deps the task
    * is *directly* waiting on.
    */
-  blockedBy: BlockRef[];
+  blockedBy?: BlockRef[];
   /**
    * Total blocker count (`chain.blockedBy.length`). When it exceeds the number
    * of named chips, the difference is summarised as a "+N upstream" tail.
@@ -17,6 +23,15 @@ interface DependencyRailProps {
   totalBlocked?: number;
   /** How many blockers to name before collapsing the rest into the tail. */
   max?: number;
+  /**
+   * `chips` (default) is the desktop treatment: one `← {title}` chip per direct
+   * blocker. `line` is the mobile rail's treatment of the SAME edge — the rail's
+   * premise is that vertical adjacency *is* the chip, so the edge becomes a line
+   * segment instead of text.
+   */
+  mode?: 'chips' | 'line';
+  /** Line mode: the class of the segment entering the node below this one. */
+  edge?: RailEdgeKind;
 }
 
 /** Titles longer than this are truncated; keeps the rail on one line in row density. */
@@ -26,17 +41,40 @@ const truncate = (text: string, limit: number) =>
   text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
 
 /**
- * Blocker reference rail.
- *
- * Renders one `← {title}` chip per direct blocker, plus `#{pr}` when the blocker
- * is the half state (completed, PR still open) — the case that looks finished but
- * silently gates everything downstream. Chips link to the blocking task.
- *
- * Prose (`← blocked on {title} because …`) is still banned; chip form is the only
- * output. Naming the blocker inside the chip is not prose — it replaces the bare
- * `← afa5b0` hash, which told a reader nothing they could act on.
+ * Line-mode stroke classes. Amber solid is the hard `dependsOn` edge — the same
+ * token the chips below use, so "hard dependency" reads identically on both
+ * surfaces. Grey dashed is advisory pathManifest ordering; red dashed is retry
+ * lineage. No two share a greyscale pattern (§3.4).
  */
-export function DependencyRail({ blockedBy, totalBlocked, max = 2 }: DependencyRailProps) {
+const EDGE_STROKE: Record<Exclude<RailEdgeKind, 'none'>, string> = {
+  hard: 'border-status-warning',
+  soft: 'border-text-muted border-dashed',
+  retry: 'border-status-error border-dashed',
+};
+
+/**
+ * Blocker reference rail — two render modes over the same `dependsOn` edge.
+ *
+ * `chips` (desktop): one `← {title}` chip per direct blocker, plus `#{pr}` when
+ * the blocker is the half state (completed, PR still open) — the case that looks
+ * finished but silently gates everything downstream. Chips link to the blocking
+ * task. Prose (`← blocked on {title} because …`) is still banned; chip form is
+ * the only output. Naming the blocker inside the chip is not prose — it replaces
+ * the bare `← afa5b0` hash, which told a reader nothing they could act on.
+ *
+ * `line` (mobile rail): the same edge as a vertical stroke between adjacent rail
+ * nodes, classed per `EDGE_STROKE`. On the rail, adjacency IS the chip.
+ */
+export function DependencyRail({ blockedBy = [], totalBlocked, max = 2, mode = 'chips', edge = 'none' }: DependencyRailProps) {
+  if (mode === 'line') {
+    return (
+      <span
+        className={`block w-0 h-full ${edge === 'none' ? 'border-l border-border-default' : `border-l ${EDGE_STROKE[edge]}`}`}
+        aria-hidden="true"
+      />
+    );
+  }
+
   if (blockedBy.length === 0) return null;
 
   const named = blockedBy.slice(0, max);
