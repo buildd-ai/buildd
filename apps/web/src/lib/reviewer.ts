@@ -35,6 +35,14 @@ import {
   type GithubPrFile,
   type ReviewerPatchFile,
 } from './reviewer-patch';
+import {
+  REVIEWER_CRITERIA_FINDINGS_SCHEMA,
+  REVIEWER_CRITERIA_CONTEXT_KEY,
+  loadMissionProseCriteria,
+  renderMissionCriteriaGuidance,
+  type ReviewerCriterionRef,
+} from './criteria-reviewer-findings';
+import type { CriterionReviewerFinding } from '@buildd/shared';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -65,6 +73,19 @@ export interface ReviewerTaskOutput {
    * touches the PR itself.
    */
   correctedLede?: string;
+  /**
+   * Per-criterion side report on the mission's prose criteria, returned only
+   * when the prompt listed some (see lib/criteria-reviewer-findings.ts).
+   *
+   * Strictly additive. It is recorded on the mission and read later by the
+   * completion-time criteria evaluator; it does not, and must not, participate
+   * in the approve / request-changes decision this task exists to make.
+   */
+  criteriaFindings?: Array<{
+    index: number;
+    finding: CriterionReviewerFinding;
+    reason: string;
+  }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -104,6 +125,7 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
       description:
         'ONLY when the PR\'s opening lede contradicts the diff: one plain-language sentence that is actually true of this change. Correctness, never taste — omit this for a lede that is accurate but clumsy, dull or badly worded. Same rules as the author\'s: one sentence, no file paths, no endpoint or symbol names.',
     },
+    criteriaFindings: REVIEWER_CRITERIA_FINDINGS_SCHEMA,
   },
   additionalProperties: false,
 } as const;
@@ -427,6 +449,11 @@ export async function createReviewerTask(
     }
   }
 
+  // The mission's prose criteria, if any. This reviewer is the only agent that
+  // will ever see this diff next to them, so it is asked for a side report —
+  // additive to the verdict, read later by the criteria evaluator.
+  const missionCriteria = await loadMissionProseCriteria(originalTask.missionId);
+
   // Build reviewer context description. A priorVerdict switches this to a
   // DELTA review: the diff is `priorVerdict.headSha..headSha`, not the whole
   // PR, and the prompt carries the prior verdict instead of asking the agent
@@ -443,6 +470,7 @@ export async function createReviewerTask(
         policyConfig: params.policyConfig,
         priorVerdict: params.priorVerdict,
         deltaFiles: params.deltaFiles,
+        missionCriteria,
       })
     : await buildReviewerContext({
         originalTaskId,
@@ -456,6 +484,7 @@ export async function createReviewerTask(
         migrationSafety: params.migrationSafety,
         prFiles: params.prFiles,
         prBody: params.prBody,
+        missionCriteria,
       });
 
   const title = reviewerTitle(prNumber, originalTask.title);
@@ -494,6 +523,11 @@ export async function createReviewerTask(
           priorVerdictHeadSha: params.priorVerdict.headSha,
           priorVerdict: params.priorVerdict.verdict,
         } : {}),
+        // The criteria this reviewer was actually shown, with the fingerprints
+        // they had at dispatch. Read back when the verdict lands so a finding
+        // lands on the claim it was made about, not on whatever now sits at
+        // that index.
+        ...(missionCriteria.length > 0 ? { [REVIEWER_CRITERIA_CONTEXT_KEY]: missionCriteria } : {}),
       },
       release: 'false', // reviewer tasks never trigger releases
       priority: 8,      // reviewer tasks are high priority
@@ -536,6 +570,11 @@ interface BuildContextParams {
    * Fetched lazily when absent; a failed fetch simply omits the lede section.
    */
   prBody?: string | null;
+  /**
+   * The mission's `description` criteria, when it has any. Empty or omitted
+   * leaves the assembled prompt byte-identical to the pre-criteria one.
+   */
+  missionCriteria?: ReviewerCriterionRef[];
 }
 
 /** Doctrine + section for judging the PR's lede. Empty when the PR has none. */
@@ -768,6 +807,14 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
   const { doctrine: manifestDoctrine, section: manifestSection } =
     renderManifestGuidance(originalTask.pathManifest);
 
+  // Mission prose criteria — all three pieces are empty when there are none.
+  const {
+    doctrine: criteriaDoctrine,
+    section: criteriaSection,
+    outputLine: criteriaOutputLine,
+  } = renderMissionCriteriaGuidance(params.missionCriteria ?? []);
+  const criteriaBlock = criteriaSection ? `\n${criteriaSection}\n` : '';
+
   const iterationInfo = originalTask.iteration != null
     ? `Iteration: ${originalTask.iteration}/${originalTask.maxIterations ?? 3}`
     : '';
@@ -840,7 +887,7 @@ ${wrapUntrustedText(originalTask.description, {
 ## Doctrine
 ${manifestDoctrine}
 - SPEC CONFORMANCE: What was built must match the task description.
-- NO OBVIOUS REGRESSIONS: No deleted test files, no broken imports visible in diff.${ledeDoctrine}
+- NO OBVIOUS REGRESSIONS: No deleted test files, no broken imports visible in diff.${ledeDoctrine}${criteriaDoctrine}
 
 ${policySection}
 ${uncoveredSection}
@@ -850,7 +897,7 @@ ${ledeBlock}
 ${diffSummary}${patchBlock}
 
 ${artifactsSection}
-
+${criteriaBlock}
 ## Your Output
 Use your outputSchema to return:
 - \`verdict\`: 'approve' | 'request-changes' | 'escalate'
@@ -858,7 +905,7 @@ Use your outputSchema to return:
 - \`summary\`: one sentence
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide; include any proposed policy additions
-- \`recommendation\`: (escalate only) what the human should DO next — the specific action, decision, or check. Never leave this empty on an escalation: it is the first line they read on their queue.${ledeOutputLine}
+- \`recommendation\`: (escalate only) what the human should DO next — the specific action, decision, or check. Never leave this empty on an escalation: it is the first line they read on their queue.${ledeOutputLine}${criteriaOutputLine}
 `.trim();
 }
 
@@ -875,6 +922,8 @@ interface BuildDeltaContextParams {
   priorVerdict: PriorVerdict;
   /** The delta's files, when the caller already fetched them (GitHub compare). */
   deltaFiles?: GithubPrFile[];
+  /** The mission's `description` criteria. See BuildContextParams. */
+  missionCriteria?: ReviewerCriterionRef[];
 }
 
 /**
@@ -956,6 +1005,15 @@ ${SECURITY_ESCALATION_RULES}`;
     ? `\n- **Escalation reason:** ${sanitizeUntrustedText(priorVerdict.escalationReason).text}`
     : '';
 
+  // The criteria side report is about the PR, not the delta — a re-review is a
+  // later, better-informed reading of the same change, and the fold reads the
+  // newest report per PR. Restating an unchanged finding is the point.
+  const { section: criteriaSection, outputLine: criteriaOutputLine } =
+    renderMissionCriteriaGuidance(params.missionCriteria ?? []);
+  const criteriaBlock = criteriaSection
+    ? `\n${criteriaSection}\n\nAnswer for the PR AS A WHOLE, not just this delta: restate your prior\nreading of a criterion the delta did not change.\n`
+    : '';
+
   return `# Delta Re-Review
 
 You already reviewed PR #${prNumber} on \`${repoFullName}\` at commit ${priorVerdict.headSha}.
@@ -986,7 +1044,7 @@ the prior one.
 ${policySection}
 
 ${diffSummary}${patchBlock}
-
+${criteriaBlock}
 ## Your Output
 Use your outputSchema to return:
 - \`verdict\`: 'approve' | 'request-changes' | 'escalate'
@@ -994,7 +1052,7 @@ Use your outputSchema to return:
 - \`summary\`: one sentence — about the delta, and whether it changes the prior verdict
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide
-- \`recommendation\`: (escalate only) what the human should DO next
+- \`recommendation\`: (escalate only) what the human should DO next${criteriaOutputLine}
 `.trim();
 }
 

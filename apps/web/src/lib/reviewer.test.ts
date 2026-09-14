@@ -11,6 +11,9 @@ let liveReviewerTaskResult: any = null;
 let liveReviewerProbeArgs: any[] = [];
 let taskUpdateReturning: any[] = [];
 let workerUpdateCalls: Array<{ set: any }> = [];
+// Fixture for the mission-criteria lookup createReviewerTask does when the
+// original task belongs to a mission. Null = task has no mission.
+let missionFindFirstResult: any = null;
 
 function whereResult(rows: any[]) {
   const p = Promise.resolve(rows) as Promise<any[]> & { returning: () => Promise<any[]> };
@@ -44,6 +47,7 @@ mock.module('@buildd/core/db', () => ({
     })),
     query: {
       artifacts: { findMany: mock(() => Promise.resolve([])) },
+      missions: { findFirst: mock(() => Promise.resolve(missionFindFirstResult)) },
       // Two different callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
       // passes a `with: { workers }` relation; the pre-dispatch duplicate probe in
       // createReviewerTask does not — dispatch on that so one fixture cannot
@@ -74,6 +78,7 @@ mock.module('@buildd/core/db/schema', () => ({
   },
   workers: 'workers',
   missionNotes: 'missionNotes',
+  missions: { id: 'id' },
   artifacts: 'artifacts',
   taskSubjectReports: 'taskSubjectReports',
 }));
@@ -102,6 +107,7 @@ import {
   REVIEWER_TASK_OUTPUT_SCHEMA,
 } from './reviewer';
 import { composeBodyWithLede } from '@buildd/core/pr-lede';
+import { toReviewerCriterionRefs } from './criteria-reviewer-findings';
 import { resolvePolicy } from './merge-policy';
 import type { MergePolicy } from '@buildd/shared';
 
@@ -1389,5 +1395,154 @@ describe('buildReviewerContext — the lede', () => {
     // Byte-identical for a PR with no lede block and one with no body at all:
     // a prompt that predates this feature is not reflowed by it.
     expect(noLede).toBe(nullBody);
+  });
+});
+
+// ── Mission criteria in the reviewer prompt ───────────────────────────────────
+
+describe('buildReviewerContext — mission prose criteria', () => {
+  const PROSE = {
+    type: 'description' as const,
+    description: 'The dashboard renders a defined empty state when a metric has no baseline',
+    notMechanizableReason: 'visual judgment over a rendered surface',
+    label: 'empty state',
+  };
+
+  const BASE = {
+    originalTaskId: 'original-criteria',
+    originalTask: { title: 'Empty state', description: 'Render the no-baseline case', pathManifest: null },
+    prNumber: 120,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/120',
+    headSha: 'sha120',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prFiles: [{ filename: 'apps/web/src/app/page.tsx', status: 'modified', additions: 3, deletions: 0 }],
+    prBody: null,
+  };
+
+  it('reflows nothing when the task belongs to no mission', async () => {
+    const withCriteria = await buildReviewerContext({ ...BASE, missionCriteria: [] });
+    const without = await buildReviewerContext(BASE);
+
+    // An empty list and an absent one must produce the same prompt, and that
+    // prompt must be byte-identical at the seam this section splices into.
+    expect(withCriteria).toBe(without);
+    expect(without).not.toContain('Mission criteria');
+    expect(without).toContain('[modified]\n\n\n\n## Your Output');
+  });
+
+  it('carries the criteria, and asks for a finding per criterion', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      missionCriteria: toReviewerCriterionRefs([{ type: 'command', command: 'bun test' }, PROSE]),
+    });
+
+    expect(prompt).toContain('## Mission criteria this PR may bear on (1)');
+    expect(prompt).toContain('- index=1: empty state — The dashboard renders a defined empty state');
+    expect(prompt).toContain('- `criteriaFindings`: one entry per mission criterion');
+    // The mechanical criterion is not in the reviewer's remit.
+    expect(prompt).not.toContain('bun test');
+  });
+
+  it('tells the reviewer the criteria do not move its verdict', async () => {
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      missionCriteria: toReviewerCriterionRefs([PROSE]),
+    });
+
+    // This is what makes it safe to put mission context inside a merge gate: a
+    // criterion is never a reason to approve, block, or escalate one PR.
+    expect(prompt).toContain('it does NOT change your verdict');
+    expect(prompt).toContain('must not influence `verdict` or `confidence`');
+  });
+
+  it('asks a delta re-review about the PR as a whole, not just the delta', async () => {
+    const prompt = await buildDeltaReviewerContext({
+      originalTaskId: 'original-criteria',
+      originalTask: { title: 'Empty state', description: null, pathManifest: null },
+      prNumber: 120,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/120',
+      headSha: 'new-sha',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      priorVerdict: {
+        headSha: 'old-sha', verdict: 'approve', confidence: 0.9,
+        summary: 'ok', feedback: null, escalationReason: null,
+      },
+      deltaFiles: [],
+      missionCriteria: toReviewerCriterionRefs([PROSE]),
+    });
+
+    expect(prompt).toContain('## Mission criteria this PR may bear on (1)');
+    expect(prompt).toContain('Answer for the PR AS A WHOLE');
+  });
+
+  it('offers the finding schema only as an optional, additive field', async () => {
+    const props = REVIEWER_TASK_OUTPUT_SCHEMA.properties as Record<string, any>;
+
+    expect(props.criteriaFindings.type).toBe('array');
+    expect(props.criteriaFindings.items.properties.finding.enum)
+      .toEqual(['supports', 'contradicts', 'not_applicable']);
+    // Not required: a reviewer on a PR with no mission criteria returns none,
+    // and a schema that demanded the field would fail every such review.
+    expect(REVIEWER_TASK_OUTPUT_SCHEMA.required).not.toContain('criteriaFindings');
+  });
+});
+
+describe('createReviewerTask — mission criteria', () => {
+  it('injects the criteria and records what it asked about on the task context', async () => {
+    insertedTask = undefined;
+    missionFindFirstResult = {
+      id: 'm1',
+      goalCriteria: [{
+        type: 'description',
+        description: 'Error copy names the failing provider',
+        notMechanizableReason: 'wording quality is not mechanically checkable',
+      }],
+    };
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-m1',
+      originalTask: { title: 'Error copy', description: null, backend: 'claude', missionId: 'm1' },
+      worker: { branch: 'buildd/error-copy' },
+      prNumber: 121,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/121',
+      headSha: 'sha121',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect(insertedTask?.description).toContain('## Mission criteria this PR may bear on (1)');
+
+    // The fingerprints as of dispatch. Read back when the verdict lands so a
+    // finding is applied to the claim it was made about, not to whatever has
+    // since moved into that index.
+    const asked = (insertedTask?.context as any).missionCriteria;
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ index: 0, fingerprint: expect.stringMatching(/^description:/) });
+
+    missionFindFirstResult = null;
+  });
+
+  it('leaves no criteria key on the context for a task with no mission', async () => {
+    insertedTask = undefined;
+    missionFindFirstResult = null;
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-m2',
+      originalTask: { title: 'Standalone', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/standalone' },
+      prNumber: 122,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/122',
+      headSha: 'sha122',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect((insertedTask?.context as any).missionCriteria).toBeUndefined();
   });
 });

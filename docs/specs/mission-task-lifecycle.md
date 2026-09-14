@@ -669,6 +669,32 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
 - No prose criterion is dispatched while another criterion already reads `fail`,
   and a finished grading run that returned no verdicts is not retried until it
   ages past `PROSE_VERDICT_TTL_MS` — the same economics as the command path.
+- A prose criterion is graded at PR review time wherever it can be, BEFORE the
+  standalone evaluator is chosen. A reviewer task dispatched for a PR whose task
+  belongs to a mission with `description` criteria carries those criteria in its
+  prompt and returns, per criterion, `supports | contradicts | not_applicable`
+  with a one-line cited reason. That section is strictly ADDITIVE: it MUST NOT
+  change `verdict` or `confidence`, and a mission criterion is never grounds to
+  approve, request changes on, or escalate one PR.
+- Reviewer findings are appended to `missions.criteriaReviewerFindings`
+  (newest-first, capped, one report per reviewer task) — a sibling column, NOT
+  `goalCriteriaState`, for the same reason the `criteriaRearm*` columns are
+  siblings: findings accumulate over the life of the mission and every fresh
+  evaluation overwrites `goalCriteriaState` wholesale.
+- The fold from findings to a verdict counts only MERGED PRs — a `supports` on a
+  branch that was closed or is still open is a statement about code that is not
+  in the product. Reports are read newest-first and one PR gets one voice, its
+  most recent reading. Any `contradicts` on a merged PR grades the criterion
+  `fail`; otherwise ≥1 `supports` and no `contradicts` grades it `pass` with the
+  reviewer citations as evidence. A criterion every reviewer called
+  `not_applicable`, or that no merged PR spoke to, falls through untouched and
+  the standalone evaluator runs for it exactly as before.
+- A finding is matched to its criterion by `criterionFingerprint`, captured on
+  the reviewer task's `context.missionCriteria` at dispatch. A finding whose
+  fingerprint no longer matches is discarded, never transplanted.
+- Reviewer findings MUST NOT decide a `command` or structural criterion. A model
+  cannot know whether a command exits 0, and only prose criteria are ever put in
+  front of a reviewer.
 - The release trigger keeps one additional bar above the predicate: no task of
   the mission in `pending`, `assigned`, or `in_progress`, housekeeping rows
   included (`countPendingTasksForMission`). It MUST NOT be loosened to match a
@@ -739,6 +765,20 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   without merging (`prLifecycleStatus = 'closed'`, `mergedAt` null) WHEN
   completion is attempted THEN it is refused with `code = 'awaiting_merge'` —
   a closed-unmerged PR is not a passing outcome either.
+- AC-11r: GIVEN a mission with a `description` criterion WHEN a reviewer task is
+  dispatched for one of its task PRs THEN the reviewer prompt carries that
+  criterion with its index, the reviewer task's `context.missionCriteria` carries
+  its fingerprint, and the prompt states the criteria do not change the verdict —
+  and GIVEN a task in no mission, the assembled prompt is byte-identical to the
+  pre-criteria one.
+- AC-11s: GIVEN that reviewer completes with
+  `criteriaFindings: [{ index, finding: 'supports', reason }]` and its PR
+  subsequently merges WHEN criteria are evaluated THEN the criterion reads `pass`
+  with evidence citing `PR #<n>`, and NO prose grading task is dispatched.
+- AC-11t: GIVEN the same shape with `finding: 'contradicts'` on a merged PR THEN
+  the criterion reads `fail`; GIVEN `supports` on a PR that never merged, or
+  `not_applicable` from every reviewer, THEN the criterion is untouched and the
+  standalone evaluator is dispatched as before.
 
 ### Blocked-Verdict Consumer
 
@@ -954,6 +994,14 @@ Four missions sat in that state, one for ~40 cycles, each finished by hand.
   `resolveCommandCriterion()`, `handleCriteriaVerificationOutcome()`
 - Prose criteria: `apps/web/src/lib/mission-criteria-prose.ts` —
   `resolveProseCriteria()`, `handleProseEvalOutcome()`
+- Prose criteria graded at review time:
+  `apps/web/src/lib/criteria-reviewer-findings.ts` —
+  `loadMissionProseCriteria()`, `renderMissionCriteriaGuidance()`,
+  `recordReviewerCriteriaFindings()`, `applyReviewerFindings()`; injected by
+  `apps/web/src/lib/reviewer.ts` (`buildReviewerContext()`,
+  `REVIEWER_TASK_OUTPUT_SCHEMA.criteriaFindings`) and recorded from
+  `apps/web/src/app/api/workers/[id]/route.ts`
+  (`handleReviewerOutcomeIfNeeded()`)
 - Pure evaluator + form validation: `packages/core/mission-helpers.ts` —
   `evaluateGoalCriteria()`, `recalculateOverall()`, `validateGoalCriteria()`,
   `computeMissionProgress()` (`awaitingMerge` count, `MissionSegmentState`
