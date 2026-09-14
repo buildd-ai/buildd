@@ -6,6 +6,7 @@ import { buildCreateTaskUrl } from '@/components/artifact-helpers';
 import ArtifactCard from '@/components/ArtifactCard';
 import ArtifactViewer from '@/components/ArtifactViewer';
 import type { ArtifactViewerItem } from '@/components/ArtifactViewer';
+import { isReviewArtifact } from '@/lib/artifact-prominence';
 
 interface ArtifactItem {
   id: string;
@@ -19,19 +20,34 @@ interface ArtifactItem {
   taskTitle: string | null;
   taskId: string | null;
   workspaceName: string | null;
+  /**
+   * Prominence signals. Only supplied by callers that pass
+   * `showReviewFilter` — see `@/lib/artifact-prominence`.
+   */
+  key?: string | null;
+  missionId?: string | null;
+  initiativeId?: string | null;
 }
 
 interface Props {
   artifacts: ArtifactItem[];
   showWorkspace?: boolean;
   baseUrl: string;
+  /**
+   * Show the review/all scope toggle and default to review-worthy artifacts.
+   * Requires the caller to supply the prominence signals on each item (`key`,
+   * `missionId`, `initiativeId`, `visibility`); without them every artifact
+   * would be judged on `type` alone.
+   */
+  showReviewFilter?: boolean;
 }
 
 const TYPE_FILTERS = ['all', 'content', 'report', 'data', 'link', 'summary'] as const;
 
-export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Props) {
+export default function ArtifactList({ artifacts, showWorkspace, baseUrl, showReviewFilter }: Props) {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [scope, setScope] = useState<'review' | 'all'>(showReviewFilter ? 'review' : 'all');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   // Local overrides so share/unshare reflect immediately without a page refresh.
@@ -107,7 +123,12 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
     }
   }
 
-  const filtered = artifacts.filter((a) => {
+  // Review scope narrows the pool BEFORE type pills and search, so every
+  // count on the page is a count within the scope you are looking at.
+  const reviewCount = showReviewFilter ? artifacts.filter(isReviewArtifact).length : artifacts.length;
+  const scoped = showReviewFilter && scope === 'review' ? artifacts.filter(isReviewArtifact) : artifacts;
+
+  const filtered = scoped.filter((a) => {
     if (typeFilter !== 'all' && a.type !== typeFilter) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -177,12 +198,40 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
         )}
       </div>
 
+      {/* Review scope toggle — deliberate deliverables by default, everything
+          else one click away (progressive disclosure, not a hidden list). */}
+      {showReviewFilter && (
+        <div className="flex mb-4 border-2 border-border-strong w-fit" role="group" aria-label="Artifact scope">
+          {([
+            ['review', 'For review', reviewCount],
+            ['all', 'All artifacts', artifacts.length],
+          ] as const).map(([value, label, count], i) => {
+            const isActive = scope === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setScope(value)}
+                aria-pressed={isActive}
+                data-testid={`artifact-scope-${value}`}
+                className={`px-3 py-1.5 text-xs font-medium font-mono uppercase tracking-wide transition-colors ${
+                  i > 0 ? 'border-l-2 border-border-strong' : ''
+                } ${isActive ? 'bg-primary text-white' : 'bg-surface-1 text-text-secondary hover:bg-surface-3'}`}
+              >
+                {label}
+                <span className="ml-1.5 opacity-70">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Type filter pills */}
       <div className="flex gap-1.5 mb-6 overflow-x-auto pb-1">
         {TYPE_FILTERS.map((type) => {
           const count = type === 'all'
-            ? artifacts.length
-            : artifacts.filter(a => a.type === type).length;
+            ? scoped.length
+            : scoped.filter(a => a.type === type).length;
           if (type !== 'all' && count === 0) return null;
           const isActive = typeFilter === type;
           return (
@@ -322,6 +371,18 @@ export default function ArtifactList({ artifacts, showWorkspace, baseUrl }: Prop
       {!search && typeFilter !== 'all' && filtered.length === 0 && (
         <p className="text-center py-8 text-text-muted text-sm">
           No {typeFilter} artifacts
+        </p>
+      )}
+      {!search && typeFilter === 'all' && scope === 'review' && scoped.length === 0 && (
+        <p className="text-center py-8 text-text-muted text-sm">
+          Nothing waiting for review.{' '}
+          <button
+            type="button"
+            onClick={() => setScope('all')}
+            className="underline hover:text-text-primary"
+          >
+            Show all {artifacts.length} artifacts
+          </button>
         </p>
       )}
     </div>

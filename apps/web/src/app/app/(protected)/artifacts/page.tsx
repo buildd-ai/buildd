@@ -6,6 +6,8 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserWorkspaceIds } from '@/lib/team-access';
 import { isSystemWorkspace } from '@buildd/shared';
 import ArtifactList from '@/components/ArtifactList';
+import { artifactVisibilityScope } from '@/lib/artifact-scope';
+import { isReviewArtifact } from '@/lib/artifact-prominence';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,17 +47,18 @@ export default async function ArtifactsPage() {
 
   const workerIds = allWorkers.map(w => w.id);
 
-  // Get artifacts, excluding plan types
-  const allArtifacts = workerIds.length > 0
-    ? await db.query.artifacts.findMany({
-        where: inArray(artifacts.workerId, workerIds),
-        orderBy: desc(artifacts.createdAt),
-      })
-    : [];
+  // Every artifact this user can see. Worker-scoped only used to be the whole
+  // query, which made mission- and initiative-level artifacts (worker_id NULL)
+  // permanently invisible here — see `artifactVisibilityScope` for the tenancy
+  // argument behind each arm.
+  const visibleArtifacts = await db.query.artifacts.findMany({
+    where: artifactVisibilityScope({ workspaceIds: wsIds, workerIds }),
+    orderBy: desc(artifacts.createdAt),
+  });
 
-  const deliverableArtifacts = allArtifacts.filter(
-    a => a.type !== 'impl_plan'
-  );
+  // Prominence is derived, not stored: the list ships every artifact and the
+  // client defaults to the review-worthy ones. No type is hidden outright.
+  const reviewCount = visibleArtifacts.filter(isReviewArtifact).length;
 
   // Build mappings
   const taskIds = [...new Set(allWorkers.filter(w => w.taskId).map(w => w.taskId!))];
@@ -77,11 +80,14 @@ export default async function ArtifactsPage() {
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
-  const artifactItems = deliverableArtifacts.map(a => {
+  const artifactItems = visibleArtifacts.map(a => {
     const meta = a.workerId ? workerMeta.get(a.workerId) : undefined;
     const taskId = meta?.taskId || null;
     const task = taskId ? taskMap.get(taskId) : null;
-    const workspaceName = meta?.workspaceId ? wsNameMap.get(meta.workspaceId) || null : null;
+    // A non-worker artifact carries its own workspace; fall back to the
+    // worker's for legacy rows that never had workspace_id set.
+    const workspaceId = a.workspaceId || meta?.workspaceId || null;
+    const workspaceName = workspaceId ? wsNameMap.get(workspaceId) || null : null;
     return {
       id: a.id,
       type: a.type,
@@ -94,6 +100,11 @@ export default async function ArtifactsPage() {
       taskTitle: task?.title || null,
       taskId: task?.id || null,
       workspaceName,
+      // Prominence signals — the client re-applies `isReviewArtifact` so the
+      // scope toggle and this page agree by construction.
+      key: a.key,
+      missionId: a.missionId,
+      initiativeId: a.initiativeId,
     };
   });
 
@@ -104,7 +115,7 @@ export default async function ArtifactsPage() {
           <div>
             <h1 className="text-2xl font-semibold tracking-tight">Artifacts</h1>
             <p className="text-text-muted mt-1">
-              {deliverableArtifacts.length} artifact{deliverableArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length} workspace{userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length !== 1 ? 's' : ''}
+              {reviewCount} for review of {visibleArtifacts.length} artifact{visibleArtifacts.length !== 1 ? 's' : ''} across {userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length} workspace{userWorkspaces.filter(ws => !isSystemWorkspace(ws.name)).length !== 1 ? 's' : ''}
             </p>
           </div>
         </div>
@@ -112,6 +123,7 @@ export default async function ArtifactsPage() {
         <ArtifactList
           artifacts={artifactItems}
           showWorkspace
+          showReviewFilter
           baseUrl={baseUrl}
         />
       </div>

@@ -384,7 +384,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
     create_artifact: '{ workerId?, missionId?, initiativeId?, type (required: content|report|data|link|summary|email_draft|social_post|analysis|recommendation|alert|calendar_event|file|impl_plan|screenshot|recording|diff|walkthrough), title (required), content?, url?, metadata?, key? } — workerId auto-resolved from context if omitted. Pass missionId to create a mission-level artifact, or initiativeId to create an initiative-level artifact (roadmap/spec), without a worker context.',
     upload_artifact: '{ workerId?, filename (required), mimeType (required), sizeBytes (required — the exact byte size; the upload URL is signed for that size and a body of any other length is rejected), title?, type? (default: file), metadata? } — Returns presigned upload URL. After calling, upload file with: curl -X PUT -H "Content-Type: {mimeType}" --data-binary @{filePath} "{uploadUrl}". Also returns downloadUrl for embedding in markdown.',
-    list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call.',
+    list_artifacts: '{ workspaceId?, missionId?, initiativeId?, key?, type?, review?, limit? } — initiativeId returns initiative-level artifacts PLUS rolled-up artifacts from every child mission in one call. review: true narrows to artifacts deliberately produced for a human to read (reports, analyses, recommendations, anything named with a key or filed against a mission/initiative, anything shared publicly) and drops the captures — screenshots, diffs, uploaded files, machine markers. Same rule as the dashboard\'s "For review" view. Ignored when initiativeId is set.',
     get_artifact: '{ artifactId (required) } — fetch full artifact content by ID',
     update_artifact: '{ artifactId (required), title?, content?, metadata? }',
     create_schedule: '{ name (required), cronExpression (required), title (required), description?, timezone?, priority?, mode?, skillSlugs?, trigger?, workspaceId? } [admin]',
@@ -3156,6 +3156,10 @@ export async function handleBuilddAction(
       if (params.missionId) searchParams.set('missionId', params.missionId as string);
       if (params.key) searchParams.set('key', params.key as string);
       if (params.type) searchParams.set('type', params.type as string);
+      // Server-side prominence filter — the rule lives in the API, not here,
+      // so the dashboard and this action cannot disagree about what "review"
+      // means. Anything other than an explicit true is left off entirely.
+      if (params.review === true || params.review === 'true') searchParams.set('review', 'true');
       if (params.limit) searchParams.set('limit', String(params.limit));
 
       if (wsId) {
