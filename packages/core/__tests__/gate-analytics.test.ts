@@ -86,7 +86,7 @@ describe('computeGateAnalytics', () => {
 
     expect(out.totals).toMatchObject({ events: 4, rejected: 1, deferred: 1, bypassed: 2, warned: 0, distinctGates: 2 });
     expect(out.gates.map(g => g.gate)).toEqual(['subject_dedupe', 'path_claim']);
-    expect(out.gates[0].outcomes).toEqual({ rejected: 1, deferred: 0, bypassed: 2, warned: 0 });
+    expect(out.gates[0].outcomes).toEqual({ rejected: 1, deferred: 0, bypassed: 2, warned: 0, stranded: 0 });
   });
 
   it('collects every surface a gate fired from', () => {
@@ -131,17 +131,17 @@ describe('computeGateAnalytics', () => {
 describe('bypassRatePct', () => {
   it('is the false-positive rate of a lint: bypassed over what the gate acted on', () => {
     // 3 warned, 1 bypassed → the caller overrode 1 of 4 fires.
-    expect(bypassRatePct({ rejected: 0, deferred: 0, bypassed: 1, warned: 3 })).toBe(25);
+    expect(bypassRatePct({ rejected: 0, deferred: 0, bypassed: 1, warned: 3, stranded: 0 })).toBe(25);
   });
 
   it('excludes deferrals from the denominator', () => {
     // A single-flight deferral is the gate working, and nobody bypasses it.
     // Folding 96 of them in would report 4% instead of the true 50%.
-    expect(bypassRatePct({ rejected: 2, deferred: 96, bypassed: 2, warned: 0 })).toBe(50);
+    expect(bypassRatePct({ rejected: 2, deferred: 96, bypassed: 2, warned: 0, stranded: 0 })).toBe(50);
   });
 
   it('is zero rather than NaN when a gate only ever deferred', () => {
-    expect(bypassRatePct({ rejected: 0, deferred: 9, bypassed: 0, warned: 0 })).toBe(0);
+    expect(bypassRatePct({ rejected: 0, deferred: 9, bypassed: 0, warned: 0, stranded: 0 })).toBe(0);
   });
 });
 

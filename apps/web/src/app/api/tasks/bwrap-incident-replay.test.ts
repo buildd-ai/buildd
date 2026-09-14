@@ -25,6 +25,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 mock.module('@buildd/core/gate-events', () => ({
   GATE_SLUGS: new Proxy({}, { get: (_t, k) => String(k).toLowerCase() }),
   recordGateEvent: async () => null,
+  recordOrCoalesceDeferral: async () => null,
 }));
 import { NextRequest } from 'next/server';
 import { findBlockingPr } from '@buildd/core/path-overlap';

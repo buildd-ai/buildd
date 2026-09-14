@@ -3125,7 +3125,7 @@ export const gateEvents = pgTable('gate_events', {
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
   taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'set null' }),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'set null' }),
-  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned'>(),
+  outcome: text('outcome').notNull().$type<'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded'>(),
   // normalizeErrorSignature() of the caller-facing message — the SAME
   // normalizer get_failure_analytics clusters worker errors with, so a family
   // whose message embeds a branch name or an id collapses to one row here too.

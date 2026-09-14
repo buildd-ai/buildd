@@ -41,6 +41,8 @@ const mockMissionsFindMany = mock(async () =>
   missionRows.length > 0 ? missionRows : (missionRow ? [missionRow] : []),
 );
 const mockWorkersFindMany = mock(async () => workerRows);
+let gateEventRows: Row[] = [];
+const mockGateEventsFindMany = mock(async () => gateEventRows);
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -48,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
       missions: { findFirst: mockMissionsFindFirst, findMany: mockMissionsFindMany },
       tasks: { findFirst: mockTasksFindFirst, findMany: mockTasksFindMany },
       workers: { findMany: mockWorkersFindMany },
+      gateEvents: { findMany: mockGateEventsFindMany },
     },
   },
 }));
@@ -56,6 +59,7 @@ mock.module('@buildd/core/db/schema', () => ({
   missions: { id: 'id', workspaceId: 'workspaceId', status: 'status' },
   tasks: { id: 'id', missionId: 'missionId', parentTaskId: 'parentTaskId', workspaceId: 'workspaceId', status: 'status' },
   workers: { id: 'id', workspaceId: 'workspaceId', prBaseRef: 'prBaseRef', mergedAt: 'mergedAt', startedAt: 'startedAt' },
+  gateEvents: { taskId: 'taskId', occurredAt: 'occurredAt' },
 }));
 
 mock.module('drizzle-orm', () => ({

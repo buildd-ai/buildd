@@ -58,11 +58,11 @@ export function gateWindowStartFor(window: GateWindow, now: Date): Date {
 }
 
 function emptyCounts(): GateOutcomeCounts {
-  return { rejected: 0, deferred: 0, bypassed: 0, warned: 0 };
+  return { rejected: 0, deferred: 0, bypassed: 0, warned: 0, stranded: 0 };
 }
 
 function tally(counts: GateOutcomeCounts, outcome: string): void {
-  if (outcome === 'rejected' || outcome === 'deferred' || outcome === 'bypassed' || outcome === 'warned') {
+  if (outcome === 'rejected' || outcome === 'deferred' || outcome === 'bypassed' || outcome === 'warned' || outcome === 'stranded') {
     counts[outcome] += 1;
   }
 }

@@ -21,8 +21,13 @@ let recorded: Recorded[] = [];
 let recordShouldReject = false;
 
 mock.module('@buildd/core/gate-events', () => ({
-  GATE_SLUGS: { PROSE_GATE: 'prose_gate', TASK_PARAM_VOCABULARY: 'task_param_vocabulary' },
+  GATE_SLUGS: { PROSE_GATE: 'prose_gate', TASK_PARAM_VOCABULARY: 'task_param_vocabulary', CLAIM_LOOP_DEFERRAL: 'claim_loop_deferral' },
   recordGateEvent: async (input: Recorded) => {
+    if (recordShouldReject) throw new Error('ledger exploded');
+    recorded.push(input);
+    return 'row-1';
+  },
+  recordOrCoalesceDeferral: async (input: Recorded) => {
     if (recordShouldReject) throw new Error('ledger exploded');
     recorded.push(input);
     return 'row-1';
