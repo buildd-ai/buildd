@@ -226,6 +226,36 @@ both arms, in both eras, which is indistinguishable from a null result. It is
 read off `resultMeta.toolCounts['mcp__buildd__recall']` instead, and a
 zero-coverage outcome now says so in capitals.
 
+**How the readout ends.** The daily cron would otherwise outlive the
+experiment: deduping the notification made it quiet, not finished, so a
+concluded experiment was re-scanned every morning for ever. The route now
+retires itself — its first act is a primary-key lookup for the once-ever
+terminal notification claim, and if that claim exists it returns without
+computing the readout at all. It is a route that no-ops rather than a schedule
+that was switched off, and it is worth saying so plainly: the scheduler still
+ticks and still gets a 200; what stops is the work. Flipping `enabled` in
+`cron-manifest.json` could not do this — that file is a build-time declaration
+synced to the external scheduler by CI, so a runtime event cannot edit it —
+and disabling the job at the scheduler out-of-band would be undone by the next
+`cron:sync`. The retired path still reports `changed: 0, errors: 0` to
+`withCronRun`, because a run reporting neither is dropped by
+`evaluateCronHealth` entirely: it reads as healthy-and-idle, while a retired
+path that *throws* still alarms.
+
+**Where a human reads the verdict.** As a keyed `artifacts` row, upserted in
+place, keyed `memory-digest-readout:<policyVersion>` — so the next policy
+version gets its own row rather than overwriting a concluded verdict, and
+re-runs update one row rather than adding one a day (`(workspace_id, key)` is a
+unique index, and the upsert's conflict target is that index). Typed `analysis`
+rather than `report`: it is arithmetic over rows with effect sizes, intervals
+and a power position, not authored prose. The terminal push carries a link to
+it, because a notification is read once on a phone and then gone. The link is
+auth-gated like any other artifact; no share token is minted to make it
+followable, since a share token in a notification is a bearer credential.
+An `indeterminate` readout is deliberately *not* published — overwriting a real
+verdict with "no rows, the collection path may be broken" would destroy the
+artifact exactly when someone goes looking for it.
+
 **Where the record durably lands.** `worker_prompt_composition_events`
 (`packages/core/db/schema.ts`, migrations `0152_rainy_miek.sql` and
 `0153_greedy_mad_thinker.sql`). One row per prompt build, queryable, with

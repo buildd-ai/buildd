@@ -39,7 +39,8 @@ import { enforceServerSideEscalation } from '@/lib/reviewer';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
-import { reviewerRetryTitle } from '@/lib/task-title';
+import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
+import { formatAttemptTitle } from '@/lib/task-title';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -3549,6 +3550,24 @@ async function handleReviewerOutcomeIfNeeded(
 
   console.log(`[reviewer] Verdict for PR #${prNumber}: ${output.verdict} (confidence ${output.confidence})`);
 
+  // The mission-criteria side report, recorded before any of the verdict
+  // handling below. It reads nothing the verdict path writes and writes nothing
+  // the verdict path reads — and it is awaited rather than fired off so a
+  // reviewer whose PR auto-merges on the very next line cannot race its own
+  // finding into a mission that has already been evaluated.
+  await recordReviewerCriteriaFindings({
+    missionId,
+    reviewerTaskId,
+    reviewerContext: ctx,
+    structuredOutput,
+    prNumber,
+    headSha,
+    originalTaskId,
+    verdict: output.verdict,
+  }).catch(err =>
+    console.error(`[criteria-reviewer] recording findings for PR #${prNumber} failed:`, err),
+  );
+
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, workspaceId),
     // releaseConfig is read for prodBranch — one of the trunk branches a model
@@ -3902,7 +3921,10 @@ async function handleReviewerOutcomeIfNeeded(
         .insert(tasks)
         .values({
           workspaceId,
-          title: reviewerRetryTitle(currentIteration + 1, originalTask.title),
+          title: formatAttemptTitle('builder', originalTask.title, {
+            reason: 'after review',
+            iteration: currentIteration + 1,
+          }),
           description: originalTask.description,
           missionId: originalTask.missionId,
           parentTaskId: originalTaskId,

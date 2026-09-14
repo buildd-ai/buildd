@@ -10,8 +10,13 @@ import WorkerRespondInput from '@/components/WorkerRespondInput';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
-import { deriveBandKey } from '@/lib/condensed-timeline';
-import type { ChainUnit } from '@/lib/condensed-timeline';
+import { deriveBandKey, buildRail } from '@/lib/condensed-timeline';
+import type { ChainUnit, RailGoal, RailNode } from '@/lib/condensed-timeline';
+import { DependencyRail } from '@/components/DependencyRail';
+import { RailNodeGlyph, type RailGlyphState } from '@/components/SegmentStrip';
+import { deriveStage } from '@/lib/stage';
+import { isStrandedTask } from '@/lib/structure-layout';
+import type { CondensedTask } from '@/lib/condensed-timeline';
 import type { MergePolicyTier } from '@buildd/shared';
 import type { ChainPositionResult } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
@@ -32,6 +37,17 @@ export type CondensedTimelineTask = {
   taskCreatedAt: string;
   taskUpdatedAt: string;
   roleColor: string;
+  /**
+   * Stored dependency edges, needed by the mobile rail to class the segment
+   * entering each node (timeline-mobile-rail.md Rule D3-1). Same column the
+   * grouping pass already reads — no new query.
+   */
+  dependsOn?: string[] | null;
+  /**
+   * Declared file scope. Read only to decide whether two Lane-2 siblings would
+   * be advisory-serialized (Rule D3-2/D3-3); never a hard blocker.
+   */
+  pathManifest?: string[] | null;
   chain: ChainPositionResult | null;
   latestWorker: CondensedTimelineWorker | null;
   taskType: TaskType | null;
@@ -116,6 +132,15 @@ export type CondensedTimelineProps = {
    * states, not an unresolved completion gate.
    */
   criteriaGate?: CriteriaGatePresentation | null;
+  /**
+   * Mobile rail inputs (docs/specs/timeline-mobile-rail.md). All optional: an
+   * absent map degrades the rail's STRANDED/retry detail, never its structure.
+   */
+  taskMap?: Map<string, CondensedTask>;
+  /** childId → parentId retry lineage — the same map StructureView receives. */
+  retryLinks?: Map<string, string>;
+  /** Goal-criteria pass count for the rail's root node; null renders no root. */
+  railGoal?: RailGoal | null;
 };
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
@@ -831,6 +856,351 @@ function WaveBandedDone({
   );
 }
 
+// ─── Mobile rail — docs/specs/timeline-mobile-rail.md ────────────────────────
+
+/**
+ * Below `md`, the Timeline is one continuous vertical rail: chain heads at the
+ * top, the mission's goal root at the bottom, day boundaries as ticks rather
+ * than collapsible sections, and landed work collapsed to one row per chain.
+ *
+ * Everything structural comes from `buildRail()` — this tree only paints it.
+ * Nothing here reaches for `deriveBandKey`/`WaveBandedDone`, which is what makes
+ * the duplicate-day-header defect unreachable on a phone (Rule D4-1/D4-2).
+ */
+
+/** Reviewer confidence is noise above this; below it, it is the point (Rule D6-2). */
+const RAIL_CONFIDENCE_FLOOR = 0.85;
+
+const RAIL_TITLE_CHARS = 32;
+const railTruncate = (text: string, limit = RAIL_TITLE_CHARS) =>
+  text.length <= limit ? text : `${text.slice(0, limit - 1).trimEnd()}…`;
+
+/** `[spec] Draft the …` → `SPEC`. Falls back to the stripped title. */
+function ordinalLabel(task: CondensedTimelineTask): string {
+  const prefix = task.title.match(/^\[([^\]]+)\]/)?.[1];
+  if (prefix) return prefix.trim().toUpperCase();
+  return railTruncate(stripTaskTypePrefix(task.title), 24);
+}
+
+type RailGlyphSpec = { state: RailGlyphState; tone?: string; pulse?: boolean; title: string };
+
+/**
+ * Node fill, derived from `deriveStage()` and nothing else (Rule D7-1). The two
+ * additions the table allows are structural, not a second stage vocabulary:
+ * STRANDED (Rule D7-2) and the advisory pathManifest dash (Rule D3-3).
+ */
+function railGlyph(
+  task: CondensedTimelineTask,
+  opts: { stranded?: boolean; soft?: boolean } = {},
+): RailGlyphSpec {
+  if (opts.stranded) return { state: 'notch', tone: 'text-status-error', title: 'stranded — its dependency died' };
+  if (opts.soft) return { state: 'dashed', tone: 'text-text-muted', title: 'ordered behind a lane sibling by file scope' };
+
+  const lw = task.latestWorker;
+  const stage = deriveStage({
+    taskStatus: task.status,
+    workerStatus: lw?.status ?? null,
+    prUrl: lw?.prUrl ?? null,
+    prLifecycleStatus: lw?.prLifecycleStatus ?? null,
+    mergedAt: lw?.mergedAt ?? null,
+    isBlocked: (task.chain?.blockedBy?.length ?? 0) > 0,
+    isMissionBudgetExhausted: task.missionBudgetExhausted ?? false,
+  });
+
+  switch (stage) {
+    case 'FAILED':        return { state: 'solid', tone: 'text-status-error', title: 'failed' };
+    case 'CANCELLED':     return { state: 'skipped', title: 'cancelled' };
+    case 'DONE':          return { state: 'solid', title: 'done' };
+    case 'RUNNING':       return { state: 'ring', tone: 'text-text-primary', pulse: true, title: 'running' };
+    case 'WAITING_INPUT': return { state: 'ring', tone: 'text-status-warning', title: 'needs your input' };
+    // Completed with a PR still open: a human must act, same amber ring.
+    case 'OPEN':
+    case 'CI':
+    case 'CI_FAILING':
+    case 'MERGE':
+    case 'REVIEWING':
+    case 'VERIFY':        return { state: 'ring', tone: 'text-status-warning', title: 'waiting on you' };
+    default:              return { state: 'empty', title: stage.toLowerCase().replace('_', ' ') };
+  }
+}
+
+/** PR number + its terminal word, plus a low-confidence flag (Rule D6-1/D6-2). */
+function RailRightColumn({ task }: { task: CondensedTimelineTask }) {
+  const lw = task.latestWorker;
+  const note = task.reviewerNote;
+  const confidenceRaw = note?.title.match(/\(confidence ([\d.]+)\)/)?.[1];
+  const confidence = confidenceRaw != null ? Number(confidenceRaw) : null;
+  const showConfidence =
+    note != null &&
+    confidence != null &&
+    (note.type !== 'reviewer_approved' || confidence < RAIL_CONFIDENCE_FLOOR);
+
+  let prWord: { text: string; cls: string } | null = null;
+  if (lw?.prNumber) {
+    if (lw.mergedAt || lw.prLifecycleStatus === 'merged') prWord = { text: 'merged', cls: 'text-status-success' };
+    else if (lw.prLifecycleStatus === 'closed') prWord = { text: 'closed', cls: 'text-text-muted' };
+    else {
+      const entry = lw.prLifecycleStatus ? PR_STATUS[lw.prLifecycleStatus] : null;
+      prWord = entry ? { text: entry.label, cls: entry.cls } : { text: 'open', cls: 'text-accent-text' };
+    }
+  }
+
+  if (!prWord && !showConfidence) return null;
+
+  return (
+    <span className="ml-auto flex shrink-0 items-baseline gap-1 font-mono text-[10px]">
+      {prWord && lw?.prUrl && (
+        <a
+          href={lw.prUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={e => e.stopPropagation()}
+          className="text-accent-text hover:underline"
+        >
+          #{lw.prNumber}
+        </a>
+      )}
+      {prWord && <span className={prWord.cls}>{prWord.text}</span>}
+      {showConfidence && <span className="text-status-warning">{confidenceRaw}</span>}
+    </span>
+  );
+}
+
+/** The 22px day / `now` tick (Rule D4-3). No count, no collapse, no histogram. */
+function RailTickRow({ label, isNow }: { label: string; isNow: boolean }) {
+  const stroke = isNow ? 'border-text-muted/60 border-dashed' : 'border-border-default';
+  return (
+    <div className="flex h-[22px] items-center gap-2" data-testid="rail-tick">
+      <span className="flex h-full w-4 shrink-0 justify-center">
+        <span className={`w-0 border-l ${stroke}`} />
+      </span>
+      <span className="shrink-0 font-mono text-[10px] text-text-muted">{label}</span>
+      <span className={`h-px flex-1 border-t ${stroke}`} />
+    </div>
+  );
+}
+
+/** Gutter column: incoming edge segment, the node glyph, then the rail below. */
+function RailGutter({
+  edge,
+  glyph,
+  shape = 'circle',
+  continues = true,
+}: {
+  edge: 'hard' | 'soft' | 'retry' | 'none';
+  glyph: RailGlyphSpec;
+  shape?: 'circle' | 'square';
+  continues?: boolean;
+}) {
+  return (
+    <span className="flex w-4 shrink-0 flex-col items-center">
+      <span className="flex h-2 items-stretch">
+        <DependencyRail mode="line" edge={edge} />
+      </span>
+      <RailNodeGlyph state={glyph.state} shape={shape} tone={glyph.tone} pulse={glyph.pulse} title={glyph.title} />
+      <span className={`w-0 flex-1 ${continues ? 'border-l border-border-default' : ''}`} />
+    </span>
+  );
+}
+
+function RailTaskLine({ task, label }: { task: CondensedTimelineTask; label?: string }) {
+  return (
+    <>
+      <Link
+        href={`/app/tasks/${task.id}`}
+        className="min-w-0 flex-1 truncate text-[12px] text-text-secondary hover:text-accent-text"
+      >
+        {label ? <span className="font-mono text-text-muted">{label} </span> : null}
+        {railTruncate(stripTaskTypePrefix(task.title))}
+      </Link>
+      <RailRightColumn task={task} />
+    </>
+  );
+}
+
+/** One Lane-1 rail node — a collapsed chain, or a single task. */
+function RailNodeRow({
+  node,
+  isLast,
+  stranded,
+}: {
+  node: RailNode<CondensedTimelineTask>;
+  isLast: boolean;
+  stranded: (id: string) => boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [forkOpen, setForkOpen] = useState(false);
+  const [retryOpen, setRetryOpen] = useState(false);
+
+  const collapsible = node.count > 1;
+  const glyph = railGlyph(node.head, { stranded: stranded(node.head.id) });
+  const visibleSiblings = forkOpen
+    ? [...node.siblings, ...node.hiddenSiblings.map(task => ({ task, soft: false }))]
+    : node.siblings;
+  // The stub stands in for AttemptStrip's collapsed `●● N attempts` line (Rule
+  // D3-5), so it must appear whenever there IS an attempt history — a retry whose
+  // own task row is bookkeeping-class never reaches `node.retries`.
+  const attemptCount = node.head.attempts?.total ?? 0;
+  const hasRetryStub = node.retries.length > 0 || attemptCount > 0;
+  const retryLabel = node.retries.length || attemptCount;
+  const hasLaneTwo = visibleSiblings.length > 0 || hasRetryStub || node.forkHidden > 0;
+
+  return (
+    <div className="flex items-stretch gap-2" data-task-id={node.head.id} data-rail-node="">
+      <RailGutter edge={node.edge} glyph={glyph} continues={!isLast || hasLaneTwo} />
+
+      <div className="min-w-0 flex-1 pb-1">
+        <div className="flex min-h-[18px] items-baseline gap-1.5">
+          {collapsible && (
+            <button
+              type="button"
+              onClick={() => setExpanded(v => !v)}
+              aria-expanded={expanded}
+              className="shrink-0 font-mono text-[10px] text-text-muted hover:text-text-secondary"
+              title={`${node.count} tasks in this chain`}
+            >
+              ▣{node.count}
+            </button>
+          )}
+          <RailTaskLine task={node.head} />
+        </div>
+
+        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). */}
+        {collapsible && expanded && (
+          <div className="mt-0.5 space-y-0.5 border-l border-border-default pl-3">
+            {node.members.map((member, i) => (
+              <div key={member.id} className="flex items-baseline gap-1.5">
+                <span className="shrink-0 font-mono text-[10px] text-text-muted">{i + 1}</span>
+                <RailTaskLine task={member} label={ordinalLabel(member)} />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Lane 2 — siblings, the fork glyph, and retry stubs (§2, §3.3). */}
+        {hasLaneTwo && (
+          <div className="mt-0.5 space-y-0.5 pl-1">
+            {visibleSiblings.map(({ task, soft }) => (
+              <div key={task.id} className="flex items-baseline gap-1.5">
+                <span className="shrink-0 font-mono text-[10px] text-text-muted" aria-hidden="true">├</span>
+                <RailNodeGlyph {...railGlyph(task, { stranded: stranded(task.id), soft })} shape="circle" />
+                <RailTaskLine task={task} />
+                {soft && <span className="shrink-0 font-mono text-[10px] text-text-muted">after ↑ paths</span>}
+              </div>
+            ))}
+
+            {node.forkHidden > 0 && (
+              <button
+                type="button"
+                onClick={() => setForkOpen(v => !v)}
+                aria-expanded={forkOpen}
+                className="flex items-baseline gap-1.5 font-mono text-[10px] text-text-muted hover:text-text-secondary"
+              >
+                <span aria-hidden="true">├╮</span>
+                <span>{forkOpen ? 'less' : `+${node.forkHidden}`}</span>
+              </button>
+            )}
+
+            {hasRetryStub && (
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setRetryOpen(v => !v)}
+                  aria-expanded={retryOpen}
+                  className="flex items-center gap-1.5 font-mono text-[10px] text-status-error hover:underline"
+                  title={`${retryLabel} retry attempt${retryLabel === 1 ? '' : 's'}`}
+                  data-testid="rail-retry-stub"
+                >
+                  <span className="inline-block w-3 border-t border-dashed border-status-error" aria-hidden="true" />
+                  <span aria-hidden="true">✗</span>
+                  <span className="sr-only">{retryLabel} retry attempts</span>
+                </button>
+                {retryOpen && <AttemptStrip strip={node.head.attempts ?? null} defaultExpanded />}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The goal root — the one square in a rail of circles (Rule D5-1). */
+function RailGoalRoot({ goal }: { goal: RailGoal }) {
+  const allPassed = goal.passed != null && goal.passed >= goal.total;
+  return (
+    <div className="flex items-stretch gap-2" data-testid="rail-goal-root">
+      <span className="flex w-4 shrink-0 flex-col items-center">
+        <span className="flex h-2 items-stretch">
+          <DependencyRail mode="line" edge="none" />
+        </span>
+        <RailNodeGlyph
+          state={allPassed ? 'solid' : 'empty'}
+          shape="square"
+          tone={allPassed ? 'text-status-success' : 'text-text-muted'}
+          title="mission goal criteria"
+        />
+      </span>
+      <span className="font-mono text-[11px] text-text-secondary">
+        goal <span className="text-text-muted">{goal.passed ?? '?'} / {goal.total}</span>
+      </span>
+    </div>
+  );
+}
+
+function MobileRail({
+  groups,
+  taskMap,
+  retryLinks,
+  goal,
+  bookkeepingTasks,
+}: {
+  groups: CondensedTimelineGroups;
+  taskMap?: Map<string, CondensedTask>;
+  retryLinks?: Map<string, string>;
+  goal?: RailGoal | null;
+  bookkeepingTasks: BookkeepingTask[];
+}) {
+  const model = buildRail<CondensedTimelineTask>(groups, { retryLinks, goal });
+  const stranded = (id: string) => (taskMap ? isStrandedTask(id, taskMap) : false);
+
+  if (model.rows.length === 0) {
+    return (
+      <>
+        <p className="mb-6 text-[13px] italic text-text-muted">No tasks yet</p>
+        <BookkeepingFooter tasks={bookkeepingTasks} />
+      </>
+    );
+  }
+
+  const lastNodeIndex = model.rows.map(r => r.kind).lastIndexOf('node');
+
+  return (
+    <div data-testid="mission-rail">
+      {model.rows.map((row, i) => {
+        if (row.kind === 'tick') return <RailTickRow key={row.id} label={row.label} isNow={row.now} />;
+        if (row.kind === 'label') {
+          return (
+            <div key={row.id} className="pl-6 pt-2">
+              <SectionLabel>{row.text}</SectionLabel>
+            </div>
+          );
+        }
+        return (
+          <RailNodeRow
+            key={row.id}
+            node={row}
+            isLast={i === lastNodeIndex && !model.goal}
+            stranded={stranded}
+          />
+        );
+      })}
+      {model.goal && <RailGoalRoot goal={model.goal} />}
+      <BookkeepingFooter tasks={bookkeepingTasks} />
+    </div>
+  );
+}
+
 // ─── Timeline view — full hierarchy ──────────────────────────────────────────
 
 function TimelineView({
@@ -1004,6 +1374,9 @@ export default function CondensedTimeline({
   completedTasks,
   totalTasks,
   criteriaGate,
+  taskMap,
+  retryLinks,
+  railGoal,
 }: CondensedTimelineProps) {
   return (
     <div className="mb-6">
@@ -1030,16 +1403,33 @@ export default function CondensedTimeline({
           criteriaGate={criteriaGate}
         />
       ) : (
-        <TimelineView
-          groups={groups}
-          segments={segments}
-          effectivePolicyTier={effectivePolicyTier}
-          policyLabel={policyLabel}
-          missionId={missionId}
-          allTasksCount={allTasksCount}
-          missionCompleted={missionCompleted}
-          bookkeepingTasks={bookkeepingTasks}
-        />
+        <>
+          {/* Below md: the rail (timeline-mobile-rail.md §10.1). Both trees are
+              in the DOM and CSS picks one — the same technique the Structure tab
+              uses, and the only one here that cannot hydrate differently than it
+              rendered on the server. */}
+          <div className="md:hidden">
+            <MobileRail
+              groups={groups}
+              taskMap={taskMap}
+              retryLinks={retryLinks}
+              goal={railGoal}
+              bookkeepingTasks={bookkeepingTasks}
+            />
+          </div>
+          <div className="hidden md:block">
+            <TimelineView
+              groups={groups}
+              segments={segments}
+              effectivePolicyTier={effectivePolicyTier}
+              policyLabel={policyLabel}
+              missionId={missionId}
+              allTasksCount={allTasksCount}
+              missionCompleted={missionCompleted}
+              bookkeepingTasks={bookkeepingTasks}
+            />
+          </div>
+        </>
       )}
 
       {/* View all tasks link for active missions in timeline view */}

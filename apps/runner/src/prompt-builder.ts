@@ -422,10 +422,15 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   } else {
     // 'auto' (the default). Announce the obligation up front — this used to
     // surface only as a 400 on the final complete_task call, after the work
-    // was already spent.
+    // was already spent. The gate that enforces this (apps/web/src/app/api/
+    // workers/[id]/route.ts, outputReq === 'auto') fires on a fallback
+    // summary (the session ending without an agent-authored complete_task
+    // call) independently of commit count — so the obligation below is
+    // stated the same way, not conditioned on "if you finish with commits".
     promptParts.push(
       '## Output Requirement\n' +
-      'This task has no fixed output requirement, but if you finish with commits or uncommitted changes in the worktree, you must do ONE of: open a PR (`create_pr`) for the branch; create an artifact recording the deliverable; or call `complete_task` with `discardEdits` stating why those edits are intentionally being thrown away. ' +
+      'This task has no fixed output requirement, but you must always call `complete_task` yourself before the session ends — a session that just stops, even with zero commits, is treated as an unconfirmed outcome, not a completion. ' +
+      'If you finish with commits or uncommitted changes in the worktree, `complete_task` must additionally be paired with ONE of: an open PR (`create_pr`) for the branch; an artifact recording the deliverable; or `discardEdits` stating why those edits are intentionally being thrown away. ' +
       'A coordination task whose deliverable is action taken against OTHER PRs (merging one via `merge_pr`, or dispatching a release) satisfies this automatically — it does not need a PR of its own.'
     );
   }

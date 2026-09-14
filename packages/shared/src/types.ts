@@ -1524,6 +1524,53 @@ export interface GoalCriteriaState {
   }>;
 }
 
+/**
+ * What a PR reviewer said about one prose criterion, from the one moment the
+ * evidence is actually in front of a model: the diff review.
+ *
+ * Deliberately NOT a `CriterionVerdict`. A reviewer judges one PR, not the
+ * mission — "this PR supports the criterion" is not "the criterion passes", and
+ * collapsing the two would let a single approved PR complete a mission.
+ * Folding findings into a verdict is `applyReviewerFindings`'s job.
+ */
+export type CriterionReviewerFinding = 'supports' | 'contradicts' | 'not_applicable';
+
+export interface CriteriaReviewerFindingEntry {
+  /** Criterion index as it stood when the reviewer was prompted. */
+  index: number;
+  /**
+   * Criterion identity from `criterionFingerprint()`. Index is a position and
+   * positions get reused when criteria are edited; a finding whose fingerprint
+   * no longer matches is discarded rather than transplanted onto a new claim.
+   */
+  fingerprint?: string;
+  finding: CriterionReviewerFinding;
+  /** One line, citing what in the diff justifies it. */
+  reason: string;
+}
+
+/**
+ * One reviewer's report on a mission's prose criteria, appended to
+ * `missions.criteriaReviewerFindings` when the reviewer task completes.
+ *
+ * Append-only and newest-first. Merged-ness is deliberately NOT stored: a
+ * report is recorded at verdict time, usually before the PR merges, so it is
+ * resolved at read time from the PR's worker row instead.
+ */
+export interface CriteriaReviewerReport {
+  prNumber: number;
+  headSha?: string;
+  /** The reviewer task that produced this report. */
+  reviewerTaskId: string;
+  /** The task whose PR was reviewed — the join key for merged-ness. */
+  originalTaskId?: string;
+  /** ISO 8601. The recency key: reports are stored and read newest-first. */
+  recordedAt: string;
+  /** The reviewer's own verdict, recorded for provenance only. */
+  verdict?: 'approve' | 'request-changes' | 'escalate';
+  findings: CriteriaReviewerFindingEntry[];
+}
+
 export interface InitiativeKPI {
   name: string;
   metric: string;

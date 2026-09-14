@@ -19,7 +19,7 @@ describe('buildCIRetryTask', () => {
   it('builds the first retry (iteration 0 → 1) with branch + mission continuity', () => {
     const t = buildCIRetryTask(baseParams);
     expect(t).not.toBeNull();
-    expect(t!.title).toBe('[CI Retry #1] Fix the parser');
+    expect(t!.title).toBe('[builder · after CI #1] Fix the parser');
     expect(t!.parentTaskId).toBe('t1');
     expect(t!.missionId).toBe('m1');
     expect(t!.creationSource).toBe('webhook');
@@ -34,9 +34,9 @@ describe('buildCIRetryTask', () => {
   it('does not double-prefix the title on subsequent retries', () => {
     const t = buildCIRetryTask({
       ...baseParams,
-      originalTask: { ...baseParams.originalTask, title: '[CI Retry #1] Fix the parser', context: { iteration: 1 } },
+      originalTask: { ...baseParams.originalTask, title: '[builder · after CI #1] Fix the parser', context: { iteration: 1 } },
     });
-    expect(t!.title).toBe('[CI Retry #2] Fix the parser');
+    expect(t!.title).toBe('[builder · after CI #2] Fix the parser');
     expect(t!.context.iteration).toBe(2);
   });
 
@@ -157,7 +157,7 @@ describe('buildCIRetryTask', () => {
 
   it('foreign commit: display title still uses currentIteration + 1 for readability', () => {
     const t = buildCIRetryTask({ ...baseParams, foreignHeadSha: true });
-    expect(t!.title).toBe('[CI Retry #1] Fix the parser');
+    expect(t!.title).toBe('[builder · after CI #1] Fix the parser');
   });
 
   it('foreign commit: description notes the non-worker push and budget preservation', () => {

@@ -37,6 +37,15 @@ describe('auto-mode dispatch obligation', () => {
     expect(built.promptText).toContain('discardEdits');
   });
 
+  for (const backend of ['claude', 'codex']) {
+    test(`${backend} is told up front to report completion even with zero commits`, () => {
+      const built = buildPromptWithComposition(ctx({ backend }));
+      expect(built.promptText).toContain('must always call `complete_task` yourself');
+      expect(built.promptText).toContain('even with zero commits');
+      expect(built.promptText).not.toContain('<promise>DONE</promise>');
+    });
+  }
+
   test('an explicit outputRequirement of auto renders the same obligation', () => {
     const built = buildPromptWithComposition(ctx({ outputRequirement: 'auto' }));
     expect(built.promptText).toContain('discardEdits');

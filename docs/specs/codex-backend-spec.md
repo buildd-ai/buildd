@@ -83,7 +83,7 @@ assertions:
 
 These are the integration requirements (R1/R2 from the parity work) that make the loop function — not just the mapping shape.
 
-> **INV-8 (`lastAssistantMessage` is set for Codex).** `handleMessage`'s assistant branch sets `worker.lastAssistantMessage` from `agent_message` text (`workers.ts:~2213`). *Reason:* the review-loop exit gate (checks `<promise>DONE</promise>`) and the completion summary both read it; without it every Codex task burns all review iterations then exits with an empty summary. *Guard:* `codex-last-assistant-message.test.ts`.
+> **INV-8 (`lastAssistantMessage` is set for Codex).** `handleMessage`'s assistant branch sets `worker.lastAssistantMessage` from `agent_message` text (`workers.ts:~2213`). *Reason:* the fallback completion summary reads it when the session ends without an agent-authored `complete_task`; without it every Codex task exits with an empty summary. *Guard:* `codex-last-assistant-message.test.ts`.
 
 > **INV-9 (commit→PR linkage).** PR detection fires via the **MCP `create_pr` arm** of the gate (INV-6), not via commit detection. Commit detection (Bash `git commit`) populates `commits` but does **not** populate `commits[].prUrl`. Do not claim commit-based PR detection.
 
@@ -91,7 +91,7 @@ These are the integration requirements (R1/R2 from the parity work) that make th
 
 ## 4. Multi-turn loop + completion + abort
 
-`CodexBackend` runs a **turn loop** on a single persistent Codex `Thread` (`thread.runStreamed(prompt)` is callable repeatedly). `CodexBackendConfig.inputStream` (an `AsyncIterable`) carries `workers.ts`'s review/nudge/steering enqueues into Codex, mirroring the Claude `streamInput` path (`workers.ts` passes `inputStream` at ~L1552/L1570).
+`CodexBackend` runs a **turn loop** on a single persistent Codex `Thread` (`thread.runStreamed(prompt)` is callable repeatedly). `CodexBackendConfig.inputStream` (an `AsyncIterable`) carries `workers.ts`'s nudge/steering enqueues into Codex, mirroring the Claude `streamInput` path (`workers.ts` passes `inputStream` at ~L1552/L1570).
 
 Loop shape: run initial prompt → on `turn.completed`, park on `inputStream.next()` → a message drives another turn on the same thread; stream-end (or no stream) yields `complete` and returns.
 
@@ -113,13 +113,13 @@ Loop shape: run initial prompt → on `turn.completed`, park on `inputStream.nex
 
 ---
 
-## 6. Role / skills / context — AGENTS.md + DONE sentinel
+## 6. Role / skills / context — AGENTS.md
 
 Codex has no Skill tool, no `settingSources`, and **no `instructions` thread option** (`ThreadOptions` is only `{model, sandboxMode, workingDirectory, skipGitRepoCheck}`). Parity is delivered via Codex's native **`AGENTS.md`** (re-read from cwd each turn).
 
 > **INV-16 (AGENTS.md carries role/skills/CLAUDE.md).** When `taskBackend==='codex'`, the worker writes role persona + **inlined resolved skill content** + (when `useClaudeMd`) CLAUDE.md content into `AGENTS.md` in the repo cwd, and prepends a prompt pointer telling Codex to read it (`workers.ts:~1476-1526`). The file is restored/removed in the finally block (~L1978). *Guard:* `codex-instructions.test.ts`.
 
-> **INV-17 (DONE sentinel instruction).** The AGENTS.md/preamble instructs Codex to emit `<promise>DONE</promise>` when complete. *Reason:* the review-loop exit gate (INV-8) depends on the sentinel; without the instruction the gate can never trip. *Anchor:* `DONE_SENTINEL`, `workers.ts:~1526/1663/1696`.
+> **INV-17 retired.** Previously documented a `<promise>DONE</promise>` sentinel instruction that fed the runner's self-review "ralph loop" exit gate. That loop (and the sentinel constant it depended on) was removed from `codex-instructions.ts` — every task's completion is now driven solely by the agent calling `complete_task`, gated server-side (see `apps/web/src/app/api/workers/[id]/route.ts`).
 
 ---
 

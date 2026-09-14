@@ -972,3 +972,127 @@ describe("evaluateCriteriaNow — Option A' plumbing", () => {
     expect(lastState().criteria[0].verdict).toBe('fail');
   });
 });
+
+// ── Reviewer findings: prose graded where the evidence was ────────────────────
+//
+// A prose criterion used to get exactly one shot at a verdict: an evaluator
+// dispatched at mission completion that reads task summaries and never a diff.
+// Reviewers see the diff on every task PR. These tests pin that their reading
+// wins, that it only counts once the PR merged, and that the old path still
+// runs for criteria nobody spoke to.
+
+describe('evaluateCriteriaNow — reviewer findings', () => {
+  beforeEach(reset);
+
+  const PROSE = {
+    type: 'description' as const,
+    description: 'Error copy names the failing provider',
+    notMechanizableReason: 'wording quality is not mechanically checkable',
+  };
+
+  function withReports(reports: any[], workerOverrides: any[] = [{ taskId: 't1', mergedAt: new Date(), prNumber: 10 }]) {
+    mission({ goalCriteria: [PROSE], criteriaReviewerFindings: reports });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null }];
+    workerRows = workerOverrides;
+  }
+
+  function finding(finding: string, reason: string) {
+    return [{ index: 0, fingerprint: criterionFingerprint(PROSE), finding, reason }];
+  }
+
+  it('passes a criterion a merged PR supported, without dispatching an evaluator at all', async () => {
+    withReports([{
+      prNumber: 10, reviewerTaskId: 'rev-1', recordedAt: '2026-09-12T00:00:00.000Z',
+      findings: finding('supports', 'adds the provider name to the error branch'),
+    }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(state!.criteria[0].verdict).toBe('pass');
+    expect(state!.criteria[0].evidence).toContain('PR #10: adds the provider name to the error branch');
+    expect(state!.overall).toBe('pass');
+    // The whole point: the criterion reached a cited verdict and no second agent
+    // run — which would have had strictly less to go on — was ever spent.
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+    expect(mockResolveCriteriaWorkerEval).not.toHaveBeenCalled();
+    expect(mockInferenceCall).not.toHaveBeenCalled();
+  });
+
+  it('fails a criterion a merged PR contradicted', async () => {
+    withReports([{
+      prNumber: 10, reviewerTaskId: 'rev-1', recordedAt: '2026-09-12T00:00:00.000Z',
+      findings: finding('contradicts', 'replaces the provider name with a generic string'),
+    }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(state!.criteria[0].verdict).toBe('fail');
+    expect(state!.criteria[0].evidence).toContain('PR #10: replaces the provider name');
+    expect(state!.overall).toBe('fail');
+    expect(mockResolveProseCriteria).not.toHaveBeenCalled();
+  });
+
+  it('ignores a finding on a PR that never merged, and falls back to the evaluator', async () => {
+    // An approved branch that was closed changed nothing in the product; a
+    // reviewer's `supports` on it is not evidence the mission goal was met.
+    withReports(
+      [{
+        prNumber: 10, reviewerTaskId: 'rev-1', recordedAt: '2026-09-12T00:00:00.000Z',
+        findings: finding('supports', 'adds the provider name'),
+      }],
+      [{ taskId: 't1', mergedAt: null, prNumber: 10 }],
+    );
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the evaluator for a criterion every reviewer called not_applicable', async () => {
+    withReports([{
+      prNumber: 10, reviewerTaskId: 'rev-1', recordedAt: '2026-09-12T00:00:00.000Z',
+      findings: finding('not_applicable', 'unrelated refactor'),
+    }]);
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(mockResolveProseCriteria).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the reviewer findings column and the PR number it joins on', async () => {
+    // The db mock returns fixtures regardless of the selection, so only the
+    // selection itself pins that production still asks for what it depends on.
+    withReports([]);
+
+    await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    expect(missionFindArgs.some(a => a?.columns?.criteriaReviewerFindings === true)).toBe(true);
+    expect(workerFindArgs.some(a => a?.columns?.prNumber === true)).toBe(true);
+  });
+
+  it('leaves the mechanical path alone — findings never decide a command criterion', async () => {
+    mission({
+      goalCriteria: [{ type: 'command', command: 'bun run test' }],
+      criteriaReviewerFindings: [{
+        prNumber: 10, reviewerTaskId: 'rev-1', recordedAt: '2026-09-12T00:00:00.000Z',
+        findings: [{
+          index: 0,
+          fingerprint: criterionFingerprint({ type: 'command', command: 'bun run test' }),
+          finding: 'supports',
+          reason: 'the tests look right to me',
+        }],
+      }],
+    });
+    taskRows = [{ id: 't1', status: 'completed', title: 'Done', taskClass: 'work', mode: 'execution', result: null }];
+    workerRows = [{ taskId: 't1', mergedAt: new Date(), prNumber: 10 }];
+
+    const state = await evaluateCriteriaNow('m1', { evaluatedBy: 'auto', allowWorkerDispatch: true });
+
+    // A model cannot know whether `bun run test` exits 0, and a stored report
+    // claiming it does must not short-circuit the run that would find out.
+    expect(state!.criteria[0].verdict).toBe('PENDING');
+    expect(mockResolveCriteriaWorkerEval).toHaveBeenCalledTimes(1);
+  });
+});

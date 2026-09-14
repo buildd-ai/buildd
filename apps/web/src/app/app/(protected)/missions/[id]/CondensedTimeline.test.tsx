@@ -31,6 +31,14 @@ function makeTask(id: string, overrides: Partial<CondensedTimelineTask> = {}): C
   };
 }
 
+/**
+ * The Timeline renders two trees at once — the mobile rail (`md:hidden`) and the
+ * desktop section list (`hidden md:block`) — per timeline-mobile-rail.md §10.1.
+ * Assertions about desktop-only chrome must say so, or the rail's own (correct)
+ * markup satisfies a `not.toContain` that was written before it existed.
+ */
+const desktopTree = (html: string) => html.slice(html.indexOf('hidden md:block'));
+
 const makeSeg = (taskId: string, state = 'solid' as const) => ({ taskId, state });
 const toChain = (task: CondensedTimelineTask): ChainUnit<CondensedTimelineTask> => ({
   head: task,
@@ -395,7 +403,7 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     );
     // Chip shows; PR line (#42) should not appear as a separate element
     expect(html).toContain('✓');
-    expect(html).not.toContain('#42');
+    expect(desktopTree(html)).not.toContain('#42');
   });
 
   it('renders Changes Requested verdict fully expanded (not collapsed)', () => {
@@ -448,8 +456,8 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     );
     expect(html).toContain('retry #1');
     expect(html).toContain('queued');
-    expect(html).not.toContain('done');
-    expect(html).not.toContain('failed');
+    expect(desktopTree(html)).not.toContain('done');
+    expect(desktopTree(html)).not.toContain('failed');
   });
 
   it('shows "running" status when reviewer retry task is in-progress', () => {

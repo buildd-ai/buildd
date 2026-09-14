@@ -2,12 +2,19 @@ import { db } from '@buildd/core/db';
 import { missions, tasks, workers, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, inArray } from 'drizzle-orm';
 import { evaluateGoalCriteria, recalculateOverall } from '@buildd/core/mission-helpers';
-import type { GoalCriterion, GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
+import type {
+  GoalCriterion,
+  GoalCriteriaState,
+  CriterionVerdict,
+  GoalCriteriaEvidenceRef,
+  CriteriaReviewerReport,
+} from '@buildd/shared';
 import { inferenceCall, describeInferenceError, type InferenceError } from '@buildd/core/inference-client';
 import { resolveCommandCriterion } from './mission-criteria-verify';
 import { resolveProseCriteria } from './mission-criteria-prose';
 import { resolveEvaluationStrategy } from './mission-criteria-strategy';
 import { resolveCriteriaWorkerEval, type WorkerEvalCriterionInput } from './mission-criteria-worker-eval';
+import { applyReviewerFindings } from './criteria-reviewer-findings';
 import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
@@ -232,6 +239,9 @@ export async function evaluateCriteriaNow(
       // a pass with nothing on the default branch.
       integrationBranchEnabled: true,
       status: true,
+      // Reviewer findings accumulated on merged PRs — read before any evaluator
+      // is dispatched (see the fold below).
+      criteriaReviewerFindings: true,
     },
   });
   if (!mission) return null;
@@ -270,6 +280,7 @@ export async function evaluateCriteriaNow(
     prUrl: string | null;
     branch: string;
     prBaseRef: string | null;
+    prNumber: number | null;
   }> = [];
   if (missionTasks.length > 0) {
     const taskIds = missionTasks.map(t => t.id);
@@ -277,7 +288,8 @@ export async function evaluateCriteriaNow(
       where: inArray(workers.taskId, taskIds),
       // `prBaseRef` is what separates "merged into the mission's integration
       // branch" from "merged into trunk". Null is unknown, never trunk.
-      columns: { taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true },
+      // `prNumber` joins a stored reviewer finding to the PR it was made on.
+      columns: { taskId: true, mergedAt: true, prUrl: true, branch: true, prBaseRef: true, prNumber: true },
     });
   }
 
@@ -307,6 +319,34 @@ export async function evaluateCriteriaNow(
       evaluatedBy: opts.evaluatedBy,
     }
   );
+
+  // ── Reviewer findings: prose criteria already graded where the evidence was ─
+  //
+  // Runs BEFORE any evaluator is chosen, not as a fallback for one. A reviewer
+  // read the actual diff; the standalone evaluator reads task summaries. When
+  // the reviewer spoke to a criterion on a PR that merged, that reading wins and
+  // no evaluator is dispatched for it at all — which is the whole point: the
+  // criterion reaches a cited verdict without a second agent run that would have
+  // had less to go on.
+  //
+  // Criteria no merged PR spoke to fall through untouched, and the evidence
+  // assembly below runs for them exactly as before.
+  const mergedPrNumbers = new Set(
+    missionWorkers
+      .filter(w => w.mergedAt != null && typeof w.prNumber === 'number')
+      .map(w => w.prNumber as number),
+  );
+  const fold = applyReviewerFindings({
+    criteria,
+    state,
+    reports: mission.criteriaReviewerFindings as CriteriaReviewerReport[] | null,
+    mergedPrNumbers,
+  });
+  if (fold.decided.length > 0) {
+    console.log(
+      `[criteria-eval] mission ${missionId}: reviewer findings decided criteri${fold.decided.length === 1 ? 'on' : 'a'} [${fold.decided.join(', ')}]`,
+    );
+  }
 
   // ── Resolve evaluation strategy ────────────────────────────────────────────
   // workspace-override → team-default → 'inline'

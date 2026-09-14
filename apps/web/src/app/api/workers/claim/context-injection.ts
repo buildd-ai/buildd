@@ -29,7 +29,7 @@ import { buildSubjectPriorWork } from './subject-prior-work';
 type ClaimedTask = { id: string; title: string; workspaceId: string };
 
 /** Prefixes stripped from a title before it seeds the knowledge-context embedding query. */
-const SEED_TITLE_PREFIX_RE = /^\[(?:CI Retry #\d+|reviewer retry #\d+|reviewer|friction)\]\s*/i;
+const SEED_TITLE_PREFIX_RE = /^\[(?:builder\s+·\s+after\s+(?:review|conflict|CI) #\d+|reviewer #\d+|CI Retry #\d+|reviewer retry #\d+|reviewer|friction)\]\s*/i;
 
 /** Description chars kept in the seed query — a full CI-retry/friction body would dominate the embedding. */
 const SEED_DESCRIPTION_MAX_CHARS = 600;
@@ -38,11 +38,13 @@ const SEED_DESCRIPTION_MAX_CHARS = 600;
  * Normalise a task's title/description into the text embedded for claim-time
  * knowledge retrieval (spec f14a3d02 §1).
  *
- * Strips templated prefixes ([CI Retry #N], [reviewer], [reviewer retry #N],
- * [friction]) that carry no semantic content but would otherwise dominate the
- * embedding, and caps the description so a long templated body doesn't drown
- * out the title. Repeats the prefix strip since a retried reviewer task can
- * stack more than one prefix (e.g. "[CI Retry #2] [reviewer] Fix the sandbox").
+ * Strips templated prefixes including:
+ * - New format: [builder · after review #N], [builder · after conflict #N], [builder · after CI #N], [reviewer #N]
+ * - Legacy format: [CI Retry #N], [reviewer], [reviewer retry #N]
+ * - Other: [friction]
+ * These carry no semantic content but would otherwise dominate the embedding, and caps
+ * the description so a long templated body doesn't drown out the title. Repeats the prefix
+ * strip since a retried reviewer task can stack more than one prefix (e.g. "[builder · after CI #2] [reviewer] Fix the sandbox").
  */
 function buildSeedQuery(title: string, description: string | null | undefined): string {
   let normalizedTitle = title ?? '';
