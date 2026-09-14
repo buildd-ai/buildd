@@ -54,10 +54,18 @@ const SECONDARY_BTN =
  *  - `spec_ahead`  — Promote (primary, or the minted mission's link), Accept.
  *  - `contradicted` — Flip direction, Accept. Unchanged.
  *
- * A group with a doc fix already in flight renders no buttons at all: it is
+ * A group with a doc fix actively running renders no buttons at all: it is
  * agent-handled (chip FIXING_SPEC), and the only thing left to do is read the
  * task. The rows still close mechanically on the next checker re-run — never
  * because that task said it was done.
+ *
+ * Once that task has COMPLETED and the rows are still open, Accept comes back
+ * as the one exit. Closure is still the checker's word, so the card cannot say
+ * the finding is settled — but a docs PR that was never merged, or one that
+ * did not actually discharge the claim, would otherwise leave this card
+ * agent-handled forever with no action on it at all: the finding would be
+ * parked by accident instead of by a decision. Accept is the action §8 allows
+ * on the row in any state, and it records a reason.
  *
  * All three mutations call the §13 REST routes that back the equivalent MCP
  * actions, so there is exactly one mutation path whether a human taps here or
@@ -178,6 +186,10 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
   const age = ageLabel(item.cardAgeHours);
   const claimCount = assertionIds.length || rowIds.length;
   const inFlight = Boolean(item.docFixTaskId);
+  // The fix has been written and the rows are waiting on the checker. Nothing
+  // is running any more, so the card owes the human an exit again — see the
+  // note on Accept at the top of this file.
+  const docFixShipped = inFlight && item.docFixTaskStatus === 'completed';
   const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
@@ -233,14 +245,14 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
         )}
       </div>
 
-      {!inFlight && mode === 'idle' && (
-        <div className="flex items-center gap-2 flex-wrap">
-          {direction === 'code_ahead' && (
+      {(!inFlight || docFixShipped) && mode === 'idle' && (
+        <div className={`flex items-center gap-2 flex-wrap${docFixShipped ? ' mt-2' : ''}`}>
+          {!inFlight && direction === 'code_ahead' && (
             <button type="button" onClick={dispatchDocFix} disabled={busy} className={PRIMARY_BTN}>
               {busy ? 'Dispatching…' : 'Dispatch doc fix'}
             </button>
           )}
-          {item.promotedMissionId ? (
+          {inFlight ? null : item.promotedMissionId ? (
             <Link
               href={`/app/missions/${item.promotedMissionId}`}
               className="text-[12px] font-medium text-primary hover:underline whitespace-nowrap"
@@ -252,7 +264,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
               {busy ? 'Promoting…' : 'Promote'}
             </button>
           ) : null}
-          {direction === 'contradicted' && (
+          {!inFlight && direction === 'contradicted' && (
             <button
               type="button"
               onClick={() => setMode('flipping')}

@@ -698,6 +698,16 @@ cards are unchanged.
   renders under the same rule as a conflict retry in flight — still visible, so
   a doc fix that dies does not take the finding with it, but never counted as
   something owed to a human.
+- **A claim must be releasable, or it is just a quieter dead end.** Three
+  releases, none of them a worker's say-so: a `failed`/`cancelled` task releases
+  the claim outright; a reopen releases it, because §9's reopen is a NEW
+  occurrence with a fresh `first_seen_at` and the task that settled the previous
+  one has nothing to do with it; and once the task has `completed` with the rows
+  still open, **accept** comes back on the card as the one exit. That last case
+  is a docs PR that was never merged, or one that did not discharge the claim:
+  closure is still the checker's word so the card cannot say the finding is
+  settled, but without an action it would sit agent-handled forever and the
+  finding would end up parked by accident rather than by a decision.
 - **Closure does not move.** §9 is untouched: the rows resolve when a checker
   re-run resolves their assertions. Neither the doc-fix task, nor its PR, nor
   its worker's summary closes anything. The dispatched task is told so

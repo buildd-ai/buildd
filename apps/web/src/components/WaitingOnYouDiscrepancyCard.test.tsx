@@ -108,14 +108,19 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     expect(html).toContain('/app/tasks/task-7');
   });
 
-  it('in-flight card distinguishes "being worked" from "shipped, waiting on the checker re-run"', () => {
+  it('CTA set — doc fix shipped, rows still open: Accept comes back as the one exit', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouDiscrepancyCard
         item={item({ chip: 'FIXING_SPEC', docFixTaskId: 'task-7', docFixTaskStatus: 'completed' })}
       />,
     );
     expect(html).toContain('awaiting the conformance re-run');
-    expect(ctas(html)).toEqual([]);
+    // Nothing is running any more, and closure is still the checker's word — so
+    // the card must not offer a second dispatch, and must not pretend the
+    // finding is settled. But a docs PR that never merged would otherwise leave
+    // this card agent-handled forever with no action on it at all, parking the
+    // finding by accident. Accept is the exit, and it records a reason.
+    expect(ctas(html)).toEqual(['Accept']);
   });
 
   it('renders nothing when the item carries no discrepancyId', () => {
