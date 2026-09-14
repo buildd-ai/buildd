@@ -6366,6 +6366,51 @@ describe('PATCH /api/workers/[id]', () => {
       expect(lastInsertValues.reviewerRetryHeadSha).toBe('abc123');
     });
 
+    it('request-changes: titles the retry task as a builder attempt, not a reviewer one', async () => {
+      // This retry is a builder re-running with reviewer feedback on the same
+      // branch — the title must say "builder", never "reviewer", or the UI
+      // reads it as the review itself being retried.
+      setupReviewerTaskCompletion('request-changes');
+      // Distinguish the two lookups by requested columns instead of call order —
+      // several unrelated tasks.findFirst calls happen earlier in the generic
+      // PATCH flow, so a fixed once()/once() queue lands on the wrong calls.
+      mockTasksFindFirst.mockImplementation((opts_?: any) => {
+        if (opts_?.columns?.pathManifest) {
+          return Promise.resolve({
+            id: 'original-task-1',
+            title: 'fix(timeline): duplicate day header',
+            description: 'Description',
+            missionId: 'mission-1',
+            pathManifest: ['apps/web/src/lib/feature-x.ts'],
+          });
+        }
+        return Promise.resolve({
+          id: 'reviewer-task-1',
+          category: 'review',
+          context: {
+            reviewerFor: 'original-task-1',
+            prNumber: 42,
+            prUrl: 'https://github.com/org/repo/pull/42',
+            headSha: 'abc123',
+            repoFullName: 'org/repo',
+            installationId: 5000,
+            workerBranch: 'buildd/original-branch',
+            iteration: 0,
+            maxIterations: 3,
+          },
+          missionId: 'mission-1',
+          title: '[reviewer] PR #42: Original task',
+          outputRequirement: 'none',
+        });
+      });
+
+      const res = await PATCH(makeReviewerPatchRequest('request-changes'), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(lastInsertValues).toBeDefined();
+      expect(lastInsertValues.title).toBe('[builder · after review #1] fix(timeline): duplicate day header');
+    });
+
     it('escalate: sends Pushover and does not create retry task', async () => {
       setupReviewerTaskCompletion('escalate');
 

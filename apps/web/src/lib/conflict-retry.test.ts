@@ -141,7 +141,7 @@ describe('buildConflictRetryTask', () => {
   it('returns a retry task on the first iteration', () => {
     const result = buildConflictRetryTask(makeInput());
     expect(result).not.toBeNull();
-    expect(result!.title).toBe('[Conflict Retry #1] feat: add dark mode');
+    expect(result!.title).toBe('[builder · after conflict #1] feat: add dark mode');
     expect(result!.creationSource).toBe('conflict');
     expect(result!.conflictRetryPrNumber).toBe(42);
     expect(result!.conflictRetryHeadSha).toBe('abc123def456');
@@ -162,7 +162,7 @@ describe('buildConflictRetryTask', () => {
     });
     const result = buildConflictRetryTask(input);
     expect(result).not.toBeNull();
-    expect(result!.title).toBe('[Conflict Retry #2] feat: add dark mode');
+    expect(result!.title).toBe('[builder · after conflict #2] feat: add dark mode');
     expect(result!.context.conflictIteration).toBe(2);
   });
 
@@ -202,11 +202,11 @@ describe('buildConflictRetryTask', () => {
     expect(result!.context.maxConflictIterations).toBe(5);
   });
 
-  it('strips existing [Conflict Retry #N] prefix from title', () => {
+  it('strips existing [builder · after conflict #N] prefix from title', () => {
     const input = makeInput({
       originalTask: {
         id: 'task-abc',
-        title: '[Conflict Retry #1] feat: add dark mode',
+        title: '[builder · after conflict #1] feat: add dark mode',
         description: null,
         workspaceId: 'ws-1',
         context: { conflictIteration: 1 },
@@ -214,14 +214,14 @@ describe('buildConflictRetryTask', () => {
       },
     });
     const result = buildConflictRetryTask(input);
-    expect(result!.title).toBe('[Conflict Retry #2] feat: add dark mode');
+    expect(result!.title).toBe('[builder · after conflict #2] feat: add dark mode');
   });
 
-  it('strips existing [CI Retry #N] prefix from title', () => {
+  it('strips existing [builder · after CI #N] prefix from title', () => {
     const input = makeInput({
       originalTask: {
         id: 'task-abc',
-        title: '[CI Retry #2] feat: add dark mode',
+        title: '[builder · after CI #2] feat: add dark mode',
         description: null,
         workspaceId: 'ws-1',
         context: null,
@@ -229,7 +229,7 @@ describe('buildConflictRetryTask', () => {
       },
     });
     const result = buildConflictRetryTask(input);
-    expect(result!.title).toBe('[Conflict Retry #1] feat: add dark mode');
+    expect(result!.title).toBe('[builder · after conflict #1] feat: add dark mode');
   });
 
   it('sets branch continuity fields in context', () => {
