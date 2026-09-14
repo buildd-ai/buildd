@@ -99,6 +99,9 @@ export default async function MissionDetailPage({
           creationSource: true,
           dependsOn: true,
           parentTaskId: true,
+          // Read only to class Lane-2 rail edges as advisory ordering
+          // (docs/specs/timeline-mobile-rail.md Rule D3-2). Column already exists.
+          pathManifest: true,
           category: true,
           taskClass: true,
           loopConfig: true,
@@ -191,7 +194,7 @@ export default async function MissionDetailPage({
                 columns: {
                   id: true, title: true, status: true, priority: true, createdAt: true,
                   updatedAt: true, result: true, mode: true, roleSlug: true,
-                  creationSource: true, dependsOn: true, parentTaskId: true, category: true,
+                  creationSource: true, dependsOn: true, parentTaskId: true, pathManifest: true, category: true,
                   taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
                   reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
                   context: true,
@@ -640,6 +643,8 @@ export default async function MissionDetailPage({
       taskCreatedAt: task.createdAt.toISOString(),
       taskUpdatedAt: task.updatedAt.toISOString(),
       roleColor: role?.color ?? '#8A8478',
+      dependsOn: (task.dependsOn as string[] | null) ?? null,
+      pathManifest: ((task as any).pathManifest as string[] | null) ?? null,
       chain: chainByTaskId.get(task.id) ?? null,
       // Mission-level claim gate: a budget_exhausted mission blocks every one of
       // its pending tasks until a human raises the budget, and it never clears on
@@ -699,6 +704,21 @@ export default async function MissionDetailPage({
       retryLinks.set(t.id, t.parentTaskId);
     }
   }
+
+  // Mobile rail goal root (docs/specs/timeline-mobile-rail.md Rule D5-2). A raw
+  // pass count, not `deriveCriteriaGatePresentation`'s label/tone — the banner
+  // answers "what do I tell the user"; the root answers "how many of N passed".
+  // `passed: null` when the gate has never been evaluated, so the root can say
+  // `?/N` rather than misreporting `0/N` (Rule D5-3).
+  const railGoalTotal = Array.isArray(missionCriteria) ? missionCriteria.length : 0;
+  const railGoal = railGoalTotal > 0
+    ? {
+        total: railGoalTotal,
+        passed: criteriaStateItems.length > 0
+          ? criteriaStateItems.filter(c => c.verdict === 'pass').length
+          : null,
+      }
+    : null;
 
   // §3.5: Density tier — Summary default for missions with > N_small deliverable tasks.
   // Use timelineTasks.length (exactly what renders in the timeline) instead of allTasksCount
@@ -1251,6 +1271,9 @@ export default async function MissionDetailPage({
             completedTasks={completedTasks}
             totalTasks={totalTasks}
             criteriaGate={criteriaGate}
+            taskMap={condensedTaskMapForGrouping}
+            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
+            railGoal={railGoal}
           />
         ) : undefined}
         timelineContent={(
@@ -1269,6 +1292,9 @@ export default async function MissionDetailPage({
             completedTasks={completedTasks}
             totalTasks={totalTasks}
             criteriaGate={criteriaGate}
+            taskMap={condensedTaskMapForGrouping}
+            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
+            railGoal={railGoal}
           />
         )}
         feedContent={<MissionFeed missionId={id} />}

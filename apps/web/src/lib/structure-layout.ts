@@ -127,7 +127,13 @@ export function computeEdgeSetFingerprint<T extends StructureTask>(
 // ci_green included: a dep whose CI has passed is one reviewer-merge away from resolving (spec §5.2 STF-3)
 const OPEN_PR_STATUSES = new Set(['pr_open', 'ci_running', 'ci_failed', 'ci_green', 'conflict']);
 
-function isStrandedTask(taskId: string, taskMap: Map<string, CondensedTask>): boolean {
+/**
+ * A pending task whose only path forward died: a dep that failed or was
+ * cancelled with no open PR left to revive it. Exported for the mobile rail
+ * (timeline-mobile-rail.md Rule D7-2) so the two surfaces cannot disagree about
+ * what "stranded" means.
+ */
+export function isStrandedTask(taskId: string, taskMap: Map<string, CondensedTask>): boolean {
   const task = taskMap.get(taskId);
   if (!task) return false;
   if (task.status !== 'pending' && task.status !== 'assigned') return false;
