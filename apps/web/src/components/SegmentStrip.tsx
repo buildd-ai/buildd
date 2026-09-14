@@ -2,10 +2,17 @@ import type { MissionSegmentState } from '@buildd/core/mission-helpers';
 import type { SegmentState as ChainSegmentState } from '@/lib/task-presentation';
 
 export type SegmentState = MissionSegmentState | ChainSegmentState;
-/** Glyph vocabulary — mission states plus 'skipped' (a cancelled, non-blocking dep). */
-type Glyph = MissionSegmentState | 'skipped';
+/**
+ * Glyph vocabulary — mission states, plus 'skipped' (a cancelled, non-blocking
+ * dep) and the two rail-only states the mobile timeline needs: 'ring' (a live
+ * worker) and 'dashed' (advisory-gated or stranded).
+ */
+type Glyph = MissionSegmentState | 'skipped' | 'ring' | 'dashed';
+export type RailGlyphState = Glyph;
+/** Node outline. Circles are tasks; the single square is the mission's goal root. */
+export type SegmentShape = 'box' | 'circle' | 'square';
 const normalize = (state: SegmentState): Glyph => state === 'filled' ? 'solid' : state === 'current' ? 'ghost' : state;
-const color: Record<Glyph, string> = { solid: 'text-status-success', half: 'text-status-warning', ghost: 'text-text-primary', empty: 'text-text-muted', notch: 'text-status-error', skipped: 'text-text-muted' };
+const color: Record<Glyph, string> = { solid: 'text-status-success', half: 'text-status-warning', ghost: 'text-text-primary', empty: 'text-text-muted', notch: 'text-status-error', skipped: 'text-text-muted', ring: 'text-status-warning', dashed: 'text-text-muted' };
 const SKIPPED_BG = 'bg-[linear-gradient(45deg,transparent_44%,currentColor_45%_55%,transparent_56%)]';
 
 function SegmentGlyph({ state }: { state: SegmentState }) {
@@ -16,7 +23,49 @@ function SegmentGlyph({ state }: { state: SegmentState }) {
   if (value === 'notch') return <span className="block size-2 border border-current bg-[linear-gradient(45deg,transparent_42%,currentColor_43%_57%,transparent_58%)]" />;
   // skipped: a struck-through box — satisfied, but never delivered.
   if (value === 'skipped') return <span className={`block size-2 border border-current opacity-50 ${SKIPPED_BG}`} />;
+  if (value === 'ring') return <span className="block size-2 border-2 border-current" />;
+  if (value === 'dashed') return <span className="block size-2 border border-dashed border-current" />;
   return <span className="block size-2 border border-current opacity-35" />;
+}
+
+/**
+ * One rail node (timeline-mobile-rail.md §7, §10.2).
+ *
+ * Same glyph state machine as `SegmentGlyph` above — this variant only changes
+ * the outline (`shape`) and the size, so the rail and the progress strips stay
+ * one vocabulary rather than two. `color` above is the single fill source; the
+ * caller passes the state `deriveStage()` produced and nothing else.
+ */
+export function RailNodeGlyph({
+  state,
+  shape = 'circle',
+  tone,
+  pulse = false,
+  title,
+}: {
+  state: RailGlyphState;
+  shape?: SegmentShape;
+  /** Colour class. Defaults to the shared `color` table for the state. */
+  tone?: string;
+  pulse?: boolean;
+  title?: string;
+}) {
+  const radius = shape === 'circle' ? 'rounded-full' : '';
+  const body =
+    state === 'solid' ? 'bg-current'
+    : state === 'ring' ? 'border-2 border-current'
+    : state === 'dashed' ? 'border border-dashed border-current'
+    : state === 'notch' ? `border border-current ${SKIPPED_BG}`
+    : state === 'skipped' ? `border border-current opacity-50 ${SKIPPED_BG}`
+    : state === 'half' ? 'border border-current bg-[linear-gradient(90deg,currentColor_50%,transparent_50%)]'
+    : 'border border-current opacity-60';
+  return (
+    <span
+      className={`block size-2.5 shrink-0 ${radius} ${body} ${tone ?? color[state]} ${pulse ? 'animate-pulse' : ''}`}
+      title={title}
+      aria-hidden="true"
+    />
+  );
 }
 
 export function SegmentStrip({ segments, continuous = segments.length > 8, label, height, maxWidth }: { segments: Array<{ taskId: string; state: SegmentState }>; continuous?: boolean; label?: string; height?: number; maxWidth?: number }) {

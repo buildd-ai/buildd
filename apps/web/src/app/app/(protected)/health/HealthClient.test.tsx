@@ -144,6 +144,7 @@ const render = (over: Record<string, any> = {}) =>
       window="7d"
       cbm={null}
       subagentDelegation={null}
+      errorPatterns={null}
       now={NOW}
       {...(over as any)}
     />,
@@ -512,6 +513,82 @@ describe('HealthClient — Trend', () => {
       },
     });
     expect(html).toContain('tracked only since 2026-08-15');
+  });
+});
+
+describe('HealthClient — error trace patterns', () => {
+  it('renders no section when the panel is null', () => {
+    const html = render({ errorPatterns: null });
+    expect(html).not.toContain('data-testid="health-section-error-patterns"');
+  });
+
+  it('states the ranking key inline and ranks by distinct failed workers, not occurrences', () => {
+    const html = render({
+      errorPatterns: {
+        kind: 'value',
+        value: {
+          patterns: [
+            { pattern: 'git_fatal', occurrences: 3, workers: 3, failedWorkers: 3 },
+            { pattern: 'cd_no_such_file', occurrences: 40, workers: 12, failedWorkers: 0 },
+          ],
+          scannedWorkers: 20,
+          gatedSince: '2026-09-07',
+          windowPredatesCapture: false,
+          truncated: false,
+        },
+      },
+    });
+    expect(html).toContain('data-testid="health-section-error-patterns"');
+    expect(html).toContain('Ranked by distinct workers whose session ended in failure');
+    expect(html).toContain('over 20 workers');
+    // git_fatal (3 failed workers) must render before the chattier
+    // cd_no_such_file (40 occurrences, 0 failed workers) — this is the whole point.
+    expect(html.indexOf('git_fatal')).toBeLessThan(html.indexOf('cd_no_such_file'));
+  });
+
+  it('renders a real empty state, not the unavailable copy, when no pattern fired', () => {
+    const html = render({
+      errorPatterns: {
+        kind: 'value',
+        value: {
+          patterns: [],
+          scannedWorkers: 15,
+          gatedSince: '2026-09-07',
+          windowPredatesCapture: false,
+          truncated: false,
+        },
+      },
+    });
+    expect(html).toContain('No error-trace pattern fired in this window.');
+    expect(html).not.toContain('data-testid="error-patterns-unavailable"');
+  });
+
+  it('shows the unavailable reason instead of a fabricated zero when nothing was scanned', () => {
+    const html = render({
+      errorPatterns: {
+        kind: 'unavailable',
+        reason: 'no_scope',
+        detail: 'No worker completed in this window to scan for error-trace patterns.',
+      },
+    });
+    expect(html).toContain('data-testid="error-patterns-unavailable"');
+    expect(html).toContain('No worker completed in this window');
+  });
+
+  it('warns when the window opens before the scanner gating was completed', () => {
+    const html = render({
+      errorPatterns: {
+        kind: 'value',
+        value: {
+          patterns: [{ pattern: 'git_fatal', occurrences: 1, workers: 1, failedWorkers: 1 }],
+          scannedWorkers: 5,
+          gatedSince: '2026-09-07',
+          windowPredatesCapture: true,
+          truncated: false,
+        },
+      },
+    });
+    expect(html).toContain('completed on 2026-09-07');
   });
 });
 

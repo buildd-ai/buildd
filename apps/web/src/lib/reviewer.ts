@@ -35,6 +35,14 @@ import {
   type GithubPrFile,
   type ReviewerPatchFile,
 } from './reviewer-patch';
+import {
+  REVIEWER_CRITERIA_FINDINGS_SCHEMA,
+  REVIEWER_CRITERIA_CONTEXT_KEY,
+  loadMissionProseCriteria,
+  renderMissionCriteriaGuidance,
+  type ReviewerCriterionRef,
+} from './criteria-reviewer-findings';
+import type { CriterionReviewerFinding } from '@buildd/shared';
 
 // ── Output schema ────────────────────────────────────────────────────────────
 
@@ -65,6 +73,19 @@ export interface ReviewerTaskOutput {
    * touches the PR itself.
    */
   correctedLede?: string;
+  /**
+   * Per-criterion side report on the mission's prose criteria, returned only
+   * when the prompt listed some (see lib/criteria-reviewer-findings.ts).
+   *
+   * Strictly additive. It is recorded on the mission and read later by the
+   * completion-time criteria evaluator; it does not, and must not, participate
+   * in the approve / request-changes decision this task exists to make.
+   */
+  criteriaFindings?: Array<{
+    index: number;
+    finding: CriterionReviewerFinding;
+    reason: string;
+  }>;
 }
 
 export const REVIEWER_TASK_OUTPUT_SCHEMA = {
@@ -104,6 +125,7 @@ export const REVIEWER_TASK_OUTPUT_SCHEMA = {
       description:
         'ONLY when the PR\'s opening lede contradicts the diff: one plain-language sentence that is actually true of this change. Correctness, never taste — omit this for a lede that is accurate but clumsy, dull or badly worded. Same rules as the author\'s: one sentence, no file paths, no endpoint or symbol names.',
     },
+    criteriaFindings: REVIEWER_CRITERIA_FINDINGS_SCHEMA,
   },
   additionalProperties: false,
 } as const;
@@ -305,6 +327,13 @@ export interface CreateReviewerTaskParams {
   repoFullName: string;
   /** When set, the reviewer context uses intent sentences instead of raw glob lists. */
   policyConfig?: WorkspacePolicyConfig;
+  /**
+   * The mechanical EXPAND/CONTRACT verdict for this PR's migrations, when the
+   * caller already computed one (currently only the webhook's pre-flight path,
+   * via `inspectPullRequestMigrations`). Surfaced in the prompt so the reviewer
+   * is told the verdict rather than asked to assess schema risk itself.
+   */
+  migrationSafety?: MigrationSafety;
   /** The PR's files, when the caller already fetched them. See BuildContextParams. */
   prFiles?: GithubPrFile[];
   /** The PR's body, when the caller already has it. Read for its lede only. */
@@ -420,6 +449,11 @@ export async function createReviewerTask(
     }
   }
 
+  // The mission's prose criteria, if any. This reviewer is the only agent that
+  // will ever see this diff next to them, so it is asked for a side report —
+  // additive to the verdict, read later by the criteria evaluator.
+  const missionCriteria = await loadMissionProseCriteria(originalTask.missionId);
+
   // Build reviewer context description. A priorVerdict switches this to a
   // DELTA review: the diff is `priorVerdict.headSha..headSha`, not the whole
   // PR, and the prompt carries the prior verdict instead of asking the agent
@@ -436,6 +470,7 @@ export async function createReviewerTask(
         policyConfig: params.policyConfig,
         priorVerdict: params.priorVerdict,
         deltaFiles: params.deltaFiles,
+        missionCriteria,
       })
     : await buildReviewerContext({
         originalTaskId,
@@ -446,8 +481,10 @@ export async function createReviewerTask(
         installationId,
         repoFullName,
         policyConfig: params.policyConfig,
+        migrationSafety: params.migrationSafety,
         prFiles: params.prFiles,
         prBody: params.prBody,
+        missionCriteria,
       });
 
   const title = reviewerTitle(prNumber, originalTask.title);
@@ -486,6 +523,11 @@ export async function createReviewerTask(
           priorVerdictHeadSha: params.priorVerdict.headSha,
           priorVerdict: params.priorVerdict.verdict,
         } : {}),
+        // The criteria this reviewer was actually shown, with the fingerprints
+        // they had at dispatch. Read back when the verdict lands so a finding
+        // lands on the claim it was made about, not on whatever now sits at
+        // that index.
+        ...(missionCriteria.length > 0 ? { [REVIEWER_CRITERIA_CONTEXT_KEY]: missionCriteria } : {}),
       },
       release: 'false', // reviewer tasks never trigger releases
       priority: 8,      // reviewer tasks are high priority
@@ -515,6 +557,8 @@ interface BuildContextParams {
   installationId: number;
   repoFullName: string;
   policyConfig?: WorkspacePolicyConfig;
+  /** See `CreateReviewerTaskParams.migrationSafety`. */
+  migrationSafety?: MigrationSafety;
   /**
    * The PR's files, when the caller already fetched them. The webhook fetches
    * this exact endpoint for the policy override and the pre-flight check, so
@@ -526,6 +570,11 @@ interface BuildContextParams {
    * Fetched lazily when absent; a failed fetch simply omits the lede section.
    */
   prBody?: string | null;
+  /**
+   * The mission's `description` criteria, when it has any. Empty or omitted
+   * leaves the assembled prompt byte-identical to the pre-criteria one.
+   */
+  missionCriteria?: ReviewerCriterionRef[];
 }
 
 /** Doctrine + section for judging the PR's lede. Empty when the PR has none. */
@@ -620,6 +669,39 @@ export function renderManifestGuidance(
       .map((p) => `- ${p}`)
       .join('\n')}`,
   };
+}
+
+/**
+ * Security escalation doctrine, split by whether a decision actually exists —
+ * not by severity. A security-shaped defect with a nameable fix and nameable
+ * regression tests goes through `request-changes` and the builder retry loop;
+ * only a defect whose correct fix is itself the open question (auth/authz
+ * boundary, secret handling/exposure, credential/token flow, or anything
+ * trading security against product behavior) escalates to a human. Both
+ * branches block the merge — only which queue resolves it first differs.
+ */
+const SECURITY_ESCALATION_RULES = [
+  '- REQUEST CHANGES (do NOT escalate) when a security-shaped defect has a fix AND regression',
+  '  tests you can name — e.g. an unresolved path that lets a traversal bypass a guard, fixed by',
+  '  resolving/normalizing before matching. The builder retry loop handles it from there.',
+  '- ESCALATE a security-shaped defect only when the right fix is itself the open question: an',
+  '  auth/authz boundary change, secret handling or exposure, credential/token flow, anything',
+  '  trading security against product behavior, or any finding you cannot name a concrete fix for.',
+].join('\n');
+
+/**
+ * Render the mechanical migration classifier's verdict, when the caller
+ * already computed one. The reviewer is told the verdict, not asked to judge
+ * schema risk itself — that discriminator stays server-side (EXPAND/CONTRACT
+ * classification + risk-class resolution), which is the whole point of
+ * splitting it out of reviewer discretion.
+ */
+function renderMigrationClassifierNote(migrationSafety: MigrationSafety | undefined): string {
+  if (!migrationSafety) return '';
+  if (migrationSafety.operationClass === 'EXPAND') {
+    return '\nMigration classifier verdict: EXPAND (additive-only) — this PR\'s schema change already passed the mechanical migration classifier. Do not re-assess schema risk yourself; judge the diff on its other merits.';
+  }
+  return `\nMigration classifier verdict: CONTRACT — ${migrationSafety.reason}. This is a non-additive schema change; a human-review escalation for it is enforced server-side regardless of your verdict.`;
 }
 
 /** @internal exported for tests — the assembled prompt is the unit under test. */
@@ -725,15 +807,39 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
   const { doctrine: manifestDoctrine, section: manifestSection } =
     renderManifestGuidance(originalTask.pathManifest);
 
+  // Mission prose criteria — all three pieces are empty when there are none.
+  const {
+    doctrine: criteriaDoctrine,
+    section: criteriaSection,
+    outputLine: criteriaOutputLine,
+  } = renderMissionCriteriaGuidance(params.missionCriteria ?? []);
+  const criteriaBlock = criteriaSection ? `\n${criteriaSection}\n` : '';
+
   const iterationInfo = originalTask.iteration != null
     ? `Iteration: ${originalTask.iteration}/${originalTask.maxIterations ?? 3}`
     : '';
 
-  // Build policy context section
+  // Build policy context section. The resolved policy INTENT drives this, never
+  // a literal path: `buildPolicyClassPaths` already renders `buildPolicyIntentSentence`
+  // (see PR #1809 AC-5). The mechanical migration classifier verdict — when the
+  // caller computed one — is appended so the reviewer is told the schema-risk
+  // discriminator's answer instead of being asked to judge it itself.
+  const classifierNote = renderMigrationClassifierNote(params.migrationSafety);
   let policySection: string;
   let uncoveredSection = '';
   if (policyConfig) {
-    policySection = buildPolicyClassPaths(policyConfig);
+    // Workspace risk-class paths cover the schema/migration discriminator, but
+    // confidence and security are universal rules a policyConfig never encodes
+    // — append them so a configured workspace's reviewer sees the same
+    // request-changes-vs-escalate split as an unconfigured one (AC-9: neither
+    // branch of the security split may skip review in either code path).
+    policySection = [
+      buildPolicyClassPaths(policyConfig),
+      '',
+      '## Escalation Rules (hard — these override your confidence)',
+      '- Escalate if your confidence is below the workspace threshold (default 0.6)',
+      SECURITY_ESCALATION_RULES,
+    ].join('\n') + classifierNote;
 
     // Self-healing: find files not covered by any risk class but risk-adjacent.
     // Read from the file list, never by re-parsing the rendered prompt: patch
@@ -750,10 +856,14 @@ export async function buildReviewerContext(params: BuildContextParams): Promise<
       uncoveredSection = `\n## Proposed Policy Additions (self-healing)\nThe following files are risk-adjacent but not covered by any policy class.\nInclude in your escalationReason so the human can add them to the workspace policy:\n\n${lines.join('\n')}`;
     }
   } else {
+    // No workspace policyConfig: schema/migration risk is still classified and
+    // gated mechanically server-side (see `preflightEscalationCheck`), so this
+    // fallback never re-derives a path-based schema rule for the reviewer to
+    // apply itself.
     policySection = `## Escalation Rules (hard — these override your confidence)
-- Escalate if the diff touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
 - Escalate if your confidence is below the workspace threshold (default 0.6)
-- Escalate if you detect a possible security issue`;
+- Schema/migration risk is classified mechanically by the platform before you are dispatched — you do not need to flag schema changes yourself.
+${SECURITY_ESCALATION_RULES}${classifierNote}`;
   }
 
   return `# Reviewer Task
@@ -777,7 +887,7 @@ ${wrapUntrustedText(originalTask.description, {
 ## Doctrine
 ${manifestDoctrine}
 - SPEC CONFORMANCE: What was built must match the task description.
-- NO OBVIOUS REGRESSIONS: No deleted test files, no broken imports visible in diff.${ledeDoctrine}
+- NO OBVIOUS REGRESSIONS: No deleted test files, no broken imports visible in diff.${ledeDoctrine}${criteriaDoctrine}
 
 ${policySection}
 ${uncoveredSection}
@@ -787,7 +897,7 @@ ${ledeBlock}
 ${diffSummary}${patchBlock}
 
 ${artifactsSection}
-
+${criteriaBlock}
 ## Your Output
 Use your outputSchema to return:
 - \`verdict\`: 'approve' | 'request-changes' | 'escalate'
@@ -795,7 +905,7 @@ Use your outputSchema to return:
 - \`summary\`: one sentence
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide; include any proposed policy additions
-- \`recommendation\`: (escalate only) what the human should DO next — the specific action, decision, or check. Never leave this empty on an escalation: it is the first line they read on their queue.${ledeOutputLine}
+- \`recommendation\`: (escalate only) what the human should DO next — the specific action, decision, or check. Never leave this empty on an escalation: it is the first line they read on their queue.${ledeOutputLine}${criteriaOutputLine}
 `.trim();
 }
 
@@ -812,6 +922,8 @@ interface BuildDeltaContextParams {
   priorVerdict: PriorVerdict;
   /** The delta's files, when the caller already fetched them (GitHub compare). */
   deltaFiles?: GithubPrFile[];
+  /** The mission's `description` criteria. See BuildContextParams. */
+  missionCriteria?: ReviewerCriterionRef[];
 }
 
 /**
@@ -874,17 +986,32 @@ export async function buildDeltaReviewerContext(params: BuildDeltaContextParams)
   const patchBlock = patchSection ? `\n\n${patchSection}` : '';
 
   const policySection = policyConfig
-    ? buildPolicyClassPaths(policyConfig)
+    ? [
+        buildPolicyClassPaths(policyConfig),
+        '',
+        '## Escalation Rules (hard — these override your confidence)',
+        '- Escalate if your confidence is below the workspace threshold (default 0.6)',
+        SECURITY_ESCALATION_RULES,
+      ].join('\n')
     : `## Escalation Rules (hard — these override your confidence)
-- Escalate if the delta touches \`drizzle/*.sql\` or \`packages/core/db/schema.ts\` (schema changes need human review)
 - Escalate if your confidence is below the workspace threshold (default 0.6)
-- Escalate if you detect a possible security issue`;
+- Schema/migration risk is classified mechanically by the platform before you are dispatched — you do not need to flag schema changes yourself.
+${SECURITY_ESCALATION_RULES}`;
 
   const feedbackLine = priorVerdict.feedback
     ? `\n- **Feedback given:** ${sanitizeUntrustedText(priorVerdict.feedback).text}`
     : '';
   const escalationLine = priorVerdict.escalationReason
     ? `\n- **Escalation reason:** ${sanitizeUntrustedText(priorVerdict.escalationReason).text}`
+    : '';
+
+  // The criteria side report is about the PR, not the delta — a re-review is a
+  // later, better-informed reading of the same change, and the fold reads the
+  // newest report per PR. Restating an unchanged finding is the point.
+  const { section: criteriaSection, outputLine: criteriaOutputLine } =
+    renderMissionCriteriaGuidance(params.missionCriteria ?? []);
+  const criteriaBlock = criteriaSection
+    ? `\n${criteriaSection}\n\nAnswer for the PR AS A WHOLE, not just this delta: restate your prior\nreading of a criterion the delta did not change.\n`
     : '';
 
   return `# Delta Re-Review
@@ -917,7 +1044,7 @@ the prior one.
 ${policySection}
 
 ${diffSummary}${patchBlock}
-
+${criteriaBlock}
 ## Your Output
 Use your outputSchema to return:
 - \`verdict\`: 'approve' | 'request-changes' | 'escalate'
@@ -925,7 +1052,7 @@ Use your outputSchema to return:
 - \`summary\`: one sentence — about the delta, and whether it changes the prior verdict
 - \`feedback\`: (request-changes only) specific, actionable, with file paths
 - \`escalationReason\`: (escalate only) why a human must decide
-- \`recommendation\`: (escalate only) what the human should DO next
+- \`recommendation\`: (escalate only) what the human should DO next${criteriaOutputLine}
 `.trim();
 }
 

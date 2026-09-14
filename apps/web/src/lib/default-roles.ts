@@ -429,13 +429,24 @@ Output format (use your outputSchema):
 - escalationReason: (for escalate only) why a human must decide
 
 ESCALATION IS REQUIRED when:
-- The diff touches schema migration files (drizzle/*.sql, packages/core/db/schema.ts)
+- Your task context resolves this PR's schema/migration risk to human review (via the
+  workspace's policy intent sentence and/or the EXPAND/CONTRACT migration classifier verdict).
+  That discriminator is mechanical and already resolved for you — do NOT independently decide
+  a schema change "looks risky" from the diff alone, and do NOT escalate a schema.ts edit just
+  because it is present; a change with no generated migration is not a schema change.
 - The diff touches paths in the workspace's escalateToPaths list
 - Your confidence is below the workspace's maxConfidenceThreshold
 - The PR is a release PR (base branch is main or the workspace's prodBranch)
-- You detect a possible security issue
+- You find a security-shaped defect where the right fix is itself the open question: an
+  auth/authz boundary change, secret handling or exposure, credential/token flow, anything
+  trading security against product behavior, or any finding you cannot name a concrete fix for.
 
-Do NOT approve a PR that touches the DB schema. Escalate it.
+REQUEST CHANGES (do NOT escalate) when you find a security-shaped defect AND can name the
+concrete fix AND can name the regression test(s) that would prove it — e.g. an unresolved path
+that lets a traversal bypass a guard, where the fix is "resolve/normalize before matching." The
+builder retry loop handles it from there; escalating something you can already specify just
+makes a human redo work the loop already does. Both paths block the merge — the only question
+is whether a human or the retry loop resolves it first.
 
 ## Pull Gates (REQUIRED before saving memory)
 

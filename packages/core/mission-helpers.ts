@@ -17,14 +17,15 @@ export type TaskType = 'retry' | 'review' | 'review-retry';
  * Derive a task's display type from its title prefix, parentTaskId, and mode.
  *
  * Taxonomy:
- * - prefix match ([CI Retry], [reviewer], [reviewer retry]) → attempt, regardless of mode
+ * - prefix match ([builder · after *], [reviewer #N]) → attempt, regardless of mode
  * - parentTaskId IS NOT NULL + mode='execution' + no prefix → spawned builder (distinct deliverable) → null
  * - parentTaskId IS NOT NULL + no prefix + any other mode → legacy/unlabeled retry attempt → 'retry'
  * - parentTaskId IS NULL → root task → null
  *
  * Recognized prefixes are detected regardless of parentTaskId — this covers legacy
  * attempt tasks that predate the parentTaskId column and therefore have
- * parentTaskId IS NULL despite being retries.
+ * parentTaskId IS NULL despite being retries. Also recognizes legacy formats:
+ * [reviewer retry #N], [CI Retry #N], [Conflict Retry #N].
  */
 export function deriveTaskType(task: {
   title?: string | null;
@@ -33,9 +34,13 @@ export function deriveTaskType(task: {
 }): TaskType | null {
   const title = task.title ?? '';
   // Check recognized prefixes first — these always classify the task as an attempt.
+  // New format: [builder · after *], [reviewer #N]
+  if (/^\[builder\s+·/i.test(title)) return 'retry';
+  if (/^\[reviewer\s+#\d+\]/i.test(title)) return 'review-retry';
+  // Legacy formats still supported for backwards compatibility
   if (/^\[reviewer retry/i.test(title)) return 'review-retry';
   if (/^\[reviewer\]/i.test(title)) return 'review';
-  if (/^\[(?:CI )?retry/i.test(title)) return 'retry';
+  if (/^\[(?:CI |Conflict )?retry/i.test(title)) return 'retry';
   // No recognized prefix.
   if (!task.parentTaskId) return null;
   // Spawned execution children (created by approve_plan) are distinct units of work.
