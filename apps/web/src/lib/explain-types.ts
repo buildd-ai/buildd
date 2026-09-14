@@ -99,6 +99,22 @@ export interface HistoryNode {
   attempts: HistoryNode[];
 }
 
+/**
+ * One `gate_events` row, read verbatim — a deferral, rejection, warning, or
+ * stranding the task hit. `consecutiveDeferrals`/`firstDeferredAt` (when
+ * present in `detail`) are surfaced separately since they answer "how long
+ * has this been stuck", the exact question a task deferred silently for hours
+ * used to leave unanswerable without SQL.
+ */
+export interface GateHistoryEntry {
+  occurredAt: string;
+  gate: string;
+  outcome: 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded';
+  reason: string;
+  consecutiveDeferrals: number | null;
+  firstDeferredAt: string | null;
+}
+
 export interface ExplainSubject {
   scope: ExplainScope;
   id: string;
@@ -116,6 +132,7 @@ export interface ExplainProvenance {
   because: Array<MissionStateSource | CausalLinkSource>;
   history: ExplainSource | null;
   nextAction: ExplainSource | null;
+  gateHistory: ExplainSource | null;
 }
 
 export interface ExplainAnswer {
@@ -129,6 +146,8 @@ export interface ExplainAnswer {
   history: HistoryNode[];
   /** What would unblock it, or explicitly null when nothing is blocked. */
   nextAction: string | null;
+  /** Recent gate_events rows for this task — deferrals, rejections, strandings. Empty for scopes other than 'task'. */
+  gateHistory: GateHistoryEntry[];
   derivedFrom: ExplainProvenance;
 }
 

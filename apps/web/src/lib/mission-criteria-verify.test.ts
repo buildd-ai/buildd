@@ -67,6 +67,14 @@ mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMissionIfVerified,
 }));
 
+const firedGateEvents: Array<{ reason: string; outcome: string }> = [];
+mock.module('@/lib/gate-ledger', () => ({
+  fireGateEvent: (input: { reason: string; outcome: string }) => {
+    firedGateEvents.push(input);
+  },
+  GATE_SLUGS: new Proxy({}, { get: (_t, prop) => String(prop).toLowerCase() }),
+}));
+
 // Real recalculateOverall from core — the folding rule is not stubbed.
 import {
   resolveCommandCriterion,
@@ -93,6 +101,7 @@ function reset() {
   mockDispatchNewTask.mockImplementation(() => Promise.resolve());
   mockCompleteMissionIfVerified.mockReset();
   mockCompleteMissionIfVerified.mockImplementation(() => Promise.resolve({ completed: false, decision: { ok: false, code: 'criteria_unverified', reason: 'stub' } }) as any);
+  firedGateEvents.length = 0;
 }
 
 // ── resolveCommandCriterion ───────────────────────────────────────────────────
@@ -482,6 +491,7 @@ describe('handleCriteriaVerificationOutcome', () => {
     expect(written.criteria[0].evidence).toContain('could not be evaluated');
     // UNVERIFIED still folds into a non-passing overall — never silently passing.
     expect(written.overall).not.toBe('pass');
+    expect(firedGateEvents.some(e => e.outcome === 'warned' && e.reason === 'exec_error')).toBe(true);
   });
 
   it('turns a timeout outcome into UNVERIFIED, never fail', async () => {
@@ -493,6 +503,7 @@ describe('handleCriteriaVerificationOutcome', () => {
     });
 
     expect(res.verdict).toBe('UNVERIFIED');
+    expect(firedGateEvents.some(e => e.reason === 'timeout')).toBe(true);
   });
 
   it('falls back to the recorded loop history when the runner sent no evidence', async () => {
@@ -538,6 +549,7 @@ describe('handleCriteriaVerificationOutcome', () => {
 
     expect(res.applied).toBe(false);
     expect(updateCalls).toHaveLength(0);
+    expect(firedGateEvents.some(e => e.reason === 'evaluator_no_output')).toBe(true);
   });
 
   it('leaves the criterion unresolved — not fail — when a failed task carries no proof the command ran', async () => {

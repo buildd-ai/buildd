@@ -4,6 +4,7 @@ import { eq, and, desc, sql } from 'drizzle-orm';
 import { recalculateOverall } from '@buildd/core/mission-helpers';
 import type { GoalCriteriaState, CriterionVerdict, GoalCriteriaEvidenceRef } from '@buildd/shared';
 import { dispatchNewTask } from '@/lib/task-dispatch';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
  * Batched, repo-grounded criteria evaluator.
@@ -353,6 +354,13 @@ function correctExecutionErrorVerdict(type: string, verdict: CriterionVerdict, e
   return EXEC_ERROR_EVIDENCE_PATTERN.test(evidence) ? 'UNVERIFIED' : verdict;
 }
 
+const EXIT_126_127_PATTERN = /\bexit(?:ed)?\s*(?:code\s*)?12[67]\b/i;
+
+/** Best-effort cause classification for a downgraded UNVERIFIED verdict, from the same evidence text the pattern above matched. */
+function classifyExecErrorCause(evidence: string): 'exit_126_127' | 'exec_error' {
+  return EXIT_126_127_PATTERN.test(evidence) ? 'exit_126_127' : 'exec_error';
+}
+
 function parseVerdicts(structuredOutput: unknown): ParsedVerdict[] {
   if (!structuredOutput || typeof structuredOutput !== 'object') return [];
   const raw = (structuredOutput as Record<string, unknown>).criteriaVerdicts;
@@ -397,10 +405,24 @@ export async function handleCriteriaWorkerEvalOutcome(
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, task.missionId),
-    columns: { id: true, goalCriteria: true, goalCriteriaState: true },
+    columns: { id: true, workspaceId: true, goalCriteria: true, goalCriteriaState: true },
   });
   const state = (mission?.goalCriteriaState ?? null) as GoalCriteriaState | null;
   if (!state) return { applied: false };
+
+  const fireNotEvaluated = (index: number, reason: string, detail?: Record<string, unknown>) => {
+    fireGateEvent({
+      gate: GATE_SLUGS.CRITERIA_NOT_EVALUATED,
+      surface: 'handleCriteriaWorkerEvalOutcome',
+      outcome: 'warned',
+      reason,
+      workspaceId: mission?.workspaceId ?? null,
+      missionId: task.missionId,
+      taskId: task.id,
+      callerOrigin: 'system',
+      detail: { criterionIndex: index, ...detail },
+    });
+  };
 
   const fromRequest = parseVerdicts(structuredOutput);
   const verdicts = fromRequest.length > 0
@@ -433,6 +455,7 @@ export async function handleCriteriaWorkerEvalOutcome(
       );
       cs.verdict = 'NOT_EVALUATED';
       cs.evidence = 'Criterion was edited while the evaluator ran — grading again on the next round';
+      fireNotEvaluated(index, 'criterion_changed');
       return;
     }
 
@@ -442,11 +465,16 @@ export async function handleCriteriaWorkerEvalOutcome(
       // failure mode, not a pass. Name the task so an operator can inspect it.
       cs.verdict = 'NOT_EVALUATED';
       cs.evidence = `Worker evaluator task ${task.id.slice(0, 8)} ${task.status === 'failed' ? 'failed' : 'did not return a verdict for this criterion'}`;
+      fireNotEvaluated(index, 'evaluator_no_output', { taskStatus: task.status });
       return;
     }
 
     const evidence = v.evidence || `Graded ${v.verdict} by worker evaluator ${task.id.slice(0, 8)}`;
     const correctedVerdict = correctExecutionErrorVerdict(String(currentAtIndex?.type ?? cs.type), v.verdict, evidence);
+
+    if (correctedVerdict !== v.verdict) {
+      fireNotEvaluated(index, classifyExecErrorCause(evidence));
+    }
 
     cs.verdict = correctedVerdict;
     cs.evidence = correctedVerdict === v.verdict

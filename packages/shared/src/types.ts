@@ -1745,13 +1745,15 @@ export interface FailureAnalyticsResponse {
 /** Shares the failure vocabulary — one window concept across both surfaces. */
 export type GateWindow = FailureWindow;
 
-export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned';
+export type GateOutcome = 'rejected' | 'deferred' | 'bypassed' | 'warned' | 'stranded';
 
 export interface GateOutcomeCounts {
   rejected: number;
   deferred: number;
   bypassed: number;
   warned: number;
+  /** A task deferred long enough to be flagged by the stranded-task sweep. Excluded from bypassRatePct's denominator, same as `deferred`. */
+  stranded: number;
 }
 
 /** One normalized reason within a gate. */

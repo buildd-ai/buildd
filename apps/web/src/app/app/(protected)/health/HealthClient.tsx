@@ -2081,12 +2081,13 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
         </div>
       ) : (
         <div className="card divide-y divide-border-default">
-          <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-4 gap-3" data-testid="gate-headline">
+          <div className="px-4 py-3 grid grid-cols-2 sm:grid-cols-5 gap-3" data-testid="gate-headline">
             {([
               ['Rejected', totals.rejected, 'Requests the platform refused outright — a 4xx the caller had to act on.'],
               ['Deferred', totals.deferred, 'Accepted but not acted on yet: a wait, a queue, a single-flight. Not an error.'],
               ['Bypassed', totals.bypassed, 'A gate fired and the caller carried an explicit escape hatch. Over a lint, this IS its false-positive rate.'],
               ['Warned', totals.warned, 'Advisory only — the response carried a warning and the work proceeded.'],
+              ['Stranded', totals.stranded, 'A task deferred long enough that the sweep flagged it — nothing re-arms it on its own; it needs a look.'],
             ] as const).map(([label, value, title]) => (
               <div key={label}>
                 <span
@@ -2095,7 +2096,11 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
                 >
                   {label}
                 </span>
-                <p className="text-xl font-bold tabular-nums leading-tight">{value}</p>
+                <p
+                  className={`text-xl font-bold tabular-nums leading-tight ${label === 'Stranded' && value > 0 ? 'text-status-error' : ''}`}
+                >
+                  {value}
+                </p>
               </div>
             ))}
           </div>
@@ -2122,8 +2127,40 @@ function GatesSection({ gates, window: activeWindow }: { gates: GateAnalytics; w
               </p>
             )}
           </div>
+
+          <ClaimDeferralsSubsection gates={gates} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The claim loop's per-reason deferral breakdown, read off the same
+ * `claim_loop_deferral` gate row's `topReasons` — no separate query. Absent
+ * entirely when the claim loop hasn't fired the gate yet (a clean workspace,
+ * or before this shipped).
+ */
+function ClaimDeferralsSubsection({ gates }: { gates: GateAnalytics }) {
+  const claimGate = gates.gates.find(g => g.gate === 'claim_loop_deferral');
+  if (!claimGate || claimGate.topReasons.length === 0) return null;
+
+  return (
+    <div className="px-4 py-3" data-testid="gate-claim-deferrals">
+      <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted mb-2">
+        Claim-loop deferrals by reason
+      </p>
+      <ul className="space-y-1.5">
+        {claimGate.topReasons.map(r => (
+          <li key={r.reason} className="flex items-baseline justify-between gap-3 text-sm">
+            <span className="font-mono text-xs text-text-secondary truncate">{r.reason}</span>
+            <span className="text-[11px] text-text-muted whitespace-nowrap tabular-nums">
+              {r.outcomes.deferred > 0 ? `${r.outcomes.deferred} deferred` : ''}
+              {r.outcomes.stranded > 0 ? `${r.outcomes.deferred > 0 ? ' · ' : ''}${r.outcomes.stranded} stranded` : ''}
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

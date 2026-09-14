@@ -59,6 +59,7 @@ import {
   attachServerManagedSecrets,
   resolveAccountCredentialRefreshes,
 } from './credential-injection';
+import { fireDeferralEvent, fireGateEvent, GATE_SLUGS, gateCallerOrigin } from '@/lib/gate-ledger';
 
 // Per-runner claim cooldown after a worker error. Matches the typical
 // client-side breaker minimum (5m for generic errors, 60s default here since
@@ -72,11 +73,30 @@ export async function POST(req: NextRequest) {
 
   const account = await authenticateApiKey(apiKey);
   if (!account) {
+    // Mirrors the runner's local `claim_rejected` log (apps/runner/src/workers.ts)
+    // server-side — see #1511. This is the one gate in this route the runner
+    // itself already detects (a thrown non-2xx `API error:` in buildd.ts); every
+    // other row this route fires below is a per-task deferral the runner never
+    // sees at all.
+    fireGateEvent({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'rejected',
+      reason: 'invalid_api_key',
+      callerOrigin: 'worker',
+    });
     return NextResponse.json({ error: 'Invalid API key' }, { status: 401 });
   }
 
   // Trigger-level tokens cannot claim tasks
   if (account.level === 'trigger') {
+    fireGateEvent({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'rejected',
+      reason: 'trigger_token_cannot_claim',
+      callerOrigin: gateCallerOrigin({ apiAccount: account }),
+    });
     return NextResponse.json({ error: 'Trigger tokens cannot claim tasks. Use a worker or admin token.' }, { status: 403 });
   }
 
@@ -84,6 +104,14 @@ export async function POST(req: NextRequest) {
   let { workspaceId, capabilities = [], maxTasks = 3, runner, taskId, availableSkills = [], claimAcrossAccessible = false } = body;
 
   if (!runner) {
+    fireGateEvent({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'rejected',
+      reason: 'runner_field_missing',
+      taskId: taskId ?? null,
+      callerOrigin: gateCallerOrigin({ apiAccount: account }),
+    });
     return NextResponse.json({ error: 'runner is required' }, { status: 400 });
   }
 
@@ -779,6 +807,32 @@ export async function POST(req: NextRequest) {
     routing_paused: 0,
     duplicate_worker: 0,
   };
+
+  // One gate_events row per (task, reason) examined-and-not-dispatched this
+  // tick — coalesced across polls by `fireDeferralEvent` so a task stuck
+  // behind the same gate for hours accumulates a `consecutiveDeferrals`
+  // counter on one row instead of a fresh row every few seconds. This is the
+  // durable half of the `deferrals` counters above, which die with the
+  // response object once this request returns.
+  const deferTask = (
+    task: { id: string; workspaceId: string; missionId?: string | null },
+    reasonKey: keyof typeof deferrals,
+    detail?: Record<string, unknown>,
+  ) => {
+    deferrals[reasonKey]++;
+    fireDeferralEvent({
+      gate: GATE_SLUGS.CLAIM_LOOP_DEFERRAL,
+      surface: 'POST /api/workers/claim',
+      outcome: 'deferred',
+      reason: reasonKey,
+      workspaceId: task.workspaceId,
+      missionId: (task as any).missionId ?? null,
+      taskId: task.id,
+      callerOrigin: 'worker',
+      detail,
+    });
+  };
+
   // Number of tasks that reached the atomic claim attempt (UPDATE...WHERE status='pending').
   // If lockAttempts === 0 at the end of the loop, every candidate was deferred — no
   // lock contention occurred and `race_lost` would be a misnomer.
@@ -1003,7 +1057,7 @@ export async function POST(req: NextRequest) {
   for (const task of filteredTasks) {
     // Skip tasks whose required connectors are not available in the claiming workspace.
     // connectorMismatchTaskIds is populated by the pre-filter block above.
-    if (connectorMismatchTaskIds.has(task.id)) { deferrals.connector_mismatch++; continue; }
+    if (connectorMismatchTaskIds.has(task.id)) { deferTask(task, 'connector_mismatch'); continue; }
 
     // Subject-liveness in-loop guard (defense-in-depth for race between the SQL
     // prefilter and per-task processing). The SQL condition above should already
@@ -1014,7 +1068,7 @@ export async function POST(req: NextRequest) {
     // candidate query above selects every task column.
     if (!subjectStillLive(task)) {
       console.log(`[claim] task ${task.id} skipped: subject PR reconciled (dead)`);
-      deferrals.subject_dead++;
+      deferTask(task, 'subject_dead');
       continue;
     }
 
@@ -1032,7 +1086,7 @@ export async function POST(req: NextRequest) {
       const blocking = findBlockingPr(taskManifest, openPrTasks);
       if (blocking) {
         console.log(`[claim] path_overlap_blocked: task ${task.id} deferred (manifest overlaps PR #${blocking.prNumber ?? blocking.prUrl})`);
-        deferrals.path_overlap++;
+        deferTask(task, 'path_overlap', { prNumber: blocking.prNumber ?? null, prUrl: blocking.prUrl ?? null });
         continue;
       }
 
@@ -1057,7 +1111,7 @@ export async function POST(req: NextRequest) {
             if (concreteClaimed.length === 0) continue; // advisory-only claim
             if (pathsOverlap(concreteManifest, concreteClaimed)) {
               console.log(`[claim] path_claim_blocked: task ${task.id} deferred (manifest overlaps active claim held by task ${claimingTaskId})`);
-              deferrals.path_overlap++;
+              deferTask(task, 'path_overlap', { blockingTaskId: claimingTaskId });
               blockedByActiveClaim = true;
               break;
             }
@@ -1084,7 +1138,7 @@ export async function POST(req: NextRequest) {
           && !hasBypassFlag(taskContext, BYPASS_MISSION_BUDGET_KEY)
         ) {
           console.log(`[claim] task ${task.id} skipped: mission ${taskMissionId} budget_exhausted`);
-          deferrals.mission_budget++;
+          deferTask(task, 'mission_budget', { missionId: taskMissionId });
           continue;
         }
 
@@ -1096,7 +1150,7 @@ export async function POST(req: NextRequest) {
         );
         if (concurrencyBlock) {
           console.log(`[claim] task ${task.id} deferred: mission ${taskMissionId} at concurrency cap (${concurrencyBlock.active}/${concurrencyBlock.cap})`);
-          deferrals.mission_concurrent++;
+          deferTask(task, 'mission_concurrent', { missionId: taskMissionId, active: concurrencyBlock.active, cap: concurrencyBlock.cap });
           continue;
         }
 
@@ -1109,7 +1163,7 @@ export async function POST(req: NextRequest) {
             `(next eligible ${pacingBlock.nextEligibleAt.toISOString()}, ` +
             `interval ${pacingBlock.intervalSec}s, elapsed ${Math.round(pacingBlock.elapsedSec)}s)`,
           );
-          deferrals.mission_paced++;
+          deferTask(task, 'mission_paced', { missionId: taskMissionId, nextEligibleAt: pacingBlock.nextEligibleAt.toISOString() });
           continue;
         }
 
@@ -1163,7 +1217,7 @@ export async function POST(req: NextRequest) {
               `[claim] advisory_manifest_serialized: task ${task.id} deferred ` +
               `(mission ${taskMissionId} already has scope-undeclared task ${blockingPeer} in flight)`,
             );
-            deferrals.advisory_manifest++;
+            deferTask(task, 'advisory_manifest', { missionId: taskMissionId, blockingPeer });
             continue;
           }
         }
@@ -1183,7 +1237,7 @@ export async function POST(req: NextRequest) {
       const missionCap = taskMissionId ? (missionClaimMap.get(taskMissionId)?.maxConcurrentTasks ?? 0) : 0;
       const cap = Math.max(workspaceCap, missionCap);
       if ((activeByWorkspace.get(task.workspaceId) || 0) >= cap) {
-        deferrals.workspace_cap++;
+        deferTask(task, 'workspace_cap', { active: activeByWorkspace.get(task.workspaceId) || 0, cap });
         continue;
       }
     }
@@ -1200,7 +1254,7 @@ export async function POST(req: NextRequest) {
       if (maskedBackend === 'codex') {
         // Claude disabled team-wide → must run on Codex. Skip (leave pending) if
         // Codex has no credential or its single per-workspace slot is taken.
-        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId))) { deferrals.provider_unavailable++; continue; }
+        if (!(await tryFlipToCodex(task, taskTeamId, task.workspaceId))) { deferTask(task, 'provider_unavailable', { attemptedBackend: 'codex' }); continue; }
         console.log(`[claim] Provider toggle: task ${task.id} → Codex (Claude disabled for team ${taskTeamId})`);
       } else {
         // Codex disabled team-wide → run on Claude.
@@ -1250,7 +1304,7 @@ export async function POST(req: NextRequest) {
         (task as any).backend = 'claude';
         console.log(`[claim] Budget failover: routing task ${task.id} to Claude (Codex rate-limited until ${pauses.get('codex')!.resetsAt.toISOString()})`);
       } else {
-        deferrals.budget_paused++;
+        deferTask(task, 'budget_paused', { backend: 'codex', resetsAt: pauses.get('codex')!.resetsAt.toISOString() });
         continue;
       }
     }
@@ -1269,7 +1323,7 @@ export async function POST(req: NextRequest) {
       if (codexEnabledForTeam && await tryFlipToCodex(task, taskTeamId, task.workspaceId)) {
         console.log(`[claim] Budget failover: routing task ${task.id} to Codex (workspace ${task.workspaceId} Claude budget exhausted)`);
       } else {
-        deferrals.budget_paused++;
+        deferTask(task, 'budget_paused', { backend: 'claude' });
         continue;
       }
     }
@@ -1355,7 +1409,7 @@ export async function POST(req: NextRequest) {
 
     if (routingDecision.model === 'paused') {
       // Budget-pressure pause — leave the task pending for next cycle.
-      deferrals.routing_paused++;
+      deferTask(task, 'routing_paused');
       continue;
     }
 
@@ -1535,7 +1589,7 @@ export async function POST(req: NextRequest) {
         console.warn(
           `[claim] Duplicate-worker guard: task ${task.id} already has live worker ${liveWorkers[0].id} — skipping`,
         );
-        deferrals.duplicate_worker++;
+        deferTask(task, 'duplicate_worker', { liveWorkerId: liveWorkers[0].id });
         continue;
       }
 
