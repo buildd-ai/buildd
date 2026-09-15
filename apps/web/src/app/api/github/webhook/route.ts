@@ -62,7 +62,7 @@ import { closeIntentsForPr } from '@/lib/change-intent';
 import { detectDarkChecksForClosedPr } from './dark-check-detection';
 import { syncInstallationReposById } from '@/lib/github-repo-link';
 import { verifyReleaseDeployment } from '@/lib/release-verification';
-import { recordDirectProdMerge } from '@/lib/release-executor';
+import { recordDirectProdMerge, advanceGatedReleaseOnPrMerge } from '@/lib/release-executor';
 import { workerOwnsPr, workerOwnsPrUrl, workspaceRepoMatches } from '@/lib/repo-scope';
 import { evaluateAndAdvanceLoopOnMerge } from '@/lib/loop-webhook';
 import { releaseAndNotify } from '@/lib/path-claim-release';
@@ -896,6 +896,18 @@ async function handlePullRequestEvent(event: {
       previousSha: pr.base.sha,
     }).catch(e =>
       console.error(`[webhook] recordDirectProdMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
+    );
+
+    // A `gated` + `workflow_dispatch` workspace's release PR merging into
+    // prodBranch is its only real deploy signal — recordDirectProdMerge above
+    // is a no-op for it (branch_merge strategy only). Advance the release row
+    // already recorded at dispatch time instead of inserting a new one.
+    advanceGatedReleaseOnPrMerge({
+      repoFullName: repository.full_name,
+      baseRef: pr.base.ref,
+      prHeadSha: pr.head.sha,
+    }).catch(e =>
+      console.error(`[webhook] advanceGatedReleaseOnPrMerge failed for PR #${pr.number} on ${repository.full_name}:`, e),
     );
   }
 
@@ -2335,7 +2347,7 @@ async function advanceReleaseStateFromWorkflowRun(
   // release it is exactly the ref head the row recorded — so fall back to it
   // and backfill the url we should have had.
   const byUrl = await db
-    .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl })
+    .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
     .from(releases)
     .where(eq(releases.runUrl, run.html_url))
     .limit(1);
@@ -2344,12 +2356,12 @@ async function advanceReleaseStateFromWorkflowRun(
     byUrl[0] ??
     (
       await db
-        .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl })
+        .select({ id: releases.id, workspaceId: releases.workspaceId, state: releases.state, runUrl: releases.runUrl, archetype: releases.archetype })
         .from(releases)
         .where(
           and(
             eq(releases.headSha, run.head_sha),
-            inArray(releases.state, ['dispatched', 'deploying']),
+            inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
           ),
         )
         .orderBy(desc(releases.createdAt))
@@ -2361,18 +2373,42 @@ async function advanceReleaseStateFromWorkflowRun(
   // Don't regress from a terminal state.
   if (matchingRelease.state === 'healthy' || matchingRelease.state === 'failed') return;
 
+  // A successful workflow_dispatch run for a `gated` release has only opened
+  // the release PR (dev → prodBranch) — nothing has actually deployed yet.
+  // Treating it as 'deploying' let `verifyReleaseDeployment` probe the
+  // PREVIOUS deploy (still live), stamp the release 'healthy' minutes after
+  // dispatch — before the release PR was even reviewed — and get caught out
+  // later by the separate deploy-identity check degrading it. The real
+  // deploy signal for a gated release is the release PR itself merging into
+  // prodBranch (see advanceGatedReleaseOnPrMerge in release-executor.ts,
+  // called from the `pull_request` handler below), which is what advances
+  // this row to 'deploying' instead.
+  //
+  // Until then the row moves to 'pending_external', not 'dispatched': the
+  // 24h stale-`dispatched` sweep in the release-health-check cron exists for
+  // "no workflow_run ever arrived, dispatch outcome unknown" — no longer true
+  // once dispatch has succeeded. `pending_external` already means "known
+  // in-flight, waiting on something outside buildd's control" everywhere else
+  // it's read (see initiative-metric-registry.ts), which is exactly this.
+  const isGatedDispatchSuccess = newState === 'deploying' && matchingRelease.archetype === 'gated';
+
   // GitHub can deliver two `workflow_run.completed` events for the identical
   // run with different reported conclusions — observed for a release job that
   // calls out to a reusable workflow via `uses:`, where the outer run's
   // completed event fires once per inner conclusion before it settles. A run
   // that's actually done doesn't change conclusion, so if this row already
-  // advanced to 'deploying' from a prior success delivery for this exact run
-  // (matched by run URL, not the head-sha fallback), a second delivery that
-  // disagrees is the same known inconsistency, not new information. Re-fetch
-  // the run live and trust that over the webhook payload — mirrors the
-  // reconciliation pattern in pr-reconcile.ts for PR state — rather than
-  // regressing an already-successful release to failed on a stale signal.
-  if (matchingRelease.state === 'deploying' && newState !== 'deploying' && byUrl[0]) {
+  // advanced from a prior success delivery for this exact run (matched by run
+  // URL, not the head-sha fallback) — to 'deploying', or to 'pending_external'
+  // for a gated release — a second delivery that disagrees is the same known
+  // inconsistency, not new information. Re-fetch the run live and trust that
+  // over the webhook payload — mirrors the reconciliation pattern in
+  // pr-reconcile.ts for PR state — rather than regressing an already-resolved
+  // release to failed on a stale signal.
+  if (
+    (matchingRelease.state === 'deploying' || matchingRelease.state === 'pending_external') &&
+    newState !== 'deploying' &&
+    byUrl[0]
+  ) {
     const liveConclusion = await fetchLiveWorkflowRunConclusion(installationId, run.repository.full_name, run.id);
     if (liveConclusion !== 'failure') {
       console.log(
@@ -2383,26 +2419,27 @@ async function advanceReleaseStateFromWorkflowRun(
     }
   }
 
-  const updateFields: Record<string, unknown> = { state: newState };
+  const resolvedState = isGatedDispatchSuccess ? 'pending_external' : newState;
+  const updateFields: Record<string, unknown> = { state: resolvedState };
   if (!matchingRelease.runUrl) updateFields.runUrl = run.html_url;
-  if (newState === 'deploying') {
+  if (resolvedState === 'deploying') {
     updateFields.deployedAt = new Date();
-  } else {
+  } else if (resolvedState === 'failed') {
     updateFields.failureReason = `workflow conclusion: ${run.conclusion}`;
   }
 
   await db.update(releases).set(updateFields).where(eq(releases.id, matchingRelease.id));
 
   console.log(
-    `[webhook:workflow_run] Release ${matchingRelease.id} → ${newState} (run ${run.id} on ${run.repository.full_name})`,
+    `[webhook:workflow_run] Release ${matchingRelease.id} → ${resolvedState} (run ${run.id} on ${run.repository.full_name})`,
   );
 
   await triggerEvent(channels.workspace(matchingRelease.workspaceId), events.RELEASE_UPDATED, {
     releaseId: matchingRelease.id,
-    state: newState,
+    state: resolvedState,
   });
 
-  if (newState === 'deploying') {
+  if (resolvedState === 'deploying') {
     setTimeout(() => verifyReleaseDeployment(matchingRelease.id, db).catch(console.error), 0);
   }
 }

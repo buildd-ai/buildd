@@ -9,16 +9,16 @@
  *
  * The fix: always strip every known bot-prefix back to the human title before
  * composing a fresh one, so a title carries at most one prefix.
+ *
+ * `stripTaskTitlePrefixes` itself lives in `@buildd/core/task-title`, not
+ * here — `isMissionPrTask` (packages/core/mission-integration.ts) needs the
+ * same stripping to recognize the mission-PR-owner task under a retry prefix,
+ * and core can't import from apps/web.
  */
 
-// Leading, repeatable prefix fragments in any order:
-//   New format: [builder · after review #N], [builder · after conflict #N], [builder · after CI #N], [reviewer #N]
-//   Old format: [reviewer] PR #N:, [reviewer retry #N] PR #N:, [CI Retry #N], [Conflict Retry #N]
-//   Other: [apply recommendation]
-//
-// Note: PR #N: is only stripped when part of a reviewer task prefix like [reviewer] PR #N:.
-// Standalone PR #N: in adopted PR titles is NOT stripped.
-const TITLE_PREFIX = /^\s*(?:\[reviewer\]\s+PR\s*#\d+:|\[reviewer\s+retry\s*#?\d*\]\s+PR\s*#\d+:|\[(?:builder\s+·\s+after\s+(?:review|conflict|CI)\s+#\d+|reviewer\s+#\d+|reviewer(?:\s+retry\s*#?\d*)?|CI\s+Retry\s*#?\d*|Conflict\s+Retry\s*#?\d*)\]|\[apply recommendation\])\s*/i;
+import { stripTaskTitlePrefixes } from '@buildd/core/task-title';
+
+export { stripTaskTitlePrefixes };
 
 /** Attempt reason for a builder retry after reviewer feedback. */
 export type AttemptReason = 'after review' | 'after conflict' | 'after CI';
@@ -53,17 +53,6 @@ export function formatAttemptTitle(
   }
   const finalReason = reason || 'after review';
   return `[builder · ${finalReason} #${iteration}] ${cleanTitle}`;
-}
-
-/** Strip all bot-generated prefixes, returning the underlying human title. */
-export function stripTaskTitlePrefixes(title: string | null | undefined): string {
-  let t = title ?? '';
-  let prev: string;
-  do {
-    prev = t;
-    t = t.replace(TITLE_PREFIX, '');
-  } while (t !== prev);
-  return t.trim();
 }
 
 /** Title for a reviewer task on a PR — exactly one prefix, no stacking. */
