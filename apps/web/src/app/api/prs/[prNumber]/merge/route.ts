@@ -24,6 +24,8 @@ import { supersedeReviewerTaskOnMerge } from '@/lib/reviewer';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { supersedeAncestorEscalations } from '@/lib/escalation-supersession';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 export async function POST(
   req: NextRequest,
@@ -194,6 +196,88 @@ export async function POST(
     return NextResponse.json({ error: `cannot merge the mission PR yet: ${mergeGate.reason}` }, { status: 409 });
   }
 
+  // ── Review-verdict gate ─────────────────────────────────────────────────
+  //
+  // This route used to consult the review verdict at NO tier — its `override`
+  // flag existed only for the escalate card, so a plain Merge click landed a
+  // PR whose reviewer had just requested changes with nothing recorded.
+  //
+  // A human may still override; that is what `override: true` means here, and
+  // it is now recorded as a `bypassed` row in the gate ledger rather than
+  // passing unmarked. The head SHA is read live: `worker.lastCommitSha` lags a
+  // push, and lagging in that direction would make a stale verdict look current.
+  let reviewGateReason: string | null = null;
+  let liveHeadSha: string | null = null;
+  {
+    try {
+      const prForGate = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+      liveHeadSha = typeof prForGate?.head?.sha === 'string' ? prForGate.head.sha : null;
+    } catch (e) {
+      console.warn(`[pr-merge] could not read PR #${prNumber} head for the review gate:`, e);
+    }
+
+    if (!liveHeadSha) {
+      return NextResponse.json({ error: 'Could not verify the live PR head — retry the merge' }, { status: 409 });
+    }
+
+    const reviewGate = await guardReviewVerdict({
+      workspaceId: worker.workspaceId,
+      prNumber,
+      headSha: liveHeadSha,
+    });
+
+    if (reviewGate.blocks) {
+      reviewGateReason = reviewGate.reason ?? 'a review verdict blocks this merge';
+      const gateDetail = {
+        prNumber,
+        headSha: liveHeadSha,
+        reviewState: reviewGate.state ?? null,
+        reviewKind: reviewGate.kind ?? null,
+        reviewTaskId: reviewGate.reviewTaskId ?? null,
+      };
+
+      if (!override) {
+        fireGateEvent({
+          gate: GATE_SLUGS.REVIEW_VERDICT,
+          surface: 'POST /api/prs/[prNumber]/merge',
+          outcome: 'rejected',
+          reason: reviewGateReason,
+          workspaceId: worker.workspaceId,
+          taskId: worker.taskId ?? null,
+          workerId: worker.id,
+          callerOrigin: 'dashboard',
+          detail: gateDetail,
+        });
+        return NextResponse.json(
+          {
+            error: `Merge refused: ${reviewGateReason}`,
+            reviewGateBlocked: true,
+            reviewState: reviewGate.state ?? null,
+            reviewKind: reviewGate.kind ?? null,
+            clearedBy: reviewGate.clearedBy ?? null,
+          },
+          { status: 409 },
+        );
+      }
+
+      // Overridden. Recorded BEFORE the merge attempt: the decision to bypass
+      // was made here whether or not GitHub then accepts the merge, and a
+      // bypass that only lands on success under-counts exactly the cases worth
+      // seeing. Every other guard below still runs unmodified.
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEW_VERDICT,
+        surface: 'POST /api/prs/[prNumber]/merge',
+        outcome: 'bypassed',
+        reason: reviewGateReason,
+        workspaceId: worker.workspaceId,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id,
+        callerOrigin: 'dashboard',
+        detail: { ...gateDetail, overriddenBy: user.email },
+      });
+    }
+  }
+
   // Finalizes a merge that GitHub has confirmed happened — either the normal
   // success response, or a live re-check after an indeterminate one below.
   // Every side effect after the PUT itself lives here so both paths agree.
@@ -210,7 +294,11 @@ export async function POST(
     // mission-PR branch-lifecycle gate) ran unmodified; override never skips
     // them, it just means a failure past this point would have nothing to log.
     if (override && worker.taskId) {
-      const overriddenReason = overrideEscalationReason ?? 'reviewer escalation (reason not recorded)';
+      // What the human actually overrode, most specific first: the text the
+      // card was showing, then the gate's own reason (which names the blocking
+      // verdict and the commit it was made against).
+      const overriddenReason =
+        overrideEscalationReason ?? reviewGateReason ?? 'reviewer escalation (reason not recorded)';
       const missionId = (worker.task as { missionId?: string | null } | null)?.missionId;
       if (missionId) {
         await db.insert(missionNotes).values({
@@ -276,7 +364,7 @@ export async function POST(
   };
 
   // Perform the merge
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';

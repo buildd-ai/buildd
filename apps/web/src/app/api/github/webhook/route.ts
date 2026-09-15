@@ -69,6 +69,8 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -2028,6 +2030,16 @@ async function handleReleasePrCiSuccess(
 
   if (pendingReleaseTasks.length === 0) return;
 
+  // A delayed success must not authorize a newer commit. Leave the pending
+  // release for its own CI event if the head moved or cannot be verified.
+  try {
+    const livePr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    if (!headSha || livePr?.head?.sha !== headSha) return;
+  } catch (error) {
+    console.warn(`[release-pr] Could not verify live head for ${repoFullName}#${prNumber}:`, error);
+    return;
+  }
+
   // Verify ALL check suites passed before merging (not just this one).
   const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
   if (!allPassed) {
@@ -2035,7 +2047,39 @@ async function handleReleasePrCiSuccess(
     return;
   }
 
-  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge');
+  // Release promotion is a merge door like any other. buildd never dispatches a
+  // reviewer for a release PR on its own, so the gate normally reads
+  // `not_requested` and passes — but `request_pr_review` can be pointed at any
+  // PR, and a release that ships past its own reviewer's finding is the one
+  // merge where that matters most.
+  const releaseGate = await guardReviewVerdict({
+    workspaceId: pendingReleaseTasks[0]!.workspaceId,
+    prNumber,
+    headSha,
+  });
+  if (releaseGate.blocks) {
+    console.log(
+      `[release-pr] Merge of ${repoFullName}#${prNumber} held: ${releaseGate.reason}. ${releaseGate.clearedBy}`,
+    );
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: 'release-pr ci-success',
+      outcome: 'deferred',
+      reason: releaseGate.reason ?? 'review verdict blocks this merge',
+      workspaceId: pendingReleaseTasks[0]!.workspaceId,
+      taskId: pendingReleaseTasks[0]!.id,
+      callerOrigin: 'system',
+      detail: {
+        prNumber,
+        headSha,
+        reviewState: releaseGate.state ?? null,
+        reviewKind: releaseGate.kind ?? null,
+      },
+    });
+    return;
+  }
+
+  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
 
   for (const task of pendingReleaseTasks) {
     const ctx = (task.context ?? {}) as Record<string, unknown>;

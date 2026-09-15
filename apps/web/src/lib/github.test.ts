@@ -157,7 +157,7 @@ describe('mergePullRequest', () => {
   it('returns merged on a 200 with a parseable body', async () => {
     global.fetch = mock(async () => jsonResponse(200, { message: 'Pull Request successfully merged' })) as unknown as typeof fetch;
 
-    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
 
     expect(result).toEqual({ merged: true, message: 'Pull Request successfully merged', status: 200 });
   });
@@ -165,7 +165,7 @@ describe('mergePullRequest', () => {
   it('carries GitHub\'s real reason as a definitive (non-indeterminate) rejection', async () => {
     global.fetch = mock(async () => jsonResponse(405, { message: 'Method Not Allowed' })) as unknown as typeof fetch;
 
-    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
 
     expect(result.merged).toBe(false);
     expect(result.message).toBe('Method Not Allowed');
@@ -175,7 +175,7 @@ describe('mergePullRequest', () => {
   it('marks an empty-body failure response as indeterminate instead of surfacing a JSON parse error', async () => {
     global.fetch = mock(async () => emptyResponse(502)) as unknown as typeof fetch;
 
-    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
 
     expect(result.merged).toBe(false);
     expect(result.indeterminate).toBe(true);
@@ -186,7 +186,7 @@ describe('mergePullRequest', () => {
   it('marks an empty-body 409 as indeterminate rather than a real conflict rejection', async () => {
     global.fetch = mock(async () => emptyResponse(409)) as unknown as typeof fetch;
 
-    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
 
     expect(result.merged).toBe(false);
     expect(result.indeterminate).toBe(true);
@@ -195,7 +195,7 @@ describe('mergePullRequest', () => {
   it('marks a network failure (no response at all) as indeterminate', async () => {
     global.fetch = mock(async () => { throw new Error('fetch failed'); }) as unknown as typeof fetch;
 
-    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
 
     expect(result.merged).toBe(false);
     expect(result.indeterminate).toBe(true);
@@ -211,10 +211,25 @@ describe('mergePullRequest', () => {
       json: async () => { throw new SyntaxError('Unexpected token <'); },
     })) as unknown as typeof fetch;
 
-    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash');
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
 
     expect(result.merged).toBe(false);
     expect(result.indeterminate).toBe(true);
     expect(result.message).not.toMatch(/unexpected token/i);
+  });
+});
+
+describe('mergePullRequest expected head', () => {
+  it('sends the checked SHA and reports a head movement as a definitive refusal', async () => {
+    let sent: any;
+    global.fetch = mock(async (_url: unknown, opts?: RequestInit) => {
+      sent = JSON.parse(String(opts?.body));
+      return sent.sha === 'head-A'
+        ? jsonResponse(409, { message: 'Head branch was modified' })
+        : jsonResponse(200, { message: 'merged unchecked head' });
+    }) as unknown as typeof fetch;
+    const result = await mergePullRequest(5000, 'org/repo', 42, 'squash', 'head-A');
+    expect(sent).toEqual({ merge_method: 'squash', sha: 'head-A' });
+    expect(result).toEqual({ merged: false, message: 'Head branch was modified', status: 409 });
   });
 });

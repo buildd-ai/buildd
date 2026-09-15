@@ -27,6 +27,15 @@ export const SURFACE_AUDIT_UI_PATH_PREFIXES = [
   'apps/web/src/components/',
 ] as const;
 
+/**
+ * Subtrees that share a UI prefix above but are never a rendered surface.
+ * `apps/web/src/app/api/**` is the Next.js route-handler convention — server-only,
+ * no viewport, no CTAs — despite living under `apps/web/src/app/`.
+ */
+const SURFACE_AUDIT_NON_UI_EXCLUSIONS = [
+  'apps/web/src/app/api/',
+] as const;
+
 function stripLeadingSep(path: string): string {
   return path.replace(/^\/+/, '');
 }
@@ -34,6 +43,7 @@ function stripLeadingSep(path: string): string {
 /** True when a single concrete path falls under a UI surface directory. */
 export function isUiSurfacePath(path: string): boolean {
   const normalized = stripLeadingSep(path);
+  if (SURFACE_AUDIT_NON_UI_EXCLUSIONS.some(prefix => normalized.startsWith(prefix))) return false;
   return SURFACE_AUDIT_UI_PATH_PREFIXES.some(prefix => normalized.startsWith(prefix));
 }
 

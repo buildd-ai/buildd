@@ -4061,3 +4061,39 @@ describe('pull_request merged — effects that belong to the merge, not the tran
     expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
   });
 });
+
+describe('release PR CI success pins the live head', () => {
+  beforeEach(() => {
+    resetAll();
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42 } }]
+      : null;
+  });
+
+  const deliverSuccess = () => POST(createWebhookRequest('check_suite',
+    makeCheckSuitePayload({ check_suite: { conclusion: 'success', head_sha: 'a'.repeat(40) } })));
+
+  it('ignores delayed success for A when live B has a rejecting review', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'b'.repeat(40) } });
+    mockReadPrReviewStatus.mockResolvedValue({
+      state: 'changes_requested', terminal: true, reviewHeadSha: 'b'.repeat(40),
+      verdict: 'request-changes', reviewTaskId: 'review-B',
+    } as any);
+    await deliverSuccess();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+  });
+
+  it('does not merge when the live head cannot be read', async () => {
+    mockGithubApi.mockRejectedValue(new Error('GitHub unavailable'));
+    await deliverSuccess();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('passes the checked SHA as the expected merge head', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    await deliverSuccess();
+    expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
+  });
+});
