@@ -7,6 +7,7 @@ import { CAPABILITY_BROWSER, CAPABILITY_SANDBOX_MOUNT_ALLOWLIST } from '@buildd/
 
 export type { McpServerInfo } from './mcp-json';
 import { extractVarReferences, parseMcpJsonContent, type McpServerInfo } from './mcp-json';
+import { resolveClaudeCliVersion } from './sdk-binary-path';
 
 export interface ScanConfig {
   extraEnvKeys?: string[];
@@ -331,5 +332,6 @@ export function scanEnvironment(config?: ScanConfig): WorkerEnvironment {
       hostname: hostname(),
     },
     scannedAt: new Date().toISOString(),
+    claudeCliVersion: resolveClaudeCliVersion(),
   };
 }

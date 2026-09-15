@@ -1,10 +1,11 @@
 import { createRequire } from 'module';
 import { dirname, join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 const req = createRequire(import.meta.url);
 
 let cached: string | null | undefined;
+let cachedCliVersion: string | null | undefined;
 
 /**
  * Resolve the Claude Code native binary shipped by @anthropic-ai/claude-agent-sdk's
@@ -67,5 +68,39 @@ export function resolveClaudeBinaryPath(): string | undefined {
   }
 
   cached = null;
+  return undefined;
+}
+
+/**
+ * Read the Claude Code CLI version bundled by the installed
+ * @anthropic-ai/claude-agent-sdk, from the package's own manifest.json — not
+ * inferred from the SDK's npm version. They move in lockstep on the patch
+ * number today, but this reads the value the API's own version-gate error
+ * names, so a claim-time capability check compares against ground truth.
+ *
+ * `manifest.json` isn't in the package's `exports` map, so it can't be
+ * resolved directly — resolve `package.json` (which Node/Bun always permit)
+ * and read the sibling file from that directory, same trick as the binary
+ * resolution above.
+ *
+ * Returns undefined if resolution fails (e.g. a future SDK layout change) —
+ * callers must treat an unknown version as "don't block", not "too old".
+ */
+export function resolveClaudeCliVersion(): string | undefined {
+  if (cachedCliVersion !== undefined) return cachedCliVersion ?? undefined;
+
+  try {
+    const sdkPkgJson = req.resolve('@anthropic-ai/claude-agent-sdk/package.json');
+    const manifestPath = join(dirname(sdkPkgJson), 'manifest.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { version?: unknown };
+    if (typeof manifest.version === 'string' && manifest.version) {
+      cachedCliVersion = manifest.version;
+      return cachedCliVersion;
+    }
+  } catch {
+    // require.resolve failed, file missing, or bad JSON — fall through to undefined
+  }
+
+  cachedCliVersion = null;
   return undefined;
 }
