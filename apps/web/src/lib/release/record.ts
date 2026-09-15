@@ -120,12 +120,21 @@ export async function recordAndDispatchRelease(
 
   // Idempotency: an in-flight row for this commit means a release is already
   // under way. `force` explicitly asks to re-dispatch it anyway.
+  //
+  // `pending_external` belongs in this list too: it's a `gated` release whose
+  // dispatch workflow already succeeded and opened the release PR, now
+  // waiting on that PR's review/merge (see advanceReleaseStateFromWorkflowRun
+  // in the github webhook route). Without it here, a repeat non-forced
+  // dispatch for the same commit would fall through to the upsert below and
+  // reset the row — wiping its runUrl/deployedAt and flipping it back to
+  // 'dispatched' — while the real release PR is still open, effectively
+  // re-dispatching a release that was never actually finished.
   if (!params.force) {
     const existing = await db.query.releases.findFirst({
       where: and(
         eq(releases.workspaceId, workspaceId),
         eq(releases.headSha, headSha),
-        inArray(releases.state, ['dispatched', 'deploying']),
+        inArray(releases.state, ['dispatched', 'deploying', 'pending_external']),
       ),
     });
     if (existing) {

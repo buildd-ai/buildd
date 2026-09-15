@@ -6,6 +6,7 @@ import {
   isPrLegalForMissionTask,
   isStackedPhaseBase,
   looksLikeMissionIntegrationBranch,
+  isMissionPrTask,
   MISSION_PR_TASK_PREFIX,
   resolveTaskPrBase,
   missionIntegrationBase,
@@ -157,6 +158,43 @@ describe('shouldAnnounceBaseAdvance', () => {
   it('does not announce when the base ref is unknown', () => {
     expect(shouldAnnounceBaseAdvance({ merged: true, baseRef: null })).toBe(false);
     expect(shouldAnnounceBaseAdvance({ merged: true })).toBe(false);
+  });
+});
+
+describe('isMissionPrTask', () => {
+  it('is true for a bookkeeping task with the exact prefix', () => {
+    expect(isMissionPrTask({ taskClass: 'bookkeeping', title: `${MISSION_PR_TASK_PREFIX}Checkout arc` })).toBe(true);
+  });
+
+  it('is false for a non-bookkeeping task, even with the prefix', () => {
+    expect(isMissionPrTask({ taskClass: 'attempt', title: `${MISSION_PR_TASK_PREFIX}Checkout arc` })).toBe(false);
+  });
+
+  it('is false for a bookkeeping task without the prefix', () => {
+    expect(isMissionPrTask({ taskClass: 'bookkeeping', title: 'Checkout arc' })).toBe(false);
+  });
+
+  it('recognizes the owner task under a builder retry prefix', () => {
+    expect(
+      isMissionPrTask({
+        taskClass: 'bookkeeping',
+        title: `[builder · after review #1] ${MISSION_PR_TASK_PREFIX}Checkout arc`,
+      }),
+    ).toBe(true);
+  });
+
+  it('recognizes the owner task under a reviewer-retry prefix', () => {
+    expect(
+      isMissionPrTask({
+        taskClass: 'bookkeeping',
+        title: `[reviewer #2] ${MISSION_PR_TASK_PREFIX}Checkout arc`,
+      }),
+    ).toBe(true);
+  });
+
+  it('is false for null/undefined title', () => {
+    expect(isMissionPrTask({ taskClass: 'bookkeeping', title: null })).toBe(false);
+    expect(isMissionPrTask({ taskClass: 'bookkeeping' })).toBe(false);
   });
 });
 

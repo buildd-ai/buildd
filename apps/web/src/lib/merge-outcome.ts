@@ -23,6 +23,13 @@ export type MergeOutcome =
    * re-check failed, so retrying could double-attempt an already-landed merge.
    */
   | { kind: 'indeterminate'; liveState: 'open' | 'unknown'; message: string }
+  /**
+   * A reviewer finding is outstanding on the commit being merged, or a review
+   * round is still in flight. Not a failure and not a stale card — the merge
+   * was refused on purpose. A human can still merge by re-posting with
+   * `override: true`, which is recorded as a bypass server-side.
+   */
+  | { kind: 'review_blocked'; message: string; clearedBy: string | null }
   | { kind: 'error'; message: string };
 
 /** `/api/prs/[prNumber]/merge` returns this 404 when no unmerged worker matches. */
@@ -43,6 +50,14 @@ export function resolveMergeOutcome(
 
   const message = typeof body?.error === 'string' ? body.error : '';
   if (status === 404 && ALREADY_MERGED_RE.test(message)) return { kind: 'stale' };
+
+  if (body?.reviewGateBlocked) {
+    return {
+      kind: 'review_blocked',
+      message: message || 'A reviewer finding is outstanding on this PR',
+      clearedBy: typeof body.clearedBy === 'string' ? body.clearedBy : null,
+    };
+  }
 
   if (body?.indeterminate) {
     const liveState = body.liveState === 'open' ? 'open' : 'unknown';

@@ -93,6 +93,11 @@ mock.module('@/lib/pusher', () => ({
   events: { RELEASE_UPDATED: 'release:updated' },
 }));
 
+const mockVerifyReleaseDeployment = mock(() => Promise.resolve());
+mock.module('@/lib/release-verification', () => ({
+  verifyReleaseDeployment: mockVerifyReleaseDeployment,
+}));
+
 // Mimic production resolve logic: absent strategy => branch_merge
 mock.module('@buildd/core/release-strategy', () => ({
   // Mirrors the real module: the trigger default lives in ONE place.
@@ -109,6 +114,15 @@ mock.module('@buildd/core/release-strategy', () => ({
         strategy: { kind, prodBranch: config.prodBranch, releaseBranch: config.releaseBranch, deployTarget: config.deployTarget },
       };
     }
+    if (kind === 'workflow_dispatch') {
+      if (!config.workflowFile || !config.ref) {
+        return { ok: false, reason: 'invalid', message: 'needs workflowFile/ref' };
+      }
+      return {
+        ok: true,
+        strategy: { kind, workflowFile: config.workflowFile, ref: config.ref, inputs: config.inputs ?? {} },
+      };
+    }
     return { ok: false, reason: 'invalid', message: `unknown strategy ${kind}` };
   },
 }));
@@ -118,7 +132,7 @@ import { classifyCheckRuns } from '@/lib/release/dispatch';
 mock.module('@/lib/release/dispatch', () => ({ classifyCheckRuns }));
 
 // ── Now import the module under test ─────────────────────────────────────────
-import { findReleasePr, executeRelease, recordDirectProdMerge, _setSleeper } from './release-executor';
+import { findReleasePr, executeRelease, recordDirectProdMerge, advanceGatedReleaseOnPrMerge, _setSleeper } from './release-executor';
 
 // The executor sleeps 8s before polling Vercel and 10s between polls. Real
 // sleeps would blow the test timeout, so swap in a no-op (same injection
@@ -1420,5 +1434,121 @@ describe('recordDirectProdMerge', () => {
 
     expect(mockDbSelectWorkspaces).not.toHaveBeenCalled();
     expect(mockDbInsertValues).not.toHaveBeenCalled();
+  });
+});
+
+// A `gated` + `workflow_dispatch` workspace's release PR merging into
+// prodBranch is its only real deploy signal — recordDirectProdMerge above is
+// a no-op for it (branch_merge strategy only). This is the sibling path,
+// called from the same webhook handler, that advances the release row
+// already recorded at dispatch time instead of inserting a new one.
+describe('advanceGatedReleaseOnPrMerge', () => {
+  beforeEach(() => {
+    mockDbSelectGithubRepos.mockReset();
+    mockDbSelectWorkspaces.mockReset();
+    mockDbUpdate.mockReset();
+    mockDbUpdateSet.mockReset();
+    mockDbUpdateWhere.mockReset();
+    mockDbUpdateReturning.mockReset();
+    mockDbUpdate.mockReturnValue({ set: mockDbUpdateSet });
+    mockDbUpdateSet.mockReturnValue({ where: mockDbUpdateWhere });
+    mockDbUpdateWhere.mockReturnValue({ returning: mockDbUpdateReturning });
+    mockDbUpdateReturning.mockResolvedValue([{ id: 'release-gated-1' }]);
+    mockTriggerEvent.mockReset();
+    mockTriggerEvent.mockResolvedValue(undefined as any);
+    mockVerifyReleaseDeployment.mockReset();
+    mockDetectArchetype.mockReset();
+    mockDetectArchetype.mockReturnValue('gated');
+  });
+
+  function setupGatedWorkflowDispatchWorkspace(overrides: Record<string, unknown> = {}) {
+    mockDbSelectGithubRepos.mockResolvedValue([{ id: 'repo-1' }]);
+    mockDbSelectWorkspaces.mockResolvedValue([
+      {
+        id: 'ws-1',
+        name: 'buildd',
+        releaseConfig: {
+          enabled: true,
+          strategy: 'workflow_dispatch',
+          workflowFile: 'release.yml',
+          ref: 'dev',
+          prodBranch: 'main',
+          ...overrides,
+        },
+        gitConfig: { defaultBranch: 'dev' },
+      },
+    ]);
+  }
+
+  it('advances the matching release row to deploying when the release PR merges', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+
+    await advanceGatedReleaseOnPrMerge({
+      repoFullName: 'org/repo',
+      baseRef: 'main',
+      prHeadSha: 'dev-head-sha-1',
+    });
+
+    expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
+    const setValues = mockDbUpdateSet.mock.calls[0]?.[0] as any;
+    expect(setValues.state).toBe('deploying');
+    expect(setValues.deployedAt).toBeInstanceOf(Date);
+    expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing when no head sha is known', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+
+    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: undefined });
+
+    expect(mockDbSelectGithubRepos).not.toHaveBeenCalled();
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('skips a merge base that is not the configured prod branch (an ordinary feature merge into dev)', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+
+    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'dev', prHeadSha: 'dev-head-sha-1' });
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('skips workspaces not on the workflow_dispatch strategy — those record rows via recordDirectProdMerge instead', async () => {
+    mockDbSelectGithubRepos.mockResolvedValue([{ id: 'repo-1' }]);
+    mockDbSelectWorkspaces.mockResolvedValue([
+      { id: 'ws-1', name: 'buildd', releaseConfig: { enabled: true, strategy: 'branch_merge', prodBranch: 'main' }, gitConfig: {} },
+    ]);
+
+    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: 'dev-head-sha-1' });
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('skips a non-gated archetype (e.g. continuous) even on workflow_dispatch — that run itself already deploys', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDetectArchetype.mockReturnValue('continuous');
+
+    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: 'dev-head-sha-1' });
+
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when no dispatched/pending_external row matches this head sha (e.g. an unrelated hotfix PR)', async () => {
+    setupGatedWorkflowDispatchWorkspace();
+    mockDbUpdateReturning.mockResolvedValue([]);
+
+    await advanceGatedReleaseOnPrMerge({ repoFullName: 'org/repo', baseRef: 'main', prHeadSha: 'unrelated-sha' });
+
+    expect(mockDbUpdateSet).toHaveBeenCalledTimes(1);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the repo is not bound to any workspace', async () => {
+    mockDbSelectGithubRepos.mockResolvedValue([]);
+
+    await advanceGatedReleaseOnPrMerge({ repoFullName: 'unbound/repo', baseRef: 'main', prHeadSha: 'dev-head-sha-1' });
+
+    expect(mockDbSelectWorkspaces).not.toHaveBeenCalled();
+    expect(mockDbUpdateSet).not.toHaveBeenCalled();
   });
 });

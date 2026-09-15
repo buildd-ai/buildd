@@ -614,14 +614,27 @@ already carries `MERGE`, `REVIEW`, `QUESTION`, and `DECIDE` chips. Add:
 - A new chip, `DISCREPANCY`, inserted into `CHIP_ORDER` immediately after
   `DECIDE` — same tier as `DECIDE` ("the platform found something that needs
   an owner call," not "a live worker is blocked"), but never above it.
-- Subject key `discrepancy:${specPath}:${assertionId}` — identical to the
-  ledger row's own identity (§7), following the file's existing convention
-  that a chip's dedupe key IS its subject's identity key (compare
-  `decide:${missionId}:${criteriaFingerprint}`).
+- Subject key `discrepancy:${workspaceId}:${specPath}:${direction}` — the
+  CARD's identity, derived from the ledger's own identity fields (§7),
+  following the file's existing convention that a chip's dedupe key IS its
+  subject's identity key (compare `decide:${missionId}:${criteriaFingerprint}`).
 - Row actions: **promote** (`promote_discrepancy`, §13, direction-gated per
   §8), **accept** (`adjudicate_discrepancy` with a required reason), **flip
-  direction** (`adjudicate_discrepancy`, for the `contradicted` case). A row
-  with a `promotedMissionId` shows the link instead of the promote action.
+  direction** (`adjudicate_discrepancy`, for the `contradicted` case), and
+  **dispatch doc fix** (§12.1, `code_ahead` only). A row with a
+  `promotedMissionId` shows the link instead of the promote action.
+
+**One card per spec document, not per assertion.** A document that goes stale
+goes stale as a document: every assertion in it fails the same declared-status
+check at the same moment, so a per-assertion queue renders the same doc fix
+four times and pushes everything else off the visible ten. Group open rows on
+`(workspace, spec_path, direction)`. Direction is part of the key because it
+decides the card's entire CTA set (§8's table), so two directions on one path
+are two genuinely different asks and must not be merged into a card that can
+only offer one of them. The card shows the spec path, the direction, the claim
+count ("4 claims"), and the OLDEST `first_seen_at` in the group — the age of
+the finding, not of its newest sighting. The assertion ids stay one tap away:
+the count is the summary, the list is the evidence.
 
 **The list must be bounded, ranked, and stale rows must expire — this is not
 optional.** The Schedules page is the in-house cautionary tale: 48 rows, 87%
@@ -630,16 +643,20 @@ mission with nobody noticing. An unbounded machine-generated list is not a
 feature; it is the exact hiding place the discrepancy ledger exists to empty
 out. Concretely:
 
-- Cap the queue to the top **10** `DISCREPANCY` rows per workspace, ranked
-  `contradicted` first (needs an owner call before anything else can happen to
-  the row), then `spec_ahead`, then `code_ahead` last (lowest stakes — pure
-  doc fix); within a direction, oldest `first_seen_at` first, so a row that
-  has already survived three check-runs (the `path-claims.md` problem) always
-  outranks one that appeared this week.
+- Cap the queue to the top **10** `DISCREPANCY` cards per workspace — cards,
+  i.e. SPECS, since the cap applies to the grouped card. Ranked agent-handled
+  last (a doc fix already in flight must never displace a decision still owed),
+  then `contradicted` first (needs an owner call before anything else can
+  happen to the row), then `spec_ahead`, then `code_ahead` last (lowest stakes
+  — pure doc fix); within a direction, oldest `first_seen_at` first, so a doc
+  that has already survived three check-runs (the `path-claims.md` problem)
+  always outranks one that appeared this week.
 - Overflow past the cap is never silently dropped: emit a workspace-level
   count (the `DISCREPANCY`-queue equivalent of `summariseActionQueueAge`) —
-  "N discrepancies beyond the visible top 10" — so a clean-looking queue of 10
-  cannot hide a growing backlog the way the Schedules page did.
+  "N specs with open discrepancies beyond the visible top 10" — so a
+  clean-looking queue of 10 cannot hide a growing backlog the way the
+  Schedules page did. The count is in SPECS, matching the cap: a row count
+  there would read "12 more" for what is really two documents to fix.
 - `status: accepted` rows are excluded from the queue outright — accepting is
   the action that records an owner already made the call; re-surfacing it
   would just be the Schedules page's problem again. They remain queryable via
@@ -648,6 +665,88 @@ out. Concretely:
   threshold. Age is exactly the signal a human should see (per the ranking
   above), not a reason to hide the row — that is the opposite failure from the
   one this section is guarding against.
+
+### 12.1 The Doc Fix — Reaching the Remedy the Card Names
+
+§8's promotion table ends "the only valid actions on a `code_ahead` row are
+`accept` or a docs-only follow-up task." Only the first of those was reachable
+from the surface, so a card labelled *Code ahead — doc fix* offered exactly one
+button — accept — which parks the row and fixes nothing. Naming a concrete,
+mechanical, uncontested remedy and then offering no way to reach it is the same
+defect class as a reviewer escalation that states a defect with no dispatch
+path: the owner's only exit is to leave the app and hand-file the edit.
+
+**Primary action on a code-ahead card: dispatch doc fix.** One docs-only task
+per spec path, whatever the claim count. Accept stays, demoted to secondary.
+Promote stays absent — §8's rule is not weakened here and must not be; a doc
+fix is precisely not a build, which is the whole reason `code_ahead` is barred
+from minting missions. Flip direction is also absent on this card, because
+`adjudicate_discrepancy`'s flip is "the only path off `contradicted`" (§13) and
+would be refused for a `code_ahead` row — a CTA the server rejects is a dead
+button, and the queue's standing rule is that a CTA's very existence is derived
+from the server state that makes it applicable. `spec_ahead` and `contradicted`
+cards are unchanged.
+
+- **Dedupe is a claim on the row**, `spec_discrepancies.doc_fix_task_id`, taken
+  with an atomic `UPDATE ... WHERE doc_fix_task_id IS NULL` — the same
+  optimistic-lock shape every other write in this design uses, since the
+  neon-http driver has no interactive transactions. A double-tap, or a sibling
+  row on a path someone is already fixing, loses that race and attaches to the
+  winning task. A claim held by a `failed`/`cancelled` task is released: nothing
+  is coming, so the owner gets the action back.
+- **A claimed card leaves waiting-on-you.** It is agent-handled, not done: it
+  renders under the same rule as a conflict retry in flight — still visible, so
+  a doc fix that dies does not take the finding with it, but never counted as
+  something owed to a human.
+- **A claim must be releasable, or it is just a quieter dead end.** Three
+  releases, none of them a worker's say-so: a `failed`/`cancelled` task releases
+  the claim outright; a reopen releases it, because §9's reopen is a NEW
+  occurrence with a fresh `first_seen_at` and the task that settled the previous
+  one has nothing to do with it; and once the task has `completed` with the rows
+  still open, **accept** comes back on the card as the one exit. That last case
+  is a docs PR that was never merged, or one that did not discharge the claim:
+  closure is still the checker's word so the card cannot say the finding is
+  settled, but without an action it would sit agent-handled forever and the
+  finding would end up parked by accident rather than by a decision.
+- **Closure does not move.** §9 is untouched: the rows resolve when a checker
+  re-run resolves their assertions. Neither the doc-fix task, nor its PR, nor
+  its worker's summary closes anything. The dispatched task is told so
+  explicitly, because an agent handed "reconcile these four assertions" will
+  otherwise try to mark them done.
+- **What the task reconciles**: the status frontmatter and body, plus any claim
+  text naming a symbol, path, route or migration that has since been renamed —
+  the naming-divergence case Case 1 documents. The task carries the assertion
+  ids it is discharging, and sets `pathManifest: [specPath]` so §11's
+  dispatch-time injection fires from the ledger itself.
+
+**The doc-fixer may propose net-enhancement code work.** Reading code against a
+spec is exactly when someone notices what the spec intended and the code does
+poorly or not at all. That observation is worth keeping, and it is emphatically
+not a licence to start building: spec before code.
+
+- The worker **records** proposals; it never builds them. Each item names the
+  spec clause, the observed gap, the proposed change, why it is a net
+  enhancement rather than a rewrite, and a size estimate.
+- The doc-fix task is dispatched as a **planning task whose plan is optional**
+  (`mode: 'planning'` with `context.planOptional`), so the proposal lands in the
+  existing plan slot and the existing `approve_plan` / `reject_plan` gate
+  adjudicates it. No second approval vocabulary, no second dispatch surface.
+  `context.requiresPlanApproval` pins the no-auto-dispatch rule mechanically,
+  independent of the environment's plan-approval default.
+- **Approve mints exactly ONE child task**, linked to the ledger rows it
+  settles, that lands the code change AND updates the spec so the assertions
+  describe the finished state. One, not N: a code change that leaves the spec
+  describing the old behaviour simply re-opens the discrepancy the doc fix just
+  closed. Whatever shape the plan arrives in, it is collapsed to a single child
+  with every item preserved in its description.
+- **Reject** closes the proposal and retains the reason on the rows
+  (`proposal_rejected_reason`), so the next reader can see the enhancement was
+  considered and declined rather than never noticed. It does not respawn a
+  planning task the way an ordinary plan rejection does — the docs PR already
+  shipped, and re-planning would re-dispatch a worker against a fixed document.
+- **An empty proposal is the expected outcome** and must produce no approval
+  item and no noise. The docs-only PR is reviewable and mergeable entirely
+  independently of any proposal; a proposal never blocks it.
 
 ### 13. MCP Surface
 

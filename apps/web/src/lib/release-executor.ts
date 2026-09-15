@@ -9,6 +9,7 @@ import { classifyCheckRuns, type CheckRun } from '@/lib/release/dispatch';
 import { detectArchetype } from '@buildd/core/release-archetype';
 import { attributeRelease } from '@buildd/core/release-attribution';
 import { triggerEvent, channels, events } from '@/lib/pusher';
+import { verifyReleaseDeployment } from '@/lib/release-verification';
 
 // Injectable for tests — do not use in production code. Mirrors the same
 // affordance in release-verification.ts; without it the 8s pre-poll wait and the
@@ -354,6 +355,82 @@ export async function recordDirectProdMerge(params: {
       previousSha,
       repo: { fullName: repoFullName, installation: { installationId } },
     });
+  }
+}
+
+// A `gated` + `workflow_dispatch` workspace's release PR merging into
+// prodBranch is its only real deploy signal. `recordDirectProdMerge` above
+// does not cover it — it only fires for `branch_merge` workspaces — so
+// nothing previously advanced this workspace's release row on the merge that
+// actually ships. The row for this commit was already inserted at dispatch
+// time (state 'dispatched', then 'pending_external' once the dispatch
+// workflow succeeded — see advanceReleaseStateFromWorkflowRun in the github
+// webhook route) with headSha set to the release ref's head at dispatch,
+// which is exactly the release PR's pre-merge branch tip. That is what this
+// matches on, not the merge commit sha `recordDirectProdMerge` uses — the
+// merge commit does not exist on the row until this call.
+//
+// Called from the GitHub webhook for every merged PR, independent of whether
+// a worker owns it, the same as `recordDirectProdMerge`. A merge into
+// prodBranch that is not this workspace's release (e.g. a hotfix PR merged
+// directly) simply matches no `dispatched`/`pending_external` row and is a
+// no-op.
+export async function advanceGatedReleaseOnPrMerge(params: {
+  repoFullName: string;
+  baseRef: string;
+  prHeadSha: string | undefined;
+}): Promise<void> {
+  const { repoFullName, baseRef, prHeadSha } = params;
+  if (!prHeadSha) return;
+
+  const repoRows = await db
+    .select({ id: githubRepos.id })
+    .from(githubRepos)
+    .where(eq(githubRepos.fullName, repoFullName));
+  if (repoRows.length === 0) return;
+
+  const boundWorkspaces = await db
+    .select({
+      id: workspaces.id,
+      name: workspaces.name,
+      releaseConfig: workspaces.releaseConfig,
+      gitConfig: workspaces.gitConfig,
+    })
+    .from(workspaces)
+    .where(inArray(workspaces.githubRepoId, repoRows.map((r) => r.id)));
+
+  for (const workspace of boundWorkspaces) {
+    const resolution = resolveReleaseStrategy(workspace.releaseConfig);
+    if (!resolution.ok || resolution.strategy.kind !== 'workflow_dispatch') continue;
+    if (workspace.releaseConfig?.prodBranch !== baseRef) continue;
+
+    const archetype = detectArchetype({
+      name: workspace.name,
+      releaseConfig: workspace.releaseConfig,
+      gitConfig: workspace.gitConfig,
+    });
+    if (archetype !== 'gated') continue;
+
+    const [updated] = await db
+      .update(releases)
+      .set({ state: 'deploying', deployedAt: new Date() })
+      .where(
+        and(
+          eq(releases.workspaceId, workspace.id),
+          eq(releases.headSha, prHeadSha),
+          inArray(releases.state, ['dispatched', 'pending_external']),
+        ),
+      )
+      .returning({ id: releases.id });
+
+    if (!updated) continue;
+
+    await triggerEvent(channels.workspace(workspace.id), events.RELEASE_UPDATED, {
+      releaseId: updated.id,
+      state: 'deploying',
+    }).catch(() => {});
+
+    setTimeout(() => verifyReleaseDeployment(updated.id, db).catch(console.error), 0);
   }
 }
 

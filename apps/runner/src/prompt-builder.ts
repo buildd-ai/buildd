@@ -403,7 +403,13 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
 
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
-  if (task.mode === 'planning') {
+  // A planning task whose plan is a PROPOSAL SLOT rather than its deliverable
+  // (context.planOptional) — the doc-fix dispatch is the first of these. Its
+  // real output is the docs-only PR named by outputRequirement, and returning
+  // no plan at all is the expected outcome, so the standard planning block's
+  // "an empty plan stalls the mission" rule would be exactly backwards here.
+  const planIsOptional = (task.context as { planOptional?: boolean } | undefined)?.planOptional === true;
+  if (task.mode === 'planning' && !planIsOptional) {
     promptParts.push(
       '## Output Requirement\n' +
       'This is a **planning task**. Your final output is validated against a fixed JSON schema and returned as structured output — the system creates tasks directly from your `plan` array. Free-form text or a fenced ```json block is NOT read; only the structured output is.\n' +
@@ -435,6 +441,15 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     );
   }
 
+  if (planIsOptional) {
+    promptParts.push(
+      '## Optional Plan\n' +
+      'Your structured output may ALSO carry a `plan` array. It is optional here: the deliverable above is what this task is for, and returning no plan is a valid, expected outcome that creates no follow-up and no noise.\n' +
+      'Use it only when the task description asks you to propose follow-up work. When you do, each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
+      'Nothing in the plan is dispatched automatically — a human approves or rejects it. Do NOT call create_task to file the work yourself.'
+    );
+  }
+
   // Inject aggregation context: embed child task results directly so the agent
   // doesn't need to fetch them via MCP (aggregator tasks run in bare temp dirs)
   const taskCtx = task.context as { aggregation?: boolean; childTasks?: Array<{ title: string; status: string; taskId: string; result: any }> } | undefined;
@@ -454,7 +469,17 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
 
   // Render retry context so workers know they're continuing previous work
   const retryIteration = (taskCtx as any)?.iteration as number | undefined;
-  const failureCtx = (taskCtx as any)?.failureContext as string | undefined;
+  // failureContext is written as the structured { summary, errorType?, commitSha? }
+  // object by every canonical writer (ci-retry.ts, conflict-retry.ts,
+  // loop-dispatcher.ts, the direct failure-capture path in
+  // workers/[id]/route.ts) — a bare string only exists for backward compat
+  // with tasks written before that shape landed. Interpolating the object
+  // directly stringifies it to "[object Object]".
+  const rawFailureCtx = (taskCtx as any)?.failureContext as unknown;
+  const failureCtx: string | undefined =
+    typeof rawFailureCtx === 'string'
+      ? rawFailureCtx
+      : (rawFailureCtx as { summary?: string } | undefined | null)?.summary;
   const retryBaseBranch = (taskCtx as any)?.baseBranch as string | undefined;
   const maxIter = (taskCtx as any)?.maxIterations as number | undefined;
 
