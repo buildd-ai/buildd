@@ -1,7 +1,16 @@
 ---
-status: proposed
+status: superseded
+superseded_by: docs/specs/credential-refresh-lifecycle.md
+superseded_on: "2026-09-15"
+superseded_reason: >-
+  Both phases shipped: runnerRefreshCredential (Phase 1, apps/runner/src/credential-refresh.ts),
+  the lock/commit/revoke/release/bootstrap endpoint (POST /api/runner/credential-refresh),
+  pendingCredentialRefreshes announcement on every claim poll, and the Phase 2 broker with
+  Postgres-backed credential_leases (apps/runner/src/broker.ts, /api/runner/credential-lease).
+  The contract this design argued for is now the active spec, including the rotationStartedAt
+  lost-rotation detection this document's own inline corrections describe.
 assertions:
-  # Current state — control-plane refresh (what we are REPLACING). These should pass today.
+  # Current state — control-plane refresh (what this design replaced). Still pass, unchanged.
   - id: claude-credential-refresh-symbol
     type: symbol
     name: refreshClaudeCredential
@@ -19,38 +28,48 @@ assertions:
     type: symbol
     name: materializeClaudeConfigDir
     path: apps/runner/src/claude-auth.ts
-  # Phase 1 targets — will fail until the implementation PR ships.
+  # Phase 1 targets — shipped; skip_until suppressions lifted now that each passes.
   - id: runner-refresh-credential-symbol
     type: symbol
     name: runnerRefreshCredential
     path: apps/runner/src/credential-refresh.ts
-    skip_until: "2026-10-31"
-    skip_reason: "Phase 1 runner-side refresh module — implementation task filed after spec approval"
   - id: runner-credential-refresh-route
     type: route
     method: POST
     path: /api/runner/credential-refresh
     file: apps/web/src/app/api/runner/credential-refresh/route.ts
-    skip_until: "2026-10-31"
-    skip_reason: "Phase 1 write-back endpoint for runner-reported token rotation — not yet implemented"
   - id: pending-credential-refreshes-reachable
     type: symbol_reachable
     symbol: pendingCredentialRefreshes
     entry: apps/web/src/app/api/workers/claim/route.ts
     as: assign
-    skip_until: "2026-10-31"
-    skip_reason: "Phase 1 nudge field in claim response not yet implemented"
 ---
 # Runner-Anchored OAuth Credential Custody
 
-**Status:** Proposed  
+> **SUPERSEDED (2026-09-15).** Both phases described below shipped — the
+> Phase 1 runner-side refresh (`runnerRefreshCredential`, `POST
+> /api/runner/credential-refresh`, `pendingCredentialRefreshes` on every claim
+> poll) and the Phase 2 dedicated broker (`apps/runner/src/broker.ts`,
+> `credential_leases` table, `POST /api/runner/credential-lease`). The live
+> contract, including the `rotationStartedAt` lost-rotation invariant this
+> document's own inline corrections worked out, is
+> `docs/specs/credential-refresh-lifecycle.md`. Read that for current
+> behavior; read this for the problem history and the reasoning that led
+> there.
+
+**Status:** Superseded (was: Proposed)
 **Related:**
+`docs/specs/credential-refresh-lifecycle.md` (the live contract this design was promoted into),
 `apps/web/src/lib/claude-credential.ts`,
 `apps/web/src/lib/codex-credential.ts`,
 `apps/web/src/app/api/cron/codex-token-refresh/route.ts`,
 `apps/web/src/app/api/workers/claim/route.ts`,
 `apps/runner/src/claude-auth.ts`,
 `apps/runner/src/workers.ts`,
+`apps/runner/src/credential-refresh.ts`,
+`apps/runner/src/broker.ts`,
+`apps/web/src/app/api/runner/credential-refresh/route.ts`,
+`apps/web/src/app/api/runner/credential-lease/route.ts`,
 `docs/credentials-architecture.md`,
 `docs/design/oauth-device-login.md`,
 `docs/specs/auth-oauth-boundaries.md`,
