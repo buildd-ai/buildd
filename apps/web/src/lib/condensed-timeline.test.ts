@@ -404,31 +404,34 @@ describe('groupTimelineTasks — WAITING ON YOU membership rule', () => {
 // ─── deriveBandLabel — §3.8 ──────────────────────────────────────────────────
 
 describe('deriveBandLabel', () => {
-  const now = new Date('2026-08-18T14:00:00Z');
+  // Local (no "Z") timestamps: parsed in the runner's own timezone, so the
+  // calendar-day relationships below hold under any TZ instead of drifting
+  // across midnight when the runner isn't UTC.
+  const now = new Date('2026-08-18T14:00:00');
 
   it('returns Today for a timestamp earlier today', () => {
-    const ts = new Date('2026-08-18T08:00:00Z').getTime();
+    const ts = new Date('2026-08-18T08:00:00').getTime();
     expect(deriveBandLabel(ts, now)).toBe('Today');
   });
 
   it('returns Yesterday for yesterday', () => {
-    const ts = new Date('2026-08-17T10:00:00Z').getTime();
+    const ts = new Date('2026-08-17T10:00:00').getTime();
     expect(deriveBandLabel(ts, now)).toBe('Yesterday');
   });
 
   it('returns weekday name for within last 7 days', () => {
-    const ts = new Date('2026-08-14T10:00:00Z').getTime(); // Friday
+    const ts = new Date('2026-08-14T10:00:00').getTime(); // Friday
     const label = deriveBandLabel(ts, now);
     expect(label).toBe('Friday');
   });
 
   it('returns Mon D format for within current year', () => {
-    const ts = new Date('2026-01-05T10:00:00Z').getTime();
+    const ts = new Date('2026-01-05T10:00:00').getTime();
     expect(deriveBandLabel(ts, now)).toBe('Jan 5');
   });
 
   it('returns Mon D, Year for prior year', () => {
-    const ts = new Date('2025-03-15T10:00:00Z').getTime();
+    const ts = new Date('2025-03-15T10:00:00').getTime();
     expect(deriveBandLabel(ts, now)).toBe('Mar 15, 2025');
   });
 });
@@ -436,7 +439,8 @@ describe('deriveBandLabel', () => {
 // ─── deriveBandKey — §3.8 ────────────────────────────────────────────────────
 
 describe('deriveBandKey', () => {
-  const now = new Date('2026-08-18T14:00:00Z');
+  // Local (no "Z") timestamps — see deriveBandLabel above for why.
+  const now = new Date('2026-08-18T14:00:00');
   const mk = (id: string, iso: string) => ({ id, completionTs: new Date(iso).getTime() });
 
   it('returns empty array for empty input', () => {
@@ -444,7 +448,7 @@ describe('deriveBandKey', () => {
   });
 
   it('returns one band for a single item', () => {
-    const bands = deriveBandKey([mk('t1', '2026-08-18T10:00:00Z')], now);
+    const bands = deriveBandKey([mk('t1', '2026-08-18T10:00:00')], now);
     expect(bands).toHaveLength(1);
     expect(bands[0].label).toBe('Today');
     expect(bands[0].items.map(i => i.id)).toEqual(['t1']);
@@ -452,8 +456,8 @@ describe('deriveBandKey', () => {
 
   it('groups two items < 4h apart into the same band', () => {
     const bands = deriveBandKey([
-      mk('t1', '2026-08-18T08:00:00Z'),
-      mk('t2', '2026-08-18T09:00:00Z'),
+      mk('t1', '2026-08-18T08:00:00'),
+      mk('t2', '2026-08-18T09:00:00'),
     ], now);
     expect(bands).toHaveLength(1);
     expect(bands[0].items).toHaveLength(2);
@@ -471,8 +475,8 @@ describe('deriveBandKey', () => {
 
   it('returns bands newest-first', () => {
     const bands = deriveBandKey([
-      mk('old', '2026-08-16T10:00:00Z'),
-      mk('new', '2026-08-18T10:00:00Z'),
+      mk('old', '2026-08-16T10:00:00'),
+      mk('new', '2026-08-18T10:00:00'),
     ], now);
     expect(bands[0].label).toBe('Today');
     expect(bands[1].label).toBe('Sunday');
@@ -480,8 +484,8 @@ describe('deriveBandKey', () => {
 
   it('within a band items are newest-first', () => {
     const bands = deriveBandKey([
-      mk('t1', '2026-08-18T08:00:00Z'),
-      mk('t2', '2026-08-18T09:00:00Z'),
+      mk('t1', '2026-08-18T08:00:00'),
+      mk('t2', '2026-08-18T09:00:00'),
     ], now);
     expect(bands[0].items[0].id).toBe('t2');
     expect(bands[0].items[1].id).toBe('t1');
@@ -511,7 +515,8 @@ describe('deriveBandKey', () => {
 // ─── deriveDayBands — Activity groups by day, not by wave ────────────────────
 
 describe('deriveDayBands', () => {
-  const now = new Date('2026-08-18T14:00:00Z');
+  // Local (no "Z") timestamps — see deriveBandLabel above for why.
+  const now = new Date('2026-08-18T14:00:00');
   const mk = (id: string, iso: string) => ({ id, completionTs: new Date(iso).getTime() });
 
   it('returns empty array for empty input', () => {
@@ -520,8 +525,8 @@ describe('deriveDayBands', () => {
 
   it('keeps same-day items in one band even when > 4h apart (regression: duplicate "Today" header)', () => {
     const bands = deriveDayBands([
-      mk('t1', '2026-08-18T08:00:00Z'),
-      mk('t2', '2026-08-18T14:00:00Z'),
+      mk('t1', '2026-08-18T08:00:00'),
+      mk('t2', '2026-08-18T14:00:00'),
     ], now);
     expect(bands).toHaveLength(1);
     expect(bands[0].label).toBe('Today');
@@ -530,9 +535,9 @@ describe('deriveDayBands', () => {
 
   it('never emits an ordinal-suffixed label', () => {
     const bands = deriveDayBands([
-      mk('t1', '2026-08-17T08:00:00Z'),
-      mk('t2', '2026-08-17T11:00:00Z'),
-      mk('t3', '2026-08-17T14:00:00Z'),
+      mk('t1', '2026-08-17T08:00:00'),
+      mk('t2', '2026-08-17T11:00:00'),
+      mk('t3', '2026-08-17T14:00:00'),
     ], now);
     expect(bands).toHaveLength(1);
     expect(bands[0].label).toBe('Yesterday');
@@ -540,18 +545,18 @@ describe('deriveDayBands', () => {
 
   it('splits distinct calendar days into separate bands, newest day first', () => {
     const bands = deriveDayBands([
-      mk('old', '2026-08-16T12:00:00Z'),
-      mk('mid', '2026-08-17T12:00:00Z'),
-      mk('new', '2026-08-18T12:00:00Z'),
+      mk('old', '2026-08-16T12:00:00'),
+      mk('mid', '2026-08-17T12:00:00'),
+      mk('new', '2026-08-18T12:00:00'),
     ], now);
     expect(bands.map(b => b.label)).toEqual(['Today', 'Yesterday', 'Sunday']);
   });
 
   it('orders items newest-first within a band', () => {
     const bands = deriveDayBands([
-      mk('t1', '2026-08-18T08:00:00Z'),
-      mk('t2', '2026-08-18T14:00:00Z'),
-      mk('t3', '2026-08-18T11:00:00Z'),
+      mk('t1', '2026-08-18T08:00:00'),
+      mk('t2', '2026-08-18T14:00:00'),
+      mk('t3', '2026-08-18T11:00:00'),
     ], now);
     expect(bands[0].items.map(i => i.id)).toEqual(['t2', 't3', 't1']);
   });
