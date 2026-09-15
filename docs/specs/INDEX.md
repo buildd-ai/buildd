@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (32)
+## Active (33)
 
 ### auth (4)
 
@@ -45,8 +45,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
-### missions (1)
+### missions (2)
 
+- [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-15
+  A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 - [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-15
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
@@ -100,10 +102,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (4)
+## Draft (3)
 
-- [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-11
-  A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
 - [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-10
   For a mission with an integration base, canCompleteMission, the on_mission_complete release trigger, and the goal-criteria evaluator MUST all treat production release as the single, shared definition of mission "done".
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-04
