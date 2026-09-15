@@ -8,16 +8,20 @@
  * is done the integration branch opens one PR into trunk, and that mission PR
  * is the single human gate — see `merge-policy.ts` for where the tier applies.
  *
- * These predicates live in `core`, with no imports, because the question "is
- * this base ref a mission integration branch" is asked from three places that
- * must never disagree: task creation, merge-policy resolution, and the
- * completion criterion. Duplicating it is how the two-generators bug in
- * `branch-names.ts` happened.
+ * These predicates live in `core`, with no framework or DB imports, because
+ * the question "is this base ref a mission integration branch" is asked from
+ * three places that must never disagree: task creation, merge-policy
+ * resolution, and the completion criterion. Duplicating it is how the
+ * two-generators bug in `branch-names.ts` happened — the one import this file
+ * does take, `./task-title`, exists for the same reason: a bot-retry title
+ * prefix and the mission-PR-owner prefix must be parsed by one regex, not two.
  *
  * Everything here answers null / false for a mission that has not opted in, so
  * **nothing about an existing mission changes until the flag is set**. That is
  * the property that makes A′ shippable one mission at a time.
  */
+
+import { stripTaskTitlePrefixes } from './task-title';
 
 export const MISSION_BRANCH_PREFIX = 'mission/';
 
@@ -84,9 +88,20 @@ export function looksLikeMissionIntegrationBranch(ref: string | null | undefined
  */
 export const MISSION_PR_TASK_PREFIX = 'Ship mission: ';
 
-/** Does this task own a mission integration PR rather than deliverable work? */
+/**
+ * Does this task own a mission integration PR rather than deliverable work?
+ *
+ * Checked against `stripTaskTitlePrefixes(task.title)`, not the raw title:
+ * the review-retry mechanism wraps a follow-up task's title in
+ * `[builder · after review #N]` (see `formatAttemptTitle` /
+ * `apps/web/src/lib/task-title.ts`), and that wrap must not make the
+ * mission-PR-owner task unrecognizable to every caller of this predicate —
+ * adoption, merge-policy resolution, and PR-base legality would each start
+ * treating the owner task as an ordinary mission task and wrongly reject its
+ * trunk-based PR.
+ */
 export function isMissionPrTask(task: { title?: string | null; taskClass?: string | null }): boolean {
-  return task.taskClass === 'bookkeeping' && (task.title ?? '').startsWith(MISSION_PR_TASK_PREFIX);
+  return task.taskClass === 'bookkeeping' && stripTaskTitlePrefixes(task.title).startsWith(MISSION_PR_TASK_PREFIX);
 }
 
 /**
