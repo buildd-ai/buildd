@@ -741,11 +741,7 @@ export function deriveBandLabel(ts: number, now: Date): string {
 
   if (ts >= todayStart.getTime()) return 'Today';
   if (ts >= yesterdayStart.getTime()) return 'Yesterday';
-  if (ts >= weekStart.getTime()) {
-    const d = new Date(ts);
-    const date = d.getDate();
-    return new Date(ts).toLocaleDateString('en-US', { weekday: 'short' }) + ` ${date}`;
-  }
+  if (ts >= weekStart.getTime()) return new Date(ts).toLocaleDateString('en-US', { weekday: 'long' });
 
   const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
   if (ts >= yearStart) return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });

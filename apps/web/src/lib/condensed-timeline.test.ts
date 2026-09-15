@@ -416,10 +416,10 @@ describe('deriveBandLabel', () => {
     expect(deriveBandLabel(ts, now)).toBe('Yesterday');
   });
 
-  it('returns weekday + date for within last 7 days', () => {
+  it('returns weekday name for within last 7 days', () => {
     const ts = new Date('2026-08-14T10:00:00Z').getTime(); // Friday
     const label = deriveBandLabel(ts, now);
-    expect(label).toBe('Fri 14');
+    expect(label).toBe('Friday');
   });
 
   it('returns Mon D format for within current year', () => {
@@ -475,7 +475,7 @@ describe('deriveBandKey', () => {
       mk('new', '2026-08-18T10:00:00Z'),
     ], now);
     expect(bands[0].label).toBe('Today');
-    expect(bands[1].label).toBe('Sun 16');
+    expect(bands[1].label).toBe('Sunday');
   });
 
   it('within a band items are newest-first', () => {
@@ -544,7 +544,7 @@ describe('deriveDayBands', () => {
       mk('mid', '2026-08-17T12:00:00Z'),
       mk('new', '2026-08-18T12:00:00Z'),
     ], now);
-    expect(bands.map(b => b.label)).toEqual(['Today', 'Yesterday', 'Sun 16']);
+    expect(bands.map(b => b.label)).toEqual(['Today', 'Yesterday', 'Sunday']);
   });
 
   it('orders items newest-first within a band', () => {
