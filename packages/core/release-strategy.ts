@@ -76,10 +76,18 @@ export function resolveReleaseTrigger(
 // workflow opens the PR) while still describing the PR's own head/base ref
 // shape with these same two fields, and `resolveReleaseStrategy` only
 // attaches them to the `branch_merge' variant.
+//
+// Gated on `config.enabled` first, matching every other consumer of
+// `WorkspaceReleaseConfig` in this file (see `resolveReleaseStrategy` above):
+// a workspace that disabled release automation but left releaseBranch/
+// prodBranch populated from before must not have unrelated PRs (e.g. a
+// routine dev→main PR that isn't this workspace's release rollup) silently
+// exempted from the aggregate line-count cap.
 export function isReleaseBranchPr(
   config: WorkspaceReleaseConfig | null | undefined,
   refs: { headRef?: string | null; baseRef?: string | null },
 ): boolean {
+  if (!config?.enabled) return false;
   const releaseBranch = config?.releaseBranch?.trim();
   const prodBranch = config?.prodBranch?.trim();
   if (!releaseBranch || !prodBranch) return false;

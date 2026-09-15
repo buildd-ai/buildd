@@ -157,4 +157,9 @@ describe('isReleaseBranchPr', () => {
     expect(isReleaseBranchPr(null, { headRef: 'dev', baseRef: 'main' })).toBe(false);
     expect(isReleaseBranchPr(undefined, { headRef: 'dev', baseRef: 'main' })).toBe(false);
   });
+
+  it('is false when enabled=false, even though releaseBranch/prodBranch match the PR refs', () => {
+    const disabled = branchMerge({ enabled: false, releaseBranch: 'dev', prodBranch: 'main' });
+    expect(isReleaseBranchPr(disabled, { headRef: 'dev', baseRef: 'main' })).toBe(false);
+  });
 });
