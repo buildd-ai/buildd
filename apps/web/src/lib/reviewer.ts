@@ -950,6 +950,31 @@ export async function buildDeltaReviewerContext(params: BuildDeltaContextParams)
       );
       const rawFiles = compare && typeof compare === 'object' ? (compare as { files?: unknown }).files : null;
       files = Array.isArray(rawFiles) ? normalizeGithubPrFiles(rawFiles as GithubPrFile[]) : [];
+
+      // `compare/A...B` is merge-base(A,B)..B. That's correct when B is an
+      // ordinary descendant of A, but when the delta commit is a MERGE of the
+      // base branch into the PR branch (a conflict resolved via `git merge
+      // origin/dev` instead of a rebase), merge-base(A,B) is just A — so the
+      // diff balloons to every file the base branch moved on in the meantime,
+      // even ones this PR never touches. Bound the delta to files the PR
+      // itself actually changes (its current diff against base, which GitHub
+      // already computes merge-base-aware) so a merge-based conflict
+      // resolution can never look like a scope explosion. Best-effort: a
+      // failure here just skips the bound rather than losing the delta.
+      try {
+        const prFilesRaw = await githubApi(
+          params.installationId,
+          `/repos/${repoFullName}/pulls/${prNumber}/files?per_page=300`,
+        );
+        if (Array.isArray(prFilesRaw)) {
+          const prFilenames = new Set(
+            normalizeGithubPrFiles(prFilesRaw as GithubPrFile[]).map((f) => f.filename),
+          );
+          files = files.filter((f) => prFilenames.has(f.filename));
+        }
+      } catch (err) {
+        console.warn(`[reviewer] Failed to bound delta files to PR diff for #${prNumber}:`, err);
+      }
     }
 
     if (files.length > 0) {
