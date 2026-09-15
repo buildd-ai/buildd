@@ -21,6 +21,13 @@
 // (state='failed') for ones stuck past HARD_FAIL_STALE_HOURS so the release
 // reaches a terminal state instead of hanging indefinitely.
 //
+// Also sweeps `pending_external`: a gated release sits here while its release
+// PR awaits merge into prodBranch (see advanceReleaseStateFromWorkflowRun in
+// the github webhook route). If that PR closes without merging, nothing else
+// ever revisits the row — it's outside both sweeps above, whose state filters
+// are exact — and record.ts's non-forced idempotency check keeps treating it
+// as in-flight, blocking any future non-forced re-dispatch of that commit.
+//
 // Also sweeps `degraded` releases whose failure reason is a sha mismatch:
 // main advances continuously, so a later legitimate merge can land on top of
 // a release's own headSha during the watch window, making the deploy-identity
@@ -205,6 +212,48 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     }
   }
 
+  // Stale 'pending_external' sweep.
+  //
+  // A `pending_external` row means a gated release's dispatch succeeded and
+  // is now waiting on its release PR merging into prodBranch — see
+  // advanceReleaseStateFromWorkflowRun in the github webhook route. If that
+  // PR is closed without merging (superseded by a newer commit, abandoned
+  // after CI failure), nothing else ever revisits the row: the sweeps above
+  // filter on the exact state 'dispatched' or 'deploying', not this one, and
+  // `pending_external` is treated as in-flight by record.ts's non-forced
+  // idempotency check — leaving the row stuck here would silently block any
+  // future non-forced release of that commit.
+  //
+  // As with stale 'dispatched', there is nothing to retry (the PR may no
+  // longer exist), so the only correct move is to let it reach a terminal
+  // state and say why.
+  const stalePendingExternal = await db
+    .select({ id: releases.id, workspaceId: releases.workspaceId, dispatchedAt: releases.dispatchedAt })
+    .from(releases)
+    .where(and(eq(releases.state, 'pending_external'), lt(releases.dispatchedAt, hardFailCutoff)));
+
+  let pendingExternalHardFailed = 0;
+  for (const row of stalePendingExternal) {
+    const [updated] = await db
+      .update(releases)
+      .set({
+        state: 'failed',
+        failureReason:
+          `never advanced past 'pending_external' within ${HARD_FAIL_STALE_HOURS}h — ` +
+          `the release PR was never merged into the production branch`,
+      })
+      .where(and(eq(releases.id, row.id), eq(releases.state, 'pending_external')))
+      .returning({ id: releases.id });
+
+    if (updated) {
+      pendingExternalHardFailed++;
+      await triggerEvent(channels.workspace(row.workspaceId), events.RELEASE_UPDATED, {
+        releaseId: row.id,
+        state: 'failed',
+      });
+    }
+  }
+
   // Self-heal sweep: a release degraded on a sha mismatch can be a false
   // positive — a later legitimate merge landed on top of it mid-watch-window,
   // and the mismatch is really "production moved forward", not "production
@@ -267,6 +316,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       staleHardFailed,
       staleDispatched: staleDispatched.length,
       dispatchedHardFailed,
+      stalePendingExternal: stalePendingExternal.length,
+      pendingExternalHardFailed,
       healableDegraded: healableDegraded.length,
       healed,
     }),
@@ -277,8 +328,13 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
   // must be legible as such — otherwise the watcher has the same failure mode
   // it was built to detect.
   report({
-    processed: candidates.length + staleDeploying.length + staleDispatched.length + healableDegraded.length,
-    changed: degraded + staleRetried + staleHardFailed + dispatchedHardFailed + healed,
+    processed:
+      candidates.length +
+      staleDeploying.length +
+      staleDispatched.length +
+      stalePendingExternal.length +
+      healableDegraded.length,
+    changed: degraded + staleRetried + staleHardFailed + dispatchedHardFailed + pendingExternalHardFailed + healed,
     result: {
       probed,
       degraded,
@@ -287,6 +343,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
       staleHardFailed,
       staleDispatched: staleDispatched.length,
       dispatchedHardFailed,
+      stalePendingExternal: stalePendingExternal.length,
+      pendingExternalHardFailed,
       healableDegraded: healableDegraded.length,
       healed,
     },
@@ -303,6 +361,8 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
     staleHardFailed,
     staleDispatched: staleDispatched.length,
     dispatchedHardFailed,
+    stalePendingExternal: stalePendingExternal.length,
+    pendingExternalHardFailed,
     healableDegraded: healableDegraded.length,
     healed,
   });

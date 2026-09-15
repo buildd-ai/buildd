@@ -106,7 +106,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Draft (2)
 
-- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-04
+- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-14
   Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, with day boundaries as ticks and history collapsed to chain rows.

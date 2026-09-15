@@ -94,6 +94,17 @@ mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mockAppendPrActivity,
 }));
 
+// buildDeltaReviewerContext dynamically imports '@/lib/github' only when a
+// caller omits prFiles/deltaFiles. Every existing test in this file supplies
+// those directly, so this mock is inert for them — it only engages for the
+// merge-commit-bounding regression tests below, which deliberately omit
+// deltaFiles to exercise the real fetch path.
+let githubApiImpl: (installationId: number, path: string) => Promise<unknown> = () =>
+  Promise.reject(new Error('unmocked githubApi call in this test'));
+mock.module('@/lib/github', () => ({
+  githubApi: (installationId: number, path: string) => githubApiImpl(installationId, path),
+}));
+
 import {
   buildReviewerContext,
   buildDeltaReviewerContext,
@@ -1215,6 +1226,81 @@ describe('buildDeltaReviewerContext', () => {
     const prompt = await buildDeltaReviewerContext(BASE);
     expect(prompt).toContain('Do not silently\ninherit it');
     expect(prompt).toContain("- `verdict`: 'approve' | 'request-changes' | 'escalate'");
+  });
+});
+
+describe('buildDeltaReviewerContext — merge-commit delta bounding', () => {
+  // Regression for a real PR (#2414): a request-changes verdict was resolved
+  // via `git merge origin/dev` instead of a rebase. The new head is a merge
+  // commit, so `compare/oldHead...newHead` reports every file dev moved on in
+  // between (merge-base(oldHead, newHead) is just oldHead, since newHead
+  // descends from it) — 77 unrelated files for a PR that only ever touched 3.
+  const PRIOR_VERDICT = {
+    headSha: 'old-sha',
+    verdict: 'request-changes' as const,
+    confidence: 0.7,
+    summary: 'Needs the config.enabled gate.',
+    feedback: 'Add a config.enabled check before the size-cap exemption.',
+    escalationReason: null,
+  };
+
+  const BASE = {
+    originalTaskId: 'original-2414',
+    originalTask: { title: 'fix(merge-policy): exempt release PRs from the line-count cap', description: null, pathManifest: null },
+    prNumber: 2414,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/2414',
+    headSha: 'merge-sha',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    priorVerdict: PRIOR_VERDICT,
+    // No deltaFiles — forces the real compare + pulls/files fetch path.
+  };
+
+  it('bounds the delta to files the PR itself touches, dropping unrelated dev-history churn', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/compare/')) {
+        return Promise.resolve({
+          files: [
+            { filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null },
+            // Unrelated files that only moved because dev was merged in.
+            { filename: 'apps/web/src/app/api/dispatch-doc-fix/route.ts', status: 'modified', additions: 40, deletions: 5, patch: null },
+            { filename: 'packages/core/drizzle/0165_schema.sql', status: 'added', additions: 200, deletions: 0, patch: null },
+          ],
+        });
+      }
+      if (path.includes('/files')) {
+        return Promise.resolve([
+          { filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null },
+        ]);
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    expect(prompt).toContain('packages/core/release-strategy.ts');
+    expect(prompt).not.toContain('dispatch-doc-fix');
+    expect(prompt).not.toContain('0165_schema.sql');
+  });
+
+  it('fails open to the unbounded compare result when the PR-files fetch errors', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/compare/')) {
+        return Promise.resolve({
+          files: [{ filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null }],
+        });
+      }
+      if (path.includes('/files')) {
+        return Promise.reject(new Error('GitHub API unavailable'));
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    // The compare fetch still succeeded, so the delta is not lost — it's just
+    // unbounded, same as before this fix.
+    expect(prompt).toContain('packages/core/release-strategy.ts');
   });
 });
 
