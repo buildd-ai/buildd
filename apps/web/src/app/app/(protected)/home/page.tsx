@@ -1737,7 +1737,7 @@ export default async function HomePage({
             columns: {
               id: true, workspaceId: true, specPath: true, assertionId: true,
               direction: true, status: true, firstSeenAt: true, promotedMissionId: true,
-              docFixTaskId: true,
+              docFixTaskId: true, lastCheckedAt: true,
             },
           });
           if (discrepancyRows.length > 0) {
@@ -1761,20 +1761,45 @@ export default async function HomePage({
                 })
               : [];
             const docFixStatusById = new Map(docFixTasks.map((t) => [t.id, t.status]));
+            // A completed doc-fix task's PR state — whether it merged, and
+            // when — is what tells a card apart from a genuinely-stranded one
+            // (isDocFixClaimStale in lib/action-queue.ts compares this against
+            // the row's own lastCheckedAt). One worker per task is assumed
+            // (doc-fix tasks are single-shot planning tasks); a retried task
+            // would have more than one, so the most recently started wins.
+            const docFixWorkers = docFixTaskIds.length > 0
+              ? await db.query.workers.findMany({
+                  where: inArray(workers.taskId, docFixTaskIds),
+                  columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
+                  orderBy: (w, { desc: descOrder }) => [descOrder(w.startedAt)],
+                })
+              : [];
+            const docFixWorkerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();
+            for (const w of docFixWorkers) {
+              if (w.taskId && !docFixWorkerByTask.has(w.taskId)) {
+                docFixWorkerByTask.set(w.taskId, { prLifecycleStatus: w.prLifecycleStatus ?? null, mergedAt: w.mergedAt ?? null });
+              }
+            }
             const { items: discrepancyItems, overflowCount } = buildDiscrepancyItems(
-              discrepancyRows.map((r) => ({
-                id: r.id,
-                workspaceId: r.workspaceId,
-                workspaceName: wsNameById.get(r.workspaceId) ?? null,
-                specPath: r.specPath,
-                assertionId: r.assertionId,
-                direction: r.direction,
-                status: r.status,
-                firstSeenAt: r.firstSeenAt,
-                promotedMissionId: r.promotedMissionId,
-                docFixTaskId: r.docFixTaskId,
-                docFixTaskStatus: r.docFixTaskId ? docFixStatusById.get(r.docFixTaskId) ?? null : null,
-              })),
+              discrepancyRows.map((r) => {
+                const docFixWorker = r.docFixTaskId ? docFixWorkerByTask.get(r.docFixTaskId) : undefined;
+                return {
+                  id: r.id,
+                  workspaceId: r.workspaceId,
+                  workspaceName: wsNameById.get(r.workspaceId) ?? null,
+                  specPath: r.specPath,
+                  assertionId: r.assertionId,
+                  direction: r.direction,
+                  status: r.status,
+                  firstSeenAt: r.firstSeenAt,
+                  lastCheckedAt: r.lastCheckedAt,
+                  promotedMissionId: r.promotedMissionId,
+                  docFixTaskId: r.docFixTaskId,
+                  docFixTaskStatus: r.docFixTaskId ? docFixStatusById.get(r.docFixTaskId) ?? null : null,
+                  docFixPrLifecycleStatus: docFixWorker?.prLifecycleStatus ?? null,
+                  docFixMergedAt: docFixWorker?.mergedAt ?? null,
+                };
+              }),
             );
             waitingOnYou.push(...discrepancyItems);
             discrepancyOverflowCount = overflowCount;

@@ -145,6 +145,8 @@ export interface WaitingOnYouRawItem {
   docFixTaskId?: string | null;
   /** kind === 'discrepancy' — `tasks.status` of docFixTaskId. */
   docFixTaskStatus?: string | null;
+  /** kind === 'discrepancy' — `workers.prLifecycleStatus` for docFixTaskId's PR, if any. */
+  docFixPrLifecycleStatus?: string | null;
   /** kind === 'discrepancy' — set once `promote_discrepancy` has minted a mission. */
   promotedMissionId?: string | null;
   /** kind === 'discrepancy' — the discrepancy's owning workspace. */
@@ -310,6 +312,13 @@ export interface ActionQueueItem {
   docFixTaskId?: string | null;
   /** `tasks.status` of docFixTaskId — distinguishes "being worked" from "shipped, awaiting re-run". */
   docFixTaskStatus?: string | null;
+  /**
+   * `workers.prLifecycleStatus` of docFixTaskId's PR — distinguishes "PR
+   * still open" (no re-run pending; the doc fix hasn't landed yet) from "PR
+   * merged, genuinely awaiting the conformance re-run" so the card names the
+   * real blocker instead of assuming completion means merged.
+   */
+  docFixPrLifecycleStatus?: string | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -441,10 +450,16 @@ export interface DiscrepancyCandidate {
   status: 'open' | 'accepted' | 'resolved';
   firstSeenAt: Date | string;
   promotedMissionId?: string | null;
+  /** `spec_discrepancies.last_checked_at` — when the checker last evaluated this row. */
+  lastCheckedAt?: Date | string;
   /** `spec_discrepancies.doc_fix_task_id` — the dispatched docs-only follow-up. */
   docFixTaskId?: string | null;
   /** `tasks.status` of `docFixTaskId`, resolved by the caller. */
   docFixTaskStatus?: string | null;
+  /** `workers.prLifecycleStatus` for `docFixTaskId`'s PR, resolved by the caller. */
+  docFixPrLifecycleStatus?: string | null;
+  /** `workers.mergedAt` for `docFixTaskId`'s PR, resolved by the caller. */
+  docFixMergedAt?: Date | string | null;
 }
 
 export interface DiscrepancyQueueResult {
@@ -488,6 +503,40 @@ export function isDocFixInFlight(
   return LIVE_DOC_FIX_STATUSES.has(candidate.docFixTaskStatus);
 }
 
+/**
+ * A completed doc-fix task still counts as "in flight" per `isDocFixInFlight`
+ * above — on purpose, so a fresh completion isn't mistaken for an abandoned
+ * claim. But nothing released that claim once the checker actually got a
+ * chance to re-evaluate the row against the merged fix and STILL found the
+ * same gap. Without this, `docFixTaskId` sits on the row forever: every
+ * future Tier-2 run keeps 'refresh'ing direction/lastCheckedAt (the row is
+ * correctly tracked), but the card never finds out — it keeps citing a task
+ * that finished days or weeks ago and calling the row "awaiting the
+ * conformance re-run" when a re-run, or several, already ran and changed
+ * nothing. That's the stranded-card bug.
+ *
+ * Staleness requires proof, not a guess from task status alone: the task's
+ * PR must have actually MERGED (`workers.prLifecycleStatus === 'merged'`) —
+ * a task can complete without its PR merging (planning tasks open a PR and
+ * stop there), and claiming staleness before merge would let a human
+ * re-dispatch a duplicate fix while the first one is still sitting in review
+ * — and the row's own `lastCheckedAt` must be at or after that merge, i.e.
+ * the checker has demonstrably run again since the fix landed. Never trust
+ * the task's own say-so (§9) — only a timestamp comparison against the
+ * ledger row's own last real evaluation.
+ */
+export function isDocFixClaimStale(
+  candidate: Pick<
+    DiscrepancyCandidate,
+    'docFixTaskStatus' | 'docFixPrLifecycleStatus' | 'docFixMergedAt' | 'lastCheckedAt'
+  >,
+): boolean {
+  if (candidate.docFixTaskStatus !== 'completed') return false;
+  if (candidate.docFixPrLifecycleStatus !== 'merged' || !candidate.docFixMergedAt) return false;
+  if (!candidate.lastCheckedAt) return false;
+  return new Date(candidate.lastCheckedAt).getTime() >= new Date(candidate.docFixMergedAt).getTime();
+}
+
 /** §12 ranking: an owner call outranks real unbuilt work outranks a pure doc fix. */
 const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
   contradicted: 0,
@@ -510,6 +559,8 @@ interface DiscrepancyGroup {
   promotedMissionId: string | null;
   docFixTaskId: string | null;
   docFixTaskStatus: string | null;
+  docFixPrLifecycleStatus: string | null;
+  docFixMergedAt: Date | string | null;
   inFlight: boolean;
 }
 
@@ -565,6 +616,8 @@ export function buildDiscrepancyItems(
         promotedMissionId: null,
         docFixTaskId: null,
         docFixTaskStatus: null,
+        docFixPrLifecycleStatus: null,
+        docFixMergedAt: null,
         inFlight: false,
       });
     }
@@ -574,12 +627,17 @@ export function buildDiscrepancyItems(
     group.rows.sort((a, b) => new Date(a.firstSeenAt).getTime() - new Date(b.firstSeenAt).getTime());
     group.oldestFirstSeen = new Date(group.rows[0].firstSeenAt).getTime();
     group.promotedMissionId = group.rows.find((r) => r.promotedMissionId)?.promotedMissionId ?? null;
-    // Any live claim on any row in the group owns the whole spec path — the
-    // doc fix reconciles the document, not one assertion at a time.
-    const claimed = group.rows.find((r) => isDocFixInFlight(r));
+    // Any live, non-stale claim on any row in the group owns the whole spec
+    // path — the doc fix reconciles the document, not one assertion at a
+    // time. A claim the checker has already re-evaluated post-merge and
+    // still found wanting (isDocFixClaimStale) does not count: the fix
+    // demonstrably did not close this gap, so the CTA comes back.
+    const claimed = group.rows.find((r) => isDocFixInFlight(r) && !isDocFixClaimStale(r));
     group.inFlight = Boolean(claimed);
     group.docFixTaskId = claimed?.docFixTaskId ?? null;
     group.docFixTaskStatus = claimed?.docFixTaskStatus ?? null;
+    group.docFixPrLifecycleStatus = claimed?.docFixPrLifecycleStatus ?? null;
+    group.docFixMergedAt = claimed?.docFixMergedAt ?? null;
   }
 
   const byWorkspace = new Map<string, DiscrepancyGroup[]>();
@@ -614,6 +672,7 @@ export function buildDiscrepancyItems(
         promotedMissionId: g.promotedMissionId,
         docFixTaskId: g.inFlight ? g.docFixTaskId : null,
         docFixTaskStatus: g.inFlight ? g.docFixTaskStatus : null,
+        docFixPrLifecycleStatus: g.inFlight ? g.docFixPrLifecycleStatus : null,
         workspaceId: g.workspaceId,
         workspaceName: g.workspaceName ?? undefined,
       });
@@ -828,6 +887,7 @@ export function buildActionQueue(
           promotedMissionId: item.promotedMissionId ?? null,
           docFixTaskId: item.docFixTaskId ?? null,
           docFixTaskStatus: item.docFixTaskStatus ?? null,
+          docFixPrLifecycleStatus: item.docFixPrLifecycleStatus ?? null,
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
         });

@@ -267,15 +267,16 @@ Status is **computed** from assertion results, not authored. The declared
    `failing`: CI fails. Message: "Status declares 'implemented' but N assertion(s)
    fail. Fix the assertions or update the status."
 
-2. Derived `implemented` but declared `proposed`, `accepted`, or `draft`: CI
-   fails. Message: "All assertions pass but status declares '{status}'. Promote
-   the status to 'implemented' (design) or 'active' (spec), or add a
-   `skip_until` suppression if the mismatch is intentional."
+2. Derived `implemented` but declared `proposed`, `accepted`, `partially`
+   (design docs only), or `draft`: CI fails. Message: "All assertions pass but
+   status declares '{status}'. Promote the status to 'implemented' (design) or
+   'active' (spec), or add a `skip_until` suppression if the mismatch is
+   intentional."
 
-3. Derived `partial` or `failing` AND declared `proposed` or `draft`: this is
-   the expected state during active development. CI does NOT fail — assertions
-   exist but not all pass yet. Only assertion-status contradictions (1 and 2
-   above) are failures.
+3. Derived `partial` or `failing` AND declared `proposed`, `partially`
+   (design docs only), or `draft`: this is the expected state during active
+   development. CI does NOT fail — assertions exist but not all pass yet. Only
+   assertion-status contradictions (1 and 2 above) are failures.
 
 **Rationale for 2:** this is exactly the check that catches case 3
 (`cross-app-assertion-grant.md`). All routes exist, all assertions pass, but
@@ -486,10 +487,11 @@ Every row carries which way the gap runs, and — this is the load-bearing part
 in how much evidence backs a verdict.
 
 - **`code_ahead`** — the assertion **passes** but the declared status is
-  non-terminal (`proposed`/`accepted`/`draft` — the same set §2's CI failure
-  condition 2 already treats as "not yet promoted"). The code demonstrably
-  exists; the status string is what's wrong. A doc fix, not a build. Either
-  tier may write this — passing evidence needs no judgment call.
+  non-terminal (`proposed`/`accepted`/`partially` for design docs, `draft` for
+  specs — the same set §2's CI failure condition 2 already treats as "not yet
+  promoted"). The code demonstrably exists; the status string is what's
+  wrong. A doc fix, not a build. Either tier may write this — passing
+  evidence needs no judgment call.
 - **`contradicted`** — the assertion **fails** but the declared status is
   terminal (`implemented`/`active`) — i.e. exactly the Tier-2 CI failure
   condition 1 in §2. This is deliberately NOT auto-classified as `spec_ahead`:
