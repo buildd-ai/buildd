@@ -146,3 +146,24 @@ non-verdict, this counts how often one was needed and why.
 | 44 | `mission-criteria-worker-eval.ts:handleCriteriaWorkerEvalOutcome` (criterion edited mid-flight) | `criteria_not_evaluated` | warned | reason `criterion_changed` |
 | 45 | `mission-criteria-worker-eval.ts:handleCriteriaWorkerEvalOutcome` (no verdict returned) | `criteria_not_evaluated` | warned | reason `evaluator_no_output` |
 | 46 | `mission-criteria-worker-eval.ts:handleCriteriaWorkerEvalOutcome` (fail downgraded to UNVERIFIED) | `criteria_not_evaluated` | warned | reason `exec_error` / `exit_126_127` |
+
+### Review-verdict gate — every merge door
+
+`apps/web/src/lib/review-verdict-gate.ts` is the one rule; these are the doors
+that ask it. It exists because whether a reviewer's `request-changes` held a
+door used to depend on which door was used and on which tier the PR resolved
+to: `merge_pr` and the CI-green auto-merge consulted the verdict only under
+`agent-review`, and the dashboard merge button consulted it at no tier at all —
+while `auto-threshold` is exactly what every Option A′ task PR resolves to, and
+those PRs get a reviewer dispatched at them on purpose.
+
+Only the dashboard door carries a bypass, because only there is a human
+present. Nothing unattended may override a verdict.
+
+| # | file:line | gate | outcome | note |
+|---|---|---|---|---|
+| 47 | `pr/route.ts` (PUT, after the tier checks) | `review_verdict` | rejected | outstanding non-approve verdict, or a review in flight, at the commit being merged |
+| 48 | `auto-merge.ts:tryAutoMergeWorkerPr` | `review_verdict` | deferred | same rule on the unattended path (CI-green webhook, no-CI webhook, reviewer approve) |
+| 49 | `prs/[prNumber]/merge/route.ts` | `review_verdict` | rejected | dashboard merge with no `override` |
+| 50 | `prs/[prNumber]/merge/route.ts` | `review_verdict` | bypassed | `override: true` — an explicit human decision, recorded rather than passing unmarked |
+| 51 | `webhook/route.ts:handleReleasePrCiSuccess` | `review_verdict` | deferred | release promotion held by a verdict on the release PR itself |

@@ -83,6 +83,17 @@ mock.module('@/lib/conflict-retry', () => ({
   DEFAULT_MAX_CONFLICT_ITERATIONS: 3,
 }));
 
+// The review-verdict gate reads the reviewer task through `readPrReviewStatus`;
+// its own rule is tested in review-verdict-gate.test.ts. Here we drive its
+// answer and assert what the unattended merge path does with it.
+const mockGuardReviewVerdict = mock(() => Promise.resolve({ blocks: false } as any));
+mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardReviewVerdict }));
+const mockFireGateEvent = mock((_input: any) => {});
+mock.module('@/lib/gate-ledger', () => ({
+  fireGateEvent: mockFireGateEvent,
+  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict' },
+}));
+
 import { evaluateAutoMergeSafety, tryAutoMergeWorkerPr, escalateConflictExhaustion, escalateReviewerExhaustion, escalateReviewContractFailure } from './auto-merge';
 import type { MergePolicy } from '@buildd/shared';
 
@@ -1465,6 +1476,145 @@ describe('tryAutoMergeWorkerPr passes the bound through to the safety rails', ()
       bound,
     });
 
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+});
+
+// ── The review-verdict gate on the UNATTENDED path ───────────────────────────
+//
+// This is the merge that used to outrun a finding. `evaluateAutoMergeSafety`
+// covers CI, deny paths, size and migrations and asks nothing about the review;
+// under `agent-review` the CALLERS happened to require an approve first, but a
+// task PR based on a mission integration branch resolves to `auto-threshold`
+// (resolvePolicy rule 2) while still having a reviewer dispatched against it.
+describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
+  const blocked = {
+    blocks: true,
+    kind: 'changes_requested',
+    state: 'changes_requested',
+    reviewTaskId: 'review-1',
+    reason: 'the reviewer requested changes on this PR and no later review has cleared that verdict at abc1234',
+    clearedBy: 'Push the fix — a new commit supersedes the verdict.',
+  };
+
+  const greenPr = () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'feature' }, base: { ref: 'dev' } });
+  };
+
+  beforeEach(() => {
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'merged' });
+    mockGithubApi.mockReset();
+    mockInspectPullRequestMigrations.mockReset();
+    mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
+    mockFindFirst = mock(() => null as any);
+    mockTasksFindMany = mock(() => [] as any[]);
+    mockWorkersFindMany = mock(() => [] as any[]);
+    mockMissionsFindFirst = mock(() => null as any);
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+  });
+
+  it('does not merge a green PR whose reviewer requested changes on the same commit', async () => {
+    greenPr();
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(result.merged).toBe(false);
+    // The refusal names the verdict AND what would clear it.
+    expect(result.reason).toContain('requested changes');
+    expect(result.reason).toContain('supersedes the verdict');
+  });
+
+  it('records the deferral in the gate ledger rather than failing silently', async () => {
+    greenPr();
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockFireGateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: 'review_verdict',
+        outcome: 'deferred',
+        reason: blocked.reason,
+        workspaceId: 'ws-1',
+        workerId: 'worker-1',
+        callerOrigin: 'system',
+      }),
+    );
+  });
+
+  it('asks the gate about the commit actually being merged', async () => {
+    greenPr();
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockGuardReviewVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'head-sha' }),
+    );
+  });
+
+  it('merges when the review approved — the approve path is unaffected', async () => {
+    greenPr();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false, state: 'approved' });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(result.merged).toBe(true);
+    expect(mockMergePullRequest).toHaveBeenCalledTimes(1);
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
+  });
+
+  it('there is no override on this path — nothing unattended may bypass a verdict', async () => {
+    greenPr();
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+
+    await tryAutoMergeWorkerPr({
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      prNumber: 42,
+      headSha: 'head-sha',
+      worker: { id: 'worker-1', taskId: 'task-1', workspaceId: 'ws-1' },
+      policy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } },
+    });
+
+    expect(mockFireGateEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'bypassed' }),
+    );
     expect(mockMergePullRequest).not.toHaveBeenCalled();
   });
 });

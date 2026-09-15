@@ -3641,6 +3641,21 @@ async function handleReviewerOutcomeIfNeeded(
       console.warn(
         `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
       );
+      // Persist the verdict that ACTUALLY applies, alongside (never over) the
+      // agent's own output. Without this the stored review still reads
+      // `approve`, so `derivePrReviewStatus` reports `approved` — and both the
+      // self-merge check and the review-verdict gate would clear a PR the
+      // server just escalated to a human.
+      await db
+        .update(tasks)
+        .set({
+          result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${serverOverrideReason}::text)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, reviewerTaskId))
+        .catch((err: unknown) =>
+          console.error(`[reviewer] could not persist server escalation for PR #${prNumber}:`, err),
+        );
     }
   }
 

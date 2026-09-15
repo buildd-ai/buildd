@@ -30,6 +30,8 @@ import {
 import { isReleaseBranchPr } from '@buildd/core/release-strategy';
 import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -399,6 +401,48 @@ export async function tryAutoMergeWorkerPr(params: {
       }
     }
     return { merged: false, reason: safetyCheck.reason };
+  }
+
+  // Review-verdict gate — the same rule every other merge door enforces.
+  //
+  // This is the unattended path, so it is the one that used to let a finding be
+  // outrun: `evaluateAutoMergeSafety` covers CI, deny paths, size and
+  // migrations, and asks nothing about the review. Under `agent-review` the
+  // CALLERS happened to check for an approve first; under `auto-threshold` —
+  // which is every Option A′ task PR, all of which get a reviewer dispatched by
+  // `requestIntegrationBranchReview` — nothing did.
+  //
+  // No override here by construction: nothing unattended may bypass a verdict.
+  // A human override lives on the dashboard route, where a person is present.
+  const reviewWorkspaceId = worker.workspaceId ?? (worker.taskId ? await resolveWorkspaceId(worker.taskId) : null);
+  if (reviewWorkspaceId) {
+    const reviewGate = await guardReviewVerdict({
+      workspaceId: reviewWorkspaceId,
+      prNumber,
+      headSha,
+    });
+    if (reviewGate.blocks) {
+      const reason = `${reviewGate.reason}. ${reviewGate.clearedBy}`;
+      console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEW_VERDICT,
+        surface: 'auto-merge',
+        outcome: 'deferred',
+        reason: reviewGate.reason ?? 'review verdict blocks this merge',
+        workspaceId: reviewWorkspaceId,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: 'system',
+        detail: {
+          prNumber,
+          headSha,
+          reviewState: reviewGate.state ?? null,
+          reviewKind: reviewGate.kind ?? null,
+          reviewTaskId: reviewGate.reviewTaskId ?? null,
+        },
+      });
+      return { merged: false, reason };
+    }
   }
 
   // Mission-PR branch-lifecycle gate (P3) — same rule as the manual merge_pr

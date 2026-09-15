@@ -27,6 +27,7 @@ import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
@@ -1201,6 +1202,38 @@ export async function PUT(req: NextRequest) {
             hint: 'Use request_pr_review to dispatch the reviewer, then get_pr_review for the verdict. An approve merges the PR for you when policy permits.',
           }, { status: 403 });
         }
+      }
+
+      // Review-verdict gate — applies at EVERY tier, not just `agent-review`.
+      //
+      // The tier check above only fires for `agent-review`, and a task PR based
+      // on a mission integration branch resolves to `auto-threshold` by
+      // construction (resolvePolicy rule 2) while still having a reviewer
+      // dispatched against it. Without this, an agent could merge straight past
+      // its own reviewer's request-changes on any Option A′ PR.
+      const reviewGate = await guardReviewVerdict({
+        workspaceId: workspace.id,
+        prNumber,
+        headSha,
+      });
+      if (reviewGate.blocks) {
+        recordMergeGate(
+          'rejected',
+          reviewGate.reason ?? 'review verdict blocks this merge',
+          {
+            tier: policy.tier,
+            reviewState: reviewGate.state ?? null,
+            reviewKind: reviewGate.kind ?? null,
+            reviewTaskId: reviewGate.reviewTaskId ?? null,
+          },
+          GATE_SLUGS.REVIEW_VERDICT,
+        );
+        return NextResponse.json({
+          error: `merge refused: ${reviewGate.reason}`,
+          tier: policy.tier,
+          reviewState: reviewGate.state ?? null,
+          hint: reviewGate.clearedBy,
+        }, { status: 403 });
       }
 
       const safety = await evaluateAutoMergeSafety(

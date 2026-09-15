@@ -153,6 +153,15 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
         case 'conflict_exhausted':
           setState('conflict_exhausted');
           break;
+        case 'review_blocked':
+          // This card always sends `override: true`, so the server-side gate
+          // never refuses it. Reaching here means something else is outstanding
+          // (a second review round opened since the card rendered) — surface it
+          // rather than leaving the card spinning.
+          setErrorMsg(outcome.clearedBy ? `${outcome.message}. ${outcome.clearedBy}` : outcome.message);
+          setMergeRetrySafe(true);
+          setState('error');
+          break;
         case 'indeterminate':
           setErrorMsg(outcome.message);
           setMergeRetrySafe(outcome.liveState === 'open');
