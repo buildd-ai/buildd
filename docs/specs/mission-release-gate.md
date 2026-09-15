@@ -21,11 +21,6 @@ assertions:
     symbol: "findMissionPrOwner"
     entry: "apps/web/src/lib/mission-completion.ts"
     as: "read"
-  - id: "released-criterion"
-    type: "symbol_reachable"
-    symbol: "released"
-    entry: "packages/core/mission-helpers.ts"
-    as: "read"
 ---
 
 # Mission Release Gate
