@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.215.0",
+  "version": "0.215.1",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -21,6 +21,7 @@
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",
+    "./model-capability-requirements": "./model-capability-requirements.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./branch-names": "./branch-names.ts",
@@ -44,6 +45,7 @@
     "./mission-helpers": "./mission-helpers.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
+    "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
     "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
@@ -96,7 +98,7 @@
     "./initiative-metric-registry": "./initiative-metric-registry.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.231",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.272",
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",

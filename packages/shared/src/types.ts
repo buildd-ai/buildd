@@ -900,6 +900,15 @@ export interface WorkerEnvironment {
   mcpServers?: McpServerInfo[];
   labels: Record<string, string>;
   scannedAt: string;
+  /**
+   * Claude Code CLI version bundled by this runner's installed
+   * @anthropic-ai/claude-agent-sdk (read from its manifest.json, not the SDK's
+   * own npm version). Lets the claim route refuse a task whose resolved model
+   * needs a newer client before a worker session starts — see
+   * packages/core/model-capability-requirements.ts. Absent on runner builds
+   * that predate this field; the claim gate fails open in that case.
+   */
+  claudeCliVersion?: string;
 }
 
 // ============================================================================

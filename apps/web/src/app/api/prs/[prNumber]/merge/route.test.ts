@@ -20,6 +20,10 @@ const mockMissionsFindFirst = mock(() => Promise.resolve(null) as any);
 const mockInsertValues = mock((_table: any, _v: any) => Promise.resolve());
 const mockAppendPrActivity = mock(() => Promise.resolve({ action: 'updated' } as any));
 const mockSupersedeAncestorEscalations = mock(() => Promise.resolve());
+// The review-verdict gate is exercised on its own in lib/review-verdict-gate.test.ts;
+// here we drive its VERDICT to assert what this route does with each answer.
+const mockGuardReviewVerdict = mock(() => Promise.resolve({ blocks: false } as any));
+const mockFireGateEvent = mock((_input: any) => {});
 
 mock.module('@/lib/auth-helpers', () => ({ getCurrentUser: mockGetCurrentUser }));
 mock.module('@/lib/team-access', () => ({ getUserWorkspaceIds: mockGetUserWorkspaceIds }));
@@ -28,6 +32,11 @@ mock.module('@/lib/task-dependencies', () => ({ checkDependsOnResolved: mockChec
 mock.module('@/lib/mission-dependency', () => ({ checkAndUnblockDependentMissions: mockCheckAndUnblockDependentMissions }));
 mock.module('@/lib/pr-activity-comment', () => ({ appendPrActivity: mockAppendPrActivity }));
 mock.module('@/lib/escalation-supersession', () => ({ supersedeAncestorEscalations: mockSupersedeAncestorEscalations }));
+mock.module('@/lib/review-verdict-gate', () => ({ guardReviewVerdict: mockGuardReviewVerdict }));
+mock.module('@/lib/gate-ledger', () => ({
+  fireGateEvent: mockFireGateEvent,
+  GATE_SLUGS: { REVIEW_VERDICT: 'review_verdict' },
+}));
 mock.module('@/lib/pusher', () => ({
   triggerEvent: mockTriggerEvent,
   channels: { workspace: (id: string) => `workspace-${id}` },
@@ -114,11 +123,16 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     mockMergePullRequest.mockReset();
     mockTriggerEvent.mockReset();
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockReset();
     mockMissionsFindFirst.mockResolvedValue(null);
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+    mockInsertValues.mockReset();
+    mockInsertValues.mockResolvedValue(undefined as never);
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -191,6 +205,7 @@ describe('POST /api/prs/[prNumber]/merge', () => {
       workspace.githubRepo.fullName,
       42,
       'squash',
+      'head-A',
     );
   });
 
@@ -316,6 +331,8 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockReset();
     mockMissionsFindFirst.mockResolvedValue(null);
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
     mockCheckDependsOnResolved.mockReset();
     mockCheckDependsOnResolved.mockResolvedValue(undefined);
     mockCheckAndUnblockDependentMissions.mockReset();
@@ -335,7 +352,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'GitHub returned 502 with no readable response body',
       indeterminate: true,
     });
-    mockGithubApi.mockResolvedValue({ merged: false, state: 'open' });
+    mockGithubApi.mockResolvedValue({ merged: false, state: 'open', head: { sha: 'head-A' } });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
     const body = await res.json();
@@ -349,7 +366,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'GitHub returned 502 with no readable response body',
       indeterminate: true,
     });
-    mockGithubApi.mockResolvedValue({ merged: true, state: 'closed' });
+    mockGithubApi.mockResolvedValue({ merged: true, state: 'closed', head: { sha: 'head-A' } });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
 
@@ -366,7 +383,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'GitHub returned 502 with no readable response body',
       indeterminate: true,
     });
-    mockGithubApi.mockResolvedValue({ merged: false, state: 'open' });
+    mockGithubApi.mockResolvedValue({ merged: false, state: 'open', head: { sha: 'head-A' } });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
 
@@ -383,7 +400,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'Could not reach GitHub: fetch failed',
       indeterminate: true,
     });
-    mockGithubApi.mockRejectedValue(new Error('fetch failed'));
+    mockGithubApi.mockResolvedValueOnce({ head: { sha: 'head-A' } }).mockRejectedValue(new Error('fetch failed'));
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
 
@@ -395,6 +412,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
   });
 
   it('still classifies a genuine GitHub rejection normally (regression)', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Method Not Allowed', status: 405 });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
@@ -403,8 +421,10 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
     const body = await res.json();
     expect(body.indeterminate).toBeUndefined();
     expect(body.error).toMatch(/mergeable state|branch protection/i);
-    // A definitive rejection never needs the live-state re-check.
-    expect(mockGithubApi).not.toHaveBeenCalled();
+    // A definitive rejection never needs the live-state re-check. The one PR
+    // read that does happen is the review gate's head-SHA lookup, which runs
+    // BEFORE the merge attempt — so exactly one call, not two.
+    expect(mockGithubApi).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -423,7 +443,7 @@ describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
     mockTriggerEvent.mockReset();
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockTasksFindMany.mockReset();
     mockMissionsFindFirst.mockReset();
     mockMissionsFindFirst.mockResolvedValue({ workingBranch: BRANCH, integrationBranchEnabled: true });
@@ -531,11 +551,13 @@ describe('POST /api/prs/[prNumber]/merge — override (Merge anyway)', () => {
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
     mockTriggerEvent.mockReset();
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockReset();
     mockMissionsFindFirst.mockResolvedValue(null);
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
     mockInsertValues.mockReset();
     mockInsertValues.mockResolvedValue(undefined);
     mockAppendPrActivity.mockReset();
@@ -600,5 +622,159 @@ describe('POST /api/prs/[prNumber]/merge — override (Merge anyway)', () => {
     expect(mockInsertValues).not.toHaveBeenCalled();
     expect(mockAppendPrActivity).not.toHaveBeenCalled();
     expect(mockSupersedeAncestorEscalations).not.toHaveBeenCalled();
+  });
+});
+
+// The dashboard merge button used to consult the review verdict at NO tier: a
+// plain click merged a PR whose reviewer had just requested changes, with
+// nothing recorded anywhere. See lib/review-verdict-gate.ts.
+describe('POST /api/prs/[prNumber]/merge — review-verdict gate', () => {
+  const workerWithMission = {
+    ...openWorker,
+    task: { id: 't-1', missionId: 'mission-1', status: 'completed' },
+  };
+
+  const blocked = {
+    blocks: true,
+    kind: 'changes_requested',
+    state: 'changes_requested',
+    reviewTaskId: 'review-1',
+    reviewHeadSha: 'c'.repeat(40),
+    reason: 'the reviewer requested changes on this PR and no later review has cleared that verdict at ccccccc',
+    clearedBy: 'Push the fix — a new commit supersedes the verdict.',
+  };
+
+  beforeEach(() => {
+    mockGetCurrentUser.mockReset();
+    mockGetUserWorkspaceIds.mockReset();
+    mockWorkersFindMany.mockReset();
+    mockWorkspacesFindFirst.mockReset();
+    mockWorkspacesFindMany.mockReset();
+    mockWorkspacesFindMany.mockResolvedValue([]);
+    mockMergePullRequest.mockReset();
+    mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
+    mockTriggerEvent.mockReset();
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValue({ head: { sha: 'c'.repeat(40) } });
+    mockTasksFindMany.mockReset();
+    mockTasksFindMany.mockResolvedValue([]);
+    mockMissionsFindFirst.mockReset();
+    mockMissionsFindFirst.mockResolvedValue(null);
+    mockInsertValues.mockReset();
+    mockInsertValues.mockResolvedValue(undefined as never);
+    mockAppendPrActivity.mockReset();
+    mockAppendPrActivity.mockResolvedValue({ action: 'updated' } as any);
+    mockSupersedeAncestorEscalations.mockReset();
+    mockSupersedeAncestorEscalations.mockResolvedValue(undefined as any);
+    mockGuardReviewVerdict.mockReset();
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    mockFireGateEvent.mockReset();
+    const updateWhere = mock(() => Promise.resolve());
+    const updateSet = mock(() => ({ where: updateWhere }));
+    mockWorkersUpdate.mockReturnValue({ set: updateSet });
+    mockGetCurrentUser.mockResolvedValue({ id: 'u-1', email: 'max@example.com' });
+    mockGetUserWorkspaceIds.mockResolvedValue(['ws-1']);
+    mockWorkspacesFindFirst.mockResolvedValue(workspace);
+    mockWorkersFindMany.mockResolvedValue([workerWithMission]);
+  });
+
+  it('refuses the merge, naming the verdict and what would clear it', async () => {
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reviewGateBlocked).toBe(true);
+    expect(body.error).toContain('requested changes');
+    expect(body.clearedBy).toBe(blocked.clearedBy);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('records the refusal in the gate ledger — never a silent no-op', async () => {
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+    const [req, ctx] = makeRequest();
+    await POST(req, ctx);
+
+    expect(mockFireGateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: 'review_verdict',
+        outcome: 'rejected',
+        reason: blocked.reason,
+        workspaceId: 'ws-1',
+        taskId: 't-1',
+        callerOrigin: 'dashboard',
+      }),
+    );
+  });
+
+  it('reads the PR head live rather than trusting the worker row', async () => {
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
+    const [req, ctx] = makeRequest();
+    await POST(req, ctx);
+
+    expect(mockGuardReviewVerdict).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-1', prNumber: 42, headSha: 'c'.repeat(40) }),
+    );
+  });
+
+  it('an explicit human override merges, and lands as a bypass in the ledger', async () => {
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+    const [req, ctx] = makeRequest('42', { override: true });
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).toHaveBeenCalled();
+    expect(mockFireGateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: 'review_verdict',
+        outcome: 'bypassed',
+        reason: blocked.reason,
+        detail: expect.objectContaining({ overriddenBy: 'max@example.com' }),
+      }),
+    );
+  });
+
+  it('an override names the blocking verdict on the audit note when the card sent no reason', async () => {
+    mockGuardReviewVerdict.mockResolvedValue(blocked);
+    const [req, ctx] = makeRequest('42', { override: true });
+    await POST(req, ctx);
+
+    const noteCall = mockInsertValues.mock.calls.find(([, v]: any[]) => v?.type === 'decision');
+    expect(noteCall?.[1]).toEqual(
+      expect.objectContaining({ body: expect.stringContaining('requested changes') }),
+    );
+  });
+
+  it('refuses an unknown head even when the user overrides the review', async () => {
+    mockGithubApi.mockResolvedValue({});
+    const [req, ctx] = makeRequest('42', { override: true });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not complete the worker when the head moves between review and merge', async () => {
+    mockMergePullRequest.mockImplementation(async (...args: any[]) =>
+      args[4] === 'c'.repeat(40)
+        ? { merged: false, message: 'Head branch was modified', status: 409 }
+        : { merged: true, message: 'merged unchecked head' });
+    mockWorkersUpdate.mockClear();
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(422);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
+  });
+
+  it('lets an approve-after-changes through untouched', async () => {
+    // The gate answers "does the CURRENT review state block this" — a later
+    // approve replaces the stale verdict, so nothing here should fire.
+    mockGuardReviewVerdict.mockResolvedValue({ blocks: false, state: 'approved' });
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+
+    expect(res.status).toBe(200);
+    expect(mockMergePullRequest).toHaveBeenCalled();
+    expect(mockFireGateEvent).not.toHaveBeenCalled();
   });
 });

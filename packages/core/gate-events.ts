@@ -70,6 +70,8 @@ export const GATE_SLUGS = {
   MERGE_POLICY: 'merge_policy',
   /** merge_pr — mission-PR branch-lifecycle wait. */
   MISSION_PR_LIFECYCLE: 'mission_pr_lifecycle',
+  /** Every merge door — an outstanding non-approve verdict, or a review round still in flight, at the commit being merged. Carries the human `override` bypass. */
+  REVIEW_VERDICT: 'review_verdict',
   /** check_path_claim — wildcard refusal and real-overlap deferral. */
   PATH_CLAIM: 'path_claim',
   /** request_pr_review — one reviewer per PR at a time. */

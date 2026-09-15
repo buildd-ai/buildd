@@ -23,7 +23,7 @@ const MERGED_DISMISS_MS = 5000;
 // in flight, retries exhausted — is never decided by `state`: that's server
 // truth, held in `optimistic` only until fresh `item` props land, then
 // cleared unconditionally so a background refresh always wins.
-type MergeState = 'idle' | 'confirming' | 'merging' | 'error';
+type MergeState = 'idle' | 'confirming' | 'merging' | 'error' | 'review_blocked';
 
 type Optimistic =
   | { kind: 'merged' }
@@ -49,6 +49,10 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
   // rejection, or a confirmed-still-open indeterminate) means the merge
   // definitely did not land, so retrying is safe.
   const [retrySafe, setRetrySafe] = useState(true);
+  // The review-verdict refusal, kept apart from `errorMsg`: it is a deliberate
+  // server decision with its own exit (override), not a failure to retry.
+  const [reviewBlockMsg, setReviewBlockMsg] = useState('');
+  const [reviewClearedBy, setReviewClearedBy] = useState<string | null>(null);
   const [optimistic, setOptimistic] = useState<Optimistic | null>(null);
 
   // The moment fresh server props land, whatever `optimistic` was covering is
@@ -74,14 +78,20 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
 
   if (dismissed) return null;
 
-  const handleMerge = async () => {
+  // `override` is the human bypass of the review-verdict gate. It is only ever
+  // sent from the "Merge anyway" affordance below — never from the first click —
+  // so a bypass is always a second, deliberate act, and the server records it.
+  const handleMerge = async (opts?: { override?: boolean }) => {
     setMergeState('merging');
     try {
       const res = await fetch(`/api/prs/${item.prNumber}/merge`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceId: item.workspaceId }),
+        body: JSON.stringify({
+          workspaceId: item.workspaceId,
+          ...(opts?.override ? { override: true, escalationReason: reviewBlockMsg } : {}),
+        }),
       });
       const data = res.ok ? null : await res.json().catch(() => null);
       const outcome = resolveMergeOutcome(res.ok, res.status, data);
@@ -101,6 +111,11 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
         case 'conflict_exhausted':
           setOptimistic({ kind: 'conflict_exhausted' });
           router.refresh();
+          break;
+        case 'review_blocked':
+          setReviewBlockMsg(outcome.message);
+          setReviewClearedBy(outcome.clearedBy);
+          setMergeState('review_blocked');
           break;
         case 'indeterminate':
           setErrorMsg(outcome.message);
@@ -300,10 +315,44 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
               Cancel
             </button>
             <button
-              onClick={handleMerge}
+              onClick={() => handleMerge()}
               className="text-[12px] font-medium text-white bg-status-success hover:bg-status-success/90 transition-colors px-2.5 py-0.5 rounded"
             >
               Confirm Merge
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Review-gate strip — the merge was refused on purpose, and says why */}
+      {!optimistic && mergeState === 'review_blocked' && (
+        <div className="mt-2 pt-2 border-t border-status-warning/20">
+          <p className="text-[11px] text-status-warning mb-1 break-words">{reviewBlockMsg}</p>
+          {reviewClearedBy && (
+            <p className="text-[11px] text-text-secondary mb-1.5 break-words">{reviewClearedBy}</p>
+          )}
+          <div className="flex items-center gap-3">
+            {item.prUrl && (
+              <a
+                href={item.prUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-[12px] font-medium text-primary hover:underline"
+              >
+                Open PR
+              </a>
+            )}
+            <button
+              onClick={() => handleMerge({ override: true })}
+              className="text-[11px] text-text-muted hover:text-text-secondary underline"
+            >
+              Merge anyway
+            </button>
+            <button
+              onClick={() => setMergeState('idle')}
+              className="text-[11px] text-text-muted hover:text-text-secondary underline"
+            >
+              Dismiss
             </button>
           </div>
         </div>
@@ -316,7 +365,7 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           <div className="flex items-center gap-2 flex-shrink-0">
             {retrySafe ? (
               <button
-                onClick={handleMerge}
+                onClick={() => handleMerge()}
                 className="text-[11px] text-text-muted hover:text-text-secondary underline"
               >
                 Retry
