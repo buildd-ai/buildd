@@ -18,16 +18,28 @@ assertions:
 ---
 # MCP `start_task` action: expose the existing /start route over MCP
 
-**Status:** Proposed — prerequisites merged (capability gate removed in PRs #1864, #1868; claim-gates.ts deleted; /start now imports from canonical gate modules)  
+**Status:** Proposed — the underlying `/start` route and its gate coverage are
+fully built and hardened (capability gate removed in PRs #1864, #1868;
+claim-gates.ts deleted; /start now imports from canonical gate modules; two
+further gates — `mission_budget_exhausted` and `subject_dead` — landed in PR
+#1894, after this design's original gate audit). The `start_task` MCP action
+itself — this design's actual proposal — has not been implemented: there is no
+`start_task` (or equivalently-named) entry in `adminActions` in
+`packages/core/mcp-tools.ts`, and no MCP wrapper anywhere in the codebase calls
+`POST /api/tasks/[id]/start`. An implementer picking this up must account for
+the two gates added since the original sketch (see the updated gate table
+below and the `gateReason` union in the Action signature).
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/start/route.ts` — the existing /start implementation
-- `apps/web/src/app/api/workers/claim/` — canonical gate modules (`connector-gate.ts`, `held-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`, `deferred-gate.ts`, `pacing-gate.ts`)
+- `apps/web/src/app/api/workers/claim/` — canonical gate modules (`connector-gate.ts`, `held-gate.ts`, `mission-budget-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`, `deferred-gate.ts`, `pacing-gate.ts`)
+- `apps/web/src/lib/subject-gate-contract.ts` — subject-liveness gate predicate shared by `/start` and the claim route
 - `apps/web/src/app/api/workers/claim/route.ts` — the authoritative claim gate
-- `packages/core/mcp-tools.ts` — MCP action registry
+- `packages/core/mcp-tools.ts` — MCP action registry (does not yet contain `start_task`)
 - `apps/web/src/lib/task-dependencies.ts` — `dispatchUnblockedTask` (dep-resolution broadcast)
 - PR #1241 — dep-PR gate + forceOverride
 - PR #1512 — connector_routing_mismatch, mission_held, workspace_cap_reached gates
 - PR #1677 (task 8fe56c91) — durable priority boost + manualStartAt stamp
+- PR #1894 — mission_budget_exhausted and subject_dead gates added to `/start` and the claim route
 
 ---
 
@@ -52,7 +64,7 @@ the evidence base for deciding what to expose.
 | # | Entry point | File | Trigger | MCP-exposed today? | Notes |
 |---|---|---|---|---|---|
 | 1 | `POST /api/workers/claim` | `apps/web/src/app/api/workers/claim/route.ts` | Runner polls on its own cadence | No | Single authoritative gate; enforces all SQL-level filters. Workers call this; it is never user-initiated. |
-| 2 | `POST /api/tasks/[id]/start` | `apps/web/src/app/api/tasks/[id]/start/route.ts` | UI button or raw API key call | **No** — the gap | Runs pre-flight gate checks (dep-PR, deferred-start, connector routing, mission-held, workspace cap). On pass: stamps `context.manualStartAt`, boosts `priority+1`, broadcasts `TASK_ASSIGNED` via Pusher. Idempotent: a second call re-broadcasts but does not compound the priority boost. |
+| 2 | `POST /api/tasks/[id]/start` | `apps/web/src/app/api/tasks/[id]/start/route.ts` | UI button or raw API key call | **No** — the gap | Runs pre-flight gate checks (dep-PR, deferred-start, connector routing, mission-held, mission budget, subject liveness, workspace cap). On pass: stamps `context.manualStartAt`, boosts `priority+1`, broadcasts `TASK_ASSIGNED` via Pusher. Idempotent: a second call re-broadcasts but does not compound the priority boost. |
 | 3 | `GET /api/cron/schedules` | `apps/web/src/app/api/cron/schedules/route.ts` | External scheduler (cron-job.org) hourly (`0 * * * *`) | No | **Creates** tasks from `taskSchedules` rows (not claims). After INSERT, calls `dispatchNewTask()` which fires `TASK_CREATED` + `TASK_ASSIGNED`. Tasks then sit in the claim queue for runner #1 to pick up. |
 | 4 | `dispatchUnblockedTask()` | `apps/web/src/lib/task-dependencies.ts:496` | Called from completion route when a dependency resolves | No | Re-broadcasts `TASK_ASSIGNED` for tasks whose deps just cleared. Not user-triggered. |
 | 5 | `POST /api/missions/[id]/run` | `apps/web/src/app/api/missions/[id]/run/route.ts` | Manual one-shot trigger, admin API key | Indirectly via `manage_missions` action on the MCP `buildd` tool | Creates + dispatches a planning task for a mission. Does not target an existing pending task. |
@@ -64,14 +76,16 @@ a specific pending task, and it is the only one absent from MCP. That is the gap
 
 ## Current state of /start
 
-`POST /api/tasks/[id]/start` (PR #1241, #1512, #1677):
+`POST /api/tasks/[id]/start` (PR #1241, #1512, #1677, #1894):
 
 **Gate checks (in order):** each returns `422 { gateReason, blockClass, ... }` with gate-specific extra fields:
 1. `deferred_start` — task has a future `startAt` and `!forceOverride` · `blockClass: 'policy'` · `canForce: true`
 2. `unmerged_dep_pr` — dependency is completed but has an unmerged PR · `blockClass: 'policy'` · `canForce: true` · `blockingDeps[]`
 3. `connector_routing_mismatch` — task's role requires connectors missing or expired · `blockClass: 'capability'` · **no `canForce`** · `connectorFailures[]` · optional `alternativeRole`
 4. `mission_held` — parent mission is held (startMode=held) and `!forceOverride` · `blockClass: 'policy'` · `canForce: true`
-5. `workspace_cap_reached` — workspace is at `maxConcurrentTasks` · `blockClass: 'policy'` · `canExempt: true` (not `canForce`) · `active`, `cap`, `queuePosition`
+5. `mission_budget_exhausted` (added PR #1894) — parent mission's cost budget is exhausted and `!forceOverride` · `blockClass: 'policy'` · `canForce: true` · `missionId`
+6. `subject_dead` (added PR #1894) — task's subject PR is closed/merged with no live successor and `!forceOverride` · `blockClass: 'policy'` · `canForce: true` · `subjectKind`, `subjectPrNumber`, `subjectResolution`
+7. `workspace_cap_reached` — workspace is at `maxConcurrentTasks` · `blockClass: 'policy'` · `canExempt: true` (not `canForce`) · `active`, `cap`, `queuePosition`
 
 **On pass:**
 - Stamps `context.manualStartAt = now.toISOString()` (durable; survives Pusher drops)
@@ -131,6 +145,8 @@ start_task({
             | 'unmerged_dep_pr'
             | 'connector_routing_mismatch'
             | 'mission_held'
+            | 'mission_budget_exhausted'   // added PR #1894
+            | 'subject_dead'               // added PR #1894
             | 'workspace_cap_reached',
   blockClass: 'policy' | 'capability',
   canForce?: boolean,         // policy gates only; absent for connector_routing_mismatch
@@ -138,6 +154,10 @@ start_task({
   blockingDeps?: { taskId, taskTitle, prUrl, prNumber }[],
   connectorFailures?: { connectorId, connectorName, mode }[],
   alternativeRole?: string,
+  missionId?: string,         // mission_held, mission_budget_exhausted
+  subjectKind?: string,       // subject_dead
+  subjectPrNumber?: number,   // subject_dead
+  subjectResolution?: string, // subject_dead
   active?: number,
   cap?: number,
   queuePosition?: number,
