@@ -214,6 +214,11 @@ describe('recordAndDispatchRelease', () => {
     expect(flat).toContain('"head-sha"');
     expect(flat).toContain('"dispatched"');
     expect(flat).toContain('"deploying"');
+    // A `gated` release whose dispatch workflow already succeeded sits in
+    // 'pending_external' while its release PR awaits review/merge — that is
+    // still in-flight, so a repeat dispatch for the same commit must dedupe
+    // against it too, not reset the row and re-dispatch a duplicate release.
+    expect(flat).toContain('"pending_external"');
   });
 
   it('re-arms a terminal row for the same commit instead of raising a unique violation', async () => {
