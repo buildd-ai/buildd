@@ -24,6 +24,7 @@ ALLOWLIST=(
   "packages/core/model-aliases.ts"                 # the alias table: model IDs are its content
   "packages/core/model-prices.ts"                  # price book keyed by model ID
   "packages/core/model-tier-registry.ts"           # tier → model resolution
+  "packages/core/model-capability-requirements.ts" # model → minimum CLI version floor table
   "packages/core/model-tier-defaults.ts"           # code-level fallback tiers
   "packages/core/model-tier-liveness.ts"           # audits tier IDs; the IDs in its docstrings ARE the spec of the parser
   "packages/core/model-display.ts"                 # humanises model IDs; the IDs in its docstrings ARE the spec of the parser
