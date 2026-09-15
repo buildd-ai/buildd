@@ -108,8 +108,8 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-05
   Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
-- [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-14
-  Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, with day boundaries as ticks and history collapsed to chain rows.
+- [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-15
+  Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, with day ticks, collapsed chains, and an attempt mark only where the outcome is not clean.
 
 ## Superseded (1)
 
