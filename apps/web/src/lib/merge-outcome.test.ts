@@ -90,6 +90,37 @@ describe('resolveMergeOutcome', () => {
   });
 });
 
+describe('resolveMergeOutcome — review gate', () => {
+  it('409 reviewGateBlocked → review_blocked, carrying what would clear it', () => {
+    expect(
+      resolveMergeOutcome(false, 409, {
+        error: 'Merge refused: the reviewer requested changes on this PR',
+        reviewGateBlocked: true,
+        clearedBy: 'Push the fix, or merge with an explicit override.',
+      }),
+    ).toEqual({
+      kind: 'review_blocked',
+      message: 'Merge refused: the reviewer requested changes on this PR',
+      clearedBy: 'Push the fix, or merge with an explicit override.',
+    });
+  });
+
+  it('a review block with no clearedBy still resolves as review_blocked', () => {
+    expect(resolveMergeOutcome(false, 409, { error: 'Merge refused: x', reviewGateBlocked: true })).toEqual({
+      kind: 'review_blocked',
+      message: 'Merge refused: x',
+      clearedBy: null,
+    });
+  });
+
+  it('an ordinary 409 without the marker is still an error', () => {
+    expect(resolveMergeOutcome(false, 409, { error: 'PR has merge conflicts' })).toEqual({
+      kind: 'error',
+      message: 'PR has merge conflicts',
+    });
+  });
+});
+
 describe('shouldRefreshOnVisible', () => {
   it('refreshes when the tab has been away longer than the floor', () => {
     expect(shouldRefreshOnVisible(0, MIN_VISIBILITY_REFRESH_MS)).toBe(true);

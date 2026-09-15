@@ -399,16 +399,19 @@ mock.module('./dark-check-detection', () => ({
 }));
 
 // Release verification is fire-and-forget; no-op in route tests.
+const mockVerifyReleaseDeployment = mock(() => Promise.resolve());
 mock.module('@/lib/release-verification', () => ({
-  verifyReleaseDeployment: mock(() => Promise.resolve()),
+  verifyReleaseDeployment: mockVerifyReleaseDeployment,
 }));
 
 // recordDirectProdMerge's own repo→workspace resolution and row-insert logic
 // are covered at the unit level in release-executor.test.ts; here we only
 // assert the webhook wires it up with the right args.
 const mockRecordDirectProdMerge = mock(() => Promise.resolve());
+const mockAdvanceGatedReleaseOnPrMerge = mock(() => Promise.resolve());
 mock.module('@/lib/release-executor', () => ({
   recordDirectProdMerge: mockRecordDirectProdMerge,
+  advanceGatedReleaseOnPrMerge: mockAdvanceGatedReleaseOnPrMerge,
 }));
 
 // On-demand review callbacks — asserted below, stubbed here.
@@ -580,6 +583,8 @@ function resetAll() {
   mockTriggerEvent.mockReset();
   mockRecordDirectProdMerge.mockReset();
   mockRecordDirectProdMerge.mockReturnValue(Promise.resolve());
+  mockAdvanceGatedReleaseOnPrMerge.mockReset();
+  mockAdvanceGatedReleaseOnPrMerge.mockReturnValue(Promise.resolve());
 
   insertCalls = [];
   deleteCalls = [];
@@ -2586,6 +2591,37 @@ describe('POST /api/github/webhook', () => {
       });
     });
 
+    it('advances a gated release row when the release PR itself merges, matched by pre-merge head sha', async () => {
+      mockWorkersFindFirst.mockReturnValue(null);
+
+      const payload = {
+        action: 'closed',
+        pull_request: {
+          number: 92,
+          merged: true,
+          draft: false,
+          merge_commit_sha: 'merge-sha-92',
+          head: { ref: 'dev', sha: 'head-sha-92' },
+          base: { ref: 'main', sha: 'base-sha-92' },
+          html_url: 'https://github.com/test-org/test-repo/pull/92',
+        },
+        repository: { full_name: 'test-org/test-repo' },
+        installation: { id: 5000 },
+      };
+
+      const res = await POST(createWebhookRequest('pull_request', payload));
+      expect(res.status).toBe(200);
+
+      expect(mockAdvanceGatedReleaseOnPrMerge).toHaveBeenCalledTimes(1);
+      expect(mockAdvanceGatedReleaseOnPrMerge.mock.calls[0]?.[0]).toMatchObject({
+        repoFullName: 'test-org/test-repo',
+        baseRef: 'main',
+        // The pre-merge branch tip, NOT the merge commit sha — that's what
+        // the row was recorded with at dispatch time.
+        prHeadSha: 'head-sha-92',
+      });
+    });
+
     it('does not record a direct-prod-merge release for a closed-unmerged PR', async () => {
       const payload = {
         action: 'closed',
@@ -2605,6 +2641,7 @@ describe('POST /api/github/webhook', () => {
       expect(res.status).toBe(200);
 
       expect(mockRecordDirectProdMerge).not.toHaveBeenCalled();
+      expect(mockAdvanceGatedReleaseOnPrMerge).not.toHaveBeenCalled();
     });
 
     it('calls tryAutoMergeWorkerPr regardless of drizzle/lockfile noise in diff', async () => {
@@ -3463,6 +3500,61 @@ describe('workflow_run → releases state advancement', () => {
     expect(releaseUpdate).toBeDefined();
   });
 
+  // ── gated archetype: a successful dispatch only opened the release PR ────
+  //
+  // See apps/web/src/lib/release-executor.ts's advanceGatedReleaseOnPrMerge —
+  // the release PR merging into prodBranch is the real deploy signal for a
+  // gated workspace, not the workflow_dispatch run succeeding.
+
+  it('does not mark a gated release deploying on dispatch success — moves to pending_external instead', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-gated-1', workspaceId: 'ws-release', state: 'dispatched', archetype: 'gated' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeDefined();
+    expect((releaseUpdate!.setValues as any).state).toBe('pending_external');
+    expect((releaseUpdate!.setValues as any).deployedAt).toBeUndefined();
+
+    const pusherCall = mockTriggerEvent.mock.calls.find(
+      ([, event, data]: any[]) => event === 'release:updated' && data?.state === 'pending_external',
+    );
+    expect(pusherCall).toBeDefined();
+  });
+
+  it('still marks a non-gated (continuous) release deploying on dispatch success — unaffected', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-cont-1', workspaceId: 'ws-release', state: 'dispatched', archetype: 'continuous' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('success')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeDefined();
+    expect((releaseUpdate!.setValues as any).state).toBe('deploying');
+    expect((releaseUpdate!.setValues as any).deployedAt).toBeDefined();
+  });
+
+  it('still marks a gated release failed on dispatch failure — unaffected', async () => {
+    selectTableResults = (t) =>
+      t === schemaMock.releases
+        ? [{ id: 'release-gated-3', workspaceId: 'ws-release', state: 'dispatched', archetype: 'gated' }]
+        : null;
+
+    const res = await POST(createWebhookRequest('workflow_run', makeWorkflowRunPayload('failure')));
+    expect(res.status).toBe(200);
+
+    const releaseUpdate = updateCalls.find((c) => c.table === schemaMock.releases);
+    expect(releaseUpdate).toBeDefined();
+    expect((releaseUpdate!.setValues as any).state).toBe('failed');
+  });
+
   // ── the runId lookup ──────────────────────────────────────────────────────
   //
   // This lookup runs on EVERY completed workflow_run — every CI workflow on
@@ -4059,5 +4151,41 @@ describe('pull_request merged — effects that belong to the merge, not the tran
 
     expect(updateCalls.some(c => (c.setValues as any).status === 'completed')).toBe(true);
     expect(mockCheckAndUnblockDependentMissions).toHaveBeenCalledWith('m2', 'merged');
+  });
+});
+
+describe('release PR CI success pins the live head', () => {
+  beforeEach(() => {
+    resetAll();
+    selectTableResults = (table) => table === schemaMock.tasks
+      ? [{ id: 'release-task', workspaceId: 'ws-release', context: { releasePrPending: true, releasePrNumber: 42 } }]
+      : null;
+  });
+
+  const deliverSuccess = () => POST(createWebhookRequest('check_suite',
+    makeCheckSuitePayload({ check_suite: { conclusion: 'success', head_sha: 'a'.repeat(40) } })));
+
+  it('ignores delayed success for A when live B has a rejecting review', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'b'.repeat(40) } });
+    mockReadPrReviewStatus.mockResolvedValue({
+      state: 'changes_requested', terminal: true, reviewHeadSha: 'b'.repeat(40),
+      verdict: 'request-changes', reviewTaskId: 'review-B',
+    } as any);
+    await deliverSuccess();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+    expect(updateCalls.filter(c => c.table === schemaMock.tasks)).toHaveLength(0);
+  });
+
+  it('does not merge when the live head cannot be read', async () => {
+    mockGithubApi.mockRejectedValue(new Error('GitHub unavailable'));
+    await deliverSuccess();
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('passes the checked SHA as the expected merge head', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'a'.repeat(40) } });
+    await deliverSuccess();
+    expect(mockMergePullRequest).toHaveBeenCalledWith(5000, 'test-org/test-repo', 42, 'merge', 'a'.repeat(40));
+    expect(updateCalls.some(c => c.setValues.status === 'completed')).toBe(true);
   });
 });

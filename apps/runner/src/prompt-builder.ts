@@ -469,7 +469,17 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
 
   // Render retry context so workers know they're continuing previous work
   const retryIteration = (taskCtx as any)?.iteration as number | undefined;
-  const failureCtx = (taskCtx as any)?.failureContext as string | undefined;
+  // failureContext is written as the structured { summary, errorType?, commitSha? }
+  // object by every canonical writer (ci-retry.ts, conflict-retry.ts,
+  // loop-dispatcher.ts, the direct failure-capture path in
+  // workers/[id]/route.ts) — a bare string only exists for backward compat
+  // with tasks written before that shape landed. Interpolating the object
+  // directly stringifies it to "[object Object]".
+  const rawFailureCtx = (taskCtx as any)?.failureContext as unknown;
+  const failureCtx: string | undefined =
+    typeof rawFailureCtx === 'string'
+      ? rawFailureCtx
+      : (rawFailureCtx as { summary?: string } | undefined | null)?.summary;
   const retryBaseBranch = (taskCtx as any)?.baseBranch as string | undefined;
   const maxIter = (taskCtx as any)?.maxIterations as number | undefined;
 

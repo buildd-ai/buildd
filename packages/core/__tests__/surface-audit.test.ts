@@ -27,6 +27,11 @@ describe('isUiSurfacePath', () => {
     expect(isUiSurfacePath('packages/core/db/schema.ts')).toBe(false);
     expect(isUiSurfacePath('apps/runner/src/workers.ts')).toBe(false);
   });
+
+  it('does not match Next.js API route handlers, despite the shared apps/web/src/app/ prefix', () => {
+    expect(isUiSurfacePath("apps/web/src/app/api/workers/[id]/route.ts")).toBe(false);
+    expect(isUiSurfacePath("apps/web/src/app/api/workers/[id]/route.test.ts")).toBe(false);
+  });
 });
 
 describe('touchesUiSurface', () => {
@@ -50,6 +55,14 @@ describe('touchesUiSurface', () => {
 
   it('is false when the sentinel rides along with a UI path — sentinel means undeclared scope', () => {
     expect(touchesUiSurface(['**', 'apps/web/src/app/page.tsx'])).toBe(false);
+  });
+
+  it('is false for a mission scoped entirely to API route paths plus non-UI file types', () => {
+    expect(touchesUiSurface([
+      'apps/web/src/app/api/workers/[id]/route.ts',
+      'apps/web/src/app/api/workers/[id]/route.test.ts',
+      'docs/specs/mission-task-lifecycle.md',
+    ])).toBe(false);
   });
 });
 

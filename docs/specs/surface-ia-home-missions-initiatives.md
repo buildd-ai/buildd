@@ -1,32 +1,27 @@
 ---
 title: Surface IA — Home, Missions, Initiatives
-status: draft
+status: active
 owner: max
-last_verified: 2026-09-05
+last_verified: 2026-09-15
 summary: Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 domain: surfaces
 surfaces: [apps/web/src/lib/initiative-pulse.ts, apps/web/src/lib/verdict-presentation.ts, apps/web/src/lib/initiative-presentation.ts, apps/web/src/app/app/(protected)/home/page.tsx]
 related: [mission-task-lifecycle, timeline-dependency-geometry, release-flow]
 keywords: [losing, grinding, won_unclaimed, awaitingVerification, criteriaFail, effortDays, verdict ladder, unverified confidence, release, ship state, empty-state doctrine, unseeded baseline, integration branch, value invariant]
 supersedes: [missions-tab-triage]
+verified_by: [apps/web/src/lib/initiative-pulse.test.ts, apps/web/src/lib/verdict-presentation.test.ts, apps/web/src/app/app/(protected)/home/InitiativePulseLine.test.tsx, apps/web/src/app/app/(protected)/initiatives/[id]/verdict-blocks.test.ts, apps/web/src/app/app/(protected)/missions/[id]/MissionReleaseSection.test.tsx, apps/web/src/components/TaskShipBadge.test.tsx]
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "initiative-archetype"
     type: "symbol"
     name: "detectArchetype"
     path: "packages/core/release-archetype.ts"
-    skip_until: "2026-11-15"
-    skip_reason: "specs:check flags stale symbol claims elsewhere in this doc (groupMissionsByInitiative, initiativeGroups resolve nowhere) — holding at draft until the content audit lands, even though this assertion itself passes"
   - id: "initiative-pulse-tests"
     type: "test_file"
     path: "apps/web/src/lib/initiative-pulse.test.ts"
-    skip_until: "2026-11-15"
-    skip_reason: "specs:check flags stale symbol claims elsewhere in this doc (groupMissionsByInitiative, initiativeGroups resolve nowhere) — holding at draft until the content audit lands, even though this assertion itself passes"
   - id: "verdict-presentation-tests"
     type: "test_file"
     path: "apps/web/src/lib/verdict-presentation.test.ts"
-    skip_until: "2026-11-15"
-    skip_reason: "specs:check flags stale symbol claims elsewhere in this doc (groupMissionsByInitiative, initiativeGroups resolve nowhere) — holding at draft until the content audit lands, even though this assertion itself passes"
 ---
 
 # Surface IA — Home, Missions, Initiatives
@@ -237,10 +232,12 @@ contain a token-aggregation query.
 
 An initiative appears on this surface only as a per-card label linking to
 `/app/initiatives/<id>` (already implemented on both `FullMissionCard` and
-`CompactMissionCard`). The initiative-grouping path in `MissionGrid` —
+`CompactMissionCard`). The initiative-grouping path formerly in `MissionGrid` —
 initiativeGroups, InitiativeGroupData, InitiativeGroupSection,
-groupMissionsByInitiative — is dead (no caller passes the prop) and MUST be
-deleted along with its test file.
+groupMissionsByInitiative — was dead (no caller passed the prop) and has been
+deleted along with its test file (§7 migration step 4). None of those four
+names resolve in the tree today; they are named here as history, not as a live
+code surface.
 
 ### 3.3 Workspace headers
 
@@ -726,21 +723,24 @@ Ordered so that no intermediate commit leaves a surface without its signal:
    makes them verdict-shaped; the Missions page therefore already lost its
    triage mount.
 4. Apply the workspace-header rule (§3.3); ~~delete the dead initiative-grouping
-   path (§3.2)~~. **§3.2 done** (2026-09-04) — `groupMissionsByInitiative`, the
-   `initiativeGroups` prop, `InitiativeGroupData`, `InitiativeGroupSection`, the
-   collapse state and the grouped render branch are all removed, along with the
-   test that was their only external caller. Verified beforehand that
-   `missions/page.tsx` never passed the prop, so the path was dead as claimed.
-   The §3.3 workspace-header rule (AC-8…AC-10) is still open.
-5. Replace the initiative rail on Home with the pulse line (§2). **Partially
-   done** — the rail is unmounted and its component file deleted (AC-6 holds, and
-   a source-level guard now asserts Home does not import it). The pulse line
-   itself (§2.2's clause set, AC-1…AC-5) is **not built yet**, so Home currently
-   carries no initiative element other than the arc headline. Deleting the rail
-   ahead of its replacement is the reason this step is called out rather than
-   marked done: the two halves must not be left separated for long.
-6. Add the verdict-and-evidence block, the pending-action strip and the large
-   sparkline to the detail page (§5).
+   path (§3.2)~~. **§3.2 done** (2026-09-04) — groupMissionsByInitiative, the
+   initiativeGroups prop, InitiativeGroupData, InitiativeGroupSection, the
+   collapse state and the grouped render branch were all removed, along with the
+   test that was their only external caller (none of these four names resolve in
+   the tree today; they are named here as history, not as a live code surface).
+   Verified beforehand that `missions/page.tsx` never passed the prop, so the
+   path was dead as claimed. **The §3.3 workspace-header rule (AC-8…AC-10) is
+   still open** — `MissionGrid.tsx` labels the team-level bucket `Unassigned`,
+   not `Team-level`, and does not suppress a lone named bucket's header when the
+   team-level bucket also holds a visible mission (the `N = 1 and U` case).
+5. ~~Replace the initiative rail on Home with the pulse line (§2).~~ **Done** —
+   `InitiativeRail` is unmounted and its component file deleted (AC-6), and
+   `InitiativePulseLine` (§2.2's clause set, AC-1…AC-5) renders between the
+   greeting block and Waiting on You.
+6. ~~Add the verdict-and-evidence block, the pending-action strip and the large
+   sparkline to the detail page (§5).~~ **Done** — `/app/initiatives/[id]/page.tsx`
+   renders the verdict chip and evidence, the pending-action strip, and the
+   `SparklineBar` at `≥168×32`.
 
 The mission-state group headers on `/app/missions` are expected to converge on
 the shared `GroupSection` primitive introduced by PR #1699 once it lands; until
