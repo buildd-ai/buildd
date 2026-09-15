@@ -310,6 +310,19 @@ describe('buildRail — edge classes (D3)', () => {
     const [node] = nodes<RT>(model.rows);
     expect(node.siblings.every(s => !s.soft)).toBe(true);
   });
+
+  it('never marks the top-level edge between two unrelated Lane-1 chains soft, even with overlapping pathManifest (D3-3 scope)', () => {
+    // Two standalone, already-landed chains — not siblings, not a Lane-1/fork
+    // pair — that happen to declare overlapping paths. D3-3 scopes the dashed
+    // "advisory ordering" treatment to Lane-2 sibling pairs; it must not leak
+    // onto arbitrary consecutive top-level rail nodes.
+    const a = unit(rt('a', { pathManifest: ['apps/web/src/lib/a.ts'], taskUpdatedAt: '2026-09-12T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-12T09:00:00.000Z', prLifecycleStatus: 'merged' } }));
+    const b = unit(rt('b', { pathManifest: ['apps/web/src/lib/a.ts'], taskUpdatedAt: '2026-09-12T10:00:00.000Z', latestWorker: { mergedAt: '2026-09-12T10:00:00.000Z', prLifecycleStatus: 'merged' } }));
+    const model = buildRail({ ...EMPTY_GROUPS, done: [a, b] }, { now: new Date('2026-09-12T12:00:00Z') });
+
+    const railNodes = nodes<RT>(model.rows);
+    expect(railNodes.map(n => n.edge)).toEqual(['none', 'none']);
+  });
 });
 
 // ─── D4: ticks ────────────────────────────────────────────────────────────────
@@ -393,6 +406,34 @@ describe('buildRail — surviving section labels (D8)', () => {
 
     const labels = (model.rows.filter(r => r.kind === 'label') as Array<{ text: string }>).map(l => l.text);
     expect(labels).toEqual(['waiting on you', 'running']);
+  });
+
+  it('renders the waitingOnYou/running block above ticked history, not below it (D8-3)', () => {
+    const model = buildRail(
+      {
+        ...EMPTY_GROUPS,
+        waitingOnYou: [unit(rt('w'))],
+        running: [unit(rt('r', { status: 'running' }))],
+        done: [
+          unit(rt('old', { taskUpdatedAt: '2026-09-10T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-10T09:00:00.000Z', prLifecycleStatus: 'merged' } })),
+        ],
+      },
+      { now },
+    );
+
+    const labelIdx = model.rows.findIndex(r => r.kind === 'label');
+    const dayTickIdx = model.rows.findIndex(r => r.kind === 'tick' && !(r as any).now);
+    const wIdx = model.rows.findIndex(r => r.kind === 'node' && (r as any).id === 'w');
+    const rIdx = model.rows.findIndex(r => r.kind === 'node' && (r as any).id === 'r');
+    const oldIdx = model.rows.findIndex(r => r.kind === 'node' && (r as any).id === 'old');
+
+    // Both live-work nodes, and both their labels, sit above every day tick
+    // and above the ticked-history node — never the other way around.
+    expect(labelIdx).toBeLessThan(dayTickIdx);
+    expect(wIdx).toBeLessThan(dayTickIdx);
+    expect(rIdx).toBeLessThan(dayTickIdx);
+    expect(wIdx).toBeLessThan(oldIdx);
+    expect(rIdx).toBeLessThan(oldIdx);
   });
 });
 

@@ -629,10 +629,17 @@ export function buildRail<T extends RailTaskLike>(
   const running = sectionNodes(groups.running);
   const upcoming = [...sectionNodes(groups.nextQueued), ...sectionNodes(groups.blocked)];
 
-  const ordered: RailNode<T>[] = [...sortedTerminal, ...waitingOnYou, ...running, ...upcoming];
+  // Live-work region (waitingOnYou/running) renders ahead of ticked history —
+  // it marks the top of the rail's live-work region (Rule D8-3), not a point
+  // in the chronological sequence.
+  const liveCount = waitingOnYou.length + running.length;
+  const ordered: RailNode<T>[] = [...waitingOnYou, ...running, ...sortedTerminal, ...upcoming];
   if (ordered.length === 0) return { rows: [], goal: normaliseGoal(goal) };
 
-  // Edge class of the segment entering each node from the one above it.
+  // Edge class of the segment entering each node from the one above it. Soft
+  // (advisory pathManifest) ordering is scoped to Lane-2 siblings (Rule D3-3)
+  // and is already computed per-sibling in `toNode`; only the hard dependsOn
+  // edge applies between consecutive Lane-1 nodes.
   for (let i = 1; i < ordered.length; i++) {
     const node = ordered[i];
     const prev = ordered[i - 1];
@@ -640,17 +647,17 @@ export function buildRail<T extends RailTaskLike>(
     const deps = node.head.dependsOn ?? [];
     if (deps.some(d => prevIds.has(d))) {
       node.edge = 'hard';
-    } else if (shouldSerializeByManifest(node.head.pathManifest, prev.head.pathManifest)) {
-      node.edge = 'soft';
     }
   }
 
-  // Day ticks: one per calendar-day transition in the rendered sequence. No gap
-  // clustering, no ordinal suffix — the defect class `deriveBandKey` carries
-  // cannot exist here because there are no bands to number (Rule D4-4).
+  // Day ticks: one per calendar-day transition in the ticked-history region
+  // (sortedTerminal + upcoming). The live-work region above it (Rule D8-3) is
+  // never day-ticked. No gap clustering, no ordinal suffix — the defect class
+  // `deriveBandKey` carries cannot exist here because there are no bands to
+  // number (Rule D4-4).
   const dayTicks = new Map<number, { key: string; label: string }>();
   let prevDayKey: string | null = null;
-  for (let i = 0; i < ordered.length; i++) {
+  for (let i = liveCount; i < ordered.length; i++) {
     const key = railDayKey(ordered[i].ts);
     if (key === prevDayKey) continue;
     dayTicks.set(i, { key, label: railDayLabel(ordered[i].ts) });
@@ -676,10 +683,10 @@ export function buildRail<T extends RailTaskLike>(
 
   const labelAt = new Map<number, RailLabel>();
   if (waitingOnYou.length > 0) {
-    labelAt.set(sortedTerminal.length, { kind: 'label', id: 'label-waiting', text: 'waiting on you' });
+    labelAt.set(0, { kind: 'label', id: 'label-waiting', text: 'waiting on you' });
   }
   if (running.length > 0) {
-    labelAt.set(sortedTerminal.length + waitingOnYou.length, {
+    labelAt.set(waitingOnYou.length, {
       kind: 'label',
       id: 'label-running',
       text: 'running',
