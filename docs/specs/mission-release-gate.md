@@ -11,6 +11,17 @@ keywords: [on_mission_complete, canCompleteMission, findMissionPrOwner, awaiting
 verified_by: [apps/web/src/lib/mission-completion.test.ts, apps/web/src/app/api/github/webhook/route.test.ts, apps/web/src/lib/mission-release.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
+# Decision 2's `released` goal-criterion type (NOT IMPLEMENTED — see "Implementation
+# status" below) has no assertion here on purpose, not by oversight: a skip_until
+# suppression still counts as non-pass for computeDerivedStatus, so a suppressed
+# assertion pulls this doc's derived status to `partial`, which the checker treats
+# as a declared-ahead-of-derived contradiction against `status: active`
+# (packages/core/spec-conformance.ts checkContradiction). The escape hatch in
+# docs/design/spec-conformance.md §6 only works for docs that stay non-terminal
+# while suppressed; it cannot hold a terminal `active`/`implemented` status and a
+# known-open assertion at the same time. Decision 2's gap is tracked in prose
+# instead. Add the assertion back once `released` exists and the entry can pass
+# outright.
 assertions:
   - id: "completion-gate"
     type: "symbol"
