@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (31)
+## Active (32)
 
 ### auth (4)
 
@@ -50,12 +50,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-15
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
-### releases (3)
+### releases (4)
 
 - [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
   Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
 - [DB Migration Execution](./migration-execution.md) · @max — verified 2026-09-12
   Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
+- [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-15
+  For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
@@ -98,12 +100,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (5)
+## Draft (4)
 
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-11
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-10
-  For a mission with an integration base, canCompleteMission, the on_mission_complete release trigger, and the goal-criteria evaluator MUST all treat production release as the single, shared definition of mission "done".
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-04
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-05
