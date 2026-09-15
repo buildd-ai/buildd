@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import { attachAttempts } from '@buildd/core/mission-helpers';
 import { deriveTaskOrigin } from './task-origin';
 import {
+  ATTEMPT_KINDS,
+  attemptKind,
   buildAttemptStrips,
   partitionBookkeeping,
   repoFullNameFromPrUrl,
@@ -153,13 +155,153 @@ describe('buildAttemptStrips — per-attempt reason comes from deriveTaskOrigin'
     expect(strip.attempts[0].prLink).toBeNull();
   });
 
-  it('falls back to the taskClass reason when the retry columns were never populated', () => {
+  it('drops an attempt-classed child that carries no retry column at all (Rule D12-2)', () => {
+    // v1 counted it as `other` — in the total, named nowhere. v2's discriminator
+    // is the retry columns, so a row with none is a companion, not an attempt.
     const bare = buildAttemptStrips([
       task({ id: 'w3' }),
       task({ id: 'x1', taskClass: 'attempt', parentTaskId: 'w3', status: 'failed' }),
-    ]).get('w3')!;
-    expect(bare.attempts[0].reason).toBe('retry attempt');
-    expect(bare.summary).toBe('1 attempt');
+    ]);
+    expect(bare.size).toBe(0);
+  });
+
+  it('carries the iteration and its maximum onto the row, never re-parsed from prose (Rule D6-9)', () => {
+    const strip2 = buildAttemptStrips(MISSION).get('w1')!;
+    expect(strip2.attempts.map(a => [a.iteration, a.maxIterations])).toEqual([[1, 3], [2, 3], [1, 2]]);
+  });
+
+  it('reads the conflict mechanism from its own counter keys (Rule D6-9)', () => {
+    const solo = buildAttemptStrips([
+      task({ id: 'w9' }),
+      task({
+        id: 'c9', taskClass: 'attempt', parentTaskId: 'w9', status: 'completed',
+        conflictRetryPrNumber: 77, context: { conflictIteration: 2, maxConflictIterations: 2 },
+      }),
+    ]).get('w9')!;
+    expect(solo.attempts[0].iteration).toBe(2);
+    expect(solo.attempts[0].maxIterations).toBe(2);
+  });
+
+  it('leaves both numbers null when the context never carried them (Rule D6-10)', () => {
+    const solo = buildAttemptStrips([
+      task({ id: 'w10' }),
+      task({ id: 'c10', taskClass: 'attempt', parentTaskId: 'w10', status: 'failed', ciRetryPrNumber: 4 }),
+    ]).get('w10')!;
+    expect(solo.attempts[0].iteration).toBeNull();
+    expect(solo.attempts[0].maxIterations).toBeNull();
+  });
+});
+
+// ─── §12: what is an attempt ─────────────────────────────────────────────────
+
+describe('attemptKind — the discriminator is the retry columns, not taskClass (Rule D12-2)', () => {
+  it('has no `other` member left in the vocabulary (AC-29)', () => {
+    expect([...ATTEMPT_KINDS]).toEqual(['ci', 'reviewer', 'conflict']);
+  });
+
+  it('classifies each retry column, most specific first', () => {
+    expect(attemptKind({ ciRetryPrNumber: 1 })).toBe('ci');
+    expect(attemptKind({ reviewerRetryPrNumber: 1 })).toBe('reviewer');
+    expect(attemptKind({ conflictRetryPrNumber: 1 })).toBe('conflict');
+  });
+
+  it('returns null for a row with no retry column — not an attempt, not `other`', () => {
+    expect(attemptKind({})).toBeNull();
+    expect(attemptKind({ taskClass: 'attempt', parentTaskId: 'p' })).toBeNull();
+  });
+
+  it('excludes a drift-diagnose row, which examines rather than re-runs (Rule D12-4)', () => {
+    expect(attemptKind({ ciRetryPrNumber: 9, context: { driftDiagnosis: true } })).toBeNull();
+  });
+});
+
+describe('buildAttemptStrips — companions are not attempts (§12)', () => {
+  it('reports no attempts when the only attempt-classed child is the reviewer pass (AC-27)', () => {
+    // `createReviewerTask` inserts the pass with taskClass 'attempt' + parentTaskId
+    // and NO retry counter column — the shape that made every row read
+    // `2 attempts · reviewer ×1` with nothing naming the second.
+    const strips = buildAttemptStrips([
+      task({ id: 'w6' }),
+      task({
+        id: 'pass', taskClass: 'attempt', parentTaskId: 'w6', status: 'completed',
+        creationSource: 'webhook',
+      }),
+    ]);
+    expect(strips.size).toBe(0);
+    expect(strips.get('w6')).toBeUndefined();
+  });
+
+  it('never prints `1 attempt · CI ×1` for a schema-drift diagnose child (AC-28)', () => {
+    const strips = buildAttemptStrips([
+      task({ id: 'w7' }),
+      task({
+        id: 'drift', taskClass: 'attempt', parentTaskId: 'w7', status: 'completed',
+        ciRetryPrNumber: 4242, context: { driftDiagnosis: true, iteration: 1, maxIterations: 3 },
+      }),
+    ]);
+    expect(strips.size).toBe(0);
+  });
+
+  it('keeps the real retries when a companion sits beside them, and the count closes (AC-17)', () => {
+    const strip = buildAttemptStrips([
+      task({ id: 'w8' }),
+      task({
+        id: 'pass', taskClass: 'attempt', parentTaskId: 'w8', status: 'completed',
+        creationSource: 'webhook', updatedAt: '2025-01-01T00:30:00Z',
+      }),
+      task({
+        id: 'ci', taskClass: 'attempt', parentTaskId: 'w8', status: 'completed',
+        ciRetryPrNumber: 2301, createdAt: '2025-01-01T01:00:00Z',
+        context: { iteration: 1, maxIterations: 3, failureContext: { errorType: 'ci_failure' } },
+      }),
+      task({
+        id: 'rev', taskClass: 'attempt', parentTaskId: 'w8', status: 'completed',
+        reviewerRetryPrNumber: 2301, createdAt: '2025-01-01T02:00:00Z',
+        context: { iteration: 1, maxIterations: 3, failureContext: { errorType: 'reviewer_request_changes' } },
+      }),
+    ]).get('w8')!;
+
+    expect(strip.summary).toBe('2 attempts · CI ×1 · reviewer ×1');
+    expect(strip.total).toBe(2);
+    expect(strip.attempts.map(a => a.id)).toEqual(['ci', 'rev']);
+    expect(strip.attempts.some(a => a.id === 'pass')).toBe(false);
+  });
+
+  it('names the conflict mechanism v1 left unrepresented (AC-30)', () => {
+    const strip = buildAttemptStrips([
+      task({ id: 'w11' }),
+      task({
+        id: 'cf', taskClass: 'attempt', parentTaskId: 'w11', status: 'completed',
+        conflictRetryPrNumber: 55, context: { conflictIteration: 1, maxConflictIterations: 3 },
+      }),
+    ]).get('w11')!;
+    expect(strip.summary).toBe('1 attempt · conflict ×1');
+  });
+
+  it('lists both cycles of a superseded reviewer round — the dots are a ledger (AC-32)', () => {
+    const strip = buildAttemptStrips([
+      task({ id: 'w12' }),
+      task({
+        id: 'r1', taskClass: 'attempt', parentTaskId: 'w12', status: 'completed',
+        reviewerRetryPrNumber: 70, createdAt: '2025-01-01T01:00:00Z',
+        context: { iteration: 1, maxIterations: 3, reviewerRetryHeadSha: 'aaa' },
+      }),
+      task({
+        id: 'r2', taskClass: 'attempt', parentTaskId: 'w12', status: 'completed',
+        reviewerRetryPrNumber: 70, createdAt: '2025-01-01T02:00:00Z',
+        context: { iteration: 2, maxIterations: 3, reviewerRetryHeadSha: 'bbb' },
+      }),
+    ]).get('w12')!;
+    expect(strip.total).toBe(2);
+    expect(strip.attempts.map(a => a.id)).toEqual(['r1', 'r2']);
+    expect(strip.summary).toBe('2 attempts · reviewer ×2');
+  });
+
+  it('closes the arithmetic on every strip it builds (AC-29, Rule D12-3)', () => {
+    for (const strip of buildAttemptStrips(MISSION).values()) {
+      const named = ATTEMPT_KINDS.reduce((sum, kind) => sum + strip.kindCounts[kind], 0);
+      expect(named).toBe(strip.total);
+    }
   });
 });
 
@@ -186,7 +328,7 @@ describe('names the role that ran the attempt', () => {
   it('leaves the actor null when nothing names a runner or a creator', () => {
     const anon = buildAttemptStrips([
       task({ id: 'w5' }),
-      task({ id: 'n1', taskClass: 'attempt', parentTaskId: 'w5', status: 'failed' }),
+      task({ id: 'n1', taskClass: 'attempt', parentTaskId: 'w5', status: 'failed', ciRetryPrNumber: 3 }),
     ]).get('w5')!;
     expect(anon.attempts[0].actor).toBeNull();
   });

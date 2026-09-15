@@ -104,3 +104,29 @@ describe('mission detail wiring', () => {
     expect(timeline).toMatch(/attempts\??\s*:\s*AttemptStrip/);
   });
 });
+
+// ─── v2: the rail's disclosure panel (timeline-mobile-rail.md Rule D13-9) ────
+
+describe('AttemptStrip — hideToggle, the rail disclosure panel', () => {
+  const html = renderToStaticMarkup(<AttemptStrip strip={strip} hideToggle />);
+
+  it('renders open with no toggle of its own (AC-26)', () => {
+    // The rail row's right column is the single control; two nested toggles is
+    // precisely the ambiguity that made v1's stub untappable.
+    expect(html).not.toContain('aria-expanded');
+    expect(html).not.toContain('<button');
+    expect(html).toContain('3 attempts · CI ×2 · reviewer ×1');
+    expect(html).toContain('CI retry #1 of 3');
+  });
+
+  it('leaves the desktop strip byte-for-byte unchanged when the prop is absent', () => {
+    // §9 / the v2 out-of-scope list: attempt prose leaves the RAIL, not the
+    // desktop task row, where a wider viewport affords it at all times.
+    expect(renderToStaticMarkup(<AttemptStrip strip={strip} />))
+      .toBe(renderToStaticMarkup(<AttemptStrip strip={strip} hideToggle={false} />));
+  });
+
+  it('still renders nothing for a strip with no attempts', () => {
+    expect(renderToStaticMarkup(<AttemptStrip strip={null} hideToggle />)).toBe('');
+  });
+});

@@ -8,14 +8,15 @@
  * parent task's row.
  *
  * Nothing is classified here:
- *   - grouping is `attachAttempts` from `@buildd/core/mission-helpers` — the
+ *   - nesting is `attachAttempts` from `@buildd/core/mission-helpers` — the
  *     canonical `taskClass === 'attempt' && parentTaskId` grouping, which had no
  *     `.tsx` call site before this;
  *   - the per-attempt reason is `deriveTaskOrigin` (`lib/task-origin.ts`) —
  *     `CI retry #2 of 3 · PR #1204 check_suite failed`;
- *   - `taskClass` is the only discriminator. No title parsing: the gate in
- *     `packages/core/__tests__/task-class-invariants.test.ts` bans the legacy
- *     title/parentId predicates across all of `apps/web/src/lib`.
+ *   - attempt-hood is the three retry counter columns (`attemptKind` below), the
+ *     same precedence `retryKind` in `task-origin.ts` already applies. No title
+ *     parsing: the gate in `packages/core/__tests__/task-class-invariants.test.ts`
+ *     bans the legacy title/parentId predicates across all of `apps/web/src/lib`.
  *
  * Pure module (no React, no I/O) so the server page can assemble the strip and
  * a client component can render it — see `client-boundary.test.ts`.
@@ -23,16 +24,55 @@
 import { attachAttempts } from '@buildd/core/mission-helpers';
 import { deriveTaskOrigin, type TaskOriginRow, type TaskOriginLink } from './task-origin';
 
-/** Attempt kinds the strip counts separately, in display order. */
-export const ATTEMPT_KINDS = ['ci', 'reviewer', 'conflict', 'other'] as const;
+/**
+ * Attempt kinds the strip counts separately, in display order.
+ *
+ * There is no `other` member (timeline-mobile-rail.md Rule D12-3): every counted
+ * row has exactly one of the three retry columns set, so
+ * `total === ci + reviewer + conflict` holds by construction rather than by
+ * convention. v1 had an `other` bucket that the summary line refused to name —
+ * which is how every row came to read `2 attempts · reviewer ×1`, counting the
+ * reviewer *pass* it could not describe.
+ */
+export const ATTEMPT_KINDS = ['ci', 'reviewer', 'conflict'] as const;
 export type AttemptKind = (typeof ATTEMPT_KINDS)[number];
 
-/** How each kind reads in the summary line. `other` is never named. */
-const KIND_LABEL: Record<Exclude<AttemptKind, 'other'>, string> = {
+/** How each kind reads in the summary line. */
+const KIND_LABEL: Record<AttemptKind, string> = {
   ci: 'CI',
   reviewer: 'reviewer',
   conflict: 'conflict',
 };
+
+/** Where each mechanism keeps its iteration counters in `tasks.context`. */
+const ITERATION_KEYS: Record<AttemptKind, { iteration: string; max: string }> = {
+  ci: { iteration: 'iteration', max: 'maxIterations' },
+  reviewer: { iteration: 'iteration', max: 'maxIterations' },
+  conflict: { iteration: 'conflictIteration', max: 'maxConflictIterations' },
+};
+
+/**
+ * Is this row an attempt, and of what kind (Rule D12-1/D12-2)?
+ *
+ * An **attempt** is a re-run of its parent's own deliverable after an adverse
+ * outcome on it. The stored discriminator is the three retry counter columns —
+ * NOT `taskClass`, which only means "collapses under its parent"
+ * (`heartbeat-prepass.ts`) and is equally true of a reviewer pass, a stalled-worker
+ * reclaim and a human-answer continuation. Those are **companions**: they do a
+ * different job, so counting them asserts the deliverable was re-tried when it
+ * was not.
+ *
+ * Returns null for a companion. A schema-drift diagnose task carries
+ * `ciRetryPrNumber` but is forbidden from opening a PR or writing a migration —
+ * it examines rather than re-runs — so `context.driftDiagnosis`, the marker its
+ * own builder writes, excludes it (Rule D12-4).
+ */
+export function attemptKind(task: TaskOriginRow): AttemptKind | null {
+  if (task.ciRetryPrNumber != null && task.context?.driftDiagnosis !== true) return 'ci';
+  if (task.reviewerRetryPrNumber != null) return 'reviewer';
+  if (task.conflictRetryPrNumber != null) return 'conflict';
+  return null;
+}
 
 /**
  * An attempt has stopped moving. Open dots mean "still running", so anything
@@ -68,6 +108,15 @@ export interface AttemptRow {
   actor: string | null;
   /** True when the attempt has reached a terminal status (its dot is filled). */
   settled: boolean;
+  /**
+   * Which try this was, and out of how many — the two numbers the rail's
+   * `exhausted` mark reads (timeline-mobile-rail.md Rule D6-9). Copied from the
+   * same `context` keys `iterationClause` reads; null when the row never carried
+   * them, in which case the exhaustion state is NOT guessed from another source
+   * (Rule D6-10). Re-parsing them out of `reason` is forbidden.
+   */
+  iteration: number | null;
+  maxIterations: number | null;
   href: string;
   /** The attempt's PR, when one is resolvable. Never a guessed URL. */
   prLink: TaskOriginLink | null;
@@ -110,11 +159,10 @@ export function repoFullNameFromPrUrl(url: string | null | undefined): string | 
   return match ? `${match[1]}/${match[2]}` : null;
 }
 
-function kindOf(mechanism: string): AttemptKind {
-  if (mechanism === 'ci_retry') return 'ci';
-  if (mechanism === 'reviewer_retry') return 'reviewer';
-  if (mechanism === 'conflict_retry') return 'conflict';
-  return 'other';
+/** A finite number from `tasks.context`, or null — never a coerced string. */
+function counter(context: Record<string, unknown> | null | undefined, key: string): number | null {
+  const value = context?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function iso(value: string | Date | null | undefined): string | null {
@@ -131,13 +179,13 @@ function sortKey(task: AttemptSourceTask): number {
 /**
  * `3 attempts · CI ×2 · reviewer ×1`.
  *
- * Kinds with a zero count are omitted, and `other` is never named — an
- * unlabelled attempt still counts in the total but inventing a word for it
- * would be a classification this module is not entitled to make.
+ * Kinds with a zero count are omitted. The clause list now covers the whole
+ * vocabulary, so the head count and its breakdown can never disagree — the
+ * arithmetic that Finding 2 caught open (Rule D12-3).
  */
 function summarise(total: number, counts: Record<AttemptKind, number>): string {
   const head = `${total} ${total === 1 ? 'attempt' : 'attempts'}`;
-  const parts = (['ci', 'reviewer', 'conflict'] as const)
+  const parts = ATTEMPT_KINDS
     .filter(kind => counts[kind] > 0)
     .map(kind => `${KIND_LABEL[kind]} ×${counts[kind]}`);
   return [head, ...parts].join(' · ');
@@ -147,7 +195,12 @@ function summarise(total: number, counts: Record<AttemptKind, number>): string {
  * Build one strip per parent task that has attempts.
  *
  * Tasks without attempts get no entry at all — a row with nothing to say
- * renders no strip, per the no-empty-chrome invariant.
+ * renders no strip, per the no-empty-chrome invariant. That now includes a task
+ * whose only attempt-classed children are companions (Rule D12-1): the filter
+ * is applied HERE, to `attachAttempts`' output, never inside `attachAttempts`
+ * itself (Rule D12-5). That map is the canonical *nesting* answer and
+ * `explain.ts` depends on companions staying nested under their parent;
+ * attempt-hood is a display question, nesting is a structural one.
  */
 export function buildAttemptStrips(
   tasks: AttemptSourceTask[],
@@ -157,19 +210,24 @@ export function buildAttemptStrips(
   const strips = new Map<string, AttemptStrip>();
 
   for (const [parentTaskId, rawAttempts] of grouped) {
-    const ordered = [...rawAttempts].sort((a, b) => sortKey(a) - sortKey(b));
-    const counts: Record<AttemptKind, number> = { ci: 0, reviewer: 0, conflict: 0, other: 0 };
+    const ordered = [...rawAttempts]
+      .filter(t => attemptKind(t) !== null)
+      .sort((a, b) => sortKey(a) - sortKey(b));
+    if (ordered.length === 0) continue;
+
+    const counts: Record<AttemptKind, number> = { ci: 0, reviewer: 0, conflict: 0 };
 
     const attempts: AttemptRow[] = ordered.map(attempt => {
       const origin = deriveTaskOrigin(attempt, {
         repoFullName: ctx.repoFullName ?? null,
         creatorRoleSlug: ctx.creatorRoleSlugByTaskId?.get(attempt.id) ?? null,
       });
-      const kind = kindOf(origin.mechanism);
+      const kind = attemptKind(attempt)!;
       counts[kind] += 1;
 
       const roleSlug = attempt.roleSlug ?? null;
       const runner = roleSlug ? ctx.roleNameBySlug?.get(roleSlug) ?? roleSlug : null;
+      const keys = ITERATION_KEYS[kind];
 
       return {
         id: attempt.id,
@@ -178,6 +236,8 @@ export function buildAttemptStrips(
         kind,
         actor: runner ?? origin.actor,
         settled: SETTLED_STATUSES.has(attempt.status),
+        iteration: counter(attempt.context, keys.iteration),
+        maxIterations: counter(attempt.context, keys.max),
         href: `/app/tasks/${attempt.id}`,
         prLink: origin.links.find(l => l.key === 'pr') ?? null,
         updatedAt: iso(attempt.updatedAt),
