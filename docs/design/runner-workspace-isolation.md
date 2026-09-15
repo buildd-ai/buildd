@@ -14,6 +14,8 @@ assertions:
     type: "symbol"
     name: "stableCodexHomeIsolatedPath"
     path: "apps/runner/src/isolation-paths.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "Assertions here only cover shipped Tier 1 (API key removal) and Tier 3 (per-workspace clones) isolation; Tier 4 (separate UID/container per tenant, closing the /proc/self/environ and world-readable-path read boundary) remains unbuilt and unasserted, so status is intentionally held at 'partially' rather than promoted."
 ---
 # Runner Workspace Isolation
 
