@@ -14,10 +14,15 @@
 # so running unconditionally on every push is correct, just not maximally
 # cheap. Tracked as a follow-up, not blocking here.
 #
-# Secret guard: needs DATABASE_URL. Absent (fork / unconfigured repo), the
-# writer script itself falls back to a dry run and logs classification
-# counts without writing — same posture knowledge-eval.yml uses for its own
-# DB-dependent job.
+# Secret guard: needs DATABASE_URL and the WORKSPACE_ID repo variable. Either
+# missing FAILS this job rather than degrading to a dry run — this workflow's
+# only job is writing the ledger, so a config gap that let it silently no-op
+# would look identical to a healthy green run while the ledger quietly
+# stopped updating (the exact failure mode this workflow exists to avoid on
+# the read side: a stale finding nobody notices). Dry-run behavior is still
+# available (`bun run specs:discrepancies -- --dry-run`, or `workflow_dispatch`
+# on a fork without these configured) — it just has to be asked for, not
+# fallen into.
 #
 # WORKSPACE_ID is a repo variable (Settings → Actions → Variables), not a
 # literal here — same pattern as vars.TEST_MACHINE_HOST in build.yml. Keeps
@@ -74,9 +79,8 @@ jobs:
         if: steps.gate.outputs.skip != 'true'
         run: |
           if [ -z "$WORKSPACE_ID" ]; then
-            echo "::notice::WORKSPACE_ID repo variable not set — falling back to dry run."
-            bun run specs:discrepancies -- --dry-run
-            exit 0
+            echo "::error::WORKSPACE_ID repo variable not set — refusing to silently fall back to a dry run on the dev-push ledger writer. Set the WORKSPACE_ID repo variable, or run workflow_dispatch with 'bun run specs:discrepancies -- --dry-run' locally if a dry run is genuinely what's wanted."
+            exit 1
           fi
           bun run specs:discrepancies -- --workspace-id "$WORKSPACE_ID"
 

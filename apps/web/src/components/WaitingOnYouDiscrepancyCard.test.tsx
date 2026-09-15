@@ -108,7 +108,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     expect(html).toContain('/app/tasks/task-7');
   });
 
-  it('CTA set — doc fix shipped, rows still open: Accept comes back as the one exit', () => {
+  it('CTA set — doc fix shipped, rows still open, PR lifecycle unknown: Accept comes back as the one exit', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouDiscrepancyCard
         item={item({ chip: 'FIXING_SPEC', docFixTaskId: 'task-7', docFixTaskStatus: 'completed' })}
@@ -121,6 +121,47 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     // this card agent-handled forever with no action on it at all, parking the
     // finding by accident. Accept is the exit, and it records a reason.
     expect(ctas(html)).toEqual(['Accept']);
+  });
+
+  it('CTA set — doc fix shipped, PR merged: "awaiting the conformance re-run" is now actually true', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard
+        item={item({
+          chip: 'FIXING_SPEC',
+          docFixTaskId: 'task-7',
+          docFixTaskStatus: 'completed',
+          docFixPrLifecycleStatus: 'merged',
+        })}
+      />,
+    );
+    expect(html).toContain('awaiting the conformance re-run');
+    expect(ctas(html)).toEqual(['Accept']);
+  });
+
+  it('CTA set — doc fix shipped, PR still open: names the real blocker, never claims a re-run is pending', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard
+        item={item({
+          chip: 'FIXING_SPEC',
+          docFixTaskId: 'task-7',
+          docFixTaskStatus: 'completed',
+          docFixPrLifecycleStatus: 'open',
+        })}
+      />,
+    );
+    expect(html).not.toContain('awaiting the conformance re-run');
+    expect(html).toContain('Doc fix PR open');
+  });
+
+  it('CTA set — a stale doc-fix claim (rechecked post-merge, still open) reads exactly like a fresh code_ahead card', () => {
+    // buildDiscrepancyItems already released the claim server-side, so the
+    // card never even sees docFixTaskId/chip FIXING_SPEC for this case — this
+    // pins that the card renders the live CTA set, not the agent-handled one.
+    const html = renderToStaticMarkup(
+      <WaitingOnYouDiscrepancyCard item={item({ chip: 'DISCREPANCY', direction: 'code_ahead' })} />,
+    );
+    expect(ctas(html)).toEqual(['Dispatch doc fix', 'Accept']);
+    expect(html).not.toContain('awaiting the conformance re-run');
   });
 
   it('renders nothing when the item carries no discrepancyId', () => {

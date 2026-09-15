@@ -13,6 +13,8 @@ assertions:
   - id: "timeline-density-tests"
     type: "test_file"
     path: "apps/web/src/lib/condensed-timeline.test.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "Assertions here only cover the shipped condensed-timeline subset (I-7, I-8, I-11, I-13-I-16); I-1-I-6, I-9, I-10, I-12 (initiative grouping, live-state card collapse, gesture grammar) remain unbuilt and unasserted, so status is intentionally held at 'partially' rather than promoted."
 ---
 # Mobile Decision Flow — Design Spec
 

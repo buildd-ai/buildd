@@ -59,13 +59,31 @@ const SECONDARY_BTN =
  * task. The rows still close mechanically on the next checker re-run — never
  * because that task said it was done.
  *
- * Once that task has COMPLETED and the rows are still open, Accept comes back
- * as the one exit. Closure is still the checker's word, so the card cannot say
- * the finding is settled — but a docs PR that was never merged, or one that
- * did not actually discharge the claim, would otherwise leave this card
+ * Once that task has COMPLETED, the card names the real blocker instead of
+ * assuming completion means merged (a task can finish its session with a PR
+ * still open for review):
+ *   - PR still open — "Doc fix PR open" and a link to it. No re-run claim:
+ *     nothing has changed on the branch this checker reads, so nothing is
+ *     "awaiting" yet.
+ *   - PR merged, not yet rechecked — "awaiting the conformance re-run", which
+ *     is now actually true rather than assumed.
+ *   - PR merged AND rechecked since (lib/action-queue.ts's isDocFixClaimStale
+ *     compares the row's own last_checked_at against the merge time) and the
+ *     row is STILL open — the fix demonstrably didn't close it. The claim
+ *     releases (buildDiscrepancyItems), the group falls out of `inFlight`
+ *     entirely, and the card renders exactly like a fresh code_ahead
+ *     discrepancy: Dispatch doc fix primary, Accept secondary. This is the
+ *     one case where a completed task's claim does NOT keep the card
+ *     agent-handled — a re-run already ran and changed nothing, so citing it
+ *     as "awaiting" would be false, and Accept alone would make it look like
+ *     a judgment call when it's actually unfinished work.
+ * In every other completed sub-state, Accept stays available as the one
+ * last-resort exit — closure is still the checker's word, so the card cannot
+ * say the finding is settled, but a docs PR that was never merged, or one
+ * that did not actually discharge the claim, would otherwise leave this card
  * agent-handled forever with no action on it at all: the finding would be
- * parked by accident instead of by a decision. Accept is the action §8 allows
- * on the row in any state, and it records a reason.
+ * parked by accident instead of by a decision. Accept is the action §8
+ * allows on the row in any state, and it records a reason.
  *
  * All three mutations call the §13 REST routes that back the equivalent MCP
  * actions, so there is exactly one mutation path whether a human taps here or
@@ -190,6 +208,13 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
   // is running any more, so the card owes the human an exit again — see the
   // note on Accept at the top of this file.
   const docFixShipped = inFlight && item.docFixTaskStatus === 'completed';
+  // A completed task's PR may not have merged yet — completion just means the
+  // agent's session ended, not that the fix landed (workers.mergedAt is the
+  // authoritative merge signal). Only a KNOWN-unmerged PR gets the "PR open"
+  // copy; an unknown lifecycle (older rows, or the caller not supplying it)
+  // falls back to the existing "awaiting the conformance re-run" reading
+  // rather than asserting something the server never confirmed.
+  const docFixPrOpen = docFixShipped && item.docFixPrLifecycleStatus != null && item.docFixPrLifecycleStatus !== 'merged';
   const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
@@ -238,9 +263,11 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
             href={`/app/tasks/${item.docFixTaskId}`}
             className="text-[12px] font-medium text-primary hover:underline"
           >
-            {item.docFixTaskStatus === 'completed'
-              ? 'Doc fix shipped — awaiting the conformance re-run →'
-              : 'Fix in flight →'}
+            {docFixPrOpen
+              ? 'Doc fix PR open — merge to continue →'
+              : docFixShipped
+                ? 'Doc fix shipped — awaiting the conformance re-run →'
+                : 'Fix in flight →'}
           </Link>
         )}
       </div>
