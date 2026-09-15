@@ -1,13 +1,14 @@
 ---
 title: Mission Release Gate
-status: draft
+status: active
 owner: max
-last_verified: 2026-09-10
-summary: For a mission with an integration base, canCompleteMission, the on_mission_complete release trigger, and the goal-criteria evaluator MUST all treat production release as the single, shared definition of mission "done".
+last_verified: 2026-09-15
+summary: For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
 domain: releases
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/lib/mission-release.ts, apps/web/src/lib/mission-pr.ts, apps/web/src/lib/mission-production-status.ts]
 related: [mission-task-lifecycle, release-flow, pr-lifecycle-reconciliation]
-keywords: [on_mission_complete, canCompleteMission, findMissionPrOwner, released criterion, integration branch, dev to main, workflow_run skipped, self-referential guard, integration_pr_unmerged]
+keywords: [on_mission_complete, canCompleteMission, findMissionPrOwner, awaiting_mission_pr, integration_pr_unmerged, released criterion, integration branch, dev to main, workflow_run skipped, self-referential guard]
+verified_by: [apps/web/src/lib/mission-completion.test.ts, apps/web/src/app/api/github/webhook/route.test.ts, apps/web/src/lib/mission-release.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -19,11 +20,6 @@ assertions:
     type: "symbol_reachable"
     symbol: "findMissionPrOwner"
     entry: "apps/web/src/lib/mission-completion.ts"
-    as: "read"
-  - id: "released-criterion"
-    type: "symbol_reachable"
-    symbol: "released"
-    entry: "packages/core/mission-helpers.ts"
     as: "read"
 ---
 
@@ -47,10 +43,50 @@ guard itself had not yet reached the server it was meant to run on. Both are
 instances of the same root cause — the platform has more than one place that
 answers "is this mission done?", and they do not all ask the strict question.
 
-Status is `draft`: the invariants below describe target behaviour and name the
-one new refusal code, one new goal-criterion type, and two changed call sites
-this requires. None of it is implemented yet. Promote to `active` once the
-call sites below exist and are covered by tests named in `verified_by`.
+## Implementation status
+
+Six decisions were proposed to close this gap. Two shipped; four remain
+design-only. This spec stays `active` because the shipped pair already
+satisfies the ship-line invariant above for every mission today — the
+still-open decisions are additive (an opt-in stricter gate, a bug-fix
+reclassification, a merge-time guard) and are marked NOT IMPLEMENTED in place
+below rather than silently dropped, per `SPEC-FORMAT.md` rule 8.
+
+- **Decision 1** (`canCompleteMission` gates on the mission PR's merge state)
+  — IMPLEMENTED. Shipped with one naming change from the original proposal:
+  the refusal code is `awaiting_mission_pr`, not `integration_pr_unmerged`.
+  Covered by `apps/web/src/lib/mission-completion.test.ts`.
+- **Decision 2** (a `released` goal-criterion type) — NOT IMPLEMENTED.
+  `GoalCriterionType` (`packages/shared/src/types.ts`) has no `released`
+  member, `evaluateGoalCriteria` (`packages/core/mission-helpers.ts`) has no
+  arm for it, and the write boundary does not reject it on a non-integration
+  mission — there is no such value to reject. `loadMissionProductionStatus`,
+  the function this decision would reuse, already exists and already answers
+  the right question for the Delivery-block UI; it is simply not yet called
+  from the criteria evaluator.
+- **Decision 3** (one path dispatches dev→main) — IMPLEMENTED. This was
+  already true independent of this spec: the webhook's `on_mission_complete`
+  block owns the dispatch, and `fireMissionReleaseIfComplete` remains a second
+  call site that Decision 1 makes correctly inert until the mission PR merges.
+  Covered by `apps/web/src/app/api/github/webhook/route.test.ts` and
+  `apps/web/src/lib/mission-release.test.ts`.
+- **Decision 4** (a `skipped` workflow run is not a failed release) — NOT
+  IMPLEMENTED, and current code takes the opposite position deliberately.
+  `mapWorkflowConclusionToReleaseState`
+  (`apps/web/src/lib/release/workflow-run.ts`) maps `skipped` to `failed`,
+  with a docstring arguing that recording a no-op run as a failed release "is
+  accurate, not pessimistic." Anyone revisiting this decision needs to engage
+  that argument, not just wire up the mapping the original proposal wanted.
+- **Decision 5** (trunk CI red at mission-PR-merge time) — NOT IMPLEMENTED.
+  `guardMissionPrMerge` (`apps/web/src/lib/mission-pr.ts`) still checks only
+  the two conditions it always has (an open sibling task PR, an unfinished
+  task with no PR yet); it does not query trunk's latest commit status, and
+  there is no override parameter for a human-initiated merge to bypass such a
+  check.
+- **Decision 6** (a mission cannot fully protect its own task PRs) — NOT
+  IMPLEMENTED. Its only proposed mechanism is a self-referential mission
+  stating a Decision 2 `released` criterion; since Decision 2 does not exist,
+  neither does this.
 
 ---
 
@@ -82,57 +118,62 @@ call sites below exist and are covered by tests named in `verified_by`.
 
 ---
 
-## Decision 1 — `canCompleteMission` gates on the mission PR's merge state
+## Decision 1 — `canCompleteMission` gates on the mission PR's merge state — IMPLEMENTED
 
 **Capability statement**: For an integration-base mission,
 `canCompleteMission` MUST refuse completion until the mission's own PR has
 merged into trunk, independent of whether the mission happens to have stated
 an `all_prs_merged` goal criterion.
 
-Today, `canCompleteMission`'s `awaiting_merge` check walks deliverable tasks
-only (`isDeliverableTask`). The mission-PR-owner task is created by
-`openMissionIntegrationPr` as a `bookkeeping`-class row specifically so
-merge-surface tooling can find it — the same classification that makes
-`isDeliverableTask` exclude it from every deliverable-scoped check. The result
-is a mission with every deliverable's PR merged into the integration branch,
-zero pending tasks, and no goal criteria stated can pass `canCompleteMission`
-today with its own PR still open, because nothing in the default (no
-criteria) path ever looks at `findMissionPrOwner`. `evaluateGoalCriteria`'s
-`all_prs_merged` arm already asks the right question and already accounts for
-Option A' correctly (it requires the mission PR's base ref to show it landed
-outside the integration branch before passing) — but only for a mission that
-explicitly stated `all_prs_merged`. A mission with no stated criteria, or
-criteria that don't include it, has nothing checking this today.
+Before this decision shipped, `canCompleteMission`'s `awaiting_merge` check
+walked deliverable tasks only (`isDeliverableTask`). The mission-PR-owner task
+is created by `openMissionIntegrationPr` as a `bookkeeping`-class row
+specifically so merge-surface tooling can find it — the same classification
+that makes `isDeliverableTask` exclude it from every deliverable-scoped check.
+The result was a mission with every deliverable's PR merged into the
+integration branch, zero pending tasks, and no goal criteria stated passing
+`canCompleteMission` with its own PR still open, because nothing in the
+default (no criteria) path ever looked at `findMissionPrOwner`.
+`evaluateGoalCriteria`'s `all_prs_merged` arm already asked the right question
+and already accounted for Option A' correctly (it requires the mission PR's
+base ref to show it landed outside the integration branch before passing) —
+but only for a mission that explicitly stated `all_prs_merged`. A mission
+with no stated criteria, or criteria that don't include it, had nothing
+checking this.
 
 **Invariants**:
 - For any mission with `integrationBranchEnabled = true`, `canCompleteMission`
-  MUST call `findMissionPrOwner(missionId)` and refuse with a new code
-  `integration_pr_unmerged` whenever the owner is absent or its `state` is not
-  `'merged'`. This check is unconditional — it does not depend on `goalCriteria`
-  containing `all_prs_merged`, and it runs even when `goalCriteria` is empty
-  (today's "zero criteria means no gate" rule for goal criteria is unchanged;
-  this is a structural gate, not a stated one).
+  calls `findMissionPrOwner(missionId)` (via `evaluateMissionWorkState`) and
+  refuses with code `awaiting_mission_pr` whenever the owner is absent, its PR
+  was closed without merging, or it is still open — shipped as
+  `awaiting_mission_pr` (`packages/core/mission-completion-codes.ts`), not the
+  `integration_pr_unmerged` name this decision originally proposed. This check
+  is unconditional — it does not depend on `goalCriteria` containing
+  `all_prs_merged`, and it runs even when `goalCriteria` is empty (the "zero
+  criteria means no gate" rule for goal criteria is unchanged; this is a
+  structural gate, not a stated one).
 - The check is placed in the refusal order immediately after `awaiting_merge`:
   `mission_not_found` → `mission_not_active` → `pending_deliverables` →
   `no_deliverables` → `infra_stalled` → `awaiting_merge` →
-  `integration_pr_unmerged` → `criteria_failed` / `criteria_pending` /
-  `criteria_unverified`. Deliverable PRs merging into the integration branch is
-  a precondition for the mission PR existing at all, so checking them first
-  gives the more specific, actionable refusal.
+  `awaiting_mission_pr` → `criteria_failed` / `criteria_pending` /
+  `criteria_unverified` (`apps/web/src/lib/mission-completion.ts`, the
+  `canCompleteMission` body). Deliverable PRs merging into the integration
+  branch is a precondition for the mission PR existing at all, so checking
+  them first gives the more specific, actionable refusal.
 - `fireMissionReleaseIfComplete` and the webhook's `on_mission_complete` block
-  both already call `canCompleteMission` with `evaluateCriteria: false` — no
-  new call site is required for the release trigger; both inherit this fix
-  automatically once the predicate itself covers it, because they read the
-  predicate's `ok` field and nothing else.
+  both call `canCompleteMission` with `evaluateCriteria: false` — no separate
+  call site was needed for the release trigger; both inherited this fix once
+  the predicate itself covered it, because they read the predicate's `ok`
+  field and nothing else.
 - Missions with `integrationBranchEnabled` false/absent are untouched:
-  `findMissionPrOwner` MUST NOT be queried for them, and behaviour is
-  byte-identical to before this spec.
+  `findMissionPrOwner` is not queried for them, and behaviour is
+  byte-identical to before this decision.
 
 **Acceptance criteria**:
 - AC-RG-1: GIVEN a mission with `integrationBranchEnabled = true`, every
   deliverable task's PR merged into the integration branch, no mission-PR-owner
   task yet, and no stated `goalCriteria` WHEN `canCompleteMission` runs THEN it
-  refuses with `code = 'integration_pr_unmerged'`.
+  refuses with `code = 'awaiting_mission_pr'`.
 - AC-RG-2: GIVEN the same mission WHEN its mission PR later merges into trunk
   THEN a subsequent `canCompleteMission` call no longer refuses on this code.
 - AC-RG-3: GIVEN a mission with `integrationBranchEnabled = true` and its
@@ -146,13 +187,17 @@ criteria that don't include it, has nothing checking this today.
 
 ---
 
-## Decision 2 — a `released` goal-criterion type
+## Decision 2 — a `released` goal-criterion type — NOT IMPLEMENTED
 
 **Capability statement**: A mission MAY gate its own completion on production
 release, not merely trunk merge, via a new mechanical `GoalCriterion` type,
-`released`.
+provisionally named "released" below. Design only — `GoalCriterionType`
+(`packages/shared/src/types.ts`) does not have this member today, and nothing
+downstream (the write boundary, `evaluateGoalCriteria`, `isLlmEligible`) has a
+case for it. The design is recorded here for whoever picks this up, not as a
+description of current behaviour.
 
-**Invariants**:
+**Invariants** (target design; none of the following exists yet):
 - New `GoalCriterionType` value: `{ type: 'released', label?: string }`. No
   other fields — the mission being evaluated is implicit.
 - The evaluator reuses `loadMissionProductionStatus(missionId)`
@@ -208,7 +253,7 @@ release, not merely trunk merge, via a new mechanical `GoalCriterion` type,
 
 ---
 
-## Decision 3 — one path dispatches dev→main
+## Decision 3 — one path dispatches dev→main — IMPLEMENTED
 
 **Capability statement**: Exactly one code path performs the dev→main
 dispatch that follows a mission's own PR merging, regardless of which of the
@@ -244,20 +289,26 @@ existing call sites observes that merge first.
 
 ---
 
-## Decision 4 — a `skipped` workflow run is not a failed release
+## Decision 4 — a `skipped` workflow run is not a failed release — NOT IMPLEMENTED
 
 **Capability statement**: A GitHub Actions run that concludes `skipped` MUST
 be recorded as "did not ship, safe to retry" — never as `failed`.
 
 `mapWorkflowConclusionToReleaseState` (`apps/web/src/lib/release/workflow-run.ts`)
-currently maps every conclusion other than `success` / `null` /
-`action_required` to `failed`, which includes `skipped`. A `skipped`
-conclusion means the workflow's own internal gate (for example, an
-empty-commit check) decided there was nothing to ship — it is not a dispatch
-failure, and treating it as one produces a false "release failed" record for
-a run that, correctly, did nothing.
+maps every conclusion other than `success` / `null` / `action_required` to
+`failed`, which includes `skipped` — and does so deliberately: its docstring
+argues a skipped run "shipped nothing, and recording that as a failed release
+is accurate, not pessimistic." That is the opposite of this decision's
+invariant. The `'skipped'` member of `MissionReleaseFailure`
+(`apps/web/src/lib/mission-release.ts`) that exists today is not this call
+site — it is reached only from `fireMissionReleaseIfComplete`'s own
+`branch_merge`-strategy skip (an Option A' policy refusal), never from the
+`workflow_run` webhook's conclusion mapping. Adopting this decision means
+either overriding `mapWorkflowConclusionToReleaseState`'s stated rationale or
+retiring the decision — that judgment call belongs to whoever picks this back
+up, not to this reconciliation pass.
 
-**Invariants**:
+**Invariants** (target design; not implemented):
 - `conclusion = 'skipped'` MUST NOT set `releases.state = 'failed'`.
 - On `conclusion = 'skipped'`, the owning mission's release-attempt claim MUST
   be released via the existing `abandonMissionReleaseAttempt(missionId,
@@ -282,12 +333,19 @@ a run that, correctly, did nothing.
 
 ---
 
-## Decision 5 — trunk CI red at mission-PR-merge time
+## Decision 5 — trunk CI red at mission-PR-merge time — NOT IMPLEMENTED
 
 **Capability statement**: An unattended merge of a mission's PR into trunk
 MUST be refused while trunk's own most recent commit has a failing CI status.
 
-**Invariants**:
+`guardMissionPrMerge` (`apps/web/src/lib/mission-pr.ts`) today checks exactly
+the two conditions it always has — an open sibling task PR still based on the
+integration branch, and an unfinished deliverable task that hasn't opened a
+PR yet. It does not query trunk's latest commit or its check-runs state, and
+its signature (`task` only) has no override parameter for a human-initiated
+merge to bypass a check that does not exist.
+
+**Invariants** (target design; not implemented):
 - `guardMissionPrMerge` (`apps/web/src/lib/mission-pr.ts`) gains a second,
   independent refusal alongside its existing "a sibling task PR based on the
   integration branch is still open" check: the workspace's trunk branch's
@@ -314,13 +372,16 @@ MUST be refused while trunk's own most recent commit has a failing CI status.
 
 ---
 
-## Decision 6 — a mission cannot fully protect its own task PRs
+## Decision 6 — a mission cannot fully protect its own task PRs — NOT IMPLEMENTED
 
 **Capability statement**: When a mission's own deliverable is the
 merge/claim/release guard that would otherwise protect it, the mission MUST
 NOT be able to represent itself as verified before that guard is actually
 enforcing in production — even though the window in which it cannot protect
 itself cannot be closed by more code inside the mission itself.
+
+This decision has no code surface of its own — it is satisfied entirely by
+Decision 2 existing. Since Decision 2 is not implemented, neither is this.
 
 Recommendation: accept the window (option a in the originating brief), not a
 hotfix lane that bypasses the integration branch for enforcement changes
