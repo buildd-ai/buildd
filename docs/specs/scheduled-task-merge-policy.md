@@ -2,7 +2,7 @@
 title: Scheduled-task merge policy override
 status: draft
 owner: max
-last_verified: 2026-09-04
+last_verified: 2026-09-15
 summary: A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 domain: tasks
 surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/workspace-policy.ts, packages/shared/src/types.ts]
@@ -29,27 +29,44 @@ assertions:
 
 > **Status: `draft` — nothing in this spec is implemented.** It was carried as
 > `active` while none of AC-1…AC-6 held, which is the one thing a spec may not
-> be: `active` asserts what the system does today. Verified 2026-09-04 against
-> `dev`:
+> be: `active` asserts what the system does today. Re-verified 2026-09-15
+> against `dev` (originally verified 2026-09-04 — nothing below has changed in
+> the interim, only line numbers drifted):
 >
-> - There is no `tasks.merge_policy` column. `merge_policy` appears once in
->   `packages/core/db/schema.ts`, on `missions`.
-> - `resolvePolicy` (`apps/web/src/lib/merge-policy.ts`) has no task-policy step,
->   and its signature cannot accept one.
-> - The schedule cron does not propagate the template's merge policy — zero
->   occurrences in `apps/web/src/app/api/cron/schedules/route.ts`.
-> - `parseMergePolicy` is wired only into `apps/web/src/app/api/missions/route.ts`
->   and `apps/web/src/app/app/api/workspaces/[id]/config/route.ts`.
+> - There is still no `tasks.merge_policy` column. `merge_policy` appears once
+>   in `packages/core/db/schema.ts:807`, on `missions`.
+> - `resolvePolicy` (`apps/web/src/lib/merge-policy.ts:124`) still has no
+>   task-policy step, and its signature still cannot accept one — its `task`
+>   parameter carries only `requiresReview`.
+> - The schedule cron still does not propagate the template's merge policy —
+>   zero occurrences in `apps/web/src/app/api/cron/schedules/route.ts` (the task
+>   insert moved from line 634 to 728; `TaskScheduleTemplate`
+>   (`packages/shared/src/types.ts:743`) still has no `mergePolicy` field).
+> - `parseMergePolicy` is still wired only into
+>   `apps/web/src/app/api/missions/route.ts` and
+>   `apps/web/src/app/api/workspaces/[id]/config/route.ts`.
 >
 > The design is still wanted; `draft` is the honest home for it, and per
 > `SPEC-FORMAT.md` a draft is where naming not-yet-existing symbols is correct.
 >
-> **Before implementing, resolve one open question first.**
-> `docs/design/mission-delivery-arc.md` turns on *where the merge-policy tier
-> applies* — the mission's PR or each task's PR. That decision changes the
-> granularity this spec is written at, so building `tasks.mergePolicy` now risks
-> cementing the wrong one. Promote this back to `active` in the PR that
-> implements it, with `verified_by` populated.
+> **The open question this spec was blocked on has since been resolved —
+> implementation is unblocked, but still not started.**
+> `docs/design/mission-delivery-arc.md` is now `status: implemented`: Option A′
+> (mission integration branches) shipped, answering *where the merge-policy
+> tier applies* for mission-scoped delivery. That resolution does not implement
+> this spec's capability — Option A′ is keyed on `missions.workingBranch` /
+> `integrationBranchEnabled`, not on schedules or `tasks`, so a scheduled task
+> outside a mission gets nothing from it. But it does change the shape this
+> spec must fit into: Option A′ already occupies precedence-chain position 2
+> (see "Precedence chain" below), so `task.mergePolicy` can no longer slot in
+> at position 2 as originally written — it would need to sit above Option A′,
+> not replace it.
+>
+> `docs/design/mission-delivery-arc.md` §B8 still asks the open question
+> directly: implement `tasks.mergePolicy` per this spec, or retire the spec to
+> `superseded`. Neither has happened as of this reconciliation pass — that
+> decision is left to a human rather than made unilaterally here. Promote this
+> back to `active` in the PR that implements it, with `verified_by` populated.
 
 **Capability statement**: A task schedule MUST be able to declare its own
 `MergePolicy` that overrides the workspace/mission default for every task it
@@ -113,7 +130,7 @@ No default, no NOT NULL — existing tasks are unaffected.
 
 ### Task creation from schedule
 
-`apps/web/src/app/api/cron/schedules/route.ts:634` — the `db.insert(tasks)`
+`apps/web/src/app/api/cron/schedules/route.ts:728` — the `db.insert(tasks)`
 call MUST propagate `template.mergePolicy` when present:
 
 ```ts
@@ -127,33 +144,48 @@ additional validation at creation time.
 
 ## Precedence chain (updated)
 
-`apps/web/src/lib/merge-policy.ts` — `resolvePolicy()` gains a new step at
-position 2 (between `task.requiresReview` and `mission.mergePolicy`):
+The chain below is this spec's **proposal** — none of it is built (see status
+callout above). It no longer matches the chain `resolvePolicy()` actually runs
+today, because Option A′ (`docs/design/mission-delivery-arc.md`) shipped after
+this spec was drafted and took the position-2 slot this spec wanted:
+
+**Shipped, as of 2026-09-15** (`apps/web/src/lib/merge-policy.ts:124-149`):
 
 ```
-1. task.requiresReview = true  →  { tier: 'human' }      (explicit human gate)
-2. task.mergePolicy            →  parsed value             ← NEW
+1. task.requiresReview = true                        →  { tier: 'human' }
+2. PR based on the mission integration branch (A′)   →  { tier: 'auto-threshold', threshold: carried through }
 3. mission.mergePolicy
-4. mission.requiresReview = true  →  { tier: 'human' }
+4. mission.requiresReview = true                     →  { tier: 'human' }
 5. workspace.gitConfig.mergePolicy
 6. DEFAULT_MERGE_POLICY  ({ tier: 'auto-threshold', threshold: { maxLines: 800 } })
 ```
 
-`resolvePolicy()` signature change:
+**Proposed by this spec**, renumbered to slot in above Option A′ instead of at
+the position originally written:
+
+```
+1. task.requiresReview = true  →  { tier: 'human' }      (explicit human gate)
+2. task.mergePolicy            →  parsed value             ← NEW (this spec)
+3. PR based on the mission integration branch (A′)
+4. mission.mergePolicy
+5. mission.requiresReview = true  →  { tier: 'human' }
+6. workspace.gitConfig.mergePolicy
+7. DEFAULT_MERGE_POLICY
+```
+
+`resolvePolicy()`'s actual signature has also already diverged from what this
+spec proposed — it takes an additional `pr` argument for the Option A′ check,
+and `mission` carries `workingBranch` / `integrationBranchEnabled` alongside
+`mergePolicy` / `requiresReview`. What this spec still needs to add is a
+`mergePolicy` field on `task`, checked immediately after the
+`task.requiresReview` guard and before the Option A′ check:
 
 ```ts
-export function resolvePolicy(
-  workspace: { gitConfig?: WorkspaceGitConfig | null },
-  mission?: { mergePolicy?: MergePolicy | null; requiresReview?: boolean } | null,
-  task?: { requiresReview?: boolean; mergePolicy?: MergePolicy | null } | null,
-): MergePolicy {
-  if (task?.requiresReview) return { tier: 'human' };
-  if (task?.mergePolicy)   return parseMergePolicyRead(task.mergePolicy);  // NEW
-  if (mission?.mergePolicy) return parseMergePolicyRead(mission.mergePolicy);
-  if (mission?.requiresReview) return { tier: 'human' };
-  if (workspace.gitConfig?.mergePolicy) return parseMergePolicyRead(workspace.gitConfig.mergePolicy);
-  return DEFAULT_MERGE_POLICY;
-}
+task?: { requiresReview?: boolean; mergePolicy?: MergePolicy | null } | null,
+// ...
+if (task?.requiresReview) return { tier: 'human' };
+if (task?.mergePolicy) return parseMergePolicyRead(task.mergePolicy);  // NEW
+// (Option A′ check, unchanged, follows)
 ```
 
 All callers of `resolvePolicy()` already pass the `task` object from a DB
@@ -165,7 +197,7 @@ change needed.
 ## Risk-class interaction
 
 `applyPolicyConfigToMergePolicy()` in
-`apps/web/src/lib/workspace-policy.ts:211` is called **after** `resolvePolicy()`
+`apps/web/src/lib/workspace-policy.ts:452` is called **after** `resolvePolicy()`
 at every webhook merge entry point. It can only **upgrade** the tier
 (auto-threshold → agent-review → human), never downgrade it.
 
@@ -268,11 +300,11 @@ The schedule update is applied via `manage_workspaces`-equivalent API or direct
 
 | Symbol | File | Purpose |
 |---|---|---|
-| `TaskScheduleTemplate` | `packages/shared/src/types.ts:669` | Add `mergePolicy?: MergePolicy` |
-| `tasks.mergePolicy` | `packages/core/db/schema.ts:~846` | New nullable JSONB column |
-| `resolvePolicy()` | `apps/web/src/lib/merge-policy.ts:58` | New step 2 in precedence chain |
-| Schedule cron task insert | `apps/web/src/app/api/cron/schedules/route.ts:634` | Propagate `template.mergePolicy` |
-| `applyPolicyConfigToMergePolicy()` | `apps/web/src/lib/workspace-policy.ts:211` | Unchanged — still fires post-resolvePolicy; only upgrades tier |
+| `TaskScheduleTemplate` | `packages/shared/src/types.ts:743` | Add `mergePolicy?: MergePolicy` |
+| `tasks.mergePolicy` | `packages/core/db/schema.ts` | New nullable JSONB column — does not exist yet; `missions.mergePolicy` (`schema.ts:807`) is the nearest existing analog |
+| `resolvePolicy()` | `apps/web/src/lib/merge-policy.ts:124` | New step above Option A′ in precedence chain (not position 2 — that slot is now Option A′; see "Precedence chain" above) |
+| Schedule cron task insert | `apps/web/src/app/api/cron/schedules/route.ts:728` | Propagate `template.mergePolicy` |
+| `applyPolicyConfigToMergePolicy()` | `apps/web/src/lib/workspace-policy.ts:452` | Unchanged — still fires post-resolvePolicy; only upgrades tier |
 | Schedule save validation | `apps/web/src/app/api/workspaces/[id]/schedules/route.ts` | **DRIFT (found 2026-08-29): not implemented.** The route it named did not exist; schedule CRUD lives at the path shown, and it does not call `parseMergePolicy()` on `taskTemplate.mergePolicy`. An invalid policy on a schedule template is therefore accepted on write and only rejected (or silently ignored) at task-creation time. `parseMergePolicy()` is wired into `apps/web/src/app/api/missions/route.ts` and `apps/web/src/app/api/workspaces/[id]/config/route.ts` only. |
 
 ---
