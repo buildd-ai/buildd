@@ -1123,29 +1123,29 @@ export async function PUT(req: NextRequest) {
       recordMergeGate('bypassed', 'merge policy skipped by admin force', { force: true });
     }
 
+    let policyPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
+    try {
+      policyPr = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls/${prNumber}`,
+      );
+    } catch (err) {
+      console.warn(`[merge_pr] Could not read ${repo.fullName}#${prNumber} for policy:`, err);
+    }
+
+    const headSha = policyPr?.head?.sha ?? null;
+    if (!headSha) {
+      // Fail closed. This read is what identifies the commit the policy is
+      // evaluated against; merging without it would be a merge with no
+      // policy, which is the hole this gate closes.
+      recordMergeGate('rejected', 'could not read the PR head to evaluate merge policy — refusing the merge');
+      return NextResponse.json({
+        error: 'could not read the PR head to evaluate merge policy — refusing the merge',
+        hint: 'Retry, or have a human merge from the escalation inbox.',
+      }, { status: 403 });
+    }
+
     if (!force) {
-      let policyPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
-      try {
-        policyPr = await githubApi(
-          repo.installation.installationId,
-          `/repos/${repo.fullName}/pulls/${prNumber}`,
-        );
-      } catch (err) {
-        console.warn(`[merge_pr] Could not read ${repo.fullName}#${prNumber} for policy:`, err);
-      }
-
-      const headSha = policyPr?.head?.sha ?? null;
-      if (!headSha) {
-        // Fail closed. This read is what identifies the commit the policy is
-        // evaluated against; merging without it would be a merge with no
-        // policy, which is the hole this gate closes.
-        recordMergeGate('rejected', 'could not read the PR head to evaluate merge policy — refusing the merge');
-        return NextResponse.json({
-          error: 'could not read the PR head to evaluate merge policy — refusing the merge',
-          hint: 'Retry, or have a human merge from the escalation inbox.',
-        }, { status: 403 });
-      }
-
       const task = worker.taskId
         ? await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
@@ -1284,6 +1284,7 @@ export async function PUT(req: NextRequest) {
       repo.fullName,
       prNumber,
       mergeMethod as 'merge' | 'squash' | 'rebase',
+      headSha,
     );
 
     if (result.merged) {

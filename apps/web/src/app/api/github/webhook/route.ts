@@ -2030,6 +2030,16 @@ async function handleReleasePrCiSuccess(
 
   if (pendingReleaseTasks.length === 0) return;
 
+  // A delayed success must not authorize a newer commit. Leave the pending
+  // release for its own CI event if the head moved or cannot be verified.
+  try {
+    const livePr = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
+    if (!headSha || livePr?.head?.sha !== headSha) return;
+  } catch (error) {
+    console.warn(`[release-pr] Could not verify live head for ${repoFullName}#${prNumber}:`, error);
+    return;
+  }
+
   // Verify ALL check suites passed before merging (not just this one).
   const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
   if (!allPassed) {
@@ -2069,7 +2079,7 @@ async function handleReleasePrCiSuccess(
     return;
   }
 
-  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge');
+  const mergeResult = await mergePullRequest(installationId, repoFullName, prNumber, 'merge', headSha);
 
   for (const task of pendingReleaseTasks) {
     const ctx = (task.context ?? {}) as Record<string, unknown>;

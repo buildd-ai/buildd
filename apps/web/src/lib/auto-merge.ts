@@ -190,13 +190,11 @@ export async function evaluateAutoMergeSafety(
   // the mission integration PR. Both refs are read here: HEAD for the size-gate
   // exemption, BASE for the model-approve bound.
   //
-  // Fails soft by default: an unreadable PR leaves the head ref and
-  // mergeable_state unknown, which keeps the size gate ON and leaves the
-  // conflict check a soft pass — exactly as before. It fails CLOSED only under
-  // `opts.bound`, where the base ref is a hard input (see below).
+  // An unreadable PR keeps the size gate on and fails closed at the live-head
+  // check below. The bound also requires a verified base ref.
   let prData: {
     mergeable_state?: string;
-    head?: { ref?: string | null };
+    head?: { ref?: string | null; sha?: string | null };
     base?: { ref?: string | null };
   } | null = null;
   let prReadError: unknown = null;
@@ -270,8 +268,8 @@ export async function evaluateAutoMergeSafety(
 
   // Conflict detection — check GitHub's mergeable_state before attempting merge.
   // 'dirty' = conflicts with base; 'blocked' = branch protection or review required.
-  // 'unknown' (and an unreadable PR) means GitHub is still computing — treat as a
-  // soft pass (do not block permanently).
+  // 'unknown' means GitHub is still computing — defer that conflict decision
+  // to GitHub's merge API. The live head must still be verified below.
   const mergeableState = prData?.mergeable_state;
   if (mergeableState === 'dirty') {
     return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
@@ -305,6 +303,15 @@ export async function evaluateAutoMergeSafety(
     if (!verdict.permitted) {
       return { ok: false, reason: verdict.reason };
     }
+  }
+
+  // The event/reviewer SHA must still identify the live PR. Otherwise a late
+  // success for A could treat B's rejecting review as superseded and merge B.
+  if (!headSha || !prData?.head?.sha) {
+    return { ok: false, reason: 'could not verify the live PR head — refusing the merge' };
+  }
+  if (prData.head.sha !== headSha) {
+    return { ok: false, reason: 'PR head changed — ignoring stale merge trigger' };
   }
 
   return { ok: true };
@@ -460,7 +467,7 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha);
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);

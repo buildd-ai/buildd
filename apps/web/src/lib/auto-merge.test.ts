@@ -153,7 +153,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })           // check-runs
       .mockResolvedValueOnce([])                            // files
-      .mockResolvedValueOnce({ mergeable_state: 'dirty' }); // PR state
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha' } }); // PR state
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
   });
@@ -172,7 +172,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'blocked' });
+      .mockResolvedValueOnce({ mergeable_state: 'blocked', head: { sha: 'head-sha' } });
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
     ).resolves.toEqual({
@@ -186,7 +186,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
     ).resolves.toEqual({ ok: true });
@@ -197,7 +197,7 @@ describe('evaluateAutoMergeSafety mergeable_state check', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'unknown' });
+      .mockResolvedValueOnce({ mergeable_state: 'unknown', head: { sha: 'head-sha' } });
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
     ).resolves.toEqual({ ok: true });
@@ -216,7 +216,7 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
         { filename: 'packages/core/db/schema.ts', additions: 2, deletions: 0 },
         { filename: 'packages/core/drizzle/0094_safe.sql', additions: 1, deletions: 0 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true, operationClass: 'EXPAND' });
 
@@ -286,7 +286,7 @@ describe('evaluateAutoMergeSafety migration operation-class gate (unconditional)
       .mockResolvedValueOnce([
         { filename: 'apps/web/src/app/page.tsx', additions: 5, deletions: 2 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     mockInspectPullRequestMigrations.mockReset();
 
     await expect(
@@ -325,7 +325,7 @@ describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
       .mockResolvedValueOnce([
         { filename: '.github/workflows/build.yml', additions: 1, deletions: 0 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     const policy: MergePolicy = {
       tier: 'agent-review',
       agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['.github/workflows/'] },
@@ -345,7 +345,7 @@ describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
       .mockResolvedValueOnce([
         { filename: 'apps/web/src/app/page.tsx', additions: 5, deletions: 2 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     const policy: MergePolicy = {
       tier: 'agent-review',
       agentReview: { reviewerRole: 'reviewer', escalateToPaths: ['.github/workflows/'] },
@@ -373,7 +373,7 @@ describe('evaluateAutoMergeSafety generated-path exclusion', () => {
         { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
         { filename: 'packages/core/drizzle/meta/_journal.json', additions: 4, deletions: 2 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
 
@@ -391,7 +391,7 @@ describe('evaluateAutoMergeSafety generated-path exclusion', () => {
         { filename: 'apps/web/src/lib/feature.ts', additions: 900, deletions: 0 },
         { filename: 'packages/core/drizzle/meta/0001_snapshot.json', additions: 9413, deletions: 0 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
 
@@ -412,7 +412,7 @@ describe('evaluateAutoMergeSafety generated-path exclusion', () => {
       .mockResolvedValueOnce([
         { filename: 'packages/core/drizzle/0001_drop_column.sql', additions: 10, deletions: 0 },
       ])
-      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({
       safe: false,
@@ -716,7 +716,7 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
@@ -730,7 +730,7 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy, {
@@ -743,7 +743,7 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'feature/some-task' } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'feature/some-task' } });
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
@@ -765,7 +765,7 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy),
@@ -842,7 +842,7 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
@@ -853,7 +853,7 @@ describe("evaluateAutoMergeSafety — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'blocked', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'blocked', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
 
     await expect(
       evaluateAutoMergeSafety(...params, autoThresholdPolicy, { mission: optedInMission }),
@@ -886,7 +886,7 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
       .mockResolvedValueOnce(OVERSIZED_FILES)
       .mockResolvedValueOnce({
         mergeable_state: 'clean',
-        head: { ref: RELEASE_BRANCH },
+        head: { sha: 'head-sha', ref: RELEASE_BRANCH },
         base: { ref: PROD_BRANCH },
       });
 
@@ -901,7 +901,7 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
       .mockResolvedValueOnce(OVERSIZED_FILES)
       .mockResolvedValueOnce({
         mergeable_state: 'clean',
-        head: { ref: RELEASE_BRANCH },
+        head: { sha: 'head-sha', ref: RELEASE_BRANCH },
         base: { ref: 'some-other-branch' },
       });
 
@@ -916,7 +916,7 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
       .mockResolvedValueOnce(OVERSIZED_FILES)
       .mockResolvedValueOnce({
         mergeable_state: 'clean',
-        head: { ref: 'feature/some-task' },
+        head: { sha: 'head-sha', ref: 'feature/some-task' },
         base: { ref: PROD_BRANCH },
       });
 
@@ -931,7 +931,7 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
       .mockResolvedValueOnce(OVERSIZED_FILES)
       .mockResolvedValueOnce({
         mergeable_state: 'clean',
-        head: { ref: RELEASE_BRANCH },
+        head: { sha: 'head-sha', ref: RELEASE_BRANCH },
         base: { ref: PROD_BRANCH },
       });
 
@@ -971,7 +971,7 @@ describe('evaluateAutoMergeSafety — release branch PR', () => {
       .mockResolvedValueOnce(OVERSIZED_FILES)
       .mockResolvedValueOnce({
         mergeable_state: 'dirty',
-        head: { ref: RELEASE_BRANCH },
+        head: { sha: 'head-sha', ref: RELEASE_BRANCH },
         base: { ref: PROD_BRANCH },
       });
 
@@ -999,7 +999,7 @@ describe("tryAutoMergeWorkerPr — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
 
     await tryAutoMergeWorkerPr({
       installationId: 1,
@@ -1018,7 +1018,7 @@ describe("tryAutoMergeWorkerPr — Option A' mission integration PR", () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [] })
       .mockResolvedValueOnce(OVERSIZED_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'feature/task-1' } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'feature/task-1' } });
 
     await tryAutoMergeWorkerPr({
       installationId: 1,
@@ -1057,7 +1057,7 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
     mockTasksFindMany = mock(() => [{ id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' }]) as any;
     mockWorkersFindMany = mock(() => [
       { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: MISSION_BRANCH, mergedAt: null, prLifecycleStatus: 'pr_open', startedAt: new Date(), createdAt: new Date() },
@@ -1085,7 +1085,7 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
     mockTasksFindMany = mock(() => [
       { id: 't-2', title: 'Task 2', status: 'pending', mode: 'execution', taskClass: 'work' },
     ]) as any;
@@ -1108,7 +1108,7 @@ describe('tryAutoMergeWorkerPr — mission-PR branch-lifecycle gate (P3)', () =>
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: MISSION_BRANCH } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: MISSION_BRANCH } });
     mockTasksFindMany = mock(() => [{ id: 't-2', title: 'Task 2', status: 'completed', mode: 'execution', taskClass: 'work' }]) as any;
     mockWorkersFindMany = mock(() => [
       { taskId: 't-2', prUrl: 'u2', prNumber: 7, prBaseRef: MISSION_BRANCH, mergedAt: new Date(), prLifecycleStatus: 'merged', startedAt: new Date(), createdAt: new Date() },
@@ -1154,7 +1154,7 @@ describe('tryAutoMergeWorkerPr — return value', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
       .mockResolvedValueOnce(ORDINARY_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'task/x' } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
 
     const result = await tryAutoMergeWorkerPr({
       installationId: 1,
@@ -1172,7 +1172,7 @@ describe('tryAutoMergeWorkerPr — return value', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
       .mockResolvedValueOnce(ORDINARY_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { ref: 'task/x' } });
+      .mockResolvedValueOnce({ mergeable_state: 'dirty', head: { sha: 'head-sha', ref: 'task/x' } });
 
     const result = await tryAutoMergeWorkerPr({
       installationId: 1,
@@ -1192,7 +1192,7 @@ describe('tryAutoMergeWorkerPr — return value', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: CLEAN_GREEN })
       .mockResolvedValueOnce(ORDINARY_FILES)
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'task/x' } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'task/x' } });
     mockMergePullRequest.mockResolvedValue({ merged: false, message: 'PR has already been merged' });
 
     const result = await tryAutoMergeWorkerPr({
@@ -1233,7 +1233,7 @@ describe('evaluateAutoMergeSafety model-approve bound', () => {
       .mockResolvedValueOnce({
         mergeable_state: 'clean',
         base: { ref: pr.base },
-        head: { ref: pr.head ?? 'task/some-work' },
+        head: { sha: 'head-sha', ref: pr.head ?? 'task/some-work' },
       });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
@@ -1437,7 +1437,7 @@ describe('tryAutoMergeWorkerPr passes the bound through to the safety rails', ()
       .mockResolvedValueOnce({
         mergeable_state: 'clean',
         base: { ref: baseRef },
-        head: { ref: 'task/some-work' },
+        head: { sha: 'head-sha', ref: 'task/some-work' },
       });
     mockInspectPullRequestMigrations.mockReset();
     mockInspectPullRequestMigrations.mockResolvedValue({ safe: true });
@@ -1501,7 +1501,7 @@ describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
     mockGithubApi
       .mockResolvedValueOnce({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] })
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { ref: 'feature' }, base: { ref: 'dev' } });
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha', ref: 'feature' }, base: { ref: 'dev' } });
   };
 
   beforeEach(() => {
@@ -1517,6 +1517,54 @@ describe('tryAutoMergeWorkerPr — review-verdict gate', () => {
     mockGuardReviewVerdict.mockReset();
     mockGuardReviewVerdict.mockResolvedValue({ blocks: false });
     mockFireGateEvent.mockReset();
+  });
+
+  it('rejects delayed success for A when live head B has a rejecting review', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-B' } });
+    mockGuardReviewVerdict.mockImplementation(async (...args: any[]) =>
+      args[0].headSha === 'head-B' ? blocked : { blocks: false });
+
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-A', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+
+    expect(result.merged).toBe(false);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the live PR has no head SHA', async () => {
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce({ mergeable_state: 'clean' });
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-A', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+    expect(result.merged).toBe(false);
+    expect(result.reason).toContain('could not verify');
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('pins the merge to the checked head when a push races the merge', async () => {
+    greenPr();
+    mockMergePullRequest.mockImplementation(async (...args: any[]) =>
+      args[4] === 'head-sha'
+        ? { merged: false, message: 'Head branch was modified' }
+        : { merged: true, message: 'merged unchecked head' });
+    const result = await tryAutoMergeWorkerPr({
+      installationId: 1, repoFullName: 'buildd-ai/buildd', prNumber: 42,
+      headSha: 'head-sha', worker: { id: 'worker-1', taskId: null, workspaceId: 'ws-1' },
+      policy: autoThresholdPolicy,
+    });
+    expect(result.merged).toBe(false);
+    expect(result.reason).toBe('Head branch was modified');
   });
 
   it('does not merge a green PR whose reviewer requested changes on the same commit', async () => {

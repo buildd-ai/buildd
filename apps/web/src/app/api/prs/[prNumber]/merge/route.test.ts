@@ -123,7 +123,7 @@ describe('POST /api/prs/[prNumber]/merge', () => {
     mockMergePullRequest.mockReset();
     mockTriggerEvent.mockReset();
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockReset();
@@ -205,6 +205,7 @@ describe('POST /api/prs/[prNumber]/merge', () => {
       workspace.githubRepo.fullName,
       42,
       'squash',
+      'head-A',
     );
   });
 
@@ -351,7 +352,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'GitHub returned 502 with no readable response body',
       indeterminate: true,
     });
-    mockGithubApi.mockResolvedValue({ merged: false, state: 'open' });
+    mockGithubApi.mockResolvedValue({ merged: false, state: 'open', head: { sha: 'head-A' } });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
     const body = await res.json();
@@ -365,7 +366,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'GitHub returned 502 with no readable response body',
       indeterminate: true,
     });
-    mockGithubApi.mockResolvedValue({ merged: true, state: 'closed' });
+    mockGithubApi.mockResolvedValue({ merged: true, state: 'closed', head: { sha: 'head-A' } });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
 
@@ -382,7 +383,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'GitHub returned 502 with no readable response body',
       indeterminate: true,
     });
-    mockGithubApi.mockResolvedValue({ merged: false, state: 'open' });
+    mockGithubApi.mockResolvedValue({ merged: false, state: 'open', head: { sha: 'head-A' } });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
 
@@ -399,7 +400,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
       message: 'Could not reach GitHub: fetch failed',
       indeterminate: true,
     });
-    mockGithubApi.mockRejectedValue(new Error('fetch failed'));
+    mockGithubApi.mockResolvedValueOnce({ head: { sha: 'head-A' } }).mockRejectedValue(new Error('fetch failed'));
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
 
@@ -411,6 +412,7 @@ describe('POST /api/prs/[prNumber]/merge — indeterminate merge responses', () 
   });
 
   it('still classifies a genuine GitHub rejection normally (regression)', async () => {
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockMergePullRequest.mockResolvedValue({ merged: false, message: 'Method Not Allowed', status: 405 });
     const [req, ctx] = makeRequest();
     const res = await POST(req, ctx);
@@ -441,7 +443,7 @@ describe('POST /api/prs/[prNumber]/merge — mission-PR branch-lifecycle gate (P
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
     mockTriggerEvent.mockReset();
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockTasksFindMany.mockReset();
     mockMissionsFindFirst.mockReset();
     mockMissionsFindFirst.mockResolvedValue({ workingBranch: BRANCH, integrationBranchEnabled: true });
@@ -549,7 +551,7 @@ describe('POST /api/prs/[prNumber]/merge — override (Merge anyway)', () => {
     mockMergePullRequest.mockResolvedValue({ merged: true, message: 'ok' });
     mockTriggerEvent.mockReset();
     mockGithubApi.mockReset();
-    mockGithubApi.mockResolvedValue({});
+    mockGithubApi.mockResolvedValue({ head: { sha: 'head-A' } });
     mockTasksFindMany.mockReset();
     mockTasksFindMany.mockResolvedValue([]);
     mockMissionsFindFirst.mockReset();
@@ -742,6 +744,26 @@ describe('POST /api/prs/[prNumber]/merge — review-verdict gate', () => {
     expect(noteCall?.[1]).toEqual(
       expect.objectContaining({ body: expect.stringContaining('requested changes') }),
     );
+  });
+
+  it('refuses an unknown head even when the user overrides the review', async () => {
+    mockGithubApi.mockResolvedValue({});
+    const [req, ctx] = makeRequest('42', { override: true });
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(409);
+    expect(mockMergePullRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not complete the worker when the head moves between review and merge', async () => {
+    mockMergePullRequest.mockImplementation(async (...args: any[]) =>
+      args[4] === 'c'.repeat(40)
+        ? { merged: false, message: 'Head branch was modified', status: 409 }
+        : { merged: true, message: 'merged unchecked head' });
+    mockWorkersUpdate.mockClear();
+    const [req, ctx] = makeRequest();
+    const res = await POST(req, ctx);
+    expect(res.status).toBe(422);
+    expect(mockWorkersUpdate).not.toHaveBeenCalled();
   });
 
   it('lets an approve-after-changes through untouched', async () => {

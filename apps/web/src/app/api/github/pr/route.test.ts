@@ -2630,6 +2630,18 @@ describe('PUT /api/github/pr', () => {
       body: { workerId: 'w-1', prNumber: 42 },
     }));
 
+    it('does not mark the worker merged when a push races the policy checks', async () => {
+      workerOk();
+      mockMergePullRequest.mockImplementation(async (...args: any[]) =>
+        args[4] === 'sha-42'
+          ? { merged: false, message: 'Head branch was modified', status: 409 }
+          : { merged: true, message: 'merged unchecked head' });
+      mockWorkersUpdate.mockClear();
+      const res = await put();
+      expect((await res.json()).merged).toBe(false);
+      expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    });
+
     it("refuses under 'agent-review' — a self-merge routes around the reviewer", async () => {
       // The most important refusal: green CI does not substitute for the
       // verdict, so this cannot be satisfied by making the PR cleaner.
@@ -3018,7 +3030,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.pr.number).toBe(42);
     expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
     expect(capturedSetData.prLifecycleStatus).toBe('merged');
-    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash', 'sha-42');
   });
 
   it('uses mergeMethod param when provided', async () => {
@@ -3038,7 +3050,7 @@ describe('PUT /api/github/pr', () => {
     });
     await PUT(req);
 
-    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'rebase');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'rebase', 'sha-42');
   });
 
   it('returns 403 with hint when GitHub App lacks contents:write permission', async () => {
@@ -3124,7 +3136,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.ok).toBe(true);
     expect(data.merged).toBe(true);
     expect(mockGetTeamWorkspaceIds).toHaveBeenCalledWith('team-1');
-    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 1732, 'squash');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 1732, 'squash', 'sha-42');
   });
 
   // Test (d): ambiguous prNumber across two workspaces → 409

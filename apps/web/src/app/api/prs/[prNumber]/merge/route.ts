@@ -207,13 +207,17 @@ export async function POST(
   // passing unmarked. The head SHA is read live: `worker.lastCommitSha` lags a
   // push, and lagging in that direction would make a stale verdict look current.
   let reviewGateReason: string | null = null;
+  let liveHeadSha: string | null = null;
   {
-    let liveHeadSha: string | null = null;
     try {
       const prForGate = await githubApi(installationId, `/repos/${repoFullName}/pulls/${prNumber}`);
       liveHeadSha = typeof prForGate?.head?.sha === 'string' ? prForGate.head.sha : null;
     } catch (e) {
       console.warn(`[pr-merge] could not read PR #${prNumber} head for the review gate:`, e);
+    }
+
+    if (!liveHeadSha) {
+      return NextResponse.json({ error: 'Could not verify the live PR head — retry the merge' }, { status: 409 });
     }
 
     const reviewGate = await guardReviewVerdict({
@@ -360,7 +364,7 @@ export async function POST(
   };
 
   // Perform the merge
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', liveHeadSha);
 
   if (!result.merged) {
     const rawMessage = result.message ?? '';
