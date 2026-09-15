@@ -3455,6 +3455,108 @@ describe('PUT /api/github/pr', () => {
       expect(mockMergePullRequest).not.toHaveBeenCalled();
     });
   });
+
+  // The tier check above only fires for `agent-review`. A task PR based on a
+  // mission integration branch resolves to `auto-threshold` (resolvePolicy rule
+  // 2) while `requestIntegrationBranchReview` still dispatches a reviewer at it
+  // — so without this gate an agent could merge straight past its own
+  // reviewer's request-changes on any Option A′ PR.
+  describe('review-verdict gate — every tier, not just agent-review', () => {
+    const HEAD = 'sha-42';
+
+    function autoThresholdWorker() {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } } },
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+
+    const put = (body: Record<string, unknown> = {}) => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, ...body },
+    }));
+
+    it('refuses an auto-threshold merge when the reviewer requested changes on this commit', async () => {
+      autoThresholdWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'the gate never checks mergedAt',
+        escalationReason: null, iteration: 1, maxIterations: 3, reviewHeadSha: HEAD,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('requested changes');
+      expect(data.error).toContain('the gate never checks mergedAt');
+      expect(data.hint).toBeTruthy();
+      expect(data.reviewState).toBe('changes_requested');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses while a review round is still in flight', async () => {
+      autoThresholdWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'reviewing', terminal: false, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: null, confidence: null, summary: null, feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, reviewHeadSha: HEAD,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('still in flight');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('merges once a push has superseded the verdict', async () => {
+      autoThresholdWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'fix it', escalationReason: null,
+        iteration: 1, maxIterations: 3, reviewHeadSha: 'a'.repeat(40),
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+      // The default PR fixture reports head sha `sha-42`, which is not the
+      // 40-hex the verdict was made against — but neither is a valid SHA pair,
+      // so state an explicit one to make the supersession real.
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+        }
+        if (/\/files/.test(path)) return Promise.resolve([]);
+        return Promise.resolve({ number: 42, head: { sha: 'b'.repeat(40) }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalled();
+    });
+
+    it('an admin force still bypasses it, and the bypass is already recorded', async () => {
+      autoThresholdWorker();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'fix it', escalationReason: null,
+        iteration: 1, maxIterations: 3, reviewHeadSha: HEAD,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put({ force: true });
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalled();
+    });
+  });
 });
 
 // ── GET /api/github/pr (read PR details) ──────────────────────────────────────

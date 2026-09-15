@@ -53,6 +53,13 @@ export interface PrReviewStatus {
   /** Request-changes retry position, from the reviewer task context. */
   iteration: number | null;
   maxIterations: number | null;
+  /**
+   * The commit this review round was dispatched against, from the reviewer task
+   * context. A verdict is only a statement about the code it read, so this is
+   * what lets a caller tell a verdict that still describes the PR from one a
+   * later push has superseded — see `review-verdict-gate.ts`.
+   */
+  reviewHeadSha: string | null;
   prState: 'open' | 'merged' | 'closed' | 'unknown';
   merged: boolean;
   /** Set when an approved PR will not be merged by buildd. */
@@ -114,8 +121,16 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
         : 'unknown';
 
   const ctx = asRecord(reviewTask?.context);
-  const output = asRecord(asRecord(reviewTask?.result).structuredOutput);
-  const rawVerdict = stringOrNull(output.verdict);
+  const result = asRecord(reviewTask?.result);
+  const output = asRecord(result.structuredOutput);
+  // `effectiveVerdict` wins over the model's own when the server overrode it
+  // (enforceServerSideEscalation turns an approve into an escalate when the
+  // PR's current file list requires a human). The agent's raw output is left
+  // untouched as the audit record, but every consumer of "where does this
+  // review stand" must read the verdict that actually applies — otherwise a
+  // server-escalated PR reads as `approved` to the self-merge check and to the
+  // review-verdict gate, which is the one state neither may get wrong.
+  const rawVerdict = stringOrNull(result.effectiveVerdict) ?? stringOrNull(output.verdict);
   const verdict = rawVerdict && rawVerdict in VERDICT_STATE ? (rawVerdict as PrReviewVerdict) : null;
 
   let state: PrReviewState;
@@ -156,9 +171,11 @@ export function derivePrReviewStatus(input: DeriveInput): PrReviewStatus {
     confidence: numberOrNull(output.confidence),
     summary: stringOrNull(output.summary),
     feedback: stringOrNull(output.feedback),
-    escalationReason: stringOrNull(output.escalationReason),
+    escalationReason:
+      stringOrNull(result.effectiveVerdictReason) ?? stringOrNull(output.escalationReason),
     iteration: numberOrNull(ctx.iteration),
     maxIterations: numberOrNull(ctx.maxIterations),
+    reviewHeadSha: stringOrNull(ctx.headSha),
     prState,
     merged,
     mergeBlocked,

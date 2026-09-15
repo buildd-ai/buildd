@@ -2,12 +2,12 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-13
-summary: The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
+last_verified: 2026-09-15
+summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
-surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/mission-base-guard.ts]
+surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
-keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber, review_verdict, changes_requested, reviewheadsha, effectiveverdict]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -27,6 +27,13 @@ assertions:
   - id: "completion-gate-tests"
     type: "test_file"
     path: "apps/web/src/lib/mission-completion.test.ts"
+  - id: "review-verdict-gate"
+    type: "symbol"
+    name: "evaluateReviewVerdictGate"
+    path: "apps/web/src/lib/review-verdict-gate.ts"
+  - id: "review-verdict-gate-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/review-verdict-gate.test.ts"
 ---
 # Mission and Task Lifecycle
 
@@ -503,6 +510,38 @@ stored — it is derived on read from the state of associated tasks via
   therefore names the mission integration PR wherever one exists.
 - For workspace-less missions (`workspaceId = null`), `workingBranch` and
   `primaryPrNumber`/`primaryPrUrl` are always null (no repo, no PRs).
+- **A PR carrying an outstanding non-approve verdict, or a review round still
+  in flight, MUST NOT merge through any buildd door.** The rule lives once, in
+  `apps/web/src/lib/review-verdict-gate.ts`, and every door asks it —
+  `merge_pr`, the unattended auto-merge path (`tryAutoMergeWorkerPr`, reached by
+  the CI-green webhook, the no-CI webhook and the reviewer approve handler), the
+  dashboard merge route, and release promotion. It applies at EVERY tier, not
+  only `agent-review`: a task PR based on the mission integration branch
+  resolves to `auto-threshold` by construction while
+  `requestIntegrationBranchReview` dispatches a reviewer at it on purpose, so a
+  tier-conditional check leaves the Option A′ population ungated.
+  - A verdict binds to the commit it was made against. The gate compares the
+    review round's `headSha` to the commit being merged: the same commit blocks,
+    a later one does not. This is required, not a refinement — nothing
+    re-dispatches a reviewer on `synchronize`, so a verdict-only rule would
+    deadlock every PR that was ever told to change something.
+  - If either commit is unknown, or the review status cannot be read, the gate
+    fails closed. Same doctrine as the CI read in `evaluateAutoMergeSafety`.
+  - `review_failed` (a reviewer that produced no verdict) does NOT block: there
+    is no finding to protect, nothing can clear it, and it has its own
+    escalation (`escalateReviewContractFailure`).
+  - A refusal MUST name the blocking verdict and what would clear it, and MUST
+    land in the gate ledger under `review_verdict` — never a silent no-op.
+  - A human MAY override, and only from the dashboard route, where a person is
+    present; the override is recorded as a `bypassed` ledger row plus the
+    existing mission note and PR activity entry. Nothing unattended may override
+    a verdict.
+- **The verdict that applies is the one the gate reads.** When
+  `enforceServerSideEscalation` turns a model `approve` into an `escalate`, the
+  effective verdict MUST be persisted (`tasks.result.effectiveVerdict`) so
+  `derivePrReviewStatus` reports `escalated`. Leaving only the agent's raw
+  output makes a server-escalated PR read as `approved` to both the self-merge
+  check and this gate.
 
 **Acceptance criteria**:
 - AC-8: GIVEN a mission with all tasks `completed` WHEN health is derived THEN
@@ -541,6 +580,21 @@ stored — it is derived on read from the state of associated tasks via
 - AC-11x: GIVEN any task WHEN the runner builds its Git Workflow prompt and
   `create_pr` derives the PR base THEN both report the same base, because both
   call `resolveTaskPrBase` with the same mission and task.
+- AC-11y: GIVEN a PR whose latest review round ended `request-changes` (or
+  `escalate`) at the PR's current head SHA WHEN a merge is attempted at any
+  door — `merge_pr`, the unattended auto-merge path, the dashboard route, or
+  release promotion — THEN it is refused, the refusal names the verdict and
+  what would clear it, and a `review_verdict` row is written to the gate
+  ledger. This holds under `auto-threshold` as well as `agent-review`.
+- AC-11z: GIVEN the same PR after a push moves its head SHA WHEN a merge is
+  attempted THEN it proceeds — the verdict describes code that is no longer
+  what merges, and nothing re-reviews an existing head SHA. GIVEN instead a
+  later review round that ended `approve` THEN it also proceeds.
+- AC-11za: GIVEN a blocking verdict WHEN a human merges from the dashboard with
+  `override: true` THEN the merge proceeds and is recorded as a `bypassed`
+  ledger row naming the overridden verdict and the person; GIVEN the same
+  verdict on the unattended path THEN there is no override and the merge is
+  deferred.
 
 **Code surface**:
 - Mission helpers: `packages/core/mission-helpers.ts` — `isDeliverableTask()`
@@ -561,6 +615,14 @@ stored — it is derived on read from the state of associated tasks via
   (the one delivery-base answer, called by both the guard and the prompt)
 - Mission-PR merge gate + branch lifecycle: `apps/web/src/lib/mission-pr.ts` —
   `evaluateMissionWorkState`, `guardMissionPrMerge`, `finalizeMissionPrMerge`
+- Review-verdict merge gate: `apps/web/src/lib/review-verdict-gate.ts` —
+  `evaluateReviewVerdictGate` (the pure rule), `guardReviewVerdict` (the read);
+  called from `apps/web/src/lib/auto-merge.ts`,
+  `apps/web/src/app/api/github/pr/route.ts` (PUT),
+  `apps/web/src/app/api/prs/[prNumber]/merge/route.ts` and
+  `apps/web/src/app/api/github/webhook/route.ts` (release promotion). The review
+  state it reads comes from `apps/web/src/lib/pr-review-status.ts`
+  (`derivePrReviewStatus`, including `reviewHeadSha` and `effectiveVerdict`)
 - Integration-branch existence + re-cut:
   `apps/web/src/lib/mission-integration-branch.ts` —
   `ensureMissionIntegrationBranch`, `ensureIntegrationBaseForTaskPr`

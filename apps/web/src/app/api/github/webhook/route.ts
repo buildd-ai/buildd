@@ -69,6 +69,8 @@ import { releaseAndNotify } from '@/lib/path-claim-release';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { deliverPrReviewCallback, readPrReviewStatus, resolveOrAdoptPrOwner } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 export async function POST(req: NextRequest) {
   const signature = req.headers.get('x-hub-signature-256') || '';
@@ -2032,6 +2034,38 @@ async function handleReleasePrCiSuccess(
   const allPassed = await allCheckSuitesPassed(installationId, repoFullName, headSha);
   if (!allPassed) {
     console.log(`[release-pr] Not all suites passed for ${repoFullName}#${prNumber} — waiting for remaining checks`);
+    return;
+  }
+
+  // Release promotion is a merge door like any other. buildd never dispatches a
+  // reviewer for a release PR on its own, so the gate normally reads
+  // `not_requested` and passes — but `request_pr_review` can be pointed at any
+  // PR, and a release that ships past its own reviewer's finding is the one
+  // merge where that matters most.
+  const releaseGate = await guardReviewVerdict({
+    workspaceId: pendingReleaseTasks[0]!.workspaceId,
+    prNumber,
+    headSha,
+  });
+  if (releaseGate.blocks) {
+    console.log(
+      `[release-pr] Merge of ${repoFullName}#${prNumber} held: ${releaseGate.reason}. ${releaseGate.clearedBy}`,
+    );
+    fireGateEvent({
+      gate: GATE_SLUGS.REVIEW_VERDICT,
+      surface: 'release-pr ci-success',
+      outcome: 'deferred',
+      reason: releaseGate.reason ?? 'review verdict blocks this merge',
+      workspaceId: pendingReleaseTasks[0]!.workspaceId,
+      taskId: pendingReleaseTasks[0]!.id,
+      callerOrigin: 'system',
+      detail: {
+        prNumber,
+        headSha,
+        reviewState: releaseGate.state ?? null,
+        reviewKind: releaseGate.kind ?? null,
+      },
+    });
     return;
   }
 
