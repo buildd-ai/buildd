@@ -14,14 +14,14 @@
       "automerge": false
     },
     {
-      "matchPackageNames": ["@anthropic-ai/{/,}**"],
+      "matchPackageNames": ["@anthropic-ai/**"],
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "Anthropic AI SDK",
       "automerge": true,
       "automergeType": "pr"
     },
     {
-      "matchPackageNames": ["@anthropic-ai/{/,}**"],
+      "matchPackageNames": ["@anthropic-ai/**"],
       "matchUpdateTypes": ["major"],
       "groupName": "Anthropic AI SDK (major)",
       "automerge": false

@@ -1029,6 +1029,107 @@ describe('POST /api/workers/claim', () => {
     expect(data.workers.length).toBe(1);
   });
 
+  // --- Runner capability gate (Claude Code client version) ---
+
+  it('defers a task whose resolved model needs a newer Claude Code client than the runner reports', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'premium-plus task',
+        kind: 'engineering',
+        complexity: 'normal',
+        priority: 0,
+        dependsOn: [],
+        requiredCapabilities: [],
+        context: { model: 'claude-fable-5-1' },
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        runner: 'test-runner',
+        environment: {
+          tools: [],
+          envKeys: [],
+          mcp: [],
+          labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'test' },
+          scannedAt: '2026-01-01T00:00:00.000Z',
+          claudeCliVersion: '2.1.238',
+        },
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers).toEqual([]);
+    expect(data.diagnostics.reason).toBe('all_candidates_deferred');
+    expect(data.diagnostics.deferrals.runner_capability).toBe(1);
+  });
+
+  it('claims a premium-plus task once the runner reports a CLI version meeting the model floor', async () => {
+    mockAuthenticateApiKey.mockResolvedValue({
+      id: 'account-1',
+      maxConcurrentWorkers: 3,
+      type: 'user',
+      authType: 'api',
+    });
+
+    mockWorkersFindMany.mockResolvedValueOnce([]);
+    mockWorkspacesFindMany.mockResolvedValue([{ id: 'ws-1' }]);
+    mockAccountWorkspacesFindMany.mockResolvedValue([]);
+    mockTasksFindMany.mockResolvedValue([
+      {
+        id: 'task-1',
+        workspaceId: 'ws-1',
+        title: 'premium-plus task',
+        kind: 'engineering',
+        complexity: 'normal',
+        priority: 0,
+        dependsOn: [],
+        requiredCapabilities: [],
+        context: { model: 'claude-fable-5-1' },
+        workspace: { id: 'ws-1', gitConfig: null },
+      },
+    ]);
+    mockDbExecute.mockReturnValue(Promise.resolve({
+      rows: [{ id: 'worker-1', task_id: 'task-1', branch: 'buildd/test', status: 'idle' }],
+    }));
+
+    const req = createMockRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        runner: 'test-runner',
+        environment: {
+          tools: [],
+          envKeys: [],
+          mcp: [],
+          labels: { type: 'local', os: 'linux', arch: 'x64', hostname: 'test' },
+          scannedAt: '2026-01-01T00:00:00.000Z',
+          claudeCliVersion: '2.1.272',
+        },
+      },
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.workers.length).toBe(1);
+  });
+
   // --- Per-workspace concurrency cap tests ---
 
   it('caps concurrent workers per repo-backed workspace at maxConcurrentTasks', async () => {

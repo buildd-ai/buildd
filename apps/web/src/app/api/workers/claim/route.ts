@@ -24,6 +24,7 @@ import {
 } from '@buildd/core/oauth-budget';
 import { loadOauthEpisodes, measureOauthWindow, resolveSeatIdPeers } from '@/lib/oauth-budget-window';
 import { resolveTierEntry, mapRouterAlias, TIERS, type Tier as RegistryTier } from '@buildd/core/model-tier-registry';
+import { checkModelClientCapability } from '@buildd/core/model-capability-requirements';
 import { maskBackend, type AgentBackend } from '@buildd/core/backend-policy';
 import { generateTaskBranchName } from '@buildd/core/branch-names';
 import { getActiveBackendPauses, type ActivePause } from '@/lib/backend-failover';
@@ -806,6 +807,7 @@ export async function POST(req: NextRequest) {
     budget_paused: 0,
     routing_paused: 0,
     duplicate_worker: 0,
+    runner_capability: 0,
   };
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
@@ -1435,6 +1437,22 @@ export async function POST(req: NextRequest) {
         // No team — fall back to router alias (resolver would fail without teamId)
         resolvedModel = routingDecision.model;
       }
+    }
+
+    // Refuse a task whose resolved model needs a newer Claude Code client than
+    // this runner reports, BEFORE a worker session starts — the API's own
+    // version-gate 400 ("Claude Code X.Y.Z does not support this model;
+    // version A.B.C or newer is required") is otherwise deterministic and
+    // identical on every retry, burning a full worker session each time. See
+    // packages/core/model-capability-requirements.ts.
+    const capabilityCheck = checkModelClientCapability(resolvedModel, body.environment?.claudeCliVersion);
+    if (!capabilityCheck.ok) {
+      deferTask(task, 'runner_capability', {
+        model: resolvedModel,
+        requiredVersion: capabilityCheck.requiredVersion,
+        runnerVersion: body.environment?.claudeCliVersion ?? null,
+      });
+      continue;
     }
 
     // Persist the routing decision in task context so the runner consumes it
