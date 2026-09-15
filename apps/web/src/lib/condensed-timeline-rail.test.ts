@@ -9,8 +9,15 @@
  */
 
 import { describe, it, expect } from 'bun:test';
-import { identifyChains, buildRail } from './condensed-timeline';
-import type { CondensedTask, ChainUnit, RailTaskLike, RailNode } from './condensed-timeline';
+import { identifyChains, buildRail, railOutcome, rollupRailOutcome } from './condensed-timeline';
+import type {
+  CondensedTask,
+  ChainUnit,
+  RailTaskLike,
+  RailNode,
+  RailAttemptLike,
+  RailOutcomeTask,
+} from './condensed-timeline';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -216,39 +223,28 @@ describe('buildRail — lanes (D2)', () => {
     expect(node.forkHidden).toBe(0);
   });
 
-  it('attaches retry lineage to lane 2 as a stub, not as an ordinal chain member (AC-3)', () => {
+  it('carries no retry lane at all — a retry is a node property, not a branch (Rule D3-5/D3-6)', () => {
     const chain = unit(rt('spec'), [rt('build'), rt('review')], 'linear');
-    const retry = unit(rt('build-retry', { status: 'failed' }));
-    const model = buildRail(
-      { ...EMPTY_GROUPS, done: [chain], failed: [retry] },
-      { now: new Date('2026-09-12T12:00:00Z'), retryLinks: new Map([['build-retry', 'build']]) },
-    );
+    const model = buildRail({ ...EMPTY_GROUPS, done: [chain] }, { now: new Date('2026-09-12T12:00:00Z') });
 
-    const railNodes = nodes<RT>(model.rows);
-    // The retry never becomes its own lane-1 node …
-    expect(railNodes.map(n => n.id)).toEqual(['spec']);
-    // … it hangs off the chain that owns it …
-    expect(railNodes[0].retries.map(t => t.id)).toEqual(['build-retry']);
-    // … and it does not inflate the ordinal count (D1-2).
-    expect(railNodes[0].count).toBe(3);
+    const [node] = nodes<RT>(model.rows);
+    expect('retries' in node).toBe(false);
+    expect(node.count).toBe(3);
   });
 
-  it('gives a retry room in lane 2 by reducing the sibling budget, never by dropping the stub', () => {
+  it('spends the whole lane-2 budget on siblings — no reservation for a retry (Rule D2-4)', () => {
+    // v1 shrank the sibling budget to `laneCap - 1` whenever a retry existed, so
+    // a fan-out of exactly 2 could be truncated to 1 by something unrelated to it.
     const chain = unit(
       rt('head'),
       [rt('s1', { dependsOn: ['head'] }), rt('s2', { dependsOn: ['head'] })],
       'fan-out',
     );
-    const retry = unit(rt('head-retry', { status: 'failed' }));
-    const model = buildRail(
-      { ...EMPTY_GROUPS, done: [chain], failed: [retry] },
-      { now: new Date('2026-09-12T12:00:00Z'), retryLinks: new Map([['head-retry', 'head']]) },
-    );
+    const model = buildRail({ ...EMPTY_GROUPS, done: [chain] }, { now: new Date('2026-09-12T12:00:00Z') });
 
     const [node] = nodes<RT>(model.rows);
-    expect(node.retries.map(t => t.id)).toEqual(['head-retry']);
-    expect(node.siblings).toHaveLength(1);
-    expect(node.forkHidden).toBe(1);
+    expect(node.siblings.map(s => s.task.id)).toEqual(['s1', 's2']);
+    expect(node.forkHidden).toBe(0);
   });
 });
 
@@ -460,5 +456,220 @@ describe('buildRail — goal root (D5)', () => {
   it('renders no goal root for an empty criteria array', () => {
     const model = buildRail({ ...EMPTY_GROUPS, done: [unit(rt('d'))] }, { now, goal: { total: 0, passed: 0 } });
     expect(model.goal).toBeNull();
+  });
+});
+
+// ─── §6.4: the outcome mark (v2) ──────────────────────────────────────────────
+
+/**
+ * `railOutcome` is the whole of the v2 encoding: five states in one precedence
+ * order, and a *silent* healthy path. The rate argument in §0.2 Finding 3 is
+ * what these tests protect — a mark that fires on the common case is a bug, not
+ * a cosmetic choice.
+ */
+describe('railOutcome — the encoding (D6-5)', () => {
+  const att = (o: Partial<RailAttemptLike> = {}): RailAttemptLike => ({
+    status: 'completed',
+    settled: true,
+    iteration: null,
+    maxIterations: null,
+    ...o,
+  });
+
+  const strip = (attempts: RailAttemptLike[]) => ({ total: attempts.length, attempts });
+
+  const row = (o: Partial<RailOutcomeTask> = {}): RailOutcomeTask => ({
+    attempts: null,
+    latestWorker: null,
+    reviewerNote: null,
+    reviewerRetryTask: null,
+    missionBudgetExhausted: false,
+    ...o,
+  });
+
+  const mergedWorker = { mergedAt: '2026-09-12T10:00:00.000Z', prLifecycleStatus: 'merged' };
+  const openWorker = { mergedAt: null, prLifecycleStatus: 'pr_open' };
+
+  it('renders nothing at all for a row with no attempt history (AC-11, AC-22)', () => {
+    const out = railOutcome(row({ latestWorker: mergedWorker }));
+    expect(out.state).toBe('clean');
+    expect(out.mark).toBeNull();
+    expect(out.hasAttempts).toBe(false);
+  });
+
+  it('renders no mark for a failed task whose every worker died before a retry (AC-22)', () => {
+    const out = railOutcome(row({ attempts: null, latestWorker: null }));
+    expect(out.mark).toBeNull();
+    expect(out.hasAttempts).toBe(false);
+  });
+
+  it('is silent on a merge that took a reviewer round which landed (AC-12, AC-18)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att()]),
+      latestWorker: mergedWorker,
+      reviewerNote: { type: 'reviewer_approved', status: 'answered' },
+      reviewerRetryTask: { status: 'completed', prNumber: 2295 },
+    }));
+    expect(out.state).toBe('clean');
+    expect(out.mark).toBeNull();
+    // The chevron is the only thing distinguishing it from AC-11's row.
+    expect(out.hasAttempts).toBe(true);
+  });
+
+  it('marks a merged row whose request-changes verdict was never made terminal (AC-13)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att()]),
+      latestWorker: mergedWorker,
+      reviewerNote: { type: 'reviewer_request_changes', status: 'open' },
+    }));
+    expect(out.state).toBe('unlanded');
+    expect(out.mark).toBe('!');
+    expect(out.tone).toBe('text-status-warning');
+  });
+
+  it('marks a merged row whose reviewer retry completed without ever attaching to a PR (AC-13)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att()]),
+      latestWorker: mergedWorker,
+      reviewerNote: { type: 'reviewer_approved', status: 'answered' },
+      reviewerRetryTask: { status: 'completed', prNumber: null },
+    }));
+    expect(out.state).toBe('unlanded');
+    expect(out.mark).toBe('!');
+  });
+
+  it('treats an escalated-but-open verdict the same as request-changes (Rule D6-7)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att()]),
+      latestWorker: mergedWorker,
+      reviewerNote: { type: 'reviewer_escalated', status: 'open' },
+    }));
+    expect(out.state).toBe('unlanded');
+  });
+
+  it('never reaches `unlanded` on a row that did not merge (Rule D6-7 precondition)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att()]),
+      latestWorker: openWorker,
+      reviewerNote: { type: 'reviewer_request_changes', status: 'open' },
+    }));
+    expect(out.state).toBe('clean');
+    expect(out.mark).toBeNull();
+  });
+
+  it('renders the dot ledger while a re-run is in flight, never ✗ or ! (AC-14)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att(), att({ status: 'running', settled: false })]),
+      latestWorker: openWorker,
+    }));
+    expect(out.state).toBe('live');
+    expect(out.mark).toBe('●○');
+    expect(out.tone).toBe('text-text-muted');
+  });
+
+  it('dashes a dormant dot when the mission budget wall is up (AC-31, Rule D6-11)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att(), att({ status: 'pending', settled: false })]),
+      missionBudgetExhausted: true,
+    }));
+    expect(out.mark).toBe('●◌');
+  });
+
+  it('leaves every other parked reason hollow — it is not derivable here (Rule D6-11)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att({ status: 'pending', settled: false })]),
+      missionBudgetExhausted: false,
+    }));
+    expect(out.mark).toBe('○');
+  });
+
+  it('marks a died-but-budget-remains attempt with ✗ (AC-15)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att({ status: 'failed', iteration: 1, maxIterations: 3 })]),
+      latestWorker: { mergedAt: null, prLifecycleStatus: 'ci_failed' },
+    }));
+    expect(out.state).toBe('failed');
+    expect(out.mark).toBe('✗');
+    expect(out.tone).toBe('text-status-error');
+  });
+
+  it('treats a cancelled final attempt the same as a failed one (Rule D6-5 state 2)', () => {
+    const out = railOutcome(row({ attempts: strip([att({ status: 'cancelled' })]) }));
+    expect(out.state).toBe('failed');
+  });
+
+  it('prints N/N and outranks ✗ when the retry budget is spent (AC-16, Rule D6-6)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att({ status: 'failed', iteration: 3, maxIterations: 3 })]),
+      latestWorker: openWorker,
+    }));
+    expect(out.state).toBe('exhausted');
+    expect(out.mark).toBe('3/3');
+    expect(out.tone).toBe('text-status-error');
+  });
+
+  it('does not call a merged row exhausted — the loop closed (Rule D6-5 state 1)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att({ iteration: 3, maxIterations: 3 })]),
+      latestWorker: mergedWorker,
+      reviewerNote: { type: 'reviewer_approved', status: 'answered' },
+    }));
+    expect(out.state).toBe('clean');
+    expect(out.mark).toBeNull();
+  });
+
+  it('reads exhaustion off the NEWEST attempt only', () => {
+    const out = railOutcome(row({
+      attempts: strip([att({ iteration: 3, maxIterations: 3 }), att({ iteration: 1, maxIterations: 3 })]),
+      latestWorker: openWorker,
+    }));
+    expect(out.state).toBe('clean');
+  });
+
+  it('falls through to the next state rather than guessing when the counters are absent (Rule D6-10)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att({ status: 'failed', iteration: null, maxIterations: null })]),
+      latestWorker: openWorker,
+    }));
+    expect(out.state).toBe('failed');
+    expect(out.mark).toBe('✗');
+  });
+
+  it('still marks a row that has attempts but no PR at all (AC-23, Rule D6-13)', () => {
+    const out = railOutcome(row({
+      attempts: strip([att(), att({ status: 'running', settled: false })]),
+      latestWorker: null,
+    }));
+    expect(out.mark).toBe('●○');
+    expect(out.hasAttempts).toBe(true);
+  });
+});
+
+describe('rollupRailOutcome — one mark per collapsed chain (Rule D7-5)', () => {
+  const clean = { state: 'clean', mark: null, tone: null, hasAttempts: true } as const;
+  const unlanded = { state: 'unlanded', mark: '!', tone: 'text-status-warning', hasAttempts: true } as const;
+  const failed = { state: 'failed', mark: '✗', tone: 'text-status-error', hasAttempts: true } as const;
+  const exhausted = { state: 'exhausted', mark: '3/3', tone: 'text-status-error', hasAttempts: true } as const;
+
+  it('wears the worst outcome in the chain (AC-20)', () => {
+    expect(rollupRailOutcome([clean, unlanded, clean]).mark).toBe('!');
+  });
+
+  it('orders exhausted above failed above live above unlanded (Rule D6-6)', () => {
+    expect(rollupRailOutcome([unlanded, failed]).state).toBe('failed');
+    expect(rollupRailOutcome([failed, exhausted]).state).toBe('exhausted');
+  });
+
+  it('stays silent when every member came out clean', () => {
+    expect(rollupRailOutcome([clean, clean]).mark).toBeNull();
+  });
+
+  it('carries a chevron when any member has history, and none when no member does', () => {
+    expect(rollupRailOutcome([clean, { ...clean, hasAttempts: false }]).hasAttempts).toBe(true);
+    expect(rollupRailOutcome([{ ...clean, hasAttempts: false }]).hasAttempts).toBe(false);
+  });
+
+  it('is clean-and-silent for an empty chain rather than throwing', () => {
+    expect(rollupRailOutcome([]).state).toBe('clean');
   });
 });

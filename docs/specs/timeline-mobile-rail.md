@@ -88,10 +88,12 @@ created with exactly that shape (`createReviewerTask`,
 `apps/web/src/lib/reviewer.ts:492–537`: `taskClass: 'attempt'`,
 `parentTaskId: originalTaskId`, `creationSource: 'webhook'`, and **no** retry
 counter column). `deriveTaskOrigin` therefore resolves its mechanism to
-`webhook`, `kindOf` files it under `other`, and `summarise` prints only
+`webhook`, v1's kindOf files it under `other`, and `summarise` prints only
 ci/reviewer/conflict — so the review pass is counted in the total and named
 nowhere. §12 settles the definition; the arithmetic then closes by
-construction rather than by printing a fourth bucket.
+construction rather than by printing a fourth bucket. (kindOf is written in
+plain text here and in the code surface below, per `SPEC-FORMAT.md` rule 7: the
+shipped v2 removed it, so it names something absent.)
 
 **Finding 3 — the stub has no discriminating power.** Nearly every PR takes one
 reviewer request-changes round, so the dashed-red `✗` rendered on nearly every
@@ -1525,9 +1527,13 @@ Finding 2's undercount from the other direction).
   unreachable from that branch only (§4); **v2 rewrites `RailRightColumn`
   (line 928) into the disclosure control and deletes the retry-stub block
   (lines 1104–1120)**
-- `apps/web/src/lib/attempt-strip.ts` — `buildAttemptStrips`, `kindOf`,
+- `apps/web/src/lib/attempt-strip.ts` — `buildAttemptStrips`, `attemptKind`,
   `ATTEMPT_KINDS`, `summarise`, `AttemptRow` — **v2's attempt filter (§12) and
-  the iteration/maximum fields (Rule D6-9) both land here**
+  the iteration/maximum fields (Rule D6-9) both land here**. `attemptKind`
+  replaces v1's kindOf (written in plain text per `SPEC-FORMAT.md` rule 7: it no
+  longer exists), which classified a `TaskOriginMechanism` string and therefore
+  had an `other` bucket to fall into; the v2 discriminator reads the retry
+  columns off the row and returns null for a companion (Rule D12-2).
 - `apps/web/src/lib/task-origin.ts` — `deriveTaskOrigin`, `retryKind`,
   `iterationClause` — read unchanged; `retryKind`'s column precedence is the
   model Rule D12-2 restates
