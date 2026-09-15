@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, spyOn } from 'bun:test';
 import { groupTimelineTasks, groupChainUnits, identifyChains, gateChipCollapsed, deriveBandKey, deriveBandLabel, deriveDayBands } from './condensed-timeline';
 import type { CondensedTask } from './condensed-timeline';
 
@@ -459,15 +459,14 @@ describe('deriveBandKey', () => {
     expect(bands[0].items).toHaveLength(2);
   });
 
-  it('splits two items on same day exactly 4h apart into separate bands', () => {
+  it.each([4, 12])('keeps same-day items %ih apart in one band', (hours) => {
     const bands = deriveBandKey([
-      mk('t1', '2026-08-17T06:00:00Z'),
-      mk('t2', '2026-08-17T10:00:00Z'),
-    ], now);
-    expect(bands).toHaveLength(2);
-    // Both on same day, so same label
+      { id: 'early', completionTs: new Date(2026, 7, 17, 1).getTime() },
+      { id: 'late', completionTs: new Date(2026, 7, 17, 1 + hours).getTime() },
+    ], new Date(2026, 7, 18, 14));
+    expect(bands).toHaveLength(1);
     expect(bands[0].label).toBe('Yesterday');
-    expect(bands[1].label).toBe('Yesterday');
+    expect(bands[0].items.map(i => i.id)).toEqual(['late', 'early']);
   });
 
   it('returns bands newest-first', () => {
@@ -488,40 +487,23 @@ describe('deriveBandKey', () => {
     expect(bands[0].items[1].id).toBe('t1');
   });
 
-  it('keeps same-day items in separate gap-clustered bands (same label for now)', () => {
-    // Two bands on the same day, separated by >= 4h
-    const bands = deriveBandKey([
-      mk('t1', '2026-08-17T01:00:00Z'),
-      mk('t2', '2026-08-17T06:00:00Z'),
-    ], now);
-    expect(bands).toHaveLength(2);
-    // Both should be on the same day (Yesterday), so both labels are the same
-    const labels = bands.map(b => b.label);
-    expect(labels[0]).toBe('Yesterday');
-    expect(labels[1]).toBe('Yesterday');
-  });
-
-  it('regression: same calendar day split across UTC midnight should not create duplicate labels', () => {
-    // Sep 11 2026 7:00 AM UTC = Sep 11 2026 3:00 AM ET (Friday morning)
-    // Sep 12 2026 4:00 AM UTC = Sep 11 2026 12:00 PM ET (Friday afternoon) — same calendar day in ET
-    // Gap is 21 hours (> 4h), so they'd normally split into separate bands
-    // But both are "Friday" in local time, causing duplicate labels
-    const now = new Date('2026-09-12T12:00:00Z'); // Sep 12 2026 8:00 AM ET
-    const bands = deriveBandKey([
-      mk('t1', '2026-09-11T07:00:00Z'), // Friday early morning
-      mk('t2', '2026-09-12T04:00:00Z'), // Friday afternoon
-    ], now);
-    // Should not have two bands with same label
-    const labels = bands.map(b => b.label);
-    const labelCounts = new Map<string, number>();
-    for (const label of labels) {
-      labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
-    }
-    // Check that no non-suffixed label appears more than once
-    for (const [label, count] of labelCounts.entries()) {
-      if (!label.includes('(') && count > 1) {
-        throw new Error(`Duplicate label "${label}" appears ${count} times without ordinal suffix`);
-      }
+  it('groups one local day across UTC midnight without duplicate labels', () => {
+    // Pin local date getters to UTC-4 regardless of the test process timezone.
+    const localDate = (date: Date) => new Date(date.getTime() - 4 * 60 * 60 * 1000);
+    const mocks = [
+      spyOn(Date.prototype, 'getFullYear').mockImplementation(function (this: Date) { return localDate(this).getUTCFullYear(); }),
+      spyOn(Date.prototype, 'getMonth').mockImplementation(function (this: Date) { return localDate(this).getUTCMonth(); }),
+      spyOn(Date.prototype, 'getDate').mockImplementation(function (this: Date) { return localDate(this).getUTCDate(); }),
+    ];
+    try {
+      const bands = deriveBandKey([
+        mk('early', '2026-09-11T07:00:00Z'), // Sep 11, 03:00 local
+        mk('late', '2026-09-12T03:00:00Z'), // Sep 11, 23:00 local
+      ], new Date('2026-09-13T12:00:00Z'));
+      expect(bands).toHaveLength(1);
+      expect(bands[0].items.map(i => i.id)).toEqual(['late', 'early']);
+    } finally {
+      for (const mock of mocks) mock.mockRestore();
     }
   });
 });
