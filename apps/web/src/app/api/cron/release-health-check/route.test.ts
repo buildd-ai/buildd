@@ -70,9 +70,10 @@ mock.module('drizzle-orm', () => ({
   sql: (strings: TemplateStringsArray, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
-// Four select() calls happen per request, in order: (1) healthy-window
+// Five select() calls happen per request, in order: (1) healthy-window
 // candidates, (2) stale-deploying candidates, (3) stale-dispatched candidates,
-// (4) degraded-but-healable candidates. Queue results for each.
+// (4) stale-pending-external candidates, (5) degraded-but-healable
+// candidates. Queue results for each.
 let selectResults: any[][];
 let updateReturning: any[][];
 let updateCalls: Array<{ values: any; where?: any }>;
@@ -144,7 +145,7 @@ const hoursAgo = (n: number) => new Date(Date.now() - n * 3_600_000);
 
 beforeEach(() => {
   process.env.CRON_SECRET = CRON_SECRET;
-  selectResults = [[], [], [], []];
+  selectResults = [[], [], [], [], []];
   updateReturning = [];
   updateCalls = [];
   selectConditions = [];
@@ -335,6 +336,87 @@ describe('release-health-check cron — stale dispatched sweep', () => {
   });
 });
 
+describe('release-health-check cron — stale pending_external sweep', () => {
+  // A `pending_external` row means a gated release's workflow_dispatch
+  // succeeded and its release PR is open, awaiting merge into prodBranch.
+  // If that PR closes without merging, nothing else ever revisits the row —
+  // it's outside the stale-dispatched and stale-deploying sweeps above (both
+  // filter on an exact, different state) — and record.ts's non-forced
+  // idempotency check keeps treating it as in-flight, blocking any future
+  // non-forced release of that commit.
+  const stale = { id: 'rel-pending-stuck', workspaceId: 'ws-1', dispatchedAt: hoursAgo(30) };
+
+  it('hard-fails a pending_external release whose PR never merged, and says why', async () => {
+    selectResults = [[], [], [], [stale]];
+    updateReturning = [[{ id: 'rel-pending-stuck' }]];
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(data.stalePendingExternal).toBe(1);
+    expect(data.pendingExternalHardFailed).toBe(1);
+
+    const update = updateCalls.at(-1)!;
+    expect(update.values.state).toBe('failed');
+    expect(String(update.values.failureReason)).toContain("never advanced past 'pending_external'");
+  });
+
+  it('notifies the workspace so the UI does not keep showing it as in-flight', async () => {
+    selectResults = [[], [], [], [stale]];
+    updateReturning = [[{ id: 'rel-pending-stuck' }]];
+
+    await GET(makeRequest());
+
+    expect(mockTriggerEvent).toHaveBeenCalledWith('workspace-ws-1', 'release:updated', {
+      releaseId: 'rel-pending-stuck',
+      state: 'failed',
+    });
+  });
+
+  it('queries pending_external rows past the hard-fail cutoff, not merely any pending_external row', async () => {
+    selectResults = [[], [], [], []];
+    await GET(makeRequest());
+
+    // Index 3: (0) healthy candidates, (1) stale-deploying, (2)
+    // stale-dispatched, (3) stale-pending-external, (4) healable-degraded.
+    const flat = JSON.stringify(selectConditions[3]);
+    expect(flat).toContain('pending_external');
+    expect(flat).toContain('"type":"lt"');
+    expect(flat).toContain('dispatchedAt');
+  });
+
+  it('guards the write on the row still being pending_external', async () => {
+    selectResults = [[], [], [], [stale]];
+    updateReturning = [[{ id: 'rel-pending-stuck' }]];
+
+    await GET(makeRequest());
+
+    expect(JSON.stringify(updateCalls.at(-1)!.where)).toContain('pending_external');
+  });
+
+  it('counts nothing when the guarded write loses the race', async () => {
+    selectResults = [[], [], [], [stale]];
+    updateReturning = [[]]; // returning() empty => another writer got there first
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(data.stalePendingExternal).toBe(1);
+    expect(data.pendingExternalHardFailed).toBe(0);
+    expect(mockTriggerEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not touch a release still in pending_external within the window', async () => {
+    selectResults = [[], [], [], []];
+
+    const res = await GET(makeRequest());
+    const data = await res.json();
+
+    expect(data.stalePendingExternal).toBe(0);
+    expect(updateCalls).toHaveLength(0);
+  });
+});
+
 describe('release-health-check cron — self-heal degraded (sha-mismatch false positives)', () => {
   // Regression context: a release can degrade because a *later* legitimate
   // merge landed on top of its own headSha mid-watch-window — the deploy
@@ -353,7 +435,7 @@ describe('release-health-check cron — self-heal degraded (sha-mismatch false p
   };
 
   it('does nothing when there are no healable degraded releases', async () => {
-    selectResults = [[], [], [], []];
+    selectResults = [[], [], [], [], []];
     const res = await GET(makeRequest());
     const data = await res.json();
 
@@ -363,7 +445,7 @@ describe('release-health-check cron — self-heal degraded (sha-mismatch false p
   });
 
   it('calls healSupersededRelease for each degraded candidate and counts a heal', async () => {
-    selectResults = [[], [], [], [degradedRow]];
+    selectResults = [[], [], [], [], [degradedRow]];
     mockHealSupersededRelease.mockResolvedValue('healed' as any);
     queryWorkspaceResult = { githubRepo: { fullName: 'org/repo', installation: { installationId: 7 } } };
 
@@ -380,7 +462,7 @@ describe('release-health-check cron — self-heal degraded (sha-mismatch false p
   });
 
   it('does not count a heal when healSupersededRelease reports unresolved', async () => {
-    selectResults = [[], [], [], [degradedRow]];
+    selectResults = [[], [], [], [], [degradedRow]];
     mockHealSupersededRelease.mockResolvedValue('unresolved' as any);
 
     const res = await GET(makeRequest());
@@ -391,7 +473,7 @@ describe('release-health-check cron — self-heal degraded (sha-mismatch false p
   });
 
   it('skips a degraded candidate with no configured verification URL', async () => {
-    selectResults = [[], [], [], [{ ...degradedRow, verificationUrl: null }]];
+    selectResults = [[], [], [], [], [{ ...degradedRow, verificationUrl: null }]];
 
     await GET(makeRequest());
 
@@ -399,7 +481,7 @@ describe('release-health-check cron — self-heal degraded (sha-mismatch false p
   });
 
   it('scopes the query to degraded, http-verified, sha-mismatch releases', async () => {
-    selectResults = [[], [], [], []];
+    selectResults = [[], [], [], [], []];
     await GET(makeRequest());
 
     const flat = JSON.stringify(selectConditions.at(-1));
@@ -419,7 +501,7 @@ describe('release-health-check cron — repo identity for the main probe loop', 
       healthyAt: new Date(),
       verificationUrl: 'https://example.com/api/version',
     };
-    selectResults = [[healthyRow], [], [], []];
+    selectResults = [[healthyRow], [], [], [], []];
     queryWorkspaceResult = { githubRepo: { fullName: 'org/repo', installation: { installationId: 7 } } };
 
     await GET(makeRequest());
