@@ -578,4 +578,25 @@ describe('CondensedTimeline — chain rollup (Rule D7-5)', () => {
     expect(html.match(/rail-outcome-mark/g)).toHaveLength(2);
     expect(marks(html)).toEqual(['!', '!']);
   });
+
+  it('names the terminal member\'s PR on the collapsed row, not the head\'s (§1.3)', () => {
+    const html = mobileTree(renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: [chain] }} />,
+    ));
+
+    // spec=#2270 (head), build=#2287, review=#2295 (terminal) — §11.12a wants #2295.
+    expect(html).toContain('#2295');
+    expect(html).not.toContain('#2270');
+    expect(html).not.toContain('#2287');
+  });
+
+  it('still shows each member\'s own PR on the expanded ordinal sub-rows (§1.3)', () => {
+    const html = mobileTree(renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: [chain] }} expandedChainIds={new Set(['spec'])} />,
+    ));
+
+    expect(html).toContain('#2270');
+    expect(html).toContain('#2287');
+    expect(html).toContain('#2295');
+  });
 });
