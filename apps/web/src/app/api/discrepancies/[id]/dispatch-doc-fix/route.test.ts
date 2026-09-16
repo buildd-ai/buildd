@@ -12,6 +12,7 @@ let accountWorkspaceAccess = true;
 
 let groupRows: any[] = [];
 let claimedTaskRows: any[] = [];
+let claimedWorkerRows: any[] = [];
 let claimReturn: any[] = [];
 let refetchedRow: any = null;
 
@@ -32,9 +33,10 @@ mock.module('@buildd/core/db/schema', () => ({
   specDiscrepancies: {
     id: 'id', workspaceId: 'workspace_id', specPath: 'spec_path', assertionId: 'assertion_id',
     direction: 'direction', status: 'status', evidence: 'evidence',
-    docFixTaskId: 'doc_fix_task_id', firstSeenAt: 'first_seen_at',
+    docFixTaskId: 'doc_fix_task_id', firstSeenAt: 'first_seen_at', lastCheckedAt: 'last_checked_at',
   },
   tasks: { id: 'id', status: 'status' },
+  workers: { taskId: 'task_id', prLifecycleStatus: 'pr_lifecycle_status', mergedAt: 'merged_at', startedAt: 'started_at' },
   workspaces: { id: 'id' },
 }));
 
@@ -48,6 +50,7 @@ mock.module('@buildd/core/db', () => ({
         },
       },
       tasks: { findMany: () => Promise.resolve(claimedTaskRows) },
+      workers: { findMany: () => Promise.resolve(claimedWorkerRows) },
       workspaces: { findFirst: () => Promise.resolve({ id: 'ws-1', name: 'buildd' }) },
     },
     select: () => ({ from: () => ({ where: () => Promise.resolve(groupRows) }) }),
@@ -95,6 +98,7 @@ function reset() {
     firstSeenAt: new Date(2026, 7, i + 1),
   }));
   claimedTaskRows = [];
+  claimedWorkerRows = [];
   claimReturn = groupRows.map((r) => ({ id: r.id }));
   refetchedRow = null;
   insertedTasks = [];
@@ -244,6 +248,28 @@ describe('POST /api/discrepancies/[id]/dispatch-doc-fix', () => {
     const data = await res.json();
     expect(data.dispatched).toBe(true);
     expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('a completed task whose PR merged and was rechecked but the gap is STILL open releases the path (stranded-card regression)', async () => {
+    groupRows[0].docFixTaskId = 'task-stale';
+    groupRows[0].lastCheckedAt = new Date('2026-09-02T00:00:00Z'); // after the merge below
+    claimedTaskRows = [{ id: 'task-stale', status: 'completed' }];
+    claimedWorkerRows = [{ taskId: 'task-stale', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
+    const res = await POST(req(), { params: params('d1') });
+    const data = await res.json();
+    expect(data.dispatched).toBe(true);
+    expect(insertedTasks).toHaveLength(1);
+  });
+
+  it('a completed task whose PR merged but has NOT been rechecked yet still holds the path', async () => {
+    groupRows[0].docFixTaskId = 'task-fresh';
+    groupRows[0].lastCheckedAt = new Date('2026-08-25T00:00:00Z'); // before the merge below
+    claimedTaskRows = [{ id: 'task-fresh', status: 'completed' }];
+    claimedWorkerRows = [{ taskId: 'task-fresh', prLifecycleStatus: 'merged', mergedAt: new Date('2026-09-01T00:00:00Z') }];
+    const res = await POST(req(), { params: params('d1') });
+    const data = await res.json();
+    expect(data.dispatched).toBe(false);
+    expect(insertedTasks).toHaveLength(0);
   });
 
   it('losing the claim race deletes the task it just made and reports the winner — no worker is ever started for it', async () => {

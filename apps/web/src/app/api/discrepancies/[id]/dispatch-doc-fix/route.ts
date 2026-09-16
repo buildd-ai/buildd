@@ -33,14 +33,14 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { specDiscrepancies, tasks, workspaces } from '@buildd/core/db/schema';
+import { specDiscrepancies, tasks, workers, workspaces } from '@buildd/core/db/schema';
 import { and, eq, inArray, isNull, or } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { docFixTaskTitle, buildDocFixTaskDescription } from '@buildd/core/spec-doc-fix';
-import { isDocFixInFlight } from '@/lib/action-queue';
+import { isDocFixInFlight, isDocFixClaimStale } from '@/lib/action-queue';
 
 /** Statuses that release a claim: nothing is coming, so the CTA comes back. */
 const DEAD_DOC_FIX_STATUSES = new Set(['failed', 'cancelled']);
@@ -99,6 +99,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       evidence: specDiscrepancies.evidence,
       docFixTaskId: specDiscrepancies.docFixTaskId,
       firstSeenAt: specDiscrepancies.firstSeenAt,
+      lastCheckedAt: specDiscrepancies.lastCheckedAt,
     })
     .from(specDiscrepancies)
     .where(
@@ -113,7 +114,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   // Resolve the status of every task already claimed on this group. A claim
   // held by a live task wins; one held by a failed/cancelled task is stale and
-  // may be taken over.
+  // may be taken over — as is one held by a completed task whose PR merged
+  // and was re-evaluated by the checker with the gap still open (§9: the fix
+  // demonstrably didn't close it — see isDocFixClaimStale).
   const claimedTaskIds = [...new Set(groupRows.map((r) => r.docFixTaskId).filter(Boolean) as string[])];
   const claimedTasks = claimedTaskIds.length
     ? await db.query.tasks.findMany({
@@ -122,20 +125,47 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       })
     : [];
   const statusByTask = new Map(claimedTasks.map((t) => [t.id, t.status]));
+  const claimedWorkers = claimedTaskIds.length
+    ? await db.query.workers.findMany({
+        where: inArray(workers.taskId, claimedTaskIds),
+        columns: { taskId: true, prLifecycleStatus: true, mergedAt: true },
+        orderBy: (w, { desc: descOrder }) => [descOrder(w.startedAt)],
+      })
+    : [];
+  const workerByTask = new Map<string, { prLifecycleStatus: string | null; mergedAt: Date | null }>();
+  for (const w of claimedWorkers) {
+    if (w.taskId && !workerByTask.has(w.taskId)) {
+      workerByTask.set(w.taskId, { prLifecycleStatus: w.prLifecycleStatus ?? null, mergedAt: w.mergedAt ?? null });
+    }
+  }
 
-  const liveClaim = groupRows.find((r) =>
-    isDocFixInFlight({
+  const rowClaimState = (r: (typeof groupRows)[number]) => {
+    const taskStatus = r.docFixTaskId ? statusByTask.get(r.docFixTaskId) ?? null : null;
+    const worker = r.docFixTaskId ? workerByTask.get(r.docFixTaskId) : undefined;
+    return {
       docFixTaskId: r.docFixTaskId,
-      docFixTaskStatus: r.docFixTaskId ? statusByTask.get(r.docFixTaskId) ?? null : null,
-    }),
-  );
+      docFixTaskStatus: taskStatus,
+      docFixPrLifecycleStatus: worker?.prLifecycleStatus ?? null,
+      docFixMergedAt: worker?.mergedAt ?? null,
+      lastCheckedAt: r.lastCheckedAt,
+    };
+  };
+
+  const liveClaim = groupRows.find((r) => {
+    const state = rowClaimState(r);
+    return isDocFixInFlight(state) && !isDocFixClaimStale(state);
+  });
   if (liveClaim?.docFixTaskId) {
     // Double-tap, or a sibling row on a path someone is already fixing. Reads
     // as success, with the task to look at — never a second dispatch.
     return NextResponse.json({ ok: true, dispatched: false, taskId: liveClaim.docFixTaskId });
   }
 
-  const staleClaimTaskIds = claimedTaskIds.filter((t) => DEAD_DOC_FIX_STATUSES.has(statusByTask.get(t) ?? ''));
+  const staleClaimTaskIds = claimedTaskIds.filter((t) => {
+    if (DEAD_DOC_FIX_STATUSES.has(statusByTask.get(t) ?? '')) return true;
+    const r = groupRows.find((row) => row.docFixTaskId === t);
+    return r ? isDocFixClaimStale(rowClaimState(r)) : false;
+  });
 
   const assertionIds = groupRows.map((r) => r.assertionId);
   const discrepancyIds = groupRows.map((r) => r.id);
