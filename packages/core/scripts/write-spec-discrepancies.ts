@@ -13,10 +13,18 @@
  *   bun run packages/core/scripts/write-spec-discrepancies.ts --workspace-id <uuid>
  *   bun run packages/core/scripts/write-spec-discrepancies.ts --dry-run
  *
- * Without --dry-run, DATABASE_URL must be set. If it isn't, the script falls
- * back to a dry run with a notice rather than failing — the same
- * "skip gracefully, don't red the build over a missing secret" posture
- * `.github/workflows/knowledge-eval.yml` already uses for a DB-dependent job.
+ * `--dry-run` is the only way to get dry-run behavior. Earlier this also
+ * happened silently whenever DATABASE_URL was unset — a "skip gracefully,
+ * don't red the build over a missing secret" posture borrowed from
+ * `.github/workflows/knowledge-eval.yml`'s read-only eval job. That posture
+ * is wrong for a WRITE job whose entire purpose is keeping a ledger current:
+ * a misconfigured dev-push run would print classification counts, report
+ * zero rows written, and exit 0 — CI stays green while the ledger silently
+ * stops updating, indistinguishable from a healthy run unless someone reads
+ * the log. A resolution writer that no-ops is worse than one that breaks.
+ * Now, calling without --dry-run and without DATABASE_URL is a hard failure
+ * (exit 1) — if dry-run behavior is genuinely wanted (local testing, a fork
+ * without the secret configured), ask for it explicitly.
  */
 
 import { dirname, join } from 'path';
@@ -54,15 +62,21 @@ async function main() {
   console.log(`\nNote: spec_ahead is never written by this Tier-2 job — only the Tier-3 cron`);
   console.log(`(slice 7) writes it, after its deeper search rules out a rename.`);
 
-  if (dryRun || !process.env.DATABASE_URL) {
-    if (!dryRun) {
-      console.log(`\n::notice::DATABASE_URL not set — dry run only, no ledger rows written.`);
-    }
+  if (dryRun) {
     console.log(
       `\nOn an empty table, this run would insert ${counts.code_ahead + counts.contradicted} row(s) ` +
         `(${counts.code_ahead} code_ahead, ${counts.contradicted} contradicted).`
     );
     return;
+  }
+
+  if (!process.env.DATABASE_URL) {
+    console.error(
+      `\n::error::DATABASE_URL is not set and --dry-run was not requested. Refusing to silently ` +
+        `degrade to a dry run — a write job that no-ops quietly is worse than one that fails loudly. ` +
+        `Pass --dry-run explicitly if that is genuinely what's wanted.`
+    );
+    process.exit(1);
   }
 
   if (!workspaceId) {

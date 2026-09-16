@@ -62,6 +62,19 @@ describe('classifyAssertion', () => {
     expect(classifyAssertion('design', 'superseded', result({ id: 'a', outcome: 'fail' }))).toBe('skip');
   });
 
+  test("'partially' is a recognized non-terminal design status, not skip — a passing assertion still classifies code_ahead", () => {
+    // Regression: 'partially' is an established convention for a multi-decision
+    // design doc that has shipped some but not all of what it describes (e.g.
+    // docs/design/retry-continuity.md). Before this, an unrecognized status
+    // classified 'skip' for every assertion on the doc — indistinguishable from
+    // "nothing to log" at insert time, but for a row that already existed it
+    // meant the Tier-2 writer stopped touching it (never refreshed, never
+    // resolved) the moment a doc-fix PR set `status: partially`, however many
+    // times CI re-ran afterward.
+    expect(classifyAssertion('design', 'partially', result({ id: 'a', outcome: 'pass' }))).toBe('code_ahead');
+    expect(classifyAssertion('design', 'partially', result({ id: 'a', outcome: 'fail' }))).toBe('clean');
+  });
+
   test('never returns spec_ahead — CI never writes that direction directly', () => {
     for (const docType of ['design', 'spec'] as const) {
       for (const declared of ['proposed', 'accepted', 'draft', 'implemented', 'active', null, 'superseded']) {
@@ -243,6 +256,35 @@ describe('writeLedgerFromEvaluations', () => {
     // finished a fortnight ago, and the dispatch CTA would never come back for
     // a finding that is genuinely new.
     expect(row.docFixTaskId).toBeNull();
+  });
+
+  test("a 'partially' declared status keeps an existing open row live across runs instead of orphaning it", async () => {
+    // Regression for the stranded-card bug: reviewer-evidence-and-verification.md
+    // merged a doc fix that set `status: partially` (a real, established, but
+    // previously-unrecognized non-terminal status). The row for its still-open
+    // assertion must keep being refreshed every run, not silently stop being
+    // touched the moment the declared status became 'partially'.
+    const run1 = new Date('2026-09-01T00:00:00Z');
+    const run2 = new Date('2026-09-08T00:00:00Z');
+    const evaluations = [
+      doc({
+        path: 'docs/design/reviewer-evidence-and-verification.md',
+        docType: 'design',
+        declaredStatus: 'partially',
+        results: [result({ id: 'reviewer-patch', outcome: 'pass' })],
+      }),
+    ];
+
+    const summary1 = await writeLedgerFromEvaluations('ws-1', evaluations, run1);
+    expect(summary1.inserted).toBe(1);
+
+    const summary2 = await writeLedgerFromEvaluations('ws-1', evaluations, run2);
+    expect(summary2.refreshed).toBe(1);
+    expect(summary2.skipped).toBe(0);
+    const row = [...store.values()][0];
+    expect(row.status).toBe('open');
+    expect(row.direction).toBe('code_ahead');
+    expect(row.lastCheckedAt).toEqual(run2);
   });
 
   test('direction is computed correctly end-to-end from checker output', async () => {

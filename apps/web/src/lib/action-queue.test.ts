@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, summariseActionQueueAge } from './action-queue';
+import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, partitionEscalations, isActionableChip, isDocFixClaimStale, summariseActionQueueAge } from './action-queue';
 import type { WaitingOnYouRawItem, EscalationRawItem, ResolvedEscalationItem, EscalatedMissionCandidate, DiscrepancyCandidate } from './action-queue';
 
 const PR_URL_A = 'https://github.com/org/repo/pull/1480';
@@ -389,6 +389,53 @@ describe('buildDecideItems + buildActionQueue — decide items', () => {
   });
 });
 
+describe('isDocFixClaimStale', () => {
+  it('false while the task is not completed — no completion to check against', () => {
+    expect(isDocFixClaimStale({
+      docFixTaskStatus: 'in_progress',
+      docFixPrLifecycleStatus: 'merged',
+      docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+      lastCheckedAt: new Date('2026-09-02T00:00:00Z'),
+    })).toBe(false);
+  });
+
+  it('false when the PR never merged — never claim staleness before the fix actually landed', () => {
+    expect(isDocFixClaimStale({
+      docFixTaskStatus: 'completed',
+      docFixPrLifecycleStatus: 'open',
+      docFixMergedAt: null,
+      lastCheckedAt: new Date('2026-09-02T00:00:00Z'),
+    })).toBe(false);
+  });
+
+  it('false when the row has never been rechecked at all', () => {
+    expect(isDocFixClaimStale({
+      docFixTaskStatus: 'completed',
+      docFixPrLifecycleStatus: 'merged',
+      docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+      lastCheckedAt: undefined,
+    })).toBe(false);
+  });
+
+  it('false when merged but the last check predates the merge — genuinely awaiting the re-run', () => {
+    expect(isDocFixClaimStale({
+      docFixTaskStatus: 'completed',
+      docFixPrLifecycleStatus: 'merged',
+      docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+      lastCheckedAt: new Date('2026-08-25T00:00:00Z'),
+    })).toBe(false);
+  });
+
+  it('true when merged and the checker has rechecked at or after the merge', () => {
+    expect(isDocFixClaimStale({
+      docFixTaskStatus: 'completed',
+      docFixPrLifecycleStatus: 'merged',
+      docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+      lastCheckedAt: new Date('2026-09-01T00:00:00Z'),
+    })).toBe(true);
+  });
+});
+
 describe('buildDiscrepancyItems', () => {
   const row = (overrides?: Partial<DiscrepancyCandidate>): DiscrepancyCandidate => ({
     id: 'd-1',
@@ -471,6 +518,50 @@ describe('buildDiscrepancyItems', () => {
       row({ docFixTaskId: 'task-1', docFixTaskStatus: 'failed' }),
     ]);
     expect(items[0].docFixTaskId).toBeNull();
+  });
+
+  it('completed + PR merged + rechecked since merge and STILL open -> claim releases (the stranded-card bug)', () => {
+    const { items } = buildDiscrepancyItems([
+      row({
+        docFixTaskId: 'task-1',
+        docFixTaskStatus: 'completed',
+        docFixPrLifecycleStatus: 'merged',
+        docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+        firstSeenAt: new Date('2026-08-20T00:00:00Z'),
+        // last_checked_at moved to AFTER the merge — the checker genuinely
+        // re-evaluated post-merge and the gap is still there.
+        lastCheckedAt: new Date('2026-09-02T00:00:00Z'),
+      }),
+    ]);
+    expect(items[0].docFixTaskId).toBeNull();
+    expect(items[0].docFixTaskStatus).toBeNull();
+  });
+
+  it('completed + PR merged but NOT yet rechecked -> claim stays live (genuinely awaiting the re-run)', () => {
+    const { items } = buildDiscrepancyItems([
+      row({
+        docFixTaskId: 'task-1',
+        docFixTaskStatus: 'completed',
+        docFixPrLifecycleStatus: 'merged',
+        docFixMergedAt: new Date('2026-09-01T00:00:00Z'),
+        // last_checked_at is from BEFORE the merge — no re-run has happened yet.
+        lastCheckedAt: new Date('2026-08-25T00:00:00Z'),
+      }),
+    ]);
+    expect(items[0].docFixTaskId).toBe('task-1');
+  });
+
+  it('completed + PR still open (not merged) -> claim stays live, no premature release', () => {
+    const { items } = buildDiscrepancyItems([
+      row({
+        docFixTaskId: 'task-1',
+        docFixTaskStatus: 'completed',
+        docFixPrLifecycleStatus: 'open',
+        docFixMergedAt: null,
+        lastCheckedAt: new Date('2026-09-02T00:00:00Z'),
+      }),
+    ]);
+    expect(items[0].docFixTaskId).toBe('task-1');
   });
 
   it('ranks an in-flight card below every card still waiting on a human', () => {
