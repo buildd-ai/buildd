@@ -304,6 +304,61 @@ describe('WaitingOnYouReviewCard — escalation with a concrete defect but no re
 // it was made against. Head === approvedSha must never offer it: a re-review
 // against an empty diff has nothing new to say.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// At 320pt the card's content width (~254px) is narrower than the longest
+// button/link combinations these rows can render (e.g. "Dispatch fix" +
+// "Dispatch fix with corrections" ≈ 298px). Without flex-wrap the row
+// overflows the card instead of wrapping to a second line. Assert flex-wrap
+// on each row's container class so a future edit can't silently drop it.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('WaitingOnYouReviewCard — mobile action rows wrap instead of overflowing', () => {
+  function containerClassBefore(html: string, needle: string): string {
+    const idx = html.indexOf(needle);
+    expect(idx).toBeGreaterThan(-1);
+    const openTag = html.lastIndexOf('<div class="', idx);
+    expect(openTag).toBeGreaterThan(-1);
+    const classStart = openTag + '<div class="'.length;
+    const classEnd = html.indexOf('"', classStart);
+    return html.slice(classStart, classEnd);
+  }
+
+  it('wraps the Dispatch fix / Dispatch fix with corrections row', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Reviewer requested changes 3 times — automated fix attempts exhausted. Human review required.',
+          recommendation: null,
+          hasEscalationNote: true,
+        })}
+      />,
+    );
+    expect(containerClassBefore(html, '>Dispatch fix<')).toContain('flex-wrap');
+  });
+
+  it('wraps the Merge anyway / Re-review changes since approval row', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          escalationReason: 'Touches schema.ts',
+          recommendation: 'Guard the null-overwrite.',
+          approvedSha: 'old-sha',
+          headSha: 'new-sha',
+        })}
+      />,
+    );
+    expect(containerClassBefore(html, 'Merge anyway')).toContain('flex-wrap');
+  });
+
+  it('wraps the Merge / Re-review row (no-verdict state)', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({ escalationReason: 'Reviewer task failed — needs human review' })}
+      />,
+    );
+    expect(containerClassBefore(html, '>Re-review<')).toContain('flex-wrap');
+  });
+});
+
 describe('WaitingOnYouReviewCard — Re-review changes since approval', () => {
   it('offers it on an approved PR whose head has advanced past the verdict', () => {
     const html = renderToStaticMarkup(
