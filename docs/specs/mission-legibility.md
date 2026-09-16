@@ -56,21 +56,23 @@ shared derivation that never sees a task's title.
 ### 0.1 The observed baseline
 
 `get_usage_stats groupBy=role window=30d` on the `buildd` workspace, read
-2026-09-16: **952 tasks / 1870 workers**, grouped as
+2026-09-16, grouped by role:
 
-| Role | Tasks |
+| Role | Share of tasks |
 |---|---|
-| `(unassigned)` | **658** (69.1%) |
-| Builder | 237 |
-| Organizer | 37 |
-| spec-validator | 16 |
-| Researcher | 2 |
-| architect | 1 |
-| Ops | 1 |
+| `(unassigned)` | large majority |
+| Builder | most of the remainder |
+| Organizer | small minority |
+| spec-validator | small minority |
+| Researcher | negligible |
+| architect | negligible |
+| Ops | negligible |
 
 There is **no `reviewer` row at all**, across a window in which nearly every
 merged PR took at least one reviewer round. §3 explains why, and the
-explanation is not the one the field observation assumed.
+explanation is not the one the field observation assumed. (Exact counts from
+this read are recorded in the team knowledge base, not this public repo — see
+`no-prod-data` policy in `CLAUDE.md`.)
 
 ---
 
@@ -582,7 +584,7 @@ new trigger would race the existing one through the same dedupe.
 
 ### 3.4 What this does to `(unassigned)`, and what stays there legitimately
 
-Against the §0.1 baseline of **658 unassigned of 952 tasks (69.1%)**:
+Against the §0.1 baseline (a large majority of tasks unassigned):
 
 Rule R3-2 reclassifies every worker whose own task carries a `roleSlug` into
 that role's group. Reviewer workers are the largest identifiable set — every
