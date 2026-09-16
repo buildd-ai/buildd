@@ -193,7 +193,13 @@ export async function GET(req: NextRequest) {
           ...(isTerminalAudit ? {
             updatedAt: tasks.updatedAt,
             summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
-            prNumber: sql<number | null>`(${tasks.result}->>'prNumber')::int`,
+            // Audit mode reaches the entire terminal history, unbounded by the
+            // 24h window every other query path stays inside — including tasks
+            // completed before this field's shape was settled. A bare ::int
+            // cast throws and kills the whole query the moment one historical
+            // row has a non-numeric value here, so guard it instead of trusting
+            // the shape.
+            prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
             hasArtifact: sql<boolean>`EXISTS (
               SELECT 1 FROM ${workers} w
               JOIN ${artifacts} a ON a.worker_id = w.id
