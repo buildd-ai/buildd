@@ -951,14 +951,19 @@ type RailDisclosure = { expanded: boolean; onToggle: () => void; panelId: string
  */
 function RailRightColumn({
   task,
+  prTask,
   outcome,
   disclosure,
 }: {
   task: CondensedTimelineTask;
+  /** Source of the PR number/word, when it differs from `task` — a collapsed
+   * chain's confidence flag still belongs to the head, only the PR is the
+   * terminal member's (§1.3). */
+  prTask?: CondensedTimelineTask;
   outcome: RailOutcome;
   disclosure: RailDisclosure | null;
 }) {
-  const lw = task.latestWorker;
+  const lw = (prTask ?? task).latestWorker;
   const note = task.reviewerNote;
   const confidenceRaw = note?.title.match(/\(confidence ([\d.]+)\)/)?.[1];
   const confidence = confidenceRaw != null ? Number(confidenceRaw) : null;
@@ -1110,7 +1115,7 @@ function RailTaskLine({
         {railTruncate(stripTaskTypePrefix(task.title))}
       </Link>
       {trail}
-      <RailRightColumn task={prTask ?? task} outcome={outcome} disclosure={disclosure} />
+      <RailRightColumn task={task} prTask={prTask} outcome={outcome} disclosure={disclosure} />
     </div>
   );
 }
