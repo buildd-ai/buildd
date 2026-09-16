@@ -9,12 +9,7 @@ export type SegmentState = MissionSegmentState | ChainSegmentState;
  */
 type Glyph = MissionSegmentState | 'skipped' | 'ring' | 'dashed';
 export type RailGlyphState = Glyph;
-/**
- * Node outline. Circles are tasks; squares mark non-task rail elements — the
- * mission's goal root and, since mission-legibility.md Rule R4-6, the phase
- * header. Never ambiguous: the goal root is always the rail's last row and
- * always carries `Goal:` text; a phase header is never last and never does.
- */
+/** Node outline. Circles are tasks; the single square is the mission's goal root. */
 export type SegmentShape = 'box' | 'circle' | 'square';
 const normalize = (state: SegmentState): Glyph => state === 'filled' ? 'solid' : state === 'current' ? 'ghost' : state;
 const color: Record<Glyph, string> = { solid: 'text-status-success', half: 'text-status-warning', ghost: 'text-text-primary', empty: 'text-text-muted', notch: 'text-status-error', skipped: 'text-text-muted', ring: 'text-status-warning', dashed: 'text-text-muted' };

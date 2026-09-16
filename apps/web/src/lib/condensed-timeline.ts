@@ -1,5 +1,4 @@
 import { LIVE_WORKER_STATUSES, isGateSatisfied } from '@/lib/task-presentation';
-import type { SegmentState } from '@/lib/task-presentation';
 import { shouldSerializeByManifest } from '@buildd/core/path-overlap';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -450,13 +449,6 @@ export type RailTaskLike = {
   taskCreatedAt: string;
   taskUpdatedAt: string;
   latestWorker: { mergedAt: string | null; prLifecycleStatus?: string | null } | null;
-  /**
-   * The stored mission phase (docs/specs/mission-legibility.md §1). Both NULL
-   * or both set — a half-set row is a write-time bug, never a rendering
-   * concern here.
-   */
-  missionPhaseIndex?: number | null;
-  missionPhaseLabel?: string | null;
 };
 
 /** Hard = stored `dependsOn`. Soft = pathManifest ordering. None = no edge. */
@@ -496,27 +488,7 @@ export type RailNode<T> = {
 export type RailTick = { kind: 'tick'; id: string; label: string; now: boolean };
 export type RailLabel = { kind: 'label'; id: string; text: 'waiting on you' | 'running' };
 export type RailGoal = { total: number; passed: number | null };
-
-/**
- * A mission-phase header row (docs/specs/mission-legibility.md Rule R4-1).
- * `kind: 'phase'` is the row discriminator — it is not a work-kind, and no
- * rail row type ever carries a work-kind field (§4.4 of the spec).
- */
-export type RailPhase = {
-  kind: 'phase';
-  id: string;
-  index: number;
-  label: string;
-  /** One segment per member task, in rail order (Rule P1-10). */
-  segments: Array<{ taskId: string; state: SegmentState }>;
-  /** Count of `filled` segments only — `half` counts toward `total`, not this (Rule P1-11). */
-  filled: number;
-  total: number;
-  /** 'complete': every member filled/skipped. 'live': lowest incomplete phase with an active member (Rule P1-12). */
-  state: 'complete' | 'live' | 'upcoming';
-};
-
-export type RailRow<T> = RailNode<T> | RailTick | RailLabel | RailPhase;
+export type RailRow<T> = RailNode<T> | RailTick | RailLabel;
 export type RailModel<T> = { rows: RailRow<T>[]; goal: RailGoal | null };
 
 export type RailGroups<T> = {
@@ -673,86 +645,6 @@ export function buildRail<T extends RailTaskLike>(
     }
   }
 
-  // ─── Mission phase headers — mission-legibility.md §4.1/§4.3 ───────────────
-  //
-  // Walk the SAME ordered sequence, flattening each node's ordinal members plus
-  // its Lane-2 fan-out siblings (shown and fork-hidden) — every task that gets
-  // its own row somewhere on the rail. Retry lineage is deliberately excluded:
-  // a retry inherits its parent's phase (Rule P1-7) but is rendered as an
-  // attempt annotation on the parent, not as an independent unit of progress,
-  // so counting it would double a phase's own segment for one logical step.
-  type PhaseAccum = {
-    index: number;
-    label: string;
-    segments: Array<{ taskId: string; state: SegmentState }>;
-    hasActiveMember: boolean;
-    /** `ordered` index the header renders before. */
-    atOrderedIndex: number;
-  };
-  const phaseSegmentState = (task: T): SegmentState => {
-    if (task.status === 'cancelled') return 'skipped';
-    if (task.status === 'completed') return task.latestWorker?.mergedAt ? 'filled' : 'half';
-    return 'empty';
-  };
-  const phaseByIndex = new Map<number, PhaseAccum>();
-  const phaseOpenOrder: number[] = [];
-  for (let i = 0; i < ordered.length; i++) {
-    const node = ordered[i];
-    const candidates = [
-      ...node.members,
-      ...node.siblings.map(s => s.task),
-      ...node.hiddenSiblings,
-    ];
-    for (const member of candidates) {
-      const index = member.missionPhaseIndex;
-      const label = member.missionPhaseLabel;
-      if (index == null || label == null) continue;
-      let accum = phaseByIndex.get(index);
-      if (!accum) {
-        accum = { index, label, segments: [], hasActiveMember: false, atOrderedIndex: i };
-        phaseByIndex.set(index, accum);
-        phaseOpenOrder.push(index);
-      } else if (accum.label !== label) {
-        // AC-5: a divergent label for one index is a bug, surfaced loudly rather
-        // than silently resolved by picking one.
-        throw new Error(
-          `Mission phase ${index} has divergent labels: "${accum.label}" vs "${label}" ` +
-          `(docs/specs/mission-legibility.md Rule P1-2)`,
-        );
-      }
-      accum.segments.push({ taskId: member.id, state: phaseSegmentState(member) });
-      if (!['completed', 'failed', 'cancelled'].includes(member.status)) accum.hasActiveMember = true;
-    }
-  }
-
-  // Rule P1-12: the live phase is the lowest incomplete index with an active
-  // member. At most one phase is live; when every phase is complete, none is.
-  let livePhaseIndex: number | null = null;
-  for (const index of [...phaseByIndex.keys()].sort((a, b) => a - b)) {
-    const accum = phaseByIndex.get(index)!;
-    const complete = accum.segments.every(s => s.state === 'filled' || s.state === 'skipped');
-    if (!complete && accum.hasActiveMember) { livePhaseIndex = index; break; }
-  }
-
-  const phaseRowAt = new Map<number, RailPhase>();
-  for (const index of phaseOpenOrder) {
-    const accum = phaseByIndex.get(index)!;
-    const complete = accum.segments.every(s => s.state === 'filled' || s.state === 'skipped');
-    phaseRowAt.set(accum.atOrderedIndex, {
-      kind: 'phase',
-      id: `phase-${index}`,
-      index,
-      label: accum.label,
-      segments: accum.segments,
-      filled: accum.segments.filter(s => s.state === 'filled').length,
-      total: accum.segments.length,
-      state: complete ? 'complete' : index === livePhaseIndex ? 'live' : 'upcoming',
-    });
-  }
-  // Rule R4-8: a phase header and a day tick are both full-width separators —
-  // when phases exist, day ticks are suppressed entirely and only `now` survives.
-  const suppressDayTicks = phaseRowAt.size > 0;
-
   // Day ticks: one per calendar-day transition in the rendered sequence. No gap
   // clustering, no ordinal suffix — the defect class `deriveBandKey` carries
   // cannot exist here because there are no bands to number (Rule D4-4).
@@ -796,7 +688,7 @@ export function buildRail<T extends RailTaskLike>(
 
   const rows: RailRow<T>[] = [];
   for (let i = 0; i <= ordered.length; i++) {
-    const dayTick = suppressDayTicks ? undefined : dayTicks.get(i);
+    const dayTick = dayTicks.get(i);
     const isNow = i === nowTickAt;
 
     if (dayTick || isNow) {
@@ -808,12 +700,6 @@ export function buildRail<T extends RailTaskLike>(
         now: isNow,
       });
     }
-
-    // Rule R4-10: when the `now` boundary and a phase boundary coincide, `now`
-    // renders first (pushed above) and the phase header follows — never the
-    // reverse, and no day tick can join them (suppressed whenever any phase exists).
-    const phaseRow = phaseRowAt.get(i);
-    if (phaseRow) rows.push(phaseRow);
 
     const label = labelAt.get(i);
     if (label) rows.push(label);

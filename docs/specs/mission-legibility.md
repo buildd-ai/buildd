@@ -1,6 +1,6 @@
 ---
 title: Mission Legibility
-status: active
+status: draft
 owner: builder
 last_verified: 2026-09-16
 summary: A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
@@ -8,7 +8,7 @@ domain: surfaces
 surfaces: [apps/web/src/lib/task-presentation.ts, apps/web/src/lib/approve-plan.ts, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx]
 related: [timeline-mobile-rail, mission-structure-view, timeline-dependency-geometry, mission-task-lifecycle]
 keywords: [phase, work kind, role slug, glyph, reviewer role, unassigned, swimlane, phase header, approve_plan, usage stats]
-verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"]
+verified_by: []
 supersedes: []
 ---
 
@@ -21,11 +21,12 @@ work-kind written at most once by whichever of filer, worker or PR-open gets
 there first — and every surface that draws either MUST read it through a single
 shared derivation that never sees a task's title.
 
-> **Promoted to `active`** by the §4 build PR (this one), which lands the
-> rail-model and render tests named in §5.3 into `verified_by`. §1–§3 landed
-> earlier in PR #2454; §4's rendering — phase header rows, the work-kind glyph
-> column on the rail and the Structure canvas, and `TaskTypeBadge`'s rewrite —
-> is what this PR adds.
+> **Status is `draft` on purpose.** Nothing in §1–§4 is built yet, so per
+> `SPEC-FORMAT.md` rule 9 (`No guard, no active`) this ships as a draft with an
+> empty `verified_by`, and is promoted to `active` by the build PR that lands
+> the tests named in §5.3. Rule 7 makes unresolved symbol names warnings rather
+> than errors on a draft, which is the correct severity for names this spec is
+> proposing rather than describing.
 
 ---
 
@@ -297,10 +298,8 @@ nothing else. The complete list of mounts:
 | Activity row | `apps/web/src/components/TaskCard.tsx` | `TaskTypeBadge`, mounted from `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx` |
 
 **Rule K2-4**: `TaskTypeBadge` (`TaskCard.tsx:171`) is rewritten as a thin
-renderer over `deriveWorkKind`'s return value, and the old three-entry glyph
-table it read (retry/review/review-retry) is retired — its distinct glyphs are
-not preserved; `review`/`review-retry` resolve through tier 3 to the analysis
-glyph and `retry` resolves to nothing (§2.2, Rule K2-6). It stays a local function in
+renderer over `deriveWorkKind`'s return value, and `TASK_TYPE_BADGE`'s three
+entries become the third tier of the chain (§2.2). It stays a local function in
 `TaskCard.tsx`; no component file is created or moved, per the zero-new-files
 constraint `timeline-mobile-rail.md` §10 inherits from
 `mission-structure-view.md`. The rail and the canvas render the returned glyph
@@ -1121,8 +1120,8 @@ at the same offset as in the pre-change rendering (Rule R4-19).
 - `apps/web/src/components/SegmentStrip.tsx` — `SegmentStrip`,
   `RailNodeGlyph`, `SegmentShape`, `RailGlyphState` (reused; only the
   `SegmentShape` doc comment changes, Rule R4-6)
-- `apps/web/src/components/TaskCard.tsx` — `TaskTypeBadge`
-  (rewritten over `deriveWorkKind`, Rule K2-4; the old per-type glyph table it read is removed)
+- `apps/web/src/components/TaskCard.tsx` — `TaskTypeBadge`, `TASK_TYPE_BADGE`
+  (rewritten over `deriveWorkKind`, Rule K2-4)
 - `apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx` —
   `StructureNodeView` (glyph only, Rule R4-21)
 - `apps/web/src/lib/structure-layout.ts` — `StructureTask` (three new input
