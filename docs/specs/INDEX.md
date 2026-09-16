@@ -104,8 +104,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (2)
+## Draft (3)
 
+- [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-16
+  A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-15
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-14
