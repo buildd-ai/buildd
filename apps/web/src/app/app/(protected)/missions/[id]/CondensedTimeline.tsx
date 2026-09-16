@@ -1069,6 +1069,7 @@ function RailGutter({
  */
 function RailTaskLine({
   task,
+  prTask,
   label,
   outcome,
   disclosure,
@@ -1076,6 +1077,9 @@ function RailTaskLine({
   trail,
 }: {
   task: CondensedTimelineTask;
+  /** Source of the right column's PR number/word, when it differs from `task` — a
+   * collapsed chain names the head's title but the terminal member's PR (§1.3). */
+  prTask?: CondensedTimelineTask;
   label?: string;
   outcome: RailOutcome;
   disclosure: RailDisclosure | null;
@@ -1096,7 +1100,7 @@ function RailTaskLine({
         {railTruncate(stripTaskTypePrefix(task.title))}
       </Link>
       {trail}
-      <RailRightColumn task={task} outcome={outcome} disclosure={disclosure} />
+      <RailRightColumn task={prTask ?? task} outcome={outcome} disclosure={disclosure} />
     </div>
   );
 }
@@ -1181,6 +1185,13 @@ function RailNodeRow({
   const headDisclosure = disclosureFor(headKey, headOutcome.hasAttempts);
   const headStrips = node.members.filter(railHasAttempts).map(m => m.attempts ?? null);
 
+  // The collapsed row names the head's title but the terminal member's PR
+  // (§1.3): the last member with a PR is the one the reader would follow to
+  // see the chain's outcome. Expanded ordinal sub-rows keep each member's own.
+  const terminalPrTask = collapsible
+    ? ([...node.members].reverse().find(m => m.latestWorker?.prNumber) ?? node.head)
+    : node.head;
+
   return (
     <div className="flex items-stretch gap-2" data-task-id={node.head.id} data-rail-node="">
       <RailGutter edge={node.edge} glyph={glyph} continues={!isLast || hasLaneTwo} />
@@ -1188,6 +1199,7 @@ function RailNodeRow({
       <div className="min-w-0 flex-1 pb-1">
         <RailTaskLine
           task={node.head}
+          prTask={terminalPrTask}
           outcome={headOutcome}
           disclosure={headDisclosure}
           lead={collapsible && (
