@@ -120,3 +120,60 @@ describe('planningOutputSchema — pathManifest and goalCriteria', () => {
     expect(output.goalCriteria?.[0]?.type).toBe('command');
   });
 });
+
+/**
+ * Mission legibility (docs/specs/mission-legibility.md §1.3, §2.5): a mission's
+ * phases and a task's work-kind are STORED facts, written at their source. Both
+ * enter the system here, at the one boundary where the SDK can enforce them at
+ * generation time rather than rejecting a caller at runtime.
+ */
+describe('planningOutputSchema — phase and kind', () => {
+  const stepProps = (planningOutputSchema as any).properties.plan.items.properties;
+  const stepRequired: string[] = (planningOutputSchema as any).properties.plan.items.required;
+
+  it('AC-14: `kind` is REQUIRED on every plan step', () => {
+    // This is the lever that actually moves the volume — plan-generated mission
+    // tasks — and it cannot produce a runtime rejection at all, unlike a 400 on
+    // POST /api/tasks which would fire on the `[friction]` filing an agent makes
+    // while already failing.
+    expect(stepRequired).toContain('kind');
+    expect(stepRequired).toEqual(expect.arrayContaining(['ref', 'title', 'description', 'kind']));
+  });
+
+  it('`kind` carries the seven-value vocabulary and says what each one means', () => {
+    expect(stepProps.kind.enum).toEqual([
+      'coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation',
+    ]);
+    const desc: string = stepProps.kind.description;
+    // The distinction that is actually hard to get right: shape, not subject.
+    expect(desc.toLowerCase()).toContain('shape of the work');
+    for (const k of stepProps.kind.enum) expect(desc).toContain(k);
+  });
+
+  it('`phase` exists, is OPTIONAL, and is described as a heading rather than a tag', () => {
+    expect(stepProps.phase.type).toBe('string');
+    expect(stepRequired).not.toContain('phase');
+    const desc: string = stepProps.phase.description;
+    // The two instructions that make the difference between a plan with phases
+    // and a plan with N phases of one step each.
+    expect(desc).toContain('Repeat the exact same string');
+    expect(desc).toContain('has no phases');
+    expect(desc).toContain('Leave it off entirely');
+  });
+
+  it('a phase is never something the schema asks the agent to derive', () => {
+    const desc: string = stepProps.phase.description;
+    for (const forbidden of ['dependsOn', 'layer', 'title']) {
+      expect(desc).not.toContain(forbidden);
+    }
+  });
+
+  it('typechecks a plan step carrying both new fields', () => {
+    const step: PlanStep = {
+      ref: 'a', title: 'A', description: 'do a', phase: 'Storage', kind: 'engineering',
+    };
+    const output: PlanningStructuredOutput = { plan: [step], summary: 's', missionComplete: false };
+    expect(output.plan[0]?.phase).toBe('Storage');
+    expect(output.plan[0]?.kind).toBe('engineering');
+  });
+});

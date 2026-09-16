@@ -41,6 +41,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -581,6 +582,10 @@ export async function PATCH(
     appendActionEvents,
     appendPromptCompositionEvents,
     waitingFor,
+    // Worker self-classification of the work it is actually doing. Written to
+    // tasks.kind only when that column is still NULL — see the guarded stamp
+    // below and docs/specs/mission-legibility.md §2.6.
+    kind: reportedKind,
     // Token usage
     inputTokens, outputTokens,
     // The model the session actually ran on, as reported by the runner.
@@ -3116,6 +3121,25 @@ export async function PATCH(
       }
     } catch (err) {
       console.error(`[path-claim] auto-lease failed for worker ${id}:`, err);
+    }
+  }
+
+  // Worker self-classification (Rule K2-15/K2-16).
+  //
+  // Reported on update_progress rather than complete_task: a kind learned at
+  // completion is too late for the claim-time model router, too late for anyone
+  // watching the rail while the task runs, and arrives after the row has already
+  // rendered unlabelled for its whole life.
+  //
+  // The write is guarded on `kind IS NULL`, so a worker reporting a kind for an
+  // already-classified task gets a no-op and a success, never an error — and an
+  // out-of-vocabulary value is ignored here rather than rejecting a progress
+  // report, which is the contract this call actually exists to deliver.
+  if (isTaskKind(reportedKind) && worker.taskId) {
+    try {
+      await stampTaskKindIfAbsent(worker.taskId, reportedKind);
+    } catch (err) {
+      console.error(`[task-kind] self-classification failed for worker ${id}:`, err);
     }
   }
 

@@ -18,7 +18,7 @@ import { deriveStage } from '@/lib/stage';
 import { isStrandedTask } from '@/lib/structure-layout';
 import type { CondensedTask } from '@/lib/condensed-timeline';
 import type { MergePolicyTier } from '@buildd/shared';
-import type { ChainPositionResult } from '@/lib/task-presentation';
+import type { ChainPositionResult, WorkKind } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
 import type { MissionSegment, TaskType, CriteriaGatePresentation } from '@buildd/core/mission-helpers';
 import { stripTaskTypePrefix } from '@buildd/core/mission-helpers';
@@ -51,6 +51,21 @@ export type CondensedTimelineTask = {
   chain: ChainPositionResult | null;
   latestWorker: CondensedTimelineWorker | null;
   taskType: TaskType | null;
+  /**
+   * The three `deriveWorkKind` inputs (docs/specs/mission-legibility.md §2.1).
+   * `taskType` above is the third tier and is already here; these two are tiers
+   * 1 and 2. No surface derives a work-kind from anything else, and notably not
+   * from `title`.
+   */
+  kind?: WorkKind | null;
+  roleSlug?: string | null;
+  /**
+   * The stored mission phase — the named stretch of the plan this task belongs
+   * to. Both NULL or both set; a task with NULL contributes to no phase's
+   * rollup anywhere.
+   */
+  missionPhaseIndex?: number | null;
+  missionPhaseLabel?: string | null;
   loopState?: string | null;
   loopMaxLoops?: number | null;
   loopIteration?: number | null;
