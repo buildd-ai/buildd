@@ -401,6 +401,18 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   }
   promptParts.push(`## Task\n${taskDescription}`);
 
+  // Rule K2-17: asked ONLY when the task has no recorded kind. `task.kind` is
+  // already on the BuilddTask the runner holds, so the condition costs no query,
+  // and a task that was filed with a kind never sees this line at all.
+  if (!task.kind) {
+    promptParts.push(
+      '## Work Kind\n'
+      + 'This task has no recorded work-kind. On your first `update_progress`, set `kind` to the shape of the '
+      + 'work you are actually doing — one of coordination, engineering, research, writing, design, analysis, '
+      + 'observation.',
+    );
+  }
+
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
   // A planning task whose plan is a PROPOSAL SLOT rather than its deliverable

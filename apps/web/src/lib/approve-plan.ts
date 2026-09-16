@@ -6,6 +6,7 @@ import { generateTaskBranchName, type BranchNameGitConfig } from '@buildd/core/b
 import type { PlanStep, TaskSubjectAnchor } from '@buildd/shared';
 import { classifyCoordinationIntent, coordinationDedupeKey, extractPrNumbers, type CoordinationIntent } from './coordination-intent';
 import { proposalChildTaskTitle, buildProposalChildDescription } from '@buildd/core/spec-doc-fix';
+import { computePlanPhases } from './mission-phase';
 
 /**
  * `tasks.context.specDocFix` — written by the doc-fix dispatch
@@ -103,7 +104,11 @@ export async function approvePlan(
   // Fetch the planning task for workspace/mission context
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, planningTaskId),
-    columns: { id: true, workspaceId: true, missionId: true, context: true, pathManifest: true },
+    columns: {
+      id: true, workspaceId: true, missionId: true, context: true, pathManifest: true,
+      // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
+      missionPhaseIndex: true, missionPhaseLabel: true,
+    },
   });
 
   if (!task) {
@@ -231,13 +236,22 @@ export async function approvePlan(
     survivingPlan = collapseProposalPlan(survivingPlan, docFix);
   }
 
+  // Phases are assigned across the SURVIVING plan, in plan-array order, before
+  // the first insert — a step dropped by dedup above never occupied a phase, so
+  // numbering it would leave a gap no row belongs to.
+  const stepPhases = computePlanPhases(survivingPlan, {
+    missionPhaseIndex: task.missionPhaseIndex ?? null,
+    missionPhaseLabel: task.missionPhaseLabel ?? null,
+  });
+
   // First pass: create all tasks with empty dependsOn to get their IDs
   const refToId: Record<string, string> = {};
   const refToTitle: Record<string, string> = {};
   const createdTaskIds: string[] = [];
 
-  for (const step of survivingPlan) {
+  for (const [stepIndex, step] of survivingPlan.entries()) {
     const intentInfo = stepIntent.get(step.ref);
+    const phase = stepPhases[stepIndex] ?? { missionPhaseIndex: null, missionPhaseLabel: null };
     const [created] = await db
       .insert(tasks)
       .values({
@@ -258,6 +272,15 @@ export async function approvePlan(
         // dispatch injection fires on the same document it is finalizing.
         ...(docFix?.specPath ? { pathManifest: task.pathManifest ?? [docFix.specPath] } : {}),
         dependsOn: [], // Updated in second pass
+        // The plan's own phase structure, stored once and never updated.
+        missionPhaseIndex: phase.missionPhaseIndex,
+        missionPhaseLabel: phase.missionPhaseLabel,
+        // The planner's declared work-kind. Until this was written through, a
+        // `kind` on a plan step was accepted by the schema and then dropped on
+        // the floor — the row it routes and draws stayed NULL. A classified
+        // coordination step still wins: that intent is read off the platform's
+        // own dedupe classifier, not guessed.
+        ...(step.kind && !intentInfo ? { kind: step.kind, classifiedBy: 'organizer' as const } : {}),
         ...(intentInfo ? {
           kind: 'coordination' as const,
           subjectAnchor: {

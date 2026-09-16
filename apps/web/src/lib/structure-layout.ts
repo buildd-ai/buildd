@@ -10,6 +10,8 @@
 
 import { deriveStage } from '@/lib/stage';
 import type { Stage } from '@/lib/stage';
+import type { WorkKind } from '@/lib/task-presentation';
+import type { TaskType } from '@buildd/core/mission-helpers';
 import type { CondensedTask, ChainUnit } from '@/lib/condensed-timeline';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -34,6 +36,22 @@ export type StructureTask = {
   loopIteration?: number | null;
   startAt?: string | null;
   loopExitConditionType?: string | null;
+  /**
+   * The three `deriveWorkKind` inputs (docs/specs/mission-legibility.md Rule
+   * R4-21). Carried as data on the task so the canvas draws the same glyph the
+   * rail does, from the same helper, with no title in sight.
+   *
+   * `computeStructureLayout` does not read them: the canvas renders NO phase
+   * swimlanes and no phase bands, because a swimlane needs its members to be
+   * rank-contiguous and phases are not guaranteed to be — `phase` and
+   * `dependsOn` are independent fields on a plan step and nothing
+   * cross-validates them. Drawing a band over a non-contiguous set either
+   * misstates the layout or forces a re-rank, and a re-rank breaks the
+   * layout-stability invariant this hand-rolled engine exists to hold.
+   */
+  kind?: WorkKind | null;
+  roleSlug?: string | null;
+  taskType?: TaskType | null;
 };
 
 export type ContentionEdge = {

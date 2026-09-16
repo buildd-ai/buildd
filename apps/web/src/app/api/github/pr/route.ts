@@ -29,6 +29,7 @@ import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request'
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
 import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
+import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { pickReviewerRole } from '@/lib/pr-review-status';
@@ -302,6 +303,7 @@ export async function POST(req: NextRequest) {
         prNumber,
         updatedAt: new Date(),
       }).where(eq(workers.id, workerId));
+      await stampTaskKindIfAbsent(worker.taskId, 'engineering');
       if (prNumber) {
         await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
           baseRef: typeof base === 'string' ? base : null,
@@ -494,6 +496,7 @@ export async function POST(req: NextRequest) {
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
+        await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
         // ── prBaseRef: BACKFILL only, never overwrite ────────────────────────
         // Our value comes from a `GET /pulls/{n}` taken earlier in this request,
@@ -789,6 +792,14 @@ export async function POST(req: NextRequest) {
         updatedAt: new Date(),
       })
       .where(eq(workers.id, workerId));
+
+    // Rule K2-19 — the late signal. "This task opened a PR, so it changed code"
+    // is a fact LEARNED LATE, not a presentation concern, so it goes in the
+    // column where every consumer sees it (usage stats, exports, the model
+    // router on a retry) rather than into a render-time derivation only the UI
+    // would know about. Guarded by `kind IS NULL`, so a task that declared
+    // itself research stays research.
+    await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
     await claimMissionPrimaryPr(worker.task?.missionId, prData.number, prData.html_url, {
       baseRef: prData.base?.ref ?? null,

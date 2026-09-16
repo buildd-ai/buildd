@@ -986,6 +986,25 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error }, { status: 400 });
     }
 
+    // Advisory kind gate: a mission task with no `kind` is unlabelled on every
+    // surface for the rest of its life, and nothing infers one later from its
+    // title. Deliberately NOT a 400 — see GATE_SLUGS.KIND_ABSENT. The lever that
+    // actually moves the volume is `kind` being required in
+    // `planningOutputSchema`, which the SDK enforces at generation time and so
+    // can never reject a caller at runtime.
+    if (missionId && rawKind === undefined) {
+      fireGateEvent({
+        gate: GATE_SLUGS.KIND_ABSENT,
+        surface: 'POST /api/tasks',
+        outcome: 'warned',
+        reason: 'mission task created with no kind — it will render unlabelled on every surface',
+        workspaceId,
+        missionId,
+        callerOrigin: gateCaller,
+        detail: { hasRoleSlug: Boolean(roleSlug), outputRequirement },
+      });
+    }
+
     // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace
     // requires it and the task targets pr_required without a caller-supplied loopConfig.
     if (

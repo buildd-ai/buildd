@@ -119,6 +119,14 @@ export default async function MissionDetailPage({
           // Authorship: computeMissionAuthorshipHealth's human-task-share input.
           createdByWorkerId: true,
           createdByAccountId: true,
+          // Mission legibility (docs/specs/mission-legibility.md): the stored
+          // phase the rail groups under a header, and the work-kind the glyph
+          // column draws. Both read straight off the row the rail and the
+          // Structure canvas already hold — no second fetch, no join, and no
+          // way for the two surfaces to disagree about staleness.
+          missionPhaseIndex: true,
+          missionPhaseLabel: true,
+          kind: true,
         },
         orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
         with: {
@@ -203,6 +211,7 @@ export default async function MissionDetailPage({
                   taskClass: true, loopConfig: true, loopState: true, loopIteration: true, startAt: true,
                   reviewerRetryPrNumber: true, ciRetryPrNumber: true, conflictRetryPrNumber: true,
                   context: true, createdByWorkerId: true, createdByAccountId: true,
+                  missionPhaseIndex: true, missionPhaseLabel: true, kind: true,
                 },
                 orderBy: (t: any, { desc }: any) => [desc(t.createdAt)],
                 with: {
@@ -673,6 +682,14 @@ export default async function MissionDetailPage({
       missionBudgetExhausted: missionBudgetExhausted,
       latestWorker: condensedTask.workers[0] ?? null,
       taskType: deriveTaskType({ title: task.title, parentTaskId: task.parentTaskId, mode: task.mode }),
+      // The three `deriveWorkKind` inputs, plus the stored phase. Carried as
+      // data on the task object so `buildRail` and `computeStructureLayout` —
+      // both pure functions over the task array, neither holding a database
+      // handle — read the identical value.
+      kind: task.kind ?? null,
+      roleSlug: task.roleSlug ?? null,
+      missionPhaseIndex: task.missionPhaseIndex ?? null,
+      missionPhaseLabel: task.missionPhaseLabel ?? null,
       loopState: task.loopState ?? null,
       loopMaxLoops: task.loopConfig ? ((task.loopConfig as any).maxLoops ?? 5) : null,
       loopIteration: task.loopConfig ? task.loopIteration : null,
