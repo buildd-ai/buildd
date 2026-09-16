@@ -18,6 +18,7 @@ import {
 } from '@/lib/structure-layout';
 import type { CondensedTask, ChainUnit } from '@/lib/condensed-timeline';
 import type { Stage } from '@/lib/stage';
+import { deriveWorkKind } from '@/lib/task-presentation';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -188,12 +189,26 @@ function StructureNodeView({
       {/* STRANDED notch overlay */}
       {node.isStranded && <div className={STRANDED_OVERLAY} aria-hidden />}
 
-      {/* Role dot */}
+      {/* Role dot + work-kind glyph (mission-legibility.md Rule R4-21) — same
+          `deriveWorkKind` helper as the rail, no local re-derivation. No
+          phase swimlane or band anywhere on this canvas (Rule R4-22). */}
       <div className="flex items-center gap-1.5 mb-1 relative z-10">
         <span
           className="w-2 h-2 rounded-full flex-shrink-0"
           style={{ backgroundColor: node.roleColor }}
         />
+        {headTask && (() => {
+          const glyph = deriveWorkKind({
+            kind: headTask.kind ?? null,
+            roleSlug: headTask.roleSlug ?? null,
+            taskType: headTask.taskType ?? null,
+          });
+          return glyph ? (
+            <span aria-hidden="true" className="shrink-0 font-mono text-[10px] text-text-muted">
+              {glyph.glyph}
+            </span>
+          ) : null;
+        })()}
         <span className="text-[10px] text-text-muted truncate font-mono flex-1 min-w-0">
           {truncate(node.label, node.isCollapsed ? 36 : 28)}
         </span>
