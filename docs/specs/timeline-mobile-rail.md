@@ -2,12 +2,12 @@
 title: Mobile Timeline Rail
 status: draft
 owner: builder
-last_verified: 2026-09-15
-summary: Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, with day ticks, collapsed chains, and an attempt mark only where the outcome is not clean.
+last_verified: 2026-09-16
+summary: Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 domain: surfaces
-surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/lib/attempt-strip.ts, apps/web/src/components/SegmentStrip.tsx]
+surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx, apps/web/src/lib/attempt-strip.ts]
 related: [timeline-dependency-geometry, mission-structure-view, mission-task-lifecycle]
-keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile]
+keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge]
 supersedes: []
 ---
 
@@ -45,7 +45,10 @@ per task.
 | 12 | Reference layouts | Thirteen ASCII 360px diagrams (§11). |
 | 13 | What is an attempt | **v2**: an attempt is a re-run of the parent's own deliverable after an adverse outcome on it. The discriminator is the three retry counter columns, not `taskClass`. Companion children — reviewer passes, drift diagnoses, continuations — are not attempts (§12). |
 | 14 | Disclosure | **v2**: the right column IS the disclosure control — one button, full row height, ≥44 CSS px wide, never nested inside the row's title link (§13). |
-| 15 | Migration | **v2**: AC-3 is superseded; AC-1/2/4–10 survive. Full table in §14. |
+| 15 | Navigation | **v3**: a tap on the rail leaves the page only from a row that stands for **exactly one task**. Every other tap is an in-place disclosure. The delegated task-sheet handler is scoped per row, not per chain unit (§13.3). |
+| 16 | Chain disclosure | **v3**: the `▣N` badge and the chain row's title are ONE `<button>` — the chain row has no link at all; the ordinal sub-rows are the navigators (§13.4). Collapsed `▣N`, expanded `▼N`. |
+| 17 | Chain right column | **v3**: names the **terminal** member's PR, not the head's — the title and the PR come from two different tasks (Rule D1-5). |
+| 18 | Migration | **v2**: AC-3 superseded. **v3**: AC-1 restated as AC-36, §11.1b/§11.12b redrawn, Rule D13-10 amended. Full tables in §14. |
 
 ### 0.1 Companion file vs amendment — justified
 
@@ -107,6 +110,59 @@ ink is spent only where the outcome is not clean.
 v1's structure is kept: one continuous rail, chains collapsed, day ticks, goal
 root, two lanes, zero new component files, 360px reference width, every edge
 class distinguishable in greyscale.
+
+### 0.3 v3 amendment — the whole chain unit is one navigation target
+
+v2 shipped and runs. §13's disclosure works: the right-column control is tappable,
+its state is visible, and it does not navigate. v3 is Finding 1 again, one row
+type over — and this time the cause is not the affordance's size.
+
+**Finding 4 — the chain row navigates, and the expand is the side effect.** On a
+360px device the collapsed chain row `▣3 {head title}` opens the **task sheet for
+the head task**. The expansion does happen — it is just invisible until the sheet
+is dismissed. v1's AC-1 named the behaviour ("tapping it expands to three ordinal
+sub-rows") and, exactly as with the retry stub, specified no affordance; the
+implementation supplied one, and something above it ate the tap.
+
+The mechanism is not the badge. The badge is already a `<button>` with
+`aria-expanded` and a 44px minimum (`CondensedTimeline.tsx:1194–1203`) — it is a
+sibling of the title link and it fires. The mechanism is one attribute two levels
+up: `RailNodeRow`'s root element carries `data-task-id={node.head.id}`
+(`CondensedTimeline.tsx:1185`), and `TaskPanelWrapper` (`TaskPanelWrapper.tsx:37–52`)
+installs a **delegated** click handler that runs `closest('[data-task-id]')` on
+every click inside the mission page, calls `preventDefault()`, and opens that
+task's sheet. On desktop that attribute scopes exactly one task's row
+(`CondensedTimeline.tsx:323–327`). On the rail it wraps the entire unit — the
+badge, every ordinal sub-row, every Lane-2 sibling, and the expanded attempt
+panel. So:
+
+- the badge toggles expansion **and** the bubbled click opens the head's sheet;
+- an ordinal sub-row's own `<Link href="/app/tasks/{member.id}">` is intercepted
+  and resolves to the **head's** id — tapping `2 BUILD` opens SPEC;
+- so does a Lane-2 sibling, and so does the attempt panel's text.
+
+§13's control survives all of this for exactly one reason: its `onClick` calls
+`stopPropagation` (`CondensedTimeline.tsx:1007`), so the delegated handler never
+sees it. Nothing else on the rail does — not the `▣N` badge (line 1196), not the
+fork glyph (line 1265). That is a contract v2 stated for one control and v3 makes
+general (§13.3).
+
+**Finding 5 — the collapsed chain names the wrong PR.** §1.3 already requires the
+terminal member's PR in the right column; the shipped row prints the head's,
+because `RailTaskLine` (`CondensedTimeline.tsx:1070`) takes a single task that
+drives the title, the link, and the PR at once. This was filed as a follow-up
+after the v2 verification pass and is folded in here as Rule D1-5 rather than left
+loose: it is the same defect as Finding 4 in a different slot — a row that stands
+for N tasks resolving every one of its questions to the head.
+
+The rule v3 writes down, which both findings violate:
+
+> **On the rail, a tap never leaves the page unless it lands on a row that stands
+> for exactly one task.** Every disclosure — chain expand, attempt detail, fork
+> glyph — is an in-place control obeying §13's contract.
+
+v1's structure and v2's disclosure contract are kept entire. v3 adds no glyph, no
+derivation and no field; it decides which element owns which tap.
 
 **What is inherited unchanged from `timeline-dependency-geometry.md`**: the
 six-bucket section priority order in §1 of that spec (`groupTimelineTasks` /
@@ -178,16 +234,49 @@ identically on tap.
 
 **Collapsed label**: `▣{N} {head title, truncated to 32 chars}` +
 `#{terminal PR} {merged|closed}` on the right column (§6). `N` is the chain's
-total task count (head + tail).
+total task count (head + tail) — `RailNode.count`
+(`condensed-timeline.ts:471`).
 
 **Expanded**: ordinal sub-rows `1 {typePrefix}`, `2 {typePrefix}`, … each
 carrying its own PR number/state and, if present, its outcome mark (§6.4) or
-reviewer confidence (§6). The ordinal label is the task's own `taskType`
-(already a field on `CondensedTimelineTask`), the same value
-`stripTaskTypePrefix` removes from the title — not a new derivation.
+reviewer confidence (§6). The ordinal label is derived by `ordinalLabel`
+(`CondensedTimeline.tsx:886`) from the task's own bracketed title prefix, falling
+back to the stripped title — the same value `stripTaskTypePrefix` removes, not a
+new derivation.
 
 A `standalone` terminal task (no chain partner) renders as a single filled
 node with no badge — unchanged from today's single-row case.
+
+**Rule D1-5 (v3 — the right column names the terminal PR, the title names the
+head)**: On a collapsed chain row (`count > 1`) the right column's PR number and
+lifecycle word come from the **last member of `members` that has a PR** — the
+terminal one — while the badge count and the title text come from `head`. These
+are two different tasks and the row MUST read them from two different sources.
+The rolled-up outcome mark (Rule D7-5) is computed across all members and is
+unaffected. Expanded, each ordinal sub-row shows its own member's PR, as it
+already does.
+
+This is a v1 gap, not a v2 regression: §14's v2 table lists §1.3 as surviving
+unchanged, and §11.12a/§11.1a both already draw `▣3 Ledger slice 2 … #2295
+merged` for a SPEC(#2270)→BUILD(#2287)→REVIEW(#2295) chain. The shipped row
+printed `#2270` because `RailTaskLine` (`CondensedTimeline.tsx:1070`) took one
+task and let it drive the title, the link and the PR together. The fix is to give
+the right column its own task source, decoupled from the title task (implemented
+as a prTask prop in PR #2447); it is stated here as a rule so the chain row's
+"one row, two tasks" nature is written down once rather than rediscovered per
+slot.
+
+**Rule D1-6 (v3 — collapsed vs expanded glyph)**: The badge renders `▣{N}` when
+collapsed and `▼{N}` when expanded. The distinction is carried by **character
+shape** — an outlined square versus a solid down-pointing triangle — and survives
+greyscale, per §3.4's discipline. Neither form is `⌃`/`⌄`: those are §6.4's
+attempt chevron, a different control on the same row (Rule D13-10), and the two
+MUST NOT share a glyph.
+
+**Rule D1-7 (v3 — a chain row is not a link)**: A rail row with `count > 1`
+contains **no** navigation target for a task. Its badge and its title are one
+disclosure control (§13.4) and its head is reachable as ordinal member 1. See
+§13.4 for why the title is part of the control rather than a link to the head.
 
 ---
 
@@ -369,7 +458,7 @@ instead, where §6.4's marks are distinguished by *character shape* (`⌃` / `!`
 **Rule D4-1**: The following are gated off (not called) on mobile — never
 replaced with an equivalent section-header pattern:
 
-- `WaveBandedDone` (`CondensedTimeline.tsx:683–832`) — the entire day-banded
+- `WaveBandedDone` (`CondensedTimeline.tsx:715–864`) — the entire day-banded
   render path, including its per-band `Collapse` footer button
   (lines 745–753) and the collapsed-band summary row (lines 754–770).
 - `deriveBandKey()` (`condensed-timeline.ts:360–394`) — the gap-clustering
@@ -444,7 +533,7 @@ distinction `GoalCriteriaState`'s own type comment enforces).
 **Rule D5-4 (no goal)**: When a mission has no `goalCriteria`, the rail simply
 ends after its last node — no root, no placeholder, no "no goal set" message.
 An absent gate is not a gap to fill; the existing desktop Summary view already
-renders nothing in this case (`CondensedTimeline.tsx:663–669`, the `!criteriaGate`
+renders nothing in this case (`CondensedTimeline.tsx:695`, the `!criteriaGate`
 branch), and the rail matches that precedent rather than inventing new empty-
 state copy.
 
@@ -454,7 +543,7 @@ state copy.
 
 **Rule D6-1**: The right column shows, per node: PR number (when present) and
 its terminal lifecycle word, reusing the existing `PR_STATUS` record
-(`CondensedTimeline.tsx:123–128`: `ci_running`/`ci_failed`/`conflict`/
+(`CondensedTimeline.tsx:155–160`: `ci_running`/`ci_failed`/`conflict`/
 `pr_open` → label + colour class) plus the `merged`/`closed — not merged`
 cases already handled inline in `PrStatusLine` (lines 140–161). **Note on
 naming**: the task brief calls these "the `git-*` roles" — no such token or
@@ -465,7 +554,7 @@ than inventing a `git-*` vocabulary that isn't there.
 
 **Rule D6-2**: Reviewer confidence (`note.title.match(/\(confidence
 ([\d.]+)\)/)` — the only existing confidence source, in
-`ApprovedVerdictChip`, `CondensedTimeline.tsx:213`) renders in the right
+`ApprovedVerdictChip`, `CondensedTimeline.tsx:245`) renders in the right
 column ONLY when confidence < **0.85** or the verdict is not `approve`
 (i.e., `reviewer_request_changes` / `reviewer_escalated`, both already
 distinct note types). This is a new threshold decision — no
@@ -542,7 +631,7 @@ round counts as **landed** unless one of these holds, in which case the row is
 - `reviewerRetryTask` is non-null, its `status` is `'completed'`, and its
   `prNumber` is null — the retry finished without ever attaching to a PR, which
   is the same evidence the desktop row already prints as the presence or absence
-  of "— pushed to #N" (`CondensedTimeline.tsx:407–412`).
+  of "— pushed to #N" (`CondensedTimeline.tsx:414–418`).
 
 Both inputs are already selected and threaded: `missionNotes.status` at
 `page.tsx:275`, the note map at `page.tsx:284–296`, `reviewerRetryMap` at
@@ -601,7 +690,7 @@ makes the disclosure control's hit box (§13) predictable at thumb reach.
 
 **Rule D6-13 (v2 — a row with no PR still gets a mark)**: `RailRightColumn`
 currently returns `null` when there is no PR word and no confidence
-(`CondensedTimeline.tsx:948`). A retry dispatched before `create_pr` ran leaves
+(`CondensedTimeline.tsx:983`). A retry dispatched before `create_pr` ran leaves
 the parent row with attempt history and no PR number; that row MUST still render
 its mark and chevron. The early return is therefore conditioned on all four
 signals being absent, not two.
@@ -676,7 +765,7 @@ visualization for the root, matching D5-3's "count is the signal, not a bar."
 
 **Rule D8-1**: `waiting on you` and `running` are the only two survivors of
 today's six section labels. Both keep the existing `SectionLabel` function
-(`CondensedTimeline.tsx:194–200`, already viewport-agnostic — no change
+(`CondensedTimeline.tsx:226–232`, already viewport-agnostic — no change
 needed) rendered as a small muted label immediately above the rail segment
 containing those nodes.
 
@@ -739,11 +828,11 @@ risk a hydration mismatch this codebase has no existing pattern for handling).
 |---|---|
 | Rail node (circle/ring/square glyphs, §7) | New `shape` prop (`'circle' \| 'square'`) and new glyph states (`ring`, `dashed-hollow`) on `SegmentStrip`'s existing glyph vocabulary (`SegmentGlyph`, `SegmentStrip.tsx:11–20`) — that module already owns the box-glyph state machine (`solid`/`half`/`ghost`/`notch`/`skipped`/`empty`); this is a variant, not a new module. |
 | Solid/dashed edge lines (§3) | New prop on `DependencyRail` distinguishing a "line" render mode from its current "chip" render mode — same component, same file, additive prop. **v2 removes the `'retry'` member of `RailEdgeKind`; the prop itself stays.** |
-| Outcome mark + chevron (§6.4) | Text spans inside the existing `RailRightColumn` (`CondensedTimeline.tsx:928`), which becomes the disclosure `<button>` (§13). No new file; the mark is characters, not a glyph component — deliberately, so it is legible at 10px where a 10px `SegmentGlyph` box is not. |
+| Outcome mark + chevron (§6.4) | Text spans inside the existing `RailRightColumn` (`CondensedTimeline.tsx:952`), which becomes the disclosure `<button>` (§13). No new file; the mark is characters, not a glyph component — deliberately, so it is legible at 10px where a 10px `SegmentGlyph` box is not. |
 | Attempt disclosure panel (§13) | Existing `AttemptStrip`, plus one new boolean prop (proposed name hideToggle) that suppresses its own internal summary button so the row's control is the single toggle. Nesting two toggles is what produced Finding 1. |
 | Day/`now` tick row (§4.2) | Inline `<div>` in the mobile render branch, directly analogous to the existing inline `<hr className="border-t border-border-default ...">` chain-boundary divider already used in `timeline-dependency-geometry.md` Rule DIV-1 and implemented ad hoc in `TaskList`/`ChainList` — not a component then, not one now. |
 | `waiting on you` / `running` labels (§8) | Existing `SectionLabel` function, unchanged. |
-| Chain collapse badge (`▣N`, §1.3) | New prop on `StageChip`'s adjacent muted-span pattern (the same `step N/M` slot `timeline-dependency-geometry.md §5` already defines as "StageChip-adjacent muted text span, NOT inside the StageChip itself") — this spec's badge occupies that same slot with different content, on terminal chains instead of blocked ones. |
+| Chain collapse badge (`▣N`/`▼N`, §1.3) | New prop on `StageChip`'s adjacent muted-span pattern (the same `step N/M` slot `timeline-dependency-geometry.md §5` already defines as "StageChip-adjacent muted text span, NOT inside the StageChip itself") — this spec's badge occupies that same slot with different content, on terminal chains instead of blocked ones. **v3: the badge and the row's title text become the children of one `<button>` inside `RailTaskLine` — a `lead`/`children` arrangement, not a new component (§13.4).** |
 | Fork glyph (`├╮ +N`, §2.2) | Additive prop on `DependencyRail`'s line-render mode (same file as the edge lines above). |
 | PR/confidence right column (§6) | Existing `PrStatusLine` and `ApprovedVerdictChip`, unchanged logic, new threshold constant (D6-2). |
 
@@ -779,8 +868,9 @@ part that must match exactly, the annotations are non-normative.
 
 Glyph key used below: `●` done, `◉` running (ring), `○` queued (hollow),
 `◯` waiting-on-you (amber ring), `◌` dashed-hollow (pathManifest-gated /
-STRANDED), `▣N` collapsed terminal chain badge, `▢` goal root, `├╮`/`├╯`
-fork open/close, `─`/`┄┄` day tick / now tick, `✗` retry-stub terminator.
+STRANDED), `▣N`/`▼N` collapsed / expanded terminal chain badge (Rule D1-6),
+`▢` goal root, `├╮`/`├╯` fork open/close, `─`/`┄┄` day tick / now tick,
+`✗` retry-stub terminator.
 
 ### 11.1 Linear chain in history (Rule D1-4, AC-1, AC-2)
 
@@ -795,16 +885,18 @@ fork open/close, `─`/`┄┄` day tick / now tick, `✗` retry-stub terminator
  ─  Fri 11
 ```
 
-Legend: `▣3` badge — plain text, no colour; `⌃` is the collapsed-state
-affordance (tap to expand, §1.3).
+Legend (amended in v3): `▣3` is the collapsed badge, and badge + title together
+are ONE `<button>` — the disclosure (§13.4). `⌃` in the right column is the
+separate §13 attempt control, present here because a member has attempt history.
+`#2295` is the **terminal** member's PR, not the head's (Rule D1-5).
 
-**(b) Expanded — same row, tapped open:**
+**(b) Expanded — badge tapped open (amended in v3):**
 
 ```
 360px ─────────────────────────────────────────────
  │
  ─  Sat 12
- ▣3 Ledger slice 2                  #2295 merged  ⌄
+ ▼3 Ledger slice 2                  #2295 merged
  ├─●  1 SPEC                              #2270
  ├─●  2 BUILD                              #2287
  ├─●  3 REVIEW  0.78                       #2295
@@ -815,7 +907,11 @@ affordance (tap to expand, §1.3).
 Legend: `●` fill is `DONE` per §7; the `├─` connector is the solid amber
 `dependsOn` rail line (§3.1) turned sideways to letter the ordinal sub-rows;
 `0.78` renders on REVIEW because it is below the 0.85 threshold (Rule D6-2) —
-contrast with AC-9, where a 0.94 confidence would print nothing.
+contrast with AC-9, where a 0.94 confidence would print nothing. v3 changes two
+things from v1's drawing: the badge is `▼3`, and the chain row's attempt chevron
+is gone — once the members are visible each owns its own history control
+(Rule D13-17). The ordinal titles ARE links; they are the only navigation targets
+in this unit (Rule D13-16).
 
 ### 11.2 Fan-out with pathManifest sibling (Rule D2-2, D3-2/D3-3, AC-4, AC-10)
 
@@ -1018,7 +1114,7 @@ carrying `reason`, `actor`, `status` and `prLink`. The summary line's arithmetic
 closes: total 2, CI ×1 + reviewer ×1 = 2, and no unnamed remainder (§12). The
 reviewer **pass** that produced the request-changes verdict is NOT in this list
 and NOT in the total — it already has its own surface as a verdict chip
-(`ApprovedVerdictChip` / the Changes Requested card, `CondensedTimeline.tsx:387–453`).
+(`ApprovedVerdictChip` / the Changes Requested card, `CondensedTimeline.tsx:395–465`).
 
 ### 11.11 Disclosure across a day boundary (Rule D13-6/D13-7, AC-19)
 
@@ -1039,7 +1135,7 @@ come from each node's bucketing timestamp (`RailNode`'s `ts` field) inside
 `buildRail`, which is server-derived and cannot be
 touched by client expansion state (Rule D13-6). The gutter stroke runs unbroken
 past the panel because `RailGutter`'s trailing segment is already `flex-1`
-(`CondensedTimeline.tsx:1001`). A `┄┄ now ·` tick below an expanded row behaves
+(`CondensedTimeline.tsx:1055`). A `┄┄ now ·` tick below an expanded row behaves
 identically — it is a sibling row, not an overlay.
 
 ### 11.12 A collapsed chain rolling up a member's outcome (Rule D7-5, AC-20)
@@ -1055,22 +1151,24 @@ on the chain row.
  ▣3 Ledger slice 2            #2295 merged  ! ⌃
 ```
 
-**(b) Expanded:**
+**(b) Expanded (amended in v3):**
 
 ```
 360px ─────────────────────────────────────────────
- ▣3 Ledger slice 2            #2295 merged  ! ⌄
+ ▼3 Ledger slice 2            #2295 merged  !
  ├─●  1 SPEC                              #2270
  ├─●  2 BUILD                  #2287 merged  ! ⌃
  ├─●  3 REVIEW  0.78                       #2295
 ```
 
-Legend: the chain badge's `⌄` and the member's `⌃` are two independent
-controls; the `▣3` badge toggles the ordinal sub-rows, and each row's own right
-column toggles that row's attempt panel (Rule D13-10). The chain row's `!` is
-the rolled-up highest-precedence outcome across members (Rule D7-5), so a reader
-who never expands still sees the worst thing in the chain. The retry is still
-not an ordinal member — the chain is `▣3`, not `▣4` (Rule D1-2).
+Legend: the `▣3`/`▼3` badge and each row's right column are independent controls
+(Rule D13-10) — the badge toggles the ordinal sub-rows, the right column toggles
+that row's attempt panel. The chain row's `!` is the rolled-up highest-precedence
+outcome across members (Rule D7-5) and stays put, so a reader who never expands
+still sees the worst thing in the chain. v3 removes the chain row's own `⌄`: once
+member 2 is on screen with its own `⌃`, a second control re-printing the same
+panel is duplicate chrome (Rule D13-17). The retry is still not an ordinal member
+— the chain is `▣3`, not `▣4` (Rule D1-2).
 
 ### 11.13 Rejections — what MUST NOT render (AC-21, AC-22, AC-23)
 
@@ -1103,6 +1201,166 @@ number. The mark and chevron still render (Rule D6-13):
 360px ─────────────────────────────────────────────
  ◉  BUILD: slice 4 backfill      running   ●○ ⌃
 ```
+
+### 11.14 Collapsed chain — the terminal PR (Rule D1-5, D1-7, AC-33, AC-34)
+
+```
+360px ─────────────────────────────────────────────
+ ─  Sat 12
+ ▣3 Ledger slice 2                  #2295 merged
+ ─  Fri 11
+```
+
+The chain is SPEC(#2270) → BUILD(#2287) → REVIEW(#2295), all merged, none with
+attempt history.
+
+Legend: the title is the **head's** (`Ledger slice 2`); `#2295 merged` is the
+**terminal** member's PR (Rule D1-5). `#2270` appears nowhere on this row. The
+badge and the title are one `<button>` running from the gutter to the right
+column — a hit region far wider than D13-3's 44px floor — and this row contains
+no `<a>` except the right column's `#2295` PR link, which is not a task link
+(Rule D1-7, D13-15).
+
+### 11.15 Expanded chain — three ordinals, member 2 carrying a mark (AC-36, AC-37, AC-41)
+
+```
+360px ─────────────────────────────────────────────
+ ─  Sat 12
+ ▼3 Ledger slice 2                #2295 merged  !
+ ├─●  1 SPEC                              #2270
+ ├─●  2 BUILD                  #2287 merged  ! ⌃
+ ├─●  3 REVIEW  0.78                       #2295
+ ─  Fri 11
+```
+
+Legend: `▣3` → `▼3` is the only collapsed/expanded indication on the badge
+(Rule D1-6), and it is `aria-expanded` on the same button. Member 2's right
+column carries its OWN mark and its OWN attempt control (§13, Rule D13-17); the
+chain row keeps the rolled-up `!` as static text and no longer offers a control
+of its own. Each ordinal title is a link to that member's task and carries that
+member's `data-task-id` — tapping `2 BUILD` opens BUILD, not SPEC
+(Rule D13-13, D13-16).
+
+### 11.16 Two disclosures open on one unit (Rule D13-10, AC-42)
+
+The chain is expanded AND member 2's attempt detail is open. Two controls, two
+independent open states, one unit.
+
+```
+360px ─────────────────────────────────────────────
+ ─  Sat 12
+ ▼3 Ledger slice 2                #2295 merged  !
+ ├─●  1 SPEC                              #2270
+ ├─●  2 BUILD                  #2287 merged  ! ⌄
+ │   │ ●● 2 attempts · reviewer ×1
+ │   │ ● Reviewer retry #1 of 3 · PR #2287
+ │   │   reviewer requested changes · Builder ·
+ │   │   completed                      #2287
+ ├─●  3 REVIEW  0.78                       #2295
+ ─  Fri 11
+```
+
+Legend: exactly two elements in this unit carry `aria-expanded="true"` — the
+chain badge and member 2's attempt toggle. The attempt panel renders inside
+member 2's own sub-row element, between member 2 and member 3, so member 3 moves
+down as a block and the ordinal numbering is untouched (Rule D13-7, extended to a
+sub-row). The panel's text sits inside no `data-task-id` other than member 2's,
+so a stray tap in it can only ever peek member 2 (Rule D13-13). Collapsing the
+attempt panel MUST NOT collapse the chain, and collapsing the chain hides member
+2's panel with member 2 without clearing member 2's open state (Rule D13-8,
+D13-19).
+
+### 11.17 An expanded chain and a day tick (Rule D4-4, D13-6, AC-45)
+
+```
+360px ─────────────────────────────────────────────
+ ─  Sat 12
+ ▼3 Ledger slice 2                #2295 merged  !
+ ├─●  1 SPEC                              #2270
+ ├─●  2 BUILD                  #2287 merged  ! ⌃
+ ├─●  3 REVIEW  0.78                       #2295
+ ─  Fri 11
+ ●  Wire the §4 delta gate           #2289 merged
+```
+
+Legend: SPEC landed Friday and REVIEW landed Saturday, and the unit still sits
+under ONE tick. A chain cannot span a tick: the unit buckets on a single
+timestamp, `ts: Math.max(...members.map(railTaskTs))`
+(`condensed-timeline.ts:587`), and ticks are emitted **between node rows** in
+`buildRail`'s row loop (`condensed-timeline.ts:669–687`), never between a node's
+own sub-rows. Expansion is client state that never re-enters `buildRail`, so no
+tick can move, gain a label, or appear (Rule D13-6). `─ Fri 11` below belongs to
+the next node, and it stays there whether the chain is open or shut.
+
+### 11.18 An expanded chain above the `now` tick and the goal root (AC-46)
+
+```
+360px ─────────────────────────────────────────────
+ ─  Sat 12
+ ▼2 Ledger slice 3                  #2301 merged
+ ├─●  1 SPEC                              #2298
+ ├─●  2 BUILD                              #2301
+ ┄┄ now · Sun 13
+ ▢  goal 2 / 3
+```
+
+Legend: the `now` tick lands at the end of the ordered node list because nothing
+is unstarted and nothing is dated today, and a goal root follows
+(`condensed-timeline.ts:648–654`). The unit's gutter stroke runs unbroken past
+the expanded sub-rows and down into the tick and the root: the node is not
+`isLast` while a goal root exists (`CondensedTimeline.tsx:1347`), so `RailGutter`
+renders its trailing `flex-1` segment (`CondensedTimeline.tsx:1055`), which
+stretches to whatever height the expansion produced. Expanding the last chain on
+the rail therefore pushes the tick and the root down as one block and changes
+neither. The root prints `goal {passed} / {total}`
+(`CondensedTimeline.tsx:1296–1298`); §11.5's longer `Goal: all PRs merged ·
+tests green` line is v1's mock text, not the shipped label.
+
+### 11.19 A 2-member chain still collapses (Rule D1-4, AC-2, AC-43)
+
+**(a) Collapsed — the default, independent of length:**
+
+```
+360px ─────────────────────────────────────────────
+ ▣2 Ledger slice 3                  #2301 merged
+```
+
+**(b) Expanded:**
+
+```
+360px ─────────────────────────────────────────────
+ ▼2 Ledger slice 3                  #2301 merged
+ ├─●  1 SPEC                              #2298
+ ├─●  2 BUILD                              #2301
+```
+
+Legend: nothing about the drawing changes at N=2 — same badge, same button, same
+ordinals, same terminal PR (`#2301`, BUILD's, not SPEC's `#2298`). A 2-member
+chain is where the collapse is least obviously worth it and where an
+implementation is most tempted to special-case; Rule D1-4 has no threshold and
+this layout is the proof obligation.
+
+### 11.20 Lane 2 / fork territory — the badge cannot appear there (AC-44)
+
+```
+360px ─────────────────────────────────────────────
+ ◉  BUILD: slice 3 dedupe index      running 12m
+ ├╮ +2
+ │ ○  REVIEW: slice 3 dedupe index          queued
+ │ ◌  Backfill assertions into tests  after ↑ paths
+ ├╯
+```
+
+Legend: the width question the task brief raises — "does the badge still fit at
+44px next to a fork arm?" — cannot arise, and that is a structural fact rather
+than a layout judgement. Lane 2 is populated only for a `fan-out` `ChainUnit`
+(`condensed-timeline.ts:561`), and a fan-out unit's `members` is `[head]` alone
+(`condensed-timeline.ts:554`), so its `count` is 1 and Rule D1-4's badge does not
+render. `count > 1` and a non-empty Lane 2 are mutually exclusive by
+construction. The controls that DO coexist here — the `├╮ +N` fork button and
+each sibling row's own §13 control — are subject to §13.3 and §13.4 in full: the
+fork button discloses in place, stops propagation, and never opens a sheet
+(Rule D13-14, AC-47).
 
 ---
 
@@ -1242,7 +1500,7 @@ are 3–5 characters at 10px.
 intersect the control's. The title `<Link>` stays `flex-1` and the control stays
 `shrink-0` with its own horizontal padding, so the boundary between them is a
 real gap rather than a shared pixel column. The PR-number `<a>` inside the right
-column (`CondensedTimeline.tsx:952–962`) is a third target in the same region:
+column (`CondensedTimeline.tsx:991–1001`) is a third target in the same region:
 it keeps its own `stopPropagation`, and it MUST NOT be nested inside the
 disclosure button — a link inside a button is not a valid target and taps
 resolve unpredictably.
@@ -1264,7 +1522,7 @@ those values is computed in `buildRail` on the server from each node's `ts` and 
 element (`data-rail-node`), after the row's first line and before its Lane-2
 block, so the rail's gutter stroke runs unbroken past it —
 `RailGutter`'s trailing segment is already `flex-1`
-(`CondensedTimeline.tsx:1001`) and stretches to the node's new height. A row that
+(`CondensedTimeline.tsx:1055`) and stretches to the node's new height. A row that
 grows by ~6 lines therefore pushes everything below it down as one block; the
 day tick that was below it stays below it, and the `now` tick likewise (§11.11).
 
@@ -1278,11 +1536,13 @@ hideToggle). `AttemptStrip` keeps its own `defaultExpanded` seam for fixtures.
 Two nested toggles — the row's and the strip's — is precisely the ambiguity that
 made v1's stub untappable in practice.
 
-**Rule D13-10 (the chain badge is a separate control)**: On a collapsed terminal
-chain the `▣N` badge and the right-column control are two independent buttons
-with independent state: `▣N` discloses the ordinal sub-rows, the right column
-discloses the attempt panel. Neither implies the other. Both obey D13-3's hit
-region.
+**Rule D13-10 (the chain badge is a separate control; amended in v3)**: On a
+terminal chain the `▣N`/`▼N` badge and the right-column control are two
+independent buttons with independent state: the badge discloses the ordinal
+sub-rows, the right column discloses the attempt panel. Neither implies the
+other. Both obey D13-3's hit region. v3 amends two things: the badge is no longer
+a bare glyph but the whole title region (§13.4), and while the chain is expanded
+the chain row's right-column control folds away (Rule D13-17).
 
 **Rule D13-11 (the panel is testable)**: The panel carries
 `data-testid="rail-attempt-disclosure"` and the control carries
@@ -1290,9 +1550,118 @@ region.
 (`CondensedTimeline.tsx:1112`) is removed along with the stub, and MUST NOT
 appear in the rendered tree.
 
+### 13.3 Navigation — what a tap does (v3)
+
+§13.1–§13.2 specify one control's hit box. This subsection specifies which
+element owns a tap in the first place, which is the question Finding 4 exposes:
+v2's control works because it stops the tap reaching an ancestor, and that was a
+property of one button rather than a rule.
+
+**Rule D13-12 (the one rule)**: A tap on the mobile rail changes `location` ONLY
+when it lands on a row that stands for **exactly one task**, and only on that
+row's own title. Every other element on the rail — chain badge, fork glyph,
+attempt control, tick, gutter, panel text — is an in-place control or inert
+chrome. There is no third category.
+
+**Rule D13-13 (`data-task-id` names exactly one task)**: The rail's task-sheet
+peek is not a link; it is the delegated handler in `TaskPanelWrapper`
+(`TaskPanelWrapper.tsx:37–52`), which resolves `closest('[data-task-id]')` from
+the click target, calls `preventDefault()`, and opens that task. Therefore
+`data-task-id` MUST be carried by the smallest element that contains exactly one
+task's title, exactly as the desktop row already does
+(`CondensedTimeline.tsx:323–327`).
+
+Specifically: `RailNodeRow`'s root element — the one carrying `data-rail-node`
+— MUST NOT carry `data-task-id` (it does today,
+`CondensedTimeline.tsx:1185`, which is the whole of Finding 4). The attribute
+moves onto each row inside the unit that stands for exactly one task: a
+standalone node's line, each ordinal sub-row, each Lane-2 sibling. A chain row
+with `count > 1` carries none, because there is no single task it could name
+(Rule D1-7).
+
+**Rule D13-14 (every rail control stops propagation)**: Every `<button>` on the
+rail MUST call `stopPropagation` in its `onClick`. This is not defensive
+styling — without it the delegated handler above runs on the bubbled React click
+and opens a sheet behind the control, which is precisely how the badge came to
+toggle expansion invisibly. The §13 attempt control already complies
+(`CondensedTimeline.tsx:1007`); the chain badge (line 1196) and the fork glyph
+(line 1265) do not, and MUST.
+
+**Rule D13-15 (the rejection, stated mechanically)**: A click dispatched anywhere
+inside a rail disclosure control's box MUST leave `location.pathname` unchanged
+AND MUST NOT add or change the `task` search parameter — the sheet's own address
+(`TaskPanelWrapper.tsx:21–26`). "Does not navigate" is checked against both,
+because the sheet does not change the path.
+
+**Rule D13-16 (the navigators)**: Ordinal sub-rows and Lane-2 sibling rows keep
+their title `<Link href="/app/tasks/{id}">` and gain that task's own
+`data-task-id`, plus the same `data-task-actionable` predicate the desktop row
+uses (`CondensedTimeline.tsx:325–327`) — so a completed task with no PR falls
+through to the link and opens its full page instead of an empty drawer. That
+predicate is reused, not re-derived: a rail row and a desktop row are answering
+the identical question.
+
+### 13.4 The chain disclosure control (v3)
+
+**Rule D13-17 (the control is the badge AND the title; and what the right column
+does while it is open)**: On a row with
+`count > 1` the badge and the title text are the children of ONE `<button>`,
+a sibling of the right column and never its ancestor or descendant. It carries
+`aria-expanded`, `aria-controls` naming the ordinal sub-row group's id, and
+`data-testid="rail-chain-toggle"`; the group carries that id and
+`data-testid="rail-chain-members"`. Everything else about it — `stopPropagation`,
+the ≥44px hit box, no intersecting targets, no accordion, expansion inert to
+layout — is §13.1/§13.2's contract unchanged, and is not restated here.
+
+While the chain is expanded, the chain row's right column renders its rolled-up
+outcome mark (Rule D7-5) as static text with **no chevron and no button**, and
+its own attempt panel is not rendered. The members are on screen and each owns
+its own history control; a second aggregate control re-printing exactly those
+panels is duplicate chrome on a 360px row, which is the thing §6.4 spends its
+entire argument avoiding. This is a deliberate carve-out from Rule D13-8's
+no-accordion rule, scoped to one unit: collapsing the chain again restores the
+chain row's control, and no *other* row is ever affected.
+
+**Why the title is part of the control and not a link to the head.** The row
+stands for N tasks and already mixes two of them — the title is the head's, the
+PR is the terminal member's (Rule D1-5). A link on it would have to pick one, and
+the shipped implementation's pick is the defect this amendment exists to remove.
+The width budget settles the rest: at 360px the title is the row's only large
+target, so making the small badge the sole disclosure while the title navigates
+puts most of the tappable area on the behaviour Rule D13-12 forbids, and D13-4
+forbids resolving that by overlapping the two. Folding the title into the button
+makes the disclosure the row's dominant target — the honest answer, since a
+collapsed chain's one question is "what is in it?" The head is not lost: it is
+ordinal member 1, one tap away, and that tap goes to the head specifically rather
+than to whichever task the row happened to be built from.
+
+**Rule D13-18 (expansion state has exactly one writer)**: A chain row's
+expansion is component-local `useState` inside `RailNodeRow`
+(`CondensedTimeline.tsx:1154`). The chain toggle's own `onClick` is its ONLY
+writer. A `useEffect`, a `usePathname`/`useSearchParams` subscription, a
+task-sheet open or close path, and the re-render triggered by the `router.replace`
+that `TaskPanelWrapper` performs MUST NOT write it. `expandedChainIds` and
+`disclosedTaskIds` (`CondensedTimeline.tsx:1131–1138`) seed the INITIAL value
+through the `useState` initializer and are a fixture seam only; they are not
+writers, and they MUST NOT be promoted to a controlled prop, because that would
+route expansion through a re-render the sheet can trigger.
+
+The consequence the reader cares about: opening a task sheet from an ordinal
+sub-row and closing it again leaves the chain expanded, with the same sub-rows
+and the same open attempt panels. Expansion must never be something you discover
+after dismissing something else.
+
+**Rule D13-19 (collapsing hides, it does not clear)**: Collapsing a chain hides
+its ordinal sub-rows and any attempt panels open inside them. Their open state is
+retained, so re-expanding restores exactly what was showing. Nothing in the unit
+resets another control's state — the two disclosures are independent in both
+directions (Rule D13-10).
+
 ---
 
-## 14. Migration note — what v2 supersedes
+## 14. Migration notes
+
+### 14.1 What v2 supersedes
 
 | v1 rule / AC | Status in v2 | Where |
 |---|---|---|
@@ -1314,6 +1683,34 @@ appear in the rendered tree.
 Nothing in §4 (ticks), §5 (goal root), §9 (desktop) or §10.1 (CSS branching) is
 touched by v2. The one production behaviour v2 removes that v1 shipped is the
 Lane-2 retry stub and everything that fed it.
+
+### 14.2 What v3 supersedes
+
+v3 removes no rule outright. It settles questions v1 and v2 left to the
+implementation, so the entries below are amendments and restatements rather than
+deletions.
+
+| v1 / v2 rule or AC | Status in v3 | Where |
+|---|---|---|
+| Rule D1-1 … D1-4 | survive unchanged | §1 |
+| §1.3 "Collapsed label" prose | **promoted to Rule D1-5** — the PR is the terminal member's, the title is the head's; ends the open follow-up rather than leaving it a separate item | §1.3 |
+| §1.3 badge glyph (unstated) | **new Rule D1-6** — `▣N` collapsed, `▼N` expanded | §1.3 |
+| §1.3 "expand on tap" (affordance unstated) | **new Rule D1-7 + §13.4** — the badge and the title are one `<button>`; the chain row has no task link | §1.3, §13.4 |
+| Rule D2-*, D3-*, D4-*, D5-*, D6-*, D7-*, D8-*, D10-*, D12-* | survive unchanged | §2–§12 |
+| Rule D13-1 … D13-9 | survive unchanged — v3 cites this contract, it does not restate it | §13.1, §13.2 |
+| **Rule D13-10** | **amended** — the badge is the whole title region, and the chain row's right-column control folds away while the chain is open | §13.4 |
+| Rule D13-11 | survives; v3 adds `rail-chain-toggle` / `rail-chain-members` alongside it | §13.4 |
+| **AC-1** | **restated as AC-36** — "tapping it expands" named no control; AC-36 names the control, the glyph change, the `aria-controls` target, and the no-cross-talk requirement. AC-1's structural half (three tasks render as one row) survives and is unchanged. | below |
+| AC-2 | survives unchanged; AC-43 adds the glyph assertion at N=2 | below |
+| **§11.1(b)** | **redrawn** — `▼3`, and the chain row's attempt chevron removed | §11.1 |
+| **§11.12(b)** | **redrawn** — same two changes; the rolled-up `!` stays | §11.12 |
+| §11.1(a), §11.12(a) | survive; legends amended to name the new control boundaries | §11.1, §11.12 |
+| §11.5 goal-root label text | **noted as v1 mock text**, not a contract — the shipped root prints `goal {passed} / {total}` | §11.18 |
+| AC-3 … AC-32 | survive unchanged | below |
+
+The one production behaviour v3 removes that v2 shipped: the `data-task-id`
+attribute on `RailNodeRow`'s wrapper, and with it the delegated task-sheet peek
+that fired for every tap anywhere inside a chain unit.
 
 ---
 
@@ -1342,16 +1739,30 @@ Lane-2 retry stub and everything that fed it.
 - Every interactive control on the rail has a hit box of at least 44 CSS px
   wide by the full height of its row, and no two controls' boxes intersect
   (Rule D13-3/D13-4).
+- A tap on the rail changes `location` only from a row that stands for exactly
+  one task, and only on that row's own title (Rule D13-12).
+- No element carrying `data-task-id` contains a row that stands for a different
+  task; a row with `count > 1` carries none (Rule D13-13).
+- Every `<button>` on the rail stops its click propagating, so the delegated
+  task-sheet handler can never fire behind a control (Rule D13-14).
+- A tap inside any rail disclosure control leaves `location.pathname` unchanged
+  and the `task` search parameter untouched (Rule D13-15).
+- A chain row's expansion state is written only by its own toggle, and survives
+  opening and closing a task sheet (Rule D13-18).
+- `count > 1` and a non-empty Lane 2 never hold on the same node — a fan-out
+  unit's `members` is its head alone (§11.20).
 
 ---
 
 ## Acceptance criteria
 
-**AC-1**: GIVEN a mission where SPEC(#2270)→BUILD(#2287)→REVIEW(#2295) are all
-`completed` and merged, WHEN the Timeline renders at a viewport < 768px, THEN
-these three tasks render as ONE collapsed rail row (`▣3 {head title}`) rather
-than three separate rows, and tapping it expands to three ordinal sub-rows
-labelled `1 SPEC`, `2 BUILD`, `3 REVIEW`.
+**AC-1 (restated in v3 as AC-36)**: GIVEN a mission where
+SPEC(#2270)→BUILD(#2287)→REVIEW(#2295) are all `completed` and merged, WHEN the
+Timeline renders at a viewport < 768px, THEN these three tasks render as ONE
+collapsed rail row (`▣3 {head title}`) rather than three separate rows, and
+activating the chain toggle expands to three ordinal sub-rows labelled `1 SPEC`,
+`2 BUILD`, `3 REVIEW`. ("Tapping it" named no control; AC-36 names the control
+and what activating it must and must not do.)
 
 **AC-2**: GIVEN the same chain but with only 2 tasks (SPEC→BUILD, no REVIEW),
 WHEN rendered on mobile, THEN it STILL collapses by default (Rule D1-4) —
@@ -1511,6 +1922,84 @@ total counts both; the rail MUST NOT collapse the lineage to the latest cycle
 (Rule D12-2; the dots are a ledger, and dropping older cycles would reintroduce
 Finding 2's undercount from the other direction).
 
+### v3 acceptance criteria
+
+**AC-33**: GIVEN a collapsed terminal chain SPEC(#2270)→BUILD(#2287)→REVIEW(#2295),
+WHEN its rail row renders, THEN its right column contains `#2295` and the string
+`#2270` appears nowhere in the row, while the title text is the head's
+(Rule D1-5, §11.14).
+
+**AC-34 (rejection)**: GIVEN a rail row with `count > 1`, WHEN its first line's
+subtree is inspected, THEN it contains no `<a>` whose `href` starts with
+`/app/tasks/`, and it carries no `data-task-id` attribute (Rule D1-7, D13-13).
+
+**AC-35 (rejection)**: GIVEN a collapsed chain row, WHEN a click is dispatched
+anywhere inside the chain toggle's bounding box, THEN `location.pathname` is
+unchanged, the `task` search parameter is unchanged, and no task sheet mounts
+(Rule D13-14, D13-15).
+
+**AC-36**: GIVEN a collapsed chain row of 3 tasks, WHEN its chain toggle is
+activated, THEN the toggle's `aria-expanded` becomes `true`, its badge text
+changes from `▣3` to `▼3`, an element with `data-testid="rail-chain-members"`
+whose `id` equals the toggle's `aria-controls` appears containing three ordinal
+sub-rows, and no other chain row's `aria-expanded` changes
+(Rule D1-6, D13-17, §11.15).
+
+**AC-37**: GIVEN an expanded chain of 3, WHEN ordinal sub-row 2 is activated,
+THEN the task that opens is member 2's id — not the head's (Rule D13-13, D13-16).
+
+**AC-38 (rejection)**: GIVEN any rail node, WHEN the rendered tree is inspected,
+THEN the element carrying `data-rail-node` carries no `data-task-id`, and no
+element carrying `data-task-id` contains a descendant row belonging to a
+different task (Rule D13-13).
+
+**AC-39**: GIVEN an expanded chain, WHEN a task sheet is opened from one of its
+ordinal sub-rows and then closed, THEN the chain toggle's `aria-expanded` is
+still `true` and the same ordinal sub-rows are still rendered (Rule D13-18).
+
+**AC-40 (rejection)**: GIVEN `CondensedTimeline.tsx`, WHEN every writer of a
+chain row's expansion state is enumerated, THEN the chain toggle's own `onClick`
+is the only one — no `useEffect`, no `usePathname`/`useSearchParams`
+subscription, and no task-sheet open or close path calls its setter; and
+`expandedChainIds` is read only by a `useState` initializer (Rule D13-18).
+
+**AC-41**: GIVEN an expanded chain whose member 2 has attempt history and an `!`
+outcome, WHEN the unit renders, THEN member 2's right column contains `!` and a
+control with `data-testid="rail-attempt-toggle"`, AND the chain row's right
+column contains the rolled-up `!` and no element with `aria-expanded` other than
+the chain toggle itself (Rule D7-5, D13-17, §11.15).
+
+**AC-42**: GIVEN an expanded chain of 3 whose member 2's attempt panel is also
+open, WHEN the unit renders, THEN exactly two elements inside the unit carry
+`aria-expanded="true"` — the chain toggle and member 2's attempt toggle — and
+member 2's `data-testid="rail-attempt-disclosure"` panel renders after member 2's
+row and before member 3's row (Rule D13-10, §11.16).
+
+**AC-43**: GIVEN a terminal chain of exactly 2 tasks, WHEN it renders, THEN it
+renders collapsed with a `▣2` badge and a chain toggle, exactly as a 3-task chain
+does (Rule D1-4, D1-6, §11.19).
+
+**AC-44 (rejection)**: GIVEN a `ChainUnit` whose `shape` is `fan-out`, WHEN its
+rail node renders, THEN its `count` is 1, no `▣N`/`▼N` badge renders, and no
+element with `data-testid="rail-chain-toggle"` exists on that node — so the badge
+never competes with the fork arm for Lane-2 width (§11.20).
+
+**AC-45**: GIVEN a terminal chain whose members' bucketing timestamps fall on two
+different calendar days, WHEN the chain is expanded, THEN no tick row renders
+between any two of its ordinal sub-rows, and the tick above the unit has the same
+position and label it had while the chain was collapsed
+(Rule D4-4, D13-6, §11.17).
+
+**AC-46**: GIVEN a mission with `goalCriteria` set whose last rail node is a
+terminal chain, WHEN that chain is expanded, THEN the `now` tick and the goal
+root render after the unit's last ordinal sub-row in document order, the node's
+gutter renders its trailing rail segment, and neither the tick's label nor the
+root's pass count changes (Rule D13-6, §11.18).
+
+**AC-47 (rejection)**: GIVEN a fan-out node with hidden siblings, WHEN its
+`├╮ +N` fork button is clicked, THEN `location.pathname` and the `task` search
+parameter are unchanged and no task sheet mounts (Rule D13-14, §11.20).
+
 ---
 
 ## Code surface
@@ -1525,8 +2014,19 @@ Finding 2's undercount from the other direction).
   `TimelineView`, `ChainBlock`, `ChainList`, new mobile render branch gated by
   `md:hidden` / `hidden md:block` (§10.1); `WaveBandedDone`, `deriveBandKey`
   unreachable from that branch only (§4); **v2 rewrites `RailRightColumn`
-  (line 928) into the disclosure control and deletes the retry-stub block
-  (lines 1104–1120)**
+  (line 952) into the disclosure control and deletes the retry-stub block**;
+  **v3 rewrites `RailNodeRow` (line 1127) — `data-task-id` leaves its wrapper
+  (line 1185, Rule D13-13), the `▣N` badge (lines 1194–1203) becomes the
+  badge-plus-title toggle (Rule D13-17), and the badge and fork-glyph
+  (line 1265) clicks gain `stopPropagation` (Rule D13-14)** — and gives
+  `RailTaskLine` (line 1070) a PR source distinct from its title task
+  (Rule D1-5)
+- `apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx` —
+  `TaskPanelWrapper`, its delegated `[data-task-id]` click handler
+  (lines 37–52) and the `task` search parameter the sheet addresses itself with
+  (lines 21–34). **Unchanged by v3** — the rail conforms to it; the peek is a
+  page-wide contract and narrowing it for one surface would break the desktop
+  rows and `HeartbeatTimeline` that already rely on it.
 - `apps/web/src/lib/attempt-strip.ts` — `buildAttemptStrips`, `attemptKind`,
   `ATTEMPT_KINDS`, `summarise`, `AttemptRow` — **v2's attempt filter (§12) and
   the iteration/maximum fields (Rule D6-9) both land here**. `attemptKind`
@@ -1597,3 +2097,12 @@ Finding 2's undercount from the other direction).
 - The desktop `AttemptStrip` summary line — unchanged. v2 removes attempt prose
   from the **rail**, not from the desktop task row, where a wider viewport makes
   `2 attempts · CI ×1 · reviewer ×1` affordable at all times (§9).
+- **The task sheet itself** — `TaskPanel` and the `TaskPanelWrapper` delegation
+  model are read as given by v3. The amendment changes which element the rail
+  offers to that handler, never what the handler does or what the sheet renders.
+- **Any change to `groupChainUnits()` or `ChainUnit` derivation** — v3 is a
+  question of which element owns a tap. `identifyChains`, `buildRail` and every
+  value on `RailNode` are unchanged, and `buildRail` stays pure: chain expansion
+  is component state that never re-enters it (Rule D13-6, D13-18).
+- **The desktop delegated peek** — `CondensedTimeline.tsx:323–327` is the
+  precedent v3 conforms the rail to, not a target for change.
