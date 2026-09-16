@@ -11,13 +11,14 @@ import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
 import { deriveBandKey, buildRail } from '@/lib/condensed-timeline';
-import type { ChainUnit, RailGoal, RailNode } from '@/lib/condensed-timeline';
+import type { ChainUnit, RailGoal, RailNode, RailPhase } from '@/lib/condensed-timeline';
 import { DependencyRail } from '@/components/DependencyRail';
-import { RailNodeGlyph, type RailGlyphState } from '@/components/SegmentStrip';
+import { RailNodeGlyph, SegmentStrip, type RailGlyphState } from '@/components/SegmentStrip';
 import { deriveStage } from '@/lib/stage';
 import { isStrandedTask } from '@/lib/structure-layout';
 import type { CondensedTask } from '@/lib/condensed-timeline';
 import type { MergePolicyTier } from '@buildd/shared';
+import { deriveWorkKind } from '@/lib/task-presentation';
 import type { ChainPositionResult, WorkKind } from '@/lib/task-presentation';
 import type { CondensedTaskWorker } from '@/lib/condensed-timeline';
 import type { MissionSegment, TaskType, CriteriaGatePresentation } from '@buildd/core/mission-helpers';
@@ -352,6 +353,9 @@ function TaskRow({
             title={task.taskType ? stripTaskTypePrefix(task.title) : task.title}
             taskStatus={task.status}
             workerStatus={latestWorker?.status ?? null}
+            taskType={task.taskType}
+            kind={task.kind}
+            roleSlug={task.roleSlug}
             chain={task.chain ?? null}
             missionBudgetExhausted={task.missionBudgetExhausted ?? false}
             taskCreatedAt={task.taskCreatedAt}
@@ -981,6 +985,64 @@ function RailRightColumn({ task }: { task: CondensedTimelineTask }) {
   );
 }
 
+/**
+ * The 18px work-kind glyph column (mission-legibility.md Rule R4-11/R4-18).
+ * Outside every interactive control — `aria-hidden`, never a descendant of the
+ * title link or the `▣N` button (Rule R4-12) — and reserved rail-wide, not
+ * per-row (Rule R4-19): a mission with no kinds at all renders no gutter.
+ */
+function WorkKindGlyph({
+  task,
+  reserve,
+}: {
+  task: { kind?: WorkKind | null; roleSlug?: string | null; taskType?: TaskType | null };
+  reserve: boolean;
+}) {
+  if (!reserve) return null;
+  const result = deriveWorkKind({
+    kind: task.kind ?? null,
+    roleSlug: task.roleSlug ?? null,
+    taskType: task.taskType ?? null,
+  });
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-flex w-[18px] shrink-0 justify-center font-mono text-[11px] text-text-secondary"
+    >
+      {result?.glyph ?? ''}
+    </span>
+  );
+}
+
+/**
+ * The 34px phase header row (mission-legibility.md §4.2). Inert — no link, no
+ * button, no `aria-expanded` (Rule R4-7) — a square node whose fill states the
+ * phase's own three-valued progress, never a `Stage`.
+ */
+function RailPhaseRow({ phase }: { phase: RailPhase }) {
+  const glyphState: RailGlyphState =
+    phase.state === 'complete' ? 'solid' : phase.state === 'live' ? 'dashed' : 'empty';
+  return (
+    <div className="flex h-[34px] items-center gap-2" data-testid="rail-phase-header">
+      <span className="flex w-4 shrink-0 justify-center">
+        <RailNodeGlyph state={glyphState} shape="square" title={`phase ${phase.index} — ${phase.state}`} />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-text-secondary">
+        {phase.index} · {phase.label}
+      </span>
+      <SegmentStrip
+        segments={phase.segments}
+        maxWidth={72}
+        height={4}
+        label={`Phase ${phase.index} progress: ${phase.filled} of ${phase.total} done`}
+      />
+      <span className="shrink-0 font-mono text-[10px] text-text-muted">
+        {phase.filled}/{phase.total}
+      </span>
+    </div>
+  );
+}
+
 /** The 22px day / `now` tick (Rule D4-3). No count, no collapse, no histogram. */
 function RailTickRow({ label, isNow }: { label: string; isNow: boolean }) {
   const stroke = isNow ? 'border-text-muted/60 border-dashed' : 'border-border-default';
@@ -1038,10 +1100,12 @@ function RailNodeRow({
   node,
   isLast,
   stranded,
+  reserveGlyphColumn,
 }: {
   node: RailNode<CondensedTimelineTask>;
   isLast: boolean;
   stranded: (id: string) => boolean;
+  reserveGlyphColumn: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [forkOpen, setForkOpen] = useState(false);
@@ -1066,6 +1130,7 @@ function RailNodeRow({
 
       <div className="min-w-0 flex-1 pb-1">
         <div className="flex min-h-[18px] items-baseline gap-1.5">
+          <WorkKindGlyph task={node.head} reserve={reserveGlyphColumn} />
           {collapsible && (
             <button
               type="button"
@@ -1080,12 +1145,14 @@ function RailNodeRow({
           <RailTaskLine task={node.head} />
         </div>
 
-        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). */}
+        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). Each
+            carries its OWN glyph, from its own task (Rule R4-15). */}
         {collapsible && expanded && (
           <div className="mt-0.5 space-y-0.5 border-l border-border-default pl-3">
             {node.members.map((member, i) => (
               <div key={member.id} className="flex items-baseline gap-1.5">
                 <span className="shrink-0 font-mono text-[10px] text-text-muted">{i + 1}</span>
+                <WorkKindGlyph task={member} reserve={reserveGlyphColumn} />
                 <RailTaskLine task={member} label={ordinalLabel(member)} />
               </div>
             ))}
@@ -1099,6 +1166,7 @@ function RailNodeRow({
               <div key={task.id} className="flex items-baseline gap-1.5">
                 <span className="shrink-0 font-mono text-[10px] text-text-muted" aria-hidden="true">├</span>
                 <RailNodeGlyph {...railGlyph(task, { stranded: stranded(task.id), soft })} shape="circle" />
+                <WorkKindGlyph task={task} reserve={reserveGlyphColumn} />
                 <RailTaskLine task={task} />
                 {soft && <span className="shrink-0 font-mono text-[10px] text-text-muted">after ↑ paths</span>}
               </div>
@@ -1190,10 +1258,22 @@ function MobileRail({
 
   const lastNodeIndex = model.rows.map(r => r.kind).lastIndexOf('node');
 
+  // Rule R4-19: the glyph column is reserved per RAIL, not per row — if any
+  // node anywhere in the sequence resolves a glyph, every row keeps the 18px
+  // slot so titles stay aligned; otherwise no row gets a gutter at all.
+  const reserveGlyphColumn = model.rows.some(row => {
+    if (row.kind !== 'node') return false;
+    const candidates = [row.head, ...row.members, ...row.siblings.map(s => s.task), ...row.hiddenSiblings];
+    return candidates.some(
+      t => deriveWorkKind({ kind: t.kind ?? null, roleSlug: t.roleSlug ?? null, taskType: t.taskType ?? null }) !== null,
+    );
+  });
+
   return (
     <div data-testid="mission-rail">
       {model.rows.map((row, i) => {
         if (row.kind === 'tick') return <RailTickRow key={row.id} label={row.label} isNow={row.now} />;
+        if (row.kind === 'phase') return <RailPhaseRow key={row.id} phase={row} />;
         if (row.kind === 'label') {
           return (
             <div key={row.id} className="pl-6 pt-2">
@@ -1207,6 +1287,7 @@ function MobileRail({
             node={row}
             isLast={i === lastNodeIndex && !model.goal}
             stranded={stranded}
+            reserveGlyphColumn={reserveGlyphColumn}
           />
         );
       })}
