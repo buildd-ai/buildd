@@ -33,29 +33,49 @@ function statusClass(status: string): string {
 export default function AttemptStrip({
   strip,
   defaultExpanded = false,
+  hideToggle = false,
 }: {
   strip: AttemptStripData | null;
   /** Test/fixture seam — the live row always starts collapsed. */
   defaultExpanded?: boolean;
+  /**
+   * Suppress this component's own summary `<button>` and render the strip
+   * always-open (timeline-mobile-rail.md Rule D13-9). The mobile rail uses the
+   * whole right column as the single disclosure control, so the summary line
+   * becomes plain text: two nested toggles is precisely the ambiguity that made
+   * v1's 24×15px retry stub untappable in practice.
+   */
+  hideToggle?: boolean;
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
+  const open = hideToggle || expanded;
 
   if (!strip || strip.total === 0) return null;
 
-  return (
-    <div className="pl-7 pb-0.5" data-testid="attempt-strip">
-      <button
-        type="button"
-        onClick={() => setExpanded(v => !v)}
-        aria-expanded={expanded}
-        className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-text-secondary transition-colors font-mono"
-        title="Attempts on this task"
-      >
-        <span className="tracking-[0.15em] text-text-secondary" aria-hidden="true">{strip.dots}</span>
-        <span>{strip.summary}</span>
-      </button>
+  const summaryLine = (
+    <>
+      <span className="tracking-[0.15em] text-text-secondary" aria-hidden="true">{strip.dots}</span>
+      <span>{strip.summary}</span>
+    </>
+  );
 
-      {expanded && (
+  return (
+    <div className={hideToggle ? 'pb-0.5' : 'pl-7 pb-0.5'} data-testid="attempt-strip">
+      {hideToggle ? (
+        <div className="flex items-center gap-1.5 text-[10px] text-text-muted font-mono">{summaryLine}</div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setExpanded(v => !v)}
+          aria-expanded={expanded}
+          className="flex items-center gap-1.5 text-[10px] text-text-muted hover:text-text-secondary transition-colors font-mono"
+          title="Attempts on this task"
+        >
+          {summaryLine}
+        </button>
+      )}
+
+      {open && (
         <div className="mt-1 space-y-1 border-l border-border-default pl-2.5">
           {strip.attempts.map(attempt => (
             <div key={attempt.id} className="flex items-baseline gap-2 flex-wrap text-[10px]">
