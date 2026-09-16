@@ -460,6 +460,27 @@ describe('CondensedTimeline — the disclosure (§13)', () => {
     expect(html).toContain('min-h-[24px]');
   });
 
+  it('gives the ▣N chain badge its own 24px row even with no attempt history (AC-1, Rule D13-10)', () => {
+    // A clean, fully-merged multi-task chain: headOutcome.hasAttempts is false,
+    // so the right-column disclosure is null and `roomy` must come from the
+    // badge alone, not from `disclosure`.
+    const chain = chainOf(makeTask('spec', { title: '[spec] Write the spec' }), [
+      makeTask('build', { title: '[build] Build it', dependsOn: ['spec'] }),
+      makeTask('review', { title: '[review] Review it', dependsOn: ['build'] }),
+    ]);
+    const html = mobileTree(
+      renderToStaticMarkup(<CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: [chain] }} />),
+    );
+
+    const badgeIndex = html.indexOf('▣3');
+    expect(badgeIndex).toBeGreaterThan(-1);
+    const rowStart = html.lastIndexOf('<div class="flex gap-1.5', badgeIndex);
+    const rowOpenTag = html.slice(rowStart, html.indexOf('>', rowStart));
+
+    expect(rowOpenTag).toContain('min-h-[24px]');
+    expect(rowOpenTag).not.toContain('min-h-[18px]');
+  });
+
   it('keeps the control a sibling of the title link, never nested inside it (Rule D13-2/D13-4)', () => {
     const html = railOf(disclosable);
     const linkStart = html.indexOf('href="/app/tasks/t"');

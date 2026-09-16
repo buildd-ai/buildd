@@ -1060,12 +1060,13 @@ function RailGutter({
 /**
  * One rail line: optional leading chrome, the title link, the right column.
  *
- * When the row carries a disclosure control it grows to a 24px minimum and
- * centre-aligns, so the control can be `self-stretch` and meet WCAG 2.2 §2.5.8
- * without changing the rhythm of rows that have no control (Rule D13-3). The
- * title `<Link>` stays `flex-1` and the control stays `shrink-0` with its own
- * padding, so the boundary between them is a real gap rather than a shared pixel
- * column (Rule D13-4).
+ * When the row carries a disclosure control (the right-column button, or the
+ * `▣N` chain badge passed via `lead`/`hasControl` — Rule D13-10) it grows to a
+ * 24px minimum and centre-aligns, so the control can be `self-stretch` and meet
+ * WCAG 2.2 §2.5.8 without changing the rhythm of rows that have no control
+ * (Rule D13-3). The title `<Link>` stays `flex-1` and the control stays
+ * `shrink-0` with its own padding, so the boundary between them is a real gap
+ * rather than a shared pixel column (Rule D13-4).
  */
 function RailTaskLine({
   task,
@@ -1075,6 +1076,7 @@ function RailTaskLine({
   disclosure,
   lead,
   trail,
+  hasControl,
 }: {
   task: CondensedTimelineTask;
   /** Source of the right column's PR number/word, when it differs from `task` — a
@@ -1087,8 +1089,16 @@ function RailTaskLine({
   lead?: React.ReactNode;
   /** Trailing text that is not the right column, e.g. `after ↑ paths`. */
   trail?: React.ReactNode;
+  /**
+   * Set when `lead` is itself an interactive control (the `▣N` chain badge),
+   * as opposed to inert chrome (an ordinal number, a `├` fork arm). Per Rule
+   * D13-10 that badge "obeys D13-3's hit region" independently of the
+   * right-column disclosure control, so its row needs the same 24px floor
+   * even when `disclosure` is null.
+   */
+  hasControl?: boolean;
 }) {
-  const roomy = disclosure != null;
+  const roomy = disclosure != null || hasControl;
   return (
     <div className={`flex gap-1.5 ${roomy ? 'min-h-[24px] items-center' : 'min-h-[18px] items-baseline'}`}>
       {lead}
@@ -1202,6 +1212,7 @@ function RailNodeRow({
           prTask={terminalPrTask}
           outcome={headOutcome}
           disclosure={headDisclosure}
+          hasControl={collapsible}
           lead={collapsible && (
             <button
               type="button"
