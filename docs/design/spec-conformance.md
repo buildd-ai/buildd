@@ -704,12 +704,28 @@ cards are unchanged.
   releases, none of them a worker's say-so: a `failed`/`cancelled` task releases
   the claim outright; a reopen releases it, because §9's reopen is a NEW
   occurrence with a fresh `first_seen_at` and the task that settled the previous
-  one has nothing to do with it; and once the task has `completed` with the rows
-  still open, **accept** comes back on the card as the one exit. That last case
-  is a docs PR that was never merged, or one that did not discharge the claim:
-  closure is still the checker's word so the card cannot say the finding is
-  settled, but without an action it would sit agent-handled forever and the
-  finding would end up parked by accident rather than by a decision.
+  one has nothing to do with it; and a claim held by a `completed` task whose PR
+  has merged AND been rechecked since (`last_checked_at` past the merge time)
+  and the rows are STILL open releases too — a re-run already ran and changed
+  nothing, so the fix demonstrably didn't discharge the claim.
+- **A `completed` task's CTA depends on what the card can actually observe
+  about its PR**, not on task status alone (a task can end its session before
+  its PR merges):
+  - **PR still open** — no re-run is pending, so the card cannot say one is
+    "awaiting"; **accept** is the last-resort exit, since a docs PR that never
+    merges would otherwise leave the card agent-handled forever with no action
+    reachable at all.
+  - **PR merged, not yet rechecked** — this is a bounded wait, not a stuck
+    one: the next checker run either resolves the row or (previous bullet)
+    finds it still open and releases the claim back to a live `code_ahead`
+    card. The card gets **no decision CTA** here — offering accept would let a
+    human launder a pending automatic re-run into an "accepted" row before the
+    checker ever ran, which is the same parking-by-accident failure this
+    section exists to prevent, just moved one step earlier.
+  - **PR lifecycle unknown** (no worker/PR row this card can read) — staleness
+    can never fire without a known merge time to compare against, so this
+    claim has no other backstop; **accept** stays as the last-resort exit,
+    same as the open-PR case.
 - **Closure does not move.** §9 is untouched: the rows resolve when a checker
   re-run resolves their assertions. Neither the doc-fix task, nor its PR, nor
   its worker's summary closes anything. The dispatched task is told so
