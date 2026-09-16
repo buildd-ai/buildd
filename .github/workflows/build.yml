@@ -156,10 +156,10 @@ jobs:
         # The self-test runs first: it plants a known violation outside the
         # allowlist and requires the scan to catch it, so a pattern or allowlist
         # change that empties the check's input set fails here instead of going
-        # green over nothing (see C30 in scripts/lint-model-ids.sh).
+        # green over nothing (see C30 in scripts/lint-model-ids.ts).
         run: |
-          bash scripts/lint-model-ids.sh --self-test
-          bash scripts/lint-model-ids.sh
+          bun run scripts/lint-model-ids.ts --self-test
+          bun run scripts/lint-model-ids.ts
 
       - name: Type check
         run: bun run type-check
