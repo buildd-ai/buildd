@@ -10,6 +10,33 @@ related: [timeline-mobile-rail, mission-structure-view, timeline-dependency-geom
 keywords: [phase, work kind, role slug, glyph, reviewer role, unassigned, swimlane, phase header, approve_plan, usage stats]
 verified_by: [apps/web/src/lib/approve-plan.test.ts, apps/web/src/lib/task-presentation.test.ts, apps/web/src/components/TaskCard.test.tsx, apps/web/src/lib/condensed-timeline-rail.test.ts, "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx", "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"]
 supersedes: []
+# Structural conformance only; passing does not certify every prose invariant.
+assertions:
+  - id: "work-kind-derivation"
+    type: "symbol"
+    name: "deriveWorkKind"
+    path: "apps/web/src/lib/task-presentation.ts"
+  - id: "rail-phase-type"
+    type: "symbol"
+    name: "RailPhase"
+    path: "apps/web/src/lib/condensed-timeline.ts"
+  - id: "rail-badge-reads-work-kind"
+    type: "symbol_reachable"
+    symbol: "deriveWorkKind"
+    entry: "apps/web/src/components/TaskCard.tsx"
+  - id: "structure-glyph-reads-work-kind"
+    type: "symbol_reachable"
+    symbol: "deriveWorkKind"
+    entry: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.tsx"
+  - id: "rail-phase-render-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.rail.test.tsx"
+  - id: "structure-glyph-render-tests"
+    type: "test_file"
+    path: "apps/web/src/app/app/(protected)/missions/[id]/StructureView.test.tsx"
+  - id: "rail-phase-model-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/condensed-timeline-rail.test.ts"
 ---
 
 # Mission Legibility
