@@ -7,7 +7,7 @@ summary: Below the md breakpoint, the mission Timeline MUST render as one contin
 domain: surfaces
 surfaces: [apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx, apps/web/src/lib/condensed-timeline.ts, apps/web/src/app/app/(protected)/missions/[id]/TaskPanelWrapper.tsx, apps/web/src/lib/attempt-strip.ts]
 related: [timeline-dependency-geometry, mission-structure-view, mission-task-lifecycle]
-keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge]
+keywords: [rail, git log --graph, day tick, now tick, goal root, chain collapse, pathmanifest edge, retry stub, attempt ledger, outcome mark, disclosure, touch target, mobile, task sheet, task peek, delegated click, chain badge, criteria evaluator, verification task, bookkeeping footer]
 supersedes: []
 ---
 
@@ -42,13 +42,14 @@ per task.
 | 9 | Section labels | Only "waiting on you" and "running" survive as muted labels (§8). |
 | 10 | New components | Zero. Every rail element is a prop/variant on `SegmentStrip`, `DependencyRail`, `StageChip`, `AttemptStrip`, or an inline `<div>`/`<hr>` matching the existing inline-divider pattern (§10). |
 | 11 | Desktop | Unchanged (§9). |
-| 12 | Reference layouts | Thirteen ASCII 360px diagrams (§11). |
+| 12 | Reference layouts | Twenty ASCII 360px diagrams, §11.1–§11.21 (§11.3 is superseded and kept as a marker). |
 | 13 | What is an attempt | **v2**: an attempt is a re-run of the parent's own deliverable after an adverse outcome on it. The discriminator is the three retry counter columns, not `taskClass`. Companion children — reviewer passes, drift diagnoses, continuations — are not attempts (§12). |
 | 14 | Disclosure | **v2**: the right column IS the disclosure control — one button, full row height, ≥44 CSS px wide, never nested inside the row's title link (§13). |
 | 15 | Navigation | **v3**: a tap on the rail leaves the page only from a row that stands for **exactly one task**. Every other tap is an in-place disclosure. The delegated task-sheet handler is scoped per row, not per chain unit (§13.3). |
 | 16 | Chain disclosure | **v3**: the `▣N` badge and the chain row's title are ONE `<button>` — the chain row has no link at all; the ordinal sub-rows are the navigators (§13.4). Collapsed `▣N`, expanded `▼N`. |
 | 17 | Chain right column | **v3**: names the **terminal** member's PR, not the head's — the title and the PR come from two different tasks (Rule D1-5). |
-| 18 | Migration | **v2**: AC-3 superseded. **v3**: AC-1 restated as AC-36, §11.1b/§11.12b redrawn, Rule D13-10 amended. Full tables in §14. |
+| 18 | Migration | **v2**: AC-3 superseded. **v3**: AC-1 restated as AC-36, §11.1b/§11.12b redrawn, Rule D13-10 amended. **v3.1**: nothing superseded; §14.3 maps every edge case the v2 brief enumerated to its rule, layout and AC. Full tables in §14. |
+| 19 | Goal root vs evaluators | **v3.1**: a criteria evaluator is `bookkeeping`, never a rail node, and cannot be attempt-bearing; the root reads stored verdicts only, so an in-flight verification is not distinguishable from an evaluated failure and MUST NOT be made so (§5, Rules D5-5..D5-7). |
 
 ### 0.1 Companion file vs amendment — justified
 
@@ -163,6 +164,32 @@ The rule v3 writes down, which both findings violate:
 
 v1's structure and v2's disclosure contract are kept entire. v3 adds no glyph, no
 derivation and no field; it decides which element owns which tap.
+
+### 0.4 v3.1 amendment — closing the v2 brief's edge-case list
+
+The v2 brief enumerated thirteen edge cases and asked for a layout wherever one
+changes the drawing. v2 (#2415) and v3 (#2449) answered twelve of them by rule,
+layout and criterion, and §14.3 now says where each one lives so the list can be
+checked mechanically rather than re-read. One was never answered: **the goal
+root when a criteria evaluator is itself an attempt-bearing task.** It was not
+skipped for being hard — the answer is structural, and nothing in v2 or v3 had
+written it down:
+
+- every criteria evaluator is `taskClass: 'bookkeeping'`, and the rail renders
+  `work` tasks only, so an evaluator is never a rail node;
+- every retry column is keyed on a PR number, and an evaluator has
+  `outputRequirement: 'none'` and never opens one, so under Rule D12-2 it cannot
+  be attempt-bearing at all;
+- the root reads the stored `GoalCriteriaState` and nothing else, so an
+  evaluator that is running, failed, or re-claimed changes the root only through
+  the verdict it eventually writes.
+
+§5 states this as Rules D5-5..D5-7, with the degraded rendering the data forces
+(an in-flight verification is not distinguishable from an evaluated failure on
+the root), §11.21 draws it, and AC-48..AC-50 reject the two things an
+implementer would otherwise be tempted to add — an evaluator node on the rail,
+and a `✗` for an evaluator that died. v3.1 adds no glyph, no derivation and no
+field.
 
 **What is inherited unchanged from `timeline-dependency-geometry.md`**: the
 six-bucket section priority order in §1 of that spec (`groupTimelineTasks` /
@@ -536,6 +563,58 @@ An absent gate is not a gap to fill; the existing desktop Summary view already
 renders nothing in this case (`CondensedTimeline.tsx:695`, the `!criteriaGate`
 branch), and the rail matches that precedent rather than inventing new empty-
 state copy.
+
+**Rule D5-5 (v3.1 — an evaluator is never a rail node)**: A criteria evaluator
+task — the `command` verifier `dispatchCommandCriterionTask` inserts
+(`mission-criteria-verify.ts:257–320`), the prose grader `dispatchProseEvalTask`
+inserts (`mission-criteria-prose.ts:358`), and the worker-eval grader
+`dispatchWorkerEvalTask` inserts (`mission-criteria-worker-eval.ts:300`) — is
+`taskClass: 'bookkeeping'` at every one of those sites, and the mission page's
+rail input is `taskClass === 'work'` only (`page.tsx:526`). An evaluator
+therefore MUST NOT appear as a node, an ordinal sub-row, or a Lane-2 sibling
+anywhere above the goal root, whatever its status. Where it IS visible is
+unchanged from desktop: `partitionBookkeeping` (`attempt-strip.ts:268`) sends it
+to the footer, and `MobileRail` renders `BookkeepingFooter` **after**
+`RailGoalRoot` (`CondensedTimeline.tsx:1366–1367`). The root is the rail's last
+node; the footer is not part of the rail.
+
+**Rule D5-6 (v3.1 — an evaluator cannot be attempt-bearing)**: Under Rule D12-2
+a row is an attempt only if one of `ciRetryPrNumber`, `reviewerRetryPrNumber` or
+`conflictRetryPrNumber` is set, and each of those is a PR number. An evaluator
+carries `outputRequirement: 'none'`, is instructed never to open a PR, and opts
+out of the mission auto-retry with `context.retryCount: 1`
+(`mission-criteria-verify.ts:279,317`). No mechanism that writes a retry column
+can fire on it, so `attempts.total` for an evaluator is 0 by construction. The
+one child an evaluator CAN acquire is a stalled-worker reclaim (§12.2 site 8),
+which Rule D12-6 already classes as a companion. The brief's premise — "a
+criteria evaluator that is itself an attempt-bearing task" — is therefore a
+shape the data cannot produce, and the rail MUST NOT design for it: no
+evaluator attempt strip, no mark, no chevron, on the root or anywhere else.
+
+**Rule D5-7 (v3.1 — the root's degraded rendering)**: The root's only inputs
+are `RailGoal.total` and `RailGoal.passed` (`condensed-timeline.ts:488`), built
+at `page.tsx:737–745` as `criteria.length` and, when the stored state has at
+least one criterion item, the count whose `verdict === 'pass'`. Every non-`pass`
+member of `CriterionVerdict` (`packages/shared/src/types.ts:1439` — `fail`,
+`UNVERIFIED`, `PENDING`, `NOT_EVALUATED`) counts as not passed. Consequences the
+rail MUST accept rather than fix:
+
+- A verification in flight (`PENDING`, evaluator `running`), a verifier that
+  finished with no command evidence (`UNVERIFIED`, written by
+  `handleCriteriaVerificationOutcome`, `mission-criteria-verify.ts:392–401`), and
+  a criterion whose command genuinely failed (`fail`) all render the same root:
+  the same hollow square, the same `{passed} / {total}`. The root does not
+  distinguish them and MUST NOT grow a spinner, a per-criterion glyph, or an
+  evaluator status word to do so — `deriveCriteriaGatePresentation` (Rule D5-2)
+  and the desktop gate banner own that reading.
+- `?/N` (Rule D5-3) fires only when the stored state carries no criterion items
+  at all; a state that has been evaluated once and is now being re-verified keeps
+  printing its last count, not `?`.
+- Solid fill (Rule D7-3) requires `passed >= total`; a root with one
+  `UNVERIFIED` criterion stays hollow even if the evaluator task itself reached
+  `completed`. That is correct: `completed` on an evaluator proves nothing about
+  the command (`mission-criteria-verify.ts:139–146`), and the root MUST read the
+  verdict, never the task status.
 
 ---
 
@@ -1362,6 +1441,48 @@ each sibling row's own §13 control — are subject to §13.3 and §13.4 in full
 fork button discloses in place, stops propagation, and never opens a sheet
 (Rule D13-14, AC-47).
 
+### 11.21 The goal root while a criterion is being verified (Rule D5-5..D5-7, AC-48, AC-49, AC-50)
+
+**(a) One criterion is being re-verified; its evaluator task is `running`:**
+
+```
+360px ─────────────────────────────────────────────
+ ─  Fri 11
+ ●  Wire the §4 delta gate           #2289 merged
+ ▢  goal 1 / 3
+ ──────── ▶ 2 orchestrator runs · last 4m ────────
+```
+
+Legend: the `Verify goal criterion:` task is running right now and appears
+nowhere above the root — it is `bookkeeping`, not `work` (Rule D5-5). The root
+prints the **stored** count: criterion 1 passed on the last evaluation,
+criterion 2 is `PENDING` behind the running verifier, criterion 3 is `fail`;
+`PENDING` and `fail` are both "not passed", so `1 / 3` (Rule D5-7). The
+`▶ 2 orchestrator runs` line is the existing `BookkeepingFooter`
+(`CondensedTimeline.tsx:573`), drawn below the root because it is not part of
+the rail; the evaluator is reachable there and only there.
+
+**(b) Rejection — the verifier died and was re-claimed; nothing on the rail
+changes:**
+
+```
+360px ─────────────────────────────────────────────
+ ─  Fri 11
+ ●  Wire the §4 delta gate           #2289 merged
+ ▢  goal 1 / 3
+ ──────── ▶ 3 orchestrator runs · last 1m ────────
+```
+
+Legend: the first evaluator `failed` before its command ran and the
+stalled-worker reclaim cloned it (§12.2 site 8). The clone carries no retry
+column, so it is a companion, not an attempt (Rule D12-6); the evaluator has
+`attempts.total === 0` (Rule D5-6). No `✗` renders anywhere — not on the root,
+not in the footer line, not on any node — and the root's count is unchanged
+because `handleCriteriaVerificationOutcome` left the criterion `UNVERIFIED`
+rather than `fail` (`mission-criteria-verify.ts:402–413`). The only visible
+change is the footer's run count, which is desktop-inherited chrome, not a rail
+signal.
+
 ---
 
 ## 12. What is an attempt (v2)
@@ -1712,6 +1833,40 @@ The one production behaviour v3 removes that v2 shipped: the `data-task-id`
 attribute on `RailNodeRow`'s wrapper, and with it the delegated task-sheet peek
 that fired for every tap anywhere inside a chain unit.
 
+### 14.3 v3.1 — where the v2 brief's enumerated edge cases live
+
+The v2 brief listed thirteen edge cases, "non-exhaustive — find the rest". This
+table is the mechanical check that every one has a rule, a drawing when the
+drawing changes, and a criterion. "Drawing unchanged" means the case renders
+with an existing layout's exact glyphs and no new one is owed.
+
+| # | Edge case (as briefed) | Rule | Layout | AC |
+|---|---|---|---|---|
+| 1 | >1 reviewer round (`retry #2 of 3`) | D6-5 state 3; D2-4 (the lane-cap/fork interaction no longer exists — retries left Lane 2) | §11.8 — drawing unchanged; the ledger gains one dot per round (`●●○`) | AC-14, AC-32 |
+| 2 | Attempts exhausted, `#3 of 3` with changes still requested | D6-5 state 1, D6-6, D7-4 | §11.9b | AC-16 |
+| 3 | CI retry + reviewer retry on one parent | D12-2, D12-3 | §11.10 | AC-17 |
+| 4 | Conflict retry (`conflictRetryPrNumber`) | D12-2 (§12.2 sites 6, 7) | §11.10 — drawing unchanged; the mark tiers are mechanism-blind, only the panel's summary word differs | AC-30 |
+| 5 | Retry whose parent is collapsed inside a terminal chain | D7-5 — the chain row AND the ordinal sub-row | §11.12 | AC-20 |
+| 6 | Retry on a chain head vs an interior member | D7-5 ("holds identically") | §11.12, §11.15 | AC-20, AC-41 |
+| 7 | Retry with no PR number | D6-13 | §11.13c | AC-23 |
+| 8 | Retry `queued` but never claimed | D6-11 — `◌` only for the budget wall; every other dormancy reason is not derivable and renders `○` | §11.8 legend | AC-31 |
+| 9 | Superseded reviewer cycle (same `reviewerRetryPrNumber`, new `reviewerRetryHeadSha`) | D12-2 — the lineage, never latest-only | — (the panel lists both rows; no rail glyph changes) | AC-32 |
+| 10 | Zero-attempt rows | D6-4 | §11.13a, §11.13b | AC-11, AC-22 |
+| 11 | Expanded row across a day tick | D13-6, D13-7 | §11.11, §11.17 | AC-19, AC-45 |
+| 12 | Expanded row + `now` tick | D13-6, D13-7 | §11.11 legend, §11.18 | AC-19, AC-46 |
+| 13 | Goal root when a criteria evaluator is attempt-bearing | **D5-5, D5-6, D5-7 (v3.1)** | **§11.21** | **AC-48, AC-49, AC-50** |
+
+Found while closing the list, and answered by the same rules:
+
+| # | Edge case | Rule | Layout | AC |
+|---|---|---|---|---|
+| 14 | An attempt whose parent is not a rendered node (the parent is `bookkeeping`, or is itself an attempt) | D5-5 for the evaluator case; in general `partitionBookkeeping` keeps such rows in the footer because `renderedTaskIds` does not contain the parent (`attempt-strip.ts:277`), and no rail node exists for the strip to attach to | §11.21b | AC-50 |
+| 15 | A companion (reviewer pass, drift diagnosis, continuation) as the ONLY child | D12-1, D12-2, D12-4 | §11.13a — drawing unchanged | AC-27, AC-28 |
+| 16 | The stalled-worker reclaim of a real attempt | D12-6 — a stated undercount, not a renderer guess | — | none: a write-site fix, out of scope |
+
+No v1, v2 or v3 rule, layout or criterion is amended by v3.1. Rows 13 and 14
+are additive.
+
 ---
 
 ## Invariants
@@ -1751,6 +1906,12 @@ that fired for every tap anywhere inside a chain unit.
   opening and closing a task sheet (Rule D13-18).
 - `count > 1` and a non-empty Lane 2 never hold on the same node — a fan-out
   unit's `members` is its head alone (§11.20).
+- A criteria evaluator task never renders as a rail node, and the goal root
+  reads `GoalCriteriaState` verdicts only — never an evaluator task's status or
+  attempt history (Rule D5-5..D5-7).
+- An attempt strip whose parent is not a rendered `work` node attaches to no
+  rail node and produces no mark, chevron or panel on the rail (Rule D5-5,
+  D5-6).
 
 ---
 
@@ -2000,6 +2161,30 @@ root's pass count changes (Rule D13-6, §11.18).
 `├╮ +N` fork button is clicked, THEN `location.pathname` and the `task` search
 parameter are unchanged and no task sheet mounts (Rule D13-14, §11.20).
 
+### v3.1 acceptance criteria
+
+**AC-48 (rejection)**: GIVEN a mission with `goalCriteria` set whose `command`
+criterion has a verification task with `taskClass === 'bookkeeping'` and
+`status === 'running'`, WHEN the Timeline renders on mobile, THEN no element
+carrying `data-rail-node` corresponds to that task's id, the element with
+`data-testid="rail-goal-root"` is the last rail element before the bookkeeping
+footer, and the evaluator's title appears only inside the footer
+(Rule D5-5, §11.21a).
+
+**AC-49**: GIVEN a mission with 3 criteria whose stored
+`goalCriteriaState.criteria` verdicts are `pass`, `PENDING`, `fail`, WHEN the
+goal root renders, THEN it reads `1 / 3`, its glyph is the hollow square, and
+the text `?` appears nowhere in it; AND GIVEN the same mission after the pending
+verifier lands `UNVERIFIED`, WHEN the root re-renders, THEN it still reads
+`1 / 3` (Rule D5-7).
+
+**AC-50 (rejection)**: GIVEN a verification task with `status === 'failed'` and
+a stalled-worker reclaim child with `taskClass === 'attempt'`, `parentTaskId`
+pointing at it, and no retry column set, WHEN the Timeline renders on mobile,
+THEN `✗` appears nowhere in the rendered rail, no element with
+`data-testid="rail-attempt-toggle"` exists for either task, and the goal root's
+count equals the count before the evaluator ran (Rule D5-6, D12-6, §11.21b).
+
 ---
 
 ## Code surface
@@ -2061,8 +2246,22 @@ parameter are unchanged and no task sheet mounts (Rule D13-14, §11.20).
   `AttemptStrip`, retained as the disclosure panel (Rule D13-9) and unchanged on
   desktop; **v2 adds one boolean prop that suppresses its internal summary
   button so the rail row owns the only toggle**
-- `packages/shared/src/types.ts` — `GoalCriterion`, `GoalCriteriaState` (§5,
+- `packages/shared/src/types.ts` — `GoalCriterion`, `GoalCriteriaState`,
+  `CriterionVerdict` (§5, read-only)
+- `apps/web/src/lib/mission-criteria-verify.ts` — `dispatchCommandCriterionTask`,
+  `handleCriteriaVerificationOutcome`, `CriteriaVerificationContext` — the
+  `command` evaluator's creation site and verdict writer (Rules D5-5..D5-7,
   read-only)
+- `apps/web/src/lib/mission-criteria-prose.ts` — `dispatchProseEvalTask`;
+  `apps/web/src/lib/mission-criteria-worker-eval.ts` — `dispatchWorkerEvalTask`
+  — the other two evaluator creation sites, both `taskClass: 'bookkeeping'`
+  (Rule D5-5, read-only)
+- `apps/web/src/lib/attempt-strip.ts` — `partitionBookkeeping` (Rule D5-5: a
+  child of an unrendered parent stays in the footer)
+- `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` —
+  `MobileRail` (line 1315), `RailGoalRoot` (line 1293), `BookkeepingFooter`
+  (line 573) — **read unchanged by v3.1**; the root-then-footer order at lines
+  1366–1367 is the behaviour Rule D5-5 binds
 
 ---
 
