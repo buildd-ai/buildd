@@ -97,7 +97,7 @@ export default async function TaskDetailPage({
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
       },
-      parentTask: { columns: { id: true, title: true, status: true } },
+      parentTask: { columns: { id: true, title: true, status: true, roleSlug: true } },
       subTasks: { columns: { id: true, title: true, status: true } },
       // Provenance (U6): who created this task and by what mechanism. The
       // creating worker has no page of its own, so we carry its task instead.
@@ -348,7 +348,16 @@ export default async function TaskDetailPage({
     });
 
     if (chainBase.length > 0) {
-      const chainIds = chainBase.map(t => t.id);
+      // If current task is a child, prepend the parent to the chain
+      let chainTasksToFetch = chainBase;
+      if (task.parentTaskId && task.parentTask) {
+        chainTasksToFetch = [
+          { id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug },
+          ...chainBase
+        ];
+      }
+
+      const chainIds = chainTasksToFetch.map(t => t.id);
 
       const chainWorkers = await db.query.workers.findMany({
         where: inArray(workers.taskId, chainIds),
@@ -374,7 +383,7 @@ export default async function TaskDetailPage({
         artsByWorker.get(a.workerId)!.push(a);
       }
 
-      planChain = chainBase.map(t => {
+      planChain = chainTasksToFetch.map(t => {
         const w = latestWorker.get(t.id) ?? null;
         return {
           ...t,
@@ -382,6 +391,11 @@ export default async function TaskDetailPage({
           artifacts: w ? (artsByWorker.get(w.id) ?? []) : [],
         };
       });
+
+      // Filter out chains that only contain the current task (self-loop)
+      if (planChain.length === 1 && planChain[0].id === id) {
+        planChain = [];
+      }
 
       const slugs = [...new Set(planChain.map(t => t.roleSlug).filter(Boolean))] as string[];
       if (slugs.length > 0) {

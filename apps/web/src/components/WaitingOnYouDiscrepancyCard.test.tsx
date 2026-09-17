@@ -123,7 +123,7 @@ describe('WaitingOnYouDiscrepancyCard', () => {
     expect(ctas(html)).toEqual(['Accept']);
   });
 
-  it('CTA set — doc fix shipped, PR merged: "awaiting the conformance re-run" is now actually true', () => {
+  it('CTA set — doc fix shipped, PR merged: no decision CTA, the re-run is a bounded wait not a stuck one', () => {
     const html = renderToStaticMarkup(
       <WaitingOnYouDiscrepancyCard
         item={item({
@@ -135,7 +135,11 @@ describe('WaitingOnYouDiscrepancyCard', () => {
       />,
     );
     expect(html).toContain('awaiting the conformance re-run');
-    expect(ctas(html)).toEqual(['Accept']);
+    // A known merge either resolves on the next checker run or, if it finds
+    // the row still open, releases the claim back to the live CTA set
+    // (isDocFixClaimStale) — so Accept must not be offered as a way to park
+    // it in between.
+    expect(ctas(html)).toEqual([]);
   });
 
   it('CTA set — doc fix shipped, PR still open: names the real blocker, never claims a re-run is pending', () => {

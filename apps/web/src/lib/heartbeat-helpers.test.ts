@@ -267,6 +267,19 @@ describe('detectMissionPhase', () => {
     expect(result.actions.some(a => a.includes('parentTaskId') || a.includes('originating task'))).toBe(true);
   });
 
+  it('reviewing phase tells the organizer to check the review verdict before escalating for approval', () => {
+    const result = detectMissionPhase(makePhaseData({
+      completedTasks: [{ roleSlug: 'builder', result: { prUrl: 'https://github.com/...' } }],
+      prCount: 1,
+    }));
+    expect(result.phase).toBe('reviewing');
+    // A terminal changes_requested verdict is a defect needing rework, not a
+    // human-approval bottleneck — the organizer must check get_pr_review before
+    // filing a "CI-green, awaiting approval" escalation task.
+    expect(result.actions.some(a => a.includes('get_pr_review'))).toBe(true);
+    expect(result.actions.some(a => a.includes('changes_requested'))).toBe(true);
+  });
+
   it('detects plan artifacts by key pattern', () => {
     const result = detectMissionPhase(makePhaseData({
       completedTasks: [{ roleSlug: null, result: {} }],

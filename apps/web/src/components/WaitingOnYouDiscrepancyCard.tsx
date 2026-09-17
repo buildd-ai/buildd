@@ -66,7 +66,12 @@ const SECONDARY_BTN =
  *     nothing has changed on the branch this checker reads, so nothing is
  *     "awaiting" yet.
  *   - PR merged, not yet rechecked — "awaiting the conformance re-run", which
- *     is now actually true rather than assumed.
+ *     is now actually true rather than assumed. This gets NO decision CTA:
+ *     the wait is bounded, not stuck. The next checker run either resolves
+ *     the row or (see the next bullet) finds it still open and releases the
+ *     claim. Offering Accept here would let a human launder a pending
+ *     automatic re-run into an "accepted" row before the checker ever ran —
+ *     exactly the pattern this card exists to prevent.
  *   - PR merged AND rechecked since (lib/action-queue.ts's isDocFixClaimStale
  *     compares the row's own last_checked_at against the merge time) and the
  *     row is STILL open — the fix demonstrably didn't close it. The claim
@@ -77,13 +82,16 @@ const SECONDARY_BTN =
  *     agent-handled — a re-run already ran and changed nothing, so citing it
  *     as "awaiting" would be false, and Accept alone would make it look like
  *     a judgment call when it's actually unfinished work.
- * In every other completed sub-state, Accept stays available as the one
- * last-resort exit — closure is still the checker's word, so the card cannot
- * say the finding is settled, but a docs PR that was never merged, or one
- * that did not actually discharge the claim, would otherwise leave this card
- * agent-handled forever with no action on it at all: the finding would be
- * parked by accident instead of by a decision. Accept is the action §8
- * allows on the row in any state, and it records a reason.
+ * In every other completed sub-state — PR still open, or a merge lifecycle
+ * that is simply unknown (isDocFixClaimStale can never fire without a known
+ * merge timestamp to compare against, so that claim would otherwise sit
+ * agent-handled forever) — Accept stays available as the one last-resort
+ * exit. Closure is still the checker's word, so the card cannot say the
+ * finding is settled, but a docs PR that was never merged, or one whose
+ * lifecycle this card cannot observe, would otherwise leave no action
+ * reachable at all: the finding would be parked by accident instead of by a
+ * decision. Accept is the action §8 allows on the row in any state, and it
+ * records a reason.
  *
  * All three mutations call the §13 REST routes that back the equivalent MCP
  * actions, so there is exactly one mutation path whether a human taps here or
@@ -215,6 +223,15 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
   // falls back to the existing "awaiting the conformance re-run" reading
   // rather than asserting something the server never confirmed.
   const docFixPrOpen = docFixShipped && item.docFixPrLifecycleStatus != null && item.docFixPrLifecycleStatus !== 'merged';
+  // A KNOWN merge is a bounded wait, not a stuck one: the next checker run
+  // either resolves the row or (isDocFixClaimStale, lib/action-queue.ts)
+  // finds it still open and releases the claim back to the live CTA set. So
+  // this substate gets no decision CTA at all — Accept here would let a human
+  // launder a pending automatic re-run into an "accepted" row before the
+  // checker ever ran. An UNKNOWN lifecycle has no such backstop (staleness
+  // requires a known merge timestamp to compare against) and keeps Accept as
+  // the last-resort exit below.
+  const docFixPrMerged = docFixShipped && item.docFixPrLifecycleStatus === 'merged';
   const accent = inFlight ? 'text-text-muted' : 'text-status-warning';
 
   return (
@@ -272,7 +289,7 @@ export function WaitingOnYouDiscrepancyCard({ item }: WaitingOnYouDiscrepancyCar
         )}
       </div>
 
-      {(!inFlight || docFixShipped) && mode === 'idle' && (
+      {(!inFlight || (docFixShipped && !docFixPrMerged)) && mode === 'idle' && (
         <div className={`flex items-center gap-2 flex-wrap${docFixShipped ? ' mt-2' : ''}`}>
           {!inFlight && direction === 'code_ahead' && (
             <button type="button" onClick={dispatchDocFix} disabled={busy} className={PRIMARY_BTN}>
