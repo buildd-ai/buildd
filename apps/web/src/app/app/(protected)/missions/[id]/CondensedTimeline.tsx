@@ -1063,15 +1063,25 @@ function RailGutter({
 }
 
 /**
- * One rail line: optional leading chrome, the title link, the right column.
+ * A chain row's disclosure control — the `▣N`/`▼N` badge and the title text as
+ * ONE button (Rule D13-17). `membersId` is what its `aria-controls` names.
+ */
+type RailChainToggle = { count: number; expanded: boolean; onToggle: () => void; membersId: string };
+
+/**
+ * One rail line: optional leading chrome, the title, the right column.
  *
- * When the row carries a disclosure control (the right-column button, or the
- * `▣N` chain badge passed via `lead`/`hasControl` — Rule D13-10) it grows to a
- * 24px minimum and centre-aligns, so the control can be `self-stretch` and meet
- * WCAG 2.2 §2.5.8 without changing the rhythm of rows that have no control
- * (Rule D13-3). The title `<Link>` stays `flex-1` and the control stays
- * `shrink-0` with its own padding, so the boundary between them is a real gap
- * rather than a shared pixel column (Rule D13-4).
+ * The title is a `<Link>` on a row that stands for exactly one task, and the
+ * inside of a `<button>` on a chain row that stands for N (Rule D13-12/D13-17).
+ * A chain row has no task link at all: it could only pick one of the N, and
+ * picking the head is the defect v3 exists to remove.
+ *
+ * When the row carries a control — the right-column disclosure, the chain
+ * toggle, or both — it grows to a 24px minimum and centre-aligns, so the
+ * control can be `self-stretch` and meet WCAG 2.2 §2.5.8 without changing the
+ * rhythm of rows that have no control (Rule D13-3). The title stays `flex-1`
+ * and the right column stays `shrink-0` with its own padding, so the boundary
+ * between them is a real gap rather than a shared pixel column (Rule D13-4).
  */
 function RailTaskLine({
   task,
@@ -1079,9 +1089,9 @@ function RailTaskLine({
   label,
   outcome,
   disclosure,
+  chain,
   lead,
   trail,
-  hasControl,
 }: {
   task: CondensedTimelineTask;
   /** Source of the right column's PR number/word, when it differs from `task` — a
@@ -1090,30 +1100,45 @@ function RailTaskLine({
   label?: string;
   outcome: RailOutcome;
   disclosure: RailDisclosure | null;
-  /** Leading chrome — the `▣N` badge, an ordinal number, a `├` fork arm. */
+  /** Set on a row with `count > 1`: badge + title become the disclosure (§13.4). */
+  chain?: RailChainToggle | null;
+  /** Leading chrome — an ordinal number, a `├` fork arm. Inert, never a control. */
   lead?: React.ReactNode;
   /** Trailing text that is not the right column, e.g. `after ↑ paths`. */
   trail?: React.ReactNode;
-  /**
-   * Set when `lead` is itself an interactive control (the `▣N` chain badge),
-   * as opposed to inert chrome (an ordinal number, a `├` fork arm). Per Rule
-   * D13-10 that badge "obeys D13-3's hit region" independently of the
-   * right-column disclosure control, so its row needs the same 24px floor
-   * even when `disclosure` is null.
-   */
-  hasControl?: boolean;
 }) {
-  const roomy = disclosure != null || hasControl;
+  const roomy = disclosure != null || chain != null;
+  const title = railTruncate(stripTaskTypePrefix(task.title));
   return (
     <div className={`flex gap-1.5 ${roomy ? 'min-h-[24px] items-center' : 'min-h-[18px] items-baseline'}`}>
-      {lead}
-      <Link
-        href={`/app/tasks/${task.id}`}
-        className="min-w-0 flex-1 truncate text-[12px] text-text-secondary hover:text-accent-text"
-      >
-        {label ? <span className="font-mono text-text-muted">{label} </span> : null}
-        {railTruncate(stripTaskTypePrefix(task.title))}
-      </Link>
+      {chain ? (
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); chain.onToggle(); }}
+          aria-expanded={chain.expanded}
+          aria-controls={chain.membersId}
+          data-testid="rail-chain-toggle"
+          title={`${chain.count} tasks in this chain`}
+          className="flex min-w-[44px] flex-1 items-center gap-1.5 self-stretch text-left hover:text-accent-text"
+        >
+          <span className="shrink-0 font-mono text-[10px] text-text-muted">
+            {`${chain.expanded ? '▼' : '▣'}${chain.count}`}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12px] text-text-secondary">{title}</span>
+          <span className="sr-only">{chain.expanded ? 'Hide' : 'Show'} the tasks in this chain</span>
+        </button>
+      ) : (
+        <>
+          {lead}
+          <Link
+            href={`/app/tasks/${task.id}`}
+            className="min-w-0 flex-1 truncate text-[12px] text-text-secondary hover:text-accent-text"
+          >
+            {label ? <span className="font-mono text-text-muted">{label} </span> : null}
+            {title}
+          </Link>
+        </>
+      )}
       {trail}
       <RailRightColumn task={task} prTask={prTask} outcome={outcome} disclosure={disclosure} />
     </div>
@@ -1141,6 +1166,33 @@ function RailAttemptPanel({ id, strips }: { id: string; strips: (AttemptStripDat
 
 /** A row with attempts to disclose gets a control; one with none gets no chrome. */
 const railHasAttempts = (task: CondensedTimelineTask) => (task.attempts?.total ?? 0) > 0;
+
+/**
+ * The attributes `TaskPanelWrapper`'s delegated handler reads, on the smallest
+ * element that stands for exactly one task (Rule D13-13/D13-16).
+ *
+ * The actionable predicate is `TaskRow`'s, reused rather than re-derived: a rail
+ * row and a desktop row are answering the identical question,
+ * and a completed task with no PR must fall through to its `<Link>` and open the
+ * full page instead of an empty drawer.
+ */
+const railTaskAttrs = (task: CondensedTimelineTask) => ({
+  'data-task-id': task.id,
+  'data-task-actionable':
+    task.status !== 'completed' || !!task.latestWorker?.prUrl ? 'true' : 'false',
+});
+
+/**
+ * The peek scope for one rail row: its line plus its own attempt panel, and
+ * nothing belonging to another task.
+ *
+ * `task` is null on a chain row, which stands for N tasks and therefore names
+ * none — there is no single id it could offer the delegated handler, so a tap
+ * inside it resolves to nothing and cannot open a sheet (Rule D1-7, D13-13).
+ */
+function RailRowScope({ task, children }: { task: CondensedTimelineTask | null; children: React.ReactNode }) {
+  return <div {...(task ? railTaskAttrs(task) : {})}>{children}</div>;
+}
 
 /** One Lane-1 rail node — a collapsed chain, or a single task. */
 function RailNodeRow({
@@ -1170,7 +1222,13 @@ function RailNodeRow({
     for (const t of laneTwoTasks) if (disclosedTaskIds.has(t.id)) seeded.add(`sib:${t.id}`);
     return seeded;
   });
-  const [expanded, setExpanded] = useState(() => expandedChainIds?.has(node.id) ?? false);
+  // Rule D13-18: the chain toggle's own onClick is the ONLY writer of this.
+  // Nothing here subscribes to the address or fires on mount, so the
+  // `router.replace` the task sheet performs re-renders the row without
+  // touching its expansion — opening and closing a sheet from an ordinal
+  // sub-row leaves the chain exactly as it was. `expandedChainIds` seeds the
+  // initial value and is a fixture seam only, never a controlled prop.
+  const [chainExpanded, setChainExpanded] = useState(() => expandedChainIds?.has(node.id) ?? false);
   const [forkOpen, setForkOpen] = useState(false);
 
   const toggleRow = (key: string) =>
@@ -1197,8 +1255,15 @@ function RailNodeRow({
   const memberOutcomes = node.members.map(railOutcome);
   const headOutcome = collapsible ? rollupRailOutcome(memberOutcomes) : (memberOutcomes[0] ?? railOutcome(node.head));
   const headKey = `chain:${node.id}`;
-  const headDisclosure = disclosureFor(headKey, headOutcome.hasAttempts);
+  // While the chain is open its members are on screen, each owning its own
+  // history control; a second aggregate control re-printing exactly those panels
+  // is duplicate chrome on a 360px row, so the chain row's own control folds
+  // away and its rolled-up mark stays as static text (Rule D13-17). Collapsing
+  // restores the control with whatever it had open (Rule D13-19).
+  const chainOpen = collapsible && chainExpanded;
+  const headDisclosure = chainOpen ? null : disclosureFor(headKey, headOutcome.hasAttempts);
   const headStrips = node.members.filter(railHasAttempts).map(m => m.attempts ?? null);
+  const membersId = `rail-chain-${node.id}`;
 
   // The collapsed row names the head's title but the terminal member's PR
   // (§1.3): the last member with a PR is the one the reader would follow to
@@ -1208,40 +1273,45 @@ function RailNodeRow({
     : node.head;
 
   return (
-    <div className="flex items-stretch gap-2" data-task-id={node.head.id} data-rail-node="">
+    // No `data-task-id` here (Rule D13-13): the delegated handler resolves
+    // `closest('[data-task-id]')`, so an attribute on the unit wrapper makes
+    // every tap inside it — badge, ordinal sub-row, Lane-2 sibling, panel text —
+    // peek the head. It belongs on the smallest element standing for one task.
+    <div className="flex items-stretch gap-2" data-rail-node="">
       <RailGutter edge={node.edge} glyph={glyph} continues={!isLast || hasLaneTwo} />
 
       <div className="min-w-0 flex-1 pb-1">
-        <RailTaskLine
-          task={node.head}
-          prTask={terminalPrTask}
-          outcome={headOutcome}
-          disclosure={headDisclosure}
-          hasControl={collapsible}
-          lead={collapsible && (
-            <button
-              type="button"
-              onClick={() => setExpanded(v => !v)}
-              aria-expanded={expanded}
-              className="flex min-w-[44px] shrink-0 items-center self-stretch font-mono text-[10px] text-text-muted hover:text-text-secondary"
-              title={`${node.count} tasks in this chain`}
-            >
-              ▣{node.count}
-            </button>
+        <RailRowScope task={collapsible ? null : node.head}>
+          <RailTaskLine
+            task={node.head}
+            prTask={terminalPrTask}
+            outcome={headOutcome}
+            disclosure={headDisclosure}
+            chain={collapsible ? {
+              count: node.count,
+              expanded: chainExpanded,
+              onToggle: () => setChainExpanded(v => !v),
+              membersId,
+            } : null}
+          />
+          {headDisclosure?.expanded && (
+            <RailAttemptPanel id={headDisclosure.panelId} strips={headStrips} />
           )}
-        />
-        {headDisclosure?.expanded && (
-          <RailAttemptPanel id={headDisclosure.panelId} strips={headStrips} />
-        )}
+        </RailRowScope>
 
-        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). */}
-        {collapsible && expanded && (
-          <div className="mt-0.5 space-y-0.5 border-l border-border-default pl-3">
+        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). They,
+            not the row above them, are this unit's navigation targets (D13-16). */}
+        {chainOpen && (
+          <div
+            id={membersId}
+            data-testid="rail-chain-members"
+            className="mt-0.5 space-y-0.5 border-l border-border-default pl-3"
+          >
             {node.members.map((member, i) => {
               const key = `member:${member.id}`;
               const disclosure = disclosureFor(key, railHasAttempts(member));
               return (
-                <div key={member.id}>
+                <RailRowScope key={member.id} task={member}>
                   <RailTaskLine
                     task={member}
                     label={ordinalLabel(member)}
@@ -1252,7 +1322,7 @@ function RailNodeRow({
                   {disclosure?.expanded && (
                     <RailAttemptPanel id={disclosure.panelId} strips={[member.attempts ?? null]} />
                   )}
-                </div>
+                </RailRowScope>
               );
             })}
           </div>
@@ -1267,7 +1337,7 @@ function RailNodeRow({
               const key = `sib:${task.id}`;
               const disclosure = disclosureFor(key, railHasAttempts(task));
               return (
-                <div key={task.id}>
+                <RailRowScope key={task.id} task={task}>
                   <RailTaskLine
                     task={task}
                     outcome={railOutcome(task)}
@@ -1283,14 +1353,18 @@ function RailNodeRow({
                   {disclosure?.expanded && (
                     <RailAttemptPanel id={disclosure.panelId} strips={[task.attempts ?? null]} />
                   )}
-                </div>
+                </RailRowScope>
               );
             })}
 
+            {/* The fork glyph discloses in place and never opens a sheet: without
+                stopPropagation the bubbled click reaches the delegated handler
+                (Rule D13-14). It sits outside every row scope, so there is no
+                task for that handler to resolve either. */}
             {node.forkHidden > 0 && (
               <button
                 type="button"
-                onClick={() => setForkOpen(v => !v)}
+                onClick={e => { e.stopPropagation(); setForkOpen(v => !v); }}
                 aria-expanded={forkOpen}
                 className="flex items-baseline gap-1.5 font-mono text-[10px] text-text-muted hover:text-text-secondary"
               >

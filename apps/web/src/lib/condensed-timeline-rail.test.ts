@@ -673,3 +673,74 @@ describe('rollupRailOutcome — one mark per collapsed chain (Rule D7-5)', () =>
     expect(rollupRailOutcome([]).state).toBe('clean');
   });
 });
+
+// ─── v3: what the model guarantees the render branch (§13.4, §11.17, §11.20) ──
+
+/**
+ * v3 is a question of which element owns a tap, so it adds nothing to the
+ * model. These are the three facts the render branch leans on — each one is a
+ * structural claim the spec makes about `buildRail`, not about the markup.
+ */
+describe('buildRail — the v3 structural guarantees', () => {
+  it('never puts a chain badge and a fork arm on the same node (AC-44, §11.20)', () => {
+    // A fan-out unit's members is `[head]` alone, so `count > 1` and a non-empty
+    // Lane 2 are mutually exclusive by construction — the badge can never have
+    // to share a 360px row with the fork arm.
+    const fanOut = unit(
+      rt('head'),
+      [rt('s1', { dependsOn: ['head'] }), rt('s2', { dependsOn: ['head'] }), rt('s3', { dependsOn: ['head'] })],
+      'fan-out',
+    );
+    const linear = unit(rt('spec'), [rt('build'), rt('review')], 'linear');
+    const model = buildRail(
+      { ...EMPTY_GROUPS, done: [fanOut, linear] },
+      { now: new Date('2026-09-12T12:00:00Z') },
+    );
+
+    for (const node of nodes<RT>(model.rows)) {
+      const laneTwo = node.siblings.length + node.forkHidden;
+      expect(node.count > 1 && laneTwo > 0).toBe(false);
+    }
+    expect(nodes<RT>(model.rows).map(n => n.count).sort()).toEqual([1, 3]);
+  });
+
+  it('buckets a chain that spans two calendar days onto one tick (AC-45, §11.17)', () => {
+    // SPEC landed Friday, REVIEW landed Saturday. The unit buckets on
+    // `max(members)`, and ticks are emitted between NODE rows — so no tick can
+    // ever fall between two ordinal sub-rows, expanded or not.
+    const friday = '2026-09-11T10:00:00.000Z';
+    const saturday = '2026-09-12T10:00:00.000Z';
+    const chain = unit(
+      rt('spec', { taskUpdatedAt: friday }),
+      [rt('build', { taskUpdatedAt: friday }), rt('review', { taskUpdatedAt: saturday })],
+      'linear',
+    );
+    const model = buildRail({ ...EMPTY_GROUPS, done: [chain] }, { now: new Date('2026-09-12T12:00:00Z') });
+
+    const [node] = nodes<RT>(model.rows);
+    expect(node.count).toBe(3);
+    expect(node.ts).toBe(new Date(saturday).getTime());
+    // One node, therefore at most one tick above it — never one per member.
+    expect(model.rows.filter(r => r.kind === 'tick')).toHaveLength(1);
+  });
+
+  it('takes no expansion input and is deterministic, so no tick can move (AC-45, AC-46, Rule D13-6)', () => {
+    const chain = unit(rt('spec'), [rt('build')], 'linear');
+    const later = unit(rt('next', { taskUpdatedAt: '2026-09-13T10:00:00.000Z' }));
+    const groups = { ...EMPTY_GROUPS, done: [chain, later] };
+    const opts = { now: new Date('2026-09-13T12:00:00Z'), goal: { total: 3, passed: 2 } };
+
+    const a = buildRail(groups, opts);
+    const b = buildRail(groups, opts);
+
+    expect(JSON.stringify(b.rows.map(r => [r.kind, r.id]))).toBe(
+      JSON.stringify(a.rows.map(r => [r.kind, r.id])),
+    );
+    // Chain expansion is component state: there is nowhere on the model for it
+    // to live, which is what makes Rule D13-6 structural rather than a discipline.
+    for (const node of nodes<RT>(a.rows)) {
+      expect('expanded' in node).toBe(false);
+    }
+    expect(a.goal).toEqual({ total: 3, passed: 2 });
+  });
+});
