@@ -620,4 +620,33 @@ describe('CondensedTimeline — chain rollup (Rule D7-5)', () => {
     expect(html).toContain('#2287');
     expect(html).toContain('#2295');
   });
+
+  it('keeps the head\'s reviewer-confidence flag on the collapsed row even though the PR badge names the terminal member (Rule D6-2)', () => {
+    // Head carries its own PR (#2287) and a sub-floor confidence note; the
+    // terminal member carries a different PR (#2295) and no note at all.
+    // Redirecting the PR badge to the terminal member must not also redirect
+    // which task's reviewerNote gets read — those are independent signals.
+    const headWithNote = makeTask('build', {
+      title: '[build] Ledger slice 2',
+      latestWorker: worker({ prNumber: 2287 }),
+      reviewerNote: {
+        type: 'reviewer_approved',
+        title: 'Approved (confidence 0.62)',
+        body: null,
+        status: 'answered',
+        supersededByPrNumber: null,
+      },
+    });
+    const noteChain = chainOf(headWithNote, [
+      makeTask('review', { title: '[review] Ledger slice 2', dependsOn: ['build'], latestWorker: worker({ prNumber: 2295 }) }),
+    ]);
+
+    const html = mobileTree(renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: [noteChain] }} />,
+    ));
+
+    expect(html).toContain('#2295');
+    expect(html).not.toContain('#2287');
+    expect(html).toContain('0.62');
+  });
 });
