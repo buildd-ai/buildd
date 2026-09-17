@@ -172,10 +172,20 @@ function Sparkline({ data, tier }: { data: number[]; tier: IntensityTier }) {
 // ─── Task type badge ──────────────────────────────────────────────────────────
 
 /**
- * A thin renderer over `deriveWorkKind` (docs/specs/mission-legibility.md Rule
- * K2-4) — no local re-derivation. Renders nothing (not even a spacer) when the
- * chain resolves to no glyph (Rule R4-18).
+ * Attempt-type indicators (retry/review/review-retry) take priority over
+ * work-kind glyphs, since they encode attempt lineage (a different semantic
+ * axis). Falls back to deriveWorkKind for other cases and for tasks where
+ * taskType is not set.
+ *
+ * The priority: attempt type → work kind (docs/specs/mission-legibility.md
+ * Rule K2-4). No local re-derivation of work kind.
  */
+const ATTEMPT_TYPE_BADGE: Record<string, { glyph: string; label: string }> = {
+  retry:          { glyph: '↻', label: 'CI Retry' },
+  review:         { glyph: '⬡', label: 'Review' },
+  'review-retry': { glyph: '↻', label: 'Review Retry' },
+};
+
 function TaskTypeBadge({
   kind,
   roleSlug,
@@ -185,6 +195,22 @@ function TaskTypeBadge({
   roleSlug?: string | null;
   taskType?: TaskType | null;
 }) {
+  // Attempt types (retry/review/review-retry) always render their own badge,
+  // independent of work kind. These are lineage indicators, not work-kind indicators.
+  if (taskType && taskType in ATTEMPT_TYPE_BADGE) {
+    const cfg = ATTEMPT_TYPE_BADGE[taskType];
+    return (
+      <span
+        className="font-mono text-[9px] shrink-0 select-none text-text-secondary"
+        title={cfg.label}
+        aria-label={cfg.label}
+      >
+        {cfg.glyph}
+      </span>
+    );
+  }
+
+  // Fall back to work-kind derivation for non-attempt cases.
   const result = deriveWorkKind({ kind: kind ?? null, roleSlug: roleSlug ?? null, taskType: taskType ?? null });
   if (!result) return null;
   return (
