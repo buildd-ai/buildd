@@ -167,6 +167,18 @@ mock.module('@/lib/heartbeat-prepass', () => ({
   evaluateHeartbeatPrepass: mockPrepass,
 }));
 
+// Circuit breaker sits ahead of the prepass and is consulted under the same
+// condition (isHeartbeat && linkedMission). Defaults to "never trips" so
+// every existing heartbeat-path test keeps exercising the prepass/dispatch
+// behaviour it was written for; breaker-specific behaviour is unit-tested in
+// heartbeat-circuit-breaker.test.ts.
+const mockEvaluateBreaker = mock(() => Promise.resolve({ tripped: false, count: 0, errorSignature: '' } as any));
+const mockTripBreaker = mock(() => Promise.resolve({ tripped: true } as any));
+mock.module('@/lib/heartbeat-circuit-breaker', () => ({
+  evaluateHeartbeatCircuitBreaker: mockEvaluateBreaker,
+  tripHeartbeatCircuitBreaker: mockTripBreaker,
+}));
+
 const mockCompleteMission = mock(() => Promise.resolve({ completed: true, decision: { code: 'ok' } } as any));
 mock.module('@/lib/mission-completion', () => ({
   completeMissionIfVerified: mockCompleteMission,
@@ -237,6 +249,10 @@ describe('GET /api/cron/schedules', () => {
     mockGetOrCreateCoordinationWorkspace.mockResolvedValue({ id: 'orchestrator-ws' });
     mockPrepass.mockReset();
     mockPrepass.mockResolvedValue({ action: 'invoke_llm', stateKey: 'sk-1' } as any);
+    mockEvaluateBreaker.mockReset();
+    mockEvaluateBreaker.mockResolvedValue({ tripped: false, count: 0, errorSignature: '' } as any);
+    mockTripBreaker.mockReset();
+    mockTripBreaker.mockResolvedValue({ tripped: true } as any);
     mockCompleteMission.mockReset();
     mockCompleteMission.mockResolvedValue({ completed: true, decision: { code: 'ok' } } as any);
     mockApplyCriteriaRearm.mockReset();
@@ -486,6 +502,52 @@ describe('GET /api/cron/schedules', () => {
       triggerSource: 'cron',
       heartbeat: true,
     }));
+  });
+
+  describe('heartbeat circuit breaker', () => {
+    function heartbeatSchedule() {
+      return makeSchedule({
+        workspaceId: 'ws-1',
+        taskTemplate: {
+          title: 'Mission: Circuit',
+          mode: 'planning',
+          priority: 0,
+          context: { heartbeat: true },
+        },
+      });
+    }
+
+    it('skips dispatch and trips the breaker instead of creating a task', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Circuit', workspaceId: 'ws-1', status: 'active' });
+      mockEvaluateBreaker.mockResolvedValue({ tripped: true, count: 3, errorSignature: 'weekly limit' } as any);
+
+      const res = await GET(makeRequest());
+      const body = await res.json();
+
+      expect(tasksInsertValues).toBeNull();
+      expect(mockTripBreaker).toHaveBeenCalledWith(expect.objectContaining({
+        missionId: 'mission-1',
+        missionTitle: 'Circuit',
+        count: 3,
+        errorSignature: 'weekly limit',
+      }));
+      // The prepass — and therefore the LLM-invocation path — must never run
+      // once the breaker has already decided to skip this cycle.
+      expect(mockPrepass).not.toHaveBeenCalled();
+      expect(body.skipped).toBeGreaterThan(0);
+    });
+
+    it('proceeds to the normal heartbeat path when the breaker does not trip', async () => {
+      mockTaskSchedulesFindMany.mockResolvedValue([heartbeatSchedule()]);
+      mockMissionsFindFirst.mockResolvedValue({ id: 'mission-1', title: 'Circuit', workspaceId: 'ws-1', status: 'active' });
+      mockEvaluateBreaker.mockResolvedValue({ tripped: false, count: 0, errorSignature: '' } as any);
+
+      await GET(makeRequest());
+
+      expect(mockTripBreaker).not.toHaveBeenCalled();
+      expect(mockPrepass).toHaveBeenCalled();
+    });
   });
 
   describe('waiting heartbeat (skip_waiting)', () => {

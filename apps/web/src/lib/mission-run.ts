@@ -7,6 +7,10 @@ import { normalizeRepoFullName } from '@/lib/repo-scope';
 import { dispatchNewTask as _dispatchNewTask } from '@/lib/task-dispatch';
 import { getOrCreateCoordinationWorkspace as _getOrCreateCoordinationWorkspace } from '@/lib/orchestrator-workspace';
 import { getMissionSpendUsd as _getMissionSpendUsd, exhaustMissionBudget as _exhaustMissionBudget } from '@/lib/mission-budget';
+import {
+  evaluateHeartbeatCircuitBreaker as _evaluateHeartbeatCircuitBreaker,
+  tripHeartbeatCircuitBreaker as _tripHeartbeatCircuitBreaker,
+} from '@/lib/heartbeat-circuit-breaker';
 import { notifyMissionPrReady } from '@/lib/mission-notifications';
 import { isMissionBlocked } from '@/lib/mission-dependency';
 import { ensureMissionIntegrationBranch } from '@/lib/mission-integration-branch';
@@ -197,6 +201,8 @@ export interface RunMissionResult {
   blockedReason?: string;
   /** True when spawning was blocked because the mission's cost budget is exhausted */
   skippedBudgetExhausted?: boolean;
+  /** True when the heartbeat circuit breaker tripped and paused the mission instead of dispatching */
+  skippedCircuitBreaker?: boolean;
 }
 
 export interface CycleContext {
@@ -222,6 +228,8 @@ export interface RunMissionDeps {
   prepareSubjectFiling?: typeof prepareSubjectFiling;
   recordSubjectMatchObserved?: typeof recordSubjectMatchObserved;
   triggerEvent?: typeof _triggerEvent;
+  evaluateHeartbeatCircuitBreaker?: typeof _evaluateHeartbeatCircuitBreaker;
+  tripHeartbeatCircuitBreaker?: typeof _tripHeartbeatCircuitBreaker;
 }
 
 /**
@@ -244,6 +252,8 @@ export async function runMission(
   const prepareSubject = deps?.prepareSubjectFiling ?? prepareSubjectFiling;
   const recordSubjectMatch = deps?.recordSubjectMatchObserved ?? recordSubjectMatchObserved;
   const triggerEvent = deps?.triggerEvent ?? _triggerEvent;
+  const evaluateHeartbeatCircuitBreaker = deps?.evaluateHeartbeatCircuitBreaker ?? _evaluateHeartbeatCircuitBreaker;
+  const tripHeartbeatCircuitBreaker = deps?.tripHeartbeatCircuitBreaker ?? _tripHeartbeatCircuitBreaker;
 
   const mission = await db.query.missions.findFirst({
     where: eq(missions.id, missionId),
@@ -256,6 +266,31 @@ export async function runMission(
 
   if (mission.status !== 'active') {
     throw new Error(`Cannot run mission with status: ${mission.status}. Only active missions can be run.`);
+  }
+
+  // Token-free circuit breaker: a manual/retrigger run reaches the same
+  // heartbeat bookkeeping tasks the cron path does, so it must not bypass the
+  // breaker just because it did not come from cron. See
+  // heartbeat-circuit-breaker.ts for why the window resets on trip, not on
+  // re-arm.
+  const isHeartbeatMission = (mission.schedule?.taskTemplate as { context?: { heartbeat?: boolean } } | null)
+    ?.context?.heartbeat === true;
+  if (isHeartbeatMission && mission.scheduleId) {
+    const breaker = await evaluateHeartbeatCircuitBreaker({
+      missionId: mission.id,
+      scheduleId: mission.scheduleId,
+      heartbeatBreakerTrippedAt: mission.heartbeatBreakerTrippedAt ?? null,
+    });
+    if (breaker.tripped) {
+      await tripHeartbeatCircuitBreaker({
+        missionId: mission.id,
+        missionTitle: mission.title,
+        scheduleId: mission.scheduleId,
+        count: breaker.count,
+        errorSignature: breaker.errorSignature,
+      });
+      return { task: null, skippedCircuitBreaker: true };
+    }
   }
 
   // Dependency gate: don't plan if the upstream mission's gate condition isn't met
