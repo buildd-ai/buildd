@@ -1,0 +1,2 @@
+ALTER TABLE "tasks" ADD COLUMN "heartbeat_tick_anchor" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "tasks_heartbeat_tick_anchor_unique" ON "tasks" USING btree ("heartbeat_tick_anchor") WHERE "tasks"."heartbeat_tick_anchor" IS NOT NULL;

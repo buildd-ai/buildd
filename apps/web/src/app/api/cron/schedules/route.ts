@@ -778,6 +778,11 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             ...(linkedMission ? { missionId: linkedMission.id } : {}),
             ...(linkedMission?.defaultBackend ? { backend: linkedMission.defaultBackend } : {}),
             ...(outputSchema ? { outputSchema } : {}),
+            // `now` is the exact value this claim just wrote to lastRunAt, so it
+            // identifies this tick. A same-tick auto-retry (mission-loop.ts)
+            // computes the identical anchor from the schedule's lastRunAt and
+            // collides here instead of dispatching a second worker.
+            ...(linkedMission ? { heartbeatTickAnchor: `${schedule.id}:${now.toISOString()}` } : {}),
           })
           // A mission schedule can fire while its previous planning task is
           // still active. The partial unique index
