@@ -898,6 +898,15 @@ export const missions = pgTable('missions', {
   // existed" — both read as no-baseline, never as "just now", to a derived
   // metric keyed off it (docs/design/derived-metric-availability.md).
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Set when the token-free heartbeat circuit breaker (lib/heartbeat-circuit-
+  // breaker.ts) pauses this mission after N consecutive died-early heartbeat
+  // cycles — a provider outage or similar has no supervisor otherwise, since
+  // the organizer IS a Claude worker. Deliberately never cleared on re-arm: the
+  // breaker's own "last N heartbeat tasks" window is bounded to tasks created
+  // AFTER this timestamp, so re-arming (status -> active) naturally gives the
+  // mission a fresh run of N attempts before it can trip again, with no
+  // separate clear step to keep in sync.
+  heartbeatBreakerTrippedAt: timestamp('heartbeat_breaker_tripped_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1810,7 +1819,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted' | 'heartbeat_circuit_breaker'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),

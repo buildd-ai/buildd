@@ -65,7 +65,8 @@ export type CausalLinkSource =
   | 'workers.observedTouches ∪ tasks.pathManifest'
   | 'workers.mergedAt + workers.observedTouches ∪ tasks.pathManifest'
   | 'workers.observedTouches ∪ tasks.pathManifest (no intersection)'
-  | 'workers.prLifecycleStatus + workers.conflictDetectedAt';
+  | 'workers.prLifecycleStatus + workers.conflictDetectedAt'
+  | 'tasks.subjectPrNumber + workers.mergedAt';
 
 export interface CausalLink {
   /** 1-based position. The chain reads cause → effect, in order. */

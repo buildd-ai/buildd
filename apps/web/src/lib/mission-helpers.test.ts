@@ -525,6 +525,20 @@ describe('deriveTaskHealthSignal', () => {
     ])).toBe<Health>('FAILING');
   });
 
+  it('not FAILING when the only failed task is superseded — its deliverable shipped anyway', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      makeTask('completed'),
+      { ...makeTask('failed'), superseded: true },
+    ])).toBe<Health>('NOMINAL');
+  });
+
+  it('FAILING when a superseded failure is mixed with a real one', () => {
+    expect(deriveTaskHealthSignal(noDepMission, [
+      { ...makeTask('failed'), superseded: true },
+      makeTask('failed'),
+    ])).toBe<Health>('FAILING');
+  });
+
   it('STALLED when deliverable pending task has no live worker', () => {
     expect(deriveTaskHealthSignal(noDepMission, [makeTask('pending', [])])).toBe<Health>('STALLED');
   });

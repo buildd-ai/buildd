@@ -14,6 +14,7 @@ import { runHealthWatcher } from '@/lib/health-watcher';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { evaluateHeartbeatPrepass } from '@/lib/heartbeat-prepass';
 import { recordHeartbeatWaitNote, resolveHeartbeatWaitNote } from '@/lib/heartbeat-wait-note';
+import { evaluateHeartbeatCircuitBreaker, tripHeartbeatCircuitBreaker } from '@/lib/heartbeat-circuit-breaker';
 import { completeMissionIfVerified, isCriteriaBlockCode } from '@/lib/mission-completion';
 import { applyCriteriaRearm } from '@/lib/criteria-rearm';
 import { runStaleWorkerCleanup } from './maintenance/stale-workers';
@@ -409,6 +410,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
           where: eq(missions.scheduleId, schedule.id),
           columns: {
             id: true,
+            title: true,
             status: true,
             workspaceId: true,
             teamId: true,
@@ -418,6 +420,7 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
             gateCondition: true,
             dependencyMetAt: true,
             orchestrationMode: true,
+            heartbeatBreakerTrippedAt: true,
           },
         });
 
@@ -550,6 +553,29 @@ async function runCronJob(req: NextRequest, report: CronReport): Promise<NextRes
               .update(taskSchedules)
               .set({ nextRunAt: advancedNextRunAt, lastDeferralReason: 'active_hours', lastDeferredAt: now, updatedAt: now })
               .where(eq(taskSchedules.id, schedule.id));
+            skipped++;
+            continue;
+          }
+        }
+
+        // Token-free circuit breaker: before dispatching a new heartbeat cycle,
+        // check whether the last N cycles all died early with nothing to show
+        // for it (see heartbeat-circuit-breaker.ts). No model call — this must
+        // survive a provider outage that makes the organizer itself unrunnable.
+        if (isHeartbeat && linkedMission) {
+          const breaker = await evaluateHeartbeatCircuitBreaker({
+            missionId: linkedMission.id,
+            scheduleId: schedule.id,
+            heartbeatBreakerTrippedAt: linkedMission.heartbeatBreakerTrippedAt ?? null,
+          });
+          if (breaker.tripped) {
+            await tripHeartbeatCircuitBreaker({
+              missionId: linkedMission.id,
+              missionTitle: linkedMission.title,
+              scheduleId: schedule.id,
+              count: breaker.count,
+              errorSignature: breaker.errorSignature,
+            });
             skipped++;
             continue;
           }
