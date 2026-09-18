@@ -2,7 +2,7 @@
 title: Scheduled-task merge policy override
 status: draft
 owner: max
-last_verified: 2026-09-15
+last_verified: 2026-09-18
 summary: A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 domain: tasks
 surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/workspace-policy.ts, packages/shared/src/types.ts]
@@ -29,9 +29,9 @@ assertions:
 
 > **Status: `draft` — nothing in this spec is implemented.** It was carried as
 > `active` while none of AC-1…AC-6 held, which is the one thing a spec may not
-> be: `active` asserts what the system does today. Re-verified 2026-09-15
-> against `dev` (originally verified 2026-09-04 — nothing below has changed in
-> the interim, only line numbers drifted):
+> be: `active` asserts what the system does today. Re-verified 2026-09-18
+> against `dev` (originally verified 2026-09-04, re-verified 2026-09-15 —
+> nothing below has changed since, only the cron insert's line number drifted):
 >
 > - There is still no `tasks.merge_policy` column. `merge_policy` appears once
 >   in `packages/core/db/schema.ts:807`, on `missions`.
@@ -40,7 +40,7 @@ assertions:
 >   parameter carries only `requiresReview`.
 > - The schedule cron still does not propagate the template's merge policy —
 >   zero occurrences in `apps/web/src/app/api/cron/schedules/route.ts` (the task
->   insert moved from line 634 to 728; `TaskScheduleTemplate`
+>   insert has drifted from line 634 to 728 to 754; `TaskScheduleTemplate`
 >   (`packages/shared/src/types.ts:743`) still has no `mergePolicy` field).
 > - `parseMergePolicy` is still wired only into
 >   `apps/web/src/app/api/missions/route.ts` and
@@ -48,6 +48,16 @@ assertions:
 >
 > The design is still wanted; `draft` is the honest home for it, and per
 > `SPEC-FORMAT.md` a draft is where naming not-yet-existing symbols is correct.
+>
+> **Note on the two passing assertions** (`resolve-merge-policy`,
+> `merge-policy-precedence-tests`): both are structural checks — that
+> `resolvePolicy` is exported from `merge-policy.ts`, and that
+> `merge-policy.test.ts` exists — not checks of this spec's capability. Both
+> symbols have existed since `resolvePolicy`'s introduction in #1162
+> (2026-07-12), long before this spec's own `mergePolicy`-on-`task` step was
+> proposed, so their passing predates and is independent of this draft. A
+> conformance run that reports them as "code ahead of doc" is a false
+> positive: there is no code ahead here for this spec to catch up to.
 >
 > **The open question this spec was blocked on has since been resolved —
 > implementation is unblocked, but still not started.**
@@ -130,7 +140,7 @@ No default, no NOT NULL — existing tasks are unaffected.
 
 ### Task creation from schedule
 
-`apps/web/src/app/api/cron/schedules/route.ts:728` — the `db.insert(tasks)`
+`apps/web/src/app/api/cron/schedules/route.ts:754` — the `db.insert(tasks)`
 call MUST propagate `template.mergePolicy` when present:
 
 ```ts
@@ -303,7 +313,7 @@ The schedule update is applied via `manage_workspaces`-equivalent API or direct
 | `TaskScheduleTemplate` | `packages/shared/src/types.ts:743` | Add `mergePolicy?: MergePolicy` |
 | `tasks.mergePolicy` | `packages/core/db/schema.ts` | New nullable JSONB column — does not exist yet; `missions.mergePolicy` (`schema.ts:807`) is the nearest existing analog |
 | `resolvePolicy()` | `apps/web/src/lib/merge-policy.ts:124` | New step above Option A′ in precedence chain (not position 2 — that slot is now Option A′; see "Precedence chain" above) |
-| Schedule cron task insert | `apps/web/src/app/api/cron/schedules/route.ts:728` | Propagate `template.mergePolicy` |
+| Schedule cron task insert | `apps/web/src/app/api/cron/schedules/route.ts:754` | Propagate `template.mergePolicy` |
 | `applyPolicyConfigToMergePolicy()` | `apps/web/src/lib/workspace-policy.ts:452` | Unchanged — still fires post-resolvePolicy; only upgrades tier |
 | Schedule save validation | `apps/web/src/app/api/workspaces/[id]/schedules/route.ts` | **DRIFT (found 2026-08-29): not implemented.** The route it named did not exist; schedule CRUD lives at the path shown, and it does not call `parseMergePolicy()` on `taskTemplate.mergePolicy`. An invalid policy on a schedule template is therefore accepted on write and only rejected (or silently ignored) at task-creation time. `parseMergePolicy()` is wired into `apps/web/src/app/api/missions/route.ts` and `apps/web/src/app/api/workspaces/[id]/config/route.ts` only. |
 
