@@ -23,3 +23,29 @@ describe('ship badge plumbing — tasks/[id]/page.tsx (spec §10.3)', () => {
     expect(pageSource).toContain('<TaskShipBadge release={task.release} shippedReleaseId={shippedRelease?.releaseId ?? null} />');
   });
 });
+
+describe('plan chain — tasks/[id]/page.tsx (reviewer task navigation)', () => {
+  it('prepends parent task to chain when current task is a child', () => {
+    // When a reviewer task (child) is viewed, the parent (builder) task should be
+    // included in the chain so the user can navigate from reviewer to builder.
+    expect(pageSource).toContain('if (task.parentTaskId && task.parentTask) {');
+    expect(pageSource).toContain('{ id: task.parentTaskId, title: task.parentTask.title, status: task.parentTask.status, roleSlug: task.parentTask.roleSlug },');
+  });
+
+  it('filters out self-loop chains', () => {
+    // If the chain only contains the current task, suppress it to fall back to
+    // the Related Tasks section which has more comprehensive navigation.
+    expect(pageSource).toContain('if (planChain.length === 1 && planChain[0].id === id) {');
+    expect(pageSource).toContain('planChain = [];');
+  });
+
+  it('renders PlanChainView when chain has content', () => {
+    expect(pageSource).toContain('{planChain.length > 0 ? (');
+    expect(pageSource).toContain('<PlanChainView');
+  });
+
+  it('falls back to Related Tasks only when chain is empty', () => {
+    // The Related Tasks section (with parent link) only renders when the chain is empty.
+    expect(pageSource).toContain(') : (task.parentTask || (task.subTasks && task.subTasks.length > 0)) && (');
+  });
+});
