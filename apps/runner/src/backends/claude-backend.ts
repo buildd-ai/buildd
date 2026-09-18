@@ -86,22 +86,40 @@ export class ClaudeBackend implements AgentBackend {
           }
         }
       } else if (msg.type === 'result') {
-        if (msgAny.structured_output && typeof msgAny.structured_output === 'object') {
-          lastStructuredOutput = msgAny.structured_output;
-        }
+        // A `result` message can be nominally subtype 'success' while still
+        // carrying is_error: true — the SDK's own encoding for a turn that
+        // ended on an API error (e.g. a budget/session wall) without
+        // throwing. Treating that as an ordinary turn_complete makes
+        // workers.ts report the worker as 'completed' with no error text.
+        // Yield 'error' instead so the caller's for-await throws and this
+        // flows through the same exception-catch path (isBudgetExhaustionError,
+        // status: 'failed') as a thrown SDK error.
+        if (msgAny.is_error === true) {
+          yield {
+            type: 'error',
+            error: typeof msgAny.result === 'string' && msgAny.result.trim()
+              ? msgAny.result
+              : 'Claude Agent SDK returned an error result',
+          };
+          return;
+        } else {
+          if (msgAny.structured_output && typeof msgAny.structured_output === 'object') {
+            lastStructuredOutput = msgAny.structured_output;
+          }
 
-        let inputTokens: number | undefined;
-        let outputTokens: number | undefined;
-        if (msgAny.usage) {
-          inputTokens = (msgAny.usage.input_tokens ?? 0) + (msgAny.usage.cache_read_input_tokens ?? 0);
-          outputTokens = msgAny.usage.output_tokens ?? 0;
-        }
+          let inputTokens: number | undefined;
+          let outputTokens: number | undefined;
+          if (msgAny.usage) {
+            inputTokens = (msgAny.usage.input_tokens ?? 0) + (msgAny.usage.cache_read_input_tokens ?? 0);
+            outputTokens = msgAny.usage.output_tokens ?? 0;
+          }
 
-        yield {
-          type: 'turn_complete',
-          ...(inputTokens !== undefined ? { usage: { inputTokens, outputTokens: outputTokens ?? 0 } } : {}),
-          ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
-        };
+          yield {
+            type: 'turn_complete',
+            ...(inputTokens !== undefined ? { usage: { inputTokens, outputTokens: outputTokens ?? 0 } } : {}),
+            ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
+          };
+        }
       }
     }
 
