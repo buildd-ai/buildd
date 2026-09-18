@@ -27,6 +27,17 @@
  */
 export const SESSION_WINDOW_MS = 5 * 60 * 60 * 1000;
 
+/**
+ * Length of an OAuth seat's weekly cap window — distinct from the 5h session
+ * window above. A weekly-limit error's reset clause is still just a bare
+ * clock time ("resets 4am (UTC)"), which routinely sits well over 5h from the
+ * report; passing `SESSION_WINDOW_MS` as `extractResetTime`'s plausibility
+ * bound in that case misreads a genuinely-tomorrow reset as "already passed"
+ * and rolls it back a day. Callers that know the quote came from a weekly
+ * (not session) cap should pass this as `maxAheadMs` instead.
+ */
+export const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Shortest pause worth serving: below this the breaker just re-trips. */
 export const PAUSE_FLOOR_MS = 5 * 60 * 1000;
 

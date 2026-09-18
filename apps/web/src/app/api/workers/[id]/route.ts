@@ -2153,6 +2153,17 @@ export async function PATCH(
           Boolean(orchestratorTaskRow?.scheduleId) &&
           !orchestratorTaskRow?.outputSchema)
       );
+      // A provider/SDK error result (budget wall, session cap, rate limit) never
+      // reaches the planning contract at all — the agent didn't get a turn to
+      // write a plan, prose or otherwise. The runner can report that as a
+      // `completed` PATCH with no structuredOutput (the SDK's error result
+      // surfaces as an ordinary terminal message, not a thrown exception), which
+      // looks identical to an organizer that ran and silently produced nothing —
+      // exactly the shape #2045/#2076 exist to catch. Distinguish them by the
+      // positive signal (the error text itself), not by re-deriving intent from
+      // absence: check this BEFORE the contract guard fires, the same way
+      // `isBudgetError` is checked for a `status:'failed'` report above.
+      const completionBudgetError = status === 'completed' && isBudgetExhaustionError(error);
       // A worker that produced a PR or artifact delivered something — the
       // contract this guard polices was satisfied by that deliverable even
       // though it did not arrive as structuredOutput. Silently reclassifying a
@@ -2167,6 +2178,17 @@ export async function PATCH(
         status === 'completed' &&
         !shouldAutoRetry &&
         expectsStructuredPlan &&
+        !completionBudgetError &&
+        !body.structuredOutput &&
+        !workerDeliveredSomething
+      );
+      // Same shape as the contract guard above, minus the completionBudgetError
+      // exclusion — this is what fires instead of it.
+      const planningBudgetLimited = (
+        status === 'completed' &&
+        !shouldAutoRetry &&
+        expectsStructuredPlan &&
+        completionBudgetError &&
         !body.structuredOutput &&
         !workerDeliveredSomething
       );
@@ -2190,6 +2212,36 @@ export async function PATCH(
         // the default by accident: not returning the contract's output is the
         // agent's own failure, so it is a code_failure and it should be charged.
         updates.exitCause = 'code_failure';
+      } else if (planningBudgetLimited) {
+        console.error(
+          `[planning-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
+          `overriding completed→failed as budget_limited: the SDK returned a ` +
+          `provider budget/session error before the organizer produced a plan. ` +
+          `Not a planning-contract violation — the agent never got a turn.`
+        );
+        updates.status = 'failed';
+        updates.error = error;
+        // Not chargeable: the agent never ran, so this is not its failure —
+        // mirrors the `status:'failed'` budget path's `budget_limited` exitCause,
+        // which consumesRetryAttempt excludes from retry caps.
+        updates.exitCause = 'budget_limited';
+        if (taskMissionId) {
+          try {
+            await db.insert(missionNotes).values({
+              missionId: taskMissionId,
+              taskId: worker.taskId,
+              authorType: 'system',
+              type: 'warning',
+              title: 'Heartbeat cycle hit a provider budget wall',
+              body: `The organizer cycle ended before it could plan: ${error}`,
+              status: 'open',
+            });
+          } catch (err) {
+            console.warn(
+              `[planning-contract-enforcement] failed to post budget-wall mission note for task ${worker.taskId}:`, err,
+            );
+          }
+        }
       }
 
       // Review contract guard: a reviewer verdict only reaches
@@ -2266,8 +2318,8 @@ export async function PATCH(
         }
       }
 
-      // Both guards fail the task the same way; only the recorded reason differs.
-      const contractViolation = planningContractViolation || reviewContractViolation;
+      // All three guards fail the task the same way; only the recorded reason differs.
+      const contractViolation = planningContractViolation || reviewContractViolation || planningBudgetLimited;
 
       const taskUpdate: Record<string, unknown> = {
         status: shouldAutoRetry ? 'pending' : (contractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
@@ -2282,6 +2334,11 @@ export async function PATCH(
           result: {
             error: 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created. Mission will retry.',
             errorType: 'planning_contract_violation',
+          },
+        } : planningBudgetLimited ? {
+          result: {
+            error,
+            errorType: 'budget_limited',
           },
         } : reviewContractViolation ? {
           result: {

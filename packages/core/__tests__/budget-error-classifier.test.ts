@@ -23,6 +23,18 @@ describe('isBudgetExhaustionError', () => {
     expect(isBudgetExhaustionError('session limit reached')).toBe(true);
   });
 
+  // Regression: a heartbeat organizer hit the OAuth seat's weekly cap (distinct
+  // from the 5h/session cap above); the wording doesn't contain "session" at
+  // all, so it silently missed every existing pattern and was misclassified.
+  it('detects OAuth weekly-limit exhaustion', () => {
+    expect(
+      isBudgetExhaustionError(
+        "Claude Code returned an error result: You've hit your weekly limit · resets 4am (UTC)",
+      ),
+    ).toBe(true);
+    expect(isBudgetExhaustionError('weekly limit reached')).toBe(true);
+  });
+
   // Regression: Codex-backed workers hard-failed instead of pausing, because
   // this detector only knew Claude's wording. Codex has no redundant signal
   // (no account/tenant budget columns), so a detector miss here means no
