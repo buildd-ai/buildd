@@ -46,6 +46,7 @@ export interface SupersededResult {
  */
 export async function computeSupersededFailedTasks(
   missionId: string,
+  workspaceId: string | null,
   failedTasks: SupersededCheckTask[],
 ): Promise<Map<string, SupersededResult>> {
   const result = new Map<string, SupersededResult>();
@@ -59,9 +60,13 @@ export async function computeSupersededFailedTasks(
   )];
 
   const [mergedWorkers, titleSiblings] = await Promise.all([
-    prNumbers.length > 0
+    prNumbers.length > 0 && workspaceId != null
       ? db.query.workers.findMany({
-          where: and(inArray(workers.prNumber, prNumbers), isNotNull(workers.mergedAt)),
+          where: and(
+            eq(workers.workspaceId, workspaceId),
+            inArray(workers.prNumber, prNumbers),
+            isNotNull(workers.mergedAt),
+          ),
           columns: { prNumber: true },
         })
       : Promise.resolve([]),

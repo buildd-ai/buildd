@@ -269,6 +269,7 @@ async function viewForMission(missionId: string): Promise<{
   const failedDeliverables = deliverables.filter(t => t.status === 'failed');
   const supersededMap = await computeSupersededFailedTasks(
     missionId,
+    (m.workspaceId as string | null) ?? null,
     failedDeliverables.map(t => ({
       id: t.id,
       title: t.title,
