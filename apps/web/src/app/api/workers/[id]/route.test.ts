@@ -9383,6 +9383,130 @@ describe('rearm-cap-deferred-schedules on worker completion', () => {
     expect(overridden.exitCause).toBe('code_failure');
   });
 
+  // Regression (task f3ab48af): a planning-mode worker whose SDK session hit a
+  // provider budget/session wall never got a turn to write a plan — reported
+  // as `status: 'completed'` with no structuredOutput, which used to look
+  // identical to an organizer that ran and produced nothing (planning_contract_violation).
+  // The error result must win: this is budget_limited, not a contract violation.
+  it('overrides completed→failed as budget_limited (not planning_contract_violation) when the result is a provider budget error', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    const workerSetCalls: any[] = [];
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        workerSetCalls.push(u);
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+          })),
+        };
+      }),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-planning-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{ outputRequirement: 'auto', missionId: 'mission-1', scheduleId: null, mode: 'planning' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      // Runner reports completed (the SDK's error result surfaced as an
+      // ordinary terminal message, not a thrown exception) with no
+      // structuredOutput and no summary — the organizer never got a turn.
+      body: {
+        status: 'completed',
+        error: "Claude Code returned an error result: You've hit your weekly limit · resets 4am (UTC)",
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+    expect(failedUpdate).toBeDefined();
+    expect(taskSetCalls.some((u) => u.status === 'completed')).toBe(false);
+    expect(failedUpdate.result.errorType).toBe('budget_limited');
+    expect(failedUpdate.result.errorType).not.toBe('planning_contract_violation');
+
+    const overriddenWorker = workerSetCalls.find((u: any) => u.status === 'failed');
+    expect(overriddenWorker).toBeDefined();
+    expect(overriddenWorker.exitCause).toBe('budget_limited');
+
+    // Feed note names the budget rather than a generic contract-violation message.
+    const note = missionNoteInserts.find((n) => n.missionId === 'mission-1');
+    expect(note).toBeDefined();
+    expect(note.body).toContain('weekly limit');
+  });
+
+  // #2045/#2076 case must not regress: a planning task that genuinely ran and
+  // returned prose (no error result, no PR/artifact) is still a contract
+  // violation, not budget_limited.
+  it('still overrides completed→failed as planning_contract_violation when the worker ran and returned prose with no budget-error text', async () => {
+    const taskSetCalls: any[] = [];
+    mockTasksUpdate.mockReturnValue({
+      set: mock((u: any) => {
+        taskSetCalls.push(u);
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]),
+        })),
+      })),
+    });
+    mockTasksFindFirst.mockResolvedValue(null);
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', authType: 'api', maxConcurrentWorkers: 5 });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'running',
+      workspaceId: 'ws-1',
+      taskId: 'task-planning-1',
+      pendingInstructions: null,
+      milestones: [],
+    });
+    mockSelect.mockReturnValueOnce({
+      from: mock(() => ({
+        where: mock(() => ({
+          limit: mock(() => [{ outputRequirement: 'auto', missionId: null, scheduleId: null, mode: 'planning' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'completed', summary: 'I thought about the mission and here is my plan in prose.' },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    const failedUpdate = taskSetCalls.find((u) => u.status === 'failed');
+    expect(failedUpdate).toBeDefined();
+    expect(failedUpdate.result.errorType).toBe('planning_contract_violation');
+    expect(failedUpdate.result.errorType).not.toBe('budget_limited');
+  });
+
   // Regression: an orchestrator/heartbeat cycle whose task row never got
   // mode='planning' (e.g. a schedule template that lost its `mode` key) must
   // still be caught. creationSource='orchestrator' with no outputSchema means
