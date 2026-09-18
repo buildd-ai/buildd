@@ -477,3 +477,82 @@ describe('approvePlan — doc-fix proposal approves as exactly one linked child'
     expect(insertedValues[0].pathManifest).toBeUndefined();
   });
 });
+
+// ─── Mission phase stamping (docs/specs/mission-legibility.md §1) ─────────────
+
+describe('approvePlan — mission phase stamping', () => {
+  beforeEach(reset);
+
+  it('AC-2: children carry the phase indexes and labels their plan declared', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Add columns', phase: 'Storage' },
+      { ref: 'b', title: 'Stamp in approve_plan', phase: 'Population' },
+      { ref: 'c', title: 'Glyph column', phase: 'Population' },
+    ] as any);
+    expect(insertedValues.map(v => v.missionPhaseIndex)).toEqual([1, 2, 2]);
+    expect(insertedValues.map(v => v.missionPhaseLabel)).toEqual(['Storage', 'Population', 'Population']);
+  });
+
+  it('AC-3 (rejection): a plan with no phase labels stores NULL/NULL on every child', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'SPEC: x' },
+      { ref: 'b', title: 'BUILD: x', dependsOn: ['a'] },
+    ] as any);
+    expect(insertedValues.map(v => v.missionPhaseIndex)).toEqual([null, null]);
+    expect(insertedValues.map(v => v.missionPhaseLabel)).toEqual([null, null]);
+  });
+
+  it('Rule P1-9: a re-plan raised inside a phase keeps its children in that phase', async () => {
+    planningTaskRow.missionPhaseIndex = 3;
+    planningTaskRow.missionPhaseLabel = 'Rendering';
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Fix the header row' },
+    ] as any);
+    expect(insertedValues[0].missionPhaseIndex).toBe(3);
+    expect(insertedValues[0].missionPhaseLabel).toBe('Rendering');
+  });
+
+  it('never writes a half-set phase pair', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Before the heading' },
+      { ref: 'b', title: 'Under the heading', phase: 'Rendering' },
+    ] as any);
+    for (const v of insertedValues) {
+      expect(v.missionPhaseIndex === null).toBe(v.missionPhaseLabel === null);
+    }
+  });
+
+  it('phases are never re-derived after insert — the second pass touches only deps/context', async () => {
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Add columns', phase: 'Storage' },
+      { ref: 'b', title: 'Stamp them', phase: 'Population', dependsOn: ['a'] },
+    ] as any);
+    for (const call of updateCalls) {
+      expect(call.set).not.toHaveProperty('missionPhaseIndex');
+      expect(call.set).not.toHaveProperty('missionPhaseLabel');
+    }
+  });
+});
+
+// ─── Work-kind carry-through (docs/specs/mission-legibility.md §2.5) ──────────
+
+describe('approvePlan — the planner\'s declared kind reaches the row', () => {
+  beforeEach(reset);
+
+  it('writes PlanStep.kind onto the created task', async () => {
+    // Before this, `kind` was accepted by the plan schema and silently dropped:
+    // the column that routes the model AND draws the glyph stayed NULL on every
+    // plan-generated task, which is exactly where the volume is.
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Add columns', kind: 'engineering' },
+      { ref: 'b', title: 'Audit plan shapes', kind: 'research' },
+    ] as any);
+    expect(insertedValues.map(v => v.kind)).toEqual(['engineering', 'research']);
+    expect(insertedValues[0].classifiedBy).toBe('organizer');
+  });
+
+  it('leaves kind unset when the step declares none', async () => {
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Add columns' }] as any);
+    expect(insertedValues[0].kind).toBeUndefined();
+  });
+});

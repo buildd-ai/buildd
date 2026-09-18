@@ -5,10 +5,12 @@ import Link from 'next/link';
 import {
   deriveDisplayStatus,
   deriveTimestampLabel,
+  deriveWorkKind,
   isStaleWorker,
   type ChainPositionResult,
   type IntensityResult,
   type IntensityTier,
+  type WorkKind,
 } from '@/lib/task-presentation';
 import { StageChip } from '@/components/StageChip';
 import { deriveStage, type Stage } from '@/lib/stage';
@@ -63,6 +65,13 @@ export interface TaskCardProps {
   currentAction?: string | null;
 
   taskType?: TaskType | null;
+  /**
+   * `deriveWorkKind`'s remaining two inputs (docs/specs/mission-legibility.md
+   * §2.1) — `taskType` above is the third tier. `TaskTypeBadge` reads all
+   * three through that one helper and nothing else, notably not `title`.
+   */
+  kind?: WorkKind | null;
+  roleSlug?: string | null;
 
   /** `tasks.release` override — drives the Skip/Force release badge (§10.3). */
   release?: 'true' | 'false' | 'inherit' | null;
@@ -162,21 +171,57 @@ function Sparkline({ data, tier }: { data: number[]; tier: IntensityTier }) {
 
 // ─── Task type badge ──────────────────────────────────────────────────────────
 
-const TASK_TYPE_BADGE: Record<TaskType, { glyph: string; cls: string; label: string }> = {
-  retry:          { glyph: '↻', cls: 'text-status-warning',  label: 'CI Retry' },
-  review:         { glyph: '⬡', cls: 'text-status-info',     label: 'Review' },
-  'review-retry': { glyph: '↻', cls: 'text-[#8B5CF6]',       label: 'Review Retry' },
+/**
+ * Attempt-type indicators (retry/review/review-retry) take priority over
+ * work-kind glyphs, since they encode attempt lineage (a different semantic
+ * axis). Falls back to deriveWorkKind for other cases and for tasks where
+ * taskType is not set.
+ *
+ * The priority: attempt type → work kind (docs/specs/mission-legibility.md
+ * Rule K2-4). No local re-derivation of work kind.
+ */
+const ATTEMPT_TYPE_BADGE: Record<string, { glyph: string; label: string }> = {
+  retry:          { glyph: '↻', label: 'CI Retry' },
+  review:         { glyph: '⬡', label: 'Review' },
+  'review-retry': { glyph: '↻', label: 'Review Retry' },
 };
 
-function TaskTypeBadge({ type }: { type: TaskType }) {
-  const cfg = TASK_TYPE_BADGE[type];
+function TaskTypeBadge({
+  kind,
+  roleSlug,
+  taskType,
+  className,
+}: {
+  kind?: WorkKind | null;
+  roleSlug?: string | null;
+  taskType?: TaskType | null;
+  className?: string;
+}) {
+  // Attempt types (retry/review/review-retry) always render their own badge,
+  // independent of work kind. These are lineage indicators, not work-kind indicators.
+  if (taskType && taskType in ATTEMPT_TYPE_BADGE) {
+    const cfg = ATTEMPT_TYPE_BADGE[taskType];
+    return (
+      <span
+        className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
+        title={cfg.label}
+        aria-label={cfg.label}
+      >
+        {cfg.glyph}
+      </span>
+    );
+  }
+
+  // Fall back to work-kind derivation for non-attempt cases.
+  const result = deriveWorkKind({ kind: kind ?? null, roleSlug: roleSlug ?? null, taskType: taskType ?? null });
+  if (!result) return null;
   return (
     <span
-      className={`font-mono text-[9px] shrink-0 select-none ${cfg.cls}`}
-      title={cfg.label}
-      aria-label={cfg.label}
+      className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
+      title={result.label}
+      aria-label={result.label}
     >
-      {cfg.glyph}
+      {result.glyph}
     </span>
   );
 }
@@ -222,6 +267,8 @@ export function TaskCard({
   prLifecycleStatus,
   currentAction,
   taskType,
+  kind,
+  roleSlug,
   release,
   shippedReleaseId,
   loopExitConditionType,
@@ -293,6 +340,12 @@ export function TaskCard({
           </div>
         )}
 
+        {/* Work-kind glyph column (mission-legibility.md Rule R4-20 — desktop
+            Timeline gains this and nothing else). No wrapper element: when
+            TaskTypeBadge resolves to no glyph it renders null, so a glyph-less
+            row consumes no gap-2 slot (matches row/full density). */}
+        <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} className="pointer-events-none" />
+
         {/* T1 — title + currentAction */}
         <span className="flex-1 min-w-0 pointer-events-none group-hover:text-accent-text transition-colors">
           <span className={`text-[13px] truncate block ${isCompleted ? 'text-text-secondary' : 'text-text-primary'}`}>
@@ -360,7 +413,7 @@ export function TaskCard({
         <div className="flex-1 min-w-0 pointer-events-none">
           {/* T1 — title (with optional type badge) */}
           <div className="flex items-center gap-1.5 text-[13px] font-medium text-text-primary group-hover:text-accent-text transition-colors">
-            {taskType && <TaskTypeBadge type={taskType} />}
+            <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
             <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
             <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
           </div>
@@ -442,7 +495,7 @@ export function TaskCard({
       {/* T1 — title + status pill (top row) */}
       <div className="flex items-start justify-between gap-3 mb-0.5 pointer-events-none">
         <div className="flex items-center gap-1.5 text-[15px] font-medium text-text-primary group-hover:text-accent-text transition-colors flex-1 min-w-0">
-          {taskType && <TaskTypeBadge type={taskType} />}
+          <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
           <span className="truncate">{taskType ? stripTaskTypePrefix(title) : title}</span>
           <TaskShipBadge release={release} shippedReleaseId={shippedReleaseId} />
         </div>

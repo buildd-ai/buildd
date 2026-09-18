@@ -26,6 +26,7 @@ import { runSupersessionPrecheck, DEFAULT_SUPERSESSION_DRIFT_RATIO } from '@/lib
 import { notify } from '@/lib/pushover';
 import { githubApi } from '@/lib/github';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { inheritPhaseFromParent } from '@/lib/mission-phase';
 
 export const DEFAULT_MAX_CONFLICT_ITERATIONS = 3;
 
@@ -471,6 +472,9 @@ export async function dispatchConflictRetry(
     }
   }
 
+  // Rule P1-7: an attempt inherits the phase of the task it re-attempts.
+  const phase = await inheritPhaseFromParent(retryTask.parentTaskId);
+
   const [newTask] = await db
     .insert(tasks)
     .values({
@@ -479,6 +483,7 @@ export async function dispatchConflictRetry(
       description: retryTask.description,
       parentTaskId: retryTask.parentTaskId,
       missionId: retryTask.missionId,
+      ...phase,
       context: retryTask.context,
       creationSource: retryTask.creationSource,
       taskClass: 'attempt',
