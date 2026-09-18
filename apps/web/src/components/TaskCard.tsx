@@ -190,10 +190,12 @@ function TaskTypeBadge({
   kind,
   roleSlug,
   taskType,
+  className,
 }: {
   kind?: WorkKind | null;
   roleSlug?: string | null;
   taskType?: TaskType | null;
+  className?: string;
 }) {
   // Attempt types (retry/review/review-retry) always render their own badge,
   // independent of work kind. These are lineage indicators, not work-kind indicators.
@@ -201,7 +203,7 @@ function TaskTypeBadge({
     const cfg = ATTEMPT_TYPE_BADGE[taskType];
     return (
       <span
-        className="font-mono text-[9px] shrink-0 select-none text-text-secondary"
+        className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
         title={cfg.label}
         aria-label={cfg.label}
       >
@@ -215,7 +217,7 @@ function TaskTypeBadge({
   if (!result) return null;
   return (
     <span
-      className="font-mono text-[9px] shrink-0 select-none text-text-secondary"
+      className={`font-mono text-[9px] shrink-0 select-none text-text-secondary${className ? ` ${className}` : ''}`}
       title={result.label}
       aria-label={result.label}
     >
@@ -339,10 +341,10 @@ export function TaskCard({
         )}
 
         {/* Work-kind glyph column (mission-legibility.md Rule R4-20 — desktop
-            Timeline gains this and nothing else). */}
-        <span className="shrink-0 pointer-events-none">
-          <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} />
-        </span>
+            Timeline gains this and nothing else). No wrapper element: when
+            TaskTypeBadge resolves to no glyph it renders null, so a glyph-less
+            row consumes no gap-2 slot (matches row/full density). */}
+        <TaskTypeBadge kind={kind} roleSlug={roleSlug} taskType={taskType} className="pointer-events-none" />
 
         {/* T1 — title + currentAction */}
         <span className="flex-1 min-w-0 pointer-events-none group-hover:text-accent-text transition-colors">

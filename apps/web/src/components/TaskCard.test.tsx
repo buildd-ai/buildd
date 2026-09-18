@@ -137,4 +137,11 @@ describe('TaskCard — work-kind badge fallback', () => {
     expect(html).not.toContain('◆');
     expect(html).not.toContain('▲');
   });
+
+  it('inline density: no empty span when kind/roleSlug/taskType are all null (PR #2456 regression)', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ density: 'inline', kind: null, roleSlug: null, taskType: null })} />,
+    );
+    expect(html).not.toMatch(/<span[^>]*><\/span>/); // no empty spans
+  });
 });
