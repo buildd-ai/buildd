@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 
-let workerRows: Array<{ prNumber: number | null; mergedAt: Date | null }> = [];
+let workerRows: Array<{ prNumber: number | null; mergedAt: Date | null; workspaceId: string }> = [];
 let siblingTaskRows: Array<{
   id: string;
   title: string;
@@ -8,11 +8,36 @@ let siblingTaskRows: Array<{
   workers: Array<{ prNumber: number | null; mergedAt: Date | null }>;
 }> = [];
 
+type WhereNode =
+  | { type: 'and'; args: WhereNode[] }
+  | { type: 'eq'; field: string; value: unknown }
+  | { type: 'inArray'; field: string; values: unknown[] }
+  | { type: 'isNotNull'; field: string };
+
+// Real (not pass-through) filtering for the workers query, since the
+// regression this file guards against is a where-clause that forgot a
+// workspace filter — a mock that ignores `where` entirely couldn't catch it.
+function evalWhere(where: WhereNode | undefined, row: Record<string, unknown>): boolean {
+  if (!where) return true;
+  switch (where.type) {
+    case 'and':
+      return where.args.every(a => evalWhere(a, row));
+    case 'eq':
+      return row[where.field] === where.value;
+    case 'inArray':
+      return where.values.includes(row[where.field]);
+    case 'isNotNull':
+      return row[where.field] != null;
+  }
+}
+
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: {
-        findMany: mock(() => Promise.resolve(workerRows)),
+        findMany: mock((args: { where?: WhereNode }) =>
+          Promise.resolve(workerRows.filter(r => evalWhere(args.where, r))),
+        ),
       },
       tasks: {
         findMany: mock(() => Promise.resolve(siblingTaskRows)),
@@ -23,7 +48,7 @@ mock.module('@buildd/core/db', () => ({
 
 mock.module('@buildd/core/db/schema', () => ({
   tasks: 'tasks',
-  workers: 'workers',
+  workers: { workspaceId: 'workspaceId', prNumber: 'prNumber', mergedAt: 'mergedAt' },
 }));
 
 mock.module('drizzle-orm', () => ({
@@ -42,13 +67,13 @@ describe('computeSupersededFailedTasks', () => {
   });
 
   it('returns empty map when there are no failed tasks', async () => {
-    const result = await computeSupersededFailedTasks('m-1', []);
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', []);
     expect(result.size).toBe(0);
   });
 
-  it('marks a task superseded when its subjectPrNumber merged', async () => {
-    workerRows = [{ prNumber: 2456, mergedAt: new Date() }];
-    const result = await computeSupersededFailedTasks('m-1', [
+  it('marks a task superseded when its subjectPrNumber merged in the same workspace', async () => {
+    workerRows = [{ prNumber: 2456, mergedAt: new Date(), workspaceId: 'ws-1' }];
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
       { id: 't-1', title: 'Rescue task', subjectPrNumber: 2456, createdAt: new Date() },
     ]);
     expect(result.get('t-1')).toEqual({ taskId: 't-1', prNumber: 2456, supersedingTaskId: null });
@@ -56,7 +81,25 @@ describe('computeSupersededFailedTasks', () => {
 
   it('does not mark superseded when the subject PR has not merged', async () => {
     workerRows = []; // no merged worker for prNumber 2456
-    const result = await computeSupersededFailedTasks('m-1', [
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
+      { id: 't-1', title: 'Rescue task', subjectPrNumber: 2456, createdAt: new Date() },
+    ]);
+    expect(result.has('t-1')).toBe(false);
+  });
+
+  it('does not mark superseded when the matching PR number merged in a different workspace', async () => {
+    // PR numbers are per-repo, not global — a merge of "PR #42" in an
+    // unrelated workspace must never satisfy this mission's task.
+    workerRows = [{ prNumber: 42, mergedAt: new Date(), workspaceId: 'ws-other' }];
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
+      { id: 't-1', title: 'Rescue task', subjectPrNumber: 42, createdAt: new Date() },
+    ]);
+    expect(result.has('t-1')).toBe(false);
+  });
+
+  it('does not mark superseded via the PR-number route when the mission has no workspaceId', async () => {
+    workerRows = [{ prNumber: 2456, mergedAt: new Date(), workspaceId: 'ws-1' }];
+    const result = await computeSupersededFailedTasks('m-1', null, [
       { id: 't-1', title: 'Rescue task', subjectPrNumber: 2456, createdAt: new Date() },
     ]);
     expect(result.has('t-1')).toBe(false);
@@ -73,7 +116,7 @@ describe('computeSupersededFailedTasks', () => {
         workers: [{ prNumber: 2456, mergedAt: new Date('2026-09-17T10:00:00Z') }],
       },
     ];
-    const result = await computeSupersededFailedTasks('m-1', [
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
       { id: 't-1', title: '[reviewer] PR #2456: BUILD', subjectPrNumber: null, createdAt: failedCreatedAt },
     ]);
     expect(result.get('t-1')).toEqual({ taskId: 't-1', prNumber: 2456, supersedingTaskId: 't-2' });
@@ -90,7 +133,7 @@ describe('computeSupersededFailedTasks', () => {
         workers: [{ prNumber: 2456, mergedAt: new Date('2026-09-17T10:00:00Z') }],
       },
     ];
-    const result = await computeSupersededFailedTasks('m-1', [
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
       { id: 't-1', title: '[reviewer] PR #2456: BUILD', subjectPrNumber: null, createdAt: failedCreatedAt },
     ]);
     expect(result.has('t-1')).toBe(false);
@@ -105,14 +148,14 @@ describe('computeSupersededFailedTasks', () => {
         workers: [{ prNumber: 2456, mergedAt: null }],
       },
     ];
-    const result = await computeSupersededFailedTasks('m-1', [
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
       { id: 't-1', title: '[reviewer] PR #2456: BUILD', subjectPrNumber: null, createdAt: new Date('2026-09-17T08:00:00Z') },
     ]);
     expect(result.has('t-1')).toBe(false);
   });
 
   it('leaves an unmatched task out of the result entirely', async () => {
-    const result = await computeSupersededFailedTasks('m-1', [
+    const result = await computeSupersededFailedTasks('m-1', 'ws-1', [
       { id: 't-1', title: 'Unrelated failure', subjectPrNumber: null, createdAt: new Date() },
     ]);
     expect(result.has('t-1')).toBe(false);
