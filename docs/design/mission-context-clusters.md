@@ -840,7 +840,8 @@ useless as a search key, so dropping non-repo-relative paths would improve both.
 
 ### Where CBM fits
 
-CBM stays worker-side. Server-side references are `skill-and-role-injection.ts`
+CBM stays worker-side. Server-side references are
+`apps/web/src/app/api/workers/claim/skill-and-role-injection.ts`
 (mounts the MCP for a worker), the metrics route, and `packages/core/cbm-health.ts`
 — nothing in `apps/web` queries the graph, and `BY_DESIGN_SKIP_REASONS`
 (`cbm-insight.ts:61`) records why: `codex_task`, `no_worktree`, `role_opt_out`.
