@@ -478,6 +478,50 @@ describe('approvePlan — doc-fix proposal approves as exactly one linked child'
   });
 });
 
+/**
+ * `context.specSource` traceability (docs/design/spec-to-build-pattern.md §3):
+ * the doc-fix pattern's `specDocFix` field, generalized to any plan filed via
+ * `emitsPlan` — a `mode: 'planning'` task whose `pathManifest[0]` names the
+ * spec doc it authors (forced non-empty at creation).
+ */
+describe('approvePlan — specSource traceability for an emitsPlan-originated plan', () => {
+  beforeEach(reset);
+
+  const SPEC_PATH = 'docs/design/some-spec.md';
+
+  function withEmitsPlanOrigin() {
+    planningTaskRow.mode = 'planning';
+    planningTaskRow.pathManifest = [SPEC_PATH];
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+  }
+
+  it('stamps specSource with specPath + planningTaskId on every child', async () => {
+    withEmitsPlanOrigin();
+    await approvePlan(PLANNING_TASK_ID, [
+      { ref: 'a', title: 'Step A' },
+      { ref: 'b', title: 'Step B' },
+    ] as any);
+    for (const v of insertedValues) {
+      expect(v.context.specSource).toEqual({ specPath: SPEC_PATH, planningTaskId: PLANNING_TASK_ID });
+    }
+  });
+
+  it('does not add specSource for an ordinary (non-emitsPlan) planning task', async () => {
+    // mode: 'planning' but no pathManifest — an organizer-authored plan, which
+    // never sets pathManifest at its own insert site.
+    planningTaskRow.mode = 'planning';
+    taskRows[PLANNING_TASK_ID] = planningTaskRow;
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Step A' }] as any);
+    expect(insertedValues[0].context.specSource).toBeUndefined();
+  });
+
+  it('does not add specSource for a plain execution-mode plan approval', async () => {
+    // Default reset() fixture: no mode set at all.
+    await approvePlan(PLANNING_TASK_ID, [{ ref: 'a', title: 'Step A' }] as any);
+    expect(insertedValues[0].context.specSource).toBeUndefined();
+  });
+});
+
 // ─── Mission phase stamping (docs/specs/mission-legibility.md §1) ─────────────
 
 describe('approvePlan — mission phase stamping', () => {
