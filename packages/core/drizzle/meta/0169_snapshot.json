@@ -1,6 +1,6 @@
 {
-  "id": "b81388d2-4d47-4d10-a145-40d16e6ab1a2",
-  "prevId": "2d9ae1eb-7cd3-430c-8b61-ba5178ad9ea6",
+  "id": "d92e566f-54f6-46f5-81e0-7c6eae6dcd41",
+  "prevId": "b81388d2-4d47-4d10-a145-40d16e6ab1a2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -10394,6 +10394,36 @@
         "pr_base_ref": {
           "name": "pr_base_ref",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "superseded_by_pr_number": {
+          "name": "superseded_by_pr_number",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "superseded_by_pr_url": {
+          "name": "superseded_by_pr_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "superseded_reason": {
+          "name": "superseded_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "superseded_recorded_by": {
+          "name": "superseded_recorded_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "superseded_at": {
+          "name": "superseded_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },

@@ -476,13 +476,21 @@ export async function retriggerMissionOnFailure(
   // 4. Retrigger — new chain since the failed task's chain is dead
   console.log(`[mission-loop] Auto-retrying mission ${missionId} after planning task ${failedTaskId} failed`);
   const run = await import('@/lib/mission-run').then(m => m.runMission);
-  await run(missionId, {
+  const retryResult = await run(missionId, {
     cycleContext: {
       cycleNumber: 1,
       triggerChainId: crypto.randomUUID(),
       triggerSource: 'auto_retry',
     },
   });
+
+  // Deduped means the schedule's own cycle for this tick already covers it —
+  // heartbeatTickAnchor collided, so no second worker was dispatched. Reporting
+  // a cycle start here would be a false "retried" signal on the mission feed.
+  if (retryResult.deduped) {
+    console.log(`[mission-loop] Mission ${missionId}: auto-retry no-op — same tick as an existing cycle`);
+    return { action: 'skipped' };
+  }
 
   await triggerEvent(
     channels.mission(missionId),
