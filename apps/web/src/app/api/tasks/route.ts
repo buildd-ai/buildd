@@ -193,7 +193,13 @@ export async function GET(req: NextRequest) {
           ...(isTerminalAudit ? {
             updatedAt: tasks.updatedAt,
             summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
-            prNumber: sql<number | null>`(${tasks.result}->>'prNumber')::int`,
+            // Audit mode reaches the entire terminal history, unbounded by the
+            // 24h window every other query path stays inside — including tasks
+            // completed before this field's shape was settled. A bare ::int
+            // cast throws and kills the whole query the moment one historical
+            // row has a non-numeric value here, so guard it instead of trusting
+            // the shape.
+            prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
             hasArtifact: sql<boolean>`EXISTS (
               SELECT 1 FROM ${workers} w
               JOIN ${artifacts} a ON a.worker_id = w.id
@@ -978,6 +984,25 @@ export async function POST(req: NextRequest) {
         },
       });
       return NextResponse.json({ error }, { status: 400 });
+    }
+
+    // Advisory kind gate: a mission task with no `kind` is unlabelled on every
+    // surface for the rest of its life, and nothing infers one later from its
+    // title. Deliberately NOT a 400 — see GATE_SLUGS.KIND_ABSENT. The lever that
+    // actually moves the volume is `kind` being required in
+    // `planningOutputSchema`, which the SDK enforces at generation time and so
+    // can never reject a caller at runtime.
+    if (missionId && rawKind === undefined) {
+      fireGateEvent({
+        gate: GATE_SLUGS.KIND_ABSENT,
+        surface: 'POST /api/tasks',
+        outcome: 'warned',
+        reason: 'mission task created with no kind — it will render unlabelled on every surface',
+        workspaceId,
+        missionId,
+        callerOrigin: gateCaller,
+        detail: { hasRoleSlug: Boolean(roleSlug), outputRequirement },
+      });
     }
 
     // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace

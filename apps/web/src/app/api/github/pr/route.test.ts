@@ -21,9 +21,15 @@ const mockTasksFindFirst = mock(() => Promise.resolve(null) as any);
 const mockTasksFindMany = mock(() => Promise.resolve([]) as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
+/**
+ * `db.update(...).set(...).where(...)` — awaited by most callers, but the
+ * guarded `kind` stamp (mission-legibility Rule K2-16) needs `.returning()` as
+ * its did-anything-change signal, so the fake WHERE is a thenable that also
+ * carries one.
+ */
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
-    where: mock(() => Promise.resolve()),
+    where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })),
   })),
 }));
 // Stored reviewer verdict for the agent-review self-merge gate. Default: no
@@ -206,7 +212,7 @@ describe('POST /api/github/pr', () => {
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
-        where: mock(() => Promise.resolve()),
+        where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })),
       })),
     });
   });
@@ -602,6 +608,9 @@ describe('POST /api/github/pr', () => {
         accountId: 'account-1',
         name: 'test-worker',
         branch: WORKER_BRANCH,
+        // The FK column, not just the joined row — the guarded `kind` stamp
+        // keys on workers.task_id, which a real row always carries.
+        taskId: 't-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
         task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
         ...overrides,
@@ -1064,6 +1073,9 @@ describe('POST /api/github/pr', () => {
         accountId: 'account-1',
         name: 'test-worker',
         branch: WORKER_BRANCH,
+        // The FK column, not just the joined row — the guarded `kind` stamp
+        // keys on workers.task_id, which a real row always carries.
+        taskId: 't-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
         task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
         ...overrides,
@@ -1451,7 +1463,7 @@ describe('POST /api/github/pr', () => {
     mockWorkersUpdate.mockReturnValue({
       set: mock((data: any) => {
         capturedSetData = data;
-        return { where: mock(() => Promise.resolve()) };
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })) };
       }),
     });
 
@@ -2079,6 +2091,9 @@ describe('POST /api/github/pr', () => {
         accountId: 'account-1',
         name: 'test-worker',
         branch: WORKER_BRANCH,
+        // The FK column, not just the joined row — the guarded `kind` stamp
+        // keys on workers.task_id, which a real row always carries.
+        taskId: MISSION_TASK.id,
         workspace: WORKSPACE_OK,
         task: MISSION_TASK,
         ...overrides,
@@ -2124,6 +2139,82 @@ describe('POST /api/github/pr', () => {
       const createArgs = mockCreateReviewerTask.mock.calls[0][0];
       expect(createArgs.prNumber).toBe(42);
       expect(createArgs.headSha).toBe('headsha');
+    });
+
+    it('creates the review pass EXACTLY once — the PR-open hook is the only trigger', async () => {
+      // mission-legibility.md Rule R3-4: the programmatic review pass for a
+      // builder task that opens a PR is the existing agent-review tier fired
+      // here. No second trigger is designed, and none is needed — any new one
+      // would race this through the same dedupe.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const setCalls: any[] = [];
+      const whereCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((data: any) => {
+          setCalls.push(data);
+          return {
+            where: mock((w: any) => {
+              whereCalls.push(w);
+              return Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) });
+            }),
+          };
+        }),
+      });
+
+      expect((await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      }))).status).toBe(200);
+
+      const kindWrite = setCalls.findIndex(c => c.kind === 'engineering');
+      expect(kindWrite).toBeGreaterThanOrEqual(0);
+      // AC-12: the late signal never overwrites a declared kind, so the write
+      // carries an IS NULL guard rather than keying on the task id alone.
+      const hasIsNull = (node: any, seen = new Set()): boolean => {
+        if (!node || typeof node !== 'object' || seen.has(node)) return false;
+        seen.add(node);
+        if (node.type === 'isNull') return true;
+        return Object.values(node).some(v => hasIsNull(v, seen));
+      };
+      expect(hasIsNull(whereCalls[kindWrite])).toBe(true);
     });
 
     it('does not request a review for a draft PR', async () => {
@@ -4299,7 +4390,7 @@ describe('Retry PR body generation', () => {
 
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
-        where: mock(() => Promise.resolve()),
+        where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })),
       })),
     });
   });

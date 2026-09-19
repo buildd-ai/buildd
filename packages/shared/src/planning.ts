@@ -40,6 +40,12 @@ export interface PlanStep {
   priority?: number;
   /** Declared files/globs this step expects to create or modify — see Task.pathManifest. */
   pathManifest?: string[];
+  /**
+   * The named stretch of the mission this step belongs to. Carried forward in
+   * plan order by approvePlan onto `tasks.missionPhaseIndex/Label` — see
+   * docs/specs/mission-legibility.md §1.3.
+   */
+  phase?: string;
   /** Smart-routing hint — see plans/buildd/smart-model-routing.md */
   kind?: 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
   /** Smart-routing hint — see plans/buildd/smart-model-routing.md */
@@ -135,18 +141,36 @@ export const planningOutputSchema = {
               'overlap with concurrently claimable steps before either starts, instead of after both open ' +
               'conflicting PRs.',
           },
-          // Smart-routing hints. Optional — router falls back to defaults
-          // when absent. See plans/buildd/smart-model-routing.md.
+          phase: {
+            type: 'string',
+            description:
+              'The named stretch of the mission this step belongs to, e.g. "Storage", "Population", "Rendering". ' +
+              'Steps that share a phase share a heading on every mission surface. Repeat the exact same string on ' +
+              'every step in a phase, and change it only where a genuinely new stretch of work begins — a plan ' +
+              'where every step has its own phase has no phases. Leave it off entirely when the plan is a single ' +
+              'stretch of work.',
+          },
+          // Smart-routing hints. `kind` is REQUIRED (below): it picks the model
+          // tier at claim time AND it is the only thing any surface draws this
+          // task's glyph from — see docs/specs/mission-legibility.md §2.5.
+          // Required here rather than gated at POST /api/tasks because the SDK
+          // enforces it at generation time, so it can never become a runtime
+          // rejection on a caller that is already failing.
           kind: {
             type: 'string',
             enum: ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation'],
+            description:
+              'The SHAPE of the work, not its subject. engineering changes code or config; research reads and ' +
+              'reports without changing anything; writing produces prose or docs; design produces a visual or ' +
+              'interaction artifact; analysis derives a judgment from data; observation watches something and ' +
+              'records what it saw; coordination plans, routes or reconciles other tasks.',
           },
           complexity: {
             type: 'string',
             enum: ['simple', 'normal', 'complex'],
           },
         },
-        required: ['ref', 'title', 'description'],
+        required: ['ref', 'title', 'description', 'kind'],
       },
     },
     summary: {

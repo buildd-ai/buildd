@@ -22,6 +22,8 @@ type SyncCall = { cmd: string; opts: Record<string, unknown> };
 const syncCalls: SyncCall[] = [];
 let worktrees: Map<string, string>;
 let existingPaths: Set<string>;
+/** Branch names whose `origin/<name>` ref the fetchBranch probe reports missing. */
+let missingBranches: Set<string>;
 const MAIN_WORKTREE = '/repo';
 const DEFAULT_BRANCH = 'dev';
 const MISSION_BRANCH = 'buildd/mission-abc';
@@ -51,6 +53,11 @@ function mockExecSync(cmd: string, opts: Record<string, unknown>) {
   if (cmd.includes('rev-list --count')) {
     // Stale-branch guard probe (HEAD..origin/<default>) — always fresh here.
     if (cmd.includes('HEAD..origin/')) return '0';
+    // fetchBranch probe: a candidate whose remote ref is simulated absent.
+    const candidate = cmd.match(/\.\.origin\/(.+)"\s*$/)?.[1];
+    if (candidate && missingBranches.has(candidate)) {
+      fail(`unknown revision or path not in the working tree: origin/${candidate}`, 128);
+    }
     return '5'; // fetchBranch probe: candidate exists, not diverged
   }
 
@@ -106,6 +113,7 @@ beforeEach(() => {
   syncCalls.length = 0;
   worktrees = new Map([[DEFAULT_BRANCH, MAIN_WORKTREE]]);
   existingPaths = new Set([MAIN_WORKTREE, `${MAIN_WORKTREE}/.git`, `${MAIN_WORKTREE}/.buildd-worktrees`]);
+  missingBranches = new Set();
   injectDeps();
 });
 
@@ -267,5 +275,58 @@ describe('setupWorktree — mission integration branch guard', () => {
     expect(adds.length).toBe(1);
     expect(adds[0].cmd).toContain(`-b "${TASK_BRANCH}"`);
     expect(adds[0].cmd).toContain(`origin/${MISSION_BRANCH}`);
+  });
+
+  // Regression (friction task e704690f): a worker resuming a prior failed
+  // attempt whose branch was never pushed (or was pruned) hit
+  // resolveWorktreeBase's resumeBranch-missing path, which used to fall
+  // straight to trunk and ignore `context.baseBranch` entirely. Combined with
+  // `branch` already being the literal mission branch (sharedHeadBranch
+  // precedence — see branch-names.ts), the worktree was created with
+  // `-b "<mission branch>"` cut from trunk: a fresh branch with the exact name
+  // create_pr refuses to accept as a task PR's head, and missing every PR the
+  // mission had already merged.
+  test('resumeBranch missing, branch param already the mission branch (resume of a mission-branch task): falls back to the mission branch, never re-creates it', async () => {
+    const RESUME_BRANCH = 'buildd/prior-attempt-missing';
+    missingBranches.add(RESUME_BRANCH);
+
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      MISSION_BRANCH, // claimedWorker.branch — sharedHeadBranch precedence already made this the mission branch
+      DEFAULT_BRANCH,
+      'worker-resume-missing',
+      { baseBranch: MISSION_BRANCH, resumeBranch: RESUME_BRANCH },
+    );
+
+    expect(result).not.toBeNull();
+    // Falls back to the mission's own declared base, never all the way to
+    // trunk — trunk would be missing the mission's own prior merged work.
+    expect(result.base).toBe(`origin/${MISSION_BRANCH}`);
+    // The fallback branch must never be the literal mission integration
+    // branch — that's the one head create_pr refuses for a task PR.
+    expect(result.branch).not.toBe(MISSION_BRANCH);
+    expect(result.fallback).toEqual({ candidate: RESUME_BRANCH, reason: 'missing' });
+
+    const adds = syncCalls.filter(c => c.cmd.includes('git worktree add'));
+    expect(adds.length).toBe(1);
+    expect(adds[0].cmd).not.toContain(`-b "${MISSION_BRANCH}"`);
+    expect(adds[0].cmd).toContain(`origin/${MISSION_BRANCH}`);
+  });
+
+  test('resumeBranch AND declared base both missing: falls all the way back to trunk', async () => {
+    const RESUME_BRANCH = 'buildd/prior-attempt-missing';
+    missingBranches.add(RESUME_BRANCH);
+    missingBranches.add(MISSION_BRANCH);
+
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      MISSION_BRANCH,
+      DEFAULT_BRANCH,
+      'worker-resume-double-missing',
+      { baseBranch: MISSION_BRANCH, resumeBranch: RESUME_BRANCH },
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.base).toBe(`origin/${DEFAULT_BRANCH}`);
   });
 });

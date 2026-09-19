@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (34)
+## Active (35)
 
 ### auth (4)
 
@@ -76,8 +76,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (6)
+### surfaces (7)
 
+- [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-16
+  A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
 - [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-15
@@ -106,7 +108,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Draft (2)
 
-- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-15
+- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-18
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-14
   Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, with day boundaries as ticks and history collapsed to chain rows.

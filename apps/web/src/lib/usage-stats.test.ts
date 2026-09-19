@@ -759,3 +759,76 @@ describe('describeScan', () => {
     expect(scan.completeSince).toBe('2026-08-25T00:00:00.000Z');
   });
 });
+
+// ─── Role attribution vs cost attribution (mission-legibility.md §3.2) ────────
+
+describe('role histogram — separated from the cost rollup (Rule R3-2)', () => {
+  /** A builder task with one reviewer attempt folded under it. */
+  const parentAndReview = () => [
+    row({ workerId: 'w-parent', taskId: 'task-b', roleSlug: 'builder', inputTokens: 8000, costUsd: '1.00' }),
+    row({
+      workerId: 'w-review',
+      taskId: 'task-r',
+      parentTaskId: 'task-b',
+      roleSlug: 'reviewer',
+      inputTokens: 2000,
+      costUsd: '0.25',
+    }),
+  ];
+
+  test('AC-17: a reviewer group appears at all, where before there was none', () => {
+    // The reviewer worker used to be folded into its parent's bucket and
+    // LABELLED with the parent's role, so no `reviewer` group was ever formed
+    // across a window in which nearly every merged PR took a review round.
+    const stats = computeUsageStats(parentAndReview(), 'role');
+    expect(stats.groups.map(g => g.key).sort()).toEqual(['builder', 'reviewer']);
+    const reviewer = stats.groups.find(g => g.key === 'reviewer')!;
+    expect(reviewer.tasks).toBe(1);
+    expect(reviewer.inputTokens).toBe(2000);
+  });
+
+  test('AC-17: the per-task cost rollup is unchanged — the attempt still charges the parent', () => {
+    const rows = parentAndReview();
+    const byTask = aggregateByTask(rows);
+    // One bucket, both workers, the full cost of getting the task done.
+    expect(byTask).toHaveLength(1);
+    expect(byTask[0].taskId).toBe('task-b');
+    expect(byTask[0].workers).toBe(2);
+    expect(byTask[0].inputTokens).toBe(10000);
+
+    const stats = computeUsageStats(rows, 'role');
+    expect(stats.totals.tasks).toBe(1);
+    expect(stats.totals.inputTokens).toBe(10000);
+    expect(dist(stats.perTask.inputTokens).max).toBe(10000);
+  });
+
+  test('a retry by the SAME role still folds into one task in that role\'s group', () => {
+    const stats = computeUsageStats([
+      row({ workerId: 'w1', taskId: 'task-b', roleSlug: 'builder', inputTokens: 1000 }),
+      row({ workerId: 'w2', taskId: 'task-b2', parentTaskId: 'task-b', roleSlug: 'builder', inputTokens: 500 }),
+    ], 'role');
+    expect(stats.groups).toHaveLength(1);
+    expect(stats.groups[0].key).toBe('builder');
+    // One task, not two — role grouping did not shatter the cost bucket.
+    expect(stats.groups[0].tasks).toBe(1);
+    expect(stats.groups[0].inputTokens).toBe(1500);
+  });
+
+  test('an unassigned parent with a reviewer attempt contributes to BOTH groups', () => {
+    const stats = computeUsageStats([
+      row({ workerId: 'w1', taskId: 'task-x', roleSlug: null, inputTokens: 100 }),
+      row({ workerId: 'w2', taskId: 'task-rx', parentTaskId: 'task-x', roleSlug: 'reviewer', inputTokens: 900 }),
+    ], 'role');
+    expect(stats.groups.map(g => g.key).sort()).toEqual([UNASSIGNED_ROLE, 'reviewer'].sort());
+  });
+
+  test('grouping by workspace is untouched by the role split', () => {
+    const stats = computeUsageStats([
+      row({ workerId: 'w1', taskId: 't1', workspaceId: 'ws-a', roleSlug: 'builder', inputTokens: 10 }),
+      row({ workerId: 'w2', taskId: 't2', parentTaskId: 't1', workspaceId: 'ws-a', roleSlug: 'reviewer', inputTokens: 90 }),
+    ], 'workspace');
+    expect(stats.groups).toHaveLength(1);
+    expect(stats.groups[0].key).toBe('ws-a');
+    expect(stats.groups[0].tasks).toBe(1);
+  });
+});

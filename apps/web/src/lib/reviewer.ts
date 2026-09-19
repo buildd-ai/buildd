@@ -26,6 +26,7 @@ import {
   buildPolicyClassPaths,
 } from './workspace-policy';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
+import { inheritPhaseFromParent } from './mission-phase';
 import { appendPrActivity } from './pr-activity-comment';
 import { wrapUntrustedText, sanitizeUntrustedText } from './untrusted-text';
 import { extractLede } from '@buildd/core/pr-lede';
@@ -489,6 +490,12 @@ export async function createReviewerTask(
 
   const title = reviewerTitle(prNumber, originalTask.title);
 
+  // Rule P1-7: an attempt inherits its parent's phase. The rail collapses
+  // attempts under the parent row they belong to, so a review pass carrying a
+  // different phase than the task it reviews would have to render inside a band
+  // it is not a member of.
+  const phase = await inheritPhaseFromParent(originalTaskId);
+
   const [reviewerTask] = await db
     .insert(tasks)
     .values({
@@ -497,6 +504,12 @@ export async function createReviewerTask(
       description: diffContext,
       category: 'review',
       roleSlug: reviewerRole,
+      // A review DERIVES A JUDGMENT from a diff — analysis, in the seven-kind
+      // vocabulary. Written at creation so every reviewer row resolves at tier 1
+      // of the glyph chain instead of depending on `reviewerTitle`'s prefix
+      // format, and so reviewer work is groupable by kind in usage stats.
+      kind: 'analysis',
+      ...phase,
       // Keep reviews on the same provider as the task that produced the PR.
       // Falling back to the DB's Claude default can strand reviews when Claude's
       // OAuth budget is exhausted even though the original ran on Codex.

@@ -36,6 +36,7 @@ mock.module('@buildd/core/gate-events', () => ({
     SUBJECT_DEDUPE: 'subject_dedupe',
     FILE_ANYWAY: 'file_anyway',
     MANIFEST_REQUIRED: 'manifest_required',
+    KIND_ABSENT: 'kind_absent',
   },
   recordGateEvent: async (input: Recorded) => {
     if (ledgerShouldReject) throw new Error('gate_events is unreachable');
@@ -268,6 +269,46 @@ describe('POST /api/tasks — gate ledger wiring', () => {
     const events = eventsFor('subject_dedupe');
     expect(events).toHaveLength(1);
     expect(events[0].outcome).toBe('rejected');
+  });
+
+  // ── Advisory kind gate (mission-legibility.md Rule K2-13/K2-14) ───────────
+
+  it('AC-15 (rejection): a mission task with no kind is WARNED, never 400ed', async () => {
+    // `kind` is meaningful on every task, so a hard gate would fire on all of
+    // them — including the `[friction]` filing an agent makes while already
+    // failing, which is the caller least able to absorb a rejection and retry.
+    const res = await POST(post({
+      workspaceId: WS,
+      title: '[friction] create_pr returned 409',
+      description: 'Filed mid-failure.',
+      missionId: MISSION,
+    }));
+    await settle();
+
+    expect(res.status).toBe(200);
+    const events = eventsFor('kind_absent');
+    expect(events).toHaveLength(1);
+    expect(events[0].outcome).toBe('warned');
+    expect(events[0].surface).toBe('POST /api/tasks');
+    expect(events[0].missionId).toBe(MISSION);
+  });
+
+  it('says nothing when the filer declared a kind', async () => {
+    const res = await POST(post({
+      workspaceId: WS, title: 'x', description: 'y', missionId: MISSION, kind: 'engineering',
+    }));
+    await settle();
+    expect(res.status).toBe(200);
+    expect(eventsFor('kind_absent')).toHaveLength(0);
+  });
+
+  it('says nothing for a task outside any mission', async () => {
+    // The measurement this gate exists for is about mission legibility; a
+    // standalone task has no rail to render unlabelled on.
+    const res = await POST(post({ workspaceId: WS, title: 'x', description: 'y' }));
+    await settle();
+    expect(res.status).toBe(200);
+    expect(eventsFor('kind_absent')).toHaveLength(0);
   });
 
   it('leaves the response untouched when the ledger itself is down', async () => {

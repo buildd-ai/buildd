@@ -1,5 +1,5 @@
 import {
-  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType
+  pgTable, uuid, text, timestamp, jsonb, integer, decimal, boolean, index, uniqueIndex, primaryKey, bigint, pgEnum, customType, check
 } from 'drizzle-orm/pg-core';
 
 // Custom pgvector column type. HNSW + GIN indexes are added in the migration SQL.
@@ -898,6 +898,15 @@ export const missions = pgTable('missions', {
   // existed" — both read as no-baseline, never as "just now", to a derived
   // metric keyed off it (docs/design/derived-metric-availability.md).
   completedAt: timestamp('completed_at', { withTimezone: true }),
+  // Set when the token-free heartbeat circuit breaker (lib/heartbeat-circuit-
+  // breaker.ts) pauses this mission after N consecutive died-early heartbeat
+  // cycles — a provider outage or similar has no supervisor otherwise, since
+  // the organizer IS a Claude worker. Deliberately never cleared on re-arm: the
+  // breaker's own "last N heartbeat tasks" window is bounded to tasks created
+  // AFTER this timestamp, so re-arming (status -> active) naturally gives the
+  // mission a fresh run of N attempts before it can trip again, with no
+  // separate clear step to keep in sync.
+  heartbeatBreakerTrippedAt: timestamp('heartbeat_breaker_tripped_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1019,6 +1028,17 @@ export const tasks = pgTable('tasks', {
   outputSchema: jsonb('output_schema').$type<Record<string, unknown> | null>(),
   // Mission linking
   missionId: uuid('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+  // Mission PHASE — the named stretch of a plan this task belongs to.
+  // See docs/specs/mission-legibility.md §1. Deliberately NOT called `phase`:
+  // `deriveTaskPhase` (apps/web/src/lib/task-presentation.ts) already owns that
+  // word and means a task's LIFECYCLE state, which is an unrelated concept.
+  //
+  // Written exactly once, by approvePlan (from the plan's own `phase` labels) or
+  // by the attempt-inheritance copy that gives a retry its parent's phase. Never
+  // updated afterwards, and never inferred from a title or description.
+  // Both columns are NULL or both are set — enforced by the check constraint below.
+  missionPhaseIndex: integer('mission_phase_index'),
+  missionPhaseLabel: text('mission_phase_label'),
   // Role routing — if set, only runners with this skill can claim
   roleSlug: text('role_slug'),
   // Workflow DAG: task IDs that must complete before this task is claimable
@@ -1128,6 +1148,15 @@ export const tasks = pgTable('tasks', {
   subjectErrorIdx: index('tasks_subject_error_idx').on(t.workspaceId, t.subjectErrorSignature),
   subjectMissionIdx: index('tasks_subject_mission_idx').on(t.workspaceId, t.subjectMissionId),
   subjectDedupeScopeIdx: index('tasks_subject_dedupe_scope_idx').on(t.workspaceId, t.subjectDedupeScope),
+  // Mission phase lookup — every reader asks "the phases of THIS mission, in order".
+  missionPhaseIdx: index('tasks_mission_phase_idx').on(t.missionId, t.missionPhaseIndex),
+  // A half-set phase is not a degraded phase, it is a corrupt one: an index with
+  // no label renders as a header with no name, a label with no index has nowhere
+  // to sort. Rejected in the database so no write path can produce one.
+  missionPhasePaired: check(
+    'tasks_mission_phase_paired',
+    sql`(${t.missionPhaseIndex} IS NULL) = (${t.missionPhaseLabel} IS NULL)`,
+  ),
 }));
 
 // Reports attached to a task's subject anchor — one row per observation/filing.
@@ -1790,7 +1819,7 @@ export const taskSchedules = pgTable('task_schedules', {
   lastCheckedAt: timestamp('last_checked_at', { withTimezone: true }),
   lastTriggerValue: text('last_trigger_value'),
   totalChecks: integer('total_checks').default(0).notNull(),
-  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted'>(),
+  lastDeferralReason: text('last_deferral_reason').$type<'concurrent_cap' | 'active_hours' | 'trigger_unchanged' | 'heartbeat_blocked' | 'heartbeat_no_change' | 'heartbeat_waiting' | 'heartbeat_criteria_blocked' | 'criteria_escalated' | 'orchestration_manual' | 'budget_exhausted' | 'heartbeat_circuit_breaker'>(),
   lastDeferredAt: timestamp('last_deferred_at', { withTimezone: true }),
   lastHeartbeatStateHash: text('last_heartbeat_state_hash'),
   lastOverdueAlertAt: timestamp('last_overdue_alert_at', { withTimezone: true }),

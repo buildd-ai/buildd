@@ -43,7 +43,7 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
-import { computeStateKey, evaluateHeartbeatPrepass, classifyMissionWait, type HeartbeatMissionState } from './heartbeat-prepass';
+import { computeStateKey, evaluateHeartbeatPrepass, classifyMissionWait, classifyLastHeartbeatCycleWait, type HeartbeatMissionState } from './heartbeat-prepass';
 
 function resetAll() {
   missionsFindFirstResult = null;
@@ -444,6 +444,61 @@ describe('evaluateHeartbeatPrepass', () => {
     const result = await evaluateHeartbeatPrepass(BASE_INPUT);
     expect(result.action).toBe('skip_waiting');
   });
+
+  // ── Heartbeat cycle itself hit a budget wall (task f3ab48af) ──
+  //
+  // A heartbeat cycle is a fresh mode='planning' task every cron tick, not a
+  // continuously-requeued row — by the time the next tick runs, the cycle
+  // that hit the wall is already terminal (status:'failed') and would never
+  // show up in classifyMissionWait's non-terminal scan (which also explicitly
+  // excludes mode='planning'). This is the other half of "wait, don't plan".
+
+  it('returns skip_waiting when the most recent heartbeat cycle itself ended budget_limited', async () => {
+    tasksFindManyResult = [
+      {
+        title: 'Mission: Organizer', mode: 'planning', status: 'failed',
+        result: { errorType: 'budget_limited', error: "Claude Code returned an error result: You've hit your weekly limit · resets 4am (UTC)" },
+        createdAt: new Date(),
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).toBe('skip_waiting');
+    if (result.action === 'skip_waiting') {
+      expect(result.reason).toContain('heartbeat cycle');
+    }
+  });
+
+  it('resumes planning once the heartbeat cycle budget reset time has passed', async () => {
+    tasksFindManyResult = [
+      {
+        title: 'Mission: Organizer', mode: 'planning', status: 'failed',
+        result: { errorType: 'budget_limited', error: 'Budget limit exceeded (maxBudgetUsd)' },
+        // No parseable reset clause → falls back to createdAt + SESSION_WINDOW_MS (5h),
+        // and that has long passed.
+        createdAt: new Date('2020-01-01T00:00:00Z'),
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).not.toBe('skip_waiting');
+  });
+
+  it('does not skip_waiting when the most recent heartbeat cycle failed for an ordinary (non-budget) reason', async () => {
+    tasksFindManyResult = [
+      {
+        title: 'Mission: Organizer', mode: 'planning', status: 'failed',
+        result: { errorType: 'planning_contract_violation', error: 'Planning task completed without structuredOutput' },
+        createdAt: new Date(),
+      },
+    ];
+    selectResults = [0, 0];
+
+    const result = await evaluateHeartbeatPrepass(BASE_INPUT);
+    expect(result.action).not.toBe('skip_waiting');
+  });
 });
 
 describe('classifyMissionWait', () => {
@@ -494,5 +549,69 @@ describe('classifyMissionWait', () => {
       },
     ], now);
     expect(result?.waitUntil).toEqual(soon);
+  });
+});
+
+describe('classifyLastHeartbeatCycleWait', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+
+  it('returns null when there are no planning-mode tasks', () => {
+    expect(classifyLastHeartbeatCycleWait([], now)).toBeNull();
+    expect(classifyLastHeartbeatCycleWait([
+      { mode: 'execution', status: 'failed', result: { errorType: 'budget_limited' }, createdAt: now },
+    ], now)).toBeNull();
+  });
+
+  it('returns null when the most recent cycle did not fail', () => {
+    expect(classifyLastHeartbeatCycleWait([
+      { mode: 'planning', status: 'completed', result: null, createdAt: now },
+    ], now)).toBeNull();
+  });
+
+  it('returns null when the most recent cycle failed for a reason other than budget_limited', () => {
+    expect(classifyLastHeartbeatCycleWait([
+      { mode: 'planning', status: 'failed', result: { errorType: 'planning_contract_violation' }, createdAt: now },
+    ], now)).toBeNull();
+  });
+
+  it('parses the reset time out of the stored error text', () => {
+    const result = classifyLastHeartbeatCycleWait([
+      {
+        mode: 'planning', status: 'failed', createdAt: now,
+        result: { errorType: 'budget_limited', error: "Claude Code returned an error result: You've hit your weekly limit · resets 4am (UTC)" },
+      },
+    ], now);
+    expect(result).not.toBeNull();
+    expect(result?.reason).toContain('heartbeat cycle');
+  });
+
+  it('falls back to createdAt + SESSION_WINDOW_MS when the error text has no parseable reset clause', () => {
+    const result = classifyLastHeartbeatCycleWait([
+      { mode: 'planning', status: 'failed', createdAt: now, result: { errorType: 'budget_limited', error: 'Budget limit exceeded (maxBudgetUsd)' } },
+    ], now);
+    expect(result).not.toBeNull();
+    // now == createdAt, and the fallback window is strictly in the future.
+    expect(result!.waitUntil.getTime()).toBeGreaterThan(now.getTime());
+  });
+
+  it('returns null once the reset time has passed', () => {
+    const result = classifyLastHeartbeatCycleWait([
+      {
+        mode: 'planning', status: 'failed', createdAt: new Date(now.getTime() - 10 * 60 * 60 * 1000),
+        result: { errorType: 'budget_limited', error: 'Budget limit exceeded (maxBudgetUsd)' },
+      },
+    ], now);
+    expect(result).toBeNull();
+  });
+
+  it('only considers the LATEST planning cycle — an old budget-limited cycle before a later successful one must not re-trigger a wait', () => {
+    const result = classifyLastHeartbeatCycleWait([
+      {
+        mode: 'planning', status: 'failed', createdAt: new Date(now.getTime() - 60 * 60 * 1000),
+        result: { errorType: 'budget_limited', error: 'Budget limit exceeded (maxBudgetUsd)' },
+      },
+      { mode: 'planning', status: 'completed', result: null, createdAt: now },
+    ], now);
+    expect(result).toBeNull();
   });
 });

@@ -155,4 +155,61 @@ describe('resolveWorktreeBase', () => {
     });
     expect(messages.some(m => m.includes('gone-branch') && m.includes('not found'))).toBe(true);
   });
+
+  // ── A missing resumeBranch doesn't veto a still-valid declared base ───────
+  //
+  // Regression (friction task e704690f): a task under a mission-branch mission
+  // resumed a prior attempt whose branch was gone from remote. The old code
+  // fell straight to trunk, discarding a perfectly valid `context.baseBranch`
+  // (the mission integration branch) — so the fresh worktree was missing the
+  // mission's own prior merged work, AND (combined with sharedHeadBranch
+  // precedence making the task's own `branch` literally the mission branch
+  // name — see worktree-mission-integration-guard.test.ts) it set up the
+  // conditions for the fallback branch to collide with the mission branch.
+
+  it('missing resumeBranch falls back to a still-valid declared base, not all the way to trunk', async () => {
+    const fetched: string[] = [];
+    const result = await resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: 'buildd/prior-attempt-gone', baseBranch: 'mission/checkout-arc-1a2b3c4d' },
+      fetchBranch: async (branch) => {
+        fetched.push(branch);
+        return branch === 'buildd/prior-attempt-gone' ? 'missing' : 'ok';
+      },
+    });
+    expect(result).toBe('origin/mission/checkout-arc-1a2b3c4d');
+    expect(fetched).toEqual(['buildd/prior-attempt-gone', 'mission/checkout-arc-1a2b3c4d']);
+  });
+
+  it('reports the resumeBranch fallback (not the declared base) when the declared base is still usable', async () => {
+    let fallback: { candidate: string; reason: string } | undefined;
+    await resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: 'buildd/prior-attempt-gone', baseBranch: 'mission/checkout-arc-1a2b3c4d' },
+      fetchBranch: async (branch) => (branch === 'buildd/prior-attempt-gone' ? 'missing' : 'ok'),
+      onFallback: info => { fallback = info; },
+    });
+    expect(fallback).toEqual({ candidate: 'buildd/prior-attempt-gone', reason: 'missing' });
+  });
+
+  it('honours a declared base that is far ahead of trunk even when reached via a missing resumeBranch', async () => {
+    // The declared_base divergence rule (honour it, don't fall back) must
+    // still apply when the declared base is reached via the resume cascade,
+    // not just when it's the primary candidate.
+    const result = await resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: 'buildd/prior-attempt-gone', baseBranch: 'mission/checkout-arc-1a2b3c4d' },
+      fetchBranch: async (branch) => (branch === 'buildd/prior-attempt-gone' ? 'missing' : 'diverged'),
+    });
+    expect(result).toBe('origin/mission/checkout-arc-1a2b3c4d');
+  });
+
+  it('missing resumeBranch AND missing declared base both cascade all the way to trunk', async () => {
+    const result = await resolveWorktreeBase({
+      defaultBranch: 'dev',
+      context: { resumeBranch: 'buildd/prior-attempt-gone', baseBranch: 'mission/also-deleted' },
+      fetchBranch: async () => 'missing',
+    });
+    expect(result).toBe('origin/dev');
+  });
 });

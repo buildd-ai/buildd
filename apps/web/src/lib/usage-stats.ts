@@ -364,7 +364,7 @@ function modelUsageTotals(resultMeta: ResultMeta | null): {
   return { cacheReadTokens, cacheCreationTokens };
 }
 
-interface TaskAgg {
+export interface TaskAgg {
   taskId: string;
   status: string | null;
   roleSlug: string | null;
@@ -701,15 +701,57 @@ export function describeScan(
   };
 }
 
-function buildGroups(tasks: TaskAgg[], groupBy: GroupDimension): GroupEntry[] {
+/**
+ * Role attribution, separated from cost attribution (Rule R3-2).
+ *
+ * `aggregateByTask` folds an attempt's workers into the PARENT's bucket, which
+ * is correct for cost — "tokens per task" must be the cost of getting the task
+ * done, retries included. But the bucket also inherits the parent's `roleSlug`,
+ * so a reviewer worker was labelled with whatever role its parent carried and a
+ * `reviewer` group was never formed at all, across a window in which nearly
+ * every merged PR took a review round.
+ *
+ * So the role histogram groups each WORKER ROW by its own task's role, then
+ * aggregates by task within that group. One parent bucket can now contribute to
+ * two role groups — its own, and `reviewer` for the review pass it contains —
+ * because cost per task and work per role are different questions and stop
+ * sharing one grouping key. The top-level totals and per-task figures still come
+ * from `aggregateByTask(rows)` and are untouched.
+ */
+export function aggregateByRole(rows: UsageWorkerRow[]): Map<string, TaskAgg[]> {
+  const byRole = new Map<string, UsageWorkerRow[]>();
+  for (const row of rows) {
+    const key = row.roleSlug ?? UNASSIGNED_ROLE;
+    const bucket = byRole.get(key);
+    if (bucket) bucket.push(row);
+    else byRole.set(key, [row]);
+  }
+
+  const out = new Map<string, TaskAgg[]>();
+  for (const [role, roleRows] of byRole) {
+    out.set(role, aggregateByTask(roleRows));
+  }
+  return out;
+}
+
+function buildGroups(
+  tasks: TaskAgg[],
+  groupBy: GroupDimension,
+  rows: UsageWorkerRow[],
+): GroupEntry[] {
   if (groupBy === 'none') return [];
 
-  const buckets = new Map<string, TaskAgg[]>();
-  for (const task of tasks) {
-    const key = groupBy === 'role' ? (task.roleSlug ?? UNASSIGNED_ROLE) : task.workspaceId;
-    const bucket = buckets.get(key);
-    if (bucket) bucket.push(task);
-    else buckets.set(key, [task]);
+  const buckets = groupBy === 'role'
+    ? aggregateByRole(rows)
+    : new Map<string, TaskAgg[]>();
+
+  if (groupBy !== 'role') {
+    for (const task of tasks) {
+      const key = task.workspaceId;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(task);
+      else buckets.set(key, [task]);
+    }
   }
 
   return [...buckets.entries()]
@@ -742,7 +784,7 @@ export function computeUsageStats(
     byModel: buildModelRollup(rows),
     modelDivergence: buildModelDivergence(rows),
     groupBy,
-    groups: buildGroups(tasks, groupBy),
+    groups: buildGroups(tasks, groupBy, rows),
   };
 }
 

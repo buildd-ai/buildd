@@ -26,6 +26,9 @@
 /** Anchor for Claude's OAuth seat session cap. */
 export const CLAUDE_SESSION_LIMIT_PATTERN = 'hit your session';
 
+/** Anchor for Claude's OAuth seat weekly cap ("You've hit your weekly limit · resets 4am (UTC)"). */
+export const CLAUDE_WEEKLY_LIMIT_PATTERN = 'hit your weekly';
+
 /** Anchor for Codex's usage/quota wall. */
 export const CODEX_USAGE_LIMIT_PATTERN = 'hit your usage limit';
 
@@ -36,6 +39,8 @@ export const BUDGET_EXHAUSTION_PATTERNS: readonly string[] = [
   'max budget',
   CLAUDE_SESSION_LIMIT_PATTERN,
   'session limit',
+  CLAUDE_WEEKLY_LIMIT_PATTERN,
+  'weekly limit',
   CODEX_USAGE_LIMIT_PATTERN,
 ];
 

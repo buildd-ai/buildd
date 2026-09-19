@@ -175,6 +175,50 @@ describe('ClaudeBackend.runStreamed', () => {
     });
   });
 
+  describe('is_error result events', () => {
+    test('yields error instead of turn_complete when result is is_error: true', async () => {
+      const events = await collectEvents([
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: true,
+          result: "You've hit your weekly limit for this account.",
+        },
+      ]);
+
+      expect(events.some(e => e.type === 'turn_complete')).toBe(false);
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent).toBeDefined();
+      expect(errorEvent.error).toBe("You've hit your weekly limit for this account.");
+    });
+
+    test('does not yield complete after an is_error result', async () => {
+      const events = await collectEvents([
+        { type: 'result', subtype: 'success', is_error: true, result: 'budget wall' },
+      ]);
+
+      expect(events.some(e => e.type === 'complete')).toBe(false);
+    });
+
+    test('falls back to a generic message when result text is missing', async () => {
+      const events = await collectEvents([
+        { type: 'result', subtype: 'success', is_error: true },
+      ]);
+
+      const errorEvent = events.find(e => e.type === 'error') as any;
+      expect(errorEvent?.error).toBe('Claude Agent SDK returned an error result');
+    });
+
+    test('a normal success result (is_error: false) still yields turn_complete', async () => {
+      const events = await collectEvents([
+        { type: 'result', subtype: 'success', is_error: false, result: 'all good' },
+      ]);
+
+      expect(events.some(e => e.type === 'turn_complete')).toBe(true);
+      expect(events.some(e => e.type === 'error')).toBe(false);
+    });
+  });
+
   describe('complete event', () => {
     test('always yields complete as the final event', async () => {
       const events = await collectEvents([{ type: 'result', subtype: 'success' }]);

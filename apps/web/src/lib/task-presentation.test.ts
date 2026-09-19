@@ -867,3 +867,73 @@ describe('isSubjectDead — binding requires source AND confidence', () => {
     })).toBe(false);
   });
 });
+
+// ─── deriveWorkKind — the glyph chain (mission-legibility.md §2.2) ────────────
+
+describe('deriveWorkKind', () => {
+  it('tier 1: a declared kind wins outright, and reports source "kind"', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    // roleSlug and taskType both resolve to analysis; kind must still win.
+    expect(deriveWorkKind({ kind: 'engineering', roleSlug: 'reviewer', taskType: 'review' }))
+      .toEqual({ glyph: '◆', label: 'Engineering', source: 'kind' });
+  });
+
+  it('tier 1 covers all seven kinds with seven distinct glyphs', async () => {
+    const { deriveWorkKind, WORK_KIND_GLYPHS } = await import('./task-presentation');
+    const kinds = Object.keys(WORK_KIND_GLYPHS) as Array<keyof typeof WORK_KIND_GLYPHS>;
+    expect(kinds).toHaveLength(7);
+    const glyphs = kinds.map(k => deriveWorkKind({ kind: k })!.glyph);
+    expect(new Set(glyphs).size).toBe(7);
+    // The rail has already spent circles (task nodes) and squares (non-task
+    // elements); a work-kind reusing either would be read as a node.
+    for (const g of glyphs) expect('●◉○◯⬡◌▣▢■□◼◻'.includes(g)).toBe(false);
+  });
+
+  it('tier 2: a seeded role resolves into the same seven-kind vocabulary', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    expect(deriveWorkKind({ roleSlug: 'builder' })).toEqual({ glyph: '◆', label: 'Engineering', source: 'role' });
+    expect(deriveWorkKind({ roleSlug: 'organizer' })).toEqual({ glyph: '⇅', label: 'Coordination', source: 'role' });
+    expect(deriveWorkKind({ roleSlug: 'reviewer' })).toEqual({ glyph: '▲', label: 'Analysis', source: 'role' });
+    expect(deriveWorkKind({ roleSlug: 'spec-validator' })).toEqual({ glyph: '▲', label: 'Analysis', source: 'role' });
+  });
+
+  it('AC-11 (rejection): an unrecognized workspace role falls through — it does NOT guess', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    // Textually "reviewer-ish", deliberately not in the table.
+    expect(deriveWorkKind({ roleSlug: 'pr-reviewer-bot' })).toBeNull();
+    // ...and falls all the way THROUGH to tier 3 when a task type is present.
+    expect(deriveWorkKind({ roleSlug: 'pr-reviewer-bot', taskType: 'review' }))
+      .toEqual({ glyph: '▲', label: 'Analysis', source: 'type' });
+  });
+
+  it('tier 3: review and review-retry resolve to the analysis glyph', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    expect(deriveWorkKind({ taskType: 'review' })).toEqual({ glyph: '▲', label: 'Analysis', source: 'type' });
+    expect(deriveWorkKind({ taskType: 'review-retry' })).toEqual({ glyph: '▲', label: 'Analysis', source: 'type' });
+  });
+
+  it('tier 3 deliberately drops `retry` — lineage is not a work vocabulary', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    expect(deriveWorkKind({ taskType: 'retry' })).toBeNull();
+  });
+
+  it('AC-9 (rejection — the title trap): nothing set yields no glyph, not the engineering one', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    // The input type has no `title` field at all, which is the enforcement
+    // mechanism. Passing one anyway must change nothing.
+    expect(deriveWorkKind({
+      kind: null,
+      roleSlug: null,
+      taskType: null,
+      ...({ title: 'BUILD: rewrite the claim loop' } as Record<string, unknown>),
+    })).toBeNull();
+  });
+
+  it('an out-of-vocabulary kind string falls through rather than rendering as itself', async () => {
+    const { deriveWorkKind } = await import('./task-presentation');
+    expect(deriveWorkKind({ kind: 'refactoring' })).toBeNull();
+    expect(deriveWorkKind({ kind: 'refactoring', roleSlug: 'builder' })).toEqual({
+      glyph: '◆', label: 'Engineering', source: 'role',
+    });
+  });
+});

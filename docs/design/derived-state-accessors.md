@@ -1,6 +1,12 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# pr-refresh-seam and task-read-refresh-tests pass, but neither is evidence
+# that this spec's migration shipped: refreshStaleWorkersForWorkspaces
+# predates this doc (it backs home/page.tsx from PR #1883), and
+# tasks/page.test.ts tests unrelated mission-budget plumbing, not the
+# refresh-before-query behavior Step 1 calls for. See "Implementation
+# Status" below for what has actually shipped.
 assertions:
   - id: "pr-terminal-accessor"
     type: "symbol"
@@ -16,16 +22,33 @@ assertions:
 ---
 # Derived-State Accessors: Single-Accessor Contract
 
-**Status:** Proposed
+**Status:** Partially — D4 has shipped; D1, D3, and D5's Step 5 have not. See "Implementation Status" below.
 **Related:**
 - `docs/design/status-reconciliation.md` (PR #1630/1633) — data-model ruling this builds on; do not contradict it
 - `apps/web/src/lib/task-presentation.ts` — canonical task derivation module
-- `apps/web/src/components/StageChip.tsx` — canonical chip stage + "is PR terminal?" derivation
-- `apps/web/src/lib/pr-state-refresh.ts` — refresh seam (`refreshStaleWorkersForWorkspaces`, `refreshWorkerMergeStateIfStale`)
-- `apps/web/src/lib/mission-helpers.ts` — mission derivation functions
-- `packages/core/mission-criteria-eval.ts` — auto-eval `judgeWithLLM`
-- `apps/web/src/app/api/missions/[id]/evaluate/route.ts` — manual-eval `judgeWithLLM` fork
+- `apps/web/src/lib/stage.ts` — canonical chip stage + "is PR terminal?" derivation (`deriveStage`). Moved out of `StageChip.tsx` since this doc was written — see the note in D1 below. `StageChip.tsx` now only re-exports the `Stage` type so server code can call `deriveStage` without importing a `'use client'` module.
+- `apps/web/src/lib/pr-state-refresh.ts` — refresh seam (`refreshStaleWorkersForWorkspaces`, in `apps/web/src/lib/pr-reconcile.ts`: `refreshWorkerMergeStateIfStale`)
+- `apps/web/src/lib/mission-helpers.ts` — mission health/display derivation functions (`deriveMissionHealth`, `deriveTaskHealthSignal`, `deriveMissionDisplayState`, `healthToGroup`, `isCountableHealthTask`)
+- `packages/core/mission-helpers.ts` — a second, separate `mission-helpers.ts` that now hosts `recalculateOverall`, `evaluateGoalCriteria`, and `isDeliverableTask` (publicly exported, used by `apps/web/src/lib/mission-completion.ts`, `mission-evaluation.ts`, `heartbeat-prepass.ts`, `explain.ts`, and `missions/[id]/page.tsx`). This split postdates the doc — see D5.
+- `apps/web/src/lib/mission-criteria-eval.ts` — auto-eval `judgeWithLLM` (this file lives under `apps/web/src/lib/`, not `packages/core/` as originally written here)
+- `apps/web/src/app/api/missions/[id]/evaluate/route.ts` — manual eval now delegates to `evaluateCriteriaNow` (imported from `mission-criteria-eval.ts`); the private `judgeWithLLM` fork this doc describes in D4 has been deleted
 - Audit artifact 483c5069 — "Derived-state duplication & refresh coverage audit" (2026-08-29)
+
+---
+
+## Implementation Status (reconciled 2026-09-19)
+
+| Decision | Status |
+|---|---|
+| D1 — `isPrTerminal` accessor | **Not implemented.** The four divergent inline predicates (`TaskCard.tsx`, `missions/page.tsx`, `missions/[id]/page.tsx`, `tasks/[id]/page.tsx`) are all still present and still forked exactly as described below. No `isPrTerminal` export exists anywhere in the codebase. |
+| D2 — two `deriveDisplayStatus` exports | Resolved by the original finding — no code change was ever required. Still true today: one `deriveDisplayStatus`, in `task-presentation.ts`. |
+| D3 — `no-stale-pr-read` lint rule | **Not implemented.** There is no `eslint-rules/` directory, no `.eslintrc*`, and no ESLint config file anywhere in this repo — `bun run lint` runs `next lint` against whatever Next.js's default config resolves to. Standing up the chosen enforcement mechanism now requires introducing ESLint config from scratch, not just adding one rule to an existing one. |
+| D4 — `judgeWithLLM` duplicate | **Done.** `evaluate/route.ts` has no private `judgeWithLLM` or `LLM_MODEL` constant; it calls `evaluateCriteriaNow` from `mission-criteria-eval.ts`, the same function the auto-eval path uses. Both paths resolve the model via `resolveTierEntrySync('budget')`. |
+| D5 — intentional duplication | `isCountableHealthTask` vs `isDeliverableTask` no longer live in the same file (see D5 below for the corrected pairing) — neither function carries the cross-referencing JSDoc Step 5 called for. |
+| Step 1 — wire the three unguarded pages | **Not implemented.** `tasks/page.tsx`, `missions/page.tsx`, and `initiatives/[id]/page.tsx` still have no `refreshStaleWorkersForWorkspaces`/`refreshWorkerMergeStateIfStale` call. The refresh-coverage gap this doc opens with is still live. |
+| Step 3 lint fixture | **Not implemented** (blocked on D3). |
+
+`pr-refresh-seam` and `task-read-refresh-tests` pass structurally (the symbol and the test file both exist), but neither shipped because of this doc: `refreshStaleWorkersForWorkspaces` predates it (it backs `home/page.tsx` since PR #1883), and `tasks/page.test.ts` tests mission-budget plumbing unrelated to the refresh-before-query behavior Step 1 describes. Status stays `partially` rather than `implemented` until D1, D3, and Step 1 land.
 
 ---
 
@@ -38,6 +61,8 @@ The status-reconciliation spec (PR #1630/1633) ruled the data model: `workers.me
 ---
 
 ## Current State
+
+**The two tables below are a frozen snapshot from audit artifact 483c5069 (2026-08-29)** — file:line citations reflect the codebase as it stood then and have drifted with ordinary code growth since. They document what the audit found, not live state. For what has and hasn't shipped since, see "Implementation Status" above; in particular the "Is PR terminal?" and "LLM criteria judge" rows below are unchanged from the audit but D1 and D4 (respectively) now describe their current, reconciled state.
 
 ### Derived facts inventory (from audit artifact 483c5069)
 
@@ -80,23 +105,25 @@ The five decisions below are ordered by impact. Steps in §Migration are written
 
 ## D1 — The "is PR terminal?" accessor
 
-**Finding:** The canonical predicate lives inline at `StageChip.tsx:67`:
+**Status: not implemented.** Everything below still describes the codebase as of 2026-09-19 — the divergence this section documents is still live.
+
+**Finding:** The canonical predicate lives inline in `deriveStage`, in `apps/web/src/lib/stage.ts` (originally at `StageChip.tsx:67` when this doc was written; `deriveStage` and its predicate were later extracted into their own module so server components could call it without importing a `'use client'` file — `StageChip.tsx` now only re-exports the `Stage` type):
 
 ```ts
 const isMerged = !!mergedAt || prLifecycleStatus === 'merged';
 const isClosed = prLifecycleStatus === 'closed';
 ```
 
-Four other sites define their own version:
+Four other sites still define their own version (unchanged since this doc was written, modulo line drift):
 
 | File | Predicate | What it misses |
 |---|---|---|
-| `TaskCard.tsx:257` | `prLifecycleStatus === 'merged' \|\| prLifecycleStatus === 'closed'` | `mergedAt` — a worker with `mergedAt` set but null `prLifecycleStatus` shows the wrong inline label |
-| `missions/[id]/page.tsx:268` | `!latestWorker?.mergedAt && prLifecycleStatus !== 'closed'` | `prLifecycleStatus === 'merged'` guard absent — inverts the intent |
-| `missions/page.tsx:386` | Same as above | Same |
-| `tasks/[id]/page.tsx:334` | `!taskWorkers[0]?.mergedAt && prLifecycleStatus !== 'closed'` | Same |
+| `TaskCard.tsx` | `prLifecycleStatus === 'merged' \|\| prLifecycleStatus === 'closed'` | `mergedAt` — a worker with `mergedAt` set but null `prLifecycleStatus` shows the wrong inline label |
+| `missions/[id]/page.tsx` | `!latestWorker?.mergedAt && prLifecycleStatus !== 'closed'` | `prLifecycleStatus === 'merged'` guard absent — inverts the intent |
+| `missions/page.tsx` | `w?.prUrl && !w?.mergedAt && w?.prLifecycleStatus !== 'closed'` | Same |
+| `tasks/[id]/page.tsx` | `!taskWorkers[0]?.mergedAt && taskWorkers[0]?.prLifecycleStatus !== 'closed'` | Same |
 
-**Resolution:** Extract `isPrTerminal(worker: { mergedAt: string | null; prLifecycleStatus: string | null }): boolean` as a named export from `task-presentation.ts`. The body is the canonical predicate from `StageChip.tsx:67`:
+**Resolution (still to be done):** Extract `isPrTerminal(worker: { mergedAt: string | null; prLifecycleStatus: string | null }): boolean` as a named export from `task-presentation.ts`. The body is the canonical predicate, currently inline in `stage.ts`'s `deriveStage`:
 
 ```ts
 export function isPrTerminal(w: { mergedAt: string | null; prLifecycleStatus: string | null }): boolean {
@@ -108,7 +135,7 @@ All four divergent sites are updated to call `isPrTerminal(worker)`. `StageChip.
 
 **Fate of the divergent inline predicates:** Deleted — not aliased. Each caller imports `isPrTerminal` from `task-presentation.ts`.
 
-**Why `task-presentation.ts` and not `StageChip.tsx`:** `StageChip.tsx` is a React component file. `task-presentation.ts` is already the canonical pure-function derivation module (see its file header: "All UI surfaces consume these pure functions — never fork display logic locally"). Moving the extracted function there avoids a component-to-library import direction inversion. `StageChip.tsx:67` calls the imported function; nothing changes for consumers of `StageChip`.
+**Why `task-presentation.ts` and not `stage.ts`:** `stage.ts` exists to compute the richer `Stage` enum consumed by chip UI (see D5's discussion of `deriveStage` vs `deriveDisplayStatus`). `task-presentation.ts` is already the canonical pure-function derivation module (see its file header: "All UI surfaces consume these pure functions — never fork display logic locally") and is what the four divergent page-level sites already import from for other derivations. Moving the extracted function there avoids adding a fifth import source. `stage.ts`'s `deriveStage` calls the imported function; nothing changes for consumers of `StageChip`/`deriveStage`.
 
 ---
 
@@ -123,6 +150,8 @@ All four divergent sites are updated to call `isPrTerminal(worker)`. `StageChip.
 ---
 
 ## D3 — The refresh seam (structural enforcement)
+
+**Status: not implemented.** The three pages named below still have no refresh call, and this repo currently has no ESLint config at all (no `.eslintrc*`, no `eslint.config.*`, no `eslint-rules/` directory — `bun run lint` runs `next lint` against Next.js's built-in default). Standing up Option B now means introducing ESLint configuration from scratch in addition to writing the rule.
 
 **Finding:** Three pages read `prLifecycleStatus`/`mergedAt` from worker rows without calling the refresh function first. Convention has failed four times. The answer must be structural.
 
@@ -160,13 +189,13 @@ The lint rule is the structural enforcement. But the three unguarded pages must 
 
 ## D4 — `judgeWithLLM` duplicate
 
-**Finding:** `mission-criteria-eval.ts:42` resolves the LLM model via `resolveTierEntrySync('budget').model`. `evaluate/route.ts:68` defines its own private copy that hardcodes `const LLM_MODEL = 'claude-haiku-4-5-20251001'`. Active divergence: a `manage_model_tiers` update to the budget tier will be picked up by auto-eval but silently ignored by manual/MCP-triggered eval.
+**Status: implemented.** `evaluate/route.ts` no longer defines a private `judgeWithLLM` or `LLM_MODEL` constant. It imports `evaluateCriteriaNow` from `apps/web/src/lib/mission-criteria-eval.ts` and calls that instead — a larger unification than exporting `judgeWithLLM` alone (the whole evaluation flow, not just the LLM judge call, now runs through one function), but it closes the gap this section describes: manual/MCP-triggered eval and auto-eval now resolve the model the same way, via `resolveTierEntrySync('budget')`. `judgeWithLLM` itself remains private to `mission-criteria-eval.ts`, called only internally by `evaluateCriteriaNow`.
 
-**Resolution:** Delete the private `judgeWithLLM` in `evaluate/route.ts:68`. Extract the function from `mission-criteria-eval.ts:42` as a named export (currently private). Import and call it in `evaluate/route.ts`.
+**Original finding (for context):** `mission-criteria-eval.ts` resolved the LLM model via `resolveTierEntrySync('budget').model`. `evaluate/route.ts` defined its own private copy that hardcoded `const LLM_MODEL = 'claude-haiku-4-5-20251001'`. Active divergence: a `manage_model_tiers` update to the budget tier would be picked up by auto-eval but silently ignored by manual/MCP-triggered eval.
 
-**Fate of the duplicate:** Deleted — not aliased. The hardcoded `LLM_MODEL` constant goes with it.
+**Fate of the duplicate:** Deleted — not aliased. The hardcoded `LLM_MODEL` constant went with it.
 
-**Why `mission-criteria-eval.ts` hosts the canonical:** It already holds the type-registering call and the `resolveTierEntrySync` call. Moving it to a shared util would be a third location; keeping it in `mission-criteria-eval.ts` and exporting it is the smallest change.
+**Where the canonical function lives:** `mission-criteria-eval.ts` under `apps/web/src/lib/` (not `packages/core/` — see the Related section above). It already held the type-registering call and the `resolveTierEntrySync` call.
 
 ---
 
@@ -177,8 +206,10 @@ The following pairs were found in the audit and are **not** collapsed. They serv
 **`deriveDisplayStatus` (task-presentation.ts:48) vs `deriveStage` (StageChip.tsx:53):**
 Two concepts. `deriveDisplayStatus` produces a plain string matching task DB status values (e.g. `'running'`, `'completed'`) for timestamp labeling and non-chip UI surfaces. `deriveStage` produces a richer `Stage` enum that adds PR lifecycle stages (`OPEN`, `CI`, `DONE`) and subject-gate states (`SUBJECT_DEAD`, `MISSION_BUDGET`). They overlap on the `running`/`waiting_input` derivation logic, but they return incompatible types to incompatible consumers. Collapsing them would either lose PR lifecycle detail from the chip or add unnecessary PR-awareness to every timestamp-label call site.
 
-**`isCountableHealthTask` (mission-helpers.ts, private) vs `isDeliverableTask` (mission-helpers.ts:314, private):**
-`isCountableHealthTask` gates health signal derivation — it excludes docs/chore tasks from NOMINAL/FAILING/STALLED/BLOCKED counts because those tasks don't have deliverable PRs and would distort the signal. `isDeliverableTask` gates progress percentage computation — it includes a task in the denominator if it has a concrete output to ship. The predicates differ: a chore task may be deliverable (it has an output) but not health-countable (it is not a signal task). Collapsing them changes health signal semantics for workspaces with chore-heavy missions. Both functions live in `mission-helpers.ts` and are explicitly not exported — they are already contained. No change needed beyond a JSDoc comment on each naming the other and explaining why they are different.
+**`isCountableHealthTask` (`apps/web/src/lib/mission-helpers.ts`, private) vs `isDeliverableTask` (`packages/core/mission-helpers.ts`, exported):**
+`isCountableHealthTask` gates health signal derivation — it excludes docs/chore tasks from NOMINAL/FAILING/STALLED/BLOCKED counts because those tasks don't have deliverable PRs and would distort the signal. `isDeliverableTask` gates progress percentage computation — it includes a task in the denominator if it has a concrete output to ship. The predicates differ: a chore task may be deliverable (it has an output) but not health-countable (it is not a signal task). Collapsing them changes health signal semantics for workspaces with chore-heavy missions.
+
+Since this doc was written, the two functions have ended up in **different files** — `apps/web/src/lib/mission-helpers.ts` (web-app-local health/display derivations) and `packages/core/mission-helpers.ts` (shared, cross-package mission logic) are now separate modules with the same base name. `isCountableHealthTask` is still private to its file; `isDeliverableTask` is now a public export of `packages/core/mission-helpers.ts`, consumed by `apps/web/src/lib/mission-completion.ts`, `mission-evaluation.ts`, `heartbeat-prepass.ts`, `explain.ts`, and `missions/[id]/page.tsx`. Neither is "already contained" in the sense this doc originally claimed. Step 5's JSDoc cross-reference has not been added to either function — the reasoning below still applies, it just needs to point across packages instead of within one file.
 
 **`isBlocked` computed in two places:**
 `deriveTaskPhase` (task-presentation.ts:110) receives `isBlocked: boolean` as a parameter. `deriveStage` (StageChip.tsx:53) receives it as a prop. At each call site (e.g. `tasks/[id]/page.tsx:347`) the predicate `unresolvedDeps.length > 0` is evaluated once and passed to both. This is not duplication of the predicate — it is duplication of a prop assignment. Both functions consume the same boolean from the same source. No change needed.
@@ -190,6 +221,8 @@ Two concepts. `deriveDisplayStatus` produces a plain string matching task DB sta
 Each step is independently shippable and revertible. The proving-ground step (Step 1) would have caught the #1878 bug class: it adds the refresh call to the three unguarded pages and ships a test that fails when the refresh is absent.
 
 ### Step 1 — Wire the three unguarded pages (proving-ground)
+
+**Status: not implemented.** `tasks/page.tsx`, `missions/page.tsx`, and `initiatives/[id]/page.tsx` have no refresh call as of 2026-09-19; the bug this step exists to fix is still live.
 
 **What:** Add `await refreshStaleWorkersForWorkspaces(wsIds)` before the worker query in `tasks/page.tsx`, `missions/page.tsx`, and `initiatives/[id]/page.tsx`. Pattern is identical to `home/page.tsx:458`.
 
@@ -208,6 +241,8 @@ Each step is independently shippable and revertible. The proving-ground step (St
 
 ### Step 2 — Extract `isPrTerminal` and delete the four inline forks
 
+**Status: not implemented.** No `isPrTerminal` export exists; all four inline forks are still in place (see D1).
+
 **What:** Add `export function isPrTerminal(w: { mergedAt: string | null; prLifecycleStatus: string | null }): boolean` to `task-presentation.ts` (after `deriveDisplayStatus`). Update `StageChip.tsx:67` to call it. Delete the inline predicates in `TaskCard.tsx:257`, `missions/[id]/page.tsx:268`, `missions/page.tsx:386`, `tasks/[id]/page.tsx:334` and replace with `isPrTerminal(worker)`.
 
 **Acceptance criteria:**
@@ -220,6 +255,8 @@ Each step is independently shippable and revertible. The proving-ground step (St
 ---
 
 ### Step 3 — Add the `no-stale-pr-read` lint rule
+
+**Status: not implemented.** See D3 — the repo currently has no ESLint config to add this rule to.
 
 **What:** Implement the ESLint rule described in §D3. Add it to `.eslintrc` at `'error'` severity. The three pages from Step 1 already import `pr-state-refresh`, so they pass immediately. The rule's first real enforcement test: add a new page that reads `prLifecycleStatus` without importing the refresh module → CI fails.
 
@@ -234,6 +271,8 @@ Each step is independently shippable and revertible. The proving-ground step (St
 
 ### Step 4 — Unify `judgeWithLLM` in `evaluate/route.ts`
 
+**Status: implemented.** See D4.
+
 **What:** Export `judgeWithLLM` from `mission-criteria-eval.ts`. Delete the private copy in `evaluate/route.ts:68` (including `LLM_MODEL` constant). Import the canonical function.
 
 **Acceptance criteria:**
@@ -246,6 +285,8 @@ Each step is independently shippable and revertible. The proving-ground step (St
 ---
 
 ### Step 5 — Document `isCountableHealthTask` vs `isDeliverableTask`
+
+**Status: not implemented.** Neither function carries the cross-referencing JSDoc; see D5 for the corrected file locations to reference.
 
 **What:** Add a JSDoc comment to each private function in `mission-helpers.ts` that names the other and explains why they are separate predicates. No logic change.
 

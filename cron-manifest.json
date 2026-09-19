@@ -120,14 +120,6 @@
       "path": "/api/cron/release-health-check",
       "schedule": "5 * * * *",
       "method": "GET"
-    },
-    {
-      "$comment": "Memory-digest experiment readout. Recomputes the experiment analysis from worker_prompt_composition_events, publishes it as a keyed `analysis` artifact, persists it to system_cache, and pushes ONLY when the verdict is terminal (post-boundary cohort powered, or accrual stalled) \u2014 with a link to the artifact on the push, because a notification is read once and then gone. Every other run is silent by design, so this is NOT a daily digest. Daily rather than hourly because the unit of accrual is a task's prompt build, not a minute, and a terminal verdict is read by a human once: a finer cadence buys nothing and wakes Neon for nothing. 07:00 EST so a verdict lands at the start of a working day. ENABLED, deliberately: a job staged dark satisfies scripts/cron-coverage.test.ts while never firing, which is the exact failure mode that left three other routes in this file inert for their whole lives. STAYS enabled after the experiment concludes, also deliberately: the route RETIRES ITSELF \u2014 its first act is a primary-key lookup for the once-ever terminal notification claim, and if that claim exists it returns without computing the readout at all. Flipping `enabled` here could not do that job: this file is a build-time declaration synced by cron-sync.yml, so a runtime event cannot reach it, and disabling the job at the scheduler instead would be undone by the next `cron:sync`. What stops is the work, not the tick. The route always reports a verdict (changed/errors) to withCronRun \u2014 an empty cohort reports errors=1 and a retired run reports 0/0, which reads as healthy-and-idle rather than as a broken cron, while a retired path that THROWS still alarms. Notification dedupe is that same once-ever atomic claim, not a time window.",
-      "title": "Buildd: Memory Digest Readout",
-      "path": "/api/cron/memory-digest-readout",
-      "schedule": "0 7 * * *",
-      "method": "GET",
-      "enabled": true
     }
   ]
 }
