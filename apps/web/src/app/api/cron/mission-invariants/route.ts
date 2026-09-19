@@ -2,7 +2,7 @@
  * POST /api/cron/mission-invariants
  *
  * Hourly mission-state invariant sweep — the watchdog for the class of defect
- * that is invisible in task counts. Fifteen named invariants, each one a shape
+ * that is invisible in task counts. Thirteen named invariants, each one a shape
  * that actually shipped and then sat unnoticed because nothing in the system
  * could express it as a question: an integration-branch flag that reads on and
  * does nothing, a PR whose base branch was deleted out from under it, a plan
@@ -18,7 +18,7 @@
  * ── Reporting is not gating ─────────────────────────────────────────────────
  * Same discipline as `/api/cron/queue-stall`, and for the same reason: this
  * route withholds nothing from anything. It names conditions. Most of the
- * fifteen ship report-only — the response body and the structured log are
+ * fourteen ship report-only — the response body and the structured log are
  * their whole consumer. Two file a task. `orphaned_integration_base`, because
  * it is unambiguous, severe and self-evidently actionable, so it proves the
  * whole path (detect → dedupe → file → fix) end to end at near-zero noise. And
@@ -29,13 +29,8 @@
  * `stale_criteria_escalation`, resolves itself directly through
  * `resolveCriteriaEscalation` — it names a write-side bug (an escalation clear
  * that should already have happened), not a human decision, so there is
- * nothing to file; a resolved count in the log is its whole observability
- * surface. One, `plan_awaiting_approval`, notifies: it posts (and escalates,
- * at doubling intervals) a `missionNotes` visibility note — see
- * `surfacePlanAwaitingApproval` below — because the remedy is a pending human
- * decision that must never be taken automatically, so a filed task or an
- * hourly log line are both the wrong instrument; a mission-feed note is the
- * right one.
+ * nothing to file or notify about; a resolved count in the log is its whole
+ * observability surface.
  *
  * Promoting another invariant to `files: true` or `resolves: true` is a later
  * diff, one invariant at a time, and the bar is: it has been OBSERVED to fire
@@ -62,8 +57,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, missionNotes } from '@buildd/core/db/schema';
-import { and, desc, eq, like, notInArray, sql } from 'drizzle-orm';
+import { tasks } from '@buildd/core/db/schema';
+import { and, eq, like, notInArray, sql } from 'drizzle-orm';
 import { notify } from '@/lib/pushover';
 import { withCronRun, type CronReport } from '@/lib/cron-run';
 import { loadInvariantSnapshot } from '@/lib/mission-invariant-scan';
@@ -218,89 +213,6 @@ async function reconcileViolation(
   }
 }
 
-type NotificationOutcome = 'created' | 'escalated' | 'skipped';
-
-interface Notification {
-  key: string;
-  entityId: string;
-  outcome: NotificationOutcome;
-}
-
-/**
- * Base interval for `plan_awaiting_approval`'s escalating visibility note:
- * left untouched for at least this long since it last posted before
- * escalating again, doubling every escalation (24h, then 48h, then 96h, ...)
- * — see `docs/design/spec-to-build-pattern.md` "Failure modes". This keeps a
- * forgotten spec plan visible on the mission feed without re-touching it
- * every hourly sweep forever.
- */
-const PLAN_NOTE_ESCALATION_BASE_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Post (or escalate) a `missionNotes` visibility note for one
- * `plan_awaiting_approval` breach, keyed on the task. This is the ONLY write
- * path this route has for that invariant — it never calls `approvePlan`, and
- * a spec-authored plan is never auto-dispatched no matter how long it waits.
- *
- * Reuses the `type: 'question'` shape `resolveCompletedTask` already uses for
- * organizer questions (`task-dependencies.ts:164-174`), a direct
- * `missionNotes` insert rather than `postMissionFeedEvent`'s config-churn
- * collapsing — that collapse window (5 minutes, by default) exists for rapid
- * successive edits, not an hours-to-days escalation schedule.
- */
-async function surfacePlanAwaitingApproval(
-  snapshot: InvariantSnapshot,
-  violation: InvariantViolation,
-  now: Date,
-): Promise<Notification> {
-  const base: Notification = { key: 'plan_awaiting_approval', entityId: violation.entityId, outcome: 'skipped' };
-
-  const task = snapshot.tasks.find(t => t.id === violation.entityId);
-  if (!task?.missionId) return base; // no mission feed to post to
-
-  const existing = await db.query.missionNotes.findFirst({
-    where: and(
-      eq(missionNotes.taskId, task.id),
-      eq(missionNotes.type, 'question'),
-      eq(missionNotes.status, 'open'),
-    ),
-    orderBy: [desc(missionNotes.createdAt)],
-  });
-
-  const title = `Plan awaiting approval: ${task.title}`;
-  const body =
-    `A spec-authored plan completed ${Math.round(violation.ageMs / 3_600_000)}h ago and is waiting on human ` +
-    `review. Call POST /api/tasks/${task.id}/approve-plan to create the child tasks, or ` +
-    `POST /api/tasks/${task.id}/reject-plan with feedback to send it back for revision. ` +
-    `It will not auto-dispatch.`;
-
-  if (!existing) {
-    await db.insert(missionNotes).values({
-      missionId: task.missionId,
-      taskId: task.id,
-      authorType: 'system',
-      actorLabel: 'mission-invariant sweep: plan_awaiting_approval',
-      type: 'question',
-      title,
-      body,
-      status: 'open',
-      collapseCount: 1,
-    });
-    return { ...base, outcome: 'created' };
-  }
-
-  const priorEscalations = Math.max(1, existing.collapseCount ?? 1);
-  const requiredGapMs = PLAN_NOTE_ESCALATION_BASE_MS * 2 ** (priorEscalations - 1);
-  const sinceLastNoteMs = now.getTime() - existing.createdAt.getTime();
-  if (sinceLastNoteMs < requiredGapMs) return base;
-
-  await db
-    .update(missionNotes)
-    .set({ title, body, createdAt: now, collapseCount: priorEscalations + 1 })
-    .where(eq(missionNotes.id, existing.id));
-  return { ...base, outcome: 'escalated' };
-}
-
 export async function POST(req: NextRequest) {
   return withCronRun('mission-invariants', req, cronReport => runCronJob(cronReport));
 }
@@ -345,23 +257,6 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
     }
   }
 
-  // ── Surface, for the invariant staged to notify ─────────────────────────────
-  // Not a filing, not a resolve: `plan_awaiting_approval` names a pending human
-  // decision this module must never make, so the only write is a mission-feed
-  // visibility note — see `surfacePlanAwaitingApproval`.
-  const notifications: Notification[] = [];
-  for (const result of results) {
-    if (!result.notifies) continue;
-    for (const violation of result.violations) {
-      try {
-        notifications.push(await surfacePlanAwaitingApproval(snapshot, violation, now));
-      } catch (err) {
-        console.error(`[mission-invariants] surfacing ${result.key}/${violation.entityId} failed:`, err);
-        notifications.push({ key: result.key, entityId: violation.entityId, outcome: 'skipped' });
-      }
-    }
-  }
-
   // ── Notify only on a NEW filing ───────────────────────────────────────────
   // A breach that is already on someone's queue does not page again; that is
   // the whole point of the dedupe signature.
@@ -398,7 +293,6 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
   const skippedCount = filings.filter(f => f.outcome === 'skipped').length;
 
   const resolvedCount = reconciliations.filter(r => r.cleared).length;
-  const notifiedCount = notifications.filter(n => n.outcome === 'created' || n.outcome === 'escalated').length;
 
   console.log(
     JSON.stringify({
@@ -408,23 +302,15 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
       filed: created.length,
       appended: appendedCount,
       resolved: resolvedCount,
-      notified: notifiedCount,
       byInvariant: totals.filter(t => t.count > 0),
     }),
   );
 
   cronReport({
     processed: results.length,
-    changed: created.length + appendedCount + resolvedCount + notifiedCount,
+    changed: created.length + appendedCount + resolvedCount,
     errors: skippedCount,
-    result: {
-      violations,
-      filed: created.length,
-      appended: appendedCount,
-      dropped: filingsDropped,
-      resolved: resolvedCount,
-      notified: notifiedCount,
-    },
+    result: { violations, filed: created.length, appended: appendedCount, dropped: filingsDropped, resolved: resolvedCount },
   });
 
   return NextResponse.json({
@@ -436,10 +322,8 @@ async function runCronJob(cronReport: CronReport): Promise<NextResponse> {
     appended: appendedCount,
     dropped: filingsDropped,
     resolved: resolvedCount,
-    notified: notifiedCount,
     filings,
     reconciliations,
-    notifications,
     report,
     // The offending ids per invariant, so an agent consuming this response does
     // not have to parse the human-readable report to act on it.

@@ -599,11 +599,10 @@ describe('plan_awaiting_approval', () => {
     expect(reported(key, s)).toEqual([]);
   });
 
-  it('must never file a task or auto-resolve, which is how auto-dispatch would sneak back in — it only notifies', () => {
+  it('is staged report-only — it must never file a task or auto-resolve, which is how auto-dispatch would sneak back in', () => {
     const inv = invariantByKey(key);
     expect(inv.files).toBe(false);
     expect(inv.resolves).toBe(false);
-    expect(inv.notifies).toBe(true);
   });
 });
 
