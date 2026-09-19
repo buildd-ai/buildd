@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "auto-merge-safety"
@@ -9,7 +9,7 @@ assertions:
   - id: "green-ci-policy"
     type: "config_key"
     key: "enforceGreenCI"
-    file: "packages/shared/src/types.ts"
+    file: "packages/core/db/schema.ts"
   - id: "merge-order-edges"
     type: "config_key"
     key: "mergeAfter"
@@ -20,20 +20,27 @@ assertions:
 ---
 # Convergence Layer: Audit and Spec
 
-**Status:** Proposed  
+**Status:** Implemented — Candidates 1, 2 and 5 shipped (5 with a materially
+different design than proposed here); Candidate 4 was correctly skipped, as
+recommended. Candidate 3 (`mergeAfter`) did **not** ship as specified — the
+problem it targeted was instead addressed by a softer, warn-only mechanism.
+See the per-candidate "Shipped" notes in Phase 2 below.
 **Related:**
 `apps/web/src/app/api/tasks/route.ts`,
 `apps/web/src/app/api/workers/claim/route.ts`,
 `apps/web/src/app/api/workers/[id]/route.ts`,
 `apps/web/src/app/api/github/webhook/route.ts`,
+`apps/web/src/app/api/github/webhook/dark-check-detection.ts`,
 `apps/web/src/lib/auto-merge.ts`,
+`apps/web/src/lib/change-intent.ts`,
 `apps/web/src/lib/loop-dispatcher.ts`,
 `packages/core/path-overlap.ts`,
 `packages/core/mcp-tools.ts`,
 `packages/core/loop-config.ts`,
 `apps/runner/src/runner-verification.ts`,
 `docs/design/loop-until-verified.md`,
-`docs/design/worker-pr-automerge.md`
+`docs/design/worker-pr-automerge.md`,
+`docs/design/change-intent.md`
 
 ---
 
@@ -188,6 +195,13 @@ is never called). The `missingChecks` logic in `evaluateAutoMergeSafety`
 The buildd workspace's current value is `gitConfig.autoMergeOnGreenCI ??
 gitConfig.autoMergePR ?? true`.
 
+**Since shipped:** `evaluateAutoMergeSafety` now takes a `MergePolicy`
+(`packages/shared/src/types.ts`), not a raw `gitConfig` read — `WorkspaceGitConfig.mergePolicy`
+supersedes the `autoMergeOnGreenCI`/`autoMergePR` pair when set, with the pair kept only
+as the legacy fallback for workspaces that have not configured `mergePolicy`. The tier
+(`auto-threshold` / `agent-review` / `human`) drives merge behaviour where this section
+still describes a flat CI-green boolean.
+
 ---
 
 ## Phase 2 — Spec
@@ -255,6 +269,12 @@ overlap check. No schema migration required (JSONB). Two days.
 (not a general sequence-claim primitive). The Drizzle migration case justifies
 it; the other frameworks do not.
 
+**Shipped.** `sequenceNamespaces` lives on `WorkspaceGitConfig`
+(`packages/core/db/schema.ts`), matching the proposed shape exactly. Anchor
+injection is `resolveAnchorInjections` in `apps/web/src/lib/change-intent.ts`,
+consumed at task-creation time in `apps/web/src/app/api/tasks/route.ts`. See
+`docs/design/change-intent.md`.
+
 ---
 
 ### Candidate 2 — External-truth completion gate
@@ -307,6 +327,17 @@ check in `evaluateAutoMergeSafety` is a one-line addition. Two to three days tot
 
 **Recommendation: BUILD.** The mechanism exists. This is a policy knob and one
 targeted extension to the auto-merge safety check.
+
+**Shipped, with one path correction.** `enforceGreenCI` lives on
+`WorkspaceGitConfig` in `packages/core/db/schema.ts` — not
+`packages/shared/src/types.ts`, where `WorkspaceGitConfig`'s sibling type
+`MergePolicy` lives instead. The loop-injection logic is in
+`apps/web/src/app/api/tasks/route.ts` (`enforceGreenCI === true` implies the
+`pr_checks_green` loop), matching the proposal. The `mergeable_state` check
+also shipped: `evaluateAutoMergeSafety` in `apps/web/src/lib/auto-merge.ts`
+reads `mergeable_state` from `GET /repos/{repo}/pulls/{prNumber}` and blocks
+on `dirty` or `blocked`, then dispatches a same-branch conflict-retry task
+rather than just surfacing the block to a human.
 
 ---
 
@@ -369,6 +400,18 @@ new `checkMergeAfterResolved` call in the PR-merged path. Two days.
 that `dependsOn` does not provide and that generalizes beyond migrations to any
 scenario where parallel work must converge in order.
 
+**Not shipped as specified.** There is no `mergeAfter` field anywhere in the
+codebase, and nothing in `handleCheckSuiteEvent` defers a merge pending a
+sibling PR. What shipped instead, in `docs/design/change-intent.md`, is
+`WorkspaceGitConfig.conflictSurfaces` + the `changeIntents` table
+(`packages/core/db/schema.ts`): when a PR touches a declared surface,
+`apps/web/src/lib/change-intent.ts` posts a warning note on every other
+open-PR task touching the same surface. That closes the *visibility* gap this
+candidate identified — but it is warn-and-guide, not a gate. Nothing stops
+either PR's auto-merge, and out-of-order merges are still possible; an agent
+has to act on the warning. The hard merge-order gate this candidate argued for
+remains unbuilt.
+
 ---
 
 ### Candidate 4 — Schema drift verification
@@ -413,6 +456,10 @@ that must be maintained as frameworks evolve.
 **Recommendation: SKIP.** This is a CI script concern. The platform's contribution
 is dark-check detection (candidate 5), which surfaces when migration tests are not
 running.
+
+**Confirmed skipped, as recommended.** No platform-level migration-drift
+runner exists. `packages/core/__tests__/migration-journal-ordering.test.ts` is
+the CI-script guard this section anticipated.
 
 ---
 
@@ -467,6 +514,23 @@ the counter update and threshold alert is ~3 days. The dashboard panel adds
 **Recommendation: BUILD.** The signal is platform-unique (no agent can see it),
 the data is already available, and the failure mode is silent and long-lived.
 
+**Shipped, with a better design than proposed.** The mechanism lives in
+`apps/web/src/app/api/github/webhook/dark-check-detection.ts`
+(`detectDarkChecksForClosedPr`, called from the `pull_request` closed/merged
+handler in `route.ts` — not from `check_suite.completed` as sketched here).
+Two differences from the proposal, both improvements:
+- Counters are a dedicated `darkCheckAlerts` table (`packages/core/db/schema.ts`),
+  not a `checkHealthLog` JSONB blob on `WorkspaceGitConfig`.
+- Before counting a check as dark, it calls
+  `GET /repos/{repo}/branches/{branch}/protection` to fetch the checks the
+  *base branch itself* requires, and only tallies skips against that set. That
+  closes the exact gap Phase 1 §6 of this document flagged in
+  `evaluateAutoMergeSafety`/`allCheckSuitesPassed`: neither of those ever
+  consulted branch protection, so the doc's own audit under-scoped what
+  candidate 5 needed to check. The threshold (default 5, matching this
+  proposal) is a hardcoded constant, not the configurable
+  `darkCheckThreshold` gitConfig field this section proposed.
+
 ---
 
 ## The mega-branch question
@@ -499,17 +563,23 @@ an agent decision that prompting must address.
 
 ## Summary of recommendations
 
-| # | Candidate | Verdict | Effort | Rationale |
-|---|---|---|---|---|
-| 1 | Sequence claims | **BUILD** (as manifest auto-anchoring) | LOW (2 days) | Direct fix for migration index collision; generalizes to any workspace with sequential namespaces |
-| 2 | External-truth completion gate | **BUILD** | LOW (2–3 days) | Most direct fix for "SUCCESS on bad PR"; mechanism already exists, this is a policy knob |
-| 3 | Merge-order edges | **BUILD** | LOW (2 days) | Fills the gap between `dependsOn` (gates claiming) and ordering at merge time |
-| 4 | Schema drift verification | **SKIP** | HIGH | CI script per workspace, not platform primitive; framework-specific; maintenance burden |
-| 5 | Dark-check detection | **BUILD** | MEDIUM (1 week) | Platform-unique signal; silently broken CI is undetectable any other way |
+| # | Candidate | Verdict | Effort | Rationale | Shipped? |
+|---|---|---|---|---|---|
+| 1 | Sequence claims | **BUILD** (as manifest auto-anchoring) | LOW (2 days) | Direct fix for migration index collision; generalizes to any workspace with sequential namespaces | Yes, as specified |
+| 2 | External-truth completion gate | **BUILD** | LOW (2–3 days) | Most direct fix for "SUCCESS on bad PR"; mechanism already exists, this is a policy knob | Yes, as specified (path corrected above) |
+| 3 | Merge-order edges | **BUILD** | LOW (2 days) | Fills the gap between `dependsOn` (gates claiming) and ordering at merge time | No — a warn-only substitute shipped instead; see above |
+| 4 | Schema drift verification | **SKIP** | HIGH | CI script per workspace, not platform primitive; framework-specific; maintenance burden | N/A — confirmed still skipped |
+| 5 | Dark-check detection | **BUILD** | MEDIUM (1 week) | Platform-unique signal; silently broken CI is undetectable any other way | Yes, with a better design than proposed |
 
 ---
 
 ## Filing-ready follow-up tasks
+
+All four tasks below were filed and executed (Task 2's literal `mergeAfter`
+design was superseded mid-build by the `conflictSurfaces` warning mechanism —
+see Candidate 3's "Shipped" note above). Kept here for historical reference;
+the per-candidate notes above and `docs/design/change-intent.md` describe what
+actually landed.
 
 Tasks listed smallest-valuable-slice first. Each is independent; each should
 be filed with `outputRequirement=pr_required` and a `pathManifest` covering the
