@@ -53,6 +53,7 @@ however many friction reports someone had the patience to file.
 | 9 | `route.ts:1248` | `file_anyway` | rejected | `fileAnywayReason` blank |
 | 10 | `route.ts:1261` | `file_anyway` | rejected | `fileAnywayReason` not permitted for this filing origin |
 | 11 | `route.ts:986` | `kind_absent` | warned | mission task filed with no `kind`; advisory only — see `docs/specs/mission-legibility.md` Rule K2-13 |
+| 12 | `route.ts:561` | `emits_plan_manifest_required` | rejected | `emitsPlan: true` task filed with no `pathManifest` naming the spec document it authors — see `docs/design/spec-to-build-pattern.md` |
 
 Sites 1 and 2 fire before the route resolves a workspace. They are recorded
 through a wrapper that resolves the caller's raw workspace reference in the

@@ -64,6 +64,8 @@ export const GATE_SLUGS = {
   FILE_ANYWAY: 'file_anyway',
   /** POST /api/tasks — mission PR task with no concrete pathManifest. */
   MANIFEST_REQUIRED: 'manifest_required',
+  /** POST /api/tasks — `emitsPlan: true` task filed with no pathManifest naming the spec doc it authors. */
+  EMITS_PLAN_MANIFEST_REQUIRED: 'emits_plan_manifest_required',
   /** Missions create/update — `branchStrategy` validation. */
   BRANCH_STRATEGY: 'branch_strategy',
   /** Missions create/update — `goalCriteria` validation, incl. notMechanizableReason. */
