@@ -52,6 +52,8 @@ import {
   attachKnowledgeContext,
   attachSubjectPriorWork,
   attachDiscrepancyContext,
+  attachTaskAreaScope,
+  predictTaskAreas,
 } from './context-injection';
 import {
   attachClaudeCredentials,
@@ -1797,13 +1799,20 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
 
-  // Prompt-context injection. ORDER IS THE CONTRACT: these four append to the
+  // Predict each task's file area from what similar COMPLETED tasks actually
+  // touched, before any block is built — attachKnowledgeContext uses it as its
+  // path filter. Advisory and never written to tasks.path_manifest; see
+  // @buildd/core/task-area-prediction.
+  const taskAreaPredictions = await predictTaskAreas(filteredTasks);
+
+  // Prompt-context injection. ORDER IS THE CONTRACT: these five append to the
   // same resolvedContextProviders rail and the runner concatenates it in order.
   // See ./context-injection.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
-  await attachKnowledgeContext(claimedWorkers, filteredTasks);
+  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions);
   await attachSubjectPriorWork(claimedWorkers, filteredTasks);
   await attachDiscrepancyContext(claimedWorkers, filteredTasks);
+  await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
   for (const cw of claimedWorkers) {

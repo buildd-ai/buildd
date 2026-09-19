@@ -1664,6 +1664,75 @@ export const workerPromptCompositionEvents = pgTable('worker_prompt_composition_
   policyArmIdx: index('worker_prompt_composition_events_policy_arm_idx').on(t.policyVersion, t.arm),
 }));
 
+/**
+ * The task-area-prediction experiment's own rail — see
+ * `packages/core/task-area-prediction.ts`.
+ *
+ * Deliberately NOT a widening of `worker_prompt_composition_events`. That table
+ * is memory-digest-specific down to its `arm` union and half its columns; a
+ * second experiment bolted onto it would make both cohorts' queries depend on
+ * columns meaningless to the other. `docs/design/experiment-lifecycle.md` says
+ * the same thing prospectively: a new experiment brings its own payload table.
+ *
+ * It is also where the prediction LIVES. There is no `predicted_path_area`
+ * column on `tasks`, on purpose: `tasks.path_manifest` feeds path-overlap
+ * serialisation and inferred `dependsOn`, and a prediction sitting next to it
+ * on the same row is an invitation for a later change to read the wrong one.
+ * Retrieval reads `predicted_paths` from here and nothing else does; dropping
+ * this table reverts the experiment without touching a task row.
+ *
+ * One row per (task, policy_version). A retried task draws the same arm — the
+ * randomiser hashes the task id, not the worker — so a second claim must not
+ * write a second row, and a version bump must not overwrite the old cohort's.
+ *
+ * Nullable-not-defaulted discipline, same as the composition rail: a column
+ * whose value is genuinely unknown for a row stays NULL rather than taking a
+ * default that would encode an inference as data.
+ */
+export const taskAreaPredictionEvents = pgTable('task_area_prediction_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  taskId: uuid('task_id').references(() => tasks.id, { onDelete: 'cascade' }).notNull(),
+  workspaceId: uuid('workspace_id').references(() => workspaces.id, { onDelete: 'cascade' }).notNull(),
+  // Stable experiment identity, stored rather than assumed: the salt includes
+  // it, so a readout that filtered on policy_version alone could pool rows from
+  // a future experiment that happened to reuse a version string.
+  experimentId: text('experiment_id').notNull(),
+  policyVersion: text('policy_version').notNull(),
+  arm: text('arm').notNull().$type<'regex_paths' | 'neighbour_area'>(),
+  // Recorded at assignment time, never reconstructed from `fraction` later —
+  // the fraction can be reconfigured between the draw and the analysis.
+  propensity: decimal('propensity', { precision: 5, scale: 4 }).notNull(),
+  fraction: decimal('fraction', { precision: 5, scale: 4 }).notNull(),
+  // The prediction: the capped union of the paths similar completed tasks
+  // actually touched. ADVISORY — read by retrieval, by nothing else, and never
+  // copied into tasks.path_manifest.
+  predictedPaths: jsonb('predicted_paths').$type<string[]>().notNull(),
+  // 'diff' or 'manifest' — which side of a neighbour these paths came from.
+  predictedPathSource: text('predicted_path_source').notNull().$type<'diff' | 'manifest'>(),
+  // The neighbours that actually contributed a path, most similar first.
+  neighbourTaskIds: jsonb('neighbour_task_ids').$type<string[]>().notNull(),
+  // Neighbours the store returned, BEFORE the similarity floor and the path
+  // lookup — the denominator for "how often does the corpus have anything".
+  neighboursConsidered: integer('neighbours_considered').notNull(),
+  // Best similarity among them. NULL when the store returned nothing: zero
+  // would claim a neighbour was found and scored 0.
+  topScore: decimal('top_score', { precision: 6, scale: 5 }),
+  // The SAME task's paths under the shipped regex (`inferPathsFromText`),
+  // computed in the same run. Without this the overlap metric cannot say
+  // whether the predictor beat what is already in production.
+  regexPaths: jsonb('regex_paths').$type<string[]>().notNull(),
+  // What the task's diff actually touched, written once at terminal worker
+  // status. NULL until then — an unfinished task has no ground truth, and an
+  // empty array would score as "predicted nothing correctly".
+  actualPaths: jsonb('actual_paths').$type<string[]>(),
+  actualRecordedAt: timestamp('actual_recorded_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({
+  taskPolicyIdx: uniqueIndex('task_area_prediction_events_task_policy_idx').on(t.taskId, t.policyVersion),
+  // The readout's cohort scan: every row for a version, split by arm.
+  policyArmIdx: index('task_area_prediction_events_policy_arm_idx').on(t.policyVersion, t.arm),
+}));
+
 export const artifacts = pgTable('artifacts', {
   id: uuid('id').primaryKey().defaultRandom(),
   workerId: uuid('worker_id').references(() => workers.id, { onDelete: 'cascade' }),
