@@ -238,7 +238,7 @@ and fans it to five namespaces — `memory`, `plan`, `task`, `pr`, `code` — at
 `topK: 3` each (`:110-122`). The same function, with the same signature, serves:
 
 - the organizer planning a mission (`mission-context.ts:891`), where the query is
-  `[mission.title, mission.description].join('\n')`
+  `[mission.title, mission.description].filter(Boolean).join('\n')`
 - a worker claiming a task (`context-injection.ts:206`), where the query is the
   task goal
 
@@ -855,7 +855,7 @@ CBM stays worker-side. Server-side references are
 `apps/web/src/app/api/workers/claim/skill-and-role-injection.ts`
 (mounts the MCP for a worker), the metrics route, and `packages/core/cbm-health.ts`
 — nothing in `apps/web` queries the graph, and `BY_DESIGN_SKIP_REASONS`
-(`cbm-insight.ts:61`) records why: `codex_task`, `no_worktree`, `role_opt_out`.
+(`apps/web/src/lib/cbm-insight.ts:61`) records why: `codex_task`, `no_worktree`, `role_opt_out`.
 The graph exists only where a worktree exists, so plan time cannot reach it.
 
 If the organizer ever needs structural facts, it gets a **small derived
