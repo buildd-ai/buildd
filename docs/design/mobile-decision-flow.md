@@ -14,11 +14,11 @@ assertions:
     type: "test_file"
     path: "apps/web/src/lib/condensed-timeline.test.ts"
     skip_until: "2026-12-15"
-    skip_reason: "Assertions here only cover the shipped condensed-timeline subset (I-7, I-8, I-11, I-13-I-16); I-1-I-6, I-9, I-10, I-12 (initiative grouping, live-state card collapse, gesture grammar) remain unbuilt and unasserted, so status is intentionally held at 'partially' rather than promoted."
+    skip_reason: "Assertions here only cover the shipped condensed-timeline subset (I-7, I-8, I-11, I-13-I-16); I-3 and I-4 (Missions list initiative grouping, §4.1-§4.2) remain unbuilt and unasserted — the rest of the breakdown (I-1, I-2, I-5, I-6, I-9, I-10, I-12) has since shipped too but gained no new assertions here — so status is intentionally held at 'partially' rather than promoted."
 ---
 # Mobile Decision Flow — Design Spec
 
-**Status:** Partially Implemented — I-7, I-8, I-11, I-13–I-16 shipped (condensed timeline default-open hierarchy, SegmentStrip in disclosure rows, gate-chip collapse, density tiers, bookkeeping footer, verdict collapse, wave banding). I-1–I-6, I-9, I-10, I-12 pending (initiative grouping, live-state card collapse, gesture grammar).  
+**Status:** Partially Implemented — 14 of 16 breakdown items shipped: I-1, I-2, I-5, I-6, I-7, I-8, I-9, I-10, I-11, I-12, I-13–I-16 (initiative detail page fix, `SegmentStrip continuous` mode, breadcrumb injection, Home `initiativeId` select, condensed timeline default-open hierarchy, SegmentStrip in disclosure rows, live-state card collapse on Home and in the escalation inbox, `SwipeableRow` gesture grammar, gate-chip collapse, density tiers, bookkeeping footer, verdict collapse, wave banding). Only I-3 and I-4 (Missions list — collapsible initiative group headers and the "Other" bucket, §4.1–§4.2) remain unbuilt; the shipped Missions list instead links each mission card to its initiative (`apps/web/src/app/app/(protected)/missions/MissionGrid.tsx`) without grouping by it.  
 **Related:**
 - `docs/design/review-gate-ux.md` (Waiting-on-you queue, StatusChip, gate chips, §5.2.1 merge CTA, §8 Activity list)
 - `docs/design/task-subject-anchors.md` §5–6 (prLifecycleStatus, reconciliation sweep, subjectStillLive)
@@ -516,7 +516,7 @@ Which of §3.5–3.8 apply to each surface, and at which density:
 | `missions/[id]/page.tsx` | ✓ governs view selection | ✓ pass `isBookkeeping` discriminator to grouping | ✓ (via CondensedTimeline) | ✓ (via CondensedTimeline done group) |
 | `missions/[id]/CondensedTimeline.tsx` | ✓ implements Summary + Timeline views | ✓ footer accumulator replaces row render | ✓ chip replaces body prose for approved verdicts | ✓ done group replaced by banded `GroupSection` list |
 | `home/page.tsx` (Right-now card) | ✗ always top-3 compact; no count gate | ✓ bookkeeping rows excluded (show top 3 non-bookkeeping) | ✓ chip only — compact card has no space for verdict prose | ✗ no history; compact card shows running tasks only |
-| `tasks/TaskGrid.tsx` (Activity) | ✗ Activity is always a flat/grouped list; no summary tier | ✓ bookkeeping rows already excluded via `parentTaskId IS NULL` DB filter; no change needed | ✗ Activity does not render reviewer verdict notes | replaces ad-hoc inline `deriveTimeBandLabel` with shared `deriveBandKey` from condensed-timeline.ts |
+| `tasks/TaskGrid.tsx` (Activity) | ✗ Activity is always a flat/grouped list; no summary tier | ✓ bookkeeping rows already excluded via `parentTaskId IS NULL` DB filter; no change needed | ✗ Activity does not render reviewer verdict notes | replaces ad-hoc inline `deriveTimeBandLabel` with shared `deriveDayBands` from condensed-timeline.ts |
 | `home/page.tsx` (ACTIVITY feed) | ✗ fixed 6-row feed, no count gate | ✓ **real change** — feed is derived from workers (last 12 terminal, deduped by task), never filtered by `parentTaskId IS NULL`; `deriveTaskType({ title, parentTaskId, mode })` applied in post-processing; excluded rows are dropped (6-row feed does not warrant an expandable footer) | ✗ feed query does not fetch reviewer verdict notes | ✗ 6-row window is too narrow to span meaningful time bands |
 | `missions/MissionGrid.tsx` | ✗ mission card surface; no timeline | ✗ | ✗ | ✗ |
 | `initiatives/[id]/page.tsx` | ✗ shows mission list, not task timeline | ✗ | ✗ | ✗ |
@@ -538,7 +538,7 @@ Which of §3.5–3.8 apply to each surface, and at which density:
 | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | Lines 264–330: `reviewerNote` block rendering body prose (`note.body`, `note.title` in `<p>` elements) + "→ Merging automatically…" line for non-escalated approved verdicts | §3.7 chip |
 | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | Single collapsed done-disclosure `<button>` row (current `{!doneExpanded && ...}` block) | §3.8 per-band `GroupSection` list |
 | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` | Line 423 `timelineTasks` filter (`t.category !== 'review'`) — currently passes CI retry rows through | §3.6: extend filter to exclude `deriveTaskType() !== null` rows; accumulate them into footer counter |
-| `apps/web/src/components/TaskGrid.tsx` | Inline `deriveTimeBandLabel` logic (Today / Yesterday / This week / Older classification) | §3.8 shared `deriveBandKey` helper |
+| `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx` | Inline `deriveTimeBandLabel` logic (Today / Yesterday / This week / Older classification) | §3.8 shared `deriveDayBands` helper |
 
 The build task's job includes deleting or replacing each of these. No other sites re-derive band keys, re-render verdict prose, or re-implement a collapse toggle for the done group.
 
@@ -680,21 +680,21 @@ No new mobile nav entries, no tab bar changes.
 
 ### 5.1 Dependency on task-subject-anchors 5/7
 
-The live-state card collapse behavior in §1.3 depends on `prLifecycleStatus` being persisted by the GitHub webhook reconciliation sweep. This is task 5/7 of mission ddfcebfe (state reconciliation sweep + pre-claim `subjectStillLive()` gate).
+The live-state card collapse behavior in §1.3 depends on `prLifecycleStatus` being persisted by the GitHub webhook reconciliation sweep. This was task 5/7 of mission ddfcebfe (state reconciliation sweep + pre-claim `subjectStillLive()` gate) — **deployed** (see §1.5, added after two production incidents on the read path this section depends on).
 
-**Items that can ship before 5/7 deploys (graceful degradation):**
+**Items that shipped ahead of 5/7 (graceful degradation while it was pending):**
 
-| Item | Fallback if `prLifecycleStatus` is null |
+| Item | Fallback used while `prLifecycleStatus` was null |
 |---|---|
 | Home "Waiting on you" card rendering | Treat as `open` — card stays visible, no false collapse |
 | Timeline gate chip | Chip stays visible (correct — PR is still open or status unknown) |
 | Needs-attention secondary line | Omit the PR status line entirely; card still shows BLOCKED badge |
 
-**Items that must wait for 5/7:**
-- Card collapse triggered by `prLifecycleStatus = 'merged'` or `'closed'` (§1.3)
-- Escalation inbox "resolved" grouping based on lifecycle state (§1.3)
+**Items that waited for 5/7 (now shipped, I-9/I-10):**
+- Card collapse triggered by `prLifecycleStatus = 'merged'` or `'closed'` (§1.3) — `apps/web/src/app/app/(protected)/home/page.tsx`
+- Escalation inbox "resolved" grouping based on lifecycle state (§1.3) — `apps/web/src/components/ResolvedEscalationsGroup.tsx`
 
-All other items in this spec are independent of 5/7.
+All other items in this spec were independent of 5/7.
 
 ### 5.2 Desktop/mobile shared-component blast radius
 
@@ -731,38 +731,32 @@ Recommended ship order. `dependsOn` values reference task IDs in this table (I-1
 
 | ID | Title | Key files | `dependsOn` |
 |---|---|---|---|
-| **I-1** | Fix initiative detail page: replace bespoke rows + flat bar with shared renderers | `apps/web/src/app/app/(protected)/initiatives/[id]/page.tsx` | — |
-| **I-2** | Add `SegmentStrip continuous` mode (if not already supported) | `apps/web/src/components/SegmentStrip.tsx` | — |
+| **I-1** ✅ | Fix initiative detail page: replace bespoke rows + flat bar with shared renderers | `apps/web/src/app/app/(protected)/initiatives/[id]/page.tsx` | — |
+| **I-2** ✅ | Add `SegmentStrip continuous` mode | `apps/web/src/components/SegmentStrip.tsx` | — |
 | **I-3** | Missions list — initiative group headers + collapsible sections | `apps/web/src/app/app/(protected)/missions/page.tsx` | I-1, I-2 |
 | **I-4** | Missions list — Ungrouped "Other" bucket + safety guard | same | I-3 |
-| **I-5** | Initiative detail breadcrumb injection (`?from=initiative` passthrough) | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `initiatives/[id]/page.tsx` | I-1 |
-| **I-6** | Home — add `initiativeId` to missions select in `home/page.tsx` | `apps/web/src/app/app/(protected)/home/page.tsx` | — |
+| **I-5** ✅ | Initiative detail breadcrumb injection (`?from=initiative` passthrough) | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `initiatives/[id]/page.tsx` | I-1 |
+| **I-6** ✅ | Home — add `initiativeId` to missions select in `home/page.tsx` | `apps/web/src/app/app/(protected)/home/page.tsx` | — |
 | **I-7** ✅ | Condensed timeline: default-open hierarchy (Waiting-on-you → Running → Queued → Done collapsed) | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` + `CondensedTimeline.tsx` + `apps/web/src/lib/condensed-timeline.ts` | BT-2 (`blockingGate` field) |
 | **I-8** ✅ | Condensed timeline: `SegmentStrip` in collapsed disclosure rows | same | I-2, I-7 |
-| **I-9** | Live-state card: Waiting-on-you card collapse on `prLifecycleStatus` | Home page "Waiting on you" section | BT-1, BT-7, **5/7 deployed** |
-| **I-10** | Live-state card: Escalation inbox resolved-group rendering | Escalation inbox component | **5/7 deployed** |
+| **I-9** ✅ | Live-state card: Waiting-on-you card collapse on `prLifecycleStatus` | Home page "Waiting on you" section (`apps/web/src/app/app/(protected)/home/page.tsx`, `apps/web/src/lib/pr-freshness.ts`) | BT-1, BT-7, **5/7 deployed** |
+| **I-10** ✅ | Live-state card: Escalation inbox resolved-group rendering | `apps/web/src/components/ResolvedEscalationsGroup.tsx` | **5/7 deployed** |
 | **I-11** ✅ | Live-state card: Timeline gate chip collapse on `mergedAt` | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | BT-1, BT-7 |
-| **I-12** | Gesture grammar: `SwipeableRow` + per-card swipe actions + undo toast | `apps/web/src/components/SwipeableRow.tsx` (new); apply to Home gate cards, Activity list rows, mission timeline rows | — |
-| **I-13** | Density tier selector: Summary default for missions > 8 tasks; Summary view composed of `MissionProgressBar density=full+labels` + PR roll-up + Waiting-on-you band | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `CondensedTimeline.tsx` | I-7, I-8 |
-| **I-14** | Bookkeeping row collapse to footer: filter `deriveTaskType() !== null` rows out of `timelineTasks`; accumulate into `"N orchestrator runs · last X ago"` footer expandable | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` (line 423 `timelineTasks` filter), `CondensedTimeline.tsx` | I-7, PR #1706 (✅ merged) |
-| **I-15** | Verdict collapse to chip: replace approved verdict body prose with `✓ {confidence}` chip; expand on tap; `Changes Requested` / `escalate` / `failed` verdicts remain expanded and sort into Waiting-on-you band | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` (lines 264–330) | I-7 |
-| **I-16** | Wave banding: replace single done-disclosure row with `GroupSection`-backed per-wave bands; `deriveBandKey()` helper in `condensed-timeline.ts`; 4 h gap threshold; shared with `TaskGrid.tsx` time-banding | `apps/web/src/lib/condensed-timeline.ts` (new `deriveBandKey`), `CondensedTimeline.tsx` (done group), `apps/web/src/components/TaskGrid.tsx` (replace inline `deriveTimeBandLabel`) | I-7, I-8 |
+| **I-12** ✅ | Gesture grammar: `SwipeableRow` + per-card swipe actions + undo toast | `apps/web/src/components/SwipeableRow.tsx`; applied on Home, Activity (`tasks/TaskGrid.tsx`), and mission timeline rows | — |
+| **I-13** ✅ | Density tier selector: Summary default for missions > 8 tasks; Summary view composed of `MissionProgressBar density=full+labels` + PR roll-up + Waiting-on-you band | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx`, `CondensedTimeline.tsx` | I-7, I-8 |
+| **I-14** ✅ | Bookkeeping row collapse to footer: filter `deriveTaskType() !== null` rows out of `timelineTasks`; accumulate into `"N orchestrator runs · last X ago"` footer expandable | `apps/web/src/app/app/(protected)/missions/[id]/page.tsx` (`timelineTasks` filter), `CondensedTimeline.tsx` | I-7, PR #1706 (✅ merged) |
+| **I-15** ✅ | Verdict collapse to chip: replace approved verdict body prose with `✓ {confidence}` chip; expand on tap; `Changes Requested` / `escalate` / `failed` verdicts remain expanded and sort into Waiting-on-you band | `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` | I-7 |
+| **I-16** ✅ | Wave banding: replace single done-disclosure row with `GroupSection`-backed per-wave bands; `deriveBandKey()` helper in `condensed-timeline.ts`; 4 h gap threshold. `tasks/TaskGrid.tsx` shares the same module's `deriveDayBands` for its own (un-gap-clustered) day banding | `apps/web/src/lib/condensed-timeline.ts` (`deriveBandKey`, `deriveDayBands`), `CondensedTimeline.tsx` (done group), `apps/web/src/app/app/(protected)/tasks/TaskGrid.tsx` | I-7, I-8 |
 
-✅ = implemented and deployed to production. Prerequisites for I-13–I-16.
+✅ = implemented and deployed to production. Only I-3 and I-4 remain open.
 
-**Parallel-safe groups:**
-- `{I-1, I-2, I-6, I-12}` — fully independent; start these in parallel
-- `{I-3, I-4, I-5}` — parallel after I-1 completes
-- `{I-7, I-8}` — after I-2; I-8 additionally after I-7 (both ✅ — no longer actionable)
-- `{I-9, I-10, I-11}` — gate on 5/7 deployment; I-9 and I-11 additionally gate on BT-1 + BT-7 (I-11 ✅)
-- `{I-13, I-14, I-15, I-16}` — all depend on I-7 ✅ and I-8 ✅; fully parallel with each other; no cross-dependency
+**Remaining work:** I-3 and I-4 (Missions list initiative grouping) are the sole unbuilt items in this spec. Everything else listed above — including all of §1 Live-state card model, §2 Gesture grammar, §3 Condensed timeline, and I-1/I-2/I-5/I-6 of §4 Initiative tier — has shipped.
 
 ---
 
 ## Approval gate
 
-This spec is for Max's review. No implementation should begin until:
+I-1 through I-16 were filed from this doc and 14 of them (all but I-3 and I-4) have since shipped, each following TDD (failing test first, then implementation). The gate below still applies to the two remaining items:
 
-1. Max approves (or provides revision feedback)
-2. Implementation tasks I-1 through I-16 are filed from this doc (I-13 through I-16 require approval of the §3.5–3.9 addendum)
-3. Each task follows TDD: failing test first, then implementation
+1. Max approves (or provides revision feedback) on §4.1–§4.2 (Missions list initiative grouping) before I-3/I-4 are filed
+2. Each task follows TDD: failing test first, then implementation
