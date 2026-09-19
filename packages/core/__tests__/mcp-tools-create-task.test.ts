@@ -774,3 +774,60 @@ describe('create_task — kind/complexity routing inputs', () => {
     expect(description).toContain('complexity?');
   });
 });
+
+describe('create_task — emitsPlan (spec-to-build)', () => {
+  let mockApi: ReturnType<typeof mock>;
+
+  beforeEach(() => {
+    mockApi = mock();
+    mockApi.mockResolvedValue({ id: 'task-new', title: 'Test Task', priority: 5, status: 'pending' });
+  });
+
+  it('forwards emitsPlan: true to the task API', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      {
+        title: 'Spec: something',
+        description: 'write a spec and propose a breakdown',
+        emitsPlan: true,
+        pathManifest: ['docs/design/something.md'],
+      },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.emitsPlan).toBe(true);
+  });
+
+  it('omits emitsPlan when the caller does not set it', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd' },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.emitsPlan).toBeUndefined();
+  });
+
+  it('does not forward emitsPlan: false (default, byte-identical to omitting it)', async () => {
+    await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'd', emitsPlan: false },
+      createMockContext(),
+    );
+
+    const body = JSON.parse(mockApi.mock.calls[0][1].body);
+    expect(body.emitsPlan).toBeUndefined();
+  });
+
+  it('documents emitsPlan in the create_task params description', () => {
+    const description = buildParamsDescription(['create_task']);
+    expect(description).toContain('emitsPlan?');
+    expect(description).toContain('mode: "planning"');
+    expect(description).toContain('requiresPlanApproval: true');
+  });
+});
