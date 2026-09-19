@@ -1484,6 +1484,15 @@ export class WorkerManager {
 
     // Sequential enforcement for Codex: at most 1 active Codex worker per workspace.
     // Codex uses a shared 5-hour plan window, so concurrent runs exhaust it quickly.
+    //
+    // Primary enforcement now lives at claim time (POST /api/workers/claim defers
+    // with reason `codex_single_flight` before ever handing back a claimed worker),
+    // so this should fire rarely. It stays as a backstop for the race the claim
+    // route's in-memory, per-request tracking can't see: two concurrent claim
+    // requests (this runner polling twice, or two runners) that each pass the
+    // server-side check before either has actually claimed. Losing this backstop
+    // would mean that race goes back to running two Codex workers on one 5-hour
+    // window instead of costing one already-started worker.
     if (fullTask.backend === 'codex') {
       const activeCodexWorker = Array.from(this.workers.values()).find(w =>
         w.workspaceId === fullTask.workspaceId &&

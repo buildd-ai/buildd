@@ -846,6 +846,41 @@ describe('POST /api/workers/claim', () => {
       // Codex busy → task is left pending rather than funneled into a deferral failure.
       expect(data.workers.length).toBe(0);
     });
+
+    // Regression: a task created with backend:'codex' from the start (not a
+    // budget-failover flip) never went through tryFlipToCodex's codexFree check,
+    // so it used to sail straight through to the atomic claim and only get
+    // stopped afterward, in the runner, by killing the worker it had just
+    // started. It must now be deferred here instead — no worker ever starts.
+    it('defers a task already assigned to codex when the workspace Codex slot is taken, at claim time', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({
+        id: 'account-1', maxConcurrentWorkers: 5, type: 'user' as const, authType: 'oauth' as const,
+        maxConcurrentSessions: 10, activeSessions: 0,
+      });
+      // One active worker whose task is Codex in ws-1 → Codex slot busy.
+      mockWorkersFindMany.mockResolvedValue([
+        { id: 'w-active', taskId: 'task-active', status: 'running', workspaceId: 'ws-1' },
+      ]);
+      // First findMany = claimable tasks (already backend:'codex' — no flip involved);
+      // second = active-Codex-workspace derivation.
+      mockTasksFindMany
+        .mockResolvedValueOnce([{ ...pendingClaudeTask(), backend: 'codex' }])
+        .mockResolvedValueOnce([{ workspaceId: 'ws-1' }]);
+      mockHasCodexCredential.mockResolvedValue(true);
+      setupClaim();
+
+      const req = createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { runner: 'test-runner', capabilities: ['backend:codex', 'CODEX_HOME'] },
+      });
+      const res = await POST(req);
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      // Deferred, not claimed — the atomic claim UPDATE never runs for this task.
+      expect(data.workers.length).toBe(0);
+      expect(data.diagnostics?.deferrals?.codex_single_flight).toBe(1);
+    });
   });
 
   describe('team provider toggle (reversible mask)', () => {

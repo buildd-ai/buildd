@@ -1054,6 +1054,8 @@ export interface ClaimDiagnostics {
     routing_paused?: number;
     /** Task already had a live worker when the atomic insert ran (dup guard). */
     duplicate_worker?: number;
+    /** Codex task deferred: the workspace's one Codex slot is already taken. */
+    codex_single_flight?: number;
   };
   /**
    * Learned OAuth budget pressure for this account (seat-based auth only).
