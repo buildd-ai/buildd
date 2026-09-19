@@ -10,9 +10,9 @@ import WorkerRespondInput from '@/components/WorkerRespondInput';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { GroupSection } from '@/components/GroupSection';
 import { SwipeableRow, type SwipeCardType } from '@/components/SwipeableRow';
-import { deriveBandKey, buildRail } from '@/lib/condensed-timeline';
-import type { ChainUnit, RailGoal, RailNode, RailPhase } from '@/lib/condensed-timeline';
-import { DependencyRail } from '@/components/DependencyRail';
+import { deriveBandKey, buildRail, railOutcome, rollupRailOutcome } from '@/lib/condensed-timeline';
+import type { ChainUnit, RailGoal, RailNode, RailOutcome, RailPhase } from '@/lib/condensed-timeline';
+import { DependencyRail, type RailEdgeKind } from '@/components/DependencyRail';
 import { RailNodeGlyph, SegmentStrip, type RailGlyphState } from '@/components/SegmentStrip';
 import { deriveStage } from '@/lib/stage';
 import { isStrandedTask } from '@/lib/structure-layout';
@@ -150,13 +150,20 @@ export type CondensedTimelineProps = {
   criteriaGate?: CriteriaGatePresentation | null;
   /**
    * Mobile rail inputs (docs/specs/timeline-mobile-rail.md). All optional: an
-   * absent map degrades the rail's STRANDED/retry detail, never its structure.
+   * absent map degrades the rail's STRANDED detail, never its structure.
    */
   taskMap?: Map<string, CondensedTask>;
-  /** childId → parentId retry lineage — the same map StructureView receives. */
-  retryLinks?: Map<string, string>;
   /** Goal-criteria pass count for the rail's root node; null renders no root. */
   railGoal?: RailGoal | null;
+  /**
+   * Fixture/test seams for the rail's two client-state disclosures, mirroring
+   * `AttemptStrip.defaultExpanded`. The live page passes neither, so every rail
+   * row renders collapsed on the server exactly as it hydrates. They exist
+   * because `renderToStaticMarkup` cannot deliver a click, and expansion
+   * behaviour (§13) still has to be pinned by a test.
+   */
+  disclosedTaskIds?: ReadonlySet<string>;
+  expandedChainIds?: ReadonlySet<string>;
 };
 
 // ─── PR status line — single PR reference for open-PR rows ──────────────────
@@ -956,9 +963,39 @@ function railGlyph(
   }
 }
 
-/** PR number + its terminal word, plus a low-confidence flag (Rule D6-1/D6-2). */
-function RailRightColumn({ task }: { task: CondensedTimelineTask }) {
-  const lw = task.latestWorker;
+/**
+ * A row's disclosure control, when it has attempt history to disclose.
+ * `panelId` is what the button's `aria-controls` names (Rule D13-5).
+ */
+type RailDisclosure = { expanded: boolean; onToggle: () => void; panelId: string };
+
+/**
+ * The right column — and, when the row has attempt history, the disclosure
+ * control itself (Rule D13-1).
+ *
+ * Render order is fixed left to right: PR number → PR lifecycle word → reviewer
+ * confidence → outcome mark → chevron (Rule D6-12). The mark sits inboard of the
+ * chevron so the chevron holds one rightmost column across every row, which is
+ * what makes the hit box predictable at thumb reach.
+ *
+ * The PR-number `<a>` stays OUTSIDE the button: a link nested in a button is not
+ * a valid target and taps resolve unpredictably (Rule D13-4).
+ */
+function RailRightColumn({
+  task,
+  prTask,
+  outcome,
+  disclosure,
+}: {
+  task: CondensedTimelineTask;
+  /** Source of the PR number/word, when it differs from `task` — a collapsed
+   * chain's confidence flag still belongs to the head, only the PR is the
+   * terminal member's (§1.3). */
+  prTask?: CondensedTimelineTask;
+  outcome: RailOutcome;
+  disclosure: RailDisclosure | null;
+}) {
+  const lw = (prTask ?? task).latestWorker;
   const note = task.reviewerNote;
   const confidenceRaw = note?.title.match(/\(confidence ([\d.]+)\)/)?.[1];
   const confidence = confidenceRaw != null ? Number(confidenceRaw) : null;
@@ -978,10 +1015,17 @@ function RailRightColumn({ task }: { task: CondensedTimelineTask }) {
     }
   }
 
-  if (!prWord && !showConfidence) return null;
+  // Four signals, not two (Rule D6-13). A retry dispatched before `create_pr`
+  // ran leaves its parent with attempt history and no PR number; that row still
+  // earns its mark and its chevron.
+  if (!prWord && !showConfidence && !outcome.mark && !disclosure) return null;
+
+  const mark = outcome.mark && (
+    <span data-testid="rail-outcome-mark" className={outcome.tone ?? 'text-text-muted'}>{outcome.mark}</span>
+  );
 
   return (
-    <span className="ml-auto flex shrink-0 items-baseline gap-1 font-mono text-[10px]">
+    <span className="ml-auto flex shrink-0 self-stretch items-center gap-1 font-mono text-[10px]">
       {prWord && lw?.prUrl && (
         <a
           href={lw.prUrl}
@@ -995,6 +1039,21 @@ function RailRightColumn({ task }: { task: CondensedTimelineTask }) {
       )}
       {prWord && <span className={prWord.cls}>{prWord.text}</span>}
       {showConfidence && <span className="text-status-warning">{confidenceRaw}</span>}
+      {disclosure ? (
+        <button
+          type="button"
+          onClick={e => { e.stopPropagation(); disclosure.onToggle(); }}
+          aria-expanded={disclosure.expanded}
+          aria-controls={disclosure.panelId}
+          data-testid="rail-attempt-toggle"
+          title="Attempt history"
+          className="-mr-2 flex min-w-[44px] shrink-0 items-center justify-end gap-1 self-stretch px-2 hover:text-text-secondary"
+        >
+          {mark}
+          <span className="text-text-muted" aria-hidden="true">{disclosure.expanded ? '⌄' : '⌃'}</span>
+          <span className="sr-only">{disclosure.expanded ? 'Hide' : 'Show'} attempt history</span>
+        </button>
+      ) : mark}
     </span>
   );
 }
@@ -1078,7 +1137,7 @@ function RailGutter({
   shape = 'circle',
   continues = true,
 }: {
-  edge: 'hard' | 'soft' | 'retry' | 'none';
+  edge: RailEdgeKind;
   glyph: RailGlyphSpec;
   shape?: 'circle' | 'square';
   continues?: boolean;
@@ -1094,19 +1153,143 @@ function RailGutter({
   );
 }
 
-function RailTaskLine({ task, label }: { task: CondensedTimelineTask; label?: string }) {
+/**
+ * A chain row's disclosure control — the `▣N`/`▼N` badge and the title text as
+ * ONE button (Rule D13-17). `membersId` is what its `aria-controls` names.
+ */
+type RailChainToggle = { count: number; expanded: boolean; onToggle: () => void; membersId: string };
+
+/**
+ * One rail line: optional leading chrome, the title, the right column.
+ *
+ * The title is a `<Link>` on a row that stands for exactly one task, and the
+ * inside of a `<button>` on a chain row that stands for N (Rule D13-12/D13-17).
+ * A chain row has no task link at all: it could only pick one of the N, and
+ * picking the head is the defect v3 exists to remove.
+ *
+ * When the row carries a control — the right-column disclosure, the chain
+ * toggle, or both — it grows to a 24px minimum and centre-aligns, so the
+ * control can be `self-stretch` and meet WCAG 2.2 §2.5.8 without changing the
+ * rhythm of rows that have no control (Rule D13-3). The title stays `flex-1`
+ * and the right column stays `shrink-0` with its own padding, so the boundary
+ * between them is a real gap rather than a shared pixel column (Rule D13-4).
+ */
+function RailTaskLine({
+  task,
+  prTask,
+  label,
+  outcome,
+  disclosure,
+  glyph,
+  chain,
+  lead,
+  trail,
+}: {
+  task: CondensedTimelineTask;
+  /** Source of the right column's PR number/word, when it differs from `task` — a
+   * collapsed chain names the head's title but the terminal member's PR (§1.3). */
+  prTask?: CondensedTimelineTask;
+  label?: string;
+  outcome: RailOutcome;
+  disclosure: RailDisclosure | null;
+  /** The reserved 18px work-kind glyph column (mission-legibility.md Rule R4-11). */
+  glyph?: React.ReactNode;
+  /** Set on a row with `count > 1`: badge + title become the disclosure (§13.4). */
+  chain?: RailChainToggle | null;
+  /** Leading chrome — an ordinal number, a `├` fork arm. Inert, never a control. */
+  lead?: React.ReactNode;
+  /** Trailing text that is not the right column, e.g. `after ↑ paths`. */
+  trail?: React.ReactNode;
+}) {
+  const roomy = disclosure != null || chain != null;
+  const title = railTruncate(stripTaskTypePrefix(task.title));
   return (
-    <>
-      <Link
-        href={`/app/tasks/${task.id}`}
-        className="min-w-0 flex-1 truncate text-[12px] text-text-secondary hover:text-accent-text"
-      >
-        {label ? <span className="font-mono text-text-muted">{label} </span> : null}
-        {railTruncate(stripTaskTypePrefix(task.title))}
-      </Link>
-      <RailRightColumn task={task} />
-    </>
+    <div className={`flex gap-1.5 ${roomy ? 'min-h-[24px] items-center' : 'min-h-[18px] items-baseline'}`}>
+      {chain ? (
+        <>
+          {glyph}
+          <button
+            type="button"
+            onClick={e => { e.stopPropagation(); chain.onToggle(); }}
+            aria-expanded={chain.expanded}
+            aria-controls={chain.membersId}
+            data-testid="rail-chain-toggle"
+            title={`${chain.count} tasks in this chain`}
+            className="flex min-w-[44px] flex-1 items-center gap-1.5 self-stretch text-left hover:text-accent-text"
+          >
+            <span className="shrink-0 font-mono text-[10px] text-text-muted">
+              {`${chain.expanded ? '▼' : '▣'}${chain.count}`}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[12px] text-text-secondary">{title}</span>
+            <span className="sr-only">{chain.expanded ? 'Hide' : 'Show'} the tasks in this chain</span>
+          </button>
+        </>
+      ) : (
+        <>
+          {lead}
+          {glyph}
+          <Link
+            href={`/app/tasks/${task.id}`}
+            className="min-w-0 flex-1 truncate text-[12px] text-text-secondary hover:text-accent-text"
+          >
+            {label ? <span className="font-mono text-text-muted">{label} </span> : null}
+            {title}
+          </Link>
+        </>
+      )}
+      {trail}
+      <RailRightColumn task={task} prTask={prTask} outcome={outcome} disclosure={disclosure} />
+    </div>
   );
+}
+
+/**
+ * The expanded attempt panel (Rule D13-7/D13-9/D13-11).
+ *
+ * It renders INSIDE the expanded node's own `data-rail-node` element, so the
+ * gutter stroke — already `flex-1` — stretches past it and everything below
+ * moves down as one block. Tick positions come from each node's server-derived
+ * `ts` inside `buildRail` and cannot be touched by client expansion state
+ * (Rule D13-6).
+ */
+function RailAttemptPanel({ id, strips }: { id: string; strips: (AttemptStripData | null)[] }) {
+  return (
+    <div id={id} data-testid="rail-attempt-disclosure" className="mt-0.5 pl-3 text-[10px]">
+      {strips.map((strip, i) => (
+        <AttemptStrip key={strip?.parentTaskId ?? i} strip={strip} hideToggle />
+      ))}
+    </div>
+  );
+}
+
+/** A row with attempts to disclose gets a control; one with none gets no chrome. */
+const railHasAttempts = (task: CondensedTimelineTask) => (task.attempts?.total ?? 0) > 0;
+
+/**
+ * The attributes `TaskPanelWrapper`'s delegated handler reads, on the smallest
+ * element that stands for exactly one task (Rule D13-13/D13-16).
+ *
+ * The actionable predicate is `TaskRow`'s, reused rather than re-derived: a rail
+ * row and a desktop row are answering the identical question,
+ * and a completed task with no PR must fall through to its `<Link>` and open the
+ * full page instead of an empty drawer.
+ */
+const railTaskAttrs = (task: CondensedTimelineTask) => ({
+  'data-task-id': task.id,
+  'data-task-actionable':
+    task.status !== 'completed' || !!task.latestWorker?.prUrl ? 'true' : 'false',
+});
+
+/**
+ * The peek scope for one rail row: its line plus its own attempt panel, and
+ * nothing belonging to another task.
+ *
+ * `task` is null on a chain row, which stands for N tasks and therefore names
+ * none — there is no single id it could offer the delegated handler, so a tap
+ * inside it resolves to nothing and cannot open a sheet (Rule D1-7, D13-13).
+ */
+function RailRowScope({ task, children }: { task: CondensedTimelineTask | null; children: React.ReactNode }) {
+  return <div {...(task ? railTaskAttrs(task) : {})}>{children}</div>;
 }
 
 /** One Lane-1 rail node — a collapsed chain, or a single task. */
@@ -1114,106 +1297,184 @@ function RailNodeRow({
   node,
   isLast,
   stranded,
+  disclosedTaskIds,
+  expandedChainIds,
   reserveGlyphColumn,
 }: {
   node: RailNode<CondensedTimelineTask>;
   isLast: boolean;
   stranded: (id: string) => boolean;
+  disclosedTaskIds?: ReadonlySet<string>;
+  expandedChainIds?: ReadonlySet<string>;
   reserveGlyphColumn: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const laneTwoTasks = [...node.siblings.map(s => s.task), ...node.hiddenSiblings];
+
+  // Disclosure state is per row and never shared: the rail is a list, not a
+  // wizard, and comparing two rows' attempt histories is a real reason to open
+  // both (Rule D13-8). Row keys are prefixed because a chain's head is also its
+  // own first ordinal member, and those are two independent controls (D13-10).
+  const [openRows, setOpenRows] = useState<ReadonlySet<string>>(() => {
+    const seeded = new Set<string>();
+    if (!disclosedTaskIds?.size) return seeded;
+    if (disclosedTaskIds.has(node.head.id)) seeded.add(`chain:${node.id}`);
+    for (const m of node.members) if (disclosedTaskIds.has(m.id)) seeded.add(`member:${m.id}`);
+    for (const t of laneTwoTasks) if (disclosedTaskIds.has(t.id)) seeded.add(`sib:${t.id}`);
+    return seeded;
+  });
+  // Rule D13-18: the chain toggle's own onClick is the ONLY writer of this.
+  // Nothing here subscribes to the address or fires on mount, so the
+  // `router.replace` the task sheet performs re-renders the row without
+  // touching its expansion — opening and closing a sheet from an ordinal
+  // sub-row leaves the chain exactly as it was. `expandedChainIds` seeds the
+  // initial value and is a fixture seam only, never a controlled prop.
+  const [chainExpanded, setChainExpanded] = useState(() => expandedChainIds?.has(node.id) ?? false);
   const [forkOpen, setForkOpen] = useState(false);
-  const [retryOpen, setRetryOpen] = useState(false);
+
+  const toggleRow = (key: string) =>
+    setOpenRows(prev => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+
+  const disclosureFor = (key: string, has: boolean): RailDisclosure | null =>
+    has ? { expanded: openRows.has(key), onToggle: () => toggleRow(key), panelId: `rail-attempts-${key}` } : null;
 
   const collapsible = node.count > 1;
   const glyph = railGlyph(node.head, { stranded: stranded(node.head.id) });
   const visibleSiblings = forkOpen
     ? [...node.siblings, ...node.hiddenSiblings.map(task => ({ task, soft: false }))]
     : node.siblings;
-  // The stub stands in for AttemptStrip's collapsed `●● N attempts` line (Rule
-  // D3-5), so it must appear whenever there IS an attempt history — a retry whose
-  // own task row is bookkeeping-class never reaches `node.retries`.
-  const attemptCount = node.head.attempts?.total ?? 0;
-  const hasRetryStub = node.retries.length > 0 || attemptCount > 0;
-  const retryLabel = node.retries.length || attemptCount;
-  const hasLaneTwo = visibleSiblings.length > 0 || hasRetryStub || node.forkHidden > 0;
+  const hasLaneTwo = visibleSiblings.length > 0 || node.forkHidden > 0;
+
+  // A collapsed chain wears ONE mark: the highest-precedence outcome across its
+  // members, so a reader who never expands still sees the worst thing in it
+  // (Rule D7-5). Expanding moves each member's own mark onto its ordinal sub-row
+  // and the chain row keeps the rollup.
+  const memberOutcomes = node.members.map(railOutcome);
+  const headOutcome = collapsible ? rollupRailOutcome(memberOutcomes) : (memberOutcomes[0] ?? railOutcome(node.head));
+  const headKey = `chain:${node.id}`;
+  // While the chain is open its members are on screen, each owning its own
+  // history control; a second aggregate control re-printing exactly those panels
+  // is duplicate chrome on a 360px row, so the chain row's own control folds
+  // away and its rolled-up mark stays as static text (Rule D13-17). Collapsing
+  // restores the control with whatever it had open (Rule D13-19).
+  const chainOpen = collapsible && chainExpanded;
+  const headDisclosure = chainOpen ? null : disclosureFor(headKey, headOutcome.hasAttempts);
+  const headStrips = node.members.filter(railHasAttempts).map(m => m.attempts ?? null);
+  const membersId = `rail-chain-${node.id}`;
+
+  // The collapsed row names the head's title but the terminal member's PR
+  // (§1.3): the last member with a PR is the one the reader would follow to
+  // see the chain's outcome. Expanded ordinal sub-rows keep each member's own.
+  const terminalPrTask = collapsible
+    ? ([...node.members].reverse().find(m => m.latestWorker?.prNumber) ?? node.head)
+    : node.head;
 
   return (
-    <div className="flex items-stretch gap-2" data-task-id={node.head.id} data-rail-node="">
+    // No `data-task-id` here (Rule D13-13): the delegated handler resolves
+    // `closest('[data-task-id]')`, so an attribute on the unit wrapper makes
+    // every tap inside it — badge, ordinal sub-row, Lane-2 sibling, panel text —
+    // peek the head. It belongs on the smallest element standing for one task.
+    <div className="flex items-stretch gap-2" data-rail-node="">
       <RailGutter edge={node.edge} glyph={glyph} continues={!isLast || hasLaneTwo} />
 
       <div className="min-w-0 flex-1 pb-1">
-        <div className="flex min-h-[18px] items-baseline gap-1.5">
-          <WorkKindGlyph task={node.head} reserve={reserveGlyphColumn} />
-          {collapsible && (
-            <button
-              type="button"
-              onClick={() => setExpanded(v => !v)}
-              aria-expanded={expanded}
-              className="shrink-0 font-mono text-[10px] text-text-muted hover:text-text-secondary"
-              title={`${node.count} tasks in this chain`}
-            >
-              ▣{node.count}
-            </button>
+        <RailRowScope task={collapsible ? null : node.head}>
+          <RailTaskLine
+            task={node.head}
+            prTask={terminalPrTask}
+            outcome={headOutcome}
+            disclosure={headDisclosure}
+            glyph={<WorkKindGlyph task={node.head} reserve={reserveGlyphColumn} />}
+            chain={collapsible ? {
+              count: node.count,
+              expanded: chainExpanded,
+              onToggle: () => setChainExpanded(v => !v),
+              membersId,
+            } : null}
+          />
+          {headDisclosure?.expanded && (
+            <RailAttemptPanel id={headDisclosure.panelId} strips={headStrips} />
           )}
-          <RailTaskLine task={node.head} />
-        </div>
+        </RailRowScope>
 
-        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). Each
-            carries its OWN glyph, from its own task (Rule R4-15). */}
-        {collapsible && expanded && (
-          <div className="mt-0.5 space-y-0.5 border-l border-border-default pl-3">
-            {node.members.map((member, i) => (
-              <div key={member.id} className="flex items-baseline gap-1.5">
-                <span className="shrink-0 font-mono text-[10px] text-text-muted">{i + 1}</span>
-                <WorkKindGlyph task={member} reserve={reserveGlyphColumn} />
-                <RailTaskLine task={member} label={ordinalLabel(member)} />
-              </div>
-            ))}
+        {/* Ordinal sub-rows — the chain, once you ask for it (Rule D1-3). They,
+            not the row above them, are this unit's navigation targets (D13-16).
+            Each carries its OWN glyph, from its own task (Rule R4-15). */}
+        {chainOpen && (
+          <div
+            id={membersId}
+            data-testid="rail-chain-members"
+            className="mt-0.5 space-y-0.5 border-l border-border-default pl-3"
+          >
+            {node.members.map((member, i) => {
+              const key = `member:${member.id}`;
+              const disclosure = disclosureFor(key, railHasAttempts(member));
+              return (
+                <RailRowScope key={member.id} task={member}>
+                  <RailTaskLine
+                    task={member}
+                    label={ordinalLabel(member)}
+                    outcome={memberOutcomes[i]}
+                    disclosure={disclosure}
+                    glyph={<WorkKindGlyph task={member} reserve={reserveGlyphColumn} />}
+                    lead={<span className="shrink-0 font-mono text-[10px] text-text-muted">{i + 1}</span>}
+                  />
+                  {disclosure?.expanded && (
+                    <RailAttemptPanel id={disclosure.panelId} strips={[member.attempts ?? null]} />
+                  )}
+                </RailRowScope>
+              );
+            })}
           </div>
         )}
 
-        {/* Lane 2 — siblings, the fork glyph, and retry stubs (§2, §3.3). */}
+        {/* Lane 2 — fan-out siblings and the fork glyph. Retry lineage is NOT
+            here: an edge answers "what had to happen before this could start",
+            and a retry answers "this ran more than once" (Rule D3-5). */}
         {hasLaneTwo && (
           <div className="mt-0.5 space-y-0.5 pl-1">
-            {visibleSiblings.map(({ task, soft }) => (
-              <div key={task.id} className="flex items-baseline gap-1.5">
-                <span className="shrink-0 font-mono text-[10px] text-text-muted" aria-hidden="true">├</span>
-                <RailNodeGlyph {...railGlyph(task, { stranded: stranded(task.id), soft })} shape="circle" />
-                <WorkKindGlyph task={task} reserve={reserveGlyphColumn} />
-                <RailTaskLine task={task} />
-                {soft && <span className="shrink-0 font-mono text-[10px] text-text-muted">after ↑ paths</span>}
-              </div>
-            ))}
+            {visibleSiblings.map(({ task, soft }) => {
+              const key = `sib:${task.id}`;
+              const disclosure = disclosureFor(key, railHasAttempts(task));
+              return (
+                <RailRowScope key={task.id} task={task}>
+                  <RailTaskLine
+                    task={task}
+                    outcome={railOutcome(task)}
+                    disclosure={disclosure}
+                    glyph={<WorkKindGlyph task={task} reserve={reserveGlyphColumn} />}
+                    lead={
+                      <>
+                        <span className="shrink-0 font-mono text-[10px] text-text-muted" aria-hidden="true">├</span>
+                        <RailNodeGlyph {...railGlyph(task, { stranded: stranded(task.id), soft })} shape="circle" />
+                      </>
+                    }
+                    trail={soft && <span className="shrink-0 font-mono text-[10px] text-text-muted">after ↑ paths</span>}
+                  />
+                  {disclosure?.expanded && (
+                    <RailAttemptPanel id={disclosure.panelId} strips={[task.attempts ?? null]} />
+                  )}
+                </RailRowScope>
+              );
+            })}
 
+            {/* The fork glyph discloses in place and never opens a sheet: without
+                stopPropagation the bubbled click reaches the delegated handler
+                (Rule D13-14). It sits outside every row scope, so there is no
+                task for that handler to resolve either. */}
             {node.forkHidden > 0 && (
               <button
                 type="button"
-                onClick={() => setForkOpen(v => !v)}
+                onClick={e => { e.stopPropagation(); setForkOpen(v => !v); }}
                 aria-expanded={forkOpen}
                 className="flex items-baseline gap-1.5 font-mono text-[10px] text-text-muted hover:text-text-secondary"
               >
                 <span aria-hidden="true">├╮</span>
                 <span>{forkOpen ? 'less' : `+${node.forkHidden}`}</span>
               </button>
-            )}
-
-            {hasRetryStub && (
-              <div>
-                <button
-                  type="button"
-                  onClick={() => setRetryOpen(v => !v)}
-                  aria-expanded={retryOpen}
-                  className="flex items-center gap-1.5 font-mono text-[10px] text-status-error hover:underline"
-                  title={`${retryLabel} retry attempt${retryLabel === 1 ? '' : 's'}`}
-                  data-testid="rail-retry-stub"
-                >
-                  <span className="inline-block w-3 border-t border-dashed border-status-error" aria-hidden="true" />
-                  <span aria-hidden="true">✗</span>
-                  <span className="sr-only">{retryLabel} retry attempts</span>
-                </button>
-                {retryOpen && <AttemptStrip strip={node.head.attempts ?? null} defaultExpanded />}
-              </div>
             )}
           </div>
         )}
@@ -1248,17 +1509,19 @@ function RailGoalRoot({ goal }: { goal: RailGoal }) {
 function MobileRail({
   groups,
   taskMap,
-  retryLinks,
   goal,
   bookkeepingTasks,
+  disclosedTaskIds,
+  expandedChainIds,
 }: {
   groups: CondensedTimelineGroups;
   taskMap?: Map<string, CondensedTask>;
-  retryLinks?: Map<string, string>;
   goal?: RailGoal | null;
   bookkeepingTasks: BookkeepingTask[];
+  disclosedTaskIds?: ReadonlySet<string>;
+  expandedChainIds?: ReadonlySet<string>;
 }) {
-  const model = buildRail<CondensedTimelineTask>(groups, { retryLinks, goal });
+  const model = buildRail<CondensedTimelineTask>(groups, { goal });
   const stranded = (id: string) => (taskMap ? isStrandedTask(id, taskMap) : false);
 
   if (model.rows.length === 0) {
@@ -1301,6 +1564,8 @@ function MobileRail({
             node={row}
             isLast={i === lastNodeIndex && !model.goal}
             stranded={stranded}
+            disclosedTaskIds={disclosedTaskIds}
+            expandedChainIds={expandedChainIds}
             reserveGlyphColumn={reserveGlyphColumn}
           />
         );
@@ -1485,8 +1750,9 @@ export default function CondensedTimeline({
   totalTasks,
   criteriaGate,
   taskMap,
-  retryLinks,
   railGoal,
+  disclosedTaskIds,
+  expandedChainIds,
 }: CondensedTimelineProps) {
   return (
     <div className="mb-6">
@@ -1522,9 +1788,10 @@ export default function CondensedTimeline({
             <MobileRail
               groups={groups}
               taskMap={taskMap}
-              retryLinks={retryLinks}
               goal={railGoal}
               bookkeepingTasks={bookkeepingTasks}
+              disclosedTaskIds={disclosedTaskIds}
+              expandedChainIds={expandedChainIds}
             />
           </div>
           <div className="hidden md:block">
