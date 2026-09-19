@@ -1,7 +1,28 @@
 # Experiment Lifecycle
 
 **Status:** Proposed
-**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts`, `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c), `packages/core/experiment-cleanup.ts`, `apps/web/src/lib/experiment-cleanup-task.ts`, `apps/web/src/app/api/cron/memory-digest-readout/route.ts`, `packages/core/memory-digest-readout-source.ts`, `cron-manifest.json`
+**Related:** `apps/runner/src/memory-digest-policy.ts`, `apps/runner/src/experiment-randomizer.ts`, `apps/runner/src/prompt-builder.ts:348`, `packages/core/db/schema.ts` → `workerPromptCompositionEvents` (`:1503`), `apps/runner/__tests__/unit/cbm-version-pin.test.ts`, `apps/web/src/lib/cbm-insight.ts`, `apps/web/src/lib/cbm-insight-query.ts`, `apps/web/src/app/api/cbm/metrics/route.ts`, `apps/runner/src/cbm-enforcement.ts`, `packages/core/mcp-tools.ts`, `packages/core/mission-helpers.ts`, `packages/core/derived-metric.ts`, `packages/core/initiative-metric-registry.ts`, `docs/design/workspace-memory-digest-arm.md`, `docs/design/self-host-only-subscription-auth.md`, `docs/reports/2026-09-11-platform-audit.md` (D15, §5c), `packages/core/experiment-cleanup.ts`, `apps/web/src/lib/experiment-cleanup-task.ts`, `apps/web/src/app/api/cron/memory-digest-readout/route.ts`, `packages/core/memory-digest-readout-source.ts`, `cron-manifest.json`
+
+**Update, post memory-digest conclusion:** the memory-digest experiment is
+concluded and retired (decision recorded in
+`docs/design/workspace-memory-digest-arm.md`; `task_scoped` is now
+unconditional behaviour, not an arm). Everything below that describes it as
+"enrolled in production" is now historical context for the design problem,
+not current state. Its randomiser (`hashUnitInterval`, the version-salted
+draw, the out-of-range-rejecting fraction resolver) has already been
+extracted into a generic, parameter-taking module —
+`apps/runner/src/experiment-randomizer.ts` — ahead of the registry proposed
+below, so implementing §2's "generalising the assignment function" step means
+pointing the registry at that module rather than writing it. The
+policy-version pin guards (`apps/runner/__tests__/unit/
+memory-digest-policy-version-pin.test.ts` and `packages/core/__tests__/
+memory-digest-readout-policy-pin.test.ts`) were removed in the same change,
+per the "two stages" rule in §1: stage two — the guard retiring — is gated on
+the decision being recorded, which it now is. `worker_prompt_composition_events`
+stays exactly as described below: a memory-digest-specific payload table, not
+a generic rail. A future experiment (CBM or otherwise) needs its own payload
+source; that design call is out of scope here and belongs to whoever declares
+that experiment.
 
 ---
 
@@ -86,11 +107,11 @@ in `tasks.context`), which is not a rollout mechanism.
 
 | Capability | Where it is today | What it gives a general primitive | What it does not |
 |---|---|---|---|
-| **Arm assignment** | `memory-digest-policy.ts`: `hashUnitInterval` (FNV-1a, `:143`), `assignMemoryDigestArm` (`:164`), draw salted `${POLICY_VERSION}:${taskId}` (`:180`), `resolveTaskScopedFraction` (`:119`, rejects out-of-range rather than clamping) | A correct, reusable randomiser: per-task so retries cannot switch arms, version-salted so a bump re-randomises, propensity recorded at assignment | Hardcoded to one version constant, one arm union, one call site (`prompt-builder.ts:348`). No notion of a second experiment |
-| **Enrolment fraction** | `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` — `apps/runner/src/index.ts:478`, `types.ts:668` | A per-runner operator knob that defaults to enrolling nobody | Env-only. Not visible to the control plane, so nothing server-side knows an experiment is live |
-| **Event rail** | `worker_prompt_composition_events` (`schema.ts:1503`), index `(policy_version, arm)` at `:1545` | The generic spine: `policy_version`, `arm`, `propensity`, `fraction`, unit id, `ts` — plus the nullable-not-defaulted discipline for unknowable fields (`:1532`, `:1538`) | **Memory-specific payload.** `digest_bytes`, `digest_bytes_available`, `digest_truncated`, `task_match_bytes`, `memory_share`, and `arm` typed `'full' \| 'task_scoped'`. A CBM arm cannot reuse it without widening that union and adding columns meaningless to the other experiment |
+| **Arm assignment** | Extracted (no longer memory-digest-specific): `apps/runner/src/experiment-randomizer.ts` — `hashUnitInterval` (FNV-1a), `assignExperimentArm`, draw salted `${experimentId}:${policyVersion}:${unitId}`, `resolveEnrolmentFraction` (rejects out-of-range rather than clamping). Retired memory-digest callers are gone; the module has no current caller until the next experiment declares one | A correct, reusable randomiser: per-unit so retries cannot switch arms, version- **and experiment-id-salted** so a bump re-randomises and two experiments on the same unit ids decorrelate, propensity recorded at assignment | Still no registry, no control-plane visibility, and no per-component version stamping (§4b) — it is the assignment primitive alone |
+| **Enrolment fraction** | Retired for memory-digest (`BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` / `memoryDigestTaskScopedFraction` are gone from the runner config surface — `task_scoped` is unconditional). `resolveEnrolmentFraction` in the extracted module remains the primitive a future experiment's knob would resolve through | A per-runner operator knob that defaults to enrolling nobody | Env-only. Not visible to the control plane, so nothing server-side knows an experiment is live |
+| **Event rail** | `worker_prompt_composition_events` (`schema.ts:1503`), index `(policy_version, arm)` at `:1545`. Still written on every prompt build — now unconditionally `arm: 'task_scoped'`, `propensity: 1`, `fraction: 1` — because the counterfactual `digest_bytes_available` column remains useful operational telemetry even with no live arm | The generic spine: `policy_version`, `arm`, `propensity`, `fraction`, unit id, `ts` — plus the nullable-not-defaulted discipline for unknowable fields (`:1532`, `:1538`) | **Memory-specific payload, unchanged by the memory-digest retirement.** `digest_bytes`, `digest_bytes_available`, `digest_truncated`, `task_match_bytes`, `memory_share`, and `arm` typed `'full' \| 'task_scoped'`. A CBM arm cannot reuse it without widening that union and adding columns meaningless to the other experiment — it needs its own payload table, a design call for whoever declares that experiment |
 | **Readout / aggregation** | `cbm-insight.ts`: `aggregateCbm` (`:74`), `computeDeltaPct` (`:69`), `MIN_COHORT` (`:52`), `BY_DESIGN_SKIP_REASONS` (`:45`); query half `cbm-insight-query.ts` (`fetchCbmSummary:28`, `CBM_ROW_LIMIT:17`); route `/api/cbm/metrics` | A two-arm delta readout with a cohort floor, already written, already shipped — and the repo's compute/query split convention (mirrored in `usage-stats.ts` / `usage-stats-query.ts`, `failure-analytics.ts`) | Fed by an observational cohort, not an assignment. Has no power position, no stopping rule, no version segmentation |
-| **Contamination guard** | Two independently invented content pins: `memory-digest-policy-version-pin.test.ts` (fingerprints 13 injection surfaces against `MEMORY_DIGEST_POLICY_VERSION`) and `cbm-version-pin.test.ts` (cross-file binary pin). Plus `packages/core/__tests__/composition-record-columns.test.ts`, which asserts record↔column correspondence by parsing source | A proven pattern for "a coupling the type system cannot see, guarded in CI, that fails on drift" | Hand-written per experiment. Nothing makes a *new* experiment get one |
+| **Contamination guard** | The memory-digest pin (`memory-digest-policy-version-pin.test.ts`, fingerprinting 13 injection surfaces against `MEMORY_DIGEST_POLICY_VERSION`) and its readout-side half (`memory-digest-readout-policy-pin.test.ts`) were removed once the experiment's decision was recorded — the cohort they protected is closed and will not be re-analysed under a moved surface. `cbm-version-pin.test.ts` (cross-file binary pin) remains, live, for CBM. `packages/core/__tests__/composition-record-columns.test.ts` still asserts record↔column correspondence by parsing source | A proven pattern for "a coupling the type system cannot see, guarded in CI, that fails on drift" | Hand-written per experiment. Nothing makes a *new* experiment get one |
 | **Declared-spec + last-evaluation storage** | `initiatives.kpis` / `kpi_state` / `auto_verify` (`schema.ts:909-914`), types `InitiativeKPI` / `InitiativeKPIState` (`packages/shared/src/types.ts:1519`, `:1528`) | The exact shape a registry needs: a declared spec, the last evaluation with `evaluatedAt` / `evaluatedBy`, and an auto-verify opt-out | Scoped to initiatives; KPI metrics resolve through `initiative-metric-registry.ts` (`KNOWN_METRIC_KEYS:20`), which knows only release metrics |
 | **Write-boundary validation** | `packages/core/mission-helpers.ts:173-180` rejects a `metric` goal criterion outright, because no evaluator exists and accepting one would hand the author a gate that can never open | The precedent this design follows: refuse at the write boundary rather than filter at read time | — |
 | **"Not available" as a first-class state** | `packages/core/derived-metric.ts`: `DerivedMetric<T>` = value \| `{unavailable, reason}` with typed reasons `no_baseline` / `no_scope` / `not_evaluated`. Also `CriterionVerdict` (`types.ts:1422`) including `UNVERIFIED` / `PENDING` / `NOT_EVALUATED` | Exactly the vocabulary "not yet conclusive" needs, already load-bearing elsewhere | — |
@@ -250,15 +271,21 @@ policy_version, arm, propensity, fraction, unit_id, ts)` — as a shared shape s
 a second experiment does not re-derive it. The memory-digest table already has
 every one of those columns except the slug, which is implicit in the table name.
 
-**Generalising the assignment function has one trap.** Extracting
+**Generalising the assignment function had one trap, now moot.** Extracting
 `assignMemoryDigestArm` into a shared `assignArm(slug, version, unitId,
-fraction)` that salts with `${slug}:${version}:${unitId}` would **re-randomise
-the live experiment**, because its current salt is `${version}:${unitId}` with
-no slug. That is a silent reassignment of every enrolled task mid-flight — the
-exact harm the version salt exists to prevent. The extraction must therefore
-take the salt prefix as a parameter and the memory-digest caller must pass its
-existing prefix verbatim, with a test asserting a fixed task id still draws the
-arm it draws today. Future experiments use the slug-qualified prefix.
+fraction)` that salts with `${slug}:${version}:${unitId}` would have
+**re-randomised the live experiment**, because its salt was
+`${version}:${unitId}` with no slug — a silent reassignment of every enrolled
+task mid-flight, the exact harm the version salt exists to prevent. That risk
+no longer applies: the memory-digest experiment concluded and its arm code was
+deleted, not merely extracted around, so the extraction
+(`apps/runner/src/experiment-randomizer.ts`, `assignExperimentArm`) had no live
+caller left to re-randomise. It ships with the slug-qualified salt
+(`${experimentId}:${policyVersion}:${unitId}`) that this paragraph originally
+proposed. A future experiment that needs this trap avoided mid-flight — i.e.
+extracting a *live* assignment function — still needs the same care: take the
+salt prefix as a parameter, and prove a fixed unit id draws the same arm
+before and after the extraction.
 
 ### 3. Stopping rules that are not dates
 

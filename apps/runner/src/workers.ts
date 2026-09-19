@@ -2048,7 +2048,6 @@ export class WorkerManager {
         inputAsRetry: this.config.inputAsRetry,
         resolvedContextProviders: (task.context as any)?.resolvedContextProviders as string[] | undefined,
         feedbackMemories,
-        memoryDigestTaskScopedFraction: this.config.memoryDigestTaskScopedFraction,
       });
       let promptText = built.promptText;
 
@@ -3287,28 +3286,26 @@ export class WorkerManager {
         }
       }
 
-      // One composition record per prompt build, in BOTH arms. The control row
-      // is the denominator: without it, "no task_scoped prompts" and "no
-      // prompts at all" look identical.
+      // One composition record per prompt build — what the workspace-memory
+      // block cost, on the durable rail the concluded memory-digest
+      // experiment left behind (see memory-digest-policy.ts).
       //
       // Deliberately emitted HERE — below the Codex AGENTS.md prepend above and
       // below the tenant-context append — because this is the last line that
       // mutates promptText. Built any earlier, promptBytes is short by whatever
       // a later branch adds and memoryShare is correspondingly inflated.
       const composition = buildPromptCompositionRecord({
-        assignment: built.assignment,
         memory: built.memory,
         promptText,
         backend: task.backend,
         taskMatchDerivedBy: taskMemory.derivedBy,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
-      // Also on stdout, as a live "is the arm firing at all" signal. Whether
+      // Also on stdout, as a live "is this firing at all" signal. Whether
       // that outlives the process is a property of the deployment's launcher,
       // not of this code: the reference one appends to a container-local file
       // inside a restart loop, so it accumulates history but is unrotated and
-      // dies with the container. Neither sink is a queryable rail — see the
-      // open question in the design doc.
+      // dies with the container. Neither sink is a queryable rail.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
       // Durable, queryable rail: neither of the above survives long enough or
       // is queryable enough to analyse the arm across a task's retry chain.

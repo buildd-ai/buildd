@@ -17,7 +17,6 @@ import { getCurrentCommit as getDiskCommit, checkForUpdate, applyUpdate, hasTrac
 import { initHistory, searchSessions, getSession, getArchivedData, getStats as getHistoryStats } from './history-store';
 import { readClaimLogs } from './session-logger';
 import { writeSecretJsonFile } from './secure-file';
-import { resolveTaskScopedFraction } from './memory-digest-policy';
 
 const PORT = parseInt(process.env.PORT || '8766');
 const BUILDD_DIR = process.env.BUILDD_HOME || join(homedir(), '.buildd');
@@ -201,14 +200,22 @@ interface SavedConfig {
   llmApiKey?: string; // Provider-specific API key (OpenRouter key, etc.)
   llmBaseUrl?: string; // Custom base URL
   maxTurns?: number; // Max turns per worker session (default: no limit)
-  // Share of tasks (0-1) enrolled in the task_scoped workspace-memory arm.
-  memoryDigestTaskScopedFraction?: number;
 }
 
+/**
+ * Retired: the task-scoped workspace-memory arm is now unconditional
+ * behaviour, not a config knob. An operator's saved config left over from
+ * before the retirement must not crash the runner — ignore it and log once
+ * so the file can be cleaned up. (The env var equivalent is checked
+ * separately, below, since it can be set with no config.json on disk.)
+ */
 function loadSavedConfig(): SavedConfig {
   try {
     if (existsSync(CONFIG_FILE)) {
       const data = JSON.parse(readFileSync(CONFIG_FILE, 'utf-8'));
+      if (data.memoryDigestTaskScopedFraction !== undefined) {
+        console.warn('[config] memoryDigestTaskScopedFraction is retired and ignored — the task-scoped workspace-memory block is now always on. Remove it from config.json.');
+      }
       return {
         apiKey: data.apiKey?.trim(), // Always trim to avoid whitespace issues
         serverless: data.serverless,
@@ -226,7 +233,6 @@ function loadSavedConfig(): SavedConfig {
         llmApiKey: data.llmApiKey,
         llmBaseUrl: data.llmBaseUrl,
         maxTurns: data.maxTurns,
-        memoryDigestTaskScopedFraction: data.memoryDigestTaskScopedFraction,
       };
     }
   } catch (err) {
@@ -289,6 +295,9 @@ function saveConfig(data: Partial<SavedConfig>) {
 
 // Load config with clear priority logging
 const savedConfig = loadSavedConfig();
+if (process.env.BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION !== undefined) {
+  console.warn('[config] BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION is retired and ignored — the task-scoped workspace-memory block is now always on.');
+}
 const envApiKey = process.env.BUILDD_API_KEY?.trim();
 
 // Determine API key source
@@ -469,15 +478,6 @@ const config: LocalUIConfig = {
   maxTurns: savedConfig.maxTurns,
   // Tier 3 structural isolation root (opt-in via env var)
   workspaceIsolationRoot: process.env.BUILDD_WORKSPACE_ISOLATION_ROOT || undefined,
-  // Workspace-memory experiment enrolment. 0 (the default) means every prompt
-  // keeps the workspace-wide digest exactly as before.
-  // `||`, not `??`, matching every neighbouring env-over-saved field: a
-  // set-but-empty env var (the normal shape in a .env file or a compose
-  // `environment:` list) must fall through to the saved value rather than
-  // shadow it with ''.
-  memoryDigestTaskScopedFraction: resolveTaskScopedFraction(
-    process.env.BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION || savedConfig.memoryDigestTaskScopedFraction,
-  ),
 };
 
 const resolver = createWorkspaceResolver(projectRoots, config.workspaceIsolationRoot);

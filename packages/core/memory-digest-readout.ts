@@ -83,10 +83,13 @@ export const DEFAULT_BACKEND = 'claude';
  *
  * Mirrors `MEMORY_DIGEST_POLICY_VERSION` in `apps/runner/src/memory-digest-policy.ts`.
  * It is duplicated rather than imported because `packages/core` must not depend
- * on `apps/runner` — and a duplicated constant that decides which rows are
- * comparable is exactly the kind that drifts silently, so
- * `packages/core/__tests__/memory-digest-readout-policy-pin.test.ts` parses the
- * runner source and fails if the two ever disagree.
+ * on `apps/runner`. The two were guarded against drift by
+ * `packages/core/__tests__/memory-digest-readout-policy-pin.test.ts`, which
+ * parsed the runner source and failed if they disagreed — removed once the
+ * experiment's decision was recorded (`docs/design/workspace-memory-digest-arm.md`),
+ * because the cohort it protects is now closed and will not be re-analysed
+ * under a moved surface. Both constants stay `'memory-digest-v4'` and are no
+ * longer expected to change.
  *
  * A stale value here would not throw. It would select an empty cohort and
  * report `indeterminate` for ever, which is why the readout treats an empty
