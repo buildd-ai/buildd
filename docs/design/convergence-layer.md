@@ -1,5 +1,5 @@
 ---
-status: implemented
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "auto-merge-safety"
@@ -20,11 +20,11 @@ assertions:
 ---
 # Convergence Layer: Audit and Spec
 
-**Status:** Implemented — Candidates 1, 2 and 5 shipped (5 with a materially
-different design than proposed here); Candidate 4 was correctly skipped, as
-recommended. Candidate 3 (`mergeAfter`) did **not** ship as specified — the
-problem it targeted was instead addressed by a softer, warn-only mechanism.
-See the per-candidate "Shipped" notes in Phase 2 below.
+**Status:** Partially Implemented — Candidates 1, 2 and 5 shipped (5 with a
+materially different design than proposed here); Candidate 4 was correctly
+skipped, as recommended. Candidate 3 (`mergeAfter`) did **not** ship as
+specified — the problem it targeted was instead addressed by a softer,
+warn-only mechanism. See the per-candidate "Shipped" notes in Phase 2 below.
 **Related:**
 `apps/web/src/app/api/tasks/route.ts`,
 `apps/web/src/app/api/workers/claim/route.ts`,
