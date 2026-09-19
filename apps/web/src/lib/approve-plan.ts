@@ -22,6 +22,17 @@ export interface SpecDocFixContext {
 }
 
 /**
+ * `tasks.context.specSource` — the doc-fix pattern's `specDocFix` traceability
+ * field, generalized: which spec document authorized this task, written onto
+ * every child of a plan whose parent was created via `emitsPlan`
+ * (docs/design/spec-to-build-pattern.md §3).
+ */
+export interface SpecSourceContext {
+  specPath: string;
+  planningTaskId: string;
+}
+
+/**
  * A doc-fixer's net-enhancement proposal approves as exactly ONE child task.
  *
  * The proposal is a list of items about one document; approving it is one
@@ -105,7 +116,7 @@ export async function approvePlan(
   const task = await db.query.tasks.findFirst({
     where: eq(tasks.id, planningTaskId),
     columns: {
-      id: true, workspaceId: true, missionId: true, context: true, pathManifest: true,
+      id: true, workspaceId: true, missionId: true, context: true, pathManifest: true, mode: true,
       // Rule P1-9: a re-plan raised inside a phase keeps its children in it.
       missionPhaseIndex: true, missionPhaseLabel: true,
     },
@@ -236,6 +247,14 @@ export async function approvePlan(
     survivingPlan = collapseProposalPlan(survivingPlan, docFix);
   }
 
+  // Traceability (docs/design/spec-to-build-pattern.md §3): a spec task filed
+  // via `emitsPlan` is a `mode: 'planning'` task whose `pathManifest[0]` names
+  // the spec doc it authors (forced non-empty at creation — see
+  // POST /api/tasks's emitsPlan gate). An ordinary organizer-authored planning
+  // task never sets `pathManifest` at its own insert site, so this reads as
+  // undefined for it and no `specSource` is written.
+  const emitsPlanSpecPath = task.mode === 'planning' ? (task.pathManifest as string[] | null)?.[0] : undefined;
+
   // Phases are assigned across the SURVIVING plan, in plan-array order, before
   // the first insert — a step dropped by dedup above never occupied a phase, so
   // numbering it would leave a gap no row belongs to.
@@ -300,6 +319,11 @@ export async function approvePlan(
           // The link back to the ledger: this child exists to settle these rows,
           // and the spec text it updates is the one they name.
           ...(docFix?.specPath ? { specDocFix: docFix, finalizesProposal: true } : {}),
+          // The link back to the spec doc that authorized this child, for a
+          // plan filed via emitsPlan.
+          ...(emitsPlanSpecPath
+            ? { specSource: { specPath: emitsPlanSpecPath, planningTaskId } satisfies SpecSourceContext }
+            : {}),
           ...(mission?.integrationBranchEnabled && mission?.workingBranch ? { headBranch: mission.workingBranch } : {}),
           ...(integrationBase ? { baseBranch: integrationBase } : {}),
         },

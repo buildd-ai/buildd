@@ -416,6 +416,9 @@ export async function POST(req: NextRequest) {
       // Routing inputs — the claim-time router's kind×complexity matrix reads these.
       kind: rawKind,
       complexity: rawComplexity,
+      // Spec-to-build opt-in: forces mode: 'planning' + context.requiresPlanApproval,
+      // both non-overridable by the caller. See the emitsPlan gate below.
+      emitsPlan: rawEmitsPlan,
       startAt: rawStartAt,
       startIn: rawStartIn,
       startAfter: rawStartAfter,
@@ -425,6 +428,12 @@ export async function POST(req: NextRequest) {
     } = body;
 
     gateCaller = gateCallerOrigin({ apiAccount, user, workerId: createdByWorkerId });
+
+    // Spec-to-build opt-in — see docs/design/spec-to-build-pattern.md Proposal §1.
+    // Never opens `mode` itself as a public parameter (that would let any task,
+    // spec or not, mint a mode: 'planning' task the mission machinery doesn't
+    // expect); this is the one narrow, explicit, server-validated entry point.
+    const emitsPlan = rawEmitsPlan === true;
 
     if (!title) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
@@ -540,6 +549,25 @@ export async function POST(req: NextRequest) {
       Array.isArray(rawPathManifest) && rawPathManifest.every((p: unknown) => typeof p === 'string')
         ? rawPathManifest
         : null;
+
+    // emitsPlan gate: a spec task must name the document it authors so the
+    // dispatch-time spec-discrepancy injection and approvePlan's specSource
+    // traceability write (docs/design/spec-to-build-pattern.md §3) have an
+    // anchor to key off. Reuses pathManifest verbatim — no new field.
+    if (emitsPlan && (!pathManifest || pathManifest.length === 0)) {
+      const error =
+        "a spec task (emitsPlan: true) must declare pathManifest naming the spec document it authors";
+      fireGateEvent({
+        gate: GATE_SLUGS.EMITS_PLAN_MANIFEST_REQUIRED,
+        surface: 'POST /api/tasks',
+        outcome: 'rejected',
+        reason: error,
+        workspaceId,
+        missionId,
+        callerOrigin: gateCaller,
+      });
+      return NextResponse.json({ error }, { status: 400 });
+    }
 
     // Dedup gate for friction tasks.
     // When an agent provides context.frictionSignature (the error-pattern slug from
@@ -1074,7 +1102,7 @@ export async function POST(req: NextRequest) {
         description: description || null,
         priority: priority || 0,
         status: 'pending',
-        mode: 'execution',
+        mode: emitsPlan ? 'planning' : 'execution',
         taskClass: (
           title.startsWith('[friction] ') ||
           title.startsWith('Aggregate results:') ||
@@ -1101,6 +1129,9 @@ export async function POST(req: NextRequest) {
           ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
           ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
           ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
+          // Last so it wins over any caller-supplied context.requiresPlanApproval —
+          // a spec task's plan is always gated; nobody authorizes their own breakdown.
+          ...(emitsPlan ? { requiresPlanApproval: true } : {}),
         },
         ...(project ? { project } : {}),
         ...(category ? { category } : {}),
@@ -1137,6 +1168,7 @@ export async function POST(req: NextRequest) {
             ...(processedAttachments.length > 0 ? { attachments: processedAttachments } : {}),
             ...(skillSlugs.length > 0 ? { skillSlugs } : {}),
             ...(resolvedSkillRefs.length > 0 ? { skillRefs: resolvedSkillRefs } : {}),
+            ...(emitsPlan ? { requiresPlanApproval: true } : {}),
             startResolution: deferredStart.resolution,
           },
         } : {}),

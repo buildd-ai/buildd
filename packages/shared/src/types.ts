@@ -964,6 +964,10 @@ export interface CreateTaskInput {
   pathManifest?: string[];
   // Agent backend that executes this task
   backend?: AgentBackend;
+  // Spec-to-build opt-in: forces mode: 'planning' + context.requiresPlanApproval: true
+  // (non-overridable) and requires a non-empty pathManifest naming the spec document
+  // this task authors. Default false — every other caller is unaffected.
+  emitsPlan?: boolean;
 }
 
 export interface CreateMissionInput {
