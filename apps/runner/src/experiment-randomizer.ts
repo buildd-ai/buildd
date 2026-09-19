@@ -12,12 +12,5 @@
  * Kept as a path so the runner's own import sites and
  * `apps/runner/__tests__/unit/experiment-randomizer.test.ts` keep resolving.
  */
-export {
-  assignExperimentArm,
-  hashUnitInterval,
-  resolveEnrolmentFraction,
-} from '@buildd/core/experiment-randomizer';
-export type {
-  AssignExperimentArmArgs,
-  ExperimentAssignment,
-} from '@buildd/core/experiment-randomizer';
+export { assignExperimentArm, hashUnitInterval, resolveEnrolmentFraction } from '@buildd/core/experiment-randomizer';
+export type { AssignExperimentArmArgs, ExperimentAssignment } from '@buildd/core/experiment-randomizer';
