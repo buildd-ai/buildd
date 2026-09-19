@@ -238,6 +238,7 @@ export async function loadInvariantSnapshot(
     taskClass: t.taskClass ?? 'work',
     outputRequirement: t.outputRequirement ?? null,
     contextBaseBranch: stringOrNull(asRecord(t.context).baseBranch),
+    requiresPlanApproval: asRecord(t.context).requiresPlanApproval === true,
     planRaw: asRecord(asRecord(t.result).structuredOutput).plan ?? null,
     childCount: 0,
     createdAt: t.createdAt,
