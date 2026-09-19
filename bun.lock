@@ -19,7 +19,7 @@
     },
     "apps/runner": {
       "name": "@buildd/runner",
-      "version": "0.215.4",
+      "version": "0.215.5",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.272",
         "@buildd/core": "workspace:*",
@@ -39,7 +39,7 @@
     },
     "apps/web": {
       "name": "@buildd/web",
-      "version": "0.215.4",
+      "version": "0.215.5",
       "dependencies": {
         "@aws-sdk/client-s3": "^3.985.0",
         "@aws-sdk/s3-request-presigner": "^3.985.0",
@@ -80,14 +80,14 @@
     },
     "packages/core": {
       "name": "@buildd/core",
-      "version": "0.215.4",
+      "version": "0.215.5",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.3.272",
         "@ast-grep/napi": "^0.45.0",
         "@buildd/shared": "workspace:*",
         "@neondatabase/serverless": "^1.0.0",
         "@openai/codex-sdk": "^0.155.0",
-        "dotenv": "^17.0.0",
+        "dotenv": "^18.0.0",
         "drizzle-orm": "^0.45.2",
         "server-only": "^0.0.1",
         "zod": "^4.3.6",
@@ -110,7 +110,7 @@
     },
     "packages/shared": {
       "name": "@buildd/shared",
-      "version": "0.215.4",
+      "version": "0.215.5",
       "devDependencies": {
         "typescript": "^6.0.0",
       },
@@ -595,7 +595,7 @@
 
     "devlop": ["devlop@1.1.0", "", { "dependencies": { "dequal": "^2.0.0" } }, "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA=="],
 
-    "dotenv": ["dotenv@17.4.2", "", {}, "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw=="],
+    "dotenv": ["dotenv@18.0.1", "", { "bin": { "dotenv": "dist/index.cjs" } }, "sha512-0eR4m4D/jH5eaI3evo2ZqqMii5mrTCR12v12VChdie6O1gPHs7XAjzTep0CWc1Bd+oNx3vVfbi734dK4zghigw=="],
 
     "drizzle-kit": ["drizzle-kit@0.31.10", "", { "dependencies": { "@drizzle-team/brocli": "^0.10.2", "@esbuild-kit/esm-loader": "^2.5.5", "esbuild": "^0.25.4", "tsx": "^4.21.0" }, "bin": { "drizzle-kit": "bin.cjs" } }, "sha512-7OZcmQUrdGI+DUNNsKBn1aW8qSoKuTH7d0mYgSP8bAzdFzKoovxEFnoGQp2dVs82EOJeYycqRtciopszwUf8bw=="],
 
