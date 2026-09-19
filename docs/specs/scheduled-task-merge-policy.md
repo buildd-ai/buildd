@@ -2,7 +2,7 @@
 title: Scheduled-task merge policy override
 status: draft
 owner: max
-last_verified: 2026-09-18
+last_verified: 2026-09-19
 summary: A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
 domain: tasks
 surfaces: [apps/web/src/lib/merge-policy.ts, apps/web/src/app/api/cron/schedules/route.ts, apps/web/src/lib/workspace-policy.ts, packages/shared/src/types.ts]
@@ -15,6 +15,8 @@ assertions:
     type: "symbol"
     name: "resolvePolicy"
     path: "apps/web/src/lib/merge-policy.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "resolvePolicy has been exported since #1162 (2026-07-12), two months before this spec was drafted. Passing this assertion only proves the pre-existing export still exists, not that this spec's proposed task.mergePolicy step was added to it — see status callout."
   - id: "schedule-copies-merge-policy"
     type: "symbol_reachable"
     symbol: "mergePolicy"
@@ -23,15 +25,18 @@ assertions:
   - id: "merge-policy-precedence-tests"
     type: "test_file"
     path: "apps/web/src/lib/merge-policy.test.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "merge-policy.test.ts predates this spec and tests today's shipped precedence chain, not this spec's proposed task.mergePolicy step. File-existence passing says nothing about this capability — see status callout."
 ---
 
 # Scheduled-task merge policy override
 
 > **Status: `draft` — nothing in this spec is implemented.** It was carried as
 > `active` while none of AC-1…AC-6 held, which is the one thing a spec may not
-> be: `active` asserts what the system does today. Re-verified 2026-09-18
-> against `dev` (originally verified 2026-09-04, re-verified 2026-09-15 —
-> nothing below has changed since, only the cron insert's line number drifted):
+> be: `active` asserts what the system does today. Re-verified 2026-09-19
+> against `dev` (originally verified 2026-09-04, re-verified 2026-09-15 and
+> 2026-09-18 — nothing below has changed since the 2026-09-04 pass, only the
+> cron insert's line number drifted, which the 2026-09-18 pass already fixed):
 >
 > - There is still no `tasks.merge_policy` column. `merge_policy` appears once
 >   in `packages/core/db/schema.ts:807`, on `missions`.
@@ -58,6 +63,22 @@ assertions:
 > proposed, so their passing predates and is independent of this draft. A
 > conformance run that reports them as "code ahead of doc" is a false
 > positive: there is no code ahead here for this spec to catch up to.
+>
+> **Why this is now a `skip_until` suppression, not just prose:** the last two
+> reconciliation passes (PR #2435, PR #2474) explained this false positive in
+> prose only. `classifyAssertion` (`packages/core/spec-discrepancy-ledger.ts`)
+> reads structural outcome and declared status alone — it has no way to see a
+> status-callout paragraph — so both assertions kept classifying `code_ahead`
+> against this doc's non-terminal status after every prose-only fix, and the
+> ledger re-dispatched this exact reconciliation task each time the checker
+> next ran (PR #2474 fixed the prose on 2026-09-18; the ledger re-checked at
+> 2026-09-19T00:43 UTC, found the same `code_ahead` pair, and re-dispatched
+> the task this PR is fixing). Both assertions now carry `skip_until:
+> "2026-12-15"` with `skip_reason` per §6 of `spec-conformance.md` — the
+> documented escape hatch for an assertion that legitimately passes but
+> doesn't certify the doc's capability. That stops the repeat dispatch; it
+> does not resolve the ledger rows, which stay open until the checker itself
+> reconciles them per §9.
 >
 > **The open question this spec was blocked on has since been resolved —
 > implementation is unblocked, but still not started.**
