@@ -66,7 +66,7 @@ export async function GET(
         tasks: {
           columns: { id: true, title: true, status: true, priority: true, roleSlug: true, createdAt: true, result: true, updatedAt: true, kind: true, mode: true, category: true, parentTaskId: true, creationSource: true, taskClass: true },
           orderBy: (tasks, { desc }) => [desc(tasks.createdAt)],
-          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
+          with: { workers: { columns: { id: true, status: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, prLastCheckedAt: true, supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true }, orderBy: (w: any, { desc }: any) => [desc(w.startedAt)], limit: 1 } },
         },
         subMissions: { columns: { id: true, title: true, status: true } },
         schedule: true,

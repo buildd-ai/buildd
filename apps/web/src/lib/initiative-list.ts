@@ -131,7 +131,7 @@ export async function loadInitiativeList(opts: {
                       // `status` is load-bearing: `deriveMissionSegmentState`
                       // needs it to reach `ghost`. Newest first, so the rollup's
                       // narrowing picks the same worker detail picks.
-                      columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+                      columns: { status: true, prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true, supersededByPrNumber: true },
                       orderBy: (w: any, { desc: d }: any) => [d(w.startedAt)],
                     },
                   },

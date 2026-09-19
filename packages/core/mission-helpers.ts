@@ -731,7 +731,13 @@ export function isDeliverableTask(task: {
 function deriveMissionSegmentState(task: {
   id?: string;
   status: string;
-  workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }>;
+  workers?: Array<{
+    status: string;
+    prUrl?: string | null;
+    mergedAt?: string | Date | null;
+    prLifecycleStatus?: string | null;
+    supersededByPrNumber?: number | null;
+  }>;
 }): MissionSegmentState {
   const workers = task.workers ?? [];
 
@@ -740,10 +746,15 @@ function deriveMissionSegmentState(task: {
   if (task.status === 'completed') {
     const prWorker = workers.find(w => w.prUrl);
     if (!prWorker || prWorker.mergedAt) return 'solid';
-    // A PR closed without merging is not "in progress toward merge" — the
-    // deliverable never shipped. Fold it in with 'notch' (didn't land cleanly)
-    // rather than 'half' (actively awaiting merge), so it doesn't inflate the
-    // awaiting-merge count with dead PRs nobody is about to merge.
+    // Recorded as superseded (task fcaf83d5) — the diff landed anyway, under a
+    // different, already-merged PR. Shipped, same as a direct merge, even
+    // though this PR itself never merged.
+    if (prWorker.supersededByPrNumber) return 'solid';
+    // A PR closed without merging, with no supersession recorded, is not "in
+    // progress toward merge" — the deliverable never shipped. Fold it in with
+    // 'notch' (didn't land cleanly) rather than 'half' (actively awaiting
+    // merge), so it doesn't inflate the awaiting-merge count with dead PRs
+    // nobody is about to merge.
     if (prWorker.prLifecycleStatus === 'closed') return 'notch';
     return 'half';
   }
@@ -787,7 +798,13 @@ export function computeMissionProgress(tasks: Array<{
   creationSource?: string | null;
   category?: string | null;
   parentTaskId?: string | null;
-  workers?: Array<{ status: string; prUrl?: string | null; mergedAt?: string | Date | null; prLifecycleStatus?: string | null }>;
+  workers?: Array<{
+    status: string;
+    prUrl?: string | null;
+    mergedAt?: string | Date | null;
+    prLifecycleStatus?: string | null;
+    supersededByPrNumber?: number | null;
+  }>;
 }>): { totalTasks: number; completedTasks: number; awaitingMerge: number; progress: number; segments: MissionSegment[] } {
   // Collapse attempt tasks under their parents.
   // Primary: use taskClass='attempt' (set by backfill on all existing rows).

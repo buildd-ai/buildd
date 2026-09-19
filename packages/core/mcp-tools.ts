@@ -190,6 +190,7 @@ export const workerActions = [
   'list_discrepancies', 'get_discrepancy',
   'list_tasks', 'get_task', 'claim_task', 'update_progress', 'complete_task',
   'create_pr', 'close_pr', 'merge_pr', 'get_pr', 'request_pr_review', 'get_pr_review',
+  'record_pr_supersession',
   'update_task', 'create_task', 'create_artifact',
   'upload_artifact', 'list_artifacts', 'get_artifact', 'update_artifact',
   'emit_event', 'query_events', 'get_error_traces',
@@ -379,6 +380,7 @@ export function buildParamsDescription(actions: readonly string[]): string {
     get_pr: '{ workerId?, prNumber?, workspaceId?, fullBody?, includeComments? } — Read PR details in a single call: mergeable state, CI check summary, review approvals, diff stats, and PR body (which contains the agent\'s work summary). workerId is optional — pass prNumber to resolve the worker from the account\'s workspaces; pass workspaceId to disambiguate. Either workerId or prNumber is required. By default the body is cut to ~2000 chars with a `…[truncated N chars]` marker (the exact count elided, never silently dropped) — pass fullBody:true for the complete text. Comments are omitted by default; pass includeComments:true to read buildd\'s own decision trail (activity log, review requests, human overrides — bounded to 10, ranked above bot/CI noise, with an omitted count). That trail is prose, not the verdict itself — use get_pr_review for the structured verdict/confidence/state.',
     request_pr_review: '{ prNumber (required), workspaceId?, reviewerRole? (role slug — defaults to the workspace merge policy\'s reviewer role), callbackUrl? (https only — POSTed once with the review status), callbackOn? ("verdict" | "merge", default "verdict"), force? (re-review a PR whose review already finished) } — hand a PR to a reviewer agent on demand, including a PR buildd did not open (it is adopted as a task + worker mapped to the PR first, so the verdict, the PR activity comment and the workspace merge policy all apply exactly as they do for a worker PR). One reviewer per PR at a time: an in-flight review is returned as-is and force will NOT stack a second agent on it. On approval buildd merges only if the effective merge policy says so (autoMergeExpected in the response tells you). Wait for the outcome with get_pr_review, or supply callbackUrl.',
     get_pr_review: '{ prNumber (required), workspaceId?, waitFor? ("verdict" | "merge", default "verdict"), waitSeconds? (0-45, default 0) } — read where a PR review stands: state (not_requested | queued | reviewing | approved | changes_requested | escalated | review_failed), terminal, verdict, confidence, summary/feedback, and the PR\'s own merge state. waitSeconds > 0 long-polls server-side until the state is terminal for your waitFor, then returns; a longer wait is clamped to 45s (the serverless limit) and comes back with timedOut so you simply call again. waitFor "merge" keeps waiting through a request-changes retry loop but stops when nothing can land any more (escalated, failed, or an approval the policy leaves to a human).',
+    record_pr_supersession: '{ workerId?, prNumber? (the CLOSED, unmerged PR that never landed — one of workerId/prNumber is required, same resolution as get_pr), workspaceId? (disambiguate when prNumber exists in multiple repos), supersedingPrNumber (required — the PR that carries this work now), reason (required — never a silent assertion) } — narrows `close_pr`/`merge_pr`\'s gap: a PR that closed without merging normally means the deliverable never shipped, and `canCompleteMission` blocks mission completion on exactly that. Use this when the diff actually landed anyway under a DIFFERENT PR (e.g. a mission integration branch was deleted out from under an open PR and the work was re-opened fresh) — it records a durable, auditable edge on the worker row, not a status you assert. REJECTED AT WRITE TIME, not discovered later: the target PR must exist in the same repo and already be MERGED, and must differ from the PR being superseded; a 404/409 names which check failed. Once recorded, canCompleteMission, get_pr, get_task and explain all treat the superseded PR as shipped and name the PR it landed under.',
     update_task: '{ taskId (required), title?, description?, priority?, project?, status? (pending|completed|failed|cancelled), backend? (claude|codex, or null to fall back to the mission/role/workspace default), maxLoops? (1-50; only for an existing looped task) } — updates task metadata. backend switches the agent provider; on a task paused by a provider budget/rate-limit it also lifts that provider\'s retry floor so the task is claimable immediately. status: cancelled also terminates any in-flight worker for this task and releases its concurrency seat — it is the one destructive side effect of this action. maxLoops affects later loop dispatches but never changes an in-flight worker prompt; use send_agent_message to steer active work.',
     create_task: '{ title (required), description (required), workspaceId?, priority?, category? (bug|feature|refactor|chore|docs|test|infra|design — auto-detected if omitted), subjectAnchor?, fileAnywayReason? (nonblank explicit dedupe escape hatch), context? (legacy structured identity such as prNumber/headSha/frictionSignature), startAt? (future ISO 8601), startIn? (45m|3h|2d), startAfter? ("budget_reset"; mutually exclusive with startAt/startIn), outputRequirement? (pr_required|artifact_required|none|auto — default auto), outputSchema?, project? (monorepo project name for scoping), missionId? (auto-inherited from caller), parentTaskId?, dependsOn?, pathManifest?, roleSlug?, baseBranch?, verificationCommand? (command to run after completion), loopConfig? ({ exitCondition, maxLoops?, backoffMinutes?, waitExpiryMinutes? }; strict nested validation), loopUntilVerified? (true requires verificationCommand and expands to a command loop), loopUntilMerged? (true expands to loopConfig: { exitCondition: { type: "pr_merged" }, maxLoops: 6, waitExpiryMinutes: 240 } — task waits for PR merge via webhook, reaper-exempt until expiry), iteration?, maxIterations?, failureContext?, skillSlugs?, kind (state it on every task — coordination|engineering|research|writing|design|analysis|observation): the SHAPE of the work, not its subject. engineering changes code or config; research reads and reports without changing anything; writing produces prose or docs; design produces a visual or interaction artifact; analysis derives a judgment from data; observation watches something and records what it saw; coordination plans, routes or reconciles other tasks. It picks the model tier at claim time AND it is the only thing any surface draws this task\'s glyph from — a task filed without it is unlabelled on every screen for the rest of its life, and nothing infers it later from the title. complexity? (simple|normal|complex), tier? (premium-plus|premium|standard|budget — hard override that skips the kind×complexity matrix; premium-plus is Fable-class and ~2x premium per token, opt-in only), model?, effort? (low|medium|high), callbackUrl?, callbackToken?, release? ("true"|"false"|"inherit"), backend? (claude|codex) } — deferred tasks are not claimable before resolved startAt; unknown parameters are rejected, as are out-of-vocabulary kind/complexity values (they are never silently dropped)',
     manage_model_tiers: '{ action: "list" | "set" | "delete", workspaceId? (required for list; scopes set/delete to workspace override — omit for team-wide default), tier? (required for set/delete: "premium-plus"|"premium"|"standard"|"budget"), provider? (required for set: "anthropic"|"openai-codex"|"openrouter"), model? (required for set: full model ID, e.g. "claude-fable-5"), defaultEffort? (set: "low"|"medium"|"high"|"xhigh"|"max"), defaultMaxTurns? (set: integer) } — manage team model tier registry. list returns the effective map (workspace override → team default → code fallback) with source annotation. set upserts a registry row — takes effect on next claim within 60s cache TTL. delete removes an override row, falling back to next level. Changing a tier row affects already-queued tasks; no deploy needed. [admin]',
@@ -1372,6 +1374,9 @@ export async function handleBuilddAction(
           wlines.push(`- **${w.id}** — ${w.status}${w.branch ? ` on \`${w.branch}\`` : ''}`);
           wlines.push(`  Worker URL: ${taskUrl}`);
           if (w.prUrl || w.prNumber) wlines.push(`  PR: ${w.prUrl || `#${w.prNumber}`}`);
+          if (w.supersededByPrNumber) {
+            wlines.push(`  Superseded by: PR #${w.supersededByPrNumber}${w.supersededByPrUrl ? ` (${w.supersededByPrUrl})` : ''} — ${w.supersededReason ?? 'no reason recorded'}`);
+          }
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
           if (w.error) wlines.push(`  Error: ${w.error}`);
@@ -1892,6 +1897,12 @@ export async function handleBuilddAction(
         ? `\n\n**Agent summary:**\n${params.fullBody === true ? pr.body : truncate(pr.body, GET_PR_BODY_PREVIEW_CHARS)}`
         : '';
 
+      const supersededLine = pr.supersededByPrNumber
+        ? `Superseded by: PR #${pr.supersededByPrNumber}${pr.supersededByPrUrl ? ` (${pr.supersededByPrUrl})` : ''} — ${pr.supersededReason ?? 'no reason recorded'}`
+        : (pr.state === 'closed_unmerged'
+          ? 'Closed without merging — no supersession recorded (record_pr_supersession if the work shipped elsewhere)'
+          : '');
+
       const commentsSection = includeComments
         ? (() => {
             const c = data.comments as
@@ -1915,6 +1926,7 @@ export async function handleBuilddAction(
         ciLine,
         reviewLine,
         statsLine,
+        supersededLine,
         `URL: ${pr.url}`,
         bodyPreview,
         commentsSection,
@@ -1987,6 +1999,30 @@ export async function handleBuilddAction(
       ].filter(Boolean);
 
       return text(lines.join('\n'));
+    }
+
+    case 'record_pr_supersession': {
+      const workerId = String(params.workerId ?? '') || ctx.workerId || null;
+      if (!workerId && !params.prNumber) throw new Error('workerId or prNumber is required');
+      if (params.supersedingPrNumber == null) throw new Error('supersedingPrNumber is required');
+      if (!params.reason || !String(params.reason).trim()) throw new Error('reason is required');
+
+      const data = await api('/api/github/pr/supersede', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...(workerId ? { workerId } : {}),
+          ...(params.prNumber != null ? { prNumber: Number(params.prNumber) } : {}),
+          ...(params.workspaceId != null ? { workspaceId: params.workspaceId } : {}),
+          supersedingPrNumber: Number(params.supersedingPrNumber),
+          reason: String(params.reason),
+        }),
+      });
+
+      return text(
+        `PR #${data.supersededPrNumber} recorded as superseded by PR #${data.supersedingPrNumber}.\n`
+        + `**Successor:** ${data.supersedingPrUrl}\n`
+        + `canCompleteMission, get_pr, get_task and explain now treat PR #${data.supersededPrNumber}'s deliverable as shipped.`,
+      );
     }
 
     case 'update_task': {

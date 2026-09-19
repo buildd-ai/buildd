@@ -44,7 +44,18 @@ export interface StateBecauseExtras {
   /** Failed rows with the signature their failure was bucketed under. */
   failedTasks?: Array<{ id: string; title: string | null; errorSignature?: string | null }>;
   /** Unmerged PRs holding completion. */
-  unmergedPrs?: Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>;
+  unmergedPrs?: Array<{
+    taskId: string;
+    title: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    /**
+     * True when the PR is closed (will never merge on its own) with no
+     * supersession edge recorded — the remedy is `record_pr_supersession`,
+     * not "wait for it to merge" (task fcaf83d5).
+     */
+    closedUnsuperseded?: boolean;
+  }>;
   /** Upstream mission title, when it was loaded. */
   dependencyTitle?: string | null;
   /**
@@ -149,8 +160,11 @@ function causeLinksFor(
     case 'merge':
       return (extra.unmergedPrs ?? []).slice(0, 10).map(p =>
         link(
-          `Task "${p.title}" is completed but its PR has not merged.`,
-          'workers.mergedAt',
+          p.closedUnsuperseded
+            ? `Task "${p.title}" is completed but its PR closed without merging, and nothing recorded that the `
+              + 'work shipped elsewhere — record_pr_supersession is the remedy if it did.'
+            : `Task "${p.title}" is completed but its PR has not merged.`,
+          p.closedUnsuperseded ? 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber' : 'workers.mergedAt',
           {
             ...base,
             taskId: p.taskId,

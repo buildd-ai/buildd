@@ -16,6 +16,10 @@ export type CondensedTaskWorker = {
   currentAction: string | null;
   branch: string | null;
   waitingFor: { type: string; prompt: string; options?: string[] } | null;
+  /** Supersession edge (task fcaf83d5) — set only on a closed, unmerged PR. */
+  supersededByPrNumber?: number | null;
+  supersededByPrUrl?: string | null;
+  supersededReason?: string | null;
 };
 
 export type CondensedTask = {

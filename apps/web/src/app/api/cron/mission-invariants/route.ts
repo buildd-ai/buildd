@@ -18,7 +18,7 @@
  * ── Reporting is not gating ─────────────────────────────────────────────────
  * Same discipline as `/api/cron/queue-stall`, and for the same reason: this
  * route withholds nothing from anything. It names conditions. Most of the
- * thirteen ship report-only — the response body and the structured log are
+ * fourteen ship report-only — the response body and the structured log are
  * their whole consumer. Two file a task. `orphaned_integration_base`, because
  * it is unambiguous, severe and self-evidently actionable, so it proves the
  * whole path (detect → dedupe → file → fix) end to end at near-zero noise. And

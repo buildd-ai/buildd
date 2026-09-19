@@ -406,6 +406,70 @@ describe('CondensedTimeline — §3.7 verdict collapse', () => {
     expect(desktopTree(html)).not.toContain('#42');
   });
 
+  it('names the successor PR on a closed PR recorded as superseded, instead of "closed — not merged" (task fcaf83d5)', () => {
+    const supersededTask = makeTask('t-superseded', {
+      status: 'completed',
+      latestWorker: {
+        id: 'w1',
+        status: 'completed',
+        prUrl: 'https://github.com/repo/pull/2287',
+        prNumber: 2287,
+        prLifecycleStatus: 'closed',
+        mergedAt: null,
+        completedAt: null,
+        startedAt: null,
+        currentAction: null,
+        branch: 'buildd/rescue',
+        waitingFor: null,
+        supersededByPrNumber: 2293,
+        supersededByPrUrl: 'https://github.com/repo/pull/2293',
+        supersededReason: 'branch deleted out from under it',
+      },
+      reviewerNote: null,
+      reviewerTaskHref: null,
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(supersededTask)] }}
+        allTasksCount={1}
+      />,
+    );
+    expect(desktopTree(html)).toContain('landed as');
+    expect(desktopTree(html)).toContain('#2293');
+    expect(desktopTree(html)).not.toContain('closed — not merged');
+  });
+
+  it('still renders "closed — not merged" for a closed PR with no supersession recorded', () => {
+    const closedTask = makeTask('t-closed', {
+      status: 'completed',
+      latestWorker: {
+        id: 'w1',
+        status: 'completed',
+        prUrl: 'https://github.com/repo/pull/50',
+        prNumber: 50,
+        prLifecycleStatus: 'closed',
+        mergedAt: null,
+        completedAt: null,
+        startedAt: null,
+        currentAction: null,
+        branch: 'buildd/abandoned',
+        waitingFor: null,
+      },
+      reviewerNote: null,
+      reviewerTaskHref: null,
+    });
+    const html = renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, waitingOnYou: [toChain(closedTask)] }}
+        allTasksCount={1}
+      />,
+    );
+    expect(desktopTree(html)).toContain('closed — not merged');
+    expect(desktopTree(html)).not.toContain('landed as');
+  });
+
   it('renders Changes Requested verdict fully expanded (not collapsed)', () => {
     const changesTask = makeTask('t2', {
       status: 'completed',
