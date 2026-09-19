@@ -284,6 +284,28 @@ runner stdout — still exist and are still worth grepping for
 `[prompt-composition]` to confirm the arm fires at all. Neither is the analysis
 source any more.
 
+## Decision
+
+**Conclusion**: Ship `task_scoped`. Decision made by Max on 2026-09-18.
+
+**Verdict artifact**: `memory-digest-readout:memory-digest-v4` (see the verdict artifact in the private knowledge base for the row id)
+
+### Reasoning
+
+**Cost side (settled and large):** Dropping the workspace-wide digest saves approximately 4,440 prompt bytes — about a quarter of the prompt. The memory block shrinks from ~38% of the prompt to ~16%.
+
+**Benefit side (found nothing):** File reads, shell calls, turns, and duration all moved slightly the wrong way. Every measured interval crosses zero — the honest reading is no detectable difference between arms.
+
+**Guardrail (recorded as a caveat, not buried):** Failure rate was 18.8% (`full`) vs 24.1% (`task_scoped`), a risk difference of +5.2pp [−0.9, +11.3]. This is not statistically significant but directionally unfavourable. The decision is "ship it and watch the failure rate", not "ship it, case closed".
+
+**Limitations acknowledged:**
+- The arms were imbalanced on `taskMatchDerivedBy` (inferred_paths 61.3% vs 53.3%), a stated limitation of the result.
+- The experiment could not answer the quality question at all because both arms retain a `### Relevant to This Task` block retrieved by regex-and-recency. Neither arm had good task context. The design measured prompt size, not context quality — this is precisely why the follow-on work is needed.
+
+### Releasing pin guards
+
+Recording this decision releases the policy-version pin guards in `apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts` and related guards in `apps/runner/src/memory-digest-policy.ts`. These guards will be removed by the follow-on default-flip task, which will flip `BUILDD_MEMORY_DIGEST_TASK_SCOPED_FRACTION` to `1.0` for all runners and complete the rollout.
+
 ## Open questions
 
 **Whether an intermediate arm is worth adding.** A `task_scoped` result that comes
