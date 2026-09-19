@@ -1,191 +1,41 @@
 /**
- * Which workspace-memory block a worker's prompt gets — and how much of the
- * prompt that block cost.
+ * The `## Workspace Memory` block every worker prompt carries — and how much
+ * of the prompt that block costs.
  *
- * Two arms:
+ * This used to run a two-arm experiment (`full`, carrying the entire
+ * workspace-wide digest, vs `task_scoped`, which drops it and keeps only the
+ * task-specific matches). The experiment concluded — see
+ * `docs/design/workspace-memory-digest-arm.md` — with the workspace-wide
+ * digest saving nothing measurable while costing a quarter of the prompt. So
+ * `task_scoped` is now simply how every prompt renders: there is no arm, no
+ * draw, and no enrolment fraction. The per-unit randomiser that used to make
+ * the assignment was extracted to `./experiment-randomizer` before this file
+ * dropped its only caller of it, so the next experiment does not have to
+ * re-derive it.
  *
- * - `full` is what every worker got before this file existed: the entire
- *   workspace digest, sliced at `FULL_DIGEST_MAX_BYTES` and backed up to the
- *   last complete line, followed by the task-specific matches. It is the
- *   control arm of the experiment.
- *
- * The control differs from the pre-experiment rendering in exactly one way: the
- * digest no longer arrives with its own `## Workspace Memory (N memories)`
- * heading, which used to land underneath this block's header as a duplicate.
- * That was fixed here rather than later because **the control is only frozen
- * once enrolment starts.** This module has never run outside tests, so there
- * are no collected rows to invalidate; from the first enrolled task onwards,
- * changing the control silently rebases the comparison and any change to it
- * must bump `MEMORY_DIGEST_POLICY_VERSION`.
- *
- * - `task_scoped` drops the workspace-wide digest and keeps everything else,
- *   leaning on the `recall` tool the block already advertises to pull the rest
- *   on demand.
- *
- * The two arms differ on exactly one axis: whether the workspace-wide digest
- * is present. In particular `task_scoped` still emits the block header and the
- * `recall`/`learn` pointer even when there are no task matches, because that
- * pointer is behavioural instruction — dropping it would change how often
- * agents record knowledge and confound the result with a context-size effect.
- *
- * Why this is an arm and not a migration: the evidence for shrinking is a
- * proxy. Retrieved paths turn out to barely predict touched paths, and
- * redundancy against what the agent would have read anyway is near-total. That
- * says the digest is not being used for navigation. It does NOT say the digest
- * is inert — it may shape how code gets written in ways path overlap cannot
- * see. So the default enrols nobody.
+ * `### Relevant to This Task` still leans on the `recall` tool the block
+ * advertises, and still renders even when nothing matched the task — that
+ * pointer is behavioural instruction, not context, and dropping it would
+ * change how often agents record knowledge.
  */
 
-/** The workspace-memory block variants a prompt can receive. */
-export type MemoryDigestArm = 'full' | 'task_scoped';
-
 /**
- * Bump whenever the meaning of an arm changes. Outcome rows carrying a stale
- * version are not comparable with newer ones and must not be pooled.
- *
- * v2: the `full` arm's cap now backs up to the last complete line instead of
- * slicing blind. That changes what the control arm actually renders, so rows
- * collected under v1 cannot be pooled with rows collected under v2.
- *
- * v3: task-memory retrieval changed from a title-phrase match to declared
- * paths first with the title as fallback (see task-memory-retrieval.ts). That
- * changes the CONTROL arm, not just the treatment: `### Relevant to This Task`
- * was empty for essentially every task under v1/v2, because a whole title only
- * appears verbatim in a memory written by a prior run of the same recurring
- * task. Under v3 it carries path-matched lessons.
- *
- * The bump therefore does two necessary things. It stops v1/v2 rows being
- * pooled with v3 rows, and — because the draw is salted with this constant — it
- * RE-RANDOMISES, so no task carries an arm it drew against a different
- * definition of what that arm means.
- *
- * v4: the title-fallback step changed from a whole-title phrase match to
- * filtered, ranked tokens (#2182 + #2201). That changes what BOTH arms contain
- * for the ~90% of tasks that declare no path manifest and therefore fall
- * through to the title step — previously they matched nothing at all, now they
- * can match on tokens. It is the same class of change as v3: the control moved,
- * so the rows are not poolable and the assignment must be redrawn.
- *
- * Bumped pre-emptively, before the release that ships those two PRs. The arm is
- * already enrolled, so waiting until after would leave rows straddling a change
- * to their own definition — the one thing the version exists to prevent.
- *
- * This obligation is enforced, not merely documented:
- * apps/runner/__tests__/unit/memory-digest-policy-version-pin.test.ts pins a
- * content fingerprint of every surface that decides what memory reaches a
- * prompt, keyed to this constant. Change one without bumping here and CI fails.
- * That test exists because it already happened once — a retrieval improvement
- * landed mid-enrolment with no bump, and nothing anywhere noticed.
+ * Historical policy version. Bump whenever what reaches the `## Workspace
+ * Memory` block changes — the readout for the concluded experiment
+ * (`packages/core/memory-digest-readout.ts`) selects its cohort by this value,
+ * and `worker_prompt_composition_events` rows still carry it, so it must keep
+ * meaning "this is what the block rendered" even with no arm left to salt.
  */
 export const MEMORY_DIGEST_POLICY_VERSION = 'memory-digest-v4';
 
-/** Byte cap on the workspace-wide digest under the `full` arm. */
-export const FULL_DIGEST_MAX_BYTES = 4096;
-
-/** Per-observation cap on the task-specific matches, in both arms. */
+/** Per-observation cap on the task-specific matches. */
 export const MAX_OBSERVATION_CHARS = 300;
-
-const DIGEST_TRUNCATION_NOTE = '\n\n*(truncated — use `recall` for more)*';
 
 const RECALL_POINTER =
   '\nUse `recall scope=["memory","task"]` for full context (prior lessons + recent outcomes in one call). Use `learn` to record gotchas/patterns/decisions — NOT summaries.';
 
-export interface MemoryDigestAssignment {
-  arm: MemoryDigestArm;
-  /**
-   * Probability that this unit would have been assigned the arm it actually
-   * got. Any later off-policy estimate divides by this, so it is recorded at
-   * assignment time rather than reconstructed from the fraction afterwards —
-   * the fraction can be reconfigured between the decision and the analysis.
-   */
-  propensity: number;
-  /** The configured `task_scoped` share this assignment was drawn against. */
-  fraction: number;
-  policyVersion: string;
-}
-
-/**
- * Coerce a configured `task_scoped` share into a usable fraction.
- *
- * Numeric strings are accepted, because the operator-facing knob is an env var
- * and env vars are always strings — rejecting them would make the documented
- * override silently inert, which is a worse failure than a bad value.
- *
- * Anything that is not a finite number inside [0, 1] resolves to 0, meaning
- * "run the control". Out-of-range values are rejected rather than clamped: a
- * fat-fingered `15` (meant as 15%) would clamp to 1 and cut the entire fleet
- * over to the treatment, which is the one outcome this file exists to prevent.
- */
-export function resolveTaskScopedFraction(raw: unknown): number {
-  const n = typeof raw === 'string'
-    ? (raw.trim() === '' ? NaN : Number(raw))
-    : raw;
-  if (typeof n !== 'number') return 0;
-  if (!Number.isFinite(n)) return 0;
-  if (n < 0 || n > 1) return 0;
-  return n;
-}
-
-/**
- * Map a string onto [0, 1) deterministically (FNV-1a, 32-bit).
- *
- * Not a security hash — it only needs to spread UUIDs evenly and give the same
- * answer on every runner, every restart, and every replay of the analysis.
- *
- * FNV-1a degrades badly for keys that differ only in their last character or
- * two, so callers must pass high-entropy keys. Task ids are v4 UUIDs
- * (`tasks.id` is `uuid().defaultRandom()`), which is fine; a sequential
- * `task-1`, `task-2` scheme would not be.
- *
- * Exported for tests only — assignment goes through assignMemoryDigestArm,
- * which salts the key. A caller that hashes a bare id is not in the experiment.
- */
-export function hashUnitInterval(key: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < key.length; i++) {
-    h ^= key.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  // >>> 0 first: Math.imul yields a signed int32.
-  return (h >>> 0) / 0x100000000;
-}
-
-/**
- * Assign an arm to a unit of work.
- *
- * Randomised on the **task** id, not the worker id. A task that retries gets a
- * fresh worker, and the outcomes this experiment is judged on — the rework
- * columns: CI retry, conflict retry, reviewer retry — span those attempts.
- * Randomising per worker would split one outcome across both arms and make the
- * comparison meaningless.
- *
- * An empty task id cannot be randomised stably, so it runs the control.
- */
-export function assignMemoryDigestArm(
-  taskId: string | undefined | null,
-  rawFraction: unknown,
-): MemoryDigestAssignment {
-  const fraction = resolveTaskScopedFraction(rawFraction);
-  const base = { fraction, policyVersion: MEMORY_DIGEST_POLICY_VERSION };
-
-  if (!taskId) return { ...base, arm: 'full', propensity: 1 };
-  if (fraction <= 0) return { ...base, arm: 'full', propensity: 1 };
-  if (fraction >= 1) return { ...base, arm: 'task_scoped', propensity: 1 };
-
-  // Salted with the policy version, so bumping the version RE-RANDOMISES.
-  // Without the salt every task keeps the arm it drew under v1, and a v2
-  // comparison silently inherits v1's assignment along with any carry-over
-  // effect from it. The salt also decorrelates this experiment from any future
-  // one that hashes the same task ids.
-  const draw = hashUnitInterval(`${MEMORY_DIGEST_POLICY_VERSION}:${taskId}`);
-  return draw < fraction
-    ? { ...base, arm: 'task_scoped', propensity: fraction }
-    : { ...base, arm: 'full', propensity: 1 - fraction };
-}
-
 export interface MemoryBlockInput {
-  arm: MemoryDigestArm;
-  /** The workspace-wide digest, as returned by getCompactObservations. */
+  /** The workspace-wide digest, as returned by getCompactObservations. Not rendered — see module docs. */
   compactResult: { count: number; markdown?: string };
   /** Ids of the task-title matches — the outer render gate reads its length. */
   taskSearchResults: ReadonlyArray<{ id: string }>;
@@ -196,39 +46,34 @@ export interface MemoryBlockInput {
 export interface MemoryBlockResult {
   /** The rendered block, or null when there is nothing to say. */
   block: string | null;
-  /** Bytes of workspace-wide digest actually rendered (0 under task_scoped). */
+  /** Bytes of workspace-wide digest actually rendered. Always 0 — kept for the composition record's historical shape. */
   digestBytes: number;
   /**
-   * Bytes the digest WOULD have occupied under `full`. Recorded in both arms so
-   * the saving is computable from a control row alone — otherwise the treatment
-   * effect and the exposure are entangled.
+   * Bytes the digest WOULD have occupied had it been rendered. Kept for the
+   * composition record: it is what the concluded experiment's saving was
+   * measured against, and it still answers "how much would restoring the
+   * digest cost today".
    */
   digestBytesAvailable: number;
   taskMatchBytes: number;
   taskMatchCount: number;
-  /** True when the `full` digest hit the cap and was sliced. */
+  /** Always false — nothing is sliced any more. Kept for the composition record's historical shape. */
   digestTruncated: boolean;
 }
 
 /**
- * Render the `## Workspace Memory` block for an arm, and report what it cost.
+ * Render the `## Workspace Memory` block, and report what it cost.
  *
- * Byte counts are UTF-8 byte lengths, not string lengths: the cap below slices
- * by code unit (as it always has) but the prompt budget question is about
- * bytes, and workspace memory routinely carries non-ASCII.
+ * Byte counts are UTF-8 byte lengths, not string lengths — workspace memory
+ * routinely carries non-ASCII.
  */
 export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
-  const { arm, compactResult, taskSearchResults, fullObservations } = input;
+  const { compactResult, taskSearchResults, fullObservations } = input;
 
-  const rawDigest = compactResult.markdown ?? '';
-  const digestTruncated = rawDigest.length > FULL_DIGEST_MAX_BYTES;
-  const renderedFullDigest = digestTruncated
-    ? truncateAtLineBoundary(rawDigest, FULL_DIGEST_MAX_BYTES) + DIGEST_TRUNCATION_NOTE
-    : rawDigest;
-  const digestBytesAvailable = byteLength(renderedFullDigest);
+  const digestBytesAvailable = byteLength(compactResult.markdown ?? '');
 
-  // Same outer gate as before: nothing to render when the workspace has no
-  // memory at all and the task matched nothing.
+  // Nothing to render when the workspace has no memory at all and the task
+  // matched nothing.
   if (compactResult.count === 0 && taskSearchResults.length === 0) {
     return {
       block: null,
@@ -236,27 +81,17 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
       digestBytesAvailable,
       taskMatchBytes: 0,
       taskMatchCount: 0,
-      digestTruncated,
+      digestTruncated: false,
     };
   }
 
-  // The count rides on the header, in BOTH arms, so the arms still differ on
-  // exactly one axis. It is true regardless of whether the digest is shown, and
-  // under task_scoped it is the more useful half: "there are N memories, and
-  // here is how to fetch them" is an actionable pairing with the recall pointer
-  // below. `getCompactObservations` used to emit its own `## Workspace Memory
-  // (N memories)` line, which landed under this header as a duplicate.
+  // The count rides on the header: "there are N memories, and here is how to
+  // fetch them" is an actionable pairing with the recall pointer below.
   const parts: string[] = [
     compactResult.count > 0
       ? `## Workspace Memory (${compactResult.count} ${compactResult.count === 1 ? 'memory' : 'memories'})`
       : '## Workspace Memory',
   ];
-
-  let digestBytes = 0;
-  if (arm === 'full' && renderedFullDigest) {
-    parts.push(renderedFullDigest);
-    digestBytes = digestBytesAvailable;
-  }
 
   let taskMatchBytes = 0;
   if (fullObservations.length > 0) {
@@ -276,22 +111,19 @@ export function buildMemoryBlock(input: MemoryBlockInput): MemoryBlockResult {
 
   return {
     block: parts.join('\n'),
-    digestBytes,
+    digestBytes: 0,
     digestBytesAvailable,
     taskMatchBytes,
     taskMatchCount: fullObservations.length,
-    digestTruncated,
+    digestTruncated: false,
   };
 }
 
-/**
- * One record per prompt build. This is the denominator for the experiment: a
- * `full` row is as necessary as a `task_scoped` one, so it is emitted
- * unconditionally rather than only when the treatment fires.
- */
+/** One record per prompt build. */
 export interface PromptCompositionRecord {
   policyVersion: string;
-  arm: MemoryDigestArm;
+  /** Always 'task_scoped' — kept as a column so historical `full` rows and current rows share a schema. */
+  arm: 'task_scoped';
   propensity: number;
   fraction: number;
   /**
@@ -325,27 +157,21 @@ export interface PromptCompositionRecord {
 }
 
 export function buildPromptCompositionRecord(args: {
-  assignment: MemoryDigestAssignment;
   memory: MemoryBlockResult;
-  /**
-   * The FINAL prompt, after every append. Build this record at the last
-   * mutation site, not at the end of `buildPromptWithComposition` — the Codex
-   * branch prepends an AGENTS.md pointer much later, and a record built early
-   * understates `promptBytes` and overstates `memoryShare`.
-   */
+  /** The FINAL prompt, after every append — see workers.ts for why this must be built at the last mutation site. */
   promptText: string;
   backend?: string | null;
   /** Which retrieval step produced the task matches; 'unknown' when unreported. */
   taskMatchDerivedBy?: string | null;
 }): PromptCompositionRecord {
-  const { assignment, memory, promptText } = args;
+  const { memory, promptText } = args;
   const memoryBlockBytes = memory.block ? byteLength(memory.block) : 0;
   const promptBytes = byteLength(promptText);
   return {
-    policyVersion: assignment.policyVersion,
-    arm: assignment.arm,
-    propensity: assignment.propensity,
-    fraction: assignment.fraction,
+    policyVersion: MEMORY_DIGEST_POLICY_VERSION,
+    arm: 'task_scoped',
+    propensity: 1,
+    fraction: 1,
     backend: args.backend || 'claude',
     digestBytes: memory.digestBytes,
     digestBytesAvailable: memory.digestBytesAvailable,
@@ -363,22 +189,6 @@ export function buildPromptCompositionRecord(args: {
 
 function byteLength(s: string): number {
   return Buffer.byteLength(s, 'utf8');
-}
-
-/**
- * Slice to at most `maxLen` code units, then back up to the last complete
- * line so the cut never lands mid-sentence or mid-word — which entries
- * survive should be an artifact of the cap, not of where inside a line it
- * happened to fall.
- *
- * Falls back to the hard slice when there is no earlier newline to back up
- * to (a single line longer than the cap on its own): a boundary that drops
- * the entire digest is worse than a mid-line cut.
- */
-function truncateAtLineBoundary(text: string, maxLen: number): string {
-  const sliced = text.slice(0, maxLen);
-  const lastNewline = sliced.lastIndexOf('\n');
-  return lastNewline > 0 ? sliced.slice(0, lastNewline) : sliced;
 }
 
 /** A PromptCompositionRecord tagged with its position in the runner's durable event rail. */

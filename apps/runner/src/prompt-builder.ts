@@ -4,10 +4,8 @@ import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
 import {
-  assignMemoryDigestArm,
   buildMemoryBlock,
   type MemoryBlockResult,
-  type MemoryDigestAssignment,
 } from './memory-digest-policy';
 
 // ── Config resolution ──────────────────────────────────────────────
@@ -258,19 +256,11 @@ export interface PromptContext {
   inputAsRetry?: boolean;
   resolvedContextProviders?: string[];
   feedbackMemories?: Array<{ id: string; title: string; content: string }>;
-  /**
-   * Share of tasks enrolled in the `task_scoped` workspace-memory arm.
-   * Absent or unparseable means everyone runs the control — see
-   * `resolveTaskScopedFraction`.
-   */
-  memoryDigestTaskScopedFraction?: number;
 }
 
 export interface PromptBuildResult {
   promptText: string;
-  /** Which workspace-memory arm this task drew, and at what propensity. */
-  assignment: MemoryDigestAssignment;
-  /** What the memory block cost, in both arms. */
+  /** What the workspace-memory block cost. */
   memory: MemoryBlockResult;
 }
 
@@ -359,15 +349,10 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     promptParts.push(gitContext.join('\n'));
   }
 
-  // Add rich workspace memory context.
-  //
-  // The workspace-wide digest is the single largest block in a typical prompt
-  // and is built from the workspace id alone — it is identical for every task
-  // in the workspace. `task_scoped` is the arm that drops it; see
-  // memory-digest-policy.ts for why that is an arm and not a cutover.
-  const assignment = assignMemoryDigestArm(task.id, ctx.memoryDigestTaskScopedFraction);
+  // Add rich workspace memory context. The workspace-wide digest (identical
+  // for every task in the workspace) is no longer rendered — see
+  // memory-digest-policy.ts.
   const memory = buildMemoryBlock({
-    arm: assignment.arm,
     compactResult,
     taskSearchResults,
     fullObservations,
@@ -529,7 +514,7 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
   // Add task metadata
   promptParts.push(`---\nTask ID: ${task.id}\nWorker ID: ${worker.id}\nWorkspace: ${worker.workspaceName}`);
 
-  return { promptText: promptParts.join('\n\n'), assignment, memory };
+  return { promptText: promptParts.join('\n\n'), memory };
 }
 
 // ── Post-session helpers ───────────────────────────────────────────
