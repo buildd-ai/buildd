@@ -16,9 +16,13 @@ assertions:
     type: "symbol"
     name: "refreshStaleWorkersForWorkspaces"
     path: "apps/web/src/lib/pr-state-refresh.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "Predates this doc (backs home/page.tsx since PR #1883); passing is not evidence Step 1 shipped. Structurally will always pass while status stays partially — see Implementation Status below."
   - id: "task-read-refresh-tests"
     type: "test_file"
     path: "apps/web/src/app/app/(protected)/tasks/page.test.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "Tests unrelated mission-budget plumbing, not the refresh-before-query behavior Step 1 calls for. Structurally will always pass while status stays partially — see Implementation Status below."
 ---
 # Derived-State Accessors: Single-Accessor Contract
 
