@@ -607,6 +607,18 @@ export async function runMission(
     }
   }
 
+  // A failure-triggered auto-retry (mission-loop.ts's retriggerMissionOnFailure)
+  // fires moments after a schedule-created cycle for this mission dies, and
+  // schedule.lastRunAt has not moved since that cycle was claimed — so the
+  // identical anchor here collides with the one the cron dispatcher wrote,
+  // making this insert a no-op instead of a second worker for the same tick.
+  // Scoped to auto_retry only: a manual "Plan now" click stays unrestricted.
+  const schedule = mission.schedule as { lastRunAt?: Date | string | null } | null | undefined;
+  const heartbeatTickAnchor =
+    cycleCtx.triggerSource === 'auto_retry' && mission.scheduleId && schedule?.lastRunAt
+      ? `${mission.scheduleId}:${new Date(schedule.lastRunAt).toISOString()}`
+      : undefined;
+
   // Create the planning task — atomic dedup via DB unique constraint.
   // The partial unique index (mode=planning, status IN active states) ensures only
   // one in-flight planning task exists per mission even if two callers race past
@@ -632,6 +644,7 @@ export async function runMission(
       requiredCapabilities: template?.requiredCapabilities || [],
       context: taskContext,
       creationSource: 'orchestrator',
+      ...(heartbeatTickAnchor ? { heartbeatTickAnchor } : {}),
       missionId: mission.id,
       ...subjectObservation.taskValues,
       // Run the planning task on the mission's chosen backend so the whole

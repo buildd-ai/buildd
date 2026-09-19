@@ -1006,6 +1006,12 @@ export const tasks = pgTable('tasks', {
   // Direct link to the task_schedule that spawned this task (when creationSource = 'schedule' or 'orchestrator').
   // Enables reverse lookup: given a stray task, find the schedule that created it.
   scheduleId: uuid('schedule_id'),  // FK constraint defined in migration (circular ref with task_schedules)
+  // Identity of the schedule tick this cycle belongs to: `${scheduleId}:${schedule.lastRunAt}`.
+  // Set by the cron dispatcher on every mission-linked cycle, and by the failure-triggered
+  // auto-retry path (mission-loop.ts's retriggerMissionOnFailure) when retrying within the
+  // same tick. A second insert sharing the anchor collides on the unique index below instead
+  // of dispatching a second worker for a cycle the next heartbeat will run anyway.
+  heartbeatTickAnchor: text('heartbeat_tick_anchor'),
   parentTaskId: uuid('parent_task_id'),  // FK constraint for self-reference defined in migration
   // Stable identity for webhook-created CI retries. One failed commit may emit
   // several check-suite deliveries, but it must create only one retry task.
@@ -1140,6 +1146,15 @@ export const tasks = pgTable('tasks', {
   // Only covers non-terminal rows so completed/failed planning tasks don't block new cycles.
   activePlanningPerMissionIdx: uniqueIndex('tasks_active_planning_per_mission').on(t.missionId).where(
     sql`${t.mode} = 'planning' AND ${t.status} IN ('pending', 'assigned', 'in_progress')`
+  ),
+  // Partial unique index — one cycle per schedule tick, regardless of the prior
+  // attempt's current status. activePlanningPerMissionIdx above only blocks while
+  // the earlier cycle is still non-terminal, so a cycle that fails fast (e.g. a
+  // budget-limited planning task) frees it up again within the same tick and lets
+  // an auto-retry dispatch a second full worker for work the next heartbeat would
+  // have covered anyway.
+  heartbeatTickAnchorIdx: uniqueIndex('tasks_heartbeat_tick_anchor_unique').on(t.heartbeatTickAnchor).where(
+    sql`${t.heartbeatTickAnchor} IS NOT NULL`
   ),
   // Subject anchor lookup indexes — hot paths for dedupe, liveness, and recall queries.
   subjectKindIdx: index('tasks_subject_kind_idx').on(t.workspaceId, t.subjectKind),
