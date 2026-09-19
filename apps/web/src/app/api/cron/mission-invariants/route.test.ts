@@ -38,26 +38,44 @@ const tasksTable = {
   description: 'description',
   workspaceId: 'workspaceId',
 };
+const missionNotesTable = { id: 'id', taskId: 'taskId', type: 'type', status: 'status', createdAt: 'createdAt' };
 
 let existingFrictionTask: { id: string } | null = null;
 const findFirstCalls: any[] = [];
 const inserted: any[] = [];
 const updated: any[] = [];
 
+// `plan_awaiting_approval`'s missionNotes write path — kept separate from
+// `inserted`/`updated` above so friction-task assertions are not disturbed by
+// an unrelated write the test never asked about.
+let existingPlanNote: { id: string; createdAt: Date; collapseCount: number } | null = null;
+const notesInserted: any[] = [];
+const notesUpdated: any[] = [];
+
 const mockFindFirst = mock(async (args: any) => {
   findFirstCalls.push(args);
   return existingFrictionTask;
 });
+const mockNotesFindFirst = mock(async () => existingPlanNote);
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       tasks: { findFirst: mockFindFirst },
       cronRuns: { findMany: mock(async () => []) },
+      missionNotes: { findFirst: mockNotesFindFirst },
     },
     insert: mock((table: any) => {
       if (table === cronRunsTable) {
         return { values: mock(() => ({ returning: mock(async () => [{ id: 'cron-run-1' }]) })) };
+      }
+      if (table === missionNotesTable) {
+        return {
+          values: mock((values: any) => {
+            notesInserted.push(values);
+            return Promise.resolve();
+          }),
+        };
       }
       return {
         values: mock((values: any) => ({
@@ -71,6 +89,15 @@ mock.module('@buildd/core/db', () => ({
     update: mock((table: any) => {
       if (table === cronRunsTable) {
         return { set: mock(() => ({ where: mock(async () => {}) })) };
+      }
+      if (table === missionNotesTable) {
+        return {
+          set: mock((values: any) => ({
+            where: mock(async () => {
+              notesUpdated.push(values);
+            }),
+          })),
+        };
       }
       return {
         set: mock((values: any) => ({
@@ -100,6 +127,7 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   cronRuns: cronRunsTable,
   tasks: tasksTable,
+  missionNotes: missionNotesTable,
 }));
 
 const mockNotify = mock((_opts: any) => undefined);
@@ -121,6 +149,17 @@ mock.module('@/lib/criteria-escalation', () => ({
 mock.module('@/lib/mission-feed', () => ({
   systemActor: (predicate: string) => ({ kind: 'system', id: null, label: predicate }),
 }));
+
+// `plan_awaiting_approval` must never call this — its whole point is that
+// approval is a pending human decision this route must never make. Mocked
+// (rather than left unimported) so a future change that wires the invariant's
+// remedy up to auto-approve gets caught here, not just by review.
+const approvePlanCalls: any[] = [];
+const mockApprovePlan = mock(async (...args: any[]) => {
+  approvePlanCalls.push(args);
+  return { taskIds: [] };
+});
+mock.module('@/lib/approve-plan', () => ({ approvePlan: mockApprovePlan }));
 
 const { POST, invariantFrictionSignature } = await import('./route');
 
@@ -221,6 +260,11 @@ beforeEach(() => {
   resolveCriteriaEscalationCalls = [];
   resolveCriteriaEscalationResult = { cleared: true };
   mockResolveCriteriaEscalation.mockClear();
+  existingPlanNote = null;
+  notesInserted.length = 0;
+  notesUpdated.length = 0;
+  approvePlanCalls.length = 0;
+  mockApprovePlan.mockClear();
 });
 
 // ── Auth ────────────────────────────────────────────────────────────────────
@@ -411,6 +455,87 @@ describe('resolving', () => {
     const second = await (await POST(makeRequest())).json();
     expect(second.resolved).toBe(0);
     expect(resolveCriteriaEscalationCalls).toHaveLength(0);
+  });
+});
+
+// ── Notifying: plan_awaiting_approval posts a missionNotes question, never approvePlan ──
+
+function planAwaitingApprovalSnapshot(over: Record<string, any> = {}): InvariantSnapshot {
+  const s = emptySnapshot();
+  s.tasks = [{
+    id: 't-plan',
+    workspaceId: 'ws-1',
+    missionId: 'm-1',
+    parentTaskId: null,
+    title: 'Spec: build the thing',
+    status: 'completed',
+    mode: 'planning',
+    taskClass: 'work',
+    outputRequirement: 'auto',
+    contextBaseBranch: null,
+    requiresPlanApproval: true,
+    planRaw: [{ ref: 'a', title: 'Step A', description: 'do a' }],
+    childCount: 0,
+    createdAt: new Date(Date.now() - 6 * HOUR),
+    updatedAt: new Date(Date.now() - 6 * HOUR),
+    ...over,
+  }] as any;
+  return s;
+}
+
+describe('notifying', () => {
+  it('posts a missionNotes question on first breach, visible on the mission feed, and never calls approvePlan', async () => {
+    scanSnapshot = planAwaitingApprovalSnapshot();
+    scanCoverage = { missions: 1, tasks: 1, workers: 0, releases: 0, notes: 0, remoteRefs: 0 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(notesInserted).toHaveLength(1);
+    expect(notesInserted[0].missionId).toBe('m-1');
+    expect(notesInserted[0].taskId).toBe('t-plan');
+    expect(notesInserted[0].type).toBe('question');
+    expect(notesInserted[0].status).toBe('open');
+    expect(notesUpdated).toEqual([]);
+    expect(body.notified).toBe(1);
+
+    // The point of the whole invariant: report-only in the auto-dispatch sense.
+    expect(inserted).toEqual([]);
+    expect(approvePlanCalls).toEqual([]);
+  });
+
+  it('does not re-touch the note before the escalation gap elapses', async () => {
+    scanSnapshot = planAwaitingApprovalSnapshot();
+    existingPlanNote = { id: 'note-1', createdAt: new Date(Date.now() - 1 * HOUR), collapseCount: 1 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(notesInserted).toEqual([]);
+    expect(notesUpdated).toEqual([]);
+    expect(body.notified).toBe(0);
+    expect(approvePlanCalls).toEqual([]);
+  });
+
+  it('escalates once the backoff gap has elapsed, doubling the next one', async () => {
+    scanSnapshot = planAwaitingApprovalSnapshot();
+    existingPlanNote = { id: 'note-1', createdAt: new Date(Date.now() - 25 * HOUR), collapseCount: 1 };
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(notesInserted).toEqual([]);
+    expect(notesUpdated).toHaveLength(1);
+    expect(notesUpdated[0].collapseCount).toBe(2);
+    expect(body.notified).toBe(1);
+    expect(approvePlanCalls).toEqual([]);
+  });
+
+  it('skips a plan on a task with no mission — there is no mission feed to post to', async () => {
+    scanSnapshot = planAwaitingApprovalSnapshot({ missionId: null });
+
+    const body = await (await POST(makeRequest())).json();
+
+    expect(notesInserted).toEqual([]);
+    expect(notesUpdated).toEqual([]);
+    expect(body.notified).toBe(0);
   });
 });
 

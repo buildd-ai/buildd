@@ -23,9 +23,13 @@
  * (`stale_criteria_escalation`) resolves itself directly through
  * `resolveCriteriaEscalation` — it is a backstop for a write-side bug (the
  * escalation clear not reaching every exit), not a condition a human needs to
- * see, so there is nothing to file. Promoting another invariant to file or
- * resolve is a later diff per invariant, and the bar is that it has been
- * observed to fire on a real breach AND stay quiet on a healthy fleet.
+ * see, so there is nothing to file. One (`plan_awaiting_approval`) notifies —
+ * it posts a `missionNotes` visibility note instead of filing a task, because
+ * the remedy is a human decision (approve/reject the plan) that must never be
+ * taken automatically, so there is no task to hand to an agent, only a signal
+ * a human needs to see. Promoting another invariant to file, resolve or notify
+ * is a later diff per invariant, and the bar is that it has been observed to
+ * fire on a real breach AND stay quiet on a healthy fleet.
  *
  * ── Thresholds are the whole game ──────────────────────────────────────────
  * Most of these states are NORMAL for minutes and pathological for days. A
@@ -418,6 +422,16 @@ export interface Invariant {
    * the thing to show a human, only evidence that a write site missed an exit.
    */
   resolves: boolean;
+  /**
+   * Whether a breach posts a `missionNotes` visibility note — reusing the
+   * `type: 'question'` shape `resolveCompletedTask` already uses for organizer
+   * questions (`task-dependencies.ts:164-174`) — instead of, or in addition to,
+   * staying purely report-only. Optional; absent means false, so the fourteen
+   * invariants that predate this field need no edit. Exactly one invariant
+   * ships with this true: `plan_awaiting_approval`, whose whole point is that
+   * a human decision is pending, not a bug — see that invariant's comment.
+   */
+  notifies?: boolean;
   /** The query. Pure: rows in, violations out. */
   query: (snapshot: InvariantSnapshot, now: Date) => InvariantViolation[];
 }
@@ -428,6 +442,7 @@ export interface InvariantResult {
   remedy: string;
   files: boolean;
   resolves: boolean;
+  notifies: boolean;
   thresholdMs: number;
   violations: InvariantViolation[];
 }
@@ -792,17 +807,24 @@ export const INVARIANTS: Invariant[] = [
       'This is the point of a spec-authored plan: it will not auto-dispatch, no matter how long it waits. ' +
       'Review it and call POST /api/tasks/[id]/approve-plan to create the child tasks, or ' +
       'POST /api/tasks/[id]/reject-plan with feedback to send it back for revision.',
-    // Report-only, permanently. Unlike `plan_produced_no_children`'s sibling
+    // Never files, never resolves. Unlike `plan_produced_no_children`'s sibling
     // remedy, "approve it" here is a human decision this module must never make
     // for them — see `docs/design/spec-to-build-pattern.md` "Failure modes":
-    // a spec-authored plan has no "today's behavior" to time out into, so
-    // there is nothing this invariant could promote itself to besides staying
-    // report-only. It deliberately does NOT unify with
-    // `docs/design/plan-first-missions.md`'s 24h auto-dispatch invariant —
-    // auto-approving a spec's own breakdown is exactly what "spec before code"
-    // forbids.
+    // a spec-authored plan has no "today's behavior" to time out into, so there
+    // is no auto-dispatch path this invariant could promote itself into. It
+    // deliberately does NOT unify with `docs/design/plan-first-missions.md`'s
+    // 24h auto-dispatch invariant — auto-approving a spec's own breakdown is
+    // exactly what "spec before code" forbids.
+    //
+    // It DOES notify: the route posts an escalating `missionNotes` visibility
+    // note (reusing the `type: 'question'` shape `resolveCompletedTask` already
+    // uses for organizer questions, `task-dependencies.ts:164-174`) at
+    // increasing intervals, so a forgotten spec plan stays visible on the
+    // mission feed instead of only existing in this hourly sweep's own log —
+    // never a call to `approvePlan`.
     files: false,
     resolves: false,
+    notifies: true,
     query: (s, now) => {
       const out: InvariantViolation[] = [];
       for (const t of s.tasks) {
@@ -1170,6 +1192,7 @@ export function evaluateInvariants(snapshot: InvariantSnapshot, now: Date): Inva
       remedy: inv.remedy,
       files: inv.files,
       resolves: inv.resolves,
+      notifies: inv.notifies ?? false,
       thresholdMs: inv.thresholdMs,
       violations,
     };
@@ -1239,7 +1262,7 @@ export function formatInvariantReport(
   lines.push('');
 
   for (const r of results) {
-    const stage = r.files ? 'files' : r.resolves ? 'resolves' : 'report-only';
+    const stage = r.files ? 'files' : r.resolves ? 'resolves' : r.notifies ? 'notifies' : 'report-only';
     const head = `${r.key}: ${r.violations.length} — ${r.title} [threshold ${humanThreshold(r.thresholdMs)}, ${stage}]`;
     if (r.violations.length === 0) {
       lines.push(`OK  ${head}`);
