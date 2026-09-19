@@ -50,6 +50,8 @@ assertions:
 
 `pr-refresh-seam` and `task-read-refresh-tests` pass structurally (the symbol and the test file both exist), but neither shipped because of this doc: `refreshStaleWorkersForWorkspaces` predates it (it backs `home/page.tsx` since PR #1883), and `tasks/page.test.ts` tests mission-budget plumbing unrelated to the refresh-before-query behavior Step 1 describes. Status stays `partially` rather than `implemented` until D1, D3, and Step 1 land.
 
+Because per-assertion conformance classification cannot read this prose, both assertions will keep re-evaluating as `code_ahead`/open on every conformance run for as long as `status: partially` stands — that is expected, not a sign this document has drifted again. A future "reconcile" pass on this file only has work to do once D1, D3, or Step 1's status above actually changes; until then, re-verify against the Implementation Status table rather than re-deriving it from scratch.
+
 ---
 
 ## Problem
