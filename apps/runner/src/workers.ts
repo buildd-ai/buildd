@@ -2037,6 +2037,8 @@ export class WorkerManager {
           title: task.title,
           description: task.description,
           pathManifest: task.pathManifest,
+          // Carries the claim-time predicted file area for treatment-arm tasks.
+          context: (task as any).context,
         }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
@@ -2048,6 +2050,7 @@ export class WorkerManager {
         derivedBy: taskMemory.derivedBy,
         results: taskMemory.results.length,
         scopePaths: taskMemory.scopePaths.length,
+        predictedPaths: taskMemory.predictedPaths.length,
         inferredPaths: taskMemory.inferredPaths.length,
         pathScopeMissed: taskMemory.pathScopeMissed,
       }), task.id);

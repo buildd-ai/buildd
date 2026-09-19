@@ -15,6 +15,7 @@ import { sendTaskCallback } from '@/lib/task-callback';
 import { upsertAutoArtifact, formatStructuredOutput } from '@/lib/artifact-helpers';
 import { recordTaskOutcome } from '@buildd/core/routing-analytics';
 import { recordRunnerOutcome } from '@buildd/core/runner-health';
+import { recordTaskAreaOutcome } from '@buildd/core/task-area-prediction-source';
 import { detectCbmFleetDisabled, detectCbmEnforcedUnused, CBM_HEALTH_TERMINAL_STATUSES } from '@buildd/core/cbm-health';
 import { reportOps } from '@buildd/core/report-ops';
 import { estimateCostUsd, estimateCostUsdFromTotals } from '@buildd/core/model-prices';
@@ -934,6 +935,18 @@ export async function PATCH(
   // path to discover, every time, that they are all already held.
   let newlyObservedPaths: string[] = [];
   if (isTerminalStatus) {
+    // Ground truth for the task-area-prediction experiment, captured HERE
+    // because the column is cleared on the next line and there is no other
+    // durable per-task file list: the `pr` corpus only covers merged, ingested
+    // PRs, which would silently narrow the cohort to work that landed.
+    // Best-effort and awaited-but-never-thrown — see recordTaskAreaOutcome.
+    if (worker.taskId) {
+      const observed = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
+      const finalPaths = Array.isArray(touchedPaths)
+        ? [...observed, ...touchedPaths.filter((p: unknown): p is string => typeof p === 'string')]
+        : observed;
+      await recordTaskAreaOutcome(worker.taskId, finalPaths);
+    }
     updates.observedTouches = null;
   } else if (Array.isArray(touchedPaths) && touchedPaths.length > 0) {
     const existing = Array.isArray(worker.observedTouches) ? (worker.observedTouches as string[]) : [];
