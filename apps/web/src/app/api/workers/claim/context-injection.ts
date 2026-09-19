@@ -23,6 +23,19 @@ import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import { componentTablePaths, extractExcerptPaths } from '@buildd/core/friction-manifest';
 import { resolveSubjectPolicy } from '@buildd/core/subject-anchor-observe';
 import { findDispatchDiscrepancyBlock } from '@buildd/core/spec-discrepancy-dispatch';
+import {
+  TASK_AREA_CONTEXT_KEY,
+  TASK_AREA_TREATMENT_ARM,
+  renderTaskAreaBlock,
+  type TaskAreaContextHint,
+} from '@buildd/core/task-area-prediction';
+import {
+  loadTaskAreaConfig,
+  predictTaskArea,
+  recordTaskAreaPrediction,
+  type TaskAreaPrediction,
+} from '@buildd/core/task-area-prediction-source';
+import { PgVectorStore, getVoyageEmbedder, getVoyageReranker } from '@buildd/core/knowledge-store';
 import { buildSubjectPriorWork } from './subject-prior-work';
 
 /** The claim-candidate rows these blocks look tasks up in. */
@@ -191,6 +204,71 @@ export async function attachExternalContextProviders(
 }
 
 /**
+ * Predict each claimed task's file area from what similar completed tasks
+ * actually touched, and record it on the experiment's own rail.
+ *
+ * Runs BEFORE the context blocks because `attachKnowledgeContext` uses the
+ * prediction as its path filter when the task declared no manifest — that is
+ * one of the two uses the prediction exists for (the other being the scope
+ * hint `attachTaskAreaScope` renders).
+ *
+ * Every arm is predicted and recorded; only the treatment arm's prediction is
+ * allowed to change retrieval. See @buildd/core/task-area-prediction for why
+ * measuring the control too is the point rather than waste.
+ *
+ * Best-effort throughout: a claim must never fail because a prediction could
+ * not be computed. Returns an empty map when the experiment is disabled.
+ */
+export async function predictTaskAreas(
+  claimedTasks: readonly ClaimedTask[],
+): Promise<Map<string, TaskAreaPrediction>> {
+  const out = new Map<string, TaskAreaPrediction>();
+  if (claimedTasks.length === 0) return out;
+
+  try {
+    const config = await loadTaskAreaConfig();
+    if (!config.enabled) return out;
+
+    const store = new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
+    for (const task of claimedTasks) {
+      const prediction = await predictTaskArea(store, {
+        taskId: task.id,
+        workspaceId: task.workspaceId,
+        title: task.title,
+        description: (task as any).description,
+      }, config).catch(err => {
+        console.warn('[claim] task-area prediction failed:', err?.message ?? err);
+        return null;
+      });
+      if (!prediction) continue;
+      out.set(task.id, prediction);
+      await recordTaskAreaPrediction(prediction);
+    }
+  } catch (err) {
+    console.warn('[claim] task-area prediction unavailable:', (err as Error)?.message ?? err);
+  }
+  return out;
+}
+
+/**
+ * The hint a treatment-arm task carries, or null.
+ *
+ * Null for the control arm and for an empty prediction, so every consumer gets
+ * today's behaviour by simply finding nothing here.
+ */
+function taskAreaHint(prediction: TaskAreaPrediction | undefined): TaskAreaContextHint | null {
+  if (!prediction) return null;
+  if (prediction.arm !== TASK_AREA_TREATMENT_ARM) return null;
+  if (prediction.predictedPaths.length === 0) return null;
+  return {
+    arm: TASK_AREA_TREATMENT_ARM,
+    policyVersion: prediction.policyVersion,
+    paths: prediction.predictedPaths,
+    source: prediction.config.pathSource,
+  };
+}
+
+/**
  * Inject related prior work into the agent's prompt — the worker analog of the
  * orchestrator's plan-time injection.
  *
@@ -199,6 +277,7 @@ export async function attachExternalContextProviders(
 export async function attachKnowledgeContext(
   claimedWorkers: ClaimTasksResponse['workers'],
   claimedTasks: readonly ClaimedTask[],
+  predictions?: ReadonlyMap<string, TaskAreaPrediction>,
 ): Promise<void> {
   for (const cw of claimedWorkers) {
     const task = claimedTasks.find(t => t.id === cw.taskId);
@@ -243,7 +322,14 @@ export async function attachKnowledgeContext(
 
     if (parts.length === 0) {
       const seedQuery = buildSeedQuery(task.title, (task as any).description);
-      const paths = manifestPaths((task as any).pathManifest);
+      // A declared manifest always wins: it is an author's statement about this
+      // task, where the prediction is a union over other tasks' diffs. The
+      // prediction fills the ~90% of tasks that declare nothing, and only for
+      // the treatment arm — `taskAreaHint` returns null otherwise, leaving the
+      // control's query byte-identical to what it was before this experiment.
+      const declared = manifestPaths((task as any).pathManifest);
+      const hint = declared.length === 0 ? taskAreaHint(predictions?.get(task.id)) : null;
+      const paths = declared.length > 0 ? declared : (hint?.paths ?? []);
       parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, { sensitive, paths });
     }
 
@@ -294,6 +380,42 @@ export async function attachSubjectPriorWork(
     if (!priorWork) continue;
 
     appendContextBlock(cw, priorWork);
+  }
+}
+
+/**
+ * Predicted-file-area injection — the second of the prediction's two uses.
+ *
+ * Appends the advisory scope block to the prompt rail and mirrors the hint onto
+ * `task.context.predictedTaskArea`, where the runner reads it as the file
+ * filter for its own memory retrieval (`apps/runner/src/task-memory-retrieval.ts`).
+ *
+ * The mirror is on the in-memory claim RESPONSE only. Nothing here writes to
+ * the `tasks` row, and in particular nothing writes `tasks.path_manifest` —
+ * that column drives path-overlap serialisation and inferred `dependsOn`, and a
+ * prediction landing in it would defer or serialise unrelated work on a guess.
+ *
+ * Runs last on the rail so the predicted area reads as a closing hint rather
+ * than as the frame for the retrieved knowledge above it.
+ */
+export async function attachTaskAreaScope(
+  claimedWorkers: ClaimTasksResponse['workers'],
+  claimedTasks: readonly ClaimedTask[],
+  predictions: ReadonlyMap<string, TaskAreaPrediction>,
+): Promise<void> {
+  if (predictions.size === 0) return;
+  for (const cw of claimedWorkers) {
+    const task = claimedTasks.find(t => t.id === cw.taskId);
+    if (!task) continue;
+    const hint = taskAreaHint(predictions.get(task.id));
+    if (!hint) continue;
+
+    const taskObj = cw.task as any;
+    if (taskObj) {
+      taskObj.context = taskObj.context ?? {};
+      taskObj.context[TASK_AREA_CONTEXT_KEY] = hint;
+    }
+    appendContextBlock(cw, renderTaskAreaBlock(hint));
   }
 }
 
