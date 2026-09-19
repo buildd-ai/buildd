@@ -1,5 +1,20 @@
 ---
-status: proposed
+status: superseded
+superseded_by: docs/specs/mission-task-lifecycle.md#claim-gate-legibility-contract
+superseded_on: 2026-09-19
+superseded_reason: >
+  This doc proposed a hard/soft dependsOn edge-type split, a `cancel_task` MCP
+  action with a required disposition enum, and a stranded condition derived
+  from hard-edge-parent-terminal-not-completed. None of that shipped —
+  `tasks.dependsOn` is still a plain string[], there is no edgeType, and no
+  `cancel_task` action exists. The problem was instead closed by a simpler,
+  uniform design: every dependsOn edge is satisfied by any terminal parent
+  status via one shared contract module (`dep-gate-contract.ts`, PR #1867 —
+  CG-4/CG-5 in the shipped contract), so cancelling a task IS the disposition,
+  with no separate enum needed. Stranding is caught generically by a
+  claim-deferral sweep (`stranded-tasks-sweep.ts`, PR #2388) unrelated to
+  dependsOn specifically, not by the hard-edge-derived condition this doc
+  proposed.
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "cancel-disposition"
@@ -19,20 +34,38 @@ assertions:
 ---
 # Cancellation Must Resolve: Edge Semantics, Disposition, and Stranded Detection
 
-**Status:** Proposed  
+> **SUPERSEDED (2026-09-19).** This is the original design proposal, kept for
+> the reasoning trail. The shipped fix takes a different, simpler shape than
+> what this document proposes: no hard/soft edge type, no `cancel_task` MCP
+> action, no disposition enum. `dep-gate-contract.ts` makes
+> `DEP_SATISFYING_STATUSES` (`completed`, `cancelled`) the single source both
+> the claim-route SQL and the display layer (`isGateSatisfied`) read (PR
+> #1867) — every dependsOn edge is satisfied uniformly by a terminal parent,
+> so cancelling a task already unblocks its dependents with no extra
+> write-path step. Stranding is caught by a general claim-loop-deferral sweep
+> (`stranded-tasks-sweep.ts`, PR #2388), not by a dependsOn-specific derived
+> condition. Read `docs/specs/mission-task-lifecycle.md` → "Claim-gate
+> legibility contract" (CG-4, CG-5) for the live contract; read this only for
+> why the edge-type question was raised in the first place.
+
+**Status:** Superseded (was: Proposed)  
 **Related:**
-- `apps/web/src/app/api/workers/claim/deps-gate.ts` — `DEP_SATISFYING_STATUSES`, `dependenciesSatisfied` SQL
+- `apps/web/src/lib/dep-gate-contract.ts` — `DEP_SATISFYING_STATUSES`, `DEP_UNBLOCKING_PR_LIFECYCLE` (the shared contract both sides below read)
+- `apps/web/src/app/api/workers/claim/deps-gate.ts` — `dependenciesSatisfied` SQL, re-exports `DEP_SATISFYING_STATUSES`
 - `apps/web/src/lib/task-dependencies.ts` — `checkDependsOnResolved`, `resolveCompletedTask`
-- `apps/web/src/lib/task-presentation.ts` — `isGateSatisfied` (line 210)
+- `apps/web/src/lib/task-presentation.ts` — `isGateSatisfied` (line 369)
 - `apps/web/src/lib/condensed-timeline.ts` — `allDepsGateSatisfied`, `TimelineGroups`, `waitingOnYou`
+- `apps/web/src/lib/stranded-tasks-sweep.ts` — the general claim-deferral stranded detector that shipped instead of Part C
 - `apps/web/src/app/app/(protected)/missions/[id]/CondensedTimeline.tsx` — Waiting on you section
 - `apps/web/src/app/app/(protected)/home/page.tsx` — `waitingOnYou`, `buildActionQueue`
-- `packages/core/db/schema.ts` — `tasks.dependsOn` (jsonb string[]), `tasks.pathManifest`
+- `packages/core/db/schema.ts` — `tasks.dependsOn` (jsonb string[], unchanged — no edgeType shipped), `tasks.pathManifest`
 - `packages/core/mission-helpers.ts` — `computeMissionProgress`, `evaluateGoalCriteria`, `no_open_tasks`
-- `packages/core/mcp-tools.ts` — `update_task`, `create_task` action handlers
-- `apps/web/src/app/api/tasks/[id]/route.ts` — cancel PATCH handler (line 291)
+- `packages/core/mcp-tools.ts` — `update_task`, `create_task` action handlers (no `cancel_task` action exists)
+- `apps/web/src/app/api/tasks/[id]/route.ts` — cancel PATCH handler (line 342)
 - docs/design/task-classification-and-wait.md — `taskClass` discriminator spec
 - docs/design/review-gate-ux.md — `mergedAt` gate, `isGateSatisfied` contract
+- `docs/specs/mission-task-lifecycle.md` — "Claim-gate legibility contract" (CG-4, CG-5): the live, authoritative contract
+- `docs/specs/timeline-dependency-geometry.md` — documents `dep-gate-contract.ts` as the shipped shared gate module
 
 ---
 
@@ -48,7 +81,7 @@ Three compounding defects:
 
 3. **No stranded detection.** A pending task whose hard-edge parents are permanently terminal-but-not-completed is invisible: the mission shows 75% with its PR merged while carrying an unclaimable task; no alert surfaces, no queue entry appears, the `no_open_tasks` goal criterion silently fails.
 
-Separately: `isGateSatisfied` (`task-presentation.ts:210`) requires `dep.status === 'completed'` and never returns `true` for a `cancelled` dep — contradicting the claim SQL that already treats cancelled as satisfying. This means `condensed-timeline.ts:allDepsGateSatisfied` puts tasks whose only blocker is a cancelled parent in the `blocked` group, not `nextQueued`, even though the claim route would serve them immediately.
+**Resolved independently of this spec (PR #1867):** at the time this was written, `isGateSatisfied` (`task-presentation.ts:210`) required `dep.status === 'completed'` and never returned `true` for a `cancelled` dep — contradicting the claim SQL that already treated cancelled as satisfying. `condensed-timeline.ts:allDepsGateSatisfied` therefore put tasks whose only blocker was a cancelled parent in the `blocked` group, not `nextQueued`, even though the claim route would serve them immediately. This was fixed by extracting `DEP_SATISFYING_STATUSES` into a shared `dep-gate-contract.ts` module that both the claim SQL and `isGateSatisfied` (now `task-presentation.ts:369`) read — no edge-type distinction, just one constant instead of two hand-synchronised copies. See the superseded banner above.
 
 ---
 
