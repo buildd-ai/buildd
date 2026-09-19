@@ -10,6 +10,8 @@ import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { MissionSkylineChart } from '@/components/MissionSkylineChart';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
+import { MissionSituationLine } from '@/components/missions/MissionSituationBlock';
+import type { MissionSituation } from '@/lib/mission-state-view';
 import {
   type MissionHealth,
   type MissionGroup,
@@ -83,6 +85,11 @@ export interface MissionItem {
   skyline: MissionSkylineData | null;
   normalizationSlots: number;
   releaseFooter: ReleaseFooterData;
+  /**
+   * What this mission is waiting on, in the SAME sentence the mission header
+   * renders above the fold. Built by `deriveMissionStateView`, never by a card.
+   */
+  situation: MissionSituation;
 }
 
 interface WorkspaceBucket {
@@ -466,8 +473,15 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           </div>
         </div>
 
+        {/* The situation, not the description. A card that says what the
+            mission is FOR and not what it is waiting on is the mission header's
+            defect at list scale — same accessor, same sentence, one line. */}
+        <div className="mb-2.5">
+          <MissionSituationLine situation={mission.situation} />
+        </div>
+
         {mission.description && (
-          <p className="text-[13px] text-text-secondary font-normal line-clamp-2 mb-2.5">
+          <p className="text-[13px] text-text-secondary/70 font-normal line-clamp-2 mb-2.5">
             {mission.description}
           </p>
         )}
@@ -628,6 +642,10 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
               {mission.title}
             </Link>
           </div>
+        </div>
+        {/* Same sentence as the full card and the mission header. */}
+        <div className="mt-1">
+          <MissionSituationLine situation={mission.situation} />
         </div>
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
           {mission.isHeld

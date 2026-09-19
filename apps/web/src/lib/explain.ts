@@ -30,6 +30,8 @@ import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
 import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
+import { loadMissionClaimDeferrals } from '@/lib/mission-claim-deferrals';
+import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import {
   buildStateBecause,
@@ -320,6 +322,20 @@ async function viewForMission(missionId: string): Promise<{
     ? await evaluateMissionWorkState(missionId)
     : null;
 
+  // The claim loop's durable refusal ledger. Read unconditionally: the whole
+  // point is that a task nothing has been allowed to start looks, from every
+  // other source, exactly like a task nothing is wrong with.
+  const deferrals = await loadMissionClaimDeferrals(missionId);
+
+  // `canCompleteMission` knows the mission PR has not merged; only the task
+  // rows know where it is. Supplying it turns "the mission PR has not merged"
+  // into an affordance with a destination.
+  const integrationPr = deriveMissionIntegrationPr({
+    mission: m as { workingBranch?: string | null; integrationBranchEnabled?: boolean | null },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    tasks: loaded as any,
+  });
+
   const activeAgents = loaded.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
   const openTasks = deliverables.filter(t => OPEN_TASK_STATUSES.has(t.status));
   // Superseded failures shipped their deliverable under a different task/PR —
@@ -353,6 +369,10 @@ async function viewForMission(missionId: string): Promise<{
       title: t.title,
       infra: (t.result as Record<string, unknown> | null)?.errorType === 'infra_stalled',
     })),
+    deferrals,
+    missionPr: integrationPr && integrationPr.state === 'open'
+      ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+      : null,
   };
 
   return {
@@ -389,6 +409,8 @@ function answerFrom(
     subject,
     state: view.kind,
     waitingOn: view.waitingOn,
+    outstanding: view.outstanding,
+    situation: view.situation,
     because,
     history,
     nextAction: view.nextAction,
