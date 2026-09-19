@@ -640,7 +640,14 @@ export type WorkerExitCause =
   | 'silent_start'
   | 'reassigned'
   | 'condition_unmet'
-  | 'sandbox_mount_gap';
+  | 'sandbox_mount_gap'
+  /**
+   * The agent correctly stopped to ask a human a question (AskUserQuestion),
+   * and nobody answered before the waiting_input timeout — not a crash, not a
+   * code defect. Excluded from the failure rate and failure-signature ranking,
+   * but still queryable by this exit cause.
+   */
+  | 'needs_input';
 
 export interface Worker {
   id: string;
@@ -677,6 +684,13 @@ export interface WaitingFor {
   type: 'question' | 'permission' | 'confirmation';
   prompt: string;
   options?: (string | WaitingForOption)[];
+  /**
+   * Set server-side when a `question` carries no real prompt (the runner's
+   * fallback text, or empty/whitespace) — the agent stopped and asked, but the
+   * contract that it state what it needs was not met. Surfaced distinctly
+   * rather than accepted silently.
+   */
+  contractViolation?: boolean;
 }
 
 /** Normalize mixed options (string[] or WaitingForOption[]) to WaitingForOption[] */

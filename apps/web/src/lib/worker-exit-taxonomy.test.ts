@@ -74,6 +74,28 @@ describe('classifyReportedFailure', () => {
       budgetLimited: false, sandboxMountGap: false, conditionUnmet: false,
     })).toBe('code_failure');
   });
+
+  // Regression for the taxonomy bug: a worker that correctly stopped to ask a
+  // human a question must never fall through to code_failure just because
+  // classifyReportedFailure had no case for it.
+  it('classifies a needs_input report as needs_input, not code_failure, and does not charge a retry', () => {
+    const cause = classifyReportedFailure({
+      budgetLimited: false,
+      sandboxMountGap: false,
+      needsInput: true,
+    });
+    expect(cause).toBe('needs_input');
+    expect(consumesRetryAttempt(cause)).toBe(false);
+  });
+
+  it('keeps needsInput from stealing precedence from causes that actually diagnose the failure', () => {
+    expect(classifyReportedFailure({
+      budgetLimited: true, sandboxMountGap: false, needsInput: true,
+    })).toBe('budget_limited');
+    expect(classifyReportedFailure({
+      budgetLimited: false, sandboxMountGap: true, needsInput: true,
+    })).toBe('sandbox_mount_gap');
+  });
 });
 
 describe('isConcurrencyConflictError', () => {

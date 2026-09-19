@@ -115,16 +115,24 @@ export interface TaskPhaseInput {
  * UI surfaces must not fork this logic.
  */
 export function deriveTaskPhase(i: TaskPhaseInput): TaskPhase {
-  // Terminal task status wins over any lingering/stale worker row.
+  // A genuine completion still wins over anything else — the task is done,
+  // full stop.
   if (i.taskStatus === 'completed') {
     return i.taskMode === 'planning' ? 'plan_review' : 'completed';
   }
+
+  // A pending question outranks a failed task status. The waiting_input
+  // timeout (cleanupStuckWaitingInput) flips the task to 'failed' as part of
+  // building its retry, and any other path that still reports needs_input as
+  // a failure does the same; either way the question itself is still the
+  // thing a human needs to see, not a generic failure badge. Checking this
+  // before taskStatus === 'failed' is what lets the waiting_input phase below
+  // actually render instead of being permanently shadowed the moment the
+  // task status flips.
+  if (i.workerWaitingFor || i.workerStatus === 'waiting_input') return 'waiting_input';
   if (i.taskStatus === 'failed') return 'failed';
 
-  // Live worker-derived phases. A pending question outranks "running" because
-  // the runner aborts the session when it asks (inputAsRetry), so the worker is
-  // effectively parked until a human answers.
-  if (i.workerWaitingFor || i.workerStatus === 'waiting_input') return 'waiting_input';
+  // Live worker-derived phases.
   if (
     i.workerStatus === 'running' ||
     i.workerStatus === 'starting' ||
