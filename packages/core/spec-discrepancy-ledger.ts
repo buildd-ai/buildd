@@ -259,6 +259,33 @@ export async function writeLedgerFromEvaluations(
       const classification = classifyAssertion(evalDoc.docType, evalDoc.declaredStatus, result);
       if (classification === 'skip') {
         summary.skipped++;
+        // When an assertion is suppressed (skip_until not expired), clean up any
+        // existing open/accepted row so it stops being redispatched (§6 + §9).
+        // This prevents perpetual reconcile-spec dispatch for assertions that are
+        // code_ahead under a non-terminal status but intentionally suppressed until
+        // a future target date (e.g., "this passed but the doc stays partially until
+        // the table ships").
+        if (result.outcome === 'suppressed') {
+          const existingRows = await db
+            .select({ status: specDiscrepancies.status })
+            .from(specDiscrepancies)
+            .where(identityFilter(workspaceId, evalDoc.path, result.id));
+          const existing = existingRows[0] as ExistingDiscrepancy | undefined;
+          if (existing && existing.status !== 'resolved') {
+            const evidence = {
+              assertionType: result.type,
+              outcome: result.outcome,
+              detail: result.detail,
+              declaredStatus: evalDoc.declaredStatus,
+              docType: evalDoc.docType,
+            };
+            await db
+              .update(specDiscrepancies)
+              .set({ status: 'resolved', lastCheckedAt: now, evidence })
+              .where(identityFilter(workspaceId, evalDoc.path, result.id));
+            summary.resolved++;
+          }
+        }
         continue;
       }
 
