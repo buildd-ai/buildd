@@ -20,9 +20,16 @@
  *
  * Exit codes:
  *   0  clean (warnings allowed)
- *   1  one or more errors (missing frontmatter, dead code-surface path,
+ *   1  one or more CONTENT errors (missing frontmatter, dead code-surface path,
  *      dead route URL in an `active` spec, duplicate active slug,
- *      superseded-without-successor)
+ *      superseded-without-successor) — a human judgment call, not fixable by
+ *      just re-running the generator
+ *   2  --check only, and the ONLY problem is a stale docs/specs/INDEX.md — pure
+ *      mechanical drift that `bun run specs:check` fixes with no judgment call.
+ *      Distinguished from 1 so a caller consuming this exit code (the runner's
+ *      provisioning gate, apps/runner/src/env-verify.ts) can treat 2 as
+ *      advisory — proceed, don't kill the worker — without also waving through
+ *      a real spec error, which still exits 1 regardless of index staleness.
  *
  * Usage:
  *   bun run scripts/check-specs.ts            # lint + rewrite INDEX.md
@@ -737,6 +744,17 @@ function buildIndex(specs: SpecFile[]): string {
   return out.join('\n');
 }
 
+/**
+ * Exit code for the CLI — see the "Exit codes" doc comment at the top of this
+ * file. Pure so it is unit-testable without spawning the script or touching
+ * docs/specs/ (the run block below is guarded by `import.meta.main` and reads
+ * the real filesystem, neither of which this needs).
+ */
+export function checkSpecsExitCode(contentErrorCount: number, indexStale: boolean): number {
+  if (contentErrorCount > 0) return 1;
+  return indexStale ? 2 : 0;
+}
+
 // ─── Run ─────────────────────────────────────────────────────────────────────
 // Guarded so `check-specs.test.ts` can import the checkable units above without
 // running the lint (and calling process.exit) on import — same shape as sync-crons.ts.
@@ -818,13 +836,19 @@ for (const s of specs) {
 }
 for (const e of crossErrors) console.error(`✖ ${e}`);
 
+// Snapshot before the INDEX.md check below adds to errorCount, so the exit
+// code can tell "a real content problem" apart from "just the generated index".
+const contentErrorCount = errorCount;
+
 // INDEX.md handling
 const nextIndex = buildIndex(specs);
 const currentIndex = existsSync(INDEX_FILE) ? readFileSync(INDEX_FILE, 'utf8') : '';
+let indexStale = false;
 if (checkOnly) {
   if (nextIndex.trim() !== currentIndex.trim()) {
     console.error('✖ docs/specs/INDEX.md is stale — run `bun run specs:check` to regenerate');
     errorCount++;
+    indexStale = true;
   }
 } else if (nextIndex.trim() !== currentIndex.trim()) {
   writeFileSync(INDEX_FILE, nextIndex);
@@ -852,5 +876,5 @@ if (cov.orphanModules.length) {
 console.log(
   `\n${specs.length} specs · ${errorCount} error(s) · ${warnCount} warning(s)`,
 );
-process.exit(errorCount > 0 ? 1 : 0);
+process.exit(checkSpecsExitCode(contentErrorCount, indexStale));
 }

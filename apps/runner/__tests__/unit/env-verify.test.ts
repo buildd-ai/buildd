@@ -201,6 +201,38 @@ describe('executeSteps', () => {
     expect(results[0].message).toContain('last line of error');
   });
 
+  it('readiness exit code 2 is a non-blocking warn, not a fail', async () => {
+    const advisoryRunner: CommandRunner = () => ({ code: 2, stdout: '', stderr: 'exit 2: ✖ docs/specs/INDEX.md is stale — run `bun run specs:check` to regenerate' });
+    const steps = planSteps({ readiness: { command: 'bun run scripts/check-specs.ts --check' } });
+    const [r] = await executeSteps(steps, { root: '/r', env: {}, runCommand: advisoryRunner, now });
+    expect(r.status).toBe('warn');
+    expect(r.message).toContain('docs/specs/INDEX.md is stale');
+  });
+
+  it('exit code 2 outside the readiness phase is still a genuine failure', async () => {
+    // The convention is readiness-only: a provision/install step returning 2
+    // means whatever that command means by 2, not "advisory".
+    const advisoryRunner: CommandRunner = () => ({ code: 2, stdout: '', stderr: 'boom' });
+    const steps = planSteps({ install: { command: 'bun install' } });
+    const [r] = await executeSteps(steps, { root: '/r', env: {}, runCommand: advisoryRunner, now });
+    expect(r.status).toBe('fail');
+  });
+
+  it('a warn step does not abort later phases the way a fail does', async () => {
+    const advisoryRunner: CommandRunner = (command) =>
+      /check-specs/.test(command)
+        ? { code: 2, stdout: '', stderr: 'stale index' }
+        : { code: 0, stdout: 'ok', stderr: '' };
+    const m: EnvManifest = {
+      provision: ['git config core.hooksPath .githooks'],
+      readiness: { command: 'bun run scripts/check-specs.ts --check' },
+    };
+    // provision runs BEFORE readiness in planSteps order, so this also proves a
+    // later 'warn' never retroactively matters — included for completeness.
+    const results = await executeSteps(planSteps(m), { root: '/r', env: {}, runCommand: advisoryRunner, now });
+    expect(results.map((r) => r.status)).toEqual(['ok', 'warn']);
+  });
+
   it('skips phases named in skipPhases without running or failing them', async () => {
     const m: EnvManifest = {
       install: { command: 'bun install --frozen-lockfile' },
@@ -327,6 +359,31 @@ describe('runProvisionGate', () => {
     const fail = await runProvisionGate({ root: '/r', env: {}, fs: fakeFs(manifest), runCommand: fakeRunner(), now });
     expect(fail.ok).toBe(false);
     expect(fail.reason).toContain('VOYAGE_API_KEY');
+  });
+
+  it('does not block a worker on a readiness exit-2 advisory (stale generated docs, not this task\'s problem)', async () => {
+    const advisoryRunner: CommandRunner = () => ({ code: 2, stdout: '', stderr: 'exit 2: ✖ docs/specs/INDEX.md is stale — run `bun run specs:check` to regenerate' });
+    const gate = await runProvisionGate({
+      root: '/r', env: {},
+      fs: fakeFs({ [MANIFEST_PATH]: 'readiness:\n  command: bun run scripts/check-specs.ts --check\n' }),
+      runCommand: advisoryRunner, now,
+    });
+    expect(gate.enforced).toBe(true);
+    expect(gate.ok).toBe(true); // proceeds — the agent starts, no worker is killed
+    expect(gate.reason).toBeUndefined();
+    expect(gate.failure).toBeUndefined();
+    expect(gate.steps.find((s) => s.phase === 'readiness')!.status).toBe('warn');
+  });
+
+  it('a genuine readiness failure (exit 1) still blocks exactly as before', async () => {
+    const failingRunner: CommandRunner = () => ({ code: 1, stdout: '', stderr: 'a real spec content error' });
+    const gate = await runProvisionGate({
+      root: '/r', env: {},
+      fs: fakeFs({ [MANIFEST_PATH]: 'readiness:\n  command: bun run scripts/check-specs.ts --check\n' }),
+      runCommand: failingRunner, now,
+    });
+    expect(gate.ok).toBe(false);
+    expect(gate.failure?.code).toBe('provision_readiness_failed');
   });
 
   it('honors skipPhases so the runner-owned install is not re-run', async () => {
