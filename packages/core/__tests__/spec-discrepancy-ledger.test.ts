@@ -393,6 +393,77 @@ describe('writeLedgerFromEvaluations', () => {
     expect(summary.skipped).toBe(2);
     expect(store.size).toBe(0);
   });
+
+  test('suppressed assertion with an existing open row resolves it (§6 + §9: clean up suppressed perpetual code_ahead)', async () => {
+    const initialRun = new Date('2026-09-01T00:00:00Z');
+    const suppressedRun = new Date('2026-09-19T00:00:00Z');
+    // A code_ahead row from before suppressions were added: an assertion that
+    // passes forever under a non-terminal status (e.g. execution-cluster-selection
+    // under 'partially'), which was about to be redispatched forever.
+    store.set('ws-1::docs/design/mission-context-clusters.md::execution-cluster-selection', {
+      workspaceId: 'ws-1',
+      specPath: 'docs/design/mission-context-clusters.md',
+      assertionId: 'execution-cluster-selection',
+      direction: 'code_ahead',
+      status: 'open',
+      firstSeenAt: initialRun,
+      lastCheckedAt: initialRun,
+      docFixTaskId: null,
+    });
+
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [
+        doc({
+          path: 'docs/design/mission-context-clusters.md',
+          docType: 'design',
+          declaredStatus: 'partially',
+          results: [result({ id: 'execution-cluster-selection', outcome: 'suppressed', detail: 'suppressed until 2026-12-19 — ...' })],
+        }),
+      ],
+      suppressedRun,
+    );
+
+    expect(summary.skipped).toBe(1);
+    expect(summary.resolved).toBe(1);
+    const row = [...store.values()][0];
+    expect(row.status).toBe('resolved');
+    expect(row.lastCheckedAt).toEqual(suppressedRun);
+  });
+
+  test('suppressed assertion with an already-resolved row does not duplicate the resolve', async () => {
+    const initialRun = new Date('2026-09-01T00:00:00Z');
+    const suppressedRun = new Date('2026-09-19T00:00:00Z');
+    store.set('ws-1::docs/design/suppressed-past.md::suppressed-claim', {
+      workspaceId: 'ws-1',
+      specPath: 'docs/design/suppressed-past.md',
+      assertionId: 'suppressed-claim',
+      direction: 'code_ahead',
+      status: 'resolved',
+      firstSeenAt: initialRun,
+      lastCheckedAt: initialRun,
+      docFixTaskId: null,
+    });
+
+    const summary = await writeLedgerFromEvaluations(
+      'ws-1',
+      [
+        doc({
+          path: 'docs/design/suppressed-past.md',
+          docType: 'design',
+          declaredStatus: 'partially',
+          results: [result({ id: 'suppressed-claim', outcome: 'suppressed', detail: 'suppressed until 2026-12-19 — ...' })],
+        }),
+      ],
+      suppressedRun,
+    );
+
+    expect(summary.skipped).toBe(1);
+    expect(summary.resolved).toBe(0);
+    const row = [...store.values()][0];
+    expect(row.status).toBe('resolved');
+    expect(row.lastCheckedAt).toEqual(initialRun); // unchanged
+  });
 });
 
 // ─── planAdjudication (§13 adjudicate_discrepancy) ──────────────────────────
