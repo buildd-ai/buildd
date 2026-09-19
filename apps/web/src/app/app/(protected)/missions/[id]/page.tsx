@@ -64,6 +64,8 @@ import {
   shouldRenderMissionPrBlock,
   MISSION_PR_STATE_LABEL,
 } from '@/lib/mission-integration-pr';
+import { explainMission } from '@/lib/explain';
+import MissionSituationBlock, { affordanceFor } from '@/components/missions/MissionSituationBlock';
 
 export const dynamic = 'force-dynamic';
 
@@ -427,6 +429,22 @@ export default async function MissionDetailPage({
     hasPendingDeliverableWork,
   });
   const stateChip = getMissionStateChip(displayState);
+
+  // ── What is this mission actually waiting on? ──
+  // Read from `explain`, which runs the one shared mission-state accessor. The
+  // page does NOT assemble its own accessor input and does NOT re-derive the
+  // answer: this screen's whole defect was that the platform already knew the
+  // next action and the screen declined to say it, and a second derivation here
+  // would be the same failure with better intentions.
+  const explained = await explainMission(id);
+  const missionAnswer = explained?.subjects[0] ?? null;
+  // Whether the situation block is offering a wired affordance. When it is, the
+  // settings panel must not raise a competing primary button — an action at
+  // parity with the one right action is what made this screen unreadable.
+  const hasPrimaryAction = missionAnswer
+    ? affordanceFor(missionAnswer.situation.focus, { missionId: id }) !== null
+    : false;
+
   const detailNextRunAt = (mission.schedule as any)?.nextRunAt;
   const detailNextScanMins = detailNextRunAt ? Math.max(0, Math.round((new Date(detailNextRunAt).getTime() - Date.now()) / 60_000)) : null;
   const driveNextRun = formatNextRun(detailNextScanMins, detailNextRunAt ? String(detailNextRunAt) : null);
@@ -933,6 +951,19 @@ export default async function MissionDetailPage({
           }
         />
 
+        {/* ── The situation — what this mission is waiting on, and the one
+            action that advances it. Rendered from `explain`'s answer, which is
+            the shared accessor; the mission card renders the same sentence as
+            its subtitle. Everything the mission merely SUPPORTS is a capability
+            and lives behind the disclosure in the settings panel below. */}
+        {missionAnswer && (
+          <MissionSituationBlock
+            missionId={id}
+            situation={missionAnswer.situation}
+            because={missionAnswer.because}
+          />
+        )}
+
         {/* ── Waiting on: owner decision — one owner for mission state ──
             Above the fold, between the chip row and the progress bar, per
             docs/design/mission-state-ownership.md's waiting-on placement.
@@ -1270,23 +1301,24 @@ export default async function MissionDetailPage({
           orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
           isHeld={isHeld}
           displayState={displayState}
+          hasPrimaryAction={hasPrimaryAction}
         />
       </div>
 
-      {/* ── Criteria gate — visible above the fold on all tab views ──
-          'unverified' (young/active mission, criteria simply haven't run yet)
-          stays quiet — it is not a work-stopping state and must never read
-          BLOCKED. Only a failed criterion or a refused completion attempt
-          gets alarm styling, and names the criterion + evidence when known.
-          Suppressed once escalated: the waiting-on-decision banner above the
-          fold already speaks for this mission, and showing both would be two
-          owners for one state. */}
-      {displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
+      {/* ── Criteria gate ──
+          The situation block above the fold now states a criteria hold in the
+          same sentence as every other blocker, ranked against them, with the
+          affordance that clears it. These two banners said the same thing a
+          second time, one screen lower, in their own vocabulary — which is the
+          "four panels, four answers" problem this surface keeps regrowing.
+          Kept only for a caller the accessor could not answer for, so a mission
+          whose `explain` read failed still sees the gate. */}
+      {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
           Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
         </p>
       )}
-      {displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
+      {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
         <div className={`mb-4 flex items-start gap-2 rounded border px-3 py-2.5 ${criteriaGate.tone === 'error' ? 'border-status-error/30 bg-status-error/5' : 'border-status-warning/30 bg-status-warning/5'}`}>
           <span className={`shrink-0 text-[11px] font-semibold uppercase tracking-wide ${CRITERIA_GATE_TONE_CLASS[criteriaGate.tone]}`}>
             {criteriaGate.label}
@@ -1362,7 +1394,7 @@ export default async function MissionDetailPage({
         const isTerminalMission = ['completed', 'archived'].includes(mission.status);
         if (criteria.length === 0 && isTerminalMission) return null;
         return (
-          <div className="mb-6">
+          <div className="mb-6" id="mission-goal-criteria">
             <MissionGoalCriteria
               missionId={id}
               criteria={criteria}
