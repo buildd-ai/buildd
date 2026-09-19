@@ -1,7 +1,7 @@
 /**
  * Mission-state invariants — the pure half of the hourly sweep.
  *
- * Thirteen named records, each of which is a defect shape that actually shipped
+ * Fourteen named records, each of which is a defect shape that actually shipped
  * and then sat unnoticed for hours or days because nothing in the system could
  * express it as a question. `deriveMissionHealth` answers "how is this mission
  * doing" from task counts; none of these thirteen are visible in task counts.
@@ -137,6 +137,16 @@ export const RELEASE_INVARIANT_CUTOFF = new Date('2026-09-06T12:04:00.000Z');
 export const APPROVED_PR_UNMERGED_MS = 2 * HOUR;
 
 /**
+ * The exact stuck state task fcaf83d5 fixed: a completed deliverable whose PR
+ * closed without merging, with no supersession edge recorded. Unlike
+ * `approved_pr_unmerged` this has no natural clock (nobody is mid-review) — it
+ * is either abandoned work or an un-filed supersession claim, and both are
+ * static once the PR is closed. 24h gives the branch-deletion race (#2355) and
+ * ordinary human triage time to resolve it before this fires.
+ */
+export const UNRESOLVED_PR_SUPERSESSION_MS = 24 * HOUR;
+
+/**
  * Zero, same reasoning as `MISSION_MERGED_TWICE_MS`: a mission that is
  * terminal, or whose verdict already passed, while `criteriaEscalatedAt` is
  * still set is not a state that gets healthier by waiting — every write site
@@ -247,6 +257,8 @@ export interface SnapshotWorker {
   prBaseRef: string | null;
   prLifecycleStatus: string | null;
   mergedAt: Date | null;
+  /** Supersession edge (task fcaf83d5) — set only on a closed, unmerged PR. */
+  supersededByPrNumber: number | null;
   commitCount: number | null;
   createdAt: Date;
   startedAt: Date | null;
@@ -350,7 +362,8 @@ export type InvariantKey =
   | 'approved_pr_unmerged'
   | 'mission_unverifiable'
   | 'stale_criteria_escalation'
-  | 'open_pr_outpaced_by_base';
+  | 'open_pr_outpaced_by_base'
+  | 'unresolved_pr_supersession';
 
 export type EntityKind = 'mission' | 'task' | 'worker' | 'release' | 'pull_request';
 
@@ -874,6 +887,36 @@ export const INVARIANTS: Invariant[] = [
           entityKind: 'pull_request',
           workspaceId: r.workspaceId,
           detail: `approved ${Math.round(ageMs / HOUR)}h ago, checks green, still open${w.prUrl ? ` (${w.prUrl})` : ''}`,
+          ageMs,
+        });
+      }
+      return out;
+    },
+  },
+
+  {
+    key: 'unresolved_pr_supersession',
+    title: 'Completed deliverable, PR closed unmerged, no supersession recorded',
+    thresholdMs: UNRESOLVED_PR_SUPERSESSION_MS,
+    remedy:
+      'Either the deliverable never shipped (re-dispatch or abandon it), or it landed under a different PR and '
+      + 'that just needs recording — record_pr_supersession names the successor PR and unblocks mission completion.',
+    files: false,
+    resolves: false,
+    query: (s, now) => {
+      const taskById = new Map(s.tasks.map(t => [t.id, t]));
+      const out: InvariantViolation[] = [];
+      for (const w of s.workers) {
+        if (!w.taskId || !w.prUrl || w.mergedAt || w.prLifecycleStatus !== 'closed' || w.supersededByPrNumber) continue;
+        const t = taskById.get(w.taskId);
+        if (!t || t.taskClass !== 'work' || t.status !== 'completed') continue;
+        const ageMs = olderThan(now, t.updatedAt, UNRESOLVED_PR_SUPERSESSION_MS);
+        if (ageMs === null) continue;
+        out.push({
+          entityId: t.id,
+          entityKind: 'task',
+          workspaceId: w.workspaceId,
+          detail: `"${t.title}" completed, PR #${w.prNumber ?? '?'} closed unmerged ${Math.round(ageMs / HOUR)}h ago, no supersession recorded${w.prUrl ? ` (${w.prUrl})` : ''}`,
           ageMs,
         });
       }

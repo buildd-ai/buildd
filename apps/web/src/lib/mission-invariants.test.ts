@@ -84,6 +84,7 @@ function worker(over: Partial<SnapshotWorker> = {}): SnapshotWorker {
     prBaseRef: null,
     prLifecycleStatus: null,
     mergedAt: null,
+    supersededByPrNumber: null,
     commitCount: 0,
     createdAt: ago(10 * HOUR),
     startedAt: ago(10 * HOUR),
@@ -119,8 +120,8 @@ function reported(key: InvariantKey, s: InvariantSnapshot): string[] {
 // ── Registry ────────────────────────────────────────────────────────────────
 
 describe('invariant registry', () => {
-  it('ships the thirteen observed defect shapes', () => {
-    expect(INVARIANTS).toHaveLength(13);
+  it('ships the fourteen observed defect shapes', () => {
+    expect(INVARIANTS).toHaveLength(14);
   });
 
   it('gives every invariant a stable, unique key', () => {
@@ -704,6 +705,80 @@ describe('approved_pr_unmerged', () => {
     const s = snapshot({
       workers: [greenOpenPr()],
       reviews: [{ prNumber: 500, workspaceId: 'ws-1', verdict: 'approve', decidedAt: ago(10 * MIN) }],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+});
+
+// ── unresolved_pr_supersession (task fcaf83d5) ──────────────────────────────
+
+describe('unresolved_pr_supersession', () => {
+  const key = 'unresolved_pr_supersession' as const;
+
+  const closedUnmergedPr = (over: Partial<SnapshotWorker> = {}) =>
+    worker({
+      id: 'w-sup',
+      taskId: 't-sup',
+      prNumber: 2287,
+      prUrl: 'https://github.com/o/r/pull/2287',
+      prLifecycleStatus: 'closed',
+      mergedAt: null,
+      supersededByPrNumber: null,
+      ...over,
+    });
+
+  it('reports a completed deliverable with a closed-unmerged PR and no supersession recorded, past the threshold', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'completed', taskClass: 'work', updatedAt: ago(30 * HOUR) })],
+      workers: [closedUnmergedPr()],
+    });
+    expect(reported(key, s)).toEqual(['t-sup']);
+  });
+
+  it('does not report once a supersession edge is recorded', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'completed', taskClass: 'work', updatedAt: ago(30 * HOUR) })],
+      workers: [closedUnmergedPr({ supersededByPrNumber: 2293 })],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a PR that is merely open (not closed) — that is approved_pr_unmerged/open_pr_outpaced_by_base\'s territory', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'completed', taskClass: 'work', updatedAt: ago(30 * HOUR) })],
+      workers: [closedUnmergedPr({ prLifecycleStatus: 'pr_open' })],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a merged PR', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'completed', taskClass: 'work', updatedAt: ago(30 * HOUR) })],
+      workers: [closedUnmergedPr({ mergedAt: ago(HOUR), prLifecycleStatus: 'merged' })],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a non-deliverable (bookkeeping) task', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'completed', taskClass: 'bookkeeping', updatedAt: ago(30 * HOUR) })],
+      workers: [closedUnmergedPr()],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a task that is not yet completed', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'pending', taskClass: 'work', updatedAt: ago(30 * HOUR) })],
+      workers: [closedUnmergedPr()],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report inside the 24h grace window', () => {
+    const s = snapshot({
+      tasks: [task({ id: 't-sup', status: 'completed', taskClass: 'work', updatedAt: ago(2 * HOUR) })],
+      workers: [closedUnmergedPr()],
     });
     expect(reported(key, s)).toEqual([]);
   });

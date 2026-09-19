@@ -145,6 +145,9 @@ type LoadedTask = {
     observedTouches: string[] | null;
     error: string | null;
     startedAt: Date | null;
+    supersededByPrNumber: number | null;
+    supersededByPrUrl: string | null;
+    supersededReason: string | null;
   }>;
 };
 
@@ -164,6 +167,7 @@ const WORKER_WITH = {
     id: true, status: true, prNumber: true, prUrl: true, branch: true,
     prBaseRef: true, prLifecycleStatus: true, mergedAt: true,
     observedTouches: true, error: true, startedAt: true,
+    supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
   },
   orderBy: [desc(workers.startedAt)],
 };
@@ -469,8 +473,17 @@ async function viewForTask(taskId: string): Promise<{
   const activeAgents = family.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
 
   const worker = task.workers?.[0];
-  const unmergedPr = task.status === 'completed' && worker?.prNumber && !worker.mergedAt
-    ? [{ taskId: task.id, title: task.title, prNumber: worker.prNumber, prUrl: worker.prUrl }]
+  // A PR recorded as superseded (task fcaf83d5) shipped anyway, under a
+  // different, merged PR — verified against GitHub at write time, so it reads
+  // as shipped here without a second check. Never awaiting-merge.
+  const unmergedPr = task.status === 'completed' && worker?.prNumber && !worker.mergedAt && !worker.supersededByPrNumber
+    ? [{
+        taskId: task.id,
+        title: task.title,
+        prNumber: worker.prNumber,
+        prUrl: worker.prUrl,
+        ...(worker.prLifecycleStatus === 'closed' ? { closedUnsuperseded: true as const } : {}),
+      }]
     : [];
 
   const terminal = ['completed', 'failed', 'cancelled'].includes(task.status);
@@ -500,7 +513,9 @@ async function viewForTask(taskId: string): Promise<{
       ? {
           ok: false,
           code: 'awaiting_merge',
-          reason: `Task completed but PR #${unmergedPr[0].prNumber} has not merged`,
+          reason: unmergedPr[0].closedUnsuperseded
+            ? `Task completed but PR #${unmergedPr[0].prNumber} closed unmerged, no supersession recorded`
+            : `Task completed but PR #${unmergedPr[0].prNumber} has not merged`,
           awaitingMerge: 1,
           awaitingMergeDetails: unmergedPr,
         }

@@ -7,6 +7,8 @@ assertions:
     method: "POST"
     path: "/api/github/webhook"
     file: "apps/web/src/app/api/github/webhook/route.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "Passes structurally because route.ts's POST handler serves every GitHub webhook event, not because @buildd mention routing shipped — there is no issue_comment case, no mention detection, no comment-authorization check, and no gitConfig.commentMentions flag anywhere in the tree. See Current state."
   - id: "issue-comment-dispatch"
     type: "symbol_reachable"
     symbol: "issue_comment"
@@ -30,6 +32,18 @@ reads PR comments, waits or finishes without it.
 Meanwhile `issue_comment` deliveries already arrive at the webhook and fall
 through the switch to `default: console.log('Unhandled event')`. The signal is
 being paid for and discarded.
+
+**Note on the `github-comment-ingest` assertion:** it checks only that
+`route.ts` exports a `POST` handler, which is true regardless of this
+proposal — that handler already serves `installation`, `pull_request`,
+`check_suite`, and every other webhook event. It is suppressed via
+`skip_until` rather than treated as evidence this shipped. A genuinely
+separate, narrower mechanism did land since this doc was written —
+`captureReviewFeedback` in the same file persists `pull_request_review` and
+`pull_request_review_comment` bodies to the `review_feedback` table so a
+*later* agent session can be shown them — but it has no `@buildd` mention
+detection, no write-access check, no `issue_comment` handling, and delivers
+nothing to a *live* worker. It does not implement this proposal.
 
 ## Current state
 

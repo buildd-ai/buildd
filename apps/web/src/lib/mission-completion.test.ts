@@ -440,6 +440,122 @@ describe('canCompleteMission — awaiting merge (task facae217: a task\'s termin
     expect(d.ok).toBe(true);
     expect(d.awaitingMerge).toBe(0);
   });
+
+  it('names the closed-unsuperseded case distinctly from a merely-open PR in the refusal reason', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/50', prNumber: 50, mergedAt: null, prLifecycleStatus: 'closed' }, 'Rescue task')];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+    expect(d.awaitingMergeDetails[0].closedUnsuperseded).toBe(true);
+    expect(d.reason).toContain('no supersession recorded');
+  });
+
+  it('does not mark an open (non-closed) unmerged PR as closedUnsuperseded', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithPr('completed', { prUrl: 'https://github.com/org/repo/pull/2020', prNumber: 2020, mergedAt: null, prLifecycleStatus: 'pr_open' })];
+
+    const d = await canCompleteMission('m1');
+    expect(d.awaitingMergeDetails[0].closedUnsuperseded).toBeUndefined();
+    expect(d.reason).toContain('PR not merged');
+  });
+});
+
+describe('canCompleteMission — PR supersession (task fcaf83d5: a closed-unmerged PR can prove it shipped under another number)', () => {
+  beforeEach(reset);
+
+  /** A work row whose latest worker carries the given PR + supersession fields. */
+  function workWithSupersession(
+    status: string,
+    pr: { prUrl?: string | null; prNumber?: number | null; mergedAt?: string | null; prLifecycleStatus?: string | null },
+    supersession: { supersededByPrNumber?: number | null; supersededByPrUrl?: string | null; supersededReason?: string | null },
+    title = 'Rescue task',
+  ) {
+    return work(status, title, {
+      workers: [{
+        prUrl: pr.prUrl ?? null,
+        prNumber: pr.prNumber ?? null,
+        mergedAt: pr.mergedAt ?? null,
+        prLifecycleStatus: pr.prLifecycleStatus ?? null,
+        supersededByPrNumber: supersession.supersededByPrNumber ?? null,
+        supersededByPrUrl: supersession.supersededByPrUrl ?? null,
+        supersededReason: supersession.supersededReason ?? null,
+      }],
+    });
+  }
+
+  it('a closed-unmerged PR with no supersession edge still blocks, naming no supersession recorded', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithSupersession(
+      'completed',
+      { prUrl: 'https://github.com/org/repo/pull/2287', prNumber: 2287, mergedAt: null, prLifecycleStatus: 'closed' },
+      {},
+    )];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+    expect(d.supersededCount).toBe(0);
+  });
+
+  it('a closed-unmerged PR with a supersession edge to a merged PR is treated as shipped', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [workWithSupersession(
+      'completed',
+      { prUrl: 'https://github.com/org/repo/pull/2287', prNumber: 2287, mergedAt: null, prLifecycleStatus: 'closed' },
+      { supersededByPrNumber: 2293, supersededByPrUrl: 'https://github.com/org/repo/pull/2293', supersededReason: 'branch deleted out from under it; re-landed via #2293' },
+    )];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.awaitingMerge).toBe(0);
+    expect(d.supersededCount).toBe(1);
+    expect(d.supersededDetails).toEqual([{
+      taskId: expect.any(String),
+      title: 'Rescue task',
+      prNumber: 2287,
+      supersededByPrNumber: 2293,
+      supersededByPrUrl: 'https://github.com/org/repo/pull/2293',
+      supersededReason: 'branch deleted out from under it; re-landed via #2293',
+    }]);
+  });
+
+  it('regression (M4): an OPEN PR with changes requested still blocks even if some unrelated field looks set — supersession never substitutes for a merge on a still-open PR', async () => {
+    activeMission({ goalCriteria: null });
+    // Open PR, no supersession recorded — must still block like the original M4 case.
+    taskRows = [workWithSupersession(
+      'completed',
+      { prUrl: 'https://github.com/org/repo/pull/2020', prNumber: 2020, mergedAt: null, prLifecycleStatus: 'pr_open' },
+      {},
+    )];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(false);
+    expect(d.code).toBe('awaiting_merge');
+  });
+
+  it('two superseded deliverables both count toward supersededCount and neither blocks', async () => {
+    activeMission({ goalCriteria: null });
+    taskRows = [
+      workWithSupersession(
+        'completed',
+        { prUrl: 'https://github.com/org/repo/pull/2287', prNumber: 2287, mergedAt: null, prLifecycleStatus: 'closed' },
+        { supersededByPrNumber: 2293, supersededByPrUrl: 'https://github.com/org/repo/pull/2293', supersededReason: 'r1' },
+        'Slice A',
+      ),
+      workWithSupersession(
+        'completed',
+        { prUrl: 'https://github.com/org/repo/pull/2289', prNumber: 2289, mergedAt: null, prLifecycleStatus: 'closed' },
+        { supersededByPrNumber: 2295, supersededByPrUrl: 'https://github.com/org/repo/pull/2295', supersededReason: 'r2' },
+        'Slice B',
+      ),
+    ];
+
+    const d = await canCompleteMission('m1');
+    expect(d.ok).toBe(true);
+    expect(d.supersededCount).toBe(2);
+  });
 });
 
 describe('canCompleteMission — the goal-criteria gate', () => {

@@ -510,7 +510,13 @@ describe('computeMissionProgress — segments', () => {
   function makeTaskWithWorkers(
     id: string,
     status: string,
-    workers: Array<{ status: string; prUrl?: string | null; mergedAt?: string | null; prLifecycleStatus?: string | null }> = [],
+    workers: Array<{
+      status: string;
+      prUrl?: string | null;
+      mergedAt?: string | null;
+      prLifecycleStatus?: string | null;
+      supersededByPrNumber?: number | null;
+    }> = [],
     opts: { kind?: string } = {},
   ): TaskInput {
     return { id, status, title: 'Do some work', workers, ...opts };
@@ -576,6 +582,22 @@ describe('computeMissionProgress — segments', () => {
     ];
     const { segments } = computeMissionProgress(tasks);
     expect(segments[0].state).toBe<MissionSegmentState>('notch');
+  });
+
+  it('solid — closed PR recorded as superseded by a merged PR counts as done, not a dead end (task fcaf83d5)', () => {
+    const tasks = [
+      makeTaskWithWorkers('a', 'completed', [{
+        status: 'completed',
+        prUrl: 'https://github.com/pr/2287',
+        mergedAt: null,
+        prLifecycleStatus: 'closed',
+        supersededByPrNumber: 2293,
+      }]),
+    ];
+    const result = computeMissionProgress(tasks);
+    expect(result.segments[0].state).toBe<MissionSegmentState>('solid');
+    expect(result.completedTasks).toBe(1);
+    expect(result.awaitingMerge).toBe(0);
   });
 
   it('ghost — task has a live worker (running)', () => {

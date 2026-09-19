@@ -140,6 +140,9 @@ export default async function MissionDetailPage({
               prNumber: true,
               prLifecycleStatus: true,
               mergedAt: true,
+              supersededByPrNumber: true,
+              supersededByPrUrl: true,
+              supersededReason: true,
               costUsd: true,
               turns: true,
               completedAt: true,
@@ -219,6 +222,7 @@ export default async function MissionDetailPage({
                     columns: {
                       id: true, status: true, waitingFor: true, branch: true, prUrl: true,
                       prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
+                      supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
                       turns: true, completedAt: true, startedAt: true, currentAction: true,
                       commitCount: true, filesChanged: true,
                     },
@@ -733,7 +737,11 @@ export default async function MissionDetailPage({
     ...timelineGroups.failed,
   ];
 
-  // Retry lineage: childId → parentId for tasks both present in the timeline task set
+  // Retry lineage: childId → parentId for tasks both present in the timeline task
+  // set. Consumed by StructureView only — the mobile rail dropped it in v2, where
+  // a retry stopped being an edge and became the right column's outcome mark
+  // (timeline-mobile-rail.md Rule D3-6). The Structure canvas keeps its own retry
+  // edges: different surface, different viewport budget.
   const timelineTaskIdSet = new Set(timelineTasks.map(t => t.id));
   const retryLinks = new Map<string, string>();
   for (const t of timelineTasks) {
@@ -1310,7 +1318,6 @@ export default async function MissionDetailPage({
             totalTasks={totalTasks}
             criteriaGate={criteriaGate}
             taskMap={condensedTaskMapForGrouping}
-            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
             railGoal={railGoal}
           />
         ) : undefined}
@@ -1331,7 +1338,6 @@ export default async function MissionDetailPage({
             totalTasks={totalTasks}
             criteriaGate={criteriaGate}
             taskMap={condensedTaskMapForGrouping}
-            retryLinks={retryLinks.size > 0 ? retryLinks : undefined}
             railGoal={railGoal}
           />
         )}

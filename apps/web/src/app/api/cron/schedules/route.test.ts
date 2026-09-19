@@ -943,6 +943,9 @@ describe('GET /api/cron/schedules', () => {
     // defaults to 'auto', which the completion gate reads as builder
     // semantics and 400s a session that ends without commits or an artifact.
     expect(tasksInsertValues.outputRequirement).toBe('none');
+    // Identifies this tick so a same-tick auto-retry (mission-loop.ts) collides
+    // on the unique index instead of dispatching a second worker.
+    expect(tasksInsertValues.heartbeatTickAnchor).toMatch(/^sched-1:\d{4}-\d{2}-\d{2}T/);
   });
 
   // A bare (non-mission) schedule with no explicit mode still defaults to
@@ -969,6 +972,8 @@ describe('GET /api/cron/schedules', () => {
     // A bare schedule's task is real work, not bookkeeping — it must not pick
     // up the planning-cycle 'none' output requirement above.
     expect(tasksInsertValues.outputRequirement).toBeUndefined();
+    // No mission means no retry loop can race it — the anchor is unnecessary.
+    expect(tasksInsertValues.heartbeatTickAnchor).toBeUndefined();
   });
 
   it('should record lastDeferralReason=concurrent_cap when maxConcurrentFromSchedule is hit', async () => {

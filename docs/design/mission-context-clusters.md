@@ -1,15 +1,24 @@
 ---
 status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# execution-cluster-selection and context-assembly genuinely shipped (Implementation
+# sketch step 3) but the doc must stay 'partially' until durable-context-assembly-table
+# (step 6, the assembly table) ships too, so those two would be reclassified code_ahead
+# and redispatched forever under a non-terminal status. Suppressed below (skip_until)
+# rather than left to redispatch a reconcile-spec task against an already-accurate doc.
 assertions:
   - id: "execution-cluster-selection"
     type: "symbol"
     name: "selectExecCluster"
     path: "packages/core/retrieval-clusters.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "selectExecCluster genuinely shipped (Implementation sketch step 3) — this isn't a false positive — but the doc must stay 'partially' until durable-context-assembly-table (step 6, the assembly table) ships, so this assertion will pass forever under a non-terminal status. durable-context-assembly-table is the assertion that tracks real remaining progress."
   - id: "context-assembly"
     type: "symbol"
     name: "ContextAssembly"
     path: "packages/core/retrieval-clusters.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "ContextAssembly genuinely shipped (Implementation sketch step 5, the assembly record) — this isn't a false positive — but the doc must stay 'partially' until durable-context-assembly-table (step 6, the assembly table) ships, so this assertion will pass forever under a non-terminal status. durable-context-assembly-table is the assertion that tracks real remaining progress."
   - id: "durable-context-assembly-table"
     type: "config_key"
     key: "assembly_id"
@@ -229,7 +238,7 @@ and fans it to five namespaces — `memory`, `plan`, `task`, `pr`, `code` — at
 `topK: 3` each (`:110-122`). The same function, with the same signature, serves:
 
 - the organizer planning a mission (`mission-context.ts:891`), where the query is
-  `[mission.title, mission.description].join('\n')`
+  `[mission.title, mission.description].filter(Boolean).join('\n')`
 - a worker claiming a task (`context-injection.ts:206`), where the query is the
   task goal
 
@@ -253,11 +262,11 @@ instructive way — see decision 4. The gap is real; the corpus name was not.
 
 **2. Code is searched with prose.** A mission goal such as "reduce p95 on the
 claim route" is sent verbatim to the `code` namespace. buildd already found and
-solved this: `spec_compare` (`mcp-tools.ts:4800`) queries `docs` semantically,
+solved this: `spec_compare` (`mcp-tools.ts:4836`) queries `docs` semantically,
 extracts implementation anchors — file paths, camelCase symbols, PascalCase
 types, route paths — then issues a **second lexical** query against `code` using
 those anchors, and fuses. The extractor is a private function at
-`mcp-tools.ts:5156`, reachable only from one admin/dev MCP action. The shared
+`mcp-tools.ts:5192`, reachable only from one admin/dev MCP action. The shared
 path never got the fix.
 
 **3. Typed cause is already plumbed and already discarded.** Two keys exist in
@@ -266,7 +275,7 @@ the schema and neither changes retrieval:
 | Layer | Key | Values | State |
 |---|---|---|---|
 | Plan | `OrganizerCause` (`workspace-state-context.ts:32`) | `task_completed`, `pr_merged`, `conflict_escalation`, `claim_409`, `mission_evaluate`, `first_decomposition`, `fallback` | plumbed via `templateContext.cause` |
-| Exec | `tasks.subjectKind` (`schema.ts:1090`, indexed `:1145`) | `pull_request`, `error`, `mission`, `branch` | shipped |
+| Exec | `tasks.subjectKind` (`schema.ts:1096`, indexed `:1160`) | `pull_request`, `error`, `mission`, `branch` | shipped |
 
 `buildWorkspaceStateContext` consumes `OrganizerCause` correctly — per-cause
 sections, seven named `BUDGET_*` char caps (`:118-124`). It is the only
@@ -279,10 +288,11 @@ The only mission-shape signal in plan-time context is `isBuildMission()`
 exactly one block: PR awareness.
 
 And there is no record of any of it. Retrieval-hit tracking exists
-(`pg-vector-store.ts:421` increments `hit_count` / `last_hit_at`,
-`schema.ts:2163-2164`) but it is a global per-chunk counter with no assembly
-identity and no outcome, so it cannot answer *which retrieval process preceded
-an observed outcome* — a question the system currently has no way to ask.
+(`packages/core/knowledge-store/pg-vector-store.ts:421` increments `hit_count` /
+`last_hit_at`, `schema.ts:2202-2203`) but it is a global per-chunk counter with
+no assembly identity and no outcome, so it cannot answer *which retrieval
+process preceded an observed outcome* — a question the system currently has no
+way to ask.
 
 ## Current state
 
@@ -312,7 +322,7 @@ buildMissionContext                            claim → context-injection.ts
 ```
 
 `knowledgePathsFromManifests` (`mission-context.ts:24`) already derives paths
-from active tasks' `pathManifest` (`schema.ts:1073`) and passes them as
+from active tasks' `pathManifest` (`schema.ts:1079`) and passes them as
 `opts.paths`, which triggers one extra `pr` lookup. That is the closest thing to
 a recipe in the shared path: one conditional hop, no budget, no record.
 
@@ -507,7 +517,8 @@ Any hit the store reached by graph expansion rather than by the step's key
 carries `graph_expansion_hit` instead of the reason in that last column, and is
 excluded from the strength judgement — decision 9.
 
-**Two extractors, not one.** `apps/web/src/lib/error-signature.ts`
+**Two extractors, not one.** `packages/core/error-signature.ts` (re-exported
+from `apps/web/src/lib/error-signature.ts` for client-bundle callers)
 deliberately destroys exactly the fields step 4 needs: it keeps only the first
 non-empty line, and collapses `RE_PATH → <path>`, `RE_NUMBER → <n>`,
 `RE_UUID`/`RE_HEX_ID → <id>`. That is correct for its job — a stable cluster key
@@ -538,7 +549,7 @@ so recurring failures collapse to one row — and useless as a search key. So:
 
 Implementation hazard worth a comment at the call site: `normalizeErrorSignature`
 names **two different functions with incompatible contracts** — the prose
-normalizer in `apps/web/src/lib/error-signature.ts` and the strict slug validator
+normalizer in `packages/core/error-signature.ts` and the strict slug validator
 in `packages/core/subject-anchor-extractor.ts`. The bridge between them is
 `failure-friction-signature.ts`, whose header already documents the trap.
 
@@ -626,7 +637,7 @@ distinguishable from "this recipe has no step 4".
 
 Trigger: `OrganizerCause` of `conflict_escalation` or `claim_409` — the causes
 raised by path-overlap serialization (`path_overlap_blocked` in the claim route,
-`pathClaims` at `schema.ts:3018`).
+`pathClaims` at `schema.ts:3057`).
 
 The key is already computed: `knowledgePathsFromManifests`
 (`mission-context.ts:24`) over the conflicting tasks' `pathManifest`.
@@ -704,7 +715,7 @@ recipe.
 `graphProximity`. No cohort analysis may compare `score` across rows differing
 on any of them — and `score` is not even on the same scale as its own
 breakdown, since it is post-decay and the components are pre-decay. This is a
-known bug class here, not a hypothetical: `mcp-tools.ts:4809` records that
+known bug class here, not a hypothetical: `mcp-tools.ts:4845` records that
 omitting the reranker on a fallback path made it "rank by age decay while the
 server-built store ranked by cross-encoder relevance, so the same query got
 different semantics depending on which path served it."
@@ -764,7 +775,7 @@ links as weak evidence, instead of that choice being foreclosed by the schema.
 
 Two existing facilities cover part of this and must not be confused with it:
 
-- **Hit tracking** (`pg-vector-store.ts:421`) — global per-chunk counters, no
+- **Hit tracking** (`packages/core/knowledge-store/pg-vector-store.ts:421`) — global per-chunk counters, no
   assembly identity, no outcome. Untouched by this design.
 - **Offline eval** (`packages/core/scripts/eval-retrieval.ts` over
   `packages/core/scripts/eval/golden-queries.json`, thresholds in
@@ -844,7 +855,7 @@ CBM stays worker-side. Server-side references are
 `apps/web/src/app/api/workers/claim/skill-and-role-injection.ts`
 (mounts the MCP for a worker), the metrics route, and `packages/core/cbm-health.ts`
 — nothing in `apps/web` queries the graph, and `BY_DESIGN_SKIP_REASONS`
-(`cbm-insight.ts:61`) records why: `codex_task`, `no_worktree`, `role_opt_out`.
+(`apps/web/src/lib/cbm-insight.ts:61`) records why: `codex_task`, `no_worktree`, `role_opt_out`.
 The graph exists only where a worktree exists, so plan time cannot reach it.
 
 If the organizer ever needs structural facts, it gets a **small derived
@@ -932,7 +943,7 @@ unfalsifiable.
    that a rate pinned at 0% or 100% is visible in the logs, which is exactly
    what the previous `score`-based threshold hid.
 8. **Then plan-time.** `conflict-v1`, querying the `docs` corpus in the shared
-   path, and lifting `extractImplementationAnchors` out of `mcp-tools.ts:5156`
+   path, and lifting `extractImplementationAnchors` out of `mcp-tools.ts:5192`
    into a shared module for symbol-keyed `code` queries (regex, no model;
    `spec_compare` keeps calling the same function). Each of these is a
    plan-time concern and none of them is needed to evaluate the exec-time

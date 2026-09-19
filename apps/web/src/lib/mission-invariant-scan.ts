@@ -2,7 +2,7 @@
  * Snapshot loader for the mission-invariant sweep.
  *
  * The impure half of `lib/mission-invariants.ts`: every DB read and the one
- * bounded set of GitHub calls live here, so the thirteen predicates stay pure and
+ * bounded set of GitHub calls live here, so the fourteen predicates stay pure and
  * unit-testable against a constructed snapshot.
  *
  * ── Cost shape ──────────────────────────────────────────────────────────────
@@ -149,7 +149,7 @@ export interface ScanResult {
 }
 
 /**
- * Read everything the thirteen invariants need, in one bounded pass.
+ * Read everything the fourteen invariants need, in one bounded pass.
  *
  * `now` is injected so the windows are deterministic in tests and identical to
  * the `now` the predicates are evaluated against.
@@ -279,6 +279,7 @@ export async function loadInvariantSnapshot(
     prBaseRef: true,
     prLifecycleStatus: true,
     mergedAt: true,
+    supersededByPrNumber: true,
     commitCount: true,
     createdAt: true,
     startedAt: true,
@@ -296,6 +297,7 @@ export async function loadInvariantSnapshot(
     prBaseRef: w.prBaseRef ?? null,
     prLifecycleStatus: w.prLifecycleStatus ?? null,
     mergedAt: w.mergedAt ?? null,
+    supersededByPrNumber: w.supersededByPrNumber ?? null,
     commitCount: w.commitCount ?? 0,
     createdAt: w.createdAt,
     startedAt: w.startedAt ?? null,

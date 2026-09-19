@@ -16,6 +16,10 @@ export type CondensedTaskWorker = {
   currentAction: string | null;
   branch: string | null;
   waitingFor: { type: string; prompt: string; options?: string[] } | null;
+  /** Supersession edge (task fcaf83d5) — set only on a closed, unmerged PR. */
+  supersededByPrNumber?: number | null;
+  supersededByPrUrl?: string | null;
+  supersededReason?: string | null;
 };
 
 export type CondensedTask = {
@@ -485,8 +489,6 @@ export type RailNode<T> = {
   forkHidden: number;
   /** Those same siblings, so the fork glyph can disclose them on tap. */
   hiddenSiblings: T[];
-  /** Retry lineage rendered as red stubs in Lane 2 (Rule D3-5). */
-  retries: T[];
   /** Bucketing timestamp — merge/update time when landed, creation time when not. */
   ts: number;
   /** False for `pending`/`assigned` — everything below the `now` tick. */
@@ -529,8 +531,6 @@ export type RailGroups<T> = {
 };
 
 export type RailOptions<T> = {
-  /** childId → parentId, the same map the Structure view consumes (Rule D3-6). */
-  retryLinks?: Map<string, string>;
   now?: Date;
   /** Mission goal criteria; `passed: null` means never evaluated (Rule D5-3). */
   goal?: RailGoal | null;
@@ -579,41 +579,18 @@ export function buildRail<T extends RailTaskLike>(
   groups: RailGroups<T>,
   options: RailOptions<T> = {},
 ): RailModel<T> {
-  const { retryLinks, goal, laneCap = 2 } = options;
-
-  // Retry children are Lane-2 stubs on the node that owns their parent, so they
-  // must never also surface as their own Lane-1 node.
-  const retryChildren = new Map<string, T[]>();
-  const retryChildIds = new Set<string>();
-  if (retryLinks && retryLinks.size > 0) {
-    const everyTask = new Map<string, T>();
-    for (const bucket of Object.values(groups) as ChainUnit<T>[][]) {
-      for (const chain of bucket) for (const t of [chain.head, ...chain.tail]) everyTask.set(t.id, t);
-    }
-    for (const [childId, parentId] of retryLinks) {
-      const child = everyTask.get(childId);
-      if (!child || !everyTask.has(parentId)) continue;
-      const bucket = retryChildren.get(parentId);
-      if (bucket) bucket.push(child);
-      else retryChildren.set(parentId, [child]);
-      retryChildIds.add(childId);
-    }
-  }
+  const { goal, laneCap = 2 } = options;
 
   const toNode = (chain: ChainUnit<T>): RailNode<T> | null => {
-    if (retryChildIds.has(chain.head.id)) return null;
-
     const isFanOut = chain.shape === 'fan-out';
     const members = isFanOut ? [chain.head] : [chain.head, ...chain.tail];
 
-    // A retry hangs off whichever task in the unit it re-ran — head, ordinal
-    // member, or Lane-2 sibling.
-    const retries = [chain.head, ...chain.tail].flatMap(m => retryChildren.get(m.id) ?? []);
-
-    // Lane-2 budget: a retry stub is the load-bearing signal, so it always gets
-    // its slot and the sibling list gives way instead (Rule D2-2).
-    const room = Math.max(0, retries.length > 0 ? laneCap - 1 : laneCap);
-    const rawSiblings = isFanOut ? chain.tail.filter(t => !retryChildIds.has(t.id)) : [];
+    // Lane-2 budget is the full cap, spent on siblings alone (Rule D2-4). v1
+    // reserved a slot for a retry stub; v2 has no stub to reserve for, so a
+    // fan-out of exactly 2 can no longer be truncated to 1 by something
+    // unrelated to it.
+    const room = Math.max(0, laneCap);
+    const rawSiblings = isFanOut ? chain.tail : [];
     const shown = rawSiblings.slice(0, room);
 
     const siblings: RailSibling<T>[] = shown.map(task => ({
@@ -639,7 +616,6 @@ export function buildRail<T extends RailTaskLike>(
       siblings,
       forkHidden: rawSiblings.length - shown.length,
       hiddenSiblings: rawSiblings.slice(room),
-      retries,
       ts: Math.max(...members.map(railTaskTs)),
       started: members.some(railStarted),
     };
@@ -657,10 +633,17 @@ export function buildRail<T extends RailTaskLike>(
   const running = sectionNodes(groups.running);
   const upcoming = [...sectionNodes(groups.nextQueued), ...sectionNodes(groups.blocked)];
 
-  const ordered: RailNode<T>[] = [...sortedTerminal, ...waitingOnYou, ...running, ...upcoming];
+  // Live-work region (waitingOnYou/running) renders ahead of ticked history —
+  // it marks the top of the rail's live-work region (Rule D8-3), not a point
+  // in the chronological sequence.
+  const liveCount = waitingOnYou.length + running.length;
+  const ordered: RailNode<T>[] = [...waitingOnYou, ...running, ...sortedTerminal, ...upcoming];
   if (ordered.length === 0) return { rows: [], goal: normaliseGoal(goal) };
 
-  // Edge class of the segment entering each node from the one above it.
+  // Edge class of the segment entering each node from the one above it. Soft
+  // (advisory pathManifest) ordering is scoped to Lane-2 siblings (Rule D3-3)
+  // and is already computed per-sibling in `toNode`; only the hard dependsOn
+  // edge applies between consecutive Lane-1 nodes.
   for (let i = 1; i < ordered.length; i++) {
     const node = ordered[i];
     const prev = ordered[i - 1];
@@ -668,8 +651,6 @@ export function buildRail<T extends RailTaskLike>(
     const deps = node.head.dependsOn ?? [];
     if (deps.some(d => prevIds.has(d))) {
       node.edge = 'hard';
-    } else if (shouldSerializeByManifest(node.head.pathManifest, prev.head.pathManifest)) {
-      node.edge = 'soft';
     }
   }
 
@@ -758,7 +739,7 @@ export function buildRail<T extends RailTaskLike>(
   // cannot exist here because there are no bands to number (Rule D4-4).
   const dayTicks = new Map<number, { key: string; label: string }>();
   let prevDayKey: string | null = null;
-  for (let i = 0; i < ordered.length; i++) {
+  for (let i = liveCount; i < ordered.length; i++) {
     const key = railDayKey(ordered[i].ts);
     if (key === prevDayKey) continue;
     dayTicks.set(i, { key, label: railDayLabel(ordered[i].ts) });
@@ -784,10 +765,10 @@ export function buildRail<T extends RailTaskLike>(
 
   const labelAt = new Map<number, RailLabel>();
   if (waitingOnYou.length > 0) {
-    labelAt.set(sortedTerminal.length, { kind: 'label', id: 'label-waiting', text: 'waiting on you' });
+    labelAt.set(0, { kind: 'label', id: 'label-waiting', text: 'waiting on you' });
   }
   if (running.length > 0) {
-    labelAt.set(sortedTerminal.length + waitingOnYou.length, {
+    labelAt.set(waitingOnYou.length, {
       kind: 'label',
       id: 'label-running',
       text: 'running',
@@ -830,6 +811,174 @@ function normaliseGoal(goal: RailGoal | null | undefined): RailGoal | null {
   return { total: goal.total, passed: goal.passed };
 }
 
+// ─── The outcome mark — docs/specs/timeline-mobile-rail.md §6.4 ──────────────
+
+/**
+ * What a rail row's attempt history says about how the row CAME OUT.
+ *
+ * The rail's job at 360px is to let a reader scroll a mission and stop only
+ * where they are needed, which makes this a **rate** problem rather than a
+ * taxonomy one: a review round is the norm, so whatever renders on most rows
+ * must be neutral, and whatever alarms must be rare. v1 drew a dashed-red `✗`
+ * stub for *any* retry — a mark on ~100% of rows, wrong on the majority case (a
+ * retry that succeeded and merged) and silent on the one case that needs a human
+ * (a merge whose review feedback never landed).
+ *
+ * So the healthy path renders NOTHING, and `✗` regains its meaning by firing
+ * only when an attempt actually died.
+ *
+ * Fill answers "what phase is this in" and comes from `deriveStage()` alone;
+ * this answers "how did it come out" (Rule D7-4). Two questions, two slots —
+ * attempt history never re-tints a node.
+ */
+export const RAIL_OUTCOME_PRECEDENCE = ['exhausted', 'failed', 'live', 'unlanded', 'clean'] as const;
+export type RailOutcomeState = (typeof RAIL_OUTCOME_PRECEDENCE)[number];
+
+export type RailOutcome = {
+  state: RailOutcomeState;
+  /** The characters to print, or null when the outcome is clean. */
+  mark: string | null;
+  /** Colour token for the mark. Never the sole signal — the character shape is. */
+  tone: string | null;
+  /** True when the row has attempt history, i.e. earns a disclosure chevron. */
+  hasAttempts: boolean;
+};
+
+/** The attempt fields the outcome reads — a structural subset of `AttemptRow`. */
+export type RailAttemptLike = {
+  status: string;
+  settled: boolean;
+  iteration: number | null;
+  maxIterations: number | null;
+};
+
+/** Everything `railOutcome` reads. All of it is already on a rail row today. */
+export type RailOutcomeTask = {
+  attempts?: { total: number; attempts: RailAttemptLike[] } | null;
+  latestWorker?: { mergedAt: string | null; prLifecycleStatus?: string | null } | null;
+  reviewerNote?: { type: string; status: string } | null;
+  reviewerRetryTask?: { status: string; prNumber: number | null } | null;
+  missionBudgetExhausted?: boolean;
+};
+
+const CLEAN: RailOutcome = { state: 'clean', mark: null, tone: null, hasAttempts: false };
+
+const railMerged = (task: RailOutcomeTask): boolean =>
+  !!task.latestWorker?.mergedAt || task.latestWorker?.prLifecycleStatus === 'merged';
+
+/**
+ * Did the review round demonstrably LAND on a merged row (Rule D6-7)?
+ *
+ * Two pieces of evidence, both already selected and threaded by the mission page:
+ * a verdict that was never made terminal, and a reviewer retry that finished
+ * without ever attaching to a PR. The second is keyed on `reviewerRetryPrNumber`
+ * and therefore only exists for the `reviewer` mechanism — the rail does NOT
+ * invent a ci/conflict equivalent to close that gap (Rule D6-8). It does not need
+ * one: a CI retry that pushed nothing leaves `prLifecycleStatus` at `ci_failed`,
+ * which the right column already prints as its own word, and a conflict retry
+ * that pushed nothing leaves the PR unmergeable, so the row could never have
+ * reached the merged precondition this test starts from.
+ */
+function reviewLanded(task: RailOutcomeTask): boolean {
+  const note = task.reviewerNote;
+  if (note && note.status === 'open'
+    && (note.type === 'reviewer_request_changes' || note.type === 'reviewer_escalated')) {
+    return false;
+  }
+  const retry = task.reviewerRetryTask;
+  if (retry && retry.status === 'completed' && retry.prNumber == null) return false;
+  return true;
+}
+
+/**
+ * One filled dot per settled attempt, hollow for a live one — `attempts.dots`
+ * with one addition: a `pending` attempt on a mission that hit its budget wall
+ * renders dashed (`◌`), because queued-and-unclaimable is a different fact from
+ * queued-and-about-to-run (Rule D6-11).
+ *
+ * Every OTHER reason an attempt can sit unclaimed — no runner with the role, a
+ * workspace concurrency cap, a future `startAt` — is not derivable on this
+ * surface, renders `○`, and is deliberately indistinguishable from in-flight.
+ * The rail does not add a field to close that gap; dormancy is owned by the
+ * heartbeat pre-pass, which reports on the mission rather than on a row.
+ */
+function railDots(attempts: RailAttemptLike[], budgetExhausted: boolean): string {
+  return attempts
+    .map(a => (a.settled ? '●' : a.status === 'pending' && budgetExhausted ? '◌' : '○'))
+    .join('');
+}
+
+/**
+ * The row's single outcome mark, first match wins (Rule D6-5).
+ *
+ * A row with no attempts returns `clean` with no mark and no chevron: a failure
+ * with no retry lineage is a *node* fact and the node's own red fill already
+ * says it. Printing `✗` beside it would double-encode one event in two slots and
+ * make `✗` mean two different things.
+ */
+export function railOutcome(task: RailOutcomeTask): RailOutcome {
+  const attempts = task.attempts?.attempts ?? [];
+  if (attempts.length === 0) return CLEAN;
+
+  const newest = attempts[attempts.length - 1];
+  const merged = railMerged(task);
+
+  // 1. Exhausted outranks failed (Rule D6-6): `✗` on a row that still has budget
+  //    means "another attempt is coming"; `N/N` means "the loop is over and you
+  //    are the next mover" — strictly more actionable, so never masked.
+  if (newest.iteration != null && newest.maxIterations != null
+    && newest.iteration >= newest.maxIterations && !merged) {
+    return {
+      state: 'exhausted',
+      mark: `${newest.iteration}/${newest.maxIterations}`,
+      tone: 'text-status-error',
+      hasAttempts: true,
+    };
+  }
+
+  // 2. An attempt died. Absent counters fall through to here rather than being
+  //    guessed into exhaustion from another source (Rule D6-10).
+  if (newest.status === 'failed' || newest.status === 'cancelled') {
+    return { state: 'failed', mark: '✗', tone: 'text-status-error', hasAttempts: true };
+  }
+
+  // 3. A re-run is happening now. Muted, never red — a retry still running has
+  //    not failed.
+  if (attempts.some(a => !a.settled)) {
+    return {
+      state: 'live',
+      mark: railDots(attempts, task.missionBudgetExhausted === true),
+      tone: 'text-text-muted',
+      hasAttempts: true,
+    };
+  }
+
+  // 4. Merged, but the review round never demonstrably landed. The one shape v1
+  //    rendered identically to a clean merge.
+  if (merged && !reviewLanded(task)) {
+    return { state: 'unlanded', mark: '!', tone: 'text-status-warning', hasAttempts: true };
+  }
+
+  // 5. Fine. The rail spends no ink on it.
+  return { ...CLEAN, hasAttempts: true };
+}
+
+/**
+ * One mark for a collapsed terminal chain: the highest-precedence outcome across
+ * its members (Rule D7-5), so a reader who never expands still sees the worst
+ * thing in it. The chevron is present when ANY member has attempt history.
+ */
+export function rollupRailOutcome(outcomes: RailOutcome[]): RailOutcome {
+  const hasAttempts = outcomes.some(o => o.hasAttempts);
+  let worst: RailOutcome = { ...CLEAN, hasAttempts };
+  for (const outcome of outcomes) {
+    if (RAIL_OUTCOME_PRECEDENCE.indexOf(outcome.state) < RAIL_OUTCOME_PRECEDENCE.indexOf(worst.state)) {
+      worst = outcome;
+    }
+  }
+  return { ...worst, hasAttempts };
+}
+
 // ─── Gate chip helpers — I-11 ─────────────────────────────────────────────────
 
 /** True when the awaiting-merge gate chip should be collapsed (PR has been merged). */
@@ -855,11 +1004,7 @@ export function deriveBandLabel(ts: number, now: Date): string {
 
   if (ts >= todayStart.getTime()) return 'Today';
   if (ts >= yesterdayStart.getTime()) return 'Yesterday';
-  if (ts >= weekStart.getTime()) {
-    const d = new Date(ts);
-    const date = d.getDate();
-    return new Date(ts).toLocaleDateString('en-US', { weekday: 'short' }) + ` ${date}`;
-  }
+  if (ts >= weekStart.getTime()) return new Date(ts).toLocaleDateString('en-US', { weekday: 'long' });
 
   const yearStart = new Date(now.getFullYear(), 0, 1).getTime();
   if (ts >= yearStart) return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -873,12 +1018,8 @@ function getLocalDateKey(ts: number): string {
 }
 
 /**
- * Gap-cluster items by completionTs into wave bands for §3.8.
- *
- * Groups items by calendar day first (to prevent same-day splits), then applies
- * 4-hour gap clustering within each day. The band label derives from the first
- * item's timestamp relative to now, and includes the date to distinguish bands.
- * Bands are returned newest-first for display.
+ * Group items by local calendar day, with one label per day.
+ * Bands and their items are returned newest-first for display.
  */
 export function deriveBandKey<T extends { id: string; completionTs: number }>(
   items: T[],
@@ -887,7 +1028,6 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
   if (items.length === 0) return [];
 
   const sorted = [...items].sort((a, b) => a.completionTs - b.completionTs);
-  const GAP_MS = 4 * 60 * 60 * 1000;
 
   // Group by calendar day first
   const byDay = new Map<string, T[]>();
@@ -898,27 +1038,10 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
     else byDay.set(dayKey, [item]);
   }
 
-  // Within each day, apply gap clustering
-  const allBands: Array<{ firstTs: number; items: T[] }> = [];
-  for (const dayItems of byDay.values()) {
-    let currentBand: { firstTs: number; items: T[] } | null = null;
-    let prevTs = 0;
-
-    for (const item of dayItems) {
-      if (!currentBand || item.completionTs - prevTs >= GAP_MS) {
-        currentBand = { firstTs: item.completionTs, items: [] };
-        allBands.push(currentBand);
-      }
-      currentBand.items.push(item);
-      prevTs = item.completionTs;
-    }
-  }
-
-  // Assign labels (no ordinal suffixes — date in label prevents collisions)
-  const labeled = allBands.map(band => {
-    const label = deriveBandLabel(band.firstTs, now);
-    return { label, items: [...band.items].reverse() };
-  });
+  const labeled = [...byDay.values()].map(dayItems => ({
+    label: deriveBandLabel(dayItems[0].completionTs, now),
+    items: [...dayItems].reverse(),
+  }));
 
   // Return newest band first
   return labeled.reverse();
@@ -929,8 +1052,7 @@ export function deriveBandKey<T extends { id: string; completionTs: number }>(
  *
  * The Activity list groups by day, not by burst: gap-clustering a single day
  * into multiple waves renders as "Today" followed by "Today (2)", which reads
- * as a duplicated header rather than two waves. Wave banding (deriveBandKey)
- * stays on the mission timeline, where the burst is the point.
+ * as a duplicated header rather than two waves.
  */
 export function deriveDayBands<T extends { id: string; completionTs: number }>(
   items: T[],

@@ -1,12 +1,23 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# start-task-endpoint and start-gate-tests genuinely shipped (see "Status"
+# below) but this doc must stay `partially` until mcp-start-action — the
+# design's actual proposal — ships too. Per-assertion classification flags
+# any passing assertion under a non-terminal status as code_ahead regardless
+# of whether the doc's own prose already says so, which would otherwise
+# redispatch a reconcile-spec task against an already-accurate doc forever.
+# Suppressed below (skip_until) rather than left to keep firing; re-verify
+# and either renew or drop the suppression once mcp-start-action ships and
+# the doc can promote to `implemented`.
 assertions:
   - id: "start-task-endpoint"
     type: "route"
     method: "POST"
     path: "/api/tasks/[id]/start"
     file: "apps/web/src/app/api/tasks/[id]/start/route.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "The /start route genuinely shipped (PRs #1241, #1512, #1677, #1894) — this isn't a false positive — but the doc must stay 'partially' until mcp-start-action ships, so this assertion will pass forever under a non-terminal status. mcp-start-action is the assertion that tracks real remaining progress."
   - id: "mcp-start-action"
     type: "symbol_reachable"
     symbol: "start_task"
@@ -15,27 +26,30 @@ assertions:
   - id: "start-gate-tests"
     type: "test_file"
     path: "apps/web/src/app/api/tasks/[id]/start/route.test.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "route.test.ts genuinely covers the shipped /start gates — this isn't a false positive — but the doc must stay 'partially' until mcp-start-action ships, so this assertion will pass forever under a non-terminal status. mcp-start-action is the assertion that tracks real remaining progress."
 ---
 # MCP `start_task` action: expose the existing /start route over MCP
 
-**Status:** Proposed — the underlying `/start` route and its gate coverage are
-fully built and hardened (capability gate removed in PRs #1864, #1868;
-claim-gates.ts deleted; /start now imports from canonical gate modules; two
-further gates — `mission_budget_exhausted` and `subject_dead` — landed in PR
-#1894, after this design's original gate audit). The `start_task` MCP action
-itself — this design's actual proposal — has not been implemented: there is no
-`start_task` (or equivalently-named) entry in `adminActions` in
-`packages/core/mcp-tools.ts`, and no MCP wrapper anywhere in the codebase calls
-`POST /api/tasks/[id]/start`. An implementer picking this up must account for
-the two gates added since the original sketch (see the updated gate table
-below and the `gateReason` union in the Action signature).
+**Status:** Partially implemented — the underlying `/start` route and its gate
+coverage are fully built and hardened (capability gate removed in PRs #1864,
+#1868; claim-gates.ts deleted; /start now imports from canonical gate modules;
+two further gates — `mission_budget_exhausted` and `subject_dead` — landed in
+PR #1894, after this design's original gate audit) and now has route-test
+coverage at `apps/web/src/app/api/tasks/[id]/start/route.test.ts`. The
+`start_task` MCP action itself — this design's actual proposal — has **not**
+been implemented: there is still no `start_task` (or equivalently-named) entry
+in `adminActions` in `packages/core/mcp-tools.ts`, and no MCP wrapper anywhere
+in the codebase calls `POST /api/tasks/[id]/start`. An implementer picking this
+up must account for the two gates added since the original sketch (see the
+updated gate table below and the `gateReason` union in the Action signature).
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/start/route.ts` — the existing /start implementation
 - `apps/web/src/app/api/workers/claim/` — canonical gate modules (`connector-gate.ts`, `held-gate.ts`, `mission-budget-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`, `deferred-gate.ts`, `pacing-gate.ts`)
 - `apps/web/src/lib/subject-gate-contract.ts` — subject-liveness gate predicate shared by `/start` and the claim route
 - `apps/web/src/app/api/workers/claim/route.ts` — the authoritative claim gate
 - `packages/core/mcp-tools.ts` — MCP action registry (does not yet contain `start_task`)
-- `apps/web/src/lib/task-dependencies.ts` — `dispatchUnblockedTask` (dep-resolution broadcast)
+- `apps/web/src/lib/task-dispatch.ts` — `dispatchUnblockedTask` (dep-resolution broadcast; called from `apps/web/src/lib/task-dependencies.ts` when a task's deps clear)
 - PR #1241 — dep-PR gate + forceOverride
 - PR #1512 — connector_routing_mismatch, mission_held, workspace_cap_reached gates
 - PR #1677 (task 8fe56c91) — durable priority boost + manualStartAt stamp
@@ -66,7 +80,7 @@ the evidence base for deciding what to expose.
 | 1 | `POST /api/workers/claim` | `apps/web/src/app/api/workers/claim/route.ts` | Runner polls on its own cadence | No | Single authoritative gate; enforces all SQL-level filters. Workers call this; it is never user-initiated. |
 | 2 | `POST /api/tasks/[id]/start` | `apps/web/src/app/api/tasks/[id]/start/route.ts` | UI button or raw API key call | **No** — the gap | Runs pre-flight gate checks (dep-PR, deferred-start, connector routing, mission-held, mission budget, subject liveness, workspace cap). On pass: stamps `context.manualStartAt`, boosts `priority+1`, broadcasts `TASK_ASSIGNED` via Pusher. Idempotent: a second call re-broadcasts but does not compound the priority boost. |
 | 3 | `GET /api/cron/schedules` | `apps/web/src/app/api/cron/schedules/route.ts` | External scheduler (cron-job.org) hourly (`0 * * * *`) | No | **Creates** tasks from `taskSchedules` rows (not claims). After INSERT, calls `dispatchNewTask()` which fires `TASK_CREATED` + `TASK_ASSIGNED`. Tasks then sit in the claim queue for runner #1 to pick up. |
-| 4 | `dispatchUnblockedTask()` | `apps/web/src/lib/task-dependencies.ts:496` | Called from completion route when a dependency resolves | No | Re-broadcasts `TASK_ASSIGNED` for tasks whose deps just cleared. Not user-triggered. |
+| 4 | `dispatchUnblockedTask()` | `apps/web/src/lib/task-dispatch.ts:133` (called from `apps/web/src/lib/task-dependencies.ts`) | Called from completion route when a dependency resolves | No | Re-broadcasts `TASK_ASSIGNED` for tasks whose deps just cleared. Not user-triggered. |
 | 5 | `POST /api/missions/[id]/run` | `apps/web/src/app/api/missions/[id]/run/route.ts` | Manual one-shot trigger, admin API key | Indirectly via `manage_missions` action on the MCP `buildd` tool | Creates + dispatches a planning task for a mission. Does not target an existing pending task. |
 
 **Conclusion:** entry point #2 (`/start`) is the only user-initiated way to nudge

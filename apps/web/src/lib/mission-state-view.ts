@@ -286,7 +286,13 @@ export interface MissionCompletionSummary {
   pendingByStatus?: Record<string, number>;
   infraStalledTitles?: string[];
   awaitingMerge?: number;
-  awaitingMergeDetails?: Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>;
+  awaitingMergeDetails?: Array<{
+    taskId: string;
+    title: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    closedUnsuperseded?: boolean;
+  }>;
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────

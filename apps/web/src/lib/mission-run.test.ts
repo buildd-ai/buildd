@@ -641,6 +641,71 @@ describe('runMission', () => {
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 
+  it('computes heartbeatTickAnchor from schedule.lastRunAt on an auto_retry cycle', async () => {
+    // A failure-triggered auto-retry (mission-loop.ts's retriggerMissionOnFailure)
+    // fires right after the schedule's own cycle for this mission died. The
+    // schedule's lastRunAt has not moved since that cycle was claimed, so the
+    // retry's insert must carry the identical anchor the cron dispatcher wrote —
+    // that is what lets the unique index catch it as the same tick.
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Heartbeat Mission',
+      priority: 0,
+      scheduleId: 'sched-1',
+      schedule: { lastRunAt: new Date('2026-09-18T01:00:02.000Z'), taskTemplate: { context: { heartbeat: true } } },
+    });
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission: Heartbeat Mission',
+      context: { missionId: 'obj-1' },
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+    mockInsertReturning.mockResolvedValue([{ id: 'retry-task-1', mode: 'planning', missionId: 'obj-1' }]);
+
+    await runMission('obj-1', {
+      cycleContext: { cycleNumber: 1, triggerChainId: 'chain-1', triggerSource: 'auto_retry' },
+    }, deps);
+
+    const insertCall = mockInsertValues.mock.calls[0][0] as Record<string, unknown>;
+    expect(insertCall.heartbeatTickAnchor).toBe('sched-1:2026-09-18T01:00:02.000Z');
+  });
+
+  it('does not dispatch a second worker when an auto_retry lands in the same schedule tick as the cycle it is retrying', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Heartbeat Mission',
+      priority: 0,
+      scheduleId: 'sched-1',
+      schedule: { lastRunAt: new Date('2026-09-18T01:00:02.000Z'), taskTemplate: { context: { heartbeat: true } } },
+    });
+    mockBuildMissionContext.mockResolvedValue({
+      description: '## Mission: Heartbeat Mission',
+      context: { missionId: 'obj-1' },
+    });
+    mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', name: 'WS' });
+
+    // The schedule-created cycle for this tick already failed (terminal), so
+    // neither in-flight check (mode=planning, then cron scheduleId) finds it —
+    // this reproduces the exact gap tasks_active_planning_per_mission leaves open.
+    mockTasksFindFirst.mockResolvedValue(null);
+    // The unique index on heartbeatTickAnchor catches it instead: the insert
+    // reports a conflict.
+    mockInsertReturning.mockResolvedValue([]);
+
+    const result = await runMission('obj-1', {
+      cycleContext: { cycleNumber: 1, triggerChainId: 'chain-1', triggerSource: 'auto_retry' },
+    }, deps);
+
+    expect(result.deduped).toBe(true);
+    expect(result.task).toBeNull();
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
   it('returns skippedBlocked when upstream dependency is not yet met', async () => {
     // First findFirst call returns the mission itself; second call (inside isMissionBlocked)
     // returns the upstream mission that is still active.

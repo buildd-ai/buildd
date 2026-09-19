@@ -5,9 +5,17 @@ import type { BlockRef } from '@/lib/task-presentation';
 
 /**
  * Edge classes the rail draws (timeline-mobile-rail.md §3). Each survives
- * greyscale on its own: solid line / dashed line / dashed stub with a ✗.
+ * greyscale on its own: solid line / dashed line.
+ *
+ * There are **two**, not three. An edge on this rail answers "what had to happen
+ * before this could start" — a retry answers "this node ran more than once",
+ * which is a property of a node, not a branch between nodes. v1's `'retry'`
+ * member borrowed the graph's vocabulary to say something the graph does not
+ * mean, and cost a lane slot to do it; the fact now lives in the right column's
+ * outcome mark (§6.4). Red is freed as an edge colour and is not reassigned to
+ * one (Rule D3-7).
  */
-export type RailEdgeKind = 'hard' | 'soft' | 'retry' | 'none';
+export type RailEdgeKind = 'hard' | 'soft' | 'none';
 
 interface DependencyRailProps {
   /**
@@ -43,13 +51,12 @@ const truncate = (text: string, limit: number) =>
 /**
  * Line-mode stroke classes. Amber solid is the hard `dependsOn` edge — the same
  * token the chips below use, so "hard dependency" reads identically on both
- * surfaces. Grey dashed is advisory pathManifest ordering; red dashed is retry
- * lineage. No two share a greyscale pattern (§3.4).
+ * surfaces. Grey dashed is advisory pathManifest ordering. The two do not share
+ * a greyscale pattern (§3.4).
  */
 const EDGE_STROKE: Record<Exclude<RailEdgeKind, 'none'>, string> = {
   hard: 'border-status-warning',
   soft: 'border-text-muted border-dashed',
-  retry: 'border-status-error border-dashed',
 };
 
 /**

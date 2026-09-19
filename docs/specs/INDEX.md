@@ -49,7 +49,7 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 - [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-15
   A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-15
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-19
   The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
 ### releases (4)
@@ -108,10 +108,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 
 ## Draft (2)
 
-- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-18
+- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-19
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-14
-  Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, with day boundaries as ticks and history collapsed to chain rows.
+- [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-16
+  Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 
 ## Superseded (1)
 
