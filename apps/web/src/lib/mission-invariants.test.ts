@@ -64,6 +64,7 @@ function task(over: Partial<SnapshotTask> = {}): SnapshotTask {
     taskClass: 'work',
     outputRequirement: 'auto',
     contextBaseBranch: null,
+    requiresPlanApproval: false,
     planRaw: null,
     childCount: 0,
     createdAt: ago(10 * HOUR),
@@ -120,8 +121,8 @@ function reported(key: InvariantKey, s: InvariantSnapshot): string[] {
 // ── Registry ────────────────────────────────────────────────────────────────
 
 describe('invariant registry', () => {
-  it('ships the fourteen observed defect shapes', () => {
-    expect(INVARIANTS).toHaveLength(14);
+  it('ships the fifteen observed defect shapes', () => {
+    expect(INVARIANTS).toHaveLength(15);
   });
 
   it('gives every invariant a stable, unique key', () => {
@@ -480,6 +481,128 @@ describe('plan_produced_no_children', () => {
       ],
     });
     expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a requiresPlanApproval plan — that is plan_awaiting_approval\'s job', () => {
+    const s = snapshot({
+      tasks: [
+        task({
+          id: 't-gated',
+          mode: 'planning',
+          status: 'completed',
+          planRaw: plan,
+          childCount: 0,
+          requiresPlanApproval: true,
+          updatedAt: ago(6 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+});
+
+// ── 6b. plan_awaiting_approval ───────────────────────────────────────────────
+
+describe('plan_awaiting_approval', () => {
+  const key = 'plan_awaiting_approval' as const;
+
+  const plan = [
+    { ref: 'a', title: 'Step A', description: 'do a' },
+    { ref: 'b', title: 'Step B', description: 'do b' },
+  ];
+
+  it('reports a completed requiresPlanApproval plan with no children, immediately', () => {
+    const s = snapshot({
+      tasks: [
+        task({
+          id: 't-pending',
+          mode: 'planning',
+          status: 'completed',
+          planRaw: plan,
+          childCount: 0,
+          requiresPlanApproval: true,
+          updatedAt: ago(1 * MIN),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual(['t-pending']);
+  });
+
+  it('never stops reporting, no matter how long the plan waits', () => {
+    // The point of this invariant: unlike every threshold-gated invariant in
+    // this module, there is no age past which this violation is expected to
+    // have resolved on its own — a spec-authored plan is never auto-dispatched.
+    const s = snapshot({
+      tasks: [
+        task({
+          id: 't-ancient',
+          mode: 'planning',
+          status: 'completed',
+          planRaw: plan,
+          childCount: 0,
+          requiresPlanApproval: true,
+          updatedAt: ago(400 * 24 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual(['t-ancient']);
+  });
+
+  it('does not report once the plan has been approved (children exist)', () => {
+    const s = snapshot({
+      tasks: [
+        task({
+          id: 't-approved',
+          mode: 'planning',
+          status: 'completed',
+          planRaw: plan,
+          childCount: 2,
+          requiresPlanApproval: true,
+          updatedAt: ago(400 * 24 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a plan that does not require approval — that is plan_produced_no_children\'s job', () => {
+    const s = snapshot({
+      tasks: [
+        task({
+          id: 't-ungated',
+          mode: 'planning',
+          status: 'completed',
+          planRaw: plan,
+          childCount: 0,
+          requiresPlanApproval: false,
+          updatedAt: ago(6 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('does not report a legitimately empty plan', () => {
+    const s = snapshot({
+      tasks: [
+        task({
+          id: 't-empty',
+          mode: 'planning',
+          status: 'completed',
+          planRaw: [],
+          childCount: 0,
+          requiresPlanApproval: true,
+          updatedAt: ago(6 * HOUR),
+        }),
+      ],
+    });
+    expect(reported(key, s)).toEqual([]);
+  });
+
+  it('is staged report-only — it must never file a task or auto-resolve, which is how auto-dispatch would sneak back in', () => {
+    const inv = invariantByKey(key);
+    expect(inv.files).toBe(false);
+    expect(inv.resolves).toBe(false);
   });
 });
 
