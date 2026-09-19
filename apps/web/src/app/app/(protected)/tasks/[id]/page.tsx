@@ -42,6 +42,7 @@ import { deriveTaskModel } from '@/lib/model-presentation';
 import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
+import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
 import { githubApi } from '@/lib/github';
 import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
 
@@ -314,6 +315,17 @@ export default async function TaskDetailPage({
       ? { releaseId: shippedRelease.releaseId, label: shippedReleaseLabel }
       : null,
   });
+
+  // Spec traceability (docs/design/spec-to-build-pattern.md §3) — which spec
+  // doc authorized this task, written by approvePlan onto every child of an
+  // emitsPlan-originated plan. Absent on ordinary tasks.
+  const specSourceRaw = (task.context as Record<string, unknown> | null)?.specSource as
+    | Partial<SpecSourceContext>
+    | undefined;
+  const specSource: SpecSourceContext | null =
+    specSourceRaw && typeof specSourceRaw.specPath === 'string' && typeof specSourceRaw.planningTaskId === 'string'
+      ? { specPath: specSourceRaw.specPath, planningTaskId: specSourceRaw.planningTaskId }
+      : null;
 
   const deliverableArtifacts = taskArtifacts.filter(
     a => a.type !== 'impl_plan'
@@ -1031,6 +1043,8 @@ export default async function TaskDetailPage({
             </div>
           </div>
         )}
+
+        <SpecSourceBlock specSource={specSource} />
 
         {/* Description — for machine-generated tasks (reviewer/builder) this is a
             templated prompt, i.e. reference material, so it sits below the plan. */}
