@@ -32,6 +32,16 @@ interface MissionSettingsProps {
   orchestrationMode?: 'auto' | 'manual';
   isHeld: boolean;
   displayState: MissionDisplayState;
+  /**
+   * True when the situation block above the fold is already offering the one
+   * action that advances this mission.
+   *
+   * Everything in this panel is a CAPABILITY — something the mission supports,
+   * not something it is asking for. Rendering Complete / Arm / Plan at the same
+   * weight as the real next action is precisely what made the screen a menu the
+   * owner had to decode. When the header has a suggestion, this panel has none.
+   */
+  hasPrimaryAction?: boolean;
 }
 
 export default function MissionSettings({
@@ -44,6 +54,7 @@ export default function MissionSettings({
   orchestrationMode: initialOrchestrationMode = 'auto',
   isHeld: initialIsHeld,
   displayState,
+  hasPrimaryAction = false,
 }: MissionSettingsProps) {
   const router = useRouter();
   const [statusLoading, setStatusLoading] = useState(false);
@@ -62,6 +73,12 @@ export default function MissionSettings({
   const [deleteLoading, setDeleteLoading] = useState(false);
 
   const isTerminal = ['completed', 'archived'].includes(currentStatus);
+  /**
+   * Whether this panel may raise a primary button of its own. The header's
+   * suggestion wins: two primaries on one screen is the same "everything at
+   * equal weight" defect, one row apart.
+   */
+  const mayOfferPrimary = !isTerminal && !hasPrimaryAction;
 
   // Live turn counter for the planning task we just started. The organizer can
   // think for minutes; without this the button settles back to idle and the work
@@ -239,8 +256,9 @@ export default function MissionSettings({
 
   return (
     <div className="space-y-4">
-      {/* ── Primary CTA — state driven ── */}
-      {!isTerminal && (
+      {/* ── Primary CTA — state driven, and silent when the header already
+          made a suggestion. ── */}
+      {mayOfferPrimary && (
         <>
           {/* Held: Arm mission is the only meaningful action */}
           {isHeld && (
@@ -333,25 +351,39 @@ export default function MissionSettings({
             </div>
           )}
 
-          {/* Auto + not held + not review-ready: an extra tick is secondary */}
-          {!isHeld && displayState !== 'review' && orchestrationMode === 'auto' && workspaceId && (
-            <button
-              onClick={handleManualRun}
-              disabled={manualRunLoading}
-              title="Tick the orchestrator now instead of waiting for the schedule"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-3 border border-card-border text-[12px] text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
-            >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 010 1.972l-11.54 6.347a1.125 1.125 0 01-1.667-.986V5.653z" />
-              </svg>
-              Plan now
-            </button>
-          )}
+        </>
+      )}
 
-          <RunOutcomeStrip outcome={runOutcome} onDismiss={() => setRunOutcome({ kind: 'idle' })} />
+      {!isTerminal && <RunOutcomeStrip outcome={runOutcome} onDismiss={() => setRunOutcome({ kind: 'idle' })} />}
 
-          {/* ── Secondary actions row ── */}
-          <div className="flex items-center gap-2 flex-wrap">
+      {/* ── Capabilities, behind a disclosure ──
+          Plan now, Disarm, Edit schedule, Complete and Delete are things this
+          mission SUPPORTS. None of them is ever the answer to "what is being
+          asked of me", and laying them out at equal visual weight with no
+          statement of what the mission is waiting on is what made this screen
+          unreadable. They stay one tap away, and the header answers the
+          question. */}
+      {!isTerminal && (
+        <details data-testid="mission-capability-menu" className="group">
+          <summary className="cursor-pointer list-none text-[11px] text-text-muted hover:text-text-secondary transition-colors select-none">
+            <span className="inline-block transition-transform group-open:rotate-90">›</span> More actions
+          </summary>
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            {/* An extra orchestrator tick. */}
+            {!isHeld && orchestrationMode === 'auto' && workspaceId && (
+              <>
+                <button
+                  onClick={handleManualRun}
+                  disabled={manualRunLoading}
+                  title="Tick the orchestrator now instead of waiting for the schedule"
+                  className="text-[11px] text-text-muted hover:text-text-secondary transition-colors disabled:opacity-50"
+                >
+                  {manualRunLoading ? '…' : 'Plan now'}
+                </button>
+                <span className="h-3 border-r border-card-border" />
+              </>
+            )}
+
             {/* Disarm — the inverse of Arm mission. Arming is a primary button
                 above, so this side of the toggle is the only text link left. */}
             {!isHeld && displayState !== 'review' && orchestrationMode === 'auto' && (
@@ -421,7 +453,7 @@ export default function MissionSettings({
               </span>
             )}
           </div>
-        </>
+        </details>
       )}
 
       {/* Archived state */}

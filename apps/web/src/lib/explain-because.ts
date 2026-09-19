@@ -87,8 +87,13 @@ export function buildStateBecause(
   const links: Link[] = [];
   const w = view.waitingOn;
 
-  if (w) {
-    links.push(...causeLinksFor(w, base, extra));
+  // Every outstanding fact, not just the precedence winner. `view.outstanding`
+  // leads with `waitingOn` when there is one, so this is a superset of the old
+  // behaviour — and it is what stops a `running` verdict from producing the
+  // chain "no source reports anything outstanding" over the top of an open
+  // mission PR.
+  for (const fact of view.outstanding) {
+    links.push(...causeLinksFor(fact, base, extra));
   }
 
   for (const t of extra.supersededTasks ?? []) {
@@ -103,15 +108,16 @@ export function buildStateBecause(
     );
   }
 
-  links.push(
-    link(
-      w
-        ? `State is ${view.kind} because ${w.label}.`
-        : `State is ${view.kind}: no source reports anything outstanding.`,
-      view.derivedFrom.kind,
-      base,
-    ),
-  );
+  // The closing link is the conclusion. When the verdict is quiet but facts are
+  // outstanding, it must say BOTH — reporting "nothing outstanding" while the
+  // links above it name an unmerged PR is the contradiction this chain existed
+  // to make impossible.
+  const closing = w
+    ? `State is ${view.kind} because ${w.label}.`
+    : view.outstanding.length > 0
+      ? `State is ${view.kind}, but ${view.outstanding.length} fact(s) are still outstanding: ${view.outstanding.map(o => o.label).join('; ')}.`
+      : `State is ${view.kind}: no source reports anything outstanding.`;
+  links.push(link(closing, view.derivedFrom.kind, base));
 
   return orderChain(links);
 }
@@ -209,6 +215,16 @@ function causeLinksFor(
           base,
         ),
       ];
+
+    case 'claim_deferral':
+      return w.taskIds.slice(0, 10).map(taskId =>
+        link(
+          `The claim loop refused this task ${w.consecutiveDeferrals} consecutive polls for the same reason (${w.reason})`
+          + `${w.firstDeferredAt ? `, first at ${w.firstDeferredAt}` : ''} — it has not been allowed to start.`,
+          'gate_events.detail.consecutiveDeferrals',
+          { ...base, taskId },
+        ),
+      );
   }
 }
 

@@ -64,12 +64,39 @@
  * `nextAction`. The failure this whole line of work exists to prevent is
  * several surfaces answering with equal confidence and no label saying what
  * each was computed from.
+ *
+ * ## Precedence must not zero out the other facts
+ *
+ * `waitingOn` is the PRECEDENCE VERDICT — the one blocker that best describes
+ * the mission. It is deliberately a single value, and rule 5 (a live worker is
+ * observable ground truth) short-circuits the chain above merge, criteria and
+ * open-task rules.
+ *
+ * That is correct for `kind`, and wrong for a screen. A mission can have a live
+ * worker AND an open mission PR AND an unmet criterion; if one stale worker row
+ * makes `activeAgents` non-zero, `running` wins, `waitingOn` goes null, and a
+ * surface reading only `waitingOn` says "nothing outstanding" over the top of an
+ * unmerged PR. That is the same class of bug as the false-zero counts fixed in
+ * #2355: populate every fact, and let the verdict carry precedence rather than
+ * erase its rivals.
+ *
+ * So `outstanding` is a SECOND, unranked answer: every fact that is true right
+ * now, independent of which one won. It is populated on every variant including
+ * the quiet ones. A fact whose whole claim is "nothing is executing" (a stall,
+ * a self-resolving wait) is refuted by a live worker and is the one thing NOT
+ * reported alongside `running` — it would be a false statement, not a demoted
+ * one.
+ *
+ * `situation` is what both the mission header and the mission card render: one
+ * plain-language line built from `kind` + the highest-ranked outstanding fact,
+ * with the action that clears it. One derivation, two surfaces.
  */
 import type { CriteriaGatePresentation } from '@buildd/core/mission-helpers';
 import type { CompletionDecisionCode } from '@buildd/core/mission-completion-codes';
 import { isCriteriaBlockCode, isMergeBlockCode } from '@buildd/core/mission-completion-codes';
 import type { Health, MissionDisplayState } from './mission-helpers';
 import { getMissionStateChip } from './mission-helpers';
+import { isRepeatedlyDeferred, SURFACE_DEFERRAL_THRESHOLD } from './claim-deferral-thresholds';
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
 
@@ -86,7 +113,9 @@ export type MissionStateSource =
   | 'deriveCriteriaGatePresentation'
   | 'canCompleteMission'
   | 'classifyMissionWait'
-  | 'evaluateMissionWorkState';
+  | 'evaluateMissionWorkState'
+  | 'gateEvents.claimLoopDeferral'
+  | 'workers.prUrl + workers.mergedAt';
 
 export interface MissionStateProvenance {
   /** What produced `kind`. */
@@ -138,6 +167,14 @@ export type WaitingOnDescriptor =
       label: string;
       count: number;
       prNumbers: number[];
+      /**
+       * Hrefs for the unmerged PRs, in the same order as `prNumbers` where both
+       * are known. Carried so a surface can WIRE the primary action rather than
+       * printing a number the reader has to go and find — a "merge the mission
+       * PR" affordance with nowhere to go is the button wall again, one row
+       * shorter.
+       */
+      prUrls: string[];
       taskIds: string[];
       /** True when the unmerged PR is the mission's own integration PR, not a task PR. */
       missionPr: boolean;
@@ -153,7 +190,27 @@ export type WaitingOnDescriptor =
    * `waitUntil` is null when the wait is known but its resume time is not —
    * an empty string would read as a timestamp nobody can parse.
    */
-  | { kind: 'self_resolving_wait'; tone: WaitingOnTone; label: string; reason: string; waitUntil: string | null };
+  | { kind: 'self_resolving_wait'; tone: WaitingOnTone; label: string; reason: string; waitUntil: string | null }
+  /**
+   * The claim loop has refused the same task for the same reason enough
+   * consecutive polls to stop being contention. Never a precedence verdict —
+   * it is reported alongside whatever `kind` says, because the failure it
+   * describes is precisely a mission that LOOKS like it is running.
+   */
+  | {
+      kind: 'claim_deferral';
+      tone: WaitingOnTone;
+      label: string;
+      /** How many tasks are sitting behind a gate this way. */
+      count: number;
+      /** The normalized gate reason of the worst offender, e.g. `workspace_cap`. */
+      reason: string;
+      /** Consecutive deferrals on the worst offender. */
+      consecutiveDeferrals: number;
+      /** When the worst offender was first deferred, if the ledger recorded it. */
+      firstDeferredAt: string | null;
+      taskIds: string[];
+    };
 
 // ─── The view ─────────────────────────────────────────────────────────────────
 
@@ -199,6 +256,18 @@ interface MissionStateViewBase {
    * `waitingOn` — never computed a second time.
    */
   readonly criteriaBlockingReason: string | null;
+  /**
+   * Every fact that is outstanding right now, ranked, INDEPENDENT of which one
+   * won precedence — see "Precedence must not zero out the other facts" above.
+   * Populated on every variant, including `running` and `idle`; empty only when
+   * no source reports anything.
+   *
+   * `waitingOn` (when non-null) is always the first entry, so a caller that
+   * renders `outstanding` renders the verdict too.
+   */
+  readonly outstanding: readonly WaitingOnDescriptor[];
+  /** The one line the header and the card both render. */
+  readonly situation: MissionSituation;
   readonly derivedFrom: MissionStateProvenance;
 }
 
@@ -275,6 +344,31 @@ export interface MissionStateInput {
   openTasks?: Array<{ id: string; status: string; title?: string | null }>;
   /** Failed deliverable rows, for naming which tasks failed. */
   failedTasks?: Array<{ id: string; title?: string | null; infra?: boolean }>;
+  /**
+   * The newest open `claim_loop_deferral` gate row per task in this mission,
+   * from `gate_events`. Only rows past `SURFACE_DEFERRAL_THRESHOLD` become a
+   * fact — the threshold lives in `claim-deferral-thresholds.ts` with its
+   * justification, so a caller may pass everything it loaded.
+   */
+  deferrals?: Array<{
+    taskId: string;
+    reason: string;
+    consecutiveDeferrals: number;
+    firstDeferredAt?: string | null;
+  }>;
+  /**
+   * The mission's own integration PR, when one is open. `canCompleteMission`
+   * knows a mission PR is unmerged but not where it lives; the URL is what
+   * turns "waiting on you to merge the mission PR" into an affordance.
+   */
+  missionPr?: { prNumber: number | null; prUrl: string | null } | null;
+  /**
+   * Open task PRs, read straight off the worker rows. For a caller that cannot
+   * afford a `canCompleteMission` decision per subject — a list page renders
+   * dozens — this is the same fact from a cheaper source, and without it a card
+   * silently drops the one thing its owner had to do.
+   */
+  unmergedPrs?: Array<{ taskId: string; title?: string | null; prNumber: number | null; prUrl: string | null }>;
 }
 
 /** The subset of `MissionCompletionDecision` this accessor reads. */
@@ -293,6 +387,53 @@ export interface MissionCompletionSummary {
     prUrl: string | null;
     closedUnsuperseded?: boolean;
   }>;
+}
+
+// ─── The situation line ───────────────────────────────────────────────────────
+
+/**
+ * How outstanding facts are ranked when one of them has to be THE thing on
+ * screen. Ordered by who has to act: a failure and an owner decision first,
+ * then the things only the owner can clear (merge, a failing criterion), then
+ * the things the platform owns (a claim-loop deferral, an open task), then the
+ * things that clear themselves.
+ *
+ * `explain`'s workspace ranking reads this same table, so "what a human should
+ * look at first" has one definition across the API and the UI.
+ */
+export const OUTSTANDING_RANK: Record<WaitingOnDescriptor['kind'], number> = {
+  task_failed: 0,
+  human_decision: 1,
+  dependency: 2,
+  merge: 3,
+  criterion_failing: 4,
+  claim_deferral: 5,
+  task: 6,
+  criterion_unverified: 7,
+  self_resolving_wait: 8,
+};
+
+/**
+ * The one line a surface renders instead of a row of buttons.
+ *
+ * Both the mission header and the condensed mission card render `headline`,
+ * and neither builds it — that is the whole point of Part 3 of the task this
+ * closes. A surface that wants its own phrasing is a surface that will drift.
+ */
+export interface MissionSituation {
+  /** Plain language: what the mission is doing, and what it is waiting on. */
+  readonly headline: string;
+  readonly tone: WaitingOnTone;
+  /**
+   * The descriptor `headline` and `nextAction` are about. Null only when
+   * nothing at all is outstanding — the honest "nothing to do" case.
+   */
+  readonly focus: WaitingOnDescriptor | null;
+  /** The imperative action that clears `focus`, or null when there is none. */
+  readonly nextAction: string | null;
+  /** Everything outstanding other than `focus`, in rank order. */
+  readonly alsoOutstanding: readonly WaitingOnDescriptor[];
+  readonly derivedFrom: MissionStateSource;
 }
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
@@ -325,11 +466,17 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
       ? resolved.waitingOn.label
       : null;
 
+  const outstandingEntries = collectOutstanding(input, resolved);
+  const outstanding = outstandingEntries.map(e => e.fact);
+  const situation = deriveSituation(input, resolved, outstandingEntries);
+
   // The brand key is never written — see the note on `MissionStateViewBrand`.
   const base = {
     chip,
     displayState: resolved.displayState,
     criteriaBlockingReason,
+    outstanding,
+    situation,
     derivedFrom: {
       kind: resolved.source,
       waitingOn: resolved.waitingOn ? resolved.source : null,
@@ -343,7 +490,10 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
       kind: resolved.kind as QuietMissionStateKind,
       waitingOn: null,
       nextAction: null,
-    } as MissionStateView;
+      // Two-step: the brand is declare-only, so no literal can ever satisfy
+      // `MissionStateViewBase` structurally — which is exactly what keeps this
+      // function the only producer.
+    } as unknown as MissionStateView;
   }
 
   return {
@@ -351,7 +501,7 @@ export function deriveMissionStateView(input: MissionStateInput): MissionStateVi
     kind: resolved.kind as GatedMissionStateKind,
     waitingOn: resolved.waitingOn,
     nextAction: nextActionFor(resolved.waitingOn),
-  } as MissionStateView;
+  } as unknown as MissionStateView;
 }
 
 interface Resolution {
@@ -428,82 +578,16 @@ function resolve(input: MissionStateInput): Resolution {
   // 6. A deliverable failed. `infra_stalled` (retries exhausted on
   //    infrastructure, from `canCompleteMission`) is reported as such because
   //    the remedy is different from a task that failed on its merits.
-  const infraTitles = completion?.code === 'infra_stalled' ? completion.infraStalledTitles ?? [] : [];
-  if (infraTitles.length > 0) {
-    return {
-      kind: 'failing',
-      waitingOn: {
-        kind: 'task_failed',
-        tone: 'error',
-        label: `${infraTitles.length} task(s) failed on infrastructure and need manual intervention`,
-        infra: true,
-        taskIds: (input.failedTasks ?? []).filter(t => t.infra).map(t => t.id),
-        titles: infraTitles,
-      },
-      displayState: 'failed',
-      source: 'canCompleteMission',
-    };
-  }
-  if (health === 'FAILING') {
-    const failed = input.failedTasks ?? [];
-    return {
-      kind: 'failing',
-      waitingOn: {
-        kind: 'task_failed',
-        tone: 'error',
-        label: failed.length === 1
-          ? `A deliverable task failed: ${failed[0].title ?? failed[0].id}`
-          : `${failed.length || 'One or more'} deliverable task(s) failed`,
-        infra: false,
-        taskIds: failed.map(t => t.id),
-        titles: failed.map(t => t.title ?? t.id),
-      },
-      displayState: 'failed',
-      source: 'deriveTaskHealthSignal',
-    };
-  }
+  const failed = failedFact(input);
+  if (failed) return failed;
 
   // 7. The work is done and has not reached trunk. `canCompleteMission` owns
   //    this refusal (`awaiting_merge` for a task PR, `awaiting_mission_pr` for
   //    the mission's own integration PR); `evaluateMissionWorkState` is the
   //    fallback for a caller that ran only the cheaper predicate. A task's
   //    status is not its terminal state — its PR's state is.
-  if (completion && isMergeBlockCode(completion.code)) {
-    const details = completion.awaitingMergeDetails ?? [];
-    const missionPr = completion.code === 'awaiting_mission_pr';
-    return {
-      kind: 'awaiting_merge',
-      waitingOn: {
-        kind: 'merge',
-        tone: 'warning',
-        label: missionPr
-          ? 'The mission PR has not merged — the work is not on trunk'
-          : `${completion.awaitingMerge ?? details.length} completed task(s) have an unmerged PR`,
-        count: completion.awaitingMerge ?? details.length,
-        prNumbers: details.map(d => d.prNumber).filter((n): n is number => typeof n === 'number'),
-        taskIds: details.map(d => d.taskId),
-        missionPr,
-      },
-      displayState: 'review',
-      source: 'canCompleteMission',
-    };
-  }
-  if (input.workState && input.workState.reason === 'prs_unmerged') {
-    return {
-      kind: 'awaiting_merge',
-      waitingOn: {
-        kind: 'merge',
-        tone: 'warning',
-        label: `${input.workState.unmergedPrCount} deliverable PR(s) have not merged`,
-        count: input.workState.unmergedPrCount,
-        prNumbers: [],
-        taskIds: [],
-        missionPr: false,
-      },
-      displayState: 'review',
-      source: 'evaluateMissionWorkState',
-    };
-  }
+  const merge = mergeFact(input);
+  if (merge) return merge;
 
   // 8. Every open task is on a known self-resolving condition, with a time it
   //    resumes. This outranks the STALLED reading below it — see ruling 2 in
@@ -543,36 +627,212 @@ function resolve(input: MissionStateInput): Resolution {
 
   // 9. Open deliverable rows with nothing live on them, and no wait explaining
   //    it. This is the genuine stall, and the only task-level `blocked`.
-  const openTasks = input.openTasks ?? [];
-  const pendingCount = completion?.pendingDeliverables ?? openTasks.length;
-  if (health === 'STALLED' || (completion?.code === 'pending_deliverables' && pendingCount > 0)) {
-    const byStatus = completion?.pendingByStatus
-      ?? openTasks.reduce<Record<string, number>>((acc, t) => {
-        acc[t.status] = (acc[t.status] ?? 0) + 1;
-        return acc;
-      }, {});
-    const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(', ');
-    return {
-      kind: 'blocked',
-      waitingOn: {
-        kind: 'task',
-        tone: 'warning',
-        label: breakdown
-          ? `${pendingCount} task(s) open with no live worker (${breakdown})`
-          : `${pendingCount} task(s) open with no live worker`,
-        count: pendingCount,
-        taskIds: openTasks.map(t => t.id),
-        byStatus,
-      },
-      displayState: 'stalled',
-      source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
-    };
-  }
+  const open = openTaskFact(input, false);
+  if (open) return open;
 
   // 10. The work is done and the completion gate has not cleared. NEVER
   //     `blocked` — see ruling 1 in the module note. Tone comes straight from
   //     `deriveCriteriaGatePresentation`, so an unverified criterion on a
   //     mission nothing has tried to close stays neutral.
+  const criteria = criteriaFact(input);
+  if (criteria) return criteria;
+
+  // 11. Nothing is running, nothing failed, nothing is open, no PR is waiting,
+  //     no criterion is holding. Reached only after every source that could
+  //     contradict it has been consulted — which is what makes `waitingOn:
+  //     null` here a claim rather than a default.
+  if (input.orchestrationMode === 'manual') {
+    return { kind: 'idle', waitingOn: null, displayState: 'manual', source: 'mission.status' };
+  }
+  return {
+    kind: 'idle',
+    waitingOn: null,
+    displayState: input.progress !== undefined && input.progress >= 100 ? 'review' : 'active',
+    source: 'mission.status',
+  };
+}
+
+// ─── Fact builders ────────────────────────────────────────────────────────────
+//
+// Each one answers "is THIS true about the mission?" from the sources that own
+// it. `resolve` calls them in precedence order and stops at the first hit;
+// `collectOutstanding` calls the same functions and keeps every hit. Two
+// callers, one definition per fact — the alternative is a second place where a
+// merge or a criterion gets described, which is the drift this module exists
+// to prevent.
+
+/** Rule 6 — a deliverable failed, on its merits or on infrastructure. */
+function failedFact(input: MissionStateInput): Resolution | null {
+  const { completion } = input;
+  const infraTitles = completion?.code === 'infra_stalled' ? completion.infraStalledTitles ?? [] : [];
+  if (infraTitles.length > 0) {
+    return {
+      kind: 'failing',
+      waitingOn: {
+        kind: 'task_failed',
+        tone: 'error',
+        label: `${infraTitles.length} task(s) failed on infrastructure and need manual intervention`,
+        infra: true,
+        taskIds: (input.failedTasks ?? []).filter(t => t.infra).map(t => t.id),
+        titles: infraTitles,
+      },
+      displayState: 'failed',
+      source: 'canCompleteMission',
+    };
+  }
+  if (input.health === 'FAILING') {
+    const failed = input.failedTasks ?? [];
+    return {
+      kind: 'failing',
+      waitingOn: {
+        kind: 'task_failed',
+        tone: 'error',
+        label: failed.length === 1
+          ? `A deliverable task failed: ${failed[0].title ?? failed[0].id}`
+          : `${failed.length || 'One or more'} deliverable task(s) failed`,
+        infra: false,
+        taskIds: failed.map(t => t.id),
+        titles: failed.map(t => t.title ?? t.id),
+      },
+      displayState: 'failed',
+      source: 'deriveTaskHealthSignal',
+    };
+  }
+  return null;
+}
+
+/** Rule 7 — the work is done and has not reached trunk. */
+function mergeFact(input: MissionStateInput): Resolution | null {
+  const { completion } = input;
+  if (completion && isMergeBlockCode(completion.code)) {
+    const details = completion.awaitingMergeDetails ?? [];
+    const missionPr = completion.code === 'awaiting_mission_pr';
+    // `canCompleteMission` knows the mission PR is unmerged without knowing
+    // where it is; the caller passes `missionPr` when it loaded the row, and
+    // that is the difference between a sentence and a link.
+    const prNumbers = missionPr && input.missionPr?.prNumber != null
+      ? [input.missionPr.prNumber]
+      : details.map(d => d.prNumber).filter((n): n is number => typeof n === 'number');
+    const prUrls = missionPr && input.missionPr?.prUrl
+      ? [input.missionPr.prUrl]
+      : details.map(d => d.prUrl).filter((u): u is string => typeof u === 'string');
+    return {
+      kind: 'awaiting_merge',
+      waitingOn: {
+        kind: 'merge',
+        tone: 'warning',
+        label: missionPr
+          ? 'The mission PR has not merged — the work is not on trunk'
+          : `${completion.awaitingMerge ?? details.length} completed task(s) have an unmerged PR`,
+        count: completion.awaitingMerge ?? details.length,
+        prNumbers,
+        prUrls,
+        taskIds: details.map(d => d.taskId),
+        missionPr,
+      },
+      displayState: 'review',
+      source: 'canCompleteMission',
+    };
+  }
+  if (input.workState && input.workState.reason === 'prs_unmerged') {
+    return {
+      kind: 'awaiting_merge',
+      waitingOn: {
+        kind: 'merge',
+        tone: 'warning',
+        label: `${input.workState.unmergedPrCount} deliverable PR(s) have not merged`,
+        count: input.workState.unmergedPrCount,
+        prNumbers: [],
+        prUrls: [],
+        taskIds: [],
+        missionPr: false,
+      },
+      displayState: 'review',
+      source: 'evaluateMissionWorkState',
+    };
+  }
+  // Rows only. A caller with no completion decision and no work-state
+  // evaluation still holds the task + worker rows that prove a PR is open. Same
+  // fact, cheaper source — and it is the difference between a mission card that
+  // says "waiting on you to merge the mission PR" and one that says nothing.
+  const openMissionPr = input.missionPr && (input.missionPr.prNumber != null || input.missionPr.prUrl)
+    ? input.missionPr
+    : null;
+  const rowPrs = input.unmergedPrs ?? [];
+  if (openMissionPr || rowPrs.length > 0) {
+    const missionPr = openMissionPr !== null;
+    return {
+      kind: 'awaiting_merge',
+      waitingOn: {
+        kind: 'merge',
+        tone: 'warning',
+        label: missionPr
+          ? 'The mission PR has not merged — the work is not on trunk'
+          : `${rowPrs.length} completed task(s) have an unmerged PR`,
+        count: missionPr ? 1 : rowPrs.length,
+        prNumbers: missionPr
+          ? openMissionPr!.prNumber != null ? [openMissionPr!.prNumber] : []
+          : rowPrs.map(p => p.prNumber).filter((n): n is number => typeof n === 'number'),
+        prUrls: missionPr
+          ? openMissionPr!.prUrl ? [openMissionPr!.prUrl] : []
+          : rowPrs.map(p => p.prUrl).filter((u): u is string => typeof u === 'string'),
+        taskIds: missionPr ? [] : rowPrs.map(p => p.taskId),
+        missionPr,
+      },
+      displayState: 'review',
+      source: 'workers.prUrl + workers.mergedAt',
+    };
+  }
+  return null;
+}
+
+/**
+ * Rule 9 — open deliverable rows.
+ *
+ * `live` changes what can honestly be claimed, not whether the fact exists. With
+ * nothing executing these tasks are a STALL, which is the only task-level
+ * `blocked`; with a worker running they are simply not finished yet, which is
+ * still something the header owes the reader and is deliberately quiet.
+ */
+function openTaskFact(input: MissionStateInput, live: boolean): Resolution | null {
+  const { completion } = input;
+  const openTasks = input.openTasks ?? [];
+  const pendingCount = completion?.pendingDeliverables ?? openTasks.length;
+  const qualifies = live
+    ? pendingCount > 0
+    : input.health === 'STALLED' || (completion?.code === 'pending_deliverables' && pendingCount > 0);
+  if (!qualifies) return null;
+
+  const byStatus = completion?.pendingByStatus
+    ?? openTasks.reduce<Record<string, number>>((acc, t) => {
+      acc[t.status] = (acc[t.status] ?? 0) + 1;
+      return acc;
+    }, {});
+  const breakdown = Object.entries(byStatus).map(([s, n]) => `${n} ${s}`).join(', ');
+  return {
+    kind: live ? 'running' : 'blocked',
+    waitingOn: {
+      kind: 'task',
+      tone: live ? 'neutral' : 'warning',
+      label: live
+        ? breakdown
+          ? `${pendingCount} deliverable task(s) still open (${breakdown})`
+          : `${pendingCount} deliverable task(s) still open`
+        : breakdown
+          ? `${pendingCount} task(s) open with no live worker (${breakdown})`
+          : `${pendingCount} task(s) open with no live worker`,
+      count: pendingCount,
+      taskIds: openTasks.map(t => t.id),
+      byStatus,
+    },
+    displayState: live ? 'running' : 'stalled',
+    source: completion?.code === 'pending_deliverables' ? 'canCompleteMission' : 'deriveTaskHealthSignal',
+  };
+}
+
+/** Rule 10 — the completion gate has not cleared. Never `blocked`. */
+function criteriaFact(input: MissionStateInput): Resolution | null {
+  const { criteriaGate, completion } = input;
   if (criteriaGate && criteriaGate.state !== 'clear') {
     const items = input.criteriaItems ?? [];
     const failing = items.filter(c => c.verdict === 'fail').map(nameCriterion);
@@ -630,20 +890,213 @@ function resolve(input: MissionStateInput): Resolution {
       source: 'canCompleteMission',
     };
   }
+  return null;
+}
 
-  // 11. Nothing is running, nothing failed, nothing is open, no PR is waiting,
-  //     no criterion is holding. Reached only after every source that could
-  //     contradict it has been consulted — which is what makes `waitingOn:
-  //     null` here a claim rather than a default.
-  if (input.orchestrationMode === 'manual') {
-    return { kind: 'idle', waitingOn: null, displayState: 'manual', source: 'mission.status' };
-  }
+/**
+ * The claim loop has refused the same task, for the same reason, enough
+ * consecutive polls to stop being contention.
+ *
+ * Deliberately NOT part of `resolve`'s precedence chain: a deferral says
+ * nothing about what state the mission is in — it says the state on screen is
+ * not the whole story. It is reported through `outstanding`, which is exactly
+ * the case the observed bug produced: a spinner reading "1 agent active" over
+ * a task the claim loop had turned away a dozen times running.
+ */
+function deferralFact(input: MissionStateInput): WaitingOnDescriptor | null {
+  const stuck = (input.deferrals ?? []).filter(d => isRepeatedlyDeferred(d.consecutiveDeferrals));
+  if (stuck.length === 0) return null;
+  // Worst offender leads: it is the one with the longest unbroken refusal.
+  const worst = stuck.reduce((a, b) => (b.consecutiveDeferrals > a.consecutiveDeferrals ? b : a));
   return {
-    kind: 'idle',
-    waitingOn: null,
-    displayState: input.progress !== undefined && input.progress >= 100 ? 'review' : 'active',
-    source: 'mission.status',
+    kind: 'claim_deferral',
+    tone: 'warning',
+    label: stuck.length === 1
+      ? `A task has been deferred by the claim loop ${worst.consecutiveDeferrals} times in a row — reason: ${worst.reason}`
+      : `${stuck.length} tasks are being deferred by the claim loop (worst: ${worst.consecutiveDeferrals} in a row — ${worst.reason})`,
+    count: stuck.length,
+    reason: worst.reason,
+    consecutiveDeferrals: worst.consecutiveDeferrals,
+    firstDeferredAt: worst.firstDeferredAt ?? null,
+    taskIds: stuck.map(d => d.taskId),
   };
+}
+
+// ─── Outstanding facts ────────────────────────────────────────────────────────
+
+/**
+ * Every fact that is outstanding, ranked, regardless of which won precedence.
+ *
+ * Terminal missions report nothing: a completed mission's stale criteria
+ * verdict is history, and rule 1 already said so.
+ *
+ * The one subtraction is deliberate. A `self_resolving_wait` and a STALLED
+ * open-task reading both assert that NOTHING IS EXECUTING. A live worker
+ * refutes them outright, so with `activeAgents > 0` the open-task fact is
+ * rebuilt in its honest form ("still open") and the wait is dropped rather than
+ * demoted. Everything else — an unmerged PR, an unmet criterion, a failed
+ * deliverable, a dependency, an owner decision, a claim-loop deferral — stays
+ * true no matter what is running, and is reported.
+ */
+interface OutstandingEntry {
+  fact: WaitingOnDescriptor;
+  /** Which derivation produced THIS fact — not which produced the verdict. */
+  source: MissionStateSource;
+}
+
+function collectOutstanding(input: MissionStateInput, resolved: Resolution): OutstandingEntry[] {
+  if (resolved.kind === 'complete') return [];
+
+  const live = input.activeAgents > 0;
+  const candidates: Array<OutstandingEntry | null> = [
+    resolved.waitingOn ? { fact: resolved.waitingOn, source: resolved.source } : null,
+    entry(deferralFact(input), 'gateEvents.claimLoopDeferral'),
+    fromResolution(failedFact(input)),
+    fromResolution(mergeFact(input)),
+    fromResolution(criteriaFact(input)),
+    fromResolution(openTaskFact(input, live)),
+  ];
+
+  const seen = new Set<WaitingOnDescriptor['kind']>();
+  const out: OutstandingEntry[] = [];
+  for (const c of candidates) {
+    if (!c) continue;
+    // A wait and a stall both claim nothing is executing. Held/idle missions
+    // keep them; a running one would be publishing a contradiction.
+    if (live && c.fact.kind === 'self_resolving_wait') continue;
+    if (seen.has(c.fact.kind)) continue;
+    seen.add(c.fact.kind);
+    out.push(c);
+  }
+  return out.sort((a, b) => OUTSTANDING_RANK[a.fact.kind] - OUTSTANDING_RANK[b.fact.kind]);
+}
+
+function entry(fact: WaitingOnDescriptor | null, source: MissionStateSource): OutstandingEntry | null {
+  return fact ? { fact, source } : null;
+}
+
+function fromResolution(r: Resolution | null): OutstandingEntry | null {
+  return r && r.waitingOn ? { fact: r.waitingOn, source: r.source } : null;
+}
+
+// ─── The situation line ───────────────────────────────────────────────────────
+
+/**
+ * Plain language for one blocker, phrased from the reader's side of the screen:
+ * "waiting on you to …" when the owner is the only one who can clear it,
+ * a statement of fact when they are not.
+ */
+function situationPhrase(d: WaitingOnDescriptor): string {
+  switch (d.kind) {
+    case 'dependency':
+      return 'waiting on an upstream mission to meet its gate condition';
+    case 'task':
+      return d.count === 1 ? '1 task is still open' : `${d.count} tasks are still open`;
+    case 'task_failed':
+      return d.infra
+        ? d.titles.length === 1
+          ? '1 task failed on infrastructure and needs manual intervention'
+          : `${d.titles.length} tasks failed on infrastructure and need manual intervention`
+        : d.titles.length === 1
+          ? `a task failed: ${d.titles[0]}`
+          : `${d.titles.length || 'one or more'} tasks failed`;
+    case 'merge': {
+      const ref = d.prNumbers.length === 1 ? ` #${d.prNumbers[0]}` : '';
+      return d.missionPr
+        ? `waiting on you to merge the mission PR${ref}`
+        : d.count === 1
+          ? `waiting on you to merge 1 open PR${ref}`
+          : `waiting on you to merge ${d.count} open PRs`;
+    }
+    case 'criterion_failing':
+      return d.count === 1 && d.criteria[0]
+        ? `waiting on you — the goal criterion "${d.criteria[0]}" is failing`
+        : `waiting on you — ${d.count} goal criteria are failing`;
+    case 'criterion_unverified':
+      return d.count === 1
+        ? 'waiting on goal-criteria verification — 1 criterion has no verdict yet'
+        : `waiting on goal-criteria verification — ${d.count} criteria have no verdict yet`;
+    case 'human_decision':
+      // These labels already read as statements ("Held — arm the mission to
+      // start work"), so they are quoted, not re-worded.
+      return `waiting on you: ${d.label}`;
+    case 'self_resolving_wait':
+      return d.waitUntil
+        ? `waiting on ${d.reason} — resumes on its own at ${d.waitUntil}`
+        : `waiting on ${d.reason} — resumes on its own`;
+    case 'claim_deferral':
+      return d.count === 1
+        ? `an agent has been turned away by the claim loop ${d.consecutiveDeferrals} times in a row — ${d.reason}`
+        : `${d.count} agents are being turned away by the claim loop — worst: ${d.consecutiveDeferrals} in a row, ${d.reason}`;
+  }
+}
+
+function capitalize(s: string): string {
+  return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
+}
+
+/**
+ * Build the one line the header and the card both render.
+ *
+ * The shape is `<what the mission is doing> — <what it is waiting on>`. When
+ * both halves are true they are BOTH said, joined by "but": "Running (1 agent)
+ * — but waiting on you to merge the mission PR" is the sentence the observed
+ * screen could not produce, and the reason it could not is that it only ever
+ * read the precedence verdict.
+ */
+function deriveSituation(
+  input: MissionStateInput,
+  resolved: Resolution,
+  outstanding: readonly OutstandingEntry[],
+): MissionSituation {
+  const lead = outstanding[0] ?? null;
+  const focus = lead?.fact ?? null;
+  const alsoOutstanding = outstanding.slice(1).map(e => e.fact);
+
+  if (resolved.kind === 'complete') {
+    return {
+      headline: 'Complete — nothing outstanding.',
+      tone: 'neutral',
+      focus: null,
+      nextAction: null,
+      alsoOutstanding: [],
+      derivedFrom: resolved.source,
+    };
+  }
+
+  if (!focus || !lead) {
+    // Every source that could contradict this was consulted and had nothing to
+    // say. Say THAT, rather than falling back to a row of buttons.
+    const headline = resolved.kind === 'running'
+      ? `Running — ${countAgents(input.activeAgents)} in flight, nothing outstanding.`
+      : 'Nothing to do — no source reports anything outstanding.';
+    return {
+      headline,
+      tone: 'neutral',
+      focus: null,
+      nextAction: null,
+      alsoOutstanding: [],
+      derivedFrom: resolved.source,
+    };
+  }
+
+  const phrase = situationPhrase(focus);
+  const headline = resolved.kind === 'running'
+    ? `Running (${countAgents(input.activeAgents)}) — but ${phrase}.`
+    : `${capitalize(phrase)}.`;
+
+  return {
+    headline,
+    tone: focus.tone,
+    focus,
+    nextAction: nextActionFor(focus),
+    alsoOutstanding,
+    derivedFrom: lead.source,
+  };
+}
+
+function countAgents(n: number): string {
+  return n === 1 ? '1 agent' : `${n} agents`;
 }
 
 /**
@@ -675,5 +1128,10 @@ export function nextActionFor(waitingOn: WaitingOnDescriptor): string {
       return waitingOn.waitUntil
         ? `Nothing to do — this resumes on its own at ${waitingOn.waitUntil}.`
         : 'Nothing to do — this resumes on its own.';
+    case 'claim_deferral':
+      return `The claim loop is refusing this task (${waitingOn.reason}) — clear that gate, or cancel the task if the work is no longer wanted.`;
   }
 }
+
+/** Exported for the threshold's own regression test and for surfaces that explain it. */
+export { SURFACE_DEFERRAL_THRESHOLD };

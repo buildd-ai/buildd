@@ -9,7 +9,9 @@ import Link from 'next/link';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds, resolveActiveTeamId } from '@/lib/team-access';
 import { deriveMissionHealth, deriveTaskHealthSignal, healthToGroup, statusToGroup, FILTER_TO_GROUPS } from '@/lib/mission-helpers';
-import { computeMissionProgress, computeMissionSkyline, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, computeMissionSkyline, computeMissionAuthorshipHealth, deriveCriteriaGatePresentation, isDeliverableTask } from '@buildd/core/mission-helpers';
+import { deriveMissionStateView } from '@/lib/mission-state-view';
+import { deriveMissionIntegrationPr } from '@/lib/mission-integration-pr';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { isValidTaskId } from '@/lib/task-id';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
@@ -114,7 +116,7 @@ export default async function MissionsPage({
   const allMissions = await db.query.missions.findMany({
     where: missionsWhere,
     orderBy: [desc(missions.priority), desc(missions.lastTaskStartedAt), desc(missions.updatedAt)],
-    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true, completedAt: true },
+    columns: { id: true, title: true, description: true, status: true, teamId: true, workspaceId: true, orchestrationMode: true, costBudgetUsd: true, dependsOnMissionId: true, dependencyMetAt: true, mergePolicy: true, startAt: true, isHeld: true, initiativeId: true, priority: true, goalCriteria: true, goalCriteriaState: true, lastTaskStartedAt: true, createdAt: true, updatedAt: true, criteriaEscalatedAt: true, completedAt: true, workingBranch: true, integrationBranchEnabled: true },
     with: {
       workspace: { columns: { id: true, name: true, gitConfig: true, releaseConfig: true } },
       initiative: { columns: { id: true, title: true } },
@@ -293,6 +295,56 @@ export default async function MissionsPage({
       : null);
 
 
+    // ── The card subtitle ──
+    // Same accessor, same sentence, as the mission header: whatever the header
+    // states as the situation, the card states as its subtitle. A list cannot
+    // afford a `canCompleteMission` decision per row, so it passes the rows it
+    // already loaded and takes the honestly-degraded view the accessor is built
+    // to return. What it must NOT do is invent its own phrasing — a card and a
+    // header describing one mission differently is the defect, not the layout.
+    const healthState = deriveTaskHealthSignal({ ...obj, heartbeatWaitingUntil }, obj.tasks || []);
+    const deliverables = (obj.tasks || []).filter(isDeliverableTask);
+    const criteriaStateForCard = (obj.goalCriteriaState ?? null) as
+      { overall?: string; criteria?: Array<{ verdict: string; label?: string; type?: string }> } | null;
+    const criteriaGateForCard = ['completed', 'cancelled', 'archived'].includes(obj.status)
+      ? null
+      : deriveCriteriaGatePresentation({
+          criteriaCount: ((obj.goalCriteria as any[]) ?? []).length,
+          overall: (criteriaStateForCard?.overall as any) ?? null,
+          items: (criteriaStateForCard?.criteria ?? []) as any,
+          completionAttempted: progress >= 100,
+        });
+    const integrationPr = deriveMissionIntegrationPr({ mission: obj as any, tasks: (obj.tasks ?? []) as any });
+    const unmergedPrs = (obj.tasks || []).flatMap((t: any) => {
+      if (t.status !== 'completed') return [];
+      const w = (t.workers as any[])?.[0];
+      if (!w?.prUrl || w?.mergedAt || w?.prLifecycleStatus === 'closed') return [];
+      return [{ taskId: t.id, title: t.title, prNumber: w.prNumber ?? null, prUrl: w.prUrl ?? null }];
+    });
+    const situation = deriveMissionStateView({
+      status: obj.status,
+      isHeld: obj.isHeld ?? false,
+      orchestrationMode: obj.orchestrationMode ?? null,
+      activeAgents,
+      progress,
+      health: healthState,
+      dependsOnMissionId: obj.dependsOnMissionId ?? null,
+      criteriaEscalatedAt: (obj as any).criteriaEscalatedAt ?? null,
+      hasPendingDeliverableWork: deliverables.some(t => !['completed', 'cancelled', 'failed'].includes(t.status)),
+      criteriaGate: criteriaGateForCard,
+      criteriaItems: (criteriaStateForCard?.criteria ?? []) as any,
+      openTasks: deliverables
+        .filter(t => ['pending', 'assigned', 'in_progress'].includes(t.status))
+        .map(t => ({ id: t.id, status: t.status, title: t.title })),
+      failedTasks: deliverables
+        .filter(t => t.status === 'failed')
+        .map(t => ({ id: t.id, title: t.title, infra: (t.result as any)?.errorType === 'infra_stalled' })),
+      missionPr: integrationPr && integrationPr.state === 'open'
+        ? { prNumber: integrationPr.prNumber, prUrl: integrationPr.prUrl }
+        : null,
+      unmergedPrs,
+    }).situation;
+
     return {
       id: obj.id,
       title: obj.title,
@@ -331,12 +383,9 @@ export default async function MissionsPage({
       segments,
       effectivePolicyLabel,
       hasPolicyOverride: (obj as any).mergePolicy != null,
-      awaitingMergePRCount: (obj.tasks || []).filter(t => {
-        if (t.status !== 'completed') return false;
-        const w = (t.workers as any[])?.[0];
-        return w?.prUrl && !w?.mergedAt && w?.prLifecycleStatus !== 'closed';
-      }).length,
-      healthState: deriveTaskHealthSignal({ ...obj, heartbeatWaitingUntil }, obj.tasks || []),
+      awaitingMergePRCount: unmergedPrs.length,
+      healthState,
+      situation,
       inFlightTasks: (obj.tasks || []).flatMap(t => (t.workers || []).filter(w => LIVE_WORKER_STATUSES.includes(w.status as any)).map(w => ({ id: t.id, title: t.title, startedAt: w.startedAt ? String(w.startedAt) : null, turns: w.turns }))),
       blockedPRCount: countBlockedByPR(obj.tasks || [], allMissionTaskMap),
       initiativeId: obj.initiativeId || null,
