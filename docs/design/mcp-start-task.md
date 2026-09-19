@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "start-task-endpoint"
@@ -18,17 +18,18 @@ assertions:
 ---
 # MCP `start_task` action: expose the existing /start route over MCP
 
-**Status:** Proposed — the underlying `/start` route and its gate coverage are
-fully built and hardened (capability gate removed in PRs #1864, #1868;
-claim-gates.ts deleted; /start now imports from canonical gate modules; two
-further gates — `mission_budget_exhausted` and `subject_dead` — landed in PR
-#1894, after this design's original gate audit). The `start_task` MCP action
-itself — this design's actual proposal — has not been implemented: there is no
-`start_task` (or equivalently-named) entry in `adminActions` in
-`packages/core/mcp-tools.ts`, and no MCP wrapper anywhere in the codebase calls
-`POST /api/tasks/[id]/start`. An implementer picking this up must account for
-the two gates added since the original sketch (see the updated gate table
-below and the `gateReason` union in the Action signature).
+**Status:** Partially implemented — the underlying `/start` route and its gate
+coverage are fully built and hardened (capability gate removed in PRs #1864,
+#1868; claim-gates.ts deleted; /start now imports from canonical gate modules;
+two further gates — `mission_budget_exhausted` and `subject_dead` — landed in
+PR #1894, after this design's original gate audit) and now has route-test
+coverage at `apps/web/src/app/api/tasks/[id]/start/route.test.ts`. The
+`start_task` MCP action itself — this design's actual proposal — has **not**
+been implemented: there is still no `start_task` (or equivalently-named) entry
+in `adminActions` in `packages/core/mcp-tools.ts`, and no MCP wrapper anywhere
+in the codebase calls `POST /api/tasks/[id]/start`. An implementer picking this
+up must account for the two gates added since the original sketch (see the
+updated gate table below and the `gateReason` union in the Action signature).
 **Related:**
 - `apps/web/src/app/api/tasks/[id]/start/route.ts` — the existing /start implementation
 - `apps/web/src/app/api/workers/claim/` — canonical gate modules (`connector-gate.ts`, `held-gate.ts`, `mission-budget-gate.ts`, `workspace-cap-gate.ts`, `deps-gate.ts`, `deferred-gate.ts`, `pacing-gate.ts`)
