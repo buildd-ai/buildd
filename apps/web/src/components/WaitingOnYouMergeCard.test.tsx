@@ -87,3 +87,25 @@ describe('WaitingOnYouMergeCard unblock clause', () => {
     expect(html).toContain('Release attribution');
   });
 });
+
+describe('WaitingOnYouMergeCard mission-PR merge gate', () => {
+  const BLOCKED_REASON =
+    "This mission's work is not finished — 2 task PR(s) still open on the integration branch: "
+    + 'PR #2514 (fix retry logic), PR #2516 (add timeout). Cancel the remaining task(s), or let '
+    + 'them land, then merge.';
+
+  it('disables the merge affordance and names the blocking PRs when guardMissionPrMerge refuses', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouMergeCard item={item({ missionMergeBlockedReason: BLOCKED_REASON })} />,
+    );
+    expect(html).toContain('PR #2514');
+    expect(html).toContain('PR #2516');
+    expect(html).toContain('cursor-not-allowed');
+  });
+
+  it('renders the normal actionable Merge button once the gate clears (reason absent)', () => {
+    const html = renderToStaticMarkup(<WaitingOnYouMergeCard item={item()} />);
+    expect(html).not.toContain('cursor-not-allowed');
+    expect(html).toContain('>Merge<');
+  });
+});
