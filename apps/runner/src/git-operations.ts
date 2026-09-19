@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { join } from 'path';
 import { resolveWorktreeBase, clearResumeContext, parseWorktreeList, BranchFetchResult } from './worktree-utils';
 import { isGeneratedPath } from '@buildd/shared';
+import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 
 // Mutable dep references — tests inject mocks via __setGitOpsDeps() without
 // touching bun's mock.module registry (which is shared across parallel workers
@@ -226,7 +227,7 @@ export interface SetupWorktreeResult {
    *  branch, when known. */
   sharedBranch?: {
     candidate: string;
-    reason: 'default_branch' | 'checked_out';
+    reason: 'default_branch' | 'checked_out' | 'mission_branch';
     holder?: string;
   };
 }
@@ -438,7 +439,9 @@ export async function setupWorktree(
     // Detect: the ORIGINAL branch parameter equals the base ref (stripped of "origin/" prefix).
     // This is different from the resume case: when resuming, requestedBranch is set to
     // resumeCandidate (a prior branch to update), not the original branch parameter.
-    // We only guard when branch (the parameter) itself equals the base (integration branch).
+    // We only guard THIS check when branch (the parameter) itself equals the base
+    // (integration branch) — see the separate `looksLikeMissionIntegrationBranch`
+    // check below for the resume/requestedBranch shape of the same bug.
     const baseWithoutPrefix = base.replace(/^origin\//, '');
     const branchEqualsBase = branch === baseWithoutPrefix;
 
@@ -453,14 +456,28 @@ export async function setupWorktree(
     //
     // This also covers the mission-integration case: when the branch parameter
     // equals the base branch (not just requestedBranch), it's a bug and the guard fires.
+    //
+    // A SECOND, independent mission-integration case (friction task f43ebcff):
+    // `requestedBranch` can equal the mission branch even when `branch` never
+    // does — e.g. a review-retry's `resumeBranch`/`baseBranch` both carry a
+    // stale `workerBranch` that turns out to literally be the mission branch.
+    // In that shape `base` resolves to `origin/<mission branch>` via the
+    // ordinary (legitimate-looking) resume ladder, so an equality check against
+    // `base` cannot tell it apart from a real per-task branch resume — the two
+    // are structurally identical once resumeCandidate === base. The one signal
+    // that IS true for a shared mission branch and false for every real
+    // per-task branch is the name itself: mission branches are always
+    // `mission/<slug>-<id8>` (generateMissionBranchName), never `buildd/...`.
+    // Checked independently of `branchEqualsBase` so it also catches a stale
+    // resume value regardless of what the task's own `branch` parameter is.
     /** Why a branch cannot be the checkout target of a new worktree, if it cannot. */
-    const unusable = (candidate: string): 'default_branch' | 'checked_out' | null =>
+    const unusable = (candidate: string): 'default_branch' | 'checked_out' | 'mission_branch' | null =>
       candidate === defaultBranch
         ? 'default_branch'
         : branchOwners.has(candidate)
           ? 'checked_out'
-          : branchEqualsBase && candidate === baseWithoutPrefix
-            ? 'default_branch' // Use 'default_branch' reason for the base branch too — shared namespace
+          : (branchEqualsBase && candidate === baseWithoutPrefix) || looksLikeMissionIntegrationBranch(candidate)
+            ? 'mission_branch'
             : null;
 
     // Candidates in preference order. The task branch is NOT automatically a
@@ -492,7 +509,9 @@ export async function setupWorktree(
         `[Worker ${workerId}] Cannot check out "${candidate}" in a worktree ` +
         (reason === 'default_branch'
           ? `— it is the repo default branch (held by the main checkout${holder ? ` at ${holder}` : ''}). `
-          : `— it is already checked out in worktree ${holder}. `) +
+          : reason === 'mission_branch'
+            ? `— it is a mission integration branch; a task must never work directly on it. `
+            : `— it is already checked out in worktree ${holder}. `) +
         `Using "${actualBranch}" instead (base stays ${base}). ` +
         `Pushes will target "${actualBranch}", so a new PR may be opened instead of updating an existing one.`,
       );
