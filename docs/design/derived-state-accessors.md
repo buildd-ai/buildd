@@ -40,7 +40,9 @@ assertions:
 
 ---
 
-## Implementation Status (reconciled 2026-09-19)
+## Implementation Status (reconciled 2026-09-19, last confirmed current by PR #2496)
+
+If you were dispatched here to reconcile this doc again: run `git log -- docs/design/derived-state-accessors.md` first. As of this writing the last three commits against this file (PR #2485, #2489, #2496, all 2026-09-19) already did this reconciliation and added the `skip_until` suppression below — a fresh dispatch here is very likely ledger lag (the conformance checker re-running before a same-day merge lands), not new drift. Only redo the table below if `git log` shows a commit *after* PR #2496 that isn't accounted for here.
 
 | Decision | Status |
 |---|---|
