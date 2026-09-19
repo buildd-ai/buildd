@@ -640,6 +640,49 @@ describe('PATCH /api/missions/[id]', () => {
     ]);
   });
 
+  it('rejects a PATCH goalCriteria array with no mechanical criterion, naming the accepted types', async () => {
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        goalCriteria: [{
+          type: 'description',
+          description: 'Ship the feature',
+          notMechanizableReason: 'Feature completeness is a human judgement call here.',
+        }],
+      }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/mechanical criterion/);
+    expect(body.error).toMatch(/all_prs_merged \+ no_open_tasks/);
+  });
+
+  it('rejects a PATCH that removes the last mechanical criterion, leaving only description-type ones', async () => {
+    const description = {
+      type: 'description',
+      description: 'Ship the feature',
+      notMechanizableReason: 'Feature completeness is a human judgement call here.',
+    };
+    mockMissionsFindFirst.mockReturnValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      title: 'Existing Mission',
+      workspaceId: 'ws-1',
+      scheduleId: null,
+      priority: 0,
+      goalCriteria: [description, { type: 'all_prs_merged' }],
+    });
+    const req = new NextRequest('http://localhost/api/missions/obj-1', {
+      method: 'PATCH',
+      body: JSON.stringify({ goalCriteria: [description] }),
+    });
+    const res = await PATCH(req, { params: makeParams('obj-1') });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/mechanical criterion/);
+  });
+
   it('rejects a PATCH that adds a prose criterion with no stated reason', async () => {
     const req = new NextRequest('http://localhost/api/missions/obj-1', {
       method: 'PATCH',

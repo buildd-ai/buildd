@@ -139,6 +139,14 @@ export function deriveTaskHealthSignal(
     mode?: string | null;
     creationSource?: string | null;
     workers?: Array<{ status: string }>;
+    /**
+     * True when this failed task's deliverable shipped anyway — its target PR
+     * merged, or a title-equivalent sibling task completed with a merged PR
+     * after it was created (`mission-task-superseded.ts`). A superseded
+     * failure never trips FAILING: the mission is not broken, a retry raced
+     * ahead of it and won.
+     */
+    superseded?: boolean;
   }>,
 ): Health {
   if (mission.dependsOnMissionId && !mission.dependencyMetAt) return 'BLOCKED';
@@ -146,7 +154,7 @@ export function deriveTaskHealthSignal(
 
   const countable = tasks.filter(isCountableHealthTask);
 
-  if (countable.some(t => t.status === 'failed')) return 'FAILING';
+  if (countable.some(t => t.status === 'failed' && !t.superseded)) return 'FAILING';
 
   const activeTasks = countable.filter(t =>
     ['pending', 'assigned', 'in_progress'].includes(t.status),

@@ -16,7 +16,6 @@ import {
   buildCodexInstructionDoc,
   writeCodexAgentsMd,
   restoreCodexAgentsMd,
-  DONE_SENTINEL,
   type AgentsMdWriteResult,
 } from './codex-instructions.js';
 import { setupWorktree, cleanupWorktree, collectGitStats } from './git-operations';
@@ -3228,12 +3227,11 @@ export class WorkerManager {
       // has none of these (no instructions/system-prompt option in codex-sdk@0.44.0),
       // and there is no Skill tool. We therefore compose a single instruction
       // document — role persona + INLINED skill content + (optionally) project
-      // CLAUDE.md + the <promise>DONE</promise> completion convention — and deliver
-      // it through Codex's native AGENTS.md, which it re-reads from cwd on every
-      // turn (durable across PR2's multi-turn review/nudge/steering loop, unlike a
-      // first-turn-only prompt preamble). The DONE instruction is what lets PR2's
-      // review-loop exit gate actually fire for Codex (R1). Must run before
-      // promptArg is built so the prompt pointer below is included.
+      // CLAUDE.md — and deliver it through Codex's native AGENTS.md, which it
+      // re-reads from cwd on every turn (durable across the multi-turn
+      // output-requirement-nudge/steering loop below, unlike a
+      // first-turn-only prompt preamble). Must run before promptArg is built
+      // so the prompt pointer below is included.
       if (isCodexTask) {
         try {
           // Role persona = the role's CLAUDE.md (the same text Claude loads from
@@ -3283,7 +3281,7 @@ export class WorkerManager {
           // Short pointer in the prompt so the very first turn is anchored to the
           // file even before the model decides to read it. AGENTS.md carries the
           // durable detail; this is just a nudge.
-          promptText = `Read AGENTS.md in the working directory for your role, applicable skills, and completion criteria (emit ${DONE_SENTINEL} when fully done).\n\n${promptText}`;
+          promptText = `Read AGENTS.md in the working directory for your role and applicable skills.\n\n${promptText}`;
         } catch (err) {
           console.error(`[Worker ${worker.id}] Failed to write Codex AGENTS.md:`, err);
         }
@@ -3358,19 +3356,16 @@ export class WorkerManager {
           }, sessionModel, (e: any) => this.emit(e));
         },
       } : {
-        // Codex branch: wire the shared MessageStream so review/nudge/steering
+        // Codex branch: wire the shared MessageStream so nudge/steering
         // enqueues drive multi-turn runs on a persistent Codex thread (Phase 1B),
         // mirroring how the Claude branch consumes `inputStream` via streamInput.
         inputStream,
       });
 
-      // Stream responses with ralph loop (prompt-based self-review)
+      // Stream responses, nudging the agent while the session is still alive
+      // when an explicit output requirement (PR/artifact) isn't met yet.
       let resultSubtype: string | undefined;
       let structuredOutput: Record<string, unknown> | undefined;
-      const taskTitle = worker.taskTitle || 'Untitled task';
-      const ralphTaskDescription = worker.taskDescription || (task as any).description || '';
-      const maxReviewIterations = (task.context as any)?.maxReviewIterations ?? 2;
-      let reviewIteration = 0;
       let outputReqNudgeCount = 0;
       const maxOutputReqNudges = 2;
 
@@ -3475,54 +3470,11 @@ export class WorkerManager {
             continue; // Keep session alive — agent needs to create the deliverable
           }
 
-          // Check if agent already passed review (said DONE)
-          const lastMsg = worker.lastAssistantMessage || '';
-          if (lastMsg.includes('<promise>DONE</promise>')) {
-            if (reviewIteration > 0) {
-              this.addMilestone(worker, { type: 'status', label: `Self-review passed (iteration ${reviewIteration})`, ts: Date.now() });
-              sessionLog(worker.id, 'info', 'ralph_review_passed', `iteration=${reviewIteration}`, worker.taskId);
-            }
-            break;
-          }
-
-          // Skip review for waiting/error states
-          if (worker.status === 'waiting' || worker.status === 'error') {
-            break;
-          }
-
-          // Check if we've exhausted review iterations
-          if (reviewIteration >= maxReviewIterations) {
-            this.addMilestone(worker, { type: 'status', label: `Self-review iterations exhausted (${reviewIteration}/${maxReviewIterations})`, ts: Date.now() });
-            sessionLog(worker.id, 'warn', 'ralph_review_exhausted', `iterations=${reviewIteration}`, worker.taskId);
-            break;
-          }
-
-          // Send self-review prompt back into the session
-          reviewIteration++;
-          const reviewPrompt = `Before completing, review your work against the original objective.
-
-**Task:** ${taskTitle}
-${ralphTaskDescription ? `**Description:** ${ralphTaskDescription}` : ''}
-
-Check your implementation:
-- Did you fully implement what was asked, or take shortcuts?
-- Any TODO comments, stubs, or placeholder code left behind?
-- Any features described in the task that you skipped or only partially implemented?
-- Did you remove or break existing functionality unnecessarily?
-
-If everything is complete and meets the objective, respond with exactly: <promise>DONE</promise>
-If something is missing or incomplete, describe what and fix it now.`;
-
-          this.addMilestone(worker, { type: 'status', label: `Self-review ${reviewIteration}/${maxReviewIterations}`, ts: Date.now() });
-          sessionLog(worker.id, 'info', 'ralph_review_start', `iteration=${reviewIteration}`, worker.taskId);
-          worker.currentAction = `Self-review (${reviewIteration}/${maxReviewIterations})`;
-          this.emit({ type: 'worker_update', worker });
-
-          const sessionRef = this.sessions.get(worker.id);
-          if (sessionRef) {
-            sessionRef.inputStream.enqueue(buildUserMessage(reviewPrompt, { sessionId: invocationSessionId }));
-          }
-          continue; // Don't break — keep streaming the agent's response
+          // No more turns to force — the SDK session ended naturally (or the
+          // worker is waiting/errored). Let post-loop cleanup below handle
+          // completion, including the fallback-summary path when the agent
+          // never called complete_task itself.
+          break;
         }
 
         if (event.type === 'progress' && event.message) {

@@ -29,6 +29,7 @@ import { canCompleteMission } from '@/lib/mission-completion';
 import { classifyMissionWait, type WaitClassifiableTask } from '@/lib/heartbeat-prepass';
 import { evaluateMissionWorkState } from '@/lib/mission-pr';
 import { deriveMissionStateView, type MissionStateInput, type MissionStateView } from '@/lib/mission-state-view';
+import { computeSupersededFailedTasks } from '@/lib/mission-task-superseded';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
 import {
   buildStateBecause,
@@ -124,6 +125,7 @@ type LoadedTask = {
   parentTaskId: string | null;
   creationSource: string | null;
   category: string | null;
+  subjectPrNumber: number | null;
   pathManifest: string[] | null;
   context: Record<string, unknown> | null;
   startAt: Date | null;
@@ -148,9 +150,9 @@ type LoadedTask = {
 
 const TASK_COLUMNS = {
   id: true, title: true, status: true, mode: true, kind: true, taskClass: true,
-  parentTaskId: true, creationSource: true, category: true, pathManifest: true,
-  context: true, startAt: true, loopConfig: true, loopState: true, result: true,
-  createdAt: true,
+  parentTaskId: true, creationSource: true, category: true, subjectPrNumber: true,
+  pathManifest: true, context: true, startAt: true, loopConfig: true, loopState: true,
+  result: true, createdAt: true,
 } as const;
 
 /**
@@ -263,9 +265,24 @@ async function viewForMission(missionId: string): Promise<{
   const heartbeatWaitingUntil =
     schedule?.lastDeferralReason === 'heartbeat_waiting' ? schedule?.nextRunAt ?? null : null;
 
-  const health = deriveTaskHealthSignal({ ...m, heartbeatWaitingUntil }, loaded);
-
   const deliverables = loaded.filter(isDeliverableTask);
+  const failedDeliverables = deliverables.filter(t => t.status === 'failed');
+  const supersededMap = await computeSupersededFailedTasks(
+    missionId,
+    (m.workspaceId as string | null) ?? null,
+    failedDeliverables.map(t => ({
+      id: t.id,
+      title: t.title,
+      subjectPrNumber: t.subjectPrNumber,
+      createdAt: t.createdAt,
+    })),
+  );
+
+  const health = deriveTaskHealthSignal(
+    { ...m, heartbeatWaitingUntil },
+    loaded.map(t => ({ ...t, superseded: supersededMap.has(t.id) })),
+  );
+
   const completedDeliverables = deliverables.filter(t => t.status === 'completed').length;
   const progress = deliverables.length > 0
     ? Math.round((completedDeliverables / deliverables.length) * 100)
@@ -301,7 +318,13 @@ async function viewForMission(missionId: string): Promise<{
 
   const activeAgents = loaded.flatMap(t => t.workers ?? []).filter(w => LIVE_WORKER_STATUSES.has(w.status)).length;
   const openTasks = deliverables.filter(t => OPEN_TASK_STATUSES.has(t.status));
-  const failedTasks = deliverables.filter(t => t.status === 'failed');
+  // Superseded failures shipped their deliverable under a different task/PR —
+  // see mission-task-superseded.ts. Excluded here so they never drive the
+  // mission into a `failing` state; reported separately below instead.
+  const failedTasks = failedDeliverables.filter(t => !supersededMap.has(t.id));
+  const supersededTasks = failedDeliverables
+    .filter(t => supersededMap.has(t.id))
+    .map(t => ({ task: t, superseded: supersededMap.get(t.id)! }));
 
   const input: MissionStateInput = {
     status: String(m.status),
@@ -341,6 +364,12 @@ async function viewForMission(missionId: string): Promise<{
       })),
       unmergedPrs: completion.awaitingMergeDetails ?? [],
       dependencyTitle: null,
+      supersededTasks: supersededTasks.map(({ task, superseded }) => ({
+        id: task.id,
+        title: task.title,
+        prNumber: superseded.prNumber,
+        supersedingTaskId: superseded.supersedingTaskId,
+      })),
     },
   };
 }

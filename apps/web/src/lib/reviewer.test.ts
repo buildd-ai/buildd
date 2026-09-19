@@ -14,6 +14,9 @@ let workerUpdateCalls: Array<{ set: any }> = [];
 // Fixture for the mission-criteria lookup createReviewerTask does when the
 // original task belongs to a mission. Null = task has no mission.
 let missionFindFirstResult: any = null;
+// Fixture for the Rule P1-7 attempt-phase read. Null = the reviewed task has no
+// phase, which is the majority case today.
+let parentPhaseRow: any = null;
 
 function whereResult(rows: any[]) {
   const p = Promise.resolve(rows) as Promise<any[]> & { returning: () => Promise<any[]> };
@@ -54,6 +57,12 @@ mock.module('@buildd/core/db', () => ({
       // silently answer the other query.
       tasks: {
         findFirst: mock((args: any) => {
+          // Three callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
+          // passes a `with: { workers }` relation; the pre-dispatch duplicate probe
+          // in createReviewerTask does not; and inheritPhaseFromParent asks for the
+          // two phase columns and nothing else. Dispatch on all three so one
+          // fixture cannot silently answer another query.
+          if (args?.columns?.missionPhaseIndex) return Promise.resolve(parentPhaseRow);
           if (args && !('with' in args)) {
             liveReviewerProbeArgs.push(args);
             return Promise.resolve(liveReviewerTaskResult);
@@ -92,6 +101,17 @@ mock.module('drizzle-orm', () => ({
 
 mock.module('@/lib/pr-activity-comment', () => ({
   appendPrActivity: mockAppendPrActivity,
+}));
+
+// buildDeltaReviewerContext dynamically imports '@/lib/github' only when a
+// caller omits prFiles/deltaFiles. Every existing test in this file supplies
+// those directly, so this mock is inert for them — it only engages for the
+// merge-commit-bounding regression tests below, which deliberately omit
+// deltaFiles to exercise the real fetch path.
+let githubApiImpl: (installationId: number, path: string) => Promise<unknown> = () =>
+  Promise.reject(new Error('unmocked githubApi call in this test'));
+mock.module('@/lib/github', () => ({
+  githubApi: (installationId: number, path: string) => githubApiImpl(installationId, path),
 }));
 
 import {
@@ -1218,6 +1238,81 @@ describe('buildDeltaReviewerContext', () => {
   });
 });
 
+describe('buildDeltaReviewerContext — merge-commit delta bounding', () => {
+  // Regression for a real PR (#2414): a request-changes verdict was resolved
+  // via `git merge origin/dev` instead of a rebase. The new head is a merge
+  // commit, so `compare/oldHead...newHead` reports every file dev moved on in
+  // between (merge-base(oldHead, newHead) is just oldHead, since newHead
+  // descends from it) — 77 unrelated files for a PR that only ever touched 3.
+  const PRIOR_VERDICT = {
+    headSha: 'old-sha',
+    verdict: 'request-changes' as const,
+    confidence: 0.7,
+    summary: 'Needs the config.enabled gate.',
+    feedback: 'Add a config.enabled check before the size-cap exemption.',
+    escalationReason: null,
+  };
+
+  const BASE = {
+    originalTaskId: 'original-2414',
+    originalTask: { title: 'fix(merge-policy): exempt release PRs from the line-count cap', description: null, pathManifest: null },
+    prNumber: 2414,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/2414',
+    headSha: 'merge-sha',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    priorVerdict: PRIOR_VERDICT,
+    // No deltaFiles — forces the real compare + pulls/files fetch path.
+  };
+
+  it('bounds the delta to files the PR itself touches, dropping unrelated dev-history churn', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/compare/')) {
+        return Promise.resolve({
+          files: [
+            { filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null },
+            // Unrelated files that only moved because dev was merged in.
+            { filename: 'apps/web/src/app/api/dispatch-doc-fix/route.ts', status: 'modified', additions: 40, deletions: 5, patch: null },
+            { filename: 'packages/core/drizzle/0165_schema.sql', status: 'added', additions: 200, deletions: 0, patch: null },
+          ],
+        });
+      }
+      if (path.includes('/files')) {
+        return Promise.resolve([
+          { filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null },
+        ]);
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    expect(prompt).toContain('packages/core/release-strategy.ts');
+    expect(prompt).not.toContain('dispatch-doc-fix');
+    expect(prompt).not.toContain('0165_schema.sql');
+  });
+
+  it('fails open to the unbounded compare result when the PR-files fetch errors', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/compare/')) {
+        return Promise.resolve({
+          files: [{ filename: 'packages/core/release-strategy.ts', status: 'modified', additions: 10, deletions: 0, patch: null }],
+        });
+      }
+      if (path.includes('/files')) {
+        return Promise.reject(new Error('GitHub API unavailable'));
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildDeltaReviewerContext(BASE);
+
+    // The compare fetch still succeeded, so the delta is not lost — it's just
+    // unbounded, same as before this fix.
+    expect(prompt).toContain('packages/core/release-strategy.ts');
+  });
+});
+
 describe('createReviewerTask — delta re-review', () => {
   it('creates a NEW reviewer task row (never mutates the prior terminal one) and marks it a delta', async () => {
     insertedTask = undefined;
@@ -1544,5 +1639,82 @@ describe('createReviewerTask — mission criteria', () => {
     });
 
     expect((insertedTask?.context as any).missionCriteria).toBeUndefined();
+  });
+});
+
+// ─── Reviewer role, kind and phase (mission-legibility.md §3, AC-16) ──────────
+
+describe('createReviewerTask — role, work-kind and inherited phase', () => {
+  const FULL_SHA = 'b'.repeat(40);
+
+  function params(overrides: Record<string, unknown> = {}) {
+    return {
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-16',
+      originalTask: {
+        title: 'Stamp phases in approve_plan',
+        description: null,
+        backend: 'claude' as const,
+        missionId: null,
+      },
+      worker: { branch: 'buildd/stamp-phases' },
+      prNumber: 2470,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/2470',
+      headSha: FULL_SHA,
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      ...overrides,
+    };
+  }
+
+  function reset() {
+    insertedTask = undefined;
+    liveReviewerTaskResult = null;
+    liveReviewerProbeArgs = [];
+    parentPhaseRow = null;
+  }
+
+  it('AC-16: carries the merge policy\'s reviewer slug AND kind "analysis"', async () => {
+    reset();
+    await createReviewerTask(params() as any);
+    // The role was never missing at the creation site — what was missing was a
+    // kind, which is why every reviewer row had to fall through to a
+    // title-prefix match to draw anything at all.
+    expect(insertedTask?.roleSlug).toBe('reviewer');
+    expect(insertedTask?.kind).toBe('analysis');
+    expect(insertedTask?.taskClass).toBe('attempt');
+  });
+
+  it('honours a workspace that names a different reviewer role', async () => {
+    reset();
+    await createReviewerTask(params({ reviewerRole: 'spec-validator' }) as any);
+    expect(insertedTask?.roleSlug).toBe('spec-validator');
+    // The role is read from the merge policy, never inferred from the kind.
+    expect(insertedTask?.kind).toBe('analysis');
+  });
+
+  it('AC-16 / Rule P1-7: the review pass inherits its parent\'s mission phase', async () => {
+    reset();
+    parentPhaseRow = { missionPhaseIndex: 2, missionPhaseLabel: 'Population' };
+    await createReviewerTask(params() as any);
+    expect(insertedTask?.missionPhaseIndex).toBe(2);
+    expect(insertedTask?.missionPhaseLabel).toBe('Population');
+  });
+
+  it('a parent with no phase gives the review pass no phase — never "the live phase"', async () => {
+    reset();
+    parentPhaseRow = null;
+    await createReviewerTask(params() as any);
+    expect(insertedTask?.missionPhaseIndex).toBeNull();
+    expect(insertedTask?.missionPhaseLabel).toBeNull();
+  });
+
+  it('a half-set parent row is treated as no phase, not as half of one', async () => {
+    reset();
+    parentPhaseRow = { missionPhaseIndex: 2, missionPhaseLabel: null };
+    await createReviewerTask(params() as any);
+    expect(insertedTask?.missionPhaseIndex).toBeNull();
+    expect(insertedTask?.missionPhaseLabel).toBeNull();
   });
 });

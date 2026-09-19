@@ -5,7 +5,7 @@ import type { AgentBackend, RunStreamedOpts, BackendEvent } from './types.js';
 export interface ClaudeBackendConfig {
   /** Pre-built query options from workers.ts (excludes sessionId, cwd, model, maxTurns, env — those come from RunStreamedOpts) */
   options: Record<string, unknown>;
-  /** Multi-turn input stream (ralph loop, user responses, nudges) */
+  /** Multi-turn input stream (output-requirement nudges, user responses, steering) */
   inputStream: AsyncIterable<unknown>;
   /** Called once with queryInstance immediately after query() is created */
   onInit?: (queryInstance: ReturnType<typeof query>) => void;
@@ -61,7 +61,7 @@ export class ClaudeBackend implements AgentBackend {
 
     this.queryInstance = queryInstance;
 
-    // Connect multi-turn input stream (allows ralph loop and user responses)
+    // Connect multi-turn input stream (allows output-requirement nudges and user responses)
     queryInstance.streamInput(this.config.inputStream as any);
 
     // Notify caller with the query instance so they can set up discovery/rewindFiles
@@ -86,22 +86,40 @@ export class ClaudeBackend implements AgentBackend {
           }
         }
       } else if (msg.type === 'result') {
-        if (msgAny.structured_output && typeof msgAny.structured_output === 'object') {
-          lastStructuredOutput = msgAny.structured_output;
-        }
+        // A `result` message can be nominally subtype 'success' while still
+        // carrying is_error: true — the SDK's own encoding for a turn that
+        // ended on an API error (e.g. a budget/session wall) without
+        // throwing. Treating that as an ordinary turn_complete makes
+        // workers.ts report the worker as 'completed' with no error text.
+        // Yield 'error' instead so the caller's for-await throws and this
+        // flows through the same exception-catch path (isBudgetExhaustionError,
+        // status: 'failed') as a thrown SDK error.
+        if (msgAny.is_error === true) {
+          yield {
+            type: 'error',
+            error: typeof msgAny.result === 'string' && msgAny.result.trim()
+              ? msgAny.result
+              : 'Claude Agent SDK returned an error result',
+          };
+          return;
+        } else {
+          if (msgAny.structured_output && typeof msgAny.structured_output === 'object') {
+            lastStructuredOutput = msgAny.structured_output;
+          }
 
-        let inputTokens: number | undefined;
-        let outputTokens: number | undefined;
-        if (msgAny.usage) {
-          inputTokens = (msgAny.usage.input_tokens ?? 0) + (msgAny.usage.cache_read_input_tokens ?? 0);
-          outputTokens = msgAny.usage.output_tokens ?? 0;
-        }
+          let inputTokens: number | undefined;
+          let outputTokens: number | undefined;
+          if (msgAny.usage) {
+            inputTokens = (msgAny.usage.input_tokens ?? 0) + (msgAny.usage.cache_read_input_tokens ?? 0);
+            outputTokens = msgAny.usage.output_tokens ?? 0;
+          }
 
-        yield {
-          type: 'turn_complete',
-          ...(inputTokens !== undefined ? { usage: { inputTokens, outputTokens: outputTokens ?? 0 } } : {}),
-          ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
-        };
+          yield {
+            type: 'turn_complete',
+            ...(inputTokens !== undefined ? { usage: { inputTokens, outputTokens: outputTokens ?? 0 } } : {}),
+            ...(lastStructuredOutput !== undefined ? { structuredOutput: lastStructuredOutput } : {}),
+          };
+        }
       }
     }
 

@@ -46,6 +46,24 @@ export interface ResolveWorktreeBaseOptions {
  * So divergence only vetoes a resume candidate. `'missing'` still vetoes both —
  * git cannot cut a worktree from a ref that does not exist.
  *
+ * A missing `resumeBranch` does NOT veto a still-valid `declaredBase`, though.
+ * The specific branch a prior attempt pushed to being gone says nothing about
+ * whether the task's own declared base (a stacked predecessor, or a mission
+ * integration branch under Option A′) is still there — and for a
+ * mission-branch task, falling straight to trunk from here reproduces the bug
+ * the declared_base path above already guards against: the worktree is cut
+ * from trunk while task context still names the real base, so the PR opens
+ * against a base its commits were never derived from. Worse, that task's own
+ * `branch` (its `workers.branch`, set via `sharedHeadBranch` precedence — see
+ * branch-names.ts) is often the literal mission integration branch name, so
+ * the fresh worktree branch collides with the one head `create_pr` refuses to
+ * accept for a task PR. So on a missing resumeBranch, cascade to the declared
+ * base (validated the same way the declared_base path validates it) before
+ * giving up on trunk. A *diverged* resumeBranch skips this cascade and still
+ * falls straight to trunk — a resume branch 50+ commits ahead of trunk is a
+ * red flag about that attempt specifically, independent of whatever base the
+ * task declared.
+ *
  * @returns A git ref like `origin/main` or `origin/buildd/abc-fix-tests`
  */
 export async function resolveWorktreeBase(
@@ -53,7 +71,6 @@ export async function resolveWorktreeBase(
 ): Promise<string> {
   const { defaultBranch, context, fetchBranch, log, onFallback } = opts;
 
-  // Prefer resumeBranch (new canonical field) over baseBranch (legacy CI retry field)
   const resumeCandidate =
     typeof context?.resumeBranch === 'string' && context.resumeBranch.length > 0
       ? (context.resumeBranch as string)
@@ -62,43 +79,50 @@ export async function resolveWorktreeBase(
     typeof context?.baseBranch === 'string' && (context.baseBranch as string).length > 0
       ? (context.baseBranch as string)
       : undefined;
-  const candidate = resumeCandidate ?? declaredBase;
-  /** Which field the candidate came from — decides how `'diverged'` is read. */
-  const kind: 'resume' | 'declared_base' = resumeCandidate ? 'resume' : 'declared_base';
 
-  if (!candidate) {
-    return `origin/${defaultBranch}`;
+  // The declared_base ladder rung: used both when there's no resume candidate
+  // at all, and as the resume path's fallback once resumeBranch turns out to
+  // be missing.
+  const resolveDeclaredBaseOrDefault = async (): Promise<string> => {
+    if (!declaredBase) return `origin/${defaultBranch}`;
+    if (!fetchBranch) return `origin/${declaredBase}`;
+    const result = await fetchBranch(declaredBase);
+    if (result === 'missing') {
+      log?.(`[worktree] baseBranch ${declaredBase} not found on remote — falling back to ${defaultBranch}`);
+      onFallback?.({ candidate: declaredBase, reason: 'missing' });
+      return `origin/${defaultBranch}`;
+    }
+    // 'diverged' is expected, not a fault: a declared base is supposed to be
+    // ahead of trunk. Divergence only vetoes a resume branch.
+    return `origin/${declaredBase}`;
+  };
+
+  if (!resumeCandidate) {
+    return resolveDeclaredBaseOrDefault();
   }
 
   if (!fetchBranch) {
     // No probe available — return optimistically (backward compat)
-    return `origin/${candidate}`;
+    return `origin/${resumeCandidate}`;
   }
 
-  const label = kind === 'resume' ? 'resumeBranch' : 'baseBranch';
-  const result = await fetchBranch(candidate);
-  if (result === 'missing') {
-    log?.(`[worktree] ${label} ${candidate} not found on remote — falling back to ${defaultBranch}`);
-    onFallback?.({ candidate, reason: 'missing' });
-    return `origin/${defaultBranch}`;
+  const result = await fetchBranch(resumeCandidate);
+  if (result === 'ok') {
+    return `origin/${resumeCandidate}`;
   }
   if (result === 'diverged') {
-    if (kind === 'declared_base') {
-      // Expected, not a fault: a declared base is supposed to be ahead of
-      // trunk. Logged with the count's meaning named so this is not mistaken
-      // for a swallowed error.
-      log?.(
-        `[worktree] baseBranch ${candidate} is far ahead of ${defaultBranch} — honouring it anyway ` +
-        `(a declared base is expected to lead trunk; divergence only vetoes a resume branch)`,
-      );
-      return `origin/${candidate}`;
-    }
-    log?.(`[worktree] resumeBranch ${candidate} is diverged beyond recovery — falling back to ${defaultBranch}`);
-    onFallback?.({ candidate, reason: 'diverged' });
+    log?.(`[worktree] resumeBranch ${resumeCandidate} is diverged beyond recovery — falling back to ${defaultBranch}`);
+    onFallback?.({ candidate: resumeCandidate, reason: 'diverged' });
     return `origin/${defaultBranch}`;
   }
 
-  return `origin/${candidate}`;
+  // result === 'missing'
+  log?.(
+    `[worktree] resumeBranch ${resumeCandidate} not found on remote — falling back to ` +
+    (declaredBase ? `declared base ${declaredBase}` : defaultBranch),
+  );
+  onFallback?.({ candidate: resumeCandidate, reason: 'missing' });
+  return resolveDeclaredBaseOrDefault();
 }
 
 /**

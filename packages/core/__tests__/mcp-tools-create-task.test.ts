@@ -301,6 +301,16 @@ describe('create_task — parentTaskId support', () => {
     )).rejects.toThrow('Unknown create_task parameter(s): startTomorrow');
     expect(mockApi).not.toHaveBeenCalled();
   });
+
+  it('rejects taskClass with a hint pointing to outputRequirement instead of a bare unknown-param error', async () => {
+    expect(handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'create_task',
+      { title: 'Task', description: 'Test', taskClass: 'bookkeeping' },
+      createMockContext(),
+    )).rejects.toThrow('taskClass is stamped server-side; use outputRequirement instead');
+    expect(mockApi).not.toHaveBeenCalled();
+  });
 });
 
 describe('create_task — similar open task detection', () => {
@@ -750,7 +760,17 @@ describe('create_task — kind/complexity routing inputs', () => {
 
   it('documents kind and complexity in the create_task params description', () => {
     const description = buildParamsDescription(['create_task']);
-    expect(description).toContain('kind?');
+    // `kind` deliberately carries NO `?` marker (mission-legibility Rule K2-12).
+    // It stays optional in the schema — nothing 400s on its absence — but the
+    // description stops presenting it as an afterthought, because it is the
+    // only thing any surface draws a task's glyph from and nothing infers it
+    // later from the title.
+    expect(description).not.toContain('kind?');
+    expect(description).toContain('kind (state it on every task');
+    expect(description).toContain('the SHAPE of the work, not its subject');
+    for (const k of ['coordination', 'engineering', 'research', 'writing', 'design', 'analysis', 'observation']) {
+      expect(description).toContain(k);
+    }
     expect(description).toContain('complexity?');
   });
 });

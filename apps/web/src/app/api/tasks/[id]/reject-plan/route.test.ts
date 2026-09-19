@@ -30,6 +30,12 @@ mock.module('@/lib/team-access', () => ({
 // Track update calls (rejection persistence)
 const mockUpdateSetCalls: any[] = [];
 const mockUpdateReturning = mock(() => [{ id: 'plan-task-1' }] as any[]);
+// Ledger writes are tracked separately from the planning-task rejection write.
+const mockDiscrepancyUpdateSets: any[] = [];
+let mockDiscrepancyUpdateReturning: any[] = [];
+
+const schemaTasks = { id: 'id', parentTaskId: 'parentTaskId', context: 'context' };
+const schemaSpecDiscrepancies = { id: 'sd.id', proposalRejectedReason: 'sd.proposal_rejected_reason' };
 
 mock.module('@buildd/core/db', () => ({
   db: {
@@ -42,8 +48,12 @@ mock.module('@buildd/core/db', () => ({
         return { returning: mockInsertReturning };
       },
     }),
-    update: () => ({
+    update: (table: any) => ({
       set: (vals: any) => {
+        if (table === schemaSpecDiscrepancies) {
+          mockDiscrepancyUpdateSets.push(vals);
+          return { where: () => ({ returning: () => Promise.resolve(mockDiscrepancyUpdateReturning) }) };
+        }
         mockUpdateSetCalls.push(vals);
         return { where: () => ({ returning: mockUpdateReturning }) };
       },
@@ -54,11 +64,13 @@ mock.module('@buildd/core/db', () => ({
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conds: any[]) => ({ conds, type: 'and' }),
+  inArray: (field: any, values: any) => ({ field, values, type: 'inArray' }),
   sql: (strings: any, ...values: any[]) => ({ strings, values, type: 'sql' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({
-  tasks: { id: 'id', parentTaskId: 'parentTaskId', context: 'context' },
+  tasks: schemaTasks,
+  specDiscrepancies: schemaSpecDiscrepancies,
 }));
 
 // Import handler AFTER mocks
@@ -103,6 +115,8 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
     mockUpdateSetCalls.length = 0;
     mockUpdateReturning.mockReset();
     mockUpdateReturning.mockReturnValue([{ id: 'plan-task-1' }]);
+    mockDiscrepancyUpdateSets.length = 0;
+    mockDiscrepancyUpdateReturning = [];
 
     // Default: grant access
     mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
@@ -336,5 +350,75 @@ describe('POST /api/tasks/[id]/reject-plan', () => {
 
     expect(response.status).toBe(409);
     expect(mockInsertValues).toHaveLength(0);
+  });
+  // ── Doc-fix proposal rejection ──────────────────────────────────────────────
+  // A doc-fix task's plan is an OPTIONAL net-enhancement proposal; the docs-only
+  // PR already shipped independently of it. Rejecting closes the proposal and
+  // keeps the reason on the ledger rows — it must NOT respawn a planning task,
+  // which would re-dispatch a worker against a document that is already fixed.
+
+  const DOC_FIX_TASK = {
+    id: 'plan-task-1',
+    mode: 'planning',
+    status: 'completed',
+    workspaceId: 'ws-1',
+    parentTaskId: null,
+    missionId: null,
+    priority: 1,
+    title: 'Reconcile spec with shipped code: docs/design/x.md',
+    description: 'Reconcile the doc.',
+    context: {
+      planOptional: true,
+      specDocFix: {
+        specPath: 'docs/design/x.md',
+        assertionIds: ['a-1', 'a-2'],
+        discrepancyIds: ['d-1', 'd-2'],
+        workspaceId: 'ws-1',
+      },
+    },
+    workspace: { id: 'ws-1' },
+  };
+
+  it('rejecting a doc-fix proposal retains the reason on every discrepancy row it named', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(DOC_FIX_TASK);
+    mockDiscrepancyUpdateReturning = [{ id: 'd-1' }, { id: 'd-2' }];
+
+    const request = createMockRequest({ body: { feedback: 'Out of scope for now — revisit after the broker lands.' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.proposalRejected).toBe(true);
+    expect(data.specPath).toBe('docs/design/x.md');
+    expect(data.discrepancyIds).toEqual(['d-1', 'd-2']);
+
+    expect(mockDiscrepancyUpdateSets).toHaveLength(1);
+    expect(mockDiscrepancyUpdateSets[0].proposalRejectedReason).toBe(
+      'Out of scope for now — revisit after the broker lands.',
+    );
+  });
+
+  it('rejecting a doc-fix proposal does NOT respawn a planning task', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(DOC_FIX_TASK);
+
+    const request = createMockRequest({ body: { feedback: 'No thanks' } });
+    const response = await callHandler(POST, request, 'plan-task-1');
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).taskId).toBeNull();
+    expect(mockInsertValues).toHaveLength(0);
+  });
+
+  it('the rejection is still persisted on the doc-fix task itself', async () => {
+    mockGetCurrentUser.mockResolvedValue({ id: 'user-123', email: 'user@test.com' });
+    mockTasksFindFirst.mockResolvedValue(DOC_FIX_TASK);
+
+    const request = createMockRequest({ body: { feedback: 'No thanks' } });
+    await callHandler(POST, request, 'plan-task-1');
+
+    expect(mockUpdateSetCalls).toHaveLength(1);
+    expect(mockUpdateSetCalls[0].context.planRejection.feedback).toBe('No thanks');
   });
 });

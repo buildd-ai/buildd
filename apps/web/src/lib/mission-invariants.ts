@@ -443,26 +443,53 @@ function prOpenedAt(w: SnapshotWorker): Date {
 }
 
 /**
- * Base drift: how many OTHER PRs merged into this PR's base after it opened.
+ * The anchor for age/drift purposes: the PR's open time, or the moment a
+ * reviewer last rendered a verdict on it, whichever is later.
  *
- * Strictly after: a merge that landed before this PR opened is already in its
- * base and is not drift. Counting those would report every PR in a busy
- * workspace within its first hour.
+ * A review task only completes against the PR's CURRENT head, and a rebase
+ * triggers a fresh one — so `decidedAt` is a real "someone just looked at
+ * this" signal, not a stand-in for staleness. Without this, a PR that gets
+ * rebased and re-escalated to a human every few hours still reads as though
+ * nobody has touched it since it was first opened, and the invariant refiles
+ * on it every single sweep forever, even minutes after its last review.
+ */
+function lastLookedAt(snapshot: InvariantSnapshot, w: SnapshotWorker): Date {
+  const opened = prOpenedAt(w);
+  if (w.prNumber === null) return opened;
+  const review = snapshot.reviews.find(
+    r => r.workspaceId === w.workspaceId && r.prNumber === w.prNumber,
+  );
+  if (!review || review.decidedAt <= opened) return opened;
+  return review.decidedAt;
+}
+
+/**
+ * Base drift: how many OTHER PRs merged into this PR's base after `anchor`
+ * (default: when the PR opened).
+ *
+ * Strictly after: a merge that landed before the anchor is already accounted
+ * for and is not drift. Counting those would report every PR in a busy
+ * workspace within its first hour — or, when the caller passes a review's
+ * `decidedAt` as the anchor, every reviewed PR the moment the review lands.
  *
  * Undercounts rather than overcounts by design — the loader supplies a bounded,
  * recent window of merges, so a PR older than that window is credited with less
  * drift than it really has and the invariant stays quiet. A signal that files
  * tasks must fail towards silence.
  */
-export function countBaseDrift(snapshot: InvariantSnapshot, w: SnapshotWorker): number {
+export function countBaseDrift(
+  snapshot: InvariantSnapshot,
+  w: SnapshotWorker,
+  anchor: Date = prOpenedAt(w),
+): number {
   const base = w.prBaseRef;
   if (!base) return 0;
-  const openedAt = prOpenedAt(w).getTime();
+  const anchorMs = anchor.getTime();
   let drift = 0;
   for (const m of snapshot.baseMerges) {
     if (m.workspaceId !== w.workspaceId) continue;
     if (m.baseRef !== base) continue;
-    if (m.mergedAt.getTime() <= openedAt) continue;
+    if (m.mergedAt.getTime() <= anchorMs) continue;
     drift++;
   }
   return drift;
@@ -961,17 +988,29 @@ export const INVARIANTS: Invariant[] = [
         // land there continuously, and the mission's single PR into trunk is
         // the gate that matters. Only ordinary bases decay.
         if (isMissionBranch(w.prBaseRef)) continue;
-        const ageMs = olderThan(now, prOpenedAt(w), PR_OUTPACED_MS);
+        // Anchored on the later of PR-open and last review verdict, so a PR
+        // that was rebased and re-reviewed hours ago does not read as though
+        // nobody has looked at it since the moment it first opened.
+        const anchor = lastLookedAt(s, w);
+        const ageMs = olderThan(now, anchor, PR_OUTPACED_MS);
         if (ageMs === null) continue;
-        const drift = countBaseDrift(s, w);
+        const drift = countBaseDrift(s, w, anchor);
         if (drift < PR_OUTPACED_DRIFT) continue;
+        const reviewed = anchor.getTime() !== prOpenedAt(w).getTime();
         out.push({
-          entityId: w.id,
-          entityKind: 'worker',
+          // The PR, not the worker row, is what's decaying, and it's the PR
+          // that must dedupe: a worker id is not guaranteed stable across two
+          // sweep runs against what is, to a human, the same breach — see
+          // `orphaned_integration_base` just above, which dedupes the same way
+          // for the same reason.
+          entityId: String(w.prNumber),
+          entityKind: 'pull_request',
           workspaceId: w.workspaceId,
           detail:
-            `PR #${w.prNumber} open ${Math.round(ageMs / HOUR)}h; ` +
-            `${drift} merges into '${w.prBaseRef}' since it opened` +
+            (reviewed
+              ? `PR #${w.prNumber} last reviewed ${Math.round(ageMs / HOUR)}h ago; `
+              : `PR #${w.prNumber} open ${Math.round(ageMs / HOUR)}h; `) +
+            `${drift} merges into '${w.prBaseRef}' since ${reviewed ? 'that review' : 'it opened'}` +
             (w.prUrl ? ` (${w.prUrl})` : ''),
           ageMs,
         });

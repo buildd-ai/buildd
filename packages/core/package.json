@@ -1,6 +1,6 @@
 {
   "name": "@buildd/core",
-  "version": "0.214.0",
+  "version": "0.215.5",
   "type": "module",
   "scripts": {
     "db:generate": "drizzle-kit generate",
@@ -21,6 +21,7 @@
     "./model-tier-registry": "./model-tier-registry.ts",
     "./model-tier-defaults": "./model-tier-defaults.ts",
     "./model-tier-liveness": "./model-tier-liveness.ts",
+    "./model-capability-requirements": "./model-capability-requirements.ts",
     "./model-display": "./model-display.ts",
     "./backend-policy": "./backend-policy.ts",
     "./branch-names": "./branch-names.ts",
@@ -38,11 +39,13 @@
     "./memory-file-scope": "./memory-file-scope.ts",
     "./memory-digest-readout": "./memory-digest-readout.ts",
     "./memory-digest-readout-source": "./memory-digest-readout-source.ts",
+    "./experiment-cleanup": "./experiment-cleanup.ts",
     "./task-path-inference": "./task-path-inference.ts",
     "./tenant-crypto": "./tenant-crypto.ts",
     "./mission-helpers": "./mission-helpers.ts",
     "./mission-completion-codes": "./mission-completion-codes.ts",
     "./mission-integration": "./mission-integration.ts",
+    "./task-title": "./task-title.ts",
     "./pr-lede": "./pr-lede.ts",
     "./release-queue-scope": "./release-queue-scope.ts",
     "./mission-control-capabilities": "./mission-control-capabilities.ts",
@@ -53,6 +56,7 @@
     "./spec-discrepancy-intake": "./spec-discrepancy-intake.ts",
     "./spec-discrepancy-dispatch": "./spec-discrepancy-dispatch.ts",
     "./spec-discrepancy-ledger": "./spec-discrepancy-ledger.ts",
+    "./spec-doc-fix": "./spec-doc-fix.ts",
     "./release-strategy": "./release-strategy.ts",
     "./branch-strategy": "./branch-strategy.ts",
     "./knowledge-store": "./knowledge-store/index.ts",
@@ -94,12 +98,12 @@
     "./initiative-metric-registry": "./initiative-metric-registry.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.231",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.272",
     "@ast-grep/napi": "^0.45.0",
     "@buildd/shared": "workspace:*",
     "@neondatabase/serverless": "^1.0.0",
-    "@openai/codex-sdk": "^0.154.0",
-    "dotenv": "^17.0.0",
+    "@openai/codex-sdk": "^0.155.0",
+    "dotenv": "^18.0.0",
     "drizzle-orm": "^0.45.2",
     "server-only": "^0.0.1",
     "zod": "^4.3.6"

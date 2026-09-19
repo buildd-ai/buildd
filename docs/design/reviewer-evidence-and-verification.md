@@ -1,14 +1,18 @@
 ---
-status: proposed
+status: partially
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "reviewer-patch"
     type: "symbol"
     name: "renderReviewerPatch"
     path: "apps/web/src/lib/reviewer-patch.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "Shipped and stable (T1, #2107) — renderReviewerPatch exists and is exercised by reviewer-patch.test.ts. Kept for regression coverage, not promoting the whole design to 'implemented': T3, T4, T6, T7, T8, the rest of T9a, and T9c are still unbuilt (see Handoff)."
   - id: "reviewer-patch-tests"
     type: "test_file"
     path: "apps/web/src/lib/reviewer-patch.test.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "Shipped and stable (T1, #2107) — same rationale as reviewer-patch: this design stays 'partially' until T3, T4, T6, T7, T8, the rest of T9a, and T9c land (see Handoff)."
   - id: "request-changes-verifier"
     type: "config_key"
     key: "request-changes"
@@ -16,7 +20,10 @@ assertions:
 ---
 # Reviewer Evidence and Verification
 
-**Status:** Proposed
+**Status:** Partially shipped — T1, T2, T5, T9b and T10 of the Handoff table
+landed (#2107, #2108, #2113, #2111, #2112); T3, T4, T6, T7, T8, T9a and T9c
+have not. See "Current state" and "Handoff" below for what each piece actually
+does today.
 **Related:** `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/default-roles.ts`,
 `apps/web/src/lib/reviewer-gate.ts`, `apps/web/src/lib/reviewer-evidence.ts`,
 `apps/web/src/lib/merge-policy.ts`, `apps/web/src/lib/pr-review-request.ts`,
@@ -41,10 +48,14 @@ description from the GitHub *files* endpoint and renders one line per file:
   - apps/web/src/lib/foo.test.ts (+40/-10) [modified]
 ```
 
-No patch text is fetched, here or anywhere in the runner. The reviewer role
-prompt (`default-roles.ts`, slug `reviewer`) nonetheless opens with "You
-receive: The PR diff", and asks the agent to judge scope creep, spec
-conformance and "obvious regressions" from that. Three consequences:
+No patch text was fetched, here or anywhere in the runner — T1/T2 below have
+since shipped a renderer and wired it into `buildReviewerContext`, but behind
+`policyConfig.reviewerPatchEvidence`, defaulting off. For any workspace that
+has not opted in, the description below is still exactly what the reviewer
+sees. The reviewer role prompt (`default-roles.ts`, slug `reviewer`)
+nonetheless opens with "You receive: The PR diff", and asks the agent to judge
+scope creep, spec conformance and "obvious regressions" from that. Three
+consequences:
 
 1. **Verdicts are guesses about content the model never read.** A judgement of
    "no obvious regressions" over a file list is not a review; it is a review
@@ -52,9 +63,10 @@ conformance and "obvious regressions" from that. Three consequences:
    stale-snapshot write, a message rendered in a format the receiving tool
    rejects, a turn counter incremented on a bookkeeping request — is
    unreachable by construction.
-2. **The declared tool restriction is not enforced, and three UI surfaces say
-   otherwise.** See "The allowedTools gap" below — this is a product problem as
-   much as a runtime one.
+2. **The declared tool restriction is still not enforced for the primary
+   agent.** The three UI surfaces that used to claim otherwise have since been
+   corrected (T9b, #2111) to say what the control actually governs. See "The
+   allowedTools gap" below — enforcement itself (T9c) is what's left.
 3. **The output shape maximises false rejections.** `REVIEWER_TASK_OUTPUT_SCHEMA`
    (`reviewer.ts`) asks for verdict + confidence + summary + actionable feedback
    in one pass. Published measurements put wrong-rejection of *correct* code at
@@ -73,13 +85,15 @@ is a filename list.
 | Piece | Where | Behaviour today |
 |---|---|---|
 | Reviewer task creation | `reviewer.ts` `createReviewerTask` | inserts task with `roleSlug: reviewerRole`, `outputSchema: REVIEWER_TASK_OUTPUT_SCHEMA`, no `skillSlugs` |
-| Evidence assembly | `reviewer.ts` `buildReviewerContext` | file list + counts, task description, artifact previews, doctrine prose |
+| Evidence assembly | `reviewer.ts` `buildReviewerContext` | file list + counts, task description, artifact previews, doctrine prose; renders the patch (`renderReviewerPatch`) when `policyConfig.reviewerPatchEvidence` is set — default off (T1/T2, #2107/#2108) |
 | On-demand review | `pr-review-request.ts` | adopts an external PR as task+worker, then same path |
 | Verdict handling | `apps/web/src/app/api/workers/[id]/route.ts` | approve → policy decides merge; request-changes → retry iteration; escalate → human |
 | Gate resolution | `reviewer-gate.ts` `resolveReviewerGate` | maps reviewer task status to gate state |
-| Escalation triggers | role prompt prose + `preflightEscalationCheck` | schema/deny-path preflight is server-side; the rest is asked of the model |
+| Escalation triggers | role prompt prose + `preflightEscalationCheck` + `enforceServerSideEscalation` | schema/deny-path preflight runs before dispatch, and is re-derived from the file list again at verdict time (T5, #2113) — overriding a model `approve` when the current files demand a human; the rest is asked of the model |
 | Confidence | `merge-policy.ts` `maxConfidenceThreshold` | model self-reports `confidence` in the same call that makes the claim |
-| Tool access | `apps/runner/src/workers.ts` | role `allowedTools` unenforced for the main agent (see Problem 2) |
+| Tool access | `apps/runner/src/workers.ts` | role `allowedTools` still unenforced for the main agent (see Problem 2; the UI that used to misstate this was fixed, T9b) |
+| Untrusted text | `untrusted-text.ts` `sanitizeUntrustedText` | strips HTML comments, invisible/bidi characters, and structure-impersonating markdown from PR title/body/summary/feedback before they reach the prompt (#2110) — not yet applied to the rendered patch text itself |
+| Auto-merge bound on a model `approve` | `auto-merge-bound.ts` `evaluateModelApproveBound` | base-ref-keyed: refuses unless the PR's base is the mission's own integration branch (never a protected trunk), and requires a check run that actually reached `success` for the head SHA (T10, #2112) |
 
 Retrieval that already exists and the reviewer never calls: `recall` over the
 `spec`, `code`, `pr`, `task`, `artifact` corpora (`packages/core/knowledge-store/types.ts`),
@@ -101,33 +115,35 @@ bundles into subagents (`useSkillAgents`), where it becomes each subagent's
 empty. Reviewer tasks attach no skills. So a reviewer session runs with full
 default tools: shell, file writes, network, `gh`.
 
-The product surfaces disagree with the runtime in three places:
+**This has been fixed on the UI side (T9b, #2111).** The three surfaces below
+used to disagree with the runtime; they now import a shared
+`apps/web/src/lib/role-tool-scope.ts`, which relabels the control "Subagent
+Tools", states in-place that it "applies when this role runs as a skill
+subagent — it does not narrow the main agent on a task", and summarises the
+selection as "Subagent defaults" / "N subagent tools" instead of the old
+"All allowed" / "N restricted" phrasing that implied a restriction on the
+primary agent:
 
-| Surface | What it shows | Reality |
+| Surface | Before (T9b) | Now |
 |---|---|---|
-| `workspaces/[id]/skills/[skillId]/RoleEditor.tsx` | an "Allowed Tools" panel of toggleable tool chips (`Read`, `Write`, `Edit`, `Bash`, `Grep`, `Glob`, `WebSearch`, `WebFetch`, `Agent`, `NotebookEdit`) whose summary reads **"All allowed"** when empty and **"N restricted"** when set | the count is inert for the primary agent |
-| `team/[slug]/settings/TeamRoleEditor.tsx` | `allowedTools` as one of three per-workspace **overridable** fields, with Inherited / overridden badges | an override that changes nothing |
-| `workspaces/[id]/skills/SkillList.tsx` | a per-role tool count in the list | same |
+| `workspaces/[id]/skills/[skillId]/RoleEditor.tsx` | an "Allowed Tools" panel whose summary read **"All allowed"** / **"N restricted"** | "Subagent Tools", `subagentToolsSummary()` |
+| `team/[slug]/settings/TeamRoleEditor.tsx` | `allowedTools` as an overridable field implying an override changed agent authority | same shared label and note |
+| `workspaces/[id]/skills/SkillList.tsx` | a per-role tool count read as a restriction | `subagentToolsSummary()` |
 
-This is the worst shape a security control can take: it is discoverable, it has
-a governance model (team default, workspace override, inheritance badge), it
-reports a state ("N restricted"), it persists, and it does nothing. A user
-tightening a role's tools gets a saved value, a changed badge, and an agent with
-unchanged authority. Nobody is warned, and the failure is silent in the safe
-direction for the UI and the unsafe direction for the system.
+What was true before the fix, and remains true today, is the runtime half:
+the count still governs nothing for the primary agent. A user restricting a
+role's subagent tools gets a saved value, a correctly-scoped label, and a
+primary agent whose authority is unchanged — that's now stated up front
+instead of silently implied otherwise.
 
-Two ways out, and the order matters:
-
-- **Make the runtime match the UI.** Apply role `allowedTools` to the primary
-  agent. This is a runner change, so it only takes effect on a release to
-  `main`, and it flips the tool surface of every role at once. Most roles in a
-  mature workspace do declare an allowlist, and a few declare MCP-only lists
-  that omit `Read`/`Edit`/`Bash` entirely — those agents would lose file and
-  shell access the moment enforcement lands. So it needs a per-role audit and a
-  rollout, not a one-line change.
-- **Make the UI match the runtime**, immediately: label the panel as applying
-  to skill subagents only, or hide it for roles with no skills attached. Cheap,
-  honest, and it stops new roles being configured on a false premise.
+**The runtime fix (T9c) has not shipped.** Applying role `allowedTools` to the
+primary agent is a runner change, so it only takes effect on a release to
+`main`, and it flips the tool surface of every role at once. Most roles in a
+mature workspace do declare an allowlist, and a few declare MCP-only lists
+that omit `Read`/`Edit`/`Bash` entirely — those agents would lose file and
+shell access the moment enforcement lands. So it needs a per-role audit and a
+rollout, not a one-line change. Its dependency (T1, patch pre-injection) has
+since landed, so T9c is now unblocked — see "Handoff".
 
 **Enforcement has a dependency on this design.** Today the reviewer needs shell
 to have any hope of seeing a diff. Restricting it to `mcp__buildd__buildd`
@@ -180,10 +196,14 @@ generate high-quality suggestions and rank them well").
 server, not the prompt: (a) reject any finding whose cited file+line is not a
 `+` line in the patch (PR-Agent anchors the model's cited line back into the
 patch with difflib at cutoff 0.93); (b) cap findings per review; (c) drop
-findings matching a hard-exclusion list. Enforce the escalate triggers —
-migrations, deny-paths, release PRs — from the file list server-side, **never**
-from the model's self-reported `escalationReason`, which is attacker-influenced
-text.
+findings matching a hard-exclusion list. **(a)–(c) have not shipped** — there
+is no findings-cap or cited-line filter yet (T4). The last sentence of this
+item has: enforcing the escalate triggers — migrations and deny-paths — from
+the file list server-side, never from the model's self-reported
+`escalationReason`, shipped as `preflightEscalationCheck` (pre-dispatch) and
+`enforceServerSideEscalation` (re-derived again at verdict time, T5, #2113).
+Release PRs are covered by a different mechanism (`evaluateModelApproveBound`,
+T10) rather than this escalate path — see Safety property 3.
 
 **4. Verify only `request-changes`, and only with new evidence.** Verification
 that adds no evidence is noise: Greptile measured a model's self-rated severity
@@ -262,40 +282,56 @@ egress rule blocks. Four bounds, all non-optional:
 2. **Tool allowlist, actually enforced.** The reviewer needs read-only git
    (`git diff`, `status`, `log`, `show`) and the buildd MCP — not `Bash`,
    not `Write`, not network. Enforcing this requires the runner to apply role
-   `allowedTools` to the primary agent, which is a runner change and therefore
-   ships only on a release to `main`; until then the restriction is documentary.
-3. **Auto-merge on model `approve` is permitted — bounded by the branch it
-   merges into.** Prior art argues against letting a model approve its way into
-   a production branch, because judgment manipulation has no prompt-level fix
-   (Anthropic's internal gate on agent-authored PRs is two human approvals,
-   fail-closed, invalidated on push). The topology this system is moving to
-   answers that differently: a task PR targets the **mission integration
-   branch**, not `dev`, so an approved-and-merged task PR lands in a quarantined
-   branch and the human gate sits once at the integration → `dev` PR (see
-   `docs/design/mission-delivery-arc.md`, option A′). An injected `approve` then
-   costs a bad commit on a branch that is itself reviewed before it can reach
-   `dev`, which is a blast radius worth trading for unattended task merges.
-   What stays hard-gated regardless of verdict, enforced server-side from the
-   file list rather than from model output: base branch `dev` or the workspace
-   `prodBranch`, release PRs, schema migrations, and deny-path files. If the
-   integration-branch topology is not in force for a workspace, task PRs target
-   `dev` directly and the same trade does not hold — so this bound reads the
-   base ref, not a global flag.
+   `allowedTools` to the primary agent (T9c), which is a runner change and
+   therefore ships only on a release to `main`; **not shipped** — the
+   restriction is still documentary. The UI that used to claim otherwise has
+   been corrected (T9b, #2111; see "The allowedTools gap").
+3. **Shipped (T10, #2112). Auto-merge on model `approve` is permitted — bounded
+   by the branch it merges into.** Prior art argues against letting a model
+   approve its way into a production branch, because judgment manipulation has
+   no prompt-level fix (Anthropic's internal gate on agent-authored PRs is two
+   human approvals, fail-closed, invalidated on push). The topology this system
+   is moving to answers that differently: a task PR targets the **mission
+   integration branch**, not `dev`, so an approved-and-merged task PR lands in a
+   quarantined branch and the human gate sits once at the integration → `dev`
+   PR (see `docs/design/mission-delivery-arc.md`, option A′). An injected
+   `approve` then costs a bad commit on a branch that is itself reviewed before
+   it can reach `dev`, which is a blast radius worth trading for unattended
+   task merges. `evaluateModelApproveBound` (`auto-merge-bound.ts`) implements
+   exactly this: it fails closed on an unreadable base ref, refuses outright
+   against an explicit trunk deny-list (`protectedBaseBranches` — `main`
+   unconditionally, plus the workspace's configured target/default/prod
+   branches, checked *before* the positive mission test so a mission whose
+   `workingBranch` was pointed at trunk can't launder it), and only then checks
+   `isMissionIntegrationBase` against the mission row. Schema/migration and
+   deny-path files are not re-checked here — `enforceServerSideEscalation` (T5)
+   and the migration operation-class inspector already gate this exact path,
+   twice. If the integration-branch topology is not in force for a workspace,
+   task PRs target `dev` directly and the same trade does not hold — so this
+   bound reads the base ref, not a global flag.
 
-   **The trade also assumes CI ran, and today that assumption can be false.**
-   `build.yml` declares `pull_request: branches: [main, dev, 'mission/**']`, so
-   a PR based on any other ref gets no Build & Test run at all — and since
+   **The trade also assumed CI ran, and that gap is closed.** `build.yml` used
+   to declare `pull_request: branches: [main, dev, 'mission/**']`, so a PR
+   based on any other ref got no Build & Test run at all — and since
    `ci-fix.yml` triggers on `workflow_run` of that workflow, the CI-retry chain
-   goes silent with it. A PR with zero runs is indistinguishable from a green
+   went silent with it. A PR with zero runs is indistinguishable from a green
    one to anything that only looks for failures; observed on PR #2108, where
-   the three passing checks were a secrets scan and two Vercel no-ops. So T10
-   must require a *reported success* for the head SHA, not the absence of
-   failure, and the trigger list needs a catch-all. A base-name allowlist is
-   the wrong shape for a condition auto-merge depends on: violating the
-   convention silently removes the gate instead of failing.
-4. **Untrusted text is labelled.** Strip HTML comments and invisible characters
-   from PR body/diff before they enter the prompt, and mark them as data. Note
-   the adjacent lesson from the CodeRabbit RCE
+   the three passing checks were a secrets scan and two Vercel no-ops. The
+   trigger list now has the needed catch-all —
+   `pull_request: branches: ['**', main, dev, 'mission/**']` — and
+   `hasBuildProof` (`auto-merge-bound.ts`) requires a named build/test/typecheck
+   check run to have actually reached `status: completed, conclusion: success`
+   for the head SHA before a model `approve` may merge; absence, `skipped` and
+   `neutral` all refuse.
+4. **Mostly shipped. Untrusted text is labelled.** `sanitizeUntrustedText`
+   (`untrusted-text.ts`, #2110) strips HTML comments, invisible/bidi
+   characters, and markdown structure that impersonates a prompt section from
+   PR title/body/summary/feedback before they reach the prompt, and reports
+   which carriers it found so the prompt can say the text was tampered with
+   rather than present laundered text as clean. **Not yet applied to the
+   rendered patch/diff text itself** (`reviewer-patch.ts` does not call it) —
+   the same carriers can appear inside diff content. Note the adjacent lesson
+   from the CodeRabbit RCE
    ([PwnedRabbit](https://research.kudelskisecurity.com/2025/08/19/how-we-exploited-coderabbit-from-a-simple-pr-to-rce-and-write-access-on-1m-repositories/)):
    the *deterministic linter* was the execution vector, via PR-supplied config.
    Any linter this path runs must not read tool config from PR head.
@@ -305,28 +341,33 @@ egress rule blocks. Four bounds, all non-optional:
 Nine tasks. Each is one branch, one PR, with a `pathManifest` so the claim
 gate serialises overlapping work. T1 is load-bearing; T2–T9 assume it landed.
 
-| ID | Task | pathManifest | Depends | Verification |
-|---|---|---|---|---|
-| T1 | Patch assembly + PR-Agent-format renderer + token budget | `apps/web/src/lib/reviewer-patch.ts`, `apps/web/src/lib/reviewer-patch.test.ts` | — | unit: hunk format, line numbers only on `+` lines, budget overflow lists filenames |
-| T2 | Wire patch into `buildReviewerContext` behind a workspace flag (default off) | `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/reviewer.test.ts` | T1 | unit: flag off ⇒ byte-identical context to today |
-| T3 | Two-phase output: evidence-only findings, then feedback | `apps/web/src/lib/reviewer.ts`, `apps/web/src/app/api/workers/[id]/route.ts` + tests | T2 | unit: old single-shape output still accepted (no-op default) |
-| T4 | Structural filters: cited-line anchoring, findings cap, hard exclusions | `apps/web/src/lib/reviewer-findings.ts` + test | T1 | unit: finding citing an unchanged line is dropped |
-| T5 | Server-side escalate enforcement from the file list | `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/workspace-policy.ts` + tests | — | unit: migration path ⇒ escalate even when model says approve |
-| T6 | Verification pass for `request-changes` only, fails toward escalate | `apps/web/src/lib/reviewer-verify.ts` + test | T3, T4 | unit: verifier error ⇒ escalate, never request-changes; one pass only |
-| T7 | Runtime retrieval: `trace_path` callers, `spec_compare`, `recall` precedents, with caps | `apps/web/src/lib/reviewer-retrieval.ts` + test | T2 | unit: per-call caps respected; skipped below size threshold |
-| T8 | `review-precedent` memory convention + `learn` on confirmed false positive | `apps/web/src/lib/reviewer-precedents.ts` + test, `.claude/skills/` doc | T7 | unit: precedent recall injects suppression rules |
-| T9a | Security: base-branch doctrine restore + untrusted-text stripping | `apps/web/src/lib/role-config.ts`, `apps/runner/src/roles.ts` + tests | — | unit: PR-head `CLAUDE.md`/`.claude/` is not read |
-| T9b | UI truth: label the Allowed Tools panel as subagent-scoped (or hide it for skill-less roles) | `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`, `apps/web/src/app/app/(protected)/team/[slug]/settings/TeamRoleEditor.tsx` | — | visual: no surface claims "N restricted" for a control that does not apply |
-| T9c | Enforce role `allowedTools` on the primary agent, reviewer role first | `apps/runner/src/workers.ts` + tests | T1, T9b | unit: role allowlist applied to primary agent; per-role audit recorded in the PR |
-| T10 | Base-ref-keyed auto-merge bound: approve may merge a task PR into an integration branch, never into `dev`/`prodBranch`/a release PR — **and only when Build & Test actually reported success for the head SHA** | `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/merge-policy.ts`, `.github/workflows/build.yml` + tests | T5 | unit: same verdict auto-merges on integration base, escalates on `dev` base; a PR whose build workflow never ran does not auto-merge |
+Five have shipped since this table was written (T1, T2, T5, T9b, T10); two of
+those (T9b, T10) brought an open question below to a close (see "Open
+questions"). T9a shipped half of its scope. T3, T4, T6, T7, T8, the rest of
+T9a, and T9c remain.
 
-Suggested split for a team: T1 alone first (nothing else is worth doing until
-the reviewer can see the diff), then T5 + T9a + T9b + T10 in parallel with T2
-(independent, mostly security- and policy-shaped), then T3→T4→T6 as a chain,
-with T7+T8 last since they add cost per review and should be measured against a
-working baseline. T9c is gated on T1 by construction: enforcing a read-only
-allowlist while the diff still has to be fetched by shell would make the
-evidence vacuum permanent.
+| ID | Task | pathManifest | Depends | Verification | Status |
+|---|---|---|---|---|---|
+| T1 | Patch assembly + PR-Agent-format renderer + token budget | `apps/web/src/lib/reviewer-patch.ts`, `apps/web/src/lib/reviewer-patch.test.ts` | — | unit: hunk format, line numbers only on `+` lines, budget overflow lists filenames | **Shipped** (#2107) |
+| T2 | Wire patch into `buildReviewerContext` behind a workspace flag (default off) | `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/reviewer.test.ts` | T1 | unit: flag off ⇒ byte-identical context to today | **Shipped** (#2108), flag `policyConfig.reviewerPatchEvidence`, default off |
+| T3 | Two-phase output: evidence-only findings, then feedback | `apps/web/src/lib/reviewer.ts`, `apps/web/src/app/api/workers/[id]/route.ts` + tests | T2 | unit: old single-shape output still accepted (no-op default) | Not shipped — `REVIEWER_TASK_OUTPUT_SCHEMA` is still one call |
+| T4 | Structural filters: cited-line anchoring, findings cap, hard exclusions | `apps/web/src/lib/reviewer-findings.ts` + test | T1 | unit: finding citing an unchanged line is dropped | Not shipped — `reviewer-findings.ts` does not exist |
+| T5 | Server-side escalate enforcement from the file list | `apps/web/src/lib/reviewer.ts`, `apps/web/src/lib/workspace-policy.ts` + tests | — | unit: migration path ⇒ escalate even when model says approve | **Shipped** (#2113) as `preflightEscalationCheck` (pre-dispatch) + `enforceServerSideEscalation` (re-derived at verdict time) |
+| T6 | Verification pass for `request-changes` only, fails toward escalate | `apps/web/src/lib/reviewer-verify.ts` + test | T3, T4 | unit: verifier error ⇒ escalate, never request-changes; one pass only | Not shipped — `reviewer-verify.ts` does not exist |
+| T7 | Runtime retrieval: `trace_path` callers, `spec_compare`, `recall` precedents, with caps | `apps/web/src/lib/reviewer-retrieval.ts` + test | T2 | unit: per-call caps respected; skipped below size threshold | Not shipped — `reviewer-retrieval.ts` does not exist |
+| T8 | `review-precedent` memory convention + `learn` on confirmed false positive | `apps/web/src/lib/reviewer-precedents.ts` + test, `.claude/skills/` doc | T7 | unit: precedent recall injects suppression rules | Not shipped — `reviewer-precedents.ts` does not exist |
+| T9a | Security: base-branch doctrine restore + untrusted-text stripping | `apps/web/src/lib/role-config.ts`, `apps/runner/src/roles.ts` + tests | — | unit: PR-head `CLAUDE.md`/`.claude/` is not read | **Split.** Untrusted-text stripping shipped separately as `untrusted-text.ts` (#2110), applied to PR title/body/summary/feedback but not yet the rendered patch. Base-branch doctrine restore has **not** shipped — `roles.ts`/`workers.ts` still resolve `CLAUDE.md` from the checked-out (PR-head) working directory; the GitInject risk this item names is still live |
+| T9b | UI truth: label the Allowed Tools panel as subagent-scoped (or hide it for skill-less roles) | `apps/web/src/app/app/(protected)/workspaces/[id]/skills/[skillId]/RoleEditor.tsx`, `apps/web/src/app/app/(protected)/team/[slug]/settings/TeamRoleEditor.tsx` | — | visual: no surface claims "N restricted" for a control that does not apply | **Shipped** (#2111) as `apps/web/src/lib/role-tool-scope.ts`, also applied to `SkillList.tsx` |
+| T9c | Enforce role `allowedTools` on the primary agent, reviewer role first | `apps/runner/src/workers.ts` + tests | T1, T9b | unit: role allowlist applied to primary agent; per-role audit recorded in the PR | Not shipped — `workers.ts` still only scopes `allowedTools` from skill assignment (`Skill(<slug>)`), never from role config. Both dependencies (T1, T9b) are now satisfied, so this is unblocked |
+| T10 | Base-ref-keyed auto-merge bound: approve may merge a task PR into an integration branch, never into `dev`/`prodBranch`/a release PR — **and only when Build & Test actually reported success for the head SHA** | `apps/web/src/lib/auto-merge.ts`, `apps/web/src/lib/merge-policy.ts`, `.github/workflows/build.yml` + tests | T5 | unit: same verdict auto-merges on integration base, escalates on `dev` base; a PR whose build workflow never ran does not auto-merge | **Shipped** (#2112) as `apps/web/src/lib/auto-merge-bound.ts`; `build.yml`'s `pull_request` trigger now includes the `'**'` catch-all |
+
+Suggested split for a team, updated for what's left: T3→T4→T6 as a chain (T4
+before T6, since the verifier needs findings to verify), then T7+T8 last since
+they add cost per review and should be measured against a working baseline.
+T9a's remaining half (base-branch doctrine restore) and T9c (allowlist
+enforcement) are both independent security-shaped work with no code
+dependency on T3/T4/T6/T7/T8 — T9c's own dependencies (T1, T9b) are already
+satisfied, so it no longer needs to wait on anything in this table.
 
 Every task: tests before code, `bun run test` (never `bun test`), and a
 regression test confirmed to fail before the fix.
@@ -340,11 +381,12 @@ regression test confirmed to fail before the fix.
 - **Two calls or one?** I lean two (evidence, then prose), per the measured
   false-rejection shape. The cost is a second round trip per review; if latency
   matters more than precision for some workspaces, this could be flag-gated.
-- **Which half of the `allowedTools` gap ships first?** I lean: make the UI
-  honest now (one label, no release needed), enforce for the reviewer role right
-  after T1, and treat enforcement for every other role as its own PR with a
-  per-role audit — because a few roles declare MCP-only lists and would lose
-  file and shell access the moment enforcement lands.
+- **Resolved: the UI half of the `allowedTools` gap shipped first** (T9b,
+  #2111) — as leaned here, ahead of any release-gated runtime change. What's
+  still open is the runtime half: enforcement for the reviewer role first
+  (T9c), then every other role as its own PR with a per-role audit — because a
+  few roles declare MCP-only lists and would lose file and shell access the
+  moment enforcement lands.
 - **Resolved: auto-merge on `approve` is allowed** for task PRs into a mission
   integration branch, since the human gate moves to the integration → `dev` PR.
   The open part is narrower: the bound has to key off the PR's base ref, so a

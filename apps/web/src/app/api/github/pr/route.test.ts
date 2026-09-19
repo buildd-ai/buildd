@@ -21,9 +21,15 @@ const mockTasksFindFirst = mock(() => Promise.resolve(null) as any);
 const mockTasksFindMany = mock(() => Promise.resolve([]) as any);
 const mockWorkspacesFindMany = mock(() => [] as any[]);
 const mockGetTeamWorkspaceIds = mock(() => [] as string[]);
+/**
+ * `db.update(...).set(...).where(...)` — awaited by most callers, but the
+ * guarded `kind` stamp (mission-legibility Rule K2-16) needs `.returning()` as
+ * its did-anything-change signal, so the fake WHERE is a thenable that also
+ * carries one.
+ */
 const mockWorkersUpdate = mock(() => ({
   set: mock(() => ({
-    where: mock(() => Promise.resolve()),
+    where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })),
   })),
 }));
 // Stored reviewer verdict for the agent-review self-merge gate. Default: no
@@ -206,7 +212,7 @@ describe('POST /api/github/pr', () => {
     // Restore default chain mock for update
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
-        where: mock(() => Promise.resolve()),
+        where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })),
       })),
     });
   });
@@ -602,6 +608,9 @@ describe('POST /api/github/pr', () => {
         accountId: 'account-1',
         name: 'test-worker',
         branch: WORKER_BRANCH,
+        // The FK column, not just the joined row — the guarded `kind` stamp
+        // keys on workers.task_id, which a real row always carries.
+        taskId: 't-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
         task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
         ...overrides,
@@ -1064,6 +1073,9 @@ describe('POST /api/github/pr', () => {
         accountId: 'account-1',
         name: 'test-worker',
         branch: WORKER_BRANCH,
+        // The FK column, not just the joined row — the guarded `kind` stamp
+        // keys on workers.task_id, which a real row always carries.
+        taskId: 't-1',
         workspace: { ...WORKSPACE_OK, gitConfig: { defaultBranch: 'dev' } },
         task: { id: 't-1', missionId: 'obj-1', title: 'Do thing', taskClass: 'work', context: null },
         ...overrides,
@@ -1451,7 +1463,7 @@ describe('POST /api/github/pr', () => {
     mockWorkersUpdate.mockReturnValue({
       set: mock((data: any) => {
         capturedSetData = data;
-        return { where: mock(() => Promise.resolve()) };
+        return { where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })) };
       }),
     });
 
@@ -2079,6 +2091,9 @@ describe('POST /api/github/pr', () => {
         accountId: 'account-1',
         name: 'test-worker',
         branch: WORKER_BRANCH,
+        // The FK column, not just the joined row — the guarded `kind` stamp
+        // keys on workers.task_id, which a real row always carries.
+        taskId: MISSION_TASK.id,
         workspace: WORKSPACE_OK,
         task: MISSION_TASK,
         ...overrides,
@@ -2124,6 +2139,82 @@ describe('POST /api/github/pr', () => {
       const createArgs = mockCreateReviewerTask.mock.calls[0][0];
       expect(createArgs.prNumber).toBe(42);
       expect(createArgs.headSha).toBe('headsha');
+    });
+
+    it('creates the review pass EXACTLY once — the PR-open hook is the only trigger', async () => {
+      // mission-legibility.md Rule R3-4: the programmatic review pass for a
+      // builder task that opens a PR is the existing agent-review tier fired
+      // here. No second trigger is designed, and none is needed — any new one
+      // would race this through the same dedupe.
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const res = await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      }));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('Rule K2-19: opening a PR stamps kind=engineering, guarded on kind IS NULL', async () => {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue(taskWorker());
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      optedInMission();
+      noExistingPr();
+      mockGithubApi.mockResolvedValueOnce({
+        number: 42,
+        html_url: 'https://github.com/owner/repo/pull/42',
+        state: 'open',
+        title: 'Do thing',
+        base: { ref: INTEGRATION_BRANCH, sha: 'basesha' },
+        head: { sha: 'headsha' },
+      });
+
+      const setCalls: any[] = [];
+      const whereCalls: any[] = [];
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((data: any) => {
+          setCalls.push(data);
+          return {
+            where: mock((w: any) => {
+              whereCalls.push(w);
+              return Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) });
+            }),
+          };
+        }),
+      });
+
+      expect((await POST(createMockRequest({
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workerId: 'w-1', title: 'Do thing', head: WORKER_BRANCH },
+      }))).status).toBe(200);
+
+      const kindWrite = setCalls.findIndex(c => c.kind === 'engineering');
+      expect(kindWrite).toBeGreaterThanOrEqual(0);
+      // AC-12: the late signal never overwrites a declared kind, so the write
+      // carries an IS NULL guard rather than keying on the task id alone.
+      const hasIsNull = (node: any, seen = new Set()): boolean => {
+        if (!node || typeof node !== 'object' || seen.has(node)) return false;
+        seen.add(node);
+        if (node.type === 'isNull') return true;
+        return Object.values(node).some(v => hasIsNull(v, seen));
+      };
+      expect(hasIsNull(whereCalls[kindWrite])).toBe(true);
     });
 
     it('does not request a review for a draft PR', async () => {
@@ -2630,6 +2721,18 @@ describe('PUT /api/github/pr', () => {
       body: { workerId: 'w-1', prNumber: 42 },
     }));
 
+    it('does not mark the worker merged when a push races the policy checks', async () => {
+      workerOk();
+      mockMergePullRequest.mockImplementation(async (...args: any[]) =>
+        args[4] === 'sha-42'
+          ? { merged: false, message: 'Head branch was modified', status: 409 }
+          : { merged: true, message: 'merged unchecked head' });
+      mockWorkersUpdate.mockClear();
+      const res = await put();
+      expect((await res.json()).merged).toBe(false);
+      expect(mockWorkersUpdate).not.toHaveBeenCalled();
+    });
+
     it("refuses under 'agent-review' — a self-merge routes around the reviewer", async () => {
       // The most important refusal: green CI does not substitute for the
       // verdict, so this cannot be satisfied by making the PR cleaner.
@@ -3018,7 +3121,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.pr.number).toBe(42);
     expect(capturedSetData.mergedAt).toBeInstanceOf(Date);
     expect(capturedSetData.prLifecycleStatus).toBe('merged');
-    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'squash', 'sha-42');
   });
 
   it('uses mergeMethod param when provided', async () => {
@@ -3038,7 +3141,7 @@ describe('PUT /api/github/pr', () => {
     });
     await PUT(req);
 
-    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'rebase');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 42, 'rebase', 'sha-42');
   });
 
   it('returns 403 with hint when GitHub App lacks contents:write permission', async () => {
@@ -3124,7 +3227,7 @@ describe('PUT /api/github/pr', () => {
     expect(data.ok).toBe(true);
     expect(data.merged).toBe(true);
     expect(mockGetTeamWorkspaceIds).toHaveBeenCalledWith('team-1');
-    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 1732, 'squash');
+    expect(mockMergePullRequest).toHaveBeenCalledWith(12345, 'owner/repo', 1732, 'squash', 'sha-42');
   });
 
   // Test (d): ambiguous prNumber across two workspaces → 409
@@ -3453,6 +3556,108 @@ describe('PUT /api/github/pr', () => {
 
       expect(res.status).toBe(409);
       expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+  });
+
+  // The tier check above only fires for `agent-review`. A task PR based on a
+  // mission integration branch resolves to `auto-threshold` (resolvePolicy rule
+  // 2) while `requestIntegrationBranchReview` still dispatches a reviewer at it
+  // — so without this gate an agent could merge straight past its own
+  // reviewer's request-changes on any Option A′ PR.
+  describe('review-verdict gate — every tier, not just agent-review', () => {
+    const HEAD = 'sha-42';
+
+    function autoThresholdWorker() {
+      mockAuthenticateApiKey.mockResolvedValue(ACCOUNT);
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'w-1', accountId: 'account-1', taskId: 'task-1',
+        prUrl: 'https://github.com/owner/repo/pull/42',
+        workspace: { ...WORKSPACE_OK, id: 'ws-1', gitConfig: { mergePolicy: { tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } } } },
+      });
+      mockGithubReposFindFirst.mockResolvedValue(REPO);
+      mockMergePullRequest.mockResolvedValue({ merged: true, message: 'Pull request successfully merged' });
+    }
+
+    const put = (body: Record<string, unknown> = {}) => PUT(createPutRequest({
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { workerId: 'w-1', prNumber: 42, ...body },
+    }));
+
+    it('refuses an auto-threshold merge when the reviewer requested changes on this commit', async () => {
+      autoThresholdWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'the gate never checks mergedAt',
+        escalationReason: null, iteration: 1, maxIterations: 3, reviewHeadSha: HEAD,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      const data = await res.json();
+      expect(data.error).toContain('requested changes');
+      expect(data.error).toContain('the gate never checks mergedAt');
+      expect(data.hint).toBeTruthy();
+      expect(data.reviewState).toBe('changes_requested');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('refuses while a review round is still in flight', async () => {
+      autoThresholdWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'reviewing', terminal: false, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: null, confidence: null, summary: null, feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, reviewHeadSha: HEAD,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put();
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).error).toContain('still in flight');
+      expect(mockMergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it('merges once a push has superseded the verdict', async () => {
+      autoThresholdWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'fix it', escalationReason: null,
+        iteration: 1, maxIterations: 3, reviewHeadSha: 'a'.repeat(40),
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+      // The default PR fixture reports head sha `sha-42`, which is not the
+      // 40-hex the verdict was made against — but neither is a valid SHA pair,
+      // so state an explicit one to make the supersession real.
+      mockGithubApi.mockImplementation((_inst: number, path: string) => {
+        if (/\/check-runs$/.test(path)) {
+          return Promise.resolve({ check_runs: [{ name: 'build', status: 'completed', conclusion: 'success' }] });
+        }
+        if (/\/files/.test(path)) return Promise.resolve([]);
+        return Promise.resolve({ number: 42, head: { sha: 'b'.repeat(40) }, base: { ref: 'dev' }, mergeable_state: 'clean' });
+      });
+
+      const res = await put();
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalled();
+    });
+
+    it('an admin force still bypasses it, and the bypass is already recorded', async () => {
+      autoThresholdWorker();
+      mockAuthenticateApiKey.mockResolvedValue({ ...ACCOUNT, level: 'admin' });
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'rev-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: null, feedback: 'fix it', escalationReason: null,
+        iteration: 1, maxIterations: 3, reviewHeadSha: HEAD,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await put({ force: true });
+
+      expect(res.status).toBe(200);
+      expect(mockMergePullRequest).toHaveBeenCalled();
     });
   });
 });
@@ -4185,7 +4390,7 @@ describe('Retry PR body generation', () => {
 
     mockWorkersUpdate.mockReturnValue({
       set: mock(() => ({
-        where: mock(() => Promise.resolve()),
+        where: mock(() => Object.assign(Promise.resolve([]), { returning: () => Promise.resolve([]) })),
       })),
     });
   });

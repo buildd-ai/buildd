@@ -6,6 +6,9 @@ import {
   requiredNPerArm,
   DESIGN_MDE,
   CONTAMINATION_MARKER,
+  TERMINAL_VERDICT_STATUSES,
+  terminalNotificationKeys,
+  terminalStatusFromNotificationKey,
   type CompositionRow,
   type SessionRow,
 } from '../memory-digest-readout';
@@ -545,5 +548,61 @@ describe('formatReadoutText', () => {
     expect(text).toContain('post-boundary');
     expect(text).toContain(BOUNDARY.toISOString());
     expect(text).toContain('guardrail');
+  });
+});
+
+describe('terminal notification keys are enumerable without computing a readout', () => {
+  /**
+   * The load-bearing link for a job that retires itself: the route asks "has a
+   * terminal verdict already been claimed for this policy version" BEFORE
+   * computing anything, so it has to be able to enumerate the keys a terminal
+   * verdict would have claimed. If this enumeration and `buildVerdict` ever
+   * disagree the failure is silent in both directions — a job that recomputes
+   * for ever, or one that retires while the experiment is still running.
+   */
+  const at = (perArm: number, now: Date) =>
+    computeReadout({
+      ...cohort({ perArm, boundary: BOUNDARY, shift: 1 }),
+      policyVersion: V,
+      now,
+    }).verdict;
+
+  it('enumerates the key a powered verdict actually claims', () => {
+    const v = at(requiredNPerArm(DESIGN_MDE), new Date(BOUNDARY.getTime() + 2 * HOUR));
+    expect(v.terminal).toBe(true);
+    expect(terminalNotificationKeys(V)).toContain(v.notificationKey);
+  });
+
+  it('enumerates the key a stalled verdict actually claims', () => {
+    const v = at(5, new Date(BOUNDARY.getTime() + 8 * DAY));
+    expect(v.status).toBe('stalled');
+    expect(v.terminal).toBe(true);
+    expect(terminalNotificationKeys(V)).toContain(v.notificationKey);
+  });
+
+  it('excludes the keys of every non-terminal verdict', () => {
+    // Retiring on `accruing` stops reading a live experiment; retiring on
+    // `indeterminate` stops reading a broken collection path.
+    const accruing = at(5, new Date(BOUNDARY.getTime() + 2 * HOUR));
+    expect(accruing.terminal).toBe(false);
+    expect(terminalNotificationKeys(V)).not.toContain(accruing.notificationKey);
+
+    const empty = computeReadout({ composition: [], sessions: [], policyVersion: V, now: new Date() });
+    expect(empty.verdict.indeterminate).toBe(true);
+    expect(terminalNotificationKeys(V)).not.toContain(empty.verdict.notificationKey);
+  });
+
+  it('covers every terminal status the type admits', () => {
+    // A third terminal status added later must land here, not silently outside
+    // the enumeration the retirement check reads.
+    expect([...TERMINAL_VERDICT_STATUSES].sort()).toEqual(['powered', 'stalled']);
+    expect(terminalNotificationKeys(V)).toHaveLength(TERMINAL_VERDICT_STATUSES.length);
+  });
+
+  it('round-trips a key back to its status, and refuses a foreign one', () => {
+    expect(terminalStatusFromNotificationKey(V, `${V}:powered`)).toBe('powered');
+    expect(terminalStatusFromNotificationKey(V, `${V}:accruing`)).toBeNull();
+    // A different policy version's key must not read as this version's verdict.
+    expect(terminalStatusFromNotificationKey(V, 'other-version:powered')).toBeNull();
   });
 });

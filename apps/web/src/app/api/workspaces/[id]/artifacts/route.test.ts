@@ -54,10 +54,19 @@ mock.module('@buildd/core/db', () => ({
   },
 }));
 
+// This mock is why the GET route's `review=true` filter is asserted in
+// `review-filter.test.ts` instead of here: under it every column is a string
+// and no WHERE clause is observable. The extra builders below exist only so
+// `@/lib/artifact-scope` (imported by the route) resolves its imports.
 mock.module('drizzle-orm', () => ({
   eq: (field: any, value: any) => ({ field, value, type: 'eq' }),
   and: (...conditions: any[]) => ({ conditions, type: 'and' }),
+  or: (...conditions: any[]) => ({ conditions, type: 'or' }),
   desc: (field: any) => ({ field, type: 'desc' }),
+  inArray: (field: any, values: any[]) => ({ field, values, type: 'inArray' }),
+  notInArray: (field: any, values: any[]) => ({ field, values, type: 'notInArray' }),
+  isNotNull: (field: any) => ({ field, type: 'isNotNull' }),
+  sql: (strings: TemplateStringsArray) => ({ strings, type: 'sql' }),
 }));
 
 mock.module('@buildd/core/db/schema', () => ({

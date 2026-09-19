@@ -2526,7 +2526,7 @@ describe('POST /api/tasks', () => {
     expect(response.status).toBe(400);
   });
 
-  it('rejects a mission task defaulting to auto output requirement with no pathManifest', async () => {
+  it('accepts a mission task defaulting to auto output requirement with no pathManifest — auto has no creation-time resolution', async () => {
     const captured = missionPathManifestSetup();
     mockMissionsFindFirst.mockResolvedValue({ defaultOutputRequirement: null, defaultBackend: null, startAt: null });
     mockTasksFindMany.mockResolvedValue([]);
@@ -2534,11 +2534,39 @@ describe('POST /api/tasks', () => {
     const response = await POST(createMockRequest({
       method: 'POST',
       headers: { Authorization: 'Bearer bld_xxx' },
-      body: { workspaceId: 'ws-1', title: 'Build feature X', missionId: 'mission-1' },
+      body: {
+        workspaceId: 'ws-1',
+        title: '[friction] observed a papercut, no code change intended',
+        missionId: 'mission-1',
+      },
+    }));
+
+    expect(response.status).toBe(200);
+    // Falls back to the conservative ['**'] sentinel-default, same as any
+    // other manifest-less mission task — the manifest GATE does not fire,
+    // but the sentinel-default still applies.
+    expect(captured().pathManifest).toEqual(['**']);
+  });
+
+  it('still rejects an explicit outputRequirement: pr_required mission task with no pathManifest, and names the none escape hatch', async () => {
+    missionPathManifestSetup();
+    mockTasksFindMany.mockResolvedValue([]);
+
+    const response = await POST(createMockRequest({
+      method: 'POST',
+      headers: { Authorization: 'Bearer bld_xxx' },
+      body: {
+        workspaceId: 'ws-1',
+        title: 'Build feature X',
+        missionId: 'mission-1',
+        outputRequirement: 'pr_required',
+      },
     }));
 
     expect(response.status).toBe(400);
-    expect(captured()).toBeNull();
+    const json = await response.json();
+    expect(json.error).toContain('pathManifest');
+    expect(json.error).toContain("outputRequirement: 'none'");
   });
 
   it('rejects a mission task whose manifest is only a repo-root-wide glob wider than one package', async () => {

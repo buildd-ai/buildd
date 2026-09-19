@@ -64,6 +64,36 @@ export function resolveReleaseTrigger(
   return config?.trigger ?? 'every_merge';
 }
 
+// Is this PR the workspace's release-branch → prod-branch PR (e.g. dev → main
+// via `bun run release` / `release.yml`)? Config-driven, like
+// `isMissionIntegrationBase` — never a title/name-shape heuristic — so a PR
+// merely titled "Release ..." does not qualify, and a real release PR still
+// qualifies even if a human renamed it.
+//
+// Checked against `releaseConfig.releaseBranch`/`prodBranch` directly rather
+// than through `resolveReleaseStrategy`'s `kind: 'branch_merge'` arm: a
+// workspace can dispatch releases via `workflow_dispatch` (a GitHub Actions
+// workflow opens the PR) while still describing the PR's own head/base ref
+// shape with these same two fields, and `resolveReleaseStrategy` only
+// attaches them to the `branch_merge' variant.
+//
+// Gated on `config.enabled` first, matching every other consumer of
+// `WorkspaceReleaseConfig` in this file (see `resolveReleaseStrategy` above):
+// a workspace that disabled release automation but left releaseBranch/
+// prodBranch populated from before must not have unrelated PRs (e.g. a
+// routine dev→main PR that isn't this workspace's release rollup) silently
+// exempted from the aggregate line-count cap.
+export function isReleaseBranchPr(
+  config: WorkspaceReleaseConfig | null | undefined,
+  refs: { headRef?: string | null; baseRef?: string | null },
+): boolean {
+  if (!config?.enabled) return false;
+  const releaseBranch = config?.releaseBranch?.trim();
+  const prodBranch = config?.prodBranch?.trim();
+  if (!releaseBranch || !prodBranch) return false;
+  return refs.headRef?.trim() === releaseBranch && refs.baseRef?.trim() === prodBranch;
+}
+
 export function resolveReleaseStrategy(
   config: WorkspaceReleaseConfig | null | undefined,
   overrides: ReleaseOverrides = {},

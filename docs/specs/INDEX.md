@@ -4,7 +4,7 @@
 Living capability contracts for buildd. Format: [SPEC-FORMAT.md](./SPEC-FORMAT.md).
 Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability contracts.
 
-## Active (31)
+## Active (35)
 
 ### auth (4)
 
@@ -45,17 +45,21 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [MCP Connectors & Roles](./mcp-connectors-and-roles.md) · @max — verified 2026-09-05
   Every MCP server an agent reaches MUST be a team connectors row that a role opts into via connectorRefs and that the claim route injects with server-side decrypted credentials — no other mount path exists.
 
-### missions (1)
+### missions (2)
 
-- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-13
-  The coordination layer MUST allow only documented task/worker/mission transitions, derive mission health from live tasks, name every claim gate, and refuse completion without passing criteria or with an unmerged PR.
+- [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-15
+  A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
+- [Mission & Task Lifecycle](./mission-task-lifecycle.md) · @max — verified 2026-09-15
+  The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 
-### releases (3)
+### releases (4)
 
 - [DB Migration Operation-Class Gate](./db-migration-gates.md) · @builder — verified 2026-08-25
   Every generated Drizzle migration in a PR MUST be classified EXPAND or CONTRACT, and that verdict MUST gate auto-merge unconditionally, independent of any workspace path configuration.
 - [DB Migration Execution](./migration-execution.md) · @max — verified 2026-09-12
   Every committed migration MUST execute exactly once and only while its journal `when` exceeds the applied high-water mark; a missing tracking row below that mark MUST be backfilled, never replayed.
+- [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-15
+  For a mission with an integration base, canCompleteMission and the on_mission_complete release trigger MUST gate on the mission PR's merge into trunk through one shared accessor.
 - [Release Flow](./release-flow.md) · @max — verified 2026-07-18
   The release system MUST resolve a workspace's declared release strategy, execute it through the matching dispatcher, verify the resulting deploy, and record the outcome while leaving prodBranch deployable.
 
@@ -72,10 +76,14 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Worker Sandbox Isolation](./worker-sandbox-isolation.md) · @max — verified 2026-08-30
   An opted-in runner MUST confine each agent subprocess to a bwrap namespace mounting only that task's worktree, project .git, toolchain and active-backend credentials, and MUST report every degradation of that boundary.
 
-### surfaces (5)
+### surfaces (7)
 
+- [Mission Legibility](./mission-legibility.md) · @builder — verified 2026-09-16
+  A mission's phases and each task's work-kind MUST be stored facts written once at their source, read by every surface through one derivation helper, and never inferred from a task's title.
 - [Mission Structure View](./mission-structure-view.md) · @builder — verified 2026-08-30
   The mission detail Structure tab MUST render the full dependency DAG as a stable left-to-right layered graph, collapsing chains via the shared identifyChains helper, on desktop only.
+- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-15
+  Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 - [Team Namespace Scoping](./team-namespace-scoping.md) · @max — verified 2026-07-18
   Home MUST aggregate across every team the user belongs to, while the missions and workspaces views MUST show only the single active team resolved server-side from the buildd-team cookie.
 - [Team / Workspace / Mission Onboarding](./team-workspace-mission-onboarding.md) · @max — verified 2026-07-18
@@ -98,16 +106,10 @@ Canonical source of truth is [../SPEC.md](../SPEC.md); these are per-capability 
 - [Subject Anchor Liveness](./subject-anchor-liveness.md) · @max — verified 2026-08-29
   A task MUST be withheld from claim for a dead subject PR only when a binding, verified anchor names that PR as its subject; an anchor derived from prose MUST NOT affect claimability and absent anchor data MUST fail open.
 
-## Draft (5)
+## Draft (2)
 
-- [Mission Heartbeat Schedule Lifecycle](./mission-heartbeat-schedule-lifecycle.md) · @max — verified 2026-09-11
-  A mission heartbeat MUST be treated as mission state, not a user schedule, and its owning `task_schedule` row MUST NOT outlive or out-tick the mission it drives.
-- [Mission Release Gate](./mission-release-gate.md) · @max — verified 2026-09-10
-  For a mission with an integration base, canCompleteMission, the on_mission_complete release trigger, and the goal-criteria evaluator MUST all treat production release as the single, shared definition of mission "done".
-- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-04
+- [Scheduled-task merge policy override](./scheduled-task-merge-policy.md) · @max — verified 2026-09-18
   A task schedule MUST be able to declare a MergePolicy that overrides the workspace and mission default for every task it creates, acting as a floor that risk-class escalation can still raise.
-- [Surface IA — Home, Missions, Initiatives](./surface-ia-home-missions-initiatives.md) · @max — verified 2026-09-05
-  Each of the three primary surfaces MUST answer exactly one question — Home what needs me now, Missions what state each mission is in, Initiatives are we winning — and a derived verdict MUST show its own missing evidence.
 - [Mobile Timeline Rail](./timeline-mobile-rail.md) · @builder — verified 2026-09-16
   Below the md breakpoint, the mission Timeline MUST render as one continuous vertical rail from chain heads to the goal root, in which every disclosure is in-place and only a row standing for exactly one task navigates.
 

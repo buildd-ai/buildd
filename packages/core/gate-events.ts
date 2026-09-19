@@ -46,6 +46,16 @@ export const GATE_SLUGS = {
   TASK_PARAM_VOCABULARY: 'task_param_vocabulary',
   /** POST /api/tasks — advisory prose dependency-gate lint. */
   PROSE_GATE: 'prose_gate',
+  /**
+   * POST /api/tasks — a mission task filed with no `kind`. ADVISORY ONLY:
+   * nothing is rejected. `kind` is meaningful on every task, so a hard gate
+   * would fire on all of them including the `[friction]` filing an agent makes
+   * while already failing — the caller least able to absorb a rejection. The
+   * value here is measurement: `get_failure_analytics family="gate"` reports how
+   * often the field is skipped and by which caller origin, which is the evidence
+   * a future decision to harden it would need.
+   */
+  KIND_ABSENT: 'kind_absent',
   /** POST /api/tasks — `[friction]` filing folded into an open task. */
   FRICTION_DEDUPE: 'friction_dedupe',
   /** POST /api/tasks — subject-anchor attach, and its `fileAnywayReason` bypass. */
@@ -70,6 +80,8 @@ export const GATE_SLUGS = {
   MERGE_POLICY: 'merge_policy',
   /** merge_pr — mission-PR branch-lifecycle wait. */
   MISSION_PR_LIFECYCLE: 'mission_pr_lifecycle',
+  /** Every merge door — an outstanding non-approve verdict, or a review round still in flight, at the commit being merged. Carries the human `override` bypass. */
+  REVIEW_VERDICT: 'review_verdict',
   /** check_path_claim — wildcard refusal and real-overlap deferral. */
   PATH_CLAIM: 'path_claim',
   /** request_pr_review — one reviewer per PR at a time. */

@@ -6,6 +6,7 @@ import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
 import { verifyWorkspaceAccess, verifyAccountWorkspaceAccess } from '@/lib/team-access';
 import { appBaseUrl } from '@/lib/app-url';
+import { reviewArtifactScope } from '@/lib/artifact-scope';
 import { ARTIFACT_TYPES, isArtifactType } from '@buildd/shared';
 
 async function authenticateRequest(req: NextRequest) {
@@ -49,6 +50,10 @@ export async function GET(
   const missionId = url.searchParams.get('missionId');
   const key = url.searchParams.get('key');
   const type = url.searchParams.get('type');
+  // `review=true` narrows to artifacts deliberately produced for a human to
+  // read, using the same rule as the dashboard — see `@/lib/artifact-scope`.
+  // Applied in SQL, not after the fact, so `limit` counts matching rows.
+  const reviewOnly = url.searchParams.get('review') === 'true';
   const limit = Math.min(Math.max(parseInt(url.searchParams.get('limit') || '10'), 1), 50);
 
   // Build conditions
@@ -56,6 +61,7 @@ export async function GET(
   if (missionId) conditions.push(eq(artifacts.missionId, missionId));
   if (key) conditions.push(eq(artifacts.key, key));
   if (type) conditions.push(eq(artifacts.type, type));
+  if (reviewOnly) conditions.push(reviewArtifactScope());
 
   const results = await db.query.artifacts.findMany({
     where: and(...conditions),

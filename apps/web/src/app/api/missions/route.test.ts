@@ -976,11 +976,39 @@ describe('POST /api/missions — goalCriteria validation', () => {
     expect(body.error).toMatch(/command/);
   });
 
-  it('accepts a prose criterion that states its reason', async () => {
+  it('accepts a prose criterion that states its reason, paired with a mechanical one', async () => {
     const req = new NextRequest('http://localhost/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         title: 'Mission with justified prose criteria',
+        goalCriteria: [
+          {
+            type: 'description',
+            description: 'The error copy reads as helpful rather than accusatory',
+            notMechanizableReason: 'Tone is a human judgement; no command can assert it.',
+          },
+          { type: 'no_open_tasks' },
+        ],
+      }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+  });
+
+  it('passes an omitted goalCriteria through unchanged', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({ title: 'Mission with no stated goal' }),
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects goalCriteria with no mechanical criterion, naming the accepted types', async () => {
+    const req = new NextRequest('http://localhost/api/missions', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Mission with prose-only criteria',
         goalCriteria: [{
           type: 'description',
           description: 'The error copy reads as helpful rather than accusatory',
@@ -989,7 +1017,10 @@ describe('POST /api/missions — goalCriteria validation', () => {
       }),
     });
     const res = await POST(req);
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/mechanical criterion/);
+    expect(body.error).toMatch(/all_prs_merged \+ no_open_tasks/);
   });
 
   it('rejects a command criterion with no command (previously accepted, then unevaluatable)', async () => {

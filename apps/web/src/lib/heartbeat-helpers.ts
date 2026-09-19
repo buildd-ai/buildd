@@ -234,6 +234,7 @@ export function detectMissionPhase(data: MissionPhaseData): PhaseAssessment {
       actions: [
         'Check PR merge status',
         'If PR has conflicts: retry the originating task (create_task with parentTaskId=<id>, failureContext describing conflict) — do NOT create a separate integration task',
+        'Before creating a "CI-green, awaiting approval" escalation for an open PR, call get_pr_review first — a terminal changes_requested verdict is a real defect needing rework, not a human-approval bottleneck. Skip or reword the escalation and retry the originating task instead',
         'If all PRs merged, create next batch of tasks from the plan or summarize completion',
       ],
     };

@@ -47,6 +47,13 @@ export interface StateBecauseExtras {
   unmergedPrs?: Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>;
   /** Upstream mission title, when it was loaded. */
   dependencyTitle?: string | null;
+  /**
+   * Failed rows excluded from the health signal because their deliverable
+   * shipped anyway — see `mission-task-superseded.ts`. Reported unconditionally
+   * (not gated on `view.kind`), since these tasks never drive `failing` and
+   * would otherwise be invisible to `because[]`.
+   */
+  supersededTasks?: Array<{ id: string; title: string | null; prNumber: number; supersedingTaskId?: string | null }>;
 }
 
 /**
@@ -71,6 +78,18 @@ export function buildStateBecause(
 
   if (w) {
     links.push(...causeLinksFor(w, base, extra));
+  }
+
+  for (const t of extra.supersededTasks ?? []) {
+    links.push(
+      link(
+        t.supersedingTaskId
+          ? `Task "${t.title ?? t.id}" failed, but sibling task "${t.supersedingTaskId}" completed the same work via merged PR #${t.prNumber} — not counted as a mission failure.`
+          : `Task "${t.title ?? t.id}" failed, but its target PR #${t.prNumber} merged anyway — not counted as a mission failure.`,
+        'tasks.subjectPrNumber + workers.mergedAt',
+        { ...base, taskId: t.id, prNumber: t.prNumber },
+      ),
+    );
   }
 
   links.push(

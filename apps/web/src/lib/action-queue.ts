@@ -29,7 +29,7 @@ import { resolveStaleGate, type StaleGate } from './pr-freshness';
 export type ActionChip =
   | 'MERGE' | 'BLOCKED' | 'RECONNECT' | 'REVIEW' | 'QUESTION' | 'DECIDE' | 'DISCREPANCY' | 'APPROVE'
   | 'STALE'
-  | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING';
+  | 'RESOLVING' | 'FIXING_CI' | 'CI_RUNNING' | 'FIXING_SPEC';
 
 /** docs/design/spec-conformance.md §8 — which way a discrepancy's gap runs. */
 export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
@@ -40,7 +40,7 @@ export type DiscrepancyDirection = 'spec_ahead' | 'code_ahead' | 'contradicted';
  * above work that genuinely needs a human.
  */
 const AGENT_HANDLED_CHIPS: ReadonlySet<ActionChip> = new Set<ActionChip>([
-  'RESOLVING', 'FIXING_CI', 'CI_RUNNING',
+  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'FIXING_SPEC',
 ]);
 
 export function isActionableChip(chip: ActionChip): boolean {
@@ -121,16 +121,32 @@ export interface WaitingOnYouRawItem {
    * card must not preselect an exit from this alone.
    */
   recommendation?: string | null;
-  /** kind === 'discrepancy' — the spec_discrepancies row id (§7). */
+  /**
+   * kind === 'discrepancy' — the REPRESENTATIVE spec_discrepancies row id (§7):
+   * the oldest row in the grouped card. Single-row routes (adjudicate, dispatch
+   * doc fix) are addressed through it; the server re-derives the rest of the
+   * group from the row's own spec path rather than trusting a client-supplied
+   * list.
+   */
   discrepancyId?: string;
-  /** kind === 'discrepancy' — the spec doc the assertion lives in. */
+  /** kind === 'discrepancy' — every row id in the grouped card, oldest first. */
+  discrepancyIds?: string[];
+  /** kind === 'discrepancy' — the spec doc the assertions live in. */
   specPath?: string;
-  /** kind === 'discrepancy' — the authored assertion id within specPath. */
+  /** kind === 'discrepancy' — the representative (oldest) assertion id. */
   assertionId?: string;
+  /** kind === 'discrepancy' — every assertion id in the grouped card, oldest first. */
+  assertionIds?: string[];
   /** kind === 'discrepancy' — which way the gap runs (§8). */
   direction?: DiscrepancyDirection;
-  /** kind === 'discrepancy' — when this row (or its current occurrence) first appeared. */
+  /** kind === 'discrepancy' — when the OLDEST row in the group first appeared. */
   firstSeenAt?: Date;
+  /** kind === 'discrepancy' — the doc-fix task claimed on this spec path, if any. */
+  docFixTaskId?: string | null;
+  /** kind === 'discrepancy' — `tasks.status` of docFixTaskId. */
+  docFixTaskStatus?: string | null;
+  /** kind === 'discrepancy' — `workers.prLifecycleStatus` for docFixTaskId's PR, if any. */
+  docFixPrLifecycleStatus?: string | null;
   /** kind === 'discrepancy' — set once `promote_discrepancy` has minted a mission. */
   promotedMissionId?: string | null;
   /** kind === 'discrepancy' — the discrepancy's owning workspace. */
@@ -275,16 +291,34 @@ export interface ActionQueueItem {
   staleGate?: StaleGate | null;
   /** PR age in hours — emitted for the action_queue.card_age_hours metric. */
   cardAgeHours?: number | null;
-  /** Set when chip === 'DISCREPANCY' — the spec_discrepancies row id (§7). */
+  /**
+   * Set when chip === 'DISCREPANCY'/'FIXING_SPEC' — the representative (oldest)
+   * spec_discrepancies row id (§7) the card's actions address.
+   */
   discrepancyId?: string;
-  /** Set when chip === 'DISCREPANCY' — the spec doc the assertion lives in. */
+  /** Every row id behind the card, oldest first. */
+  discrepancyIds?: string[];
+  /** Set when chip === 'DISCREPANCY'/'FIXING_SPEC' — the spec doc this card is about. */
   specPath?: string;
-  /** Set when chip === 'DISCREPANCY' — the authored assertion id within specPath. */
+  /** The representative (oldest) assertion id. */
   assertionId?: string;
-  /** Set when chip === 'DISCREPANCY' — which way the gap runs (§8). */
+  /** Every assertion id behind the card, oldest first — the expandable list. */
+  assertionIds?: string[];
+  /** Set when chip === 'DISCREPANCY'/'FIXING_SPEC' — which way the gap runs (§8). */
   direction?: DiscrepancyDirection;
   /** Set when chip === 'DISCREPANCY' and `promote_discrepancy` has already minted a mission. */
   promotedMissionId?: string | null;
+  /** Set when chip === 'FIXING_SPEC' — the in-flight doc-fix task to link to. */
+  docFixTaskId?: string | null;
+  /** `tasks.status` of docFixTaskId — distinguishes "being worked" from "shipped, awaiting re-run". */
+  docFixTaskStatus?: string | null;
+  /**
+   * `workers.prLifecycleStatus` of docFixTaskId's PR — distinguishes "PR
+   * still open" (no re-run pending; the doc fix hasn't landed yet) from "PR
+   * merged, genuinely awaiting the conformance re-run" so the card names the
+   * real blocker instead of assuming completion means merged.
+   */
+  docFixPrLifecycleStatus?: string | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -304,10 +338,14 @@ export interface ActionQueueItem {
 // outranks a doc/checker finding.
 // STALE sits below every live decision and above the agent-handled chips: it
 // still needs a human, but a 90-day-old PR must never outrank today's work.
+// FIXING_SPEC is DISCREPANCY's agent-handled counterpart: a doc-fix task has
+// been dispatched for that spec path, so the row is no longer waiting on a
+// human. It stays visible for the same reason RESOLVING does — a doc fix that
+// dies must not take the finding with it — but never counts as actionable.
 const CHIP_ORDER: ActionChip[] = [
   'MERGE', 'BLOCKED', 'RECONNECT', 'REVIEW', 'QUESTION', 'DECIDE', 'DISCREPANCY', 'APPROVE',
   'STALE',
-  'RESOLVING', 'FIXING_CI', 'CI_RUNNING',
+  'RESOLVING', 'FIXING_CI', 'CI_RUNNING', 'FIXING_SPEC',
 ];
 
 /**
@@ -412,18 +450,91 @@ export interface DiscrepancyCandidate {
   status: 'open' | 'accepted' | 'resolved';
   firstSeenAt: Date | string;
   promotedMissionId?: string | null;
+  /** `spec_discrepancies.last_checked_at` — when the checker last evaluated this row. */
+  lastCheckedAt?: Date | string;
+  /** `spec_discrepancies.doc_fix_task_id` — the dispatched docs-only follow-up. */
+  docFixTaskId?: string | null;
+  /** `tasks.status` of `docFixTaskId`, resolved by the caller. */
+  docFixTaskStatus?: string | null;
+  /** `workers.prLifecycleStatus` for `docFixTaskId`'s PR, resolved by the caller. */
+  docFixPrLifecycleStatus?: string | null;
+  /** `workers.mergedAt` for `docFixTaskId`'s PR, resolved by the caller. */
+  docFixMergedAt?: Date | string | null;
 }
 
 export interface DiscrepancyQueueResult {
   items: WaitingOnYouRawItem[];
   /**
-   * Rows beyond each workspace's top-`cap` — never silently dropped (§12).
+   * SPECS beyond each workspace's top-`cap` — never silently dropped (§12).
    * The DISCREPANCY-queue equivalent of `summariseActionQueueAge`: a caller
-   * must surface this count somewhere (e.g. "N discrepancies beyond the
-   * visible top 10") so a clean-looking queue can never hide a growing
-   * backlog the way the Schedules page did.
+   * must surface this count somewhere (e.g. "N specs beyond the visible top
+   * 10") so a clean-looking queue can never hide a growing backlog the way
+   * the Schedules page did.
+   *
+   * Counted in SPECS, not rows, because the cap is applied to grouped cards:
+   * four stale assertions on one doc are one card and one unit of overflow,
+   * not four. A row-count here would have read "12 more" for what is really
+   * two documents to fix.
    */
   overflowCount: number;
+}
+
+/**
+ * A doc-fix task in one of these statuses still owns the spec path: the card
+ * is agent-handled, and a second tap must attach to it rather than file again.
+ * `completed` is included deliberately — the docs PR has been written and the
+ * rows now wait on a checker re-run (§9), so re-dispatching in that window
+ * would file duplicate work against a document that has already been fixed.
+ * `failed`/`cancelled` release the claim: nothing is coming, and the human
+ * needs the CTA back.
+ */
+const LIVE_DOC_FIX_STATUSES: ReadonlySet<string> = new Set([
+  'pending', 'assigned', 'in_progress', 'completed',
+]);
+
+export function isDocFixInFlight(
+  candidate: Pick<DiscrepancyCandidate, 'docFixTaskId' | 'docFixTaskStatus'>,
+): boolean {
+  if (!candidate.docFixTaskId) return false;
+  // An unresolved status (the caller could not read the task row) is treated as
+  // live: failing closed here costs one card's CTA, failing open files a
+  // duplicate task against a doc somebody is already fixing.
+  if (!candidate.docFixTaskStatus) return true;
+  return LIVE_DOC_FIX_STATUSES.has(candidate.docFixTaskStatus);
+}
+
+/**
+ * A completed doc-fix task still counts as "in flight" per `isDocFixInFlight`
+ * above — on purpose, so a fresh completion isn't mistaken for an abandoned
+ * claim. But nothing released that claim once the checker actually got a
+ * chance to re-evaluate the row against the merged fix and STILL found the
+ * same gap. Without this, `docFixTaskId` sits on the row forever: every
+ * future Tier-2 run keeps 'refresh'ing direction/lastCheckedAt (the row is
+ * correctly tracked), but the card never finds out — it keeps citing a task
+ * that finished days or weeks ago and calling the row "awaiting the
+ * conformance re-run" when a re-run, or several, already ran and changed
+ * nothing. That's the stranded-card bug.
+ *
+ * Staleness requires proof, not a guess from task status alone: the task's
+ * PR must have actually MERGED (`workers.prLifecycleStatus === 'merged'`) —
+ * a task can complete without its PR merging (planning tasks open a PR and
+ * stop there), and claiming staleness before merge would let a human
+ * re-dispatch a duplicate fix while the first one is still sitting in review
+ * — and the row's own `lastCheckedAt` must be at or after that merge, i.e.
+ * the checker has demonstrably run again since the fix landed. Never trust
+ * the task's own say-so (§9) — only a timestamp comparison against the
+ * ledger row's own last real evaluation.
+ */
+export function isDocFixClaimStale(
+  candidate: Pick<
+    DiscrepancyCandidate,
+    'docFixTaskStatus' | 'docFixPrLifecycleStatus' | 'docFixMergedAt' | 'lastCheckedAt'
+  >,
+): boolean {
+  if (candidate.docFixTaskStatus !== 'completed') return false;
+  if (candidate.docFixPrLifecycleStatus !== 'merged' || !candidate.docFixMergedAt) return false;
+  if (!candidate.lastCheckedAt) return false;
+  return new Date(candidate.lastCheckedAt).getTime() >= new Date(candidate.docFixMergedAt).getTime();
 }
 
 /** §12 ranking: an owner call outranks real unbuilt work outranks a pure doc fix. */
@@ -433,12 +544,29 @@ const DISCREPANCY_DIRECTION_RANK: Record<DiscrepancyDirection, number> = {
   code_ahead: 2,
 };
 
-/** §12: cap the queue to the top 10 DISCREPANCY rows per workspace. */
+/** §12: cap the queue to the top 10 DISCREPANCY cards (specs) per workspace. */
 const DEFAULT_DISCREPANCY_QUEUE_CAP = 10;
 
+/** One card: every open row sharing a (workspace, spec path, direction). */
+interface DiscrepancyGroup {
+  workspaceId: string;
+  workspaceName?: string | null;
+  specPath: string;
+  direction: DiscrepancyDirection;
+  /** Oldest first — the order the card renders its assertion list in. */
+  rows: DiscrepancyCandidate[];
+  oldestFirstSeen: number;
+  promotedMissionId: string | null;
+  docFixTaskId: string | null;
+  docFixTaskStatus: string | null;
+  docFixPrLifecycleStatus: string | null;
+  docFixMergedAt: Date | string | null;
+  inFlight: boolean;
+}
+
 /**
- * Filters and ranks discrepancy ledger rows into `discrepancy` raw items,
- * per docs/design/spec-conformance.md §12.
+ * Filters, GROUPS and ranks discrepancy ledger rows into `discrepancy` raw
+ * items, per docs/design/spec-conformance.md §12.
  *
  * `status: accepted` rows are excluded outright — accepting already recorded
  * that an owner made the call, so re-surfacing it would recreate the
@@ -446,13 +574,23 @@ const DEFAULT_DISCREPANCY_QUEUE_CAP = 10;
  * open gap left to show. Neither is "hidden": both remain queryable via
  * `list_discrepancies` for anyone auditing what's been deferred or fixed.
  *
- * Within each workspace, rows rank `contradicted` first (needs an owner call
- * before anything else can happen), then `spec_ahead`, then `code_ahead`
- * (lowest stakes — pure doc fix) last; within a direction, oldest
- * `first_seen_at` first, so a row that has survived several check-runs
- * always outranks one that appeared this week. Rows beyond the cap are
- * dropped from `items` but counted in `overflowCount` — an `open` row is
- * never silently dropped without that count reflecting it.
+ * ── One card per spec path, not per assertion ──
+ * A document that goes stale goes stale as a document: every assertion in it
+ * fails the same status check, so a per-row queue rendered four identical
+ * cards for one doc fix and pushed everything else off the visible ten. Rows
+ * are grouped on `(workspaceId, specPath, direction)` — direction is part of
+ * the key because it decides the card's entire CTA set (§8's promotion table),
+ * so two directions on one path are genuinely two different asks and must not
+ * be merged into a card that can only offer one of them.
+ *
+ * Within each workspace, cards rank actionable before agent-handled (a doc fix
+ * already in flight must never displace a decision that is still owed), then
+ * `contradicted` (needs an owner call before anything else can happen), then
+ * `spec_ahead`, then `code_ahead` (lowest stakes) last; within a direction,
+ * oldest `first_seen_at` first, so a doc that has survived several check-runs
+ * always outranks one that appeared this week. Cards beyond the cap are
+ * dropped from `items` but counted in `overflowCount` — an `open` row is never
+ * silently dropped without that count reflecting it.
  */
 export function buildDiscrepancyItems(
   candidates: DiscrepancyCandidate[],
@@ -461,34 +599,82 @@ export function buildDiscrepancyItems(
   const cap = options.cap ?? DEFAULT_DISCREPANCY_QUEUE_CAP;
   const open = candidates.filter((c) => c.status === 'open');
 
-  const byWorkspace = new Map<string, DiscrepancyCandidate[]>();
+  const groups = new Map<string, DiscrepancyGroup>();
   for (const c of open) {
-    const group = byWorkspace.get(c.workspaceId);
-    if (group) group.push(c);
-    else byWorkspace.set(c.workspaceId, [c]);
+    const key = `${c.workspaceId} ${c.specPath} ${c.direction}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.rows.push(c);
+    } else {
+      groups.set(key, {
+        workspaceId: c.workspaceId,
+        workspaceName: c.workspaceName,
+        specPath: c.specPath,
+        direction: c.direction,
+        rows: [c],
+        oldestFirstSeen: 0,
+        promotedMissionId: null,
+        docFixTaskId: null,
+        docFixTaskStatus: null,
+        docFixPrLifecycleStatus: null,
+        docFixMergedAt: null,
+        inFlight: false,
+      });
+    }
+  }
+
+  for (const group of groups.values()) {
+    group.rows.sort((a, b) => new Date(a.firstSeenAt).getTime() - new Date(b.firstSeenAt).getTime());
+    group.oldestFirstSeen = new Date(group.rows[0].firstSeenAt).getTime();
+    group.promotedMissionId = group.rows.find((r) => r.promotedMissionId)?.promotedMissionId ?? null;
+    // Any live, non-stale claim on any row in the group owns the whole spec
+    // path — the doc fix reconciles the document, not one assertion at a
+    // time. A claim the checker has already re-evaluated post-merge and
+    // still found wanting (isDocFixClaimStale) does not count: the fix
+    // demonstrably did not close this gap, so the CTA comes back.
+    const claimed = group.rows.find((r) => isDocFixInFlight(r) && !isDocFixClaimStale(r));
+    group.inFlight = Boolean(claimed);
+    group.docFixTaskId = claimed?.docFixTaskId ?? null;
+    group.docFixTaskStatus = claimed?.docFixTaskStatus ?? null;
+    group.docFixPrLifecycleStatus = claimed?.docFixPrLifecycleStatus ?? null;
+    group.docFixMergedAt = claimed?.docFixMergedAt ?? null;
+  }
+
+  const byWorkspace = new Map<string, DiscrepancyGroup[]>();
+  for (const g of groups.values()) {
+    const bucket = byWorkspace.get(g.workspaceId);
+    if (bucket) bucket.push(g);
+    else byWorkspace.set(g.workspaceId, [g]);
   }
 
   const items: WaitingOnYouRawItem[] = [];
   let overflowCount = 0;
 
-  for (const group of byWorkspace.values()) {
-    const ranked = [...group].sort((a, b) => {
+  for (const bucket of byWorkspace.values()) {
+    const ranked = [...bucket].sort((a, b) => {
+      const flightDiff = Number(a.inFlight) - Number(b.inFlight);
+      if (flightDiff !== 0) return flightDiff;
       const dirDiff = DISCREPANCY_DIRECTION_RANK[a.direction] - DISCREPANCY_DIRECTION_RANK[b.direction];
       if (dirDiff !== 0) return dirDiff;
-      return new Date(a.firstSeenAt).getTime() - new Date(b.firstSeenAt).getTime();
+      return a.oldestFirstSeen - b.oldestFirstSeen;
     });
     overflowCount += Math.max(0, ranked.length - cap);
-    for (const c of ranked.slice(0, cap)) {
+    for (const g of ranked.slice(0, cap)) {
       items.push({
         kind: 'discrepancy',
-        discrepancyId: c.id,
-        specPath: c.specPath,
-        assertionId: c.assertionId,
-        direction: c.direction,
-        firstSeenAt: new Date(c.firstSeenAt),
-        promotedMissionId: c.promotedMissionId ?? null,
-        workspaceId: c.workspaceId,
-        workspaceName: c.workspaceName ?? undefined,
+        discrepancyId: g.rows[0].id,
+        discrepancyIds: g.rows.map((r) => r.id),
+        specPath: g.specPath,
+        assertionId: g.rows[0].assertionId,
+        assertionIds: g.rows.map((r) => r.assertionId),
+        direction: g.direction,
+        firstSeenAt: new Date(g.oldestFirstSeen),
+        promotedMissionId: g.promotedMissionId,
+        docFixTaskId: g.inFlight ? g.docFixTaskId : null,
+        docFixTaskStatus: g.inFlight ? g.docFixTaskStatus : null,
+        docFixPrLifecycleStatus: g.inFlight ? g.docFixPrLifecycleStatus : null,
+        workspaceId: g.workspaceId,
+        workspaceName: g.workspaceName ?? undefined,
       });
     }
   }
@@ -677,16 +863,20 @@ export function buildActionQueue(
         });
       }
     } else if (item.kind === 'discrepancy') {
-      // Subject key IS the ledger row's own identity key (§7/§12) — a
-      // dedupe key that can never drift from the row it names.
-      const key = `discrepancy:${item.specPath}:${item.assertionId}`;
+      // Subject key is the CARD's identity: the spec doc plus the direction
+      // that decides its CTA set. Still structural, still derived from the
+      // ledger's own identity fields (§7/§12) — just at the grain the card is
+      // now rendered at, so one document is one row in the queue.
+      const key = `discrepancy:${item.workspaceId}:${item.specPath}:${item.direction}`;
       if (!map.has(key)) {
         map.set(key, {
           subjectKey: key,
-          chip: 'DISCREPANCY',
+          chip: item.docFixTaskId ? 'FIXING_SPEC' : 'DISCREPANCY',
           discrepancyId: item.discrepancyId,
+          discrepancyIds: item.discrepancyIds,
           specPath: item.specPath,
           assertionId: item.assertionId,
+          assertionIds: item.assertionIds,
           direction: item.direction,
           // Age in hours, not the raw Date — same boundary rule every other
           // card observes (compare STALE's cardAgeHours): a client component
@@ -695,6 +885,9 @@ export function buildActionQueue(
             ? Math.floor((now.getTime() - item.firstSeenAt.getTime()) / 3_600_000)
             : null,
           promotedMissionId: item.promotedMissionId ?? null,
+          docFixTaskId: item.docFixTaskId ?? null,
+          docFixTaskStatus: item.docFixTaskStatus ?? null,
+          docFixPrLifecycleStatus: item.docFixPrLifecycleStatus ?? null,
           workspaceId: item.workspaceId,
           workspaceName: item.workspaceName ?? undefined,
         });
@@ -740,7 +933,7 @@ export function buildActionQueue(
     // Within DISCREPANCY: §12's ranking, re-applied here (not just trusted
     // from buildDiscrepancyItems' own per-workspace ordering) so a queue
     // merged across several workspaces still ranks correctly as one list.
-    if (a.chip === 'DISCREPANCY') {
+    if (a.chip === 'DISCREPANCY' || a.chip === 'FIXING_SPEC') {
       const dirDiff = (DISCREPANCY_DIRECTION_RANK[a.direction ?? 'code_ahead'] ?? 2)
         - (DISCREPANCY_DIRECTION_RANK[b.direction ?? 'code_ahead'] ?? 2);
       if (dirDiff !== 0) return dirDiff;

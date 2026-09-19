@@ -324,8 +324,20 @@ export type DocType = 'design' | 'spec';
 // direction (§8) using the exact same terminal/non-terminal sets this module
 // uses for the contradiction check — one definition, not two that can drift.
 export const TERMINAL_STATUS: Record<DocType, string> = { design: 'implemented', spec: 'active' };
+// 'partially' is an established convention for a design doc that has shipped
+// some but not all of what it describes (docs/design/retry-continuity.md,
+// runner-workspace-isolation.md, and others predate this set) — not an
+// exotic/unparseable value like 'superseded'. Omitting it here doesn't make
+// those docs unverified; it makes every one of their passing assertions
+// classify as 'skip' (§8's classifyAssertion returns 'skip' for a status
+// outside both sets), which is silently indistinguishable from "no row to
+// write" at insert time but, for a row that ALREADY exists, means the Tier-2
+// writer stops touching it — not refreshed, not resolved, not reopened, ever
+// again, regardless of how many times CI re-runs. A doc-fix PR that flips
+// status to 'partially' merges clean and looks like it worked; the ledger
+// row it was supposed to reconcile just goes silent.
 export const NON_TERMINAL_STATUS: Record<DocType, string[]> = {
-  design: ['proposed', 'accepted'],
+  design: ['proposed', 'accepted', 'partially'],
   spec: ['draft'],
 };
 

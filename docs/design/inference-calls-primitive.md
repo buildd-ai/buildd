@@ -6,11 +6,15 @@ assertions:
     type: "symbol"
     name: "inferenceCall"
     path: "packages/core/inference-client.ts"
+    skip_until: "2026-12-15"
+    skip_reason: "Shipped and stable (Step 1) — inferenceCall is exported and in production use by the judge. Kept suppressed rather than promoting the whole design to 'implemented': Step 4 (judgeCapture / visual-judge-uses-inference-client below) and Step 5 (retiring resolveTierEntrySync) are still unbuilt, so status is intentionally held at 'partially'."
   - id: "criteria-use-inference-client"
     type: "symbol_reachable"
     symbol: "inferenceCall"
     entry: "apps/web/src/lib/mission-criteria-eval.ts"
     as: "read"
+    skip_until: "2026-12-15"
+    skip_reason: "Shipped and stable (Step 3) — judgeWithLLM in mission-criteria-eval.ts reads inferenceCall directly. Same rationale as inference-client above: this design stays 'partially' until Step 4 and Step 5 land."
   - id: "visual-judge-uses-inference-client"
     type: "symbol_reachable"
     symbol: "inferenceCall"
@@ -19,8 +23,8 @@ assertions:
 ---
 # Inference Calls as a First-Class Primitive
 
-**Status:** Partially implemented — Step 1 (the client) and Step 3 (the judge) are done; see "Implementation status" below.
-**Related:** `packages/core/task-classifier.ts:66-128`, `apps/web/src/lib/mission-criteria-eval.ts:42-146`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts:67-174`, `apps/web/src/app/api/qa/judge/route.ts:75-203`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
+**Status:** Partially implemented — Step 1 (the client), Step 2 (via deletion, not migration), and Step 3 (the judge) are done; see "Implementation status" below.
+**Related:** `apps/web/src/lib/mission-criteria-eval.ts:104-192`, `apps/web/src/app/api/missions/[id]/evaluate/route.ts`, `apps/web/src/app/api/qa/judge/route.ts:75-203`, `packages/core/model-tier-registry.ts`, `packages/core/model-tier-defaults.ts`, `packages/core/inference-policy.ts`, `docs/design/model-tiers.md`, `docs/credentials-architecture.md`
 
 ---
 
@@ -291,7 +295,7 @@ Lean toward `manage_secrets` for now, with `ANTHROPIC_API_KEY` env fallback. The
 
 **Q3: Is `model-aliases.ts` used anywhere in runner paths that would break if we stop exporting `resolveModelName` from it?**
 
-Unknown — needs audit in Step 5. Likely yes (runners call `supportedModels()` and `updateModelAliases()`). The plan is to keep the file but remove the `resolveModelName` export from the inference-client path, not delete the file.
+**Resolved.** No — `resolveModelName` (and `resolveModelNameSync`) had zero callers anywhere once `task-classifier.ts` was deleted; both are gone from the module's exports, pinned by `model-aliases-surface.test.ts`. The runner-facing exports (`updateModelAliases`, `requiresThinkingEnabled`, `resolveEffectiveThinking`, `DEFAULT_ALIASES`) were kept, as this doc originally planned. The file itself was not deleted, only the two unreachable resolvers.
 
 **Q4: Should the on-demand evaluate route (`/api/missions/[id]/evaluate`) return 422 or 503 on missing key?**
 
@@ -299,7 +303,7 @@ Lean 422 — it is a user-initiated action and the error is "this feature requir
 
 ---
 
-## Implementation status (2026-08-30)
+## Implementation status (2026-09-19)
 
 Landed:
 
@@ -321,10 +325,13 @@ Landed:
 
 Corrections to this doc's assumptions:
 
-- **Site 1 (`classifyTask`) is dead code.** It has no production callers; the only
-  import is its own test. The `classifyTask` wired into `POST /api/tasks` is a
-  different, keyword-based function in `apps/web/src/lib/task-category.ts`. Step 2
-  should be a deletion decision, not a migration.
+- **Site 1 (`classifyTask`) was dead code, and is now deleted.** As of this doc's
+  original writing it had no production callers — the only import was its own
+  test. `packages/core/task-classifier.ts` no longer exists in the repo at all:
+  Step 2 was executed as a deletion, not a migration, exactly as this doc
+  predicted. The `classifyTask` wired into `POST /api/tasks` is a different,
+  keyword-based function in `apps/web/src/lib/task-category.ts` — unrelated to
+  inference calls and out of scope for this doc.
 - **The missing-key path is not only a degradation.** For prose goal criteria,
   `missing_key` now routes to a dispatched agent run
   (`mission-criteria-prose.ts`), which can use the OAuth subscription an inference
@@ -359,7 +366,13 @@ Remaining:
 
 - **Step 4 — `judgeCapture`** (`/api/qa/judge`) still holds its own `fetch` and
   its hardcoded model. Migrating it is now mechanical.
-- **Step 5 — retire the dead resolvers.** `resolveTierEntrySync` still has
-  non-inference callers; audit before removing.
+- **Step 5 — retire the dead resolvers, partially done.** `resolveModelName`
+  (and its unused sync twin `resolveModelNameSync`) are retired — removed from
+  `model-aliases.ts`'s exports entirely, pinned by
+  `model-aliases-surface.test.ts` (see Q3, resolved above). `resolveTierEntrySync`
+  is not yet deleted, but audit now shows it has no real callers outside its own
+  defining file and its own test — the only other reference is a stale mock in
+  `mission-criteria-eval.test.ts` for a code path that no longer calls it.
+  Deleting it is the last piece of Step 5.
 - Cost accounting (Point 6): `inferenceCall` returns `usage` on every success, but
   no caller records it yet.

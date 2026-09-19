@@ -27,7 +27,11 @@ import {
   isMissionIntegrationBase,
   type MissionIntegrationFields,
 } from '@buildd/core/mission-integration';
+import { isReleaseBranchPr } from '@buildd/core/release-strategy';
+import type { WorkspaceReleaseConfig } from '@buildd/core/db/schema';
 import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
+import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
 
 /**
  * Check CI status, deny paths, and diff size for a PR before merging.
@@ -37,18 +41,27 @@ import { guardMissionPrMerge, finalizeMissionPrMerge } from '@/lib/mission-pr';
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  *
- * ## The one exemption (Option A′)
+ * ## The exemptions from the aggregate line threshold
  *
  * `opts.mission` is the calling worker's mission, and it is read for two
  * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
  * shape test:
  *
- *  - whether this PR is the mission's integration PR, in which case the
- *    AGGREGATE LINE THRESHOLD does not apply. Nothing else is relaxed — see the
- *    comment at the size check;
+ *  - whether this PR is the mission's integration PR (Option A′), in which
+ *    case the AGGREGATE LINE THRESHOLD does not apply. Nothing else is
+ *    relaxed — see the comment at the size check;
  *  - whether `opts.bound` may permit an unattended merge (below).
  *
- * Omit `opts` and this behaves exactly as it did before Option A′ existed.
+ * `opts.releaseConfig` is the workspace's release config, read for the same
+ * AGGREGATE LINE THRESHOLD decision via `isReleaseBranchPr`: a PR from the
+ * configured release branch into the configured prod branch (e.g. dev → main)
+ * is a rollup of every commit since the last release, each of which was
+ * already size-gated on its own way into the release branch — re-applying the
+ * cap to the union would make every release unmergeable by policy regardless
+ * of review outcome. Nothing else is relaxed, same as Option A′.
+ *
+ * Omit `opts` and this behaves exactly as it did before either exemption
+ * existed.
  *
  * ## The bound (`opts.bound`)
  *
@@ -68,7 +81,11 @@ export async function evaluateAutoMergeSafety(
   // authoritative "is this ref the mission's integration branch" question is
   // asked of `opts.mission`, so a second positional parameter would have to
   // carry a duplicate of what `opts` already holds.
-  opts?: { mission?: MissionIntegrationFields | null; bound?: ModelApproveBound },
+  opts?: {
+    mission?: MissionIntegrationFields | null;
+    bound?: ModelApproveBound;
+    releaseConfig?: WorkspaceReleaseConfig | null;
+  },
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   let checkRuns: CheckRunState[] = [];
 
@@ -173,13 +190,11 @@ export async function evaluateAutoMergeSafety(
   // the mission integration PR. Both refs are read here: HEAD for the size-gate
   // exemption, BASE for the model-approve bound.
   //
-  // Fails soft by default: an unreadable PR leaves the head ref and
-  // mergeable_state unknown, which keeps the size gate ON and leaves the
-  // conflict check a soft pass — exactly as before. It fails CLOSED only under
-  // `opts.bound`, where the base ref is a hard input (see below).
+  // An unreadable PR keeps the size gate on and fails closed at the live-head
+  // check below. The bound also requires a verified base ref.
   let prData: {
     mergeable_state?: string;
-    head?: { ref?: string | null };
+    head?: { ref?: string | null; sha?: string | null };
     base?: { ref?: string | null };
   } | null = null;
   let prReadError: unknown = null;
@@ -204,6 +219,15 @@ export async function evaluateAutoMergeSafety(
     mission: opts?.mission ?? null,
   });
 
+  // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
+  // Unlike the mission check above, this compares BOTH refs — a release PR's
+  // own head and base are both configured (releaseBranch, prodBranch), so
+  // there is no single trunk-base assumption to lean on.
+  const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
+    headRef: prData?.head?.ref ?? null,
+    baseRef: prData?.base?.ref ?? null,
+  });
+
   const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
   const sourceFiles = files.filter(
     (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
@@ -219,14 +243,21 @@ export async function evaluateAutoMergeSafety(
   // and reduce "the tier applies at the mission PR" to a claim that only holds
   // for operators who explicitly configured a tier.
   //
-  // ONLY the aggregate size gate is exempt. Everything else in this function
-  // still runs for a mission PR, unchanged and in the same order: CI-green
+  // The same reasoning applies to the workspace's release PR (dev → main):
+  // it bundles every commit merged since the last release, each already
+  // size-gated on its own way into the release branch, so the union is over
+  // the cap essentially by construction and every release would otherwise
+  // need a human to merge_pr regardless of review outcome.
+  //
+  // ONLY the aggregate size gate is exempt for either. Everything else in this
+  // function still runs, unchanged and in the same order: CI-green
   // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
   // operation-class inspector, and the conflict / branch-protection checks.
-  if (isMissionIntegrationPr && totalLines > maxLines) {
+  if ((isMissionIntegrationPr || isReleasePr) && totalLines > maxLines) {
+    const exemption = isMissionIntegrationPr ? 'mission integration PR' : 'release PR';
     console.log(
-      `[auto-merge] ${repoFullName}#${prNumber}: mission integration PR — aggregate size gate not applied ` +
-        `(${totalLines} source lines > limit ${maxLines}); each task PR was size-gated on the way in`,
+      `[auto-merge] ${repoFullName}#${prNumber}: ${exemption} — aggregate size gate not applied ` +
+        `(${totalLines} source lines > limit ${maxLines}); each underlying commit was size-gated on the way in`,
     );
   } else if (totalLines > maxLines) {
     return {
@@ -237,8 +268,8 @@ export async function evaluateAutoMergeSafety(
 
   // Conflict detection — check GitHub's mergeable_state before attempting merge.
   // 'dirty' = conflicts with base; 'blocked' = branch protection or review required.
-  // 'unknown' (and an unreadable PR) means GitHub is still computing — treat as a
-  // soft pass (do not block permanently).
+  // 'unknown' means GitHub is still computing — defer that conflict decision
+  // to GitHub's merge API. The live head must still be verified below.
   const mergeableState = prData?.mergeable_state;
   if (mergeableState === 'dirty') {
     return { ok: false, reason: `PR has conflicts (mergeable_state: dirty) — needs rebase onto base branch` };
@@ -272,6 +303,15 @@ export async function evaluateAutoMergeSafety(
     if (!verdict.permitted) {
       return { ok: false, reason: verdict.reason };
     }
+  }
+
+  // The event/reviewer SHA must still identify the live PR. Otherwise a late
+  // success for A could treat B's rejecting review as superseded and merge B.
+  if (!headSha || !prData?.head?.sha) {
+    return { ok: false, reason: 'could not verify the live PR head — refusing the merge' };
+  }
+  if (prData.head.sha !== headSha) {
+    return { ok: false, reason: 'PR head changed — ignoring stale merge trigger' };
   }
 
   return { ok: true };
@@ -370,6 +410,48 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: safetyCheck.reason };
   }
 
+  // Review-verdict gate — the same rule every other merge door enforces.
+  //
+  // This is the unattended path, so it is the one that used to let a finding be
+  // outrun: `evaluateAutoMergeSafety` covers CI, deny paths, size and
+  // migrations, and asks nothing about the review. Under `agent-review` the
+  // CALLERS happened to check for an approve first; under `auto-threshold` —
+  // which is every Option A′ task PR, all of which get a reviewer dispatched by
+  // `requestIntegrationBranchReview` — nothing did.
+  //
+  // No override here by construction: nothing unattended may bypass a verdict.
+  // A human override lives on the dashboard route, where a person is present.
+  const reviewWorkspaceId = worker.workspaceId ?? (worker.taskId ? await resolveWorkspaceId(worker.taskId) : null);
+  if (reviewWorkspaceId) {
+    const reviewGate = await guardReviewVerdict({
+      workspaceId: reviewWorkspaceId,
+      prNumber,
+      headSha,
+    });
+    if (reviewGate.blocks) {
+      const reason = `${reviewGate.reason}. ${reviewGate.clearedBy}`;
+      console.log(`Auto-merge blocked for ${repoFullName}#${prNumber}: ${reason}`);
+      fireGateEvent({
+        gate: GATE_SLUGS.REVIEW_VERDICT,
+        surface: 'auto-merge',
+        outcome: 'deferred',
+        reason: reviewGate.reason ?? 'review verdict blocks this merge',
+        workspaceId: reviewWorkspaceId,
+        taskId: worker.taskId ?? null,
+        workerId: worker.id ?? null,
+        callerOrigin: 'system',
+        detail: {
+          prNumber,
+          headSha,
+          reviewState: reviewGate.state ?? null,
+          reviewKind: reviewGate.kind ?? null,
+          reviewTaskId: reviewGate.reviewTaskId ?? null,
+        },
+      });
+      return { merged: false, reason };
+    }
+  }
+
   // Mission-PR branch-lifecycle gate (P3) — same rule as the manual merge_pr
   // route: refuse to merge the mission PR while a sibling task PR based on
   // the integration branch is still open, since merging deletes that branch.
@@ -385,7 +467,7 @@ export async function tryAutoMergeWorkerPr(params: {
     return { merged: false, reason: mergeGate.reason };
   }
 
-  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash');
+  const result = await mergePullRequest(installationId, repoFullName, prNumber, 'squash', headSha);
   if (result.merged) {
     console.log(`Auto-merged PR #${prNumber} on ${repoFullName} for worker ${worker.id}`);
     await finalizeMissionPrMerge(mergingTask, installationId, repoFullName);

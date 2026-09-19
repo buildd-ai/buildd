@@ -744,3 +744,108 @@ describe('buildRail — the v3 structural guarantees', () => {
     expect(a.goal).toEqual({ total: 3, passed: 2 });
   });
 });
+
+// ─── §4: mission phase headers — mission-legibility.md ───────────────────────
+
+describe('buildRail — mission phase headers (§4.1–§4.3)', () => {
+  const now = new Date('2026-09-13T12:00:00.000Z');
+
+  const phased = (id: string, index: number, label: string, o: Partial<RT> = {}) =>
+    rt(id, { missionPhaseIndex: index, missionPhaseLabel: label, ...o });
+
+  it('emits no header row for a mission where no task has a phase (AC-1)', () => {
+    const model = buildRail(
+      { ...EMPTY_GROUPS, done: [unit(rt('a', { taskUpdatedAt: '2026-09-11T09:00:00.000Z' }))] },
+      { now },
+    );
+    expect(model.rows.some(r => r.kind === 'phase')).toBe(false);
+    // Day ticks are unaffected when no phase exists.
+    expect(model.rows.some(r => r.kind === 'tick' && !(r as any).now)).toBe(true);
+  });
+
+  it('throws when two tasks share an index with different labels (AC-5)', () => {
+    const groups = {
+      ...EMPTY_GROUPS,
+      done: [
+        unit(phased('a', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z' })),
+        unit(phased('b', 1, 'Population', { taskUpdatedAt: '2026-09-11T10:00:00.000Z' })),
+      ],
+    };
+    expect(() => buildRail(groups, { now })).toThrow(/divergent labels/);
+  });
+
+  it('emits exactly N headers and zero day ticks for an N-phase mission spanning several days (AC-6)', () => {
+    const groups = {
+      ...EMPTY_GROUPS,
+      done: [
+        unit(phased('a', 1, 'Storage', { taskUpdatedAt: '2026-09-08T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-08T09:00:00.000Z' } })),
+        unit(phased('b', 2, 'Population', { taskUpdatedAt: '2026-09-10T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-10T09:00:00.000Z' } })),
+      ],
+      nextQueued: [unit(phased('c', 3, 'Rendering', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' }))],
+    };
+    const model = buildRail(groups, { now });
+    const headers = model.rows.filter(r => r.kind === 'phase');
+    expect(headers).toHaveLength(3);
+    expect(model.rows.some(r => r.kind === 'tick' && !(r as any).now)).toBe(false);
+    expect(model.rows.filter(r => r.kind === 'tick' && (r as any).now)).toHaveLength(1);
+  });
+
+  it('reports filled/half/empty segments in rail order and counts filled only (AC-7)', () => {
+    const filled = phased('f', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-11T09:00:00.000Z' } });
+    const half = phased('h', 1, 'Storage', { taskUpdatedAt: '2026-09-11T10:00:00.000Z', latestWorker: { mergedAt: null, prLifecycleStatus: 'pr_open' } });
+    const pending = phased('p', 1, 'Storage', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });
+    const model = buildRail(
+      { ...EMPTY_GROUPS, done: [unit(filled), unit(half)], nextQueued: [unit(pending)] },
+      { now },
+    );
+    const header = model.rows.find(r => r.kind === 'phase') as any;
+    expect(header.segments.map((s: any) => s.state)).toEqual(['filled', 'half', 'empty']);
+    expect(header.filled).toBe(1);
+    expect(header.total).toBe(3);
+  });
+
+  it('places an unphased task in its ordinary position, with no header and no segment membership (AC-20)', () => {
+    const p1 = phased('a', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-11T09:00:00.000Z' } });
+    const unphased = rt('u', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });
+    const model = buildRail({ ...EMPTY_GROUPS, done: [unit(p1)], nextQueued: [unit(unphased)] }, { now });
+
+    const uNode = nodes(model.rows).find((n: any) => n.id === 'u');
+    expect(uNode).toBeDefined();
+    const header = model.rows.find(r => r.kind === 'phase') as any;
+    expect(header.segments.some((s: any) => s.taskId === 'u')).toBe(false);
+    expect(header.total).toBe(1);
+  });
+
+  it('renders the now tick before a phase boundary that coincides with it, with no day tick between (AC-21)', () => {
+    const p1 = phased('a', 1, 'Storage', { taskUpdatedAt: '2026-09-12T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-12T09:00:00.000Z' } });
+    const p2 = phased('b', 2, 'Population', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });
+    const model = buildRail({ ...EMPTY_GROUPS, done: [unit(p1)], nextQueued: [unit(p2)] }, { now });
+
+    const kinds = model.rows.map(r => r.kind);
+    const nowIdx = model.rows.findIndex(r => r.kind === 'tick' && (r as any).now);
+    const phase2Idx = model.rows.findIndex(r => r.kind === 'phase' && (r as any).index === 2);
+    expect(nowIdx).toBeGreaterThanOrEqual(0);
+    expect(phase2Idx).toBeGreaterThan(nowIdx);
+    expect(kinds.filter(k => k === 'tick')).toHaveLength(1); // only the now tick — no day tick anywhere
+  });
+
+  it('marks a phase complete only when every member is filled or skipped (Rule P1-12)', () => {
+    const filled = phased('f', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-11T09:00:00.000Z' } });
+    const skipped = phased('s', 1, 'Storage', { status: 'cancelled', taskUpdatedAt: '2026-09-11T09:00:00.000Z' });
+    const model = buildRail({ ...EMPTY_GROUPS, done: [unit(filled)], failed: [unit(skipped)] }, { now });
+    const header = model.rows.find(r => r.kind === 'phase') as any;
+    expect(header.state).toBe('complete');
+  });
+
+  it('marks the lowest incomplete phase with an active member as live, never more than one (Rule P1-12)', () => {
+    const p1 = phased('a', 1, 'Storage', { taskUpdatedAt: '2026-09-11T09:00:00.000Z', latestWorker: { mergedAt: '2026-09-11T09:00:00.000Z' } });
+    const p2 = phased('b', 2, 'Population', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });
+    const p3 = phased('c', 3, 'Rendering', { status: 'pending', taskCreatedAt: '2026-09-13T09:00:00.000Z' });
+    const model = buildRail({ ...EMPTY_GROUPS, done: [unit(p1)], nextQueued: [unit(p2), unit(p3)] }, { now });
+    const headers = model.rows.filter(r => r.kind === 'phase') as any[];
+    expect(headers.find(h => h.index === 1)?.state).toBe('complete');
+    expect(headers.find(h => h.index === 2)?.state).toBe('live');
+    expect(headers.find(h => h.index === 3)?.state).toBe('upcoming');
+    expect(headers.filter(h => h.state === 'live')).toHaveLength(1);
+  });
+});

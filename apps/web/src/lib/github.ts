@@ -283,7 +283,8 @@ export async function mergePullRequest(
   installationId: number,
   repoFullName: string,
   prNumber: number,
-  mergeMethod: 'merge' | 'squash' | 'rebase' = 'squash'
+  mergeMethod: 'merge' | 'squash' | 'rebase',
+  expectedHeadSha: string,
 ): Promise<MergePullRequestResult> {
   let response: Response;
   try {
@@ -298,7 +299,7 @@ export async function mergePullRequest(
           'X-GitHub-Api-Version': '2022-11-28',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ merge_method: mergeMethod }),
+        body: JSON.stringify({ merge_method: mergeMethod, sha: expectedHeadSha }),
       }
     );
   } catch (error) {

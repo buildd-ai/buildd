@@ -153,6 +153,15 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
         case 'conflict_exhausted':
           setState('conflict_exhausted');
           break;
+        case 'review_blocked':
+          // This card always sends `override: true`, so the server-side gate
+          // never refuses it. Reaching here means something else is outstanding
+          // (a second review round opened since the card rendered) — surface it
+          // rather than leaving the card spinning.
+          setErrorMsg(outcome.clearedBy ? `${outcome.message}. ${outcome.clearedBy}` : outcome.message);
+          setMergeRetrySafe(true);
+          setState('error');
+          break;
         case 'indeterminate':
           setErrorMsg(outcome.message);
           setMergeRetrySafe(outcome.liveState === 'open');
@@ -235,7 +244,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
         <>
           {state === 'idle' && canApply && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => handleApply(undefined)}
                   className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"
@@ -249,7 +258,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
                   {hasRecommendation ? 'Apply with corrections' : 'Dispatch fix with corrections'}
                 </button>
               </div>
-              <div className="mt-1.5 flex items-center gap-3">
+              <div className="mt-1.5 flex items-center gap-3 flex-wrap">
                 <button
                   onClick={() => setState('confirming_override')}
                   className="text-[11px] text-text-muted hover:text-text-secondary underline"
@@ -276,7 +285,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               its own. */}
           {state === 'idle' && !canApply && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <button
                   onClick={() => setState('confirming_override')}
                   className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-1 rounded"

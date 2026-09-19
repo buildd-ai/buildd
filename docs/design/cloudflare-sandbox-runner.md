@@ -10,6 +10,8 @@ assertions:
     type: "symbol"
     name: "AgentBackend"
     path: "apps/runner/src/backends/types.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "AgentBackend predates this spec and is cited in §2.1 as an existing dependency the proposed RunnerSubstrate would build on, not a deliverable of this design. It will always pass and does not indicate the proposal has shipped; runner-substrate-interface (RunnerSubstrate) is the assertion that tracks real progress and correctly still fails since apps/runner/src/substrates/types.ts does not exist."
 ---
 # Cloudflare Sandbox Runner — Design Spec
 

@@ -266,15 +266,21 @@ pricing, and picker files, so retargeting a tier is a single row write rather
 than a code sweep.
 
 **Invariants**:
-- `scripts/lint-model-ids.sh` runs in CI on every build
-  (`.github/workflows/build.yml:99`) and exits non-zero when a model-id literal
-  matching `claude-(haiku|sonnet|opus|fable|…)-[0-9]`, `claude-[0-9]`,
-  `gpt-4[0-9o-]` or `gpt-3.5` appears in a `.ts`/`.tsx` file outside the
-  allowlist. Test files are excluded by the grep filter.
-- The allowlist is a declared list with a stated reason per entry
-  (`scripts/lint-model-ids.sh:11-21`); the registry, defaults, pricing, MCP
-  help-text, the QA judge and the runner UI list are the sanctioned homes for
-  literals.
+- `scripts/lint-model-ids.ts` (a `bun`-run TypeScript tokenizer, not a
+  line-based `grep`) runs in CI on every build
+  (`.github/workflows/build.yml:99`) and exits non-zero when a model-id
+  literal matching `claude-(haiku|sonnet|opus|fable|mythos)-[0-9]`,
+  `claude-[0-9]`, `gpt-[0-9]` or `o[0-9]-(mini|preview)` appears in a
+  `.ts`/`.tsx` file outside the allowlist. It walks each file tracking
+  comment/string/template-literal state so a model id inside a line comment,
+  a block comment, or JSDoc is never flagged — only code, string literals,
+  and template literals (including `${...}` interpolations) are matched.
+  Test files (`__tests__`, `.test.`, `.spec.`) are excluded entirely.
+- The allowlist is a declared list of exact file paths with a stated reason
+  per entry (`scripts/lint-model-ids.ts:44-58`); a directory prefix or a
+  non-`.ts`/`.tsx` entry is rejected at lint time. The registry, defaults,
+  pricing, capability-requirements, MCP help-text, the QA judge and the
+  runner UI list are the sanctioned homes for literals.
 - Cost accounting classifies an id by substring rather than by exact match, so
   an unknown id degrades to the Sonnet rate instead of to zero:
   `priceForModel` (`packages/core/model-prices.ts:43-50`) and `modelWeight`
@@ -283,13 +289,16 @@ than a code sweep.
 
 **Acceptance criteria**:
 - AC-15 (failure path): GIVEN a new literal `claude-opus-5` added to
-  `packages/core/mission-helpers.ts` WHEN `bash scripts/lint-model-ids.sh` runs
-  THEN it exits 1 and prints that file and line.
+  `packages/core/mission-helpers.ts` WHEN `bun run scripts/lint-model-ids.ts`
+  runs THEN it exits 1 and prints that file and line. GIVEN the same literal
+  appears only inside a comment or JSDoc WHEN the check runs THEN it exits 0 —
+  a model id in prose cannot retarget a tier and is not what this gate exists
+  to prevent (`scripts/lint-model-ids.ts --self-test` proves both directions).
 - AC-16: WHEN `modelWeight('premium')` and `modelWeight('claude-opus-4-6')` are
   called THEN both return `MODEL_WEIGHTS.opus`, and `modelWeight(null)` returns
   the Sonnet weight `1`.
 
-**Code surface**: `scripts/lint-model-ids.sh`, `.github/workflows/build.yml:99`,
+**Code surface**: `scripts/lint-model-ids.ts`, `.github/workflows/build.yml:99`,
 `packages/core/model-prices.ts`, `packages/core/oauth-budget.ts`,
 `packages/core/__tests__/oauth-window.test.ts:96-112`,
 `packages/core/__tests__/model-prices.test.ts`.
@@ -460,14 +469,14 @@ passed through the claim payload into `agents[slug].model`
 (`apps/runner/src/workers.ts:2259`) with no translation to a model id or to the
 SDK's own alias vocabulary.
 
-**`scripts/lint-model-ids.sh` is much weaker than it reads.** Its allowlist
-contains the bare prefix `apps/web/src/app` (`:20`), which suppresses every
-violation under the entire web app — routes included — because violation lines
-are prefixed `./`. `gpt-5*` ids are not in the pattern at all (only `gpt-4…`
-and `gpt-3.5`), so a hardcoded `gpt-5-codex` passes. The alternatives
-`sonnet-5|fable-5|opus-4` inside the group are dead — they would require a
-trailing `-[0-9]` that those ids do not have. The `apps/web/src/lib/config-helpers.ts`
-entry is stale: that file contains no model id.
+**`scripts/lint-model-ids.ts` history.** The directory-prefix allowlist bug
+(`apps/web/src/app`, which suppressed every violation under the entire web
+app) and the missing `gpt-5*`/`o[0-9]-*` pattern coverage were both fixed at
+C30 — see the file's own header comment. As of the 2026-09 tokenizer rewrite,
+the allowlist is enforced as exact `.ts`/`.tsx` file paths (a directory entry
+or non-source-file entry is a lint-time error, not a silent no-op), and the
+`apps/web/src/lib/config-helpers.ts` entry is current — that file's model
+dropdown options are real literals, not stale.
 
 **Stale model ids in the fallbacks.** `TIER_DEFAULTS.standard` is
 `claude-sonnet-4-6` (`packages/core/model-tier-defaults.ts:22`) and
@@ -481,8 +490,9 @@ tier-registry path (the routing tests all run with no `teamId` and assert the
 alias fallback — `apps/web/src/app/api/workers/claim/route.test.ts:1980`);
 `tasks.tier` overriding a budget downshift; `tasks.tier` immutability under
 `PATCH /api/tasks/[id]`; `context.resolvedTier` contents; `/api/model-tiers`
-authorisation or upsert semantics; `scripts/lint-model-ids.sh` itself; the
-routing-calibration aggregate.
+authorisation or upsert semantics; the routing-calibration aggregate.
+(`scripts/lint-model-ids.ts` covers itself via `--self-test`, run in CI
+before the real scan — see `Model-id containment` above.)
 
 **Silent rejection of an invalid tier.** Both creation paths drop an
 unrecognised `tier` instead of returning HTTP 400 —

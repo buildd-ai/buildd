@@ -54,12 +54,25 @@ function makeSelectChain(result: () => any[], captureWhere?: (arg: any) => void)
   return chain;
 }
 
-const mockDbSelect = mock((_cols?: any) => {
+// Captures the columns object passed to the rows-query db.select() call so a
+// test can inspect the raw SQL text of a given column's `sql` fragment.
+let lastRowsSelectCols: any = null;
+
+const mockDbSelect = mock((cols?: any) => {
   const idx = selectCallIndex++;
   // First select call in Promise.all is the counts query
   if (idx % 2 === 0) return makeSelectChain(() => mockSelectResult);
+  lastRowsSelectCols = cols;
   return makeSelectChain(() => mockSelectRowsResult);
 });
+
+// The mocked `sql` tag below (drizzle-orm is fully stubbed in this file) returns
+// { strings, values, type: 'sql' } — joining `strings` reconstructs the literal
+// template text (interpolated columns are dropped, which is fine: we only need
+// to assert the static guard clause is present) without a real Postgres connection.
+function sqlFragmentText(fragment: any): string {
+  return Array.isArray(fragment?.strings) ? fragment.strings.join('') : '';
+}
 
 // ── Import real implementations of pure @buildd/core packages BEFORE mock.module ──
 // These packages have no drizzle-orm runtime imports, so they're safe to import
@@ -168,6 +181,8 @@ mock.module('@buildd/core/db/schema', () => ({
   systemCache: { key: 'key', expiresAt: 'expiresAt' },
   missions: { id: 'id' },
   workspaceSkills: { id: 'id', slug: 'slug', workspaceId: 'workspaceId', enabled: 'enabled' },
+  workers: { id: 'id', taskId: 'taskId' },
+  artifacts: { id: 'id', workerId: 'workerId' },
   // taskSubjectReports is imported by @/lib/subject-anchor-observer, which loads
   // for real (no stub mock). Without this entry Bun throws a SyntaxError on the
   // dynamic import chain even though the runtime value is never dereferenced by
@@ -217,10 +232,12 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
     mockSelectRowsResult = [];
     notInArrayCalls.length = 0;
     orderByCalls.length = 0;
+    lastRowsSelectCols = null;
     // Re-bind the mock: reset creates a new identity, so re-register the impl
-    mockDbSelect.mockImplementation((_cols?: any) => {
+    mockDbSelect.mockImplementation((cols?: any) => {
       const idx = selectCallIndex++;
       if (idx % 2 === 0) return makeSelectChain(() => mockSelectResult);
+      lastRowsSelectCols = cols;
       return makeSelectChain(() => mockSelectRowsResult);
     });
   });
@@ -334,5 +351,70 @@ describe('GET /api/tasks — paginated lean path (?limit=N)', () => {
     const lastArg = rowsOrderByArgs[rowsOrderByArgs.length - 1];
     // The tiebreak must be an asc() expression on the id field
     expect(lastArg).toMatchObject({ type: 'asc', f: 'id' });
+  });
+
+  describe('terminal-status audit mode (?status=completed|failed|cancelled)', () => {
+    it('filters by exact status instead of the notInArray "active" predicate', async () => {
+      const req = makeRequest({ limit: '5', status: 'completed', workspaceId: 'ws-1' });
+      await GET(req);
+
+      // Audit mode uses eq(), not notInArray() — the 24h-windowed OR branch never fires.
+      expect(notInArrayCalls.length).toBe(0);
+    });
+
+    it('exposes updatedAt/summarySource/prNumber/hasArtifact on each row', async () => {
+      mockSelectResult = [{ total: 1, pendingCount: 0 }];
+      mockSelectRowsResult = [
+        {
+          id: 't1', workspaceId: 'ws-1', title: 'Fallback completion', status: 'completed',
+          priority: 0, category: 'bug', descriptionPreview: 'desc',
+          updatedAt: new Date('2026-09-14T00:00:00Z'), summarySource: 'fallback', prNumber: null, hasArtifact: false,
+        },
+      ];
+
+      const req = makeRequest({ limit: '5', status: 'completed' });
+      const res = await GET(req);
+      const body = await res.json();
+
+      expect(body.tasks[0].summarySource).toBe('fallback');
+      expect(body.tasks[0].prNumber).toBeNull();
+      expect(body.tasks[0].hasArtifact).toBe(false);
+      expect(body.tasks[0].updatedAt).toBeDefined();
+    });
+
+    it('guards the prNumber cast so a non-numeric result.prNumber cannot 500 the whole audit query', async () => {
+      // Audit mode scans the ENTIRE terminal history (no 24h window), including
+      // tasks completed before result.prNumber's shape was as strict as it is
+      // today. A bare `(result->>'prNumber')::int` throws a Postgres error and
+      // aborts the whole query the moment ANY matched row has a non-integer
+      // string there — this reproduces the "500 - Failed to get tasks" friction
+      // report for every terminal status. Assert the rendered SQL never performs
+      // an unguarded cast: it must fall back to NULL instead of throwing.
+      const req = makeRequest({ limit: '5', status: 'completed' });
+      await GET(req);
+
+      expect(lastRowsSelectCols).toBeTruthy();
+      const prNumberSql = sqlFragmentText(lastRowsSelectCols.prNumber);
+      expect(prNumberSql).toContain('CASE WHEN');
+      expect(prNumberSql).toContain("~ '^[0-9]+$'");
+      expect(prNumberSql).toContain('ELSE NULL END');
+    });
+
+    it('orders by updatedAt desc with an id tiebreak, not the active-mode CASE/priority order', async () => {
+      const req = makeRequest({ limit: '5', status: 'failed' });
+      await GET(req);
+
+      const rowsOrderByArgs = orderByCalls[orderByCalls.length - 1];
+      expect(rowsOrderByArgs[0]).toMatchObject({ type: 'desc', f: 'updatedAt' });
+      expect(rowsOrderByArgs[rowsOrderByArgs.length - 1]).toMatchObject({ type: 'asc', f: 'id' });
+    });
+
+    it('is not triggered by an unrecognized status value (falls through to default 24h-window branch)', async () => {
+      const req = makeRequest({ limit: '5', status: 'bogus' });
+      await GET(req);
+
+      // Falls into the default branch, which still calls notInArray for the OR condition.
+      expect(notInArrayCalls.length).toBeGreaterThan(0);
+    });
   });
 });

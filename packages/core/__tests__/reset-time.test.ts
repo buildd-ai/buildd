@@ -23,6 +23,7 @@ import {
   PAUSE_FLOOR_MS,
   PAUSE_CEILING_MS,
   SESSION_WINDOW_MS,
+  WEEKLY_WINDOW_MS,
 } from '../reset-time';
 
 const MIN = 60 * 1000;
@@ -190,6 +191,35 @@ describe('matchResetClause', () => {
   it('is null when no reset clause is present', () => {
     expect(matchResetClause('hit your usage limit')).toBeNull();
     expect(matchResetClause('resets soon')).toBeNull();
+  });
+});
+
+describe('WEEKLY_WINDOW_MS', () => {
+  it('is 7 days', () => {
+    expect(WEEKLY_WINDOW_MS).toBe(7 * 24 * HOUR);
+  });
+
+  // Regression (task f3ab48af): a weekly-cap error ("You've hit your weekly
+  // limit · resets 4am (UTC)") is still just a bare clock time, and the true
+  // reset routinely sits well over 5h from the report — unlike the 5h session
+  // cap this module was originally tuned for. Reported at 07:06 with "resets
+  // 4am", the next occurrence is ~21h out; SESSION_WINDOW_MS's 5h plausibility
+  // bound misreads that as the *previous* 4am (already passed), so a caller
+  // using the default bound would never defer at all. Passing WEEKLY_WINDOW_MS
+  // as maxAheadMs keeps the correct next-day reading.
+  it('keeps a genuinely next-day weekly reset from being misread as already passed', () => {
+    const now = new Date('2026-09-17T07:06:00.000Z');
+    const error = "Claude Code returned an error result: You've hit your weekly limit · resets 4am (UTC)";
+
+    // Default bound (session-window semantics): rolled back a day, into the past.
+    const sessionWindowResult = extractResetTime(error, { now, maxAheadMs: SESSION_WINDOW_MS });
+    expect(sessionWindowResult).not.toBeNull();
+    expect(sessionWindowResult!.getTime()).toBeLessThan(now.getTime());
+
+    // Weekly bound: correctly read as tomorrow 4am, still ahead of now.
+    const weeklyWindowResult = extractResetTime(error, { now, maxAheadMs: WEEKLY_WINDOW_MS });
+    expect(weeklyWindowResult?.toISOString()).toBe('2026-09-18T04:00:00.000Z');
+    expect(weeklyWindowResult!.getTime()).toBeGreaterThan(now.getTime());
   });
 });
 

@@ -147,6 +147,121 @@ export function deriveTaskPhase(i: TaskPhaseInput): TaskPhase {
   return 'pending';
 }
 
+// ─── Work kind ────────────────────────────────────────────────────────────────
+
+/**
+ * The shape of the work a task does — `tasks.kind`. Mirrors the column union in
+ * `packages/core/db/schema.ts` and `TASK_KINDS` in POST /api/tasks.
+ */
+export type WorkKind =
+  | 'coordination' | 'engineering' | 'research' | 'writing' | 'design' | 'analysis' | 'observation';
+
+/**
+ * The seven glyphs, one per kind. No circles and no squares — the rail has spent
+ * both (circles are task nodes in every fill state, squares are non-task rail
+ * elements), so a work-kind reusing either shape would read as a node.
+ *
+ * Teachable in one line: filled produces an artifact, hollow produces a
+ * proposal; diamonds make, triangles judge, bars write, dots watch, arrows
+ * route. Every distinction is silhouette, so the vocabulary survives greyscale —
+ * the glyph carries no colour of its own and inherits the row's text colour.
+ */
+export const WORK_KIND_GLYPHS: Record<WorkKind, { glyph: string; label: string }> = {
+  engineering: { glyph: '◆', label: 'Engineering' },
+  research: { glyph: '◇', label: 'Research' },
+  analysis: { glyph: '▲', label: 'Analysis' },
+  design: { glyph: '△', label: 'Design' },
+  writing: { glyph: '≡', label: 'Writing' },
+  observation: { glyph: '⋯', label: 'Observation' },
+  coordination: { glyph: '⇅', label: 'Coordination' },
+};
+
+/**
+ * Role → kind, restricted to the SEEDED default roles (lib/default-roles.ts).
+ *
+ * A literal table on purpose, not a lookup against `workspaceSkills`: a
+ * workspace-defined role is not guessed at, it simply falls through, and
+ * reading the skills table here would put a database query inside a pure
+ * presentation helper that three surfaces call once per row.
+ *
+ * Role is a FALLBACK TIER, not an overlay. It adds information only where
+ * `kind` is absent — `builder` implies engineering, `organizer` implies
+ * coordination, and printing both would print the same fact twice.
+ */
+export const ROLE_TO_WORK_KIND: Record<string, WorkKind> = {
+  organizer: 'coordination',
+  builder: 'engineering',
+  researcher: 'research',
+  writer: 'writing',
+  analyst: 'analysis',
+  reviewer: 'analysis',
+  'spec-validator': 'analysis',
+};
+
+export interface WorkKindInput {
+  /** `tasks.kind` — the declared shape of the work. */
+  kind?: WorkKind | string | null;
+  /** `tasks.role_slug` — resolved through {@link ROLE_TO_WORK_KIND}, never guessed. */
+  roleSlug?: string | null;
+  /**
+   * `deriveTaskType()`'s output, computed by the caller and passed IN.
+   *
+   * That function reads a title, but only to match bracketed prefixes the
+   * platform itself writes (`[reviewer #1]`); this chain never calls it with a
+   * raw title of its own.
+   */
+  taskType?: 'retry' | 'review' | 'review-retry' | null;
+}
+
+export interface WorkKindResult {
+  glyph: string;
+  label: string;
+  source: 'kind' | 'role' | 'type';
+}
+
+/**
+ * The ONE derivation every surface that draws a work-kind calls — the rail
+ * node, the Structure canvas node and the Activity row. Adding an eighth kind
+ * means editing one table.
+ *
+ * Strict precedence, first non-null wins, no blending:
+ *
+ *   1. `tasks.kind`                          → source 'kind'
+ *   2. `tasks.roleSlug` through the map above → source 'role' (unknown slug falls through)
+ *   3. derived task type: review / review-retry → the analysis glyph; `retry` deliberately
+ *      resolves to NOTHING and falls through → source 'type'
+ *   4. none — returns null. The surface draws no glyph and no spacer.
+ *
+ * Note what this input type does NOT have: a `title` and a `description`. That
+ * absence is the enforcement mechanism for the no-prose rule, and it is
+ * mechanically checkable — the function cannot parse a title it is not given.
+ * A task called `BUILD: rewrite the claim loop` with nothing set renders no
+ * glyph, specifically not the engineering one.
+ *
+ * Tier 3 drops `retry` because `TaskType` is a LINEAGE vocabulary, not a work
+ * one: "second attempt at whatever its parent was" is already encoded by the
+ * rail's outcome mark and attempt disclosure. Spending the glyph column on it
+ * would repeat one fact and hide another.
+ */
+export function deriveWorkKind(input: WorkKindInput): WorkKindResult | null {
+  const kind = input.kind;
+  if (typeof kind === 'string' && kind in WORK_KIND_GLYPHS) {
+    return { ...WORK_KIND_GLYPHS[kind as WorkKind], source: 'kind' };
+  }
+
+  const roleSlug = input.roleSlug;
+  if (typeof roleSlug === 'string') {
+    const mapped = ROLE_TO_WORK_KIND[roleSlug];
+    if (mapped) return { ...WORK_KIND_GLYPHS[mapped], source: 'role' };
+  }
+
+  if (input.taskType === 'review' || input.taskType === 'review-retry') {
+    return { ...WORK_KIND_GLYPHS.analysis, source: 'type' };
+  }
+
+  return null;
+}
+
 // ─── Stale worker ─────────────────────────────────────────────────────────────
 
 /**

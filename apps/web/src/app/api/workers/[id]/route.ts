@@ -41,6 +41,7 @@ import type { MigrationSafety } from '@/lib/migration-safety';
 import { RECOMMENDATION_MARKER } from '@/lib/reviewer-evidence';
 import { recordReviewerCriteriaFindings } from '@/lib/criteria-reviewer-findings';
 import { formatAttemptTitle } from '@/lib/task-title';
+import { isTaskKind, stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { GATE_SLUGS, fireGateEvent } from '@/lib/gate-ledger';
 import { applyReviewerLedeCorrection } from '@/lib/pr-lede-correction';
@@ -581,6 +582,10 @@ export async function PATCH(
     appendActionEvents,
     appendPromptCompositionEvents,
     waitingFor,
+    // Worker self-classification of the work it is actually doing. Written to
+    // tasks.kind only when that column is still NULL — see the guarded stamp
+    // below and docs/specs/mission-legibility.md §2.6.
+    kind: reportedKind,
     // Token usage
     inputTokens, outputTokens,
     // The model the session actually ran on, as reported by the runner.
@@ -1334,8 +1339,9 @@ export async function PATCH(
       // entirely uninspected, because the whole block used to be skipped for
       // any 'none' task regardless of taskClass.
       if (outputReq === 'none' && !isReviewerTask && !isBookkeepingTask && !hasPR && (effectiveCommits > 0 || effectiveDirtyWorktree)) {
+        const hasCrossBranchDeliverable = !!worker.mergedAt;
         const discardReason = typeof discardEdits === 'string' ? discardEdits.trim() : '';
-        if (!discardReason && !(await hasDeliverableArtifact())) {
+        if (!hasCrossBranchDeliverable && !discardReason && !(await hasDeliverableArtifact())) {
           const workDescription = effectiveCommits > 0
             ? `${effectiveCommits} commit(s) on branch`
             : 'uncommitted changes in the worktree';
@@ -1345,7 +1351,7 @@ export async function PATCH(
             hint: 'create_pr',
           }, { status: 400 });
         }
-        if (discardReason) {
+        if (discardReason && !hasCrossBranchDeliverable) {
           fireGateEvent({
             gate: GATE_SLUGS.OUTPUT_REQUIREMENT,
             surface: 'PATCH /api/workers/[id]',
@@ -1364,8 +1370,8 @@ export async function PATCH(
               discardEdits: discardReason.slice(0, 500),
             },
           });
-          skipRelease = true;
         }
+        if (hasCrossBranchDeliverable || discardReason) skipRelease = true;
       }
     }
   }
@@ -2152,6 +2158,17 @@ export async function PATCH(
           Boolean(orchestratorTaskRow?.scheduleId) &&
           !orchestratorTaskRow?.outputSchema)
       );
+      // A provider/SDK error result (budget wall, session cap, rate limit) never
+      // reaches the planning contract at all — the agent didn't get a turn to
+      // write a plan, prose or otherwise. The runner can report that as a
+      // `completed` PATCH with no structuredOutput (the SDK's error result
+      // surfaces as an ordinary terminal message, not a thrown exception), which
+      // looks identical to an organizer that ran and silently produced nothing —
+      // exactly the shape #2045/#2076 exist to catch. Distinguish them by the
+      // positive signal (the error text itself), not by re-deriving intent from
+      // absence: check this BEFORE the contract guard fires, the same way
+      // `isBudgetError` is checked for a `status:'failed'` report above.
+      const completionBudgetError = status === 'completed' && isBudgetExhaustionError(error);
       // A worker that produced a PR or artifact delivered something — the
       // contract this guard polices was satisfied by that deliverable even
       // though it did not arrive as structuredOutput. Silently reclassifying a
@@ -2166,6 +2183,17 @@ export async function PATCH(
         status === 'completed' &&
         !shouldAutoRetry &&
         expectsStructuredPlan &&
+        !completionBudgetError &&
+        !body.structuredOutput &&
+        !workerDeliveredSomething
+      );
+      // Same shape as the contract guard above, minus the completionBudgetError
+      // exclusion — this is what fires instead of it.
+      const planningBudgetLimited = (
+        status === 'completed' &&
+        !shouldAutoRetry &&
+        expectsStructuredPlan &&
+        completionBudgetError &&
         !body.structuredOutput &&
         !workerDeliveredSomething
       );
@@ -2189,6 +2217,36 @@ export async function PATCH(
         // the default by accident: not returning the contract's output is the
         // agent's own failure, so it is a code_failure and it should be charged.
         updates.exitCause = 'code_failure';
+      } else if (planningBudgetLimited) {
+        console.error(
+          `[planning-contract-enforcement] task ${worker.taskId} (worker ${id}) ` +
+          `overriding completed→failed as budget_limited: the SDK returned a ` +
+          `provider budget/session error before the organizer produced a plan. ` +
+          `Not a planning-contract violation — the agent never got a turn.`
+        );
+        updates.status = 'failed';
+        updates.error = error;
+        // Not chargeable: the agent never ran, so this is not its failure —
+        // mirrors the `status:'failed'` budget path's `budget_limited` exitCause,
+        // which consumesRetryAttempt excludes from retry caps.
+        updates.exitCause = 'budget_limited';
+        if (taskMissionId) {
+          try {
+            await db.insert(missionNotes).values({
+              missionId: taskMissionId,
+              taskId: worker.taskId,
+              authorType: 'system',
+              type: 'warning',
+              title: 'Heartbeat cycle hit a provider budget wall',
+              body: `The organizer cycle ended before it could plan: ${error}`,
+              status: 'open',
+            });
+          } catch (err) {
+            console.warn(
+              `[planning-contract-enforcement] failed to post budget-wall mission note for task ${worker.taskId}:`, err,
+            );
+          }
+        }
       }
 
       // Review contract guard: a reviewer verdict only reaches
@@ -2265,8 +2323,8 @@ export async function PATCH(
         }
       }
 
-      // Both guards fail the task the same way; only the recorded reason differs.
-      const contractViolation = planningContractViolation || reviewContractViolation;
+      // All three guards fail the task the same way; only the recorded reason differs.
+      const contractViolation = planningContractViolation || reviewContractViolation || planningBudgetLimited;
 
       const taskUpdate: Record<string, unknown> = {
         status: shouldAutoRetry ? 'pending' : (contractViolation ? 'failed' : (status === 'completed' ? 'completed' : 'failed')),
@@ -2281,6 +2339,11 @@ export async function PATCH(
           result: {
             error: 'Planning task completed without structuredOutput — the plan was not returned as validated JSON, so no child tasks could be created. Mission will retry.',
             errorType: 'planning_contract_violation',
+          },
+        } : planningBudgetLimited ? {
+          result: {
+            error,
+            errorType: 'budget_limited',
           },
         } : reviewContractViolation ? {
           result: {
@@ -3118,6 +3181,25 @@ export async function PATCH(
     }
   }
 
+  // Worker self-classification (Rule K2-15/K2-16).
+  //
+  // Reported on update_progress rather than complete_task: a kind learned at
+  // completion is too late for the claim-time model router, too late for anyone
+  // watching the rail while the task runs, and arrives after the row has already
+  // rendered unlabelled for its whole life.
+  //
+  // The write is guarded on `kind IS NULL`, so a worker reporting a kind for an
+  // already-classified task gets a no-op and a success, never an error — and an
+  // out-of-vocabulary value is ignored here rather than rejecting a progress
+  // report, which is the contract this call actually exists to deliver.
+  if (isTaskKind(reportedKind) && worker.taskId) {
+    try {
+      await stampTaskKindIfAbsent(worker.taskId, reportedKind);
+    } catch (err) {
+      console.error(`[task-kind] self-classification failed for worker ${id}:`, err);
+    }
+  }
+
   // §6d Passive overlap detection: compare accumulated observedTouches against active siblings.
   // Advisory-only — never rejects the update_progress call.
   const accumulatedTouches = (updates.observedTouches as string[] | null | undefined) ?? null;
@@ -3640,6 +3722,21 @@ async function handleReviewerOutcomeIfNeeded(
       console.warn(
         `[reviewer] PR #${prNumber}: model said approve, server escalated — ${serverOverrideReason}`,
       );
+      // Persist the verdict that ACTUALLY applies, alongside (never over) the
+      // agent's own output. Without this the stored review still reads
+      // `approve`, so `derivePrReviewStatus` reports `approved` — and both the
+      // self-merge check and the review-verdict gate would clear a PR the
+      // server just escalated to a human.
+      await db
+        .update(tasks)
+        .set({
+          result: sql`COALESCE(${tasks.result}, '{}'::jsonb) || jsonb_build_object('effectiveVerdict', ${effectiveVerdict}::text, 'effectiveVerdictReason', ${serverOverrideReason}::text)`,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, reviewerTaskId))
+        .catch((err: unknown) =>
+          console.error(`[reviewer] could not persist server escalation for PR #${prNumber}:`, err),
+        );
     }
   }
 

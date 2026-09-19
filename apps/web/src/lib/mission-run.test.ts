@@ -14,6 +14,8 @@ const mockPrepareSubjectFiling = mock(() => Promise.resolve({
 }) as any);
 const mockRecordSubjectMatchObserved = mock(() => Promise.resolve());
 const mockTriggerEvent = mock(() => Promise.resolve());
+const mockEvaluateHeartbeatCircuitBreaker = mock(() => Promise.resolve({ tripped: false, count: 0, errorSignature: '' } as any));
+const mockTripHeartbeatCircuitBreaker = mock(() => Promise.resolve({ tripped: true } as any));
 
 // pre-fix guard (which asked GitHub for the primary PR's state) was actually
 // reachable in these tests — with the real module it returns null for a mission
@@ -141,6 +143,8 @@ const deps = {
   prepareSubjectFiling: mockPrepareSubjectFiling as any,
   recordSubjectMatchObserved: mockRecordSubjectMatchObserved as any,
   triggerEvent: mockTriggerEvent as any,
+  evaluateHeartbeatCircuitBreaker: mockEvaluateHeartbeatCircuitBreaker as any,
+  tripHeartbeatCircuitBreaker: mockTripHeartbeatCircuitBreaker as any,
 };
 
 function resetMissionRunMocks() {
@@ -176,6 +180,10 @@ function resetMissionRunMocks() {
     } as any);
     mockRecordSubjectMatchObserved.mockReset();
     mockRecordSubjectMatchObserved.mockResolvedValue();
+    mockEvaluateHeartbeatCircuitBreaker.mockReset();
+    mockEvaluateHeartbeatCircuitBreaker.mockResolvedValue({ tripped: false, count: 0, errorSignature: '' } as any);
+    mockTripHeartbeatCircuitBreaker.mockReset();
+    mockTripHeartbeatCircuitBreaker.mockResolvedValue({ tripped: true } as any);
     mockUpdate.mockReset();
     mockUpdate.mockImplementation((table?: any) => updateChain(table));
     recordedUpdates = [];
@@ -493,6 +501,36 @@ describe('runMission', () => {
       }),
     );
     // Must not dispatch
+    expect(mockDispatchNewTask).not.toHaveBeenCalled();
+  });
+
+  it('skips dispatch and pauses the mission when the heartbeat circuit breaker trips', async () => {
+    mockMissionsFindFirst.mockResolvedValue({
+      id: 'obj-1',
+      teamId: 'team-1',
+      workspaceId: 'ws-1',
+      status: 'active',
+      title: 'Heartbeat Mission',
+      priority: 0,
+      scheduleId: 'sched-1',
+      schedule: { taskTemplate: { context: { heartbeat: true } } },
+    });
+    mockEvaluateHeartbeatCircuitBreaker.mockResolvedValue({
+      tripped: true, count: 3, errorSignature: 'weekly limit',
+    } as any);
+
+    const result = await runMission('obj-1', { manualRun: true }, deps);
+
+    expect(result.task).toBeNull();
+    expect(result.skippedCircuitBreaker).toBe(true);
+    expect(mockTripHeartbeatCircuitBreaker).toHaveBeenCalledWith(expect.objectContaining({
+      missionId: 'obj-1',
+      missionTitle: 'Heartbeat Mission',
+      scheduleId: 'sched-1',
+      count: 3,
+      errorSignature: 'weekly limit',
+    }));
+    expect(mockInsert).not.toHaveBeenCalled();
     expect(mockDispatchNewTask).not.toHaveBeenCalled();
   });
 

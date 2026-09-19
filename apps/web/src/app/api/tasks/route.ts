@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse, after } from 'next/server';
 import { db } from '@buildd/core/db';
-import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions } from '@buildd/core/db/schema';
+import { tasks, workspaces, accountWorkspaces, workspaceSkills, missions, workers, artifacts } from '@buildd/core/db/schema';
 import { desc, asc, eq, and, or, inArray, notInArray, gte, isNotNull, isNull, like, sql } from 'drizzle-orm';
 import { MISSION_PR_TASK_PREFIX, missionIntegrationBase } from '@buildd/core/mission-integration';
 import { jsonResponse } from '@/lib/api-response';
@@ -121,6 +121,10 @@ export async function GET(req: NextRequest) {
     // Optional query filters to scope the list and shrink the payload.
     //   ?workspaceId=<id>  — restrict to a single accessible workspace
     //   ?status=active     — only non-terminal tasks (drops the 24h terminal window)
+    //   ?status=completed|failed|cancelled — audit mode: ALL matching tasks, fully
+    //     paginated, no 24h window. Row shape gains updatedAt/summarySource/prNumber/
+    //     hasArtifact so a caller can tell a real deliverable from a fallback summary
+    //     with nothing shipped. Requires ?limit — this mode only exists on the lean path.
     //   ?limit=N&offset=M  — OPT-IN pagination; returns lean row shape + total/pendingCount/hasMore
     // Both workspaceId and status are used by the dependency picker so it stops
     // fetching every workspace's task and filtering client-side (see DependencySelector).
@@ -139,6 +143,7 @@ export async function GET(req: NextRequest) {
     const terminalStatuses = ['completed', 'failed', 'cancelled'];
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const activeOnly = statusFilter === 'active';
+    const isTerminalAudit = statusFilter !== null && terminalStatuses.includes(statusFilter);
 
     // ── Paginated lean path (OPT-IN when ?limit=N is present) ──────────────
     // Returns only the columns list consumers need, sorted pending-first /
@@ -156,13 +161,17 @@ export async function GET(req: NextRequest) {
         inArray(tasks.workspaceId, workspaceIds),
         activeOnly
           ? notInArray(tasks.status, terminalStatuses)
-          : or(
-              notInArray(tasks.status, terminalStatuses),
-              and(
-                inArray(tasks.status, terminalStatuses),
-                gte(tasks.updatedAt, oneDayAgo),
+          : isTerminalAudit
+            // Audit mode: exact status, no 24h cutoff — the whole terminal history,
+            // paginated by the caller instead of silently windowed.
+            ? eq(tasks.status, statusFilter as string)
+            : or(
+                notInArray(tasks.status, terminalStatuses),
+                and(
+                  inArray(tasks.status, terminalStatuses),
+                  gte(tasks.updatedAt, oneDayAgo),
+                ),
               ),
-            ),
       );
 
       const [countsResult, leanTasks] = await Promise.all([
@@ -178,14 +187,37 @@ export async function GET(req: NextRequest) {
           priority: tasks.priority,
           category: tasks.category,
           descriptionPreview: sql<string | null>`left(${tasks.description}, 150)`,
+          // Deliverable attribution — only worth the extra columns/join in audit
+          // mode, where the whole point is telling a real completion from a
+          // fallback summary with nothing shipped.
+          ...(isTerminalAudit ? {
+            updatedAt: tasks.updatedAt,
+            summarySource: sql<string | null>`${tasks.result}->>'summarySource'`,
+            // Audit mode reaches the entire terminal history, unbounded by the
+            // 24h window every other query path stays inside — including tasks
+            // completed before this field's shape was settled. A bare ::int
+            // cast throws and kills the whole query the moment one historical
+            // row has a non-numeric value here, so guard it instead of trusting
+            // the shape.
+            prNumber: sql<number | null>`(CASE WHEN ${tasks.result}->>'prNumber' ~ '^[0-9]+$' THEN (${tasks.result}->>'prNumber')::int ELSE NULL END)`,
+            hasArtifact: sql<boolean>`EXISTS (
+              SELECT 1 FROM ${workers} w
+              JOIN ${artifacts} a ON a.worker_id = w.id
+              WHERE w.task_id = ${tasks.id}
+            )`,
+          } : {}),
         })
         .from(tasks)
         .where(where)
         .orderBy(
-          // Claimable (pending) first, then running, then other active
-          sql`CASE WHEN ${tasks.status} = 'pending' THEN 0 WHEN ${tasks.status} = 'assigned' THEN 1 WHEN ${tasks.status} = 'in_progress' THEN 2 ELSE 3 END`,
-          desc(tasks.priority),
-          asc(tasks.id),
+          ...(isTerminalAudit
+            ? [desc(tasks.updatedAt), asc(tasks.id)]
+            : [
+                // Claimable (pending) first, then running, then other active
+                sql`CASE WHEN ${tasks.status} = 'pending' THEN 0 WHEN ${tasks.status} = 'assigned' THEN 1 WHEN ${tasks.status} = 'in_progress' THEN 2 ELSE 3 END`,
+                desc(tasks.priority),
+                asc(tasks.id),
+              ]),
         )
         .limit(limit)
         .offset(offset),
@@ -911,21 +943,31 @@ export async function POST(req: NextRequest) {
       missionIntegrationBaseBranch = missionIntegrationBase(mission);
     }
 
-    // Manifest gate: a mission task whose deliverable is a PR — explicit
-    // 'pr_required', or 'auto' (the default, which resolves to a PR for an
-    // ordinary builder task) — must declare a concrete pathManifest.
+    // Manifest gate: a mission task whose deliverable is EXPLICITLY declared
+    // as a PR ('pr_required') must declare a concrete pathManifest.
     // shouldSerializeByManifest/computeOverlapEdges can only serialize
     // concrete manifests (see isAdvisoryManifest); an undeclared scope makes
     // a sibling task race instead of wait, which is the exact failure mode
     // #1759/#1763 hit. 'artifact_required' and 'none' mission tasks, and any
     // non-mission task, are exempt — they carry no PR-overlap risk.
+    //
+    // Deliberately does NOT fire on 'auto' (the default): auto has no
+    // creation-time resolution — whether it ends up needing a PR is decided
+    // at completion from actual worker behaviour (commit count + PR/artifact
+    // presence), not at filing time. Gating on it made the manifest demand
+    // fire for the common case of investigation/friction/bookkeeping-shaped
+    // mission tasks that never intend to produce a PR (see the friction
+    // report this comment accompanies). Callers that already know they'll
+    // ship a PR should still declare outputRequirement: 'pr_required'
+    // explicitly, which keeps this gate in effect for them.
     if (
       missionId &&
-      (outputRequirement === 'pr_required' || outputRequirement === 'auto') &&
+      outputRequirement === 'pr_required' &&
       !hasConcretePathManifest(pathManifest)
     ) {
       const error =
-        'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]';
+        'pathManifest is required for mission tasks that produce a PR — declare at least one concrete path, e.g. pathManifest: ["apps/web/src/lib/foo.ts"]. ' +
+        "If this task won't produce a PR, set outputRequirement: 'none' instead.";
       fireGateEvent({
         gate: GATE_SLUGS.MANIFEST_REQUIRED,
         surface: 'POST /api/tasks',
@@ -942,6 +984,25 @@ export async function POST(req: NextRequest) {
         },
       });
       return NextResponse.json({ error }, { status: 400 });
+    }
+
+    // Advisory kind gate: a mission task with no `kind` is unlabelled on every
+    // surface for the rest of its life, and nothing infers one later from its
+    // title. Deliberately NOT a 400 — see GATE_SLUGS.KIND_ABSENT. The lever that
+    // actually moves the volume is `kind` being required in
+    // `planningOutputSchema`, which the SDK enforces at generation time and so
+    // can never reject a caller at runtime.
+    if (missionId && rawKind === undefined) {
+      fireGateEvent({
+        gate: GATE_SLUGS.KIND_ABSENT,
+        surface: 'POST /api/tasks',
+        outcome: 'warned',
+        reason: 'mission task created with no kind — it will render unlabelled on every surface',
+        workspaceId,
+        missionId,
+        callerOrigin: gateCaller,
+        detail: { hasRoleSlug: Boolean(roleSlug), outputRequirement },
+      });
     }
 
     // enforceGreenCI: implicitly add a pr_checks_green loop when the workspace

@@ -27,7 +27,9 @@ import { fetchSplitPrStats } from '@/lib/supersession-check';
 import { resolvePolicy, RESOLVE_POLICY_MISSION_COLUMNS } from '@/lib/merge-policy';
 import { readPrReviewStatus, listWorkspaceRoles } from '@/lib/pr-review-request';
 import { isApprovalSelfMergeable } from '@/lib/pr-review-status';
+import { guardReviewVerdict } from '@/lib/review-verdict-gate';
 import { createReviewerTask, findLiveReviewerTaskForHead } from '@/lib/reviewer';
+import { stampTaskKindIfAbsent } from '@/lib/task-kind';
 import { dispatchNewTask } from '@/lib/task-dispatch';
 import { appendPrActivity } from '@/lib/pr-activity-comment';
 import { pickReviewerRole } from '@/lib/pr-review-status';
@@ -301,6 +303,7 @@ export async function POST(req: NextRequest) {
         prNumber,
         updatedAt: new Date(),
       }).where(eq(workers.id, workerId));
+      await stampTaskKindIfAbsent(worker.taskId, 'engineering');
       if (prNumber) {
         await claimMissionPrimaryPr(worker.task?.missionId, prNumber, existingPrUrl, {
           baseRef: typeof base === 'string' ? base : null,
@@ -493,6 +496,7 @@ export async function POST(req: NextRequest) {
             updatedAt: new Date(),
           })
           .where(eq(workers.id, workerId));
+        await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
         // ── prBaseRef: BACKFILL only, never overwrite ────────────────────────
         // Our value comes from a `GET /pulls/{n}` taken earlier in this request,
@@ -788,6 +792,14 @@ export async function POST(req: NextRequest) {
         updatedAt: new Date(),
       })
       .where(eq(workers.id, workerId));
+
+    // Rule K2-19 — the late signal. "This task opened a PR, so it changed code"
+    // is a fact LEARNED LATE, not a presentation concern, so it goes in the
+    // column where every consumer sees it (usage stats, exports, the model
+    // router on a retry) rather than into a render-time derivation only the UI
+    // would know about. Guarded by `kind IS NULL`, so a task that declared
+    // itself research stays research.
+    await stampTaskKindIfAbsent(worker.taskId, 'engineering');
 
     await claimMissionPrimaryPr(worker.task?.missionId, prData.number, prData.html_url, {
       baseRef: prData.base?.ref ?? null,
@@ -1122,29 +1134,29 @@ export async function PUT(req: NextRequest) {
       recordMergeGate('bypassed', 'merge policy skipped by admin force', { force: true });
     }
 
+    let policyPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
+    try {
+      policyPr = await githubApi(
+        repo.installation.installationId,
+        `/repos/${repo.fullName}/pulls/${prNumber}`,
+      );
+    } catch (err) {
+      console.warn(`[merge_pr] Could not read ${repo.fullName}#${prNumber} for policy:`, err);
+    }
+
+    const headSha = policyPr?.head?.sha ?? null;
+    if (!headSha) {
+      // Fail closed. This read is what identifies the commit the policy is
+      // evaluated against; merging without it would be a merge with no
+      // policy, which is the hole this gate closes.
+      recordMergeGate('rejected', 'could not read the PR head to evaluate merge policy — refusing the merge');
+      return NextResponse.json({
+        error: 'could not read the PR head to evaluate merge policy — refusing the merge',
+        hint: 'Retry, or have a human merge from the escalation inbox.',
+      }, { status: 403 });
+    }
+
     if (!force) {
-      let policyPr: { head?: { sha?: string | null }; base?: { ref?: string | null } } | null = null;
-      try {
-        policyPr = await githubApi(
-          repo.installation.installationId,
-          `/repos/${repo.fullName}/pulls/${prNumber}`,
-        );
-      } catch (err) {
-        console.warn(`[merge_pr] Could not read ${repo.fullName}#${prNumber} for policy:`, err);
-      }
-
-      const headSha = policyPr?.head?.sha ?? null;
-      if (!headSha) {
-        // Fail closed. This read is what identifies the commit the policy is
-        // evaluated against; merging without it would be a merge with no
-        // policy, which is the hole this gate closes.
-        recordMergeGate('rejected', 'could not read the PR head to evaluate merge policy — refusing the merge');
-        return NextResponse.json({
-          error: 'could not read the PR head to evaluate merge policy — refusing the merge',
-          hint: 'Retry, or have a human merge from the escalation inbox.',
-        }, { status: 403 });
-      }
-
       const task = worker.taskId
         ? await db.query.tasks.findFirst({
             where: eq(tasks.id, worker.taskId),
@@ -1203,12 +1215,45 @@ export async function PUT(req: NextRequest) {
         }
       }
 
+      // Review-verdict gate — applies at EVERY tier, not just `agent-review`.
+      //
+      // The tier check above only fires for `agent-review`, and a task PR based
+      // on a mission integration branch resolves to `auto-threshold` by
+      // construction (resolvePolicy rule 2) while still having a reviewer
+      // dispatched against it. Without this, an agent could merge straight past
+      // its own reviewer's request-changes on any Option A′ PR.
+      const reviewGate = await guardReviewVerdict({
+        workspaceId: workspace.id,
+        prNumber,
+        headSha,
+      });
+      if (reviewGate.blocks) {
+        recordMergeGate(
+          'rejected',
+          reviewGate.reason ?? 'review verdict blocks this merge',
+          {
+            tier: policy.tier,
+            reviewState: reviewGate.state ?? null,
+            reviewKind: reviewGate.kind ?? null,
+            reviewTaskId: reviewGate.reviewTaskId ?? null,
+          },
+          GATE_SLUGS.REVIEW_VERDICT,
+        );
+        return NextResponse.json({
+          error: `merge refused: ${reviewGate.reason}`,
+          tier: policy.tier,
+          reviewState: reviewGate.state ?? null,
+          hint: reviewGate.clearedBy,
+        }, { status: 403 });
+      }
+
       const safety = await evaluateAutoMergeSafety(
         repo.installation.installationId,
         repo.fullName,
         prNumber,
         headSha,
         policy,
+        { releaseConfig: workspace.releaseConfig },
       );
       if (!safety.ok) {
         recordMergeGate('rejected', `merge policy refused this merge: ${safety.reason}`, { tier: policy.tier });
@@ -1250,6 +1295,7 @@ export async function PUT(req: NextRequest) {
       repo.fullName,
       prNumber,
       mergeMethod as 'merge' | 'squash' | 'rebase',
+      headSha,
     );
 
     if (result.merged) {

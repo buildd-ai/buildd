@@ -67,3 +67,81 @@ describe('TaskCard — AC-50: no release/ship segment on the rail', () => {
     expect(chainStrip).not.toContain('ship');
   });
 });
+
+describe('TaskCard — attempt-type badge (retry/review/review-retry)', () => {
+  it('taskType=retry renders the ↻ badge regardless of roleSlug', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskType: 'retry', roleSlug: 'builder' })} />,
+    );
+    expect(html).toContain('↻');
+    expect(html).toContain('CI Retry');
+  });
+
+  it('taskType=review renders the ⬡ badge regardless of roleSlug', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskType: 'review', roleSlug: 'builder' })} />,
+    );
+    expect(html).toContain('⬡');
+    expect(html).toContain('Review');
+  });
+
+  it('taskType=review-retry renders the ↻ badge and distinguishes from review', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskType: 'review-retry', roleSlug: 'builder' })} />,
+    );
+    expect(html).toContain('↻');
+    expect(html).toContain('Review Retry');
+  });
+
+  it('review and review-retry render distinct badges (never the same)', () => {
+    const reviewHtml = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskType: 'review' })} />,
+    );
+    const reviewRetryHtml = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskType: 'review-retry' })} />,
+    );
+    expect(reviewHtml).toContain('⬡');
+    expect(reviewHtml).toContain('Review');
+    expect(reviewRetryHtml).toContain('Review Retry');
+    expect(reviewHtml).not.toContain('Review Retry');
+  });
+
+  it('retry renders even with no kind/roleSlug set (non-empty badge)', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ taskType: 'retry', kind: null, roleSlug: null })} />,
+    );
+    expect(html).toContain('↻');
+    expect(html).not.toMatch(/<span[^>]*><\/span>/); // no empty spans
+  });
+});
+
+describe('TaskCard — work-kind badge fallback', () => {
+  it('without taskType, renders work-kind glyph from kind prop', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ kind: 'engineering', taskType: null })} />,
+    );
+    expect(html).toContain('◆');
+  });
+
+  it('without taskType or kind, renders work-kind glyph from roleSlug', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ kind: null, roleSlug: 'builder', taskType: null })} />,
+    );
+    expect(html).toContain('◆');
+  });
+
+  it('without taskType, kind, or roleSlug, renders no badge', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ kind: null, roleSlug: null, taskType: null })} />,
+    );
+    expect(html).not.toContain('◆');
+    expect(html).not.toContain('▲');
+  });
+
+  it('inline density: no empty span when kind/roleSlug/taskType are all null (PR #2456 regression)', () => {
+    const html = renderToStaticMarkup(
+      <TaskCard {...baseProps({ density: 'inline', kind: null, roleSlug: null, taskType: null })} />,
+    );
+    expect(html).not.toMatch(/<span[^>]*><\/span>/); // no empty spans
+  });
+});

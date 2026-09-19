@@ -3,6 +3,8 @@ import { tasks, artifacts, missionNotes } from '@buildd/core/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { isDeliverableTask } from '@buildd/core/mission-helpers';
 import { isMissionBlocked } from './mission-dependency';
+import { extractResetTime, SESSION_WINDOW_MS, WEEKLY_WINDOW_MS } from '@buildd/core/reset-time';
+import { CLAUDE_WEEKLY_LIMIT_PATTERN } from '@buildd/core/budget-error-classifier';
 import type { LoopConfig, LoopState } from '@buildd/shared';
 
 /** Non-terminal task statuses — still counted as "remaining work" for a mission. */
@@ -85,6 +87,58 @@ export function classifyMissionWait(
   return { reason: [...reasons].join('; '), waitUntil: waitUntil! };
 }
 
+export interface LastHeartbeatCycleTask {
+  mode: string | null;
+  status: string;
+  result: unknown;
+  createdAt: Date;
+}
+
+/**
+ * A heartbeat cycle is a fresh `mode:'planning'` task created every cron tick
+ * (apps/web/src/app/api/cron/schedules/route.ts), not one continuously-requeued
+ * row — so classifyMissionWait's non-terminal scan can never see it: by the
+ * time the next tick runs, the cycle that hit the budget wall is already
+ * terminal (`status:'failed'`, stamped by the workers/[id]/route.ts completion
+ * guard) and explicitly excluded there (`t.mode !== 'planning'`). This is the
+ * other half of that wait check: was the MOST RECENT cycle itself the thing
+ * that hit the wall, not some in-flight deliverable task.
+ *
+ * Only the latest planning-mode task counts — an old budget-limited cycle from
+ * before a later, successful cycle must not re-trigger a wait.
+ */
+export function classifyLastHeartbeatCycleWait(
+  allTasks: LastHeartbeatCycleTask[],
+  now: Date = new Date(),
+): MissionWaitResult | null {
+  const planningTasks = allTasks.filter(t => t.mode === 'planning');
+  if (planningTasks.length === 0) return null;
+
+  const lastCycle = planningTasks.reduce((latest, t) =>
+    t.createdAt > latest.createdAt ? t : latest
+  );
+  if (lastCycle.status !== 'failed') return null;
+
+  const result = lastCycle.result as { errorType?: string; error?: string } | null;
+  if (result?.errorType !== 'budget_limited') return null;
+
+  // A weekly-cap reset clause is still just a bare clock time ("resets 4am
+  // (UTC)") and routinely sits well over 5h from the report — extractResetTime's
+  // default plausibility bound (SESSION_WINDOW_MS) would misread a genuinely
+  // next-day reset as "already passed" and roll it back a day. Widen the bound
+  // only for the pattern that can actually be that far out.
+  const isWeeklyLimit = typeof result.error === 'string' &&
+    result.error.toLowerCase().includes(CLAUDE_WEEKLY_LIMIT_PATTERN);
+  const windowMs = isWeeklyLimit ? WEEKLY_WINDOW_MS : SESSION_WINDOW_MS;
+  // Same fallback the worker-terminal budget path uses when the error text's
+  // reset clause is absent, unparseable, or in a timezone that isn't trusted.
+  const waitUntil = extractResetTime(result.error, { now, maxAheadMs: windowMs }) ??
+    new Date(lastCycle.createdAt.getTime() + windowMs);
+  if (waitUntil <= now) return null; // reset already passed — let the next tick plan normally
+
+  return { reason: 'provider budget/rate-limit pause (heartbeat cycle)', waitUntil };
+}
+
 export interface HeartbeatMissionState {
   completedCount: number;
   activeCount: number;
@@ -133,7 +187,7 @@ export function computeStateKey(state: HeartbeatMissionState): string {
  */
 async function loadHeartbeatMissionState(missionId: string): Promise<{
   state: HeartbeatMissionState;
-  allTasks: Array<WaitClassifiableTask & { title: string; result: unknown }>;
+  allTasks: Array<WaitClassifiableTask & { title: string; result: unknown; createdAt: Date }>;
 }> {
   const [allTasks, artifactCountResult, noteCountResult] = await Promise.all([
     db.query.tasks.findMany({
@@ -141,6 +195,7 @@ async function loadHeartbeatMissionState(missionId: string): Promise<{
       columns: {
         status: true, title: true, mode: true, result: true,
         taskClass: true, context: true, startAt: true, loopConfig: true, loopState: true,
+        createdAt: true,
       },
     }),
     db.select({ count: sql<number>`count(*)::int` })
@@ -213,7 +268,7 @@ export async function evaluateHeartbeatPrepass(input: {
   const { state, allTasks } = await loadHeartbeatMissionState(input.missionId);
 
   // 3. Every non-terminal task is on a known self-resolving wait → wait, don't plan.
-  const wait = classifyMissionWait(allTasks);
+  const wait = classifyMissionWait(allTasks) ?? classifyLastHeartbeatCycleWait(allTasks);
   if (wait) {
     return { action: 'skip_waiting', reason: wait.reason, waitUntil: wait.waitUntil };
   }
