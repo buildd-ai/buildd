@@ -183,7 +183,9 @@ function PrStatusLine({
 
   // Closed without merging is its own terminal state — render it distinctly
   // rather than hiding the line (which reads as "nothing to see here" and
-  // used to let the row pass as done, AC-4).
+  // used to let the row pass as done, AC-4). A recorded supersession (task
+  // fcaf83d5) means the diff landed anyway, under a different merged PR — say
+  // so and name it, rather than reading like an abandoned closed PR.
   if (lw.prLifecycleStatus === 'closed') {
     return (
       <div className="pl-7 pb-0.5 flex items-center gap-2 flex-wrap">
@@ -196,7 +198,18 @@ function PrStatusLine({
           #{lw.prNumber}
         </a>
         <span className="text-[10px] text-text-muted">·</span>
-        <span className="text-[10px] text-status-error">closed — not merged</span>
+        {lw.supersededByPrNumber ? (
+          <span className="text-[10px] text-status-success">
+            landed as{' '}
+            {lw.supersededByPrUrl ? (
+              <a href={lw.supersededByPrUrl} target="_blank" rel="noopener noreferrer" className="hover:underline">
+                #{lw.supersededByPrNumber}
+              </a>
+            ) : `#${lw.supersededByPrNumber}`}
+          </span>
+        ) : (
+          <span className="text-[10px] text-status-error">closed — not merged</span>
+        )}
       </div>
     );
   }
@@ -957,6 +970,7 @@ function RailRightColumn({ task }: { task: CondensedTimelineTask }) {
   let prWord: { text: string; cls: string } | null = null;
   if (lw?.prNumber) {
     if (lw.mergedAt || lw.prLifecycleStatus === 'merged') prWord = { text: 'merged', cls: 'text-status-success' };
+    else if (lw.prLifecycleStatus === 'closed' && lw.supersededByPrNumber) prWord = { text: `→ #${lw.supersededByPrNumber}`, cls: 'text-status-success' };
     else if (lw.prLifecycleStatus === 'closed') prWord = { text: 'closed', cls: 'text-text-muted' };
     else {
       const entry = lw.prLifecycleStatus ? PR_STATUS[lw.prLifecycleStatus] : null;

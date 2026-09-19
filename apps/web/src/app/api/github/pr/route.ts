@@ -1599,6 +1599,12 @@ export async function GET(req: NextRequest) {
         mergedBy: canonicalState === 'merged' ? (pr.merged_by?.login ?? null) : null,
         mergedVia: canonicalState === 'merged' ? 'unknown' : null,
         closedAt: canonicalState === 'closed_unmerged' ? (pr.closed_at ?? null) : null,
+        // Supersession edge (task fcaf83d5) — only meaningful on a closed,
+        // unmerged PR; recordPrSupersession verified this against GitHub at
+        // write time, so it is trusted here without a second round-trip.
+        supersededByPrNumber: canonicalState === 'closed_unmerged' ? (worker.supersededByPrNumber ?? null) : null,
+        supersededByPrUrl: canonicalState === 'closed_unmerged' ? (worker.supersededByPrUrl ?? null) : null,
+        supersededReason: canonicalState === 'closed_unmerged' ? (worker.supersededReason ?? null) : null,
       },
       checks: ciSummary,
       reviews: reviewSummary,

@@ -2,12 +2,12 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-15
+last_verified: 2026-09-19
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
 related: [subject-anchor-liveness, external-cron-triggers, release-flow]
-keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber, review_verdict, changes_requested, reviewheadsha, effectiveverdict]
+keywords: [gatereason, cancompletemission, derivemissionhealth, goalcriteria, dependson, activehours, awaitingmerge, isWaitingOnYou, workingbranch, integration branch, primaryprnumber, review_verdict, changes_requested, reviewheadsha, effectiveverdict, prsupersession, supersededbyprnumber, recordprsupersession]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -34,6 +34,13 @@ assertions:
   - id: "review-verdict-gate-tests"
     type: "test_file"
     path: "apps/web/src/lib/review-verdict-gate.test.ts"
+  - id: "pr-supersession-write"
+    type: "symbol"
+    name: "recordPrSupersession"
+    path: "apps/web/src/lib/pr-supersession.ts"
+  - id: "pr-supersession-tests"
+    type: "test_file"
+    path: "apps/web/src/lib/pr-supersession.test.ts"
 ---
 # Mission and Task Lifecycle
 
@@ -702,7 +709,41 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
   merge-policy-tier or reviewer-verdict carve-out decides group placement,
   after the same incident revealed one had silently reintroduced this bug at
   the UI layer), but the completion predicate treats every unmerged-PR shape
-  the same way: blocked, no exceptions.
+  the same way: blocked, no exceptions — UNLESS a supersession edge (below)
+  resolves it.
+- **PR supersession** (task fcaf83d5) is the one sanctioned exception to
+  "unmerged PR blocks, no exceptions", and it exists because a closed PR is
+  not always abandoned work: a mission integration branch can be deleted out
+  from under an open PR (the race `mission-integration-branch.md`/#2355
+  addresses prospectively), forcing the same diff to re-land as a brand-new
+  PR under a different number. The gate had no way to tell that apart from a
+  PR nobody ever came back to. `workers.supersededByPrNumber` (+
+  `supersededByPrUrl`, `supersededReason`, `supersededRecordedBy`,
+  `supersededAt`) is a durable, auditable edge recorded by
+  `recordPrSupersession` (`apps/web/src/lib/pr-supersession.ts`), exposed as
+  the `record_pr_supersession` MCP action. A claim is valid ONLY if written
+  against a real, ALREADY-MERGED PR in the SAME repo as the superseded PR's
+  workspace — verified against GitHub at write time (an unmerged or
+  nonexistent target is rejected with the specific reason, never silently
+  accepted) — and requires a non-blank `reason`. Once recorded, the edge is
+  trusted at read time without a second GitHub round-trip: a GitHub merge is
+  permanent, so the claim cannot go stale.
+  `canCompleteMission`'s `awaitingMerge` filter excludes any deliverable whose
+  latest worker carries `supersededByPrNumber` — it counts as shipped, the
+  same as a direct merge, and is reported separately via
+  `supersededCount`/`supersededDetails` so a reader can see the mission closed
+  with rerouted work rather than an ordinary merge. This is NOT a loosening of
+  the gate: an agent's assertion never satisfies it, and a closed PR with no
+  recorded edge blocks exactly as before, with `awaitingMergeDetails[].
+  closedUnsuperseded = true` and a `reason` that says "no supersession
+  recorded" rather than the generic "not merged" — the phrasing that tells an
+  owner the remedy exists. `computeMissionProgress` and `CondensedTimeline`
+  render a superseded deliverable as done (`solid` segment state), naming the
+  successor PR on the row rather than reading as an ordinary "closed — not
+  merged". The hourly mission-invariants sweep (`unresolved_pr_supersession`)
+  reports a completed deliverable whose PR closed unmerged with no
+  supersession recorded past 24h, so an unaddressed instance surfaces instead
+  of sitting silently.
 - A mission with no deliverable rows at all MAY be completed only by an explicit
   proposal (`proposed: true`), never by dormancy: a monitoring mission's output
   is its heartbeat cycles, which are housekeeping rows.
@@ -842,9 +883,38 @@ Refusal order (first failure is the reported `code`): `mission_not_found` →
 - AC-11p: GIVEN the same mission WHEN the PR merges (`mergedAt` set) THEN a
   subsequent completion attempt with no other blockers succeeds.
 - AC-11q: GIVEN a mission with a `completed` deliverable whose PR was closed
-  without merging (`prLifecycleStatus = 'closed'`, `mergedAt` null) WHEN
-  completion is attempted THEN it is refused with `code = 'awaiting_merge'` —
-  a closed-unmerged PR is not a passing outcome either.
+  without merging (`prLifecycleStatus = 'closed'`, `mergedAt` null) and no
+  supersession edge recorded WHEN completion is attempted THEN it is refused
+  with `code = 'awaiting_merge'`, and `awaitingMergeDetails[].
+  closedUnsuperseded = true` with `reason` naming "no supersession recorded" —
+  a closed-unmerged PR is not a passing outcome either, unless AC-11qs-2 below
+  applies.
+- AC-11qs-1: GIVEN a task whose PR is closed and unmerged WHEN
+  `record_pr_supersession` (or `recordPrSupersession`) is called with a
+  `supersedingPrNumber` that is unmerged, or does not exist in the same repo,
+  or with a blank `reason` THEN the write is rejected (400/404/409) naming
+  which check failed, and no edge is written.
+- AC-11qs-2: GIVEN the same task WHEN `record_pr_supersession` is called with a
+  `supersedingPrNumber` that IS merged in the same repo and a non-blank
+  `reason` THEN `workers.supersededByPrNumber` (+ `supersededByPrUrl`,
+  `supersededReason`, `supersededRecordedBy`, `supersededAt`) is written, and a
+  subsequent `canCompleteMission` no longer counts that deliverable in
+  `awaitingMerge` — it is reported in `supersededCount`/`supersededDetails`
+  instead, and completion succeeds if nothing else blocks.
+- AC-11qs-3 (regression): GIVEN the M4 shape — one completed deliverable, PR
+  OPEN with a reviewer's "changes requested" verdict, no supersession edge —
+  WHEN completion is attempted THEN it is still refused with
+  `code = 'awaiting_merge'` and `closedUnsuperseded` is NOT set (the PR is
+  open, not closed) — supersession never substitutes for a merge on a PR that
+  could still merge.
+- AC-11qs-4: GIVEN a superseded deliverable WHEN mission progress is computed
+  (`computeMissionProgress`) THEN its segment state is `solid` (counted in
+  `completedTasks`, not `awaitingMerge`), and `CondensedTimeline`'s task row
+  names the successor PR rather than rendering "closed — not merged".
+- AC-11qs-5: GIVEN a completed deliverable whose PR has been closed-unmerged
+  with no supersession edge for more than 24h WHEN the hourly mission-invariant
+  sweep runs THEN `unresolved_pr_supersession` reports it (report-only, not
+  filed as a task).
 - AC-11r: GIVEN a mission with a `description` criterion WHEN a reviewer task is
   dispatched for one of its task PRs THEN the reviewer prompt carries that
   criterion with its index, the reviewer task's `context.missionCriteria` carries

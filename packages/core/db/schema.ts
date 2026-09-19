@@ -1369,6 +1369,30 @@ export const workers = pgTable('workers', {
   // NEVER be read as "trunk" — unknown has to degrade to the existing gate,
   // because guessing wrong here silently deletes a human review gate.
   prBaseRef: text('pr_base_ref'),
+  // Supersession edge (task fcaf83d5): this worker's PR closed without merging,
+  // but its diff landed anyway under a DIFFERENT, merged PR — e.g. a mission
+  // integration branch got deleted out from under an open PR (#2355) and the
+  // work was re-opened as a fresh PR rather than resurrecting the old one.
+  // `canCompleteMission`'s awaiting-merge gate (mission-completion.ts) is
+  // deliberately strict about closed-unmerged PRs — that is the correct rule
+  // from the M4 incident — so this is the one sanctioned escape hatch: a
+  // durable, auditable claim, not a status the agent can assert its way past.
+  //
+  // Write-time only. `recordPrSupersession` (lib/pr-supersession.ts) verifies
+  // the target PR is real and MERGED before setting these columns, so a read
+  // never has to re-check GitHub — a merge is permanent, so a stored claim
+  // stays valid forever once written. All four columns are set together or
+  // not at all; there is no partial-write state to defend against.
+  supersededByPrNumber: integer('superseded_by_pr_number'),
+  supersededByPrUrl: text('superseded_by_pr_url'),
+  // Required at write time — the whole point is that this is never a silent
+  // agent assertion (see canCompleteMission's "Do NOT" doctrine).
+  supersededReason: text('superseded_reason'),
+  // Free-text actor label (user email, or 'agent:<taskId>') — same convention
+  // as missionNotes.actorLabel, not a foreign key, so the audit trail survives
+  // the account being deleted.
+  supersededRecordedBy: text('superseded_recorded_by'),
+  supersededAt: timestamp('superseded_at', { withTimezone: true }),
   // Git stats - updated by agent on progress reports
   lastCommitSha: text('last_commit_sha'),
   commitCount: integer('commit_count').default(0),

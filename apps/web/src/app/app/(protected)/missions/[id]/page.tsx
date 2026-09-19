@@ -140,6 +140,9 @@ export default async function MissionDetailPage({
               prNumber: true,
               prLifecycleStatus: true,
               mergedAt: true,
+              supersededByPrNumber: true,
+              supersededByPrUrl: true,
+              supersededReason: true,
               costUsd: true,
               turns: true,
               completedAt: true,
@@ -219,6 +222,7 @@ export default async function MissionDetailPage({
                     columns: {
                       id: true, status: true, waitingFor: true, branch: true, prUrl: true,
                       prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
+                      supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
                       turns: true, completedAt: true, startedAt: true, currentAction: true,
                       commitCount: true, filesChanged: true,
                     },

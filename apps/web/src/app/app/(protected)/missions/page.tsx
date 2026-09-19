@@ -123,7 +123,7 @@ export default async function MissionsPage({
         orderBy: (t: any, { desc }: any) => [desc(t.updatedAt)],
         with: {
           workers: {
-            columns: { id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true },
+            columns: { id: true, status: true, startedAt: true, completedAt: true, updatedAt: true, turns: true, prUrl: true, mergedAt: true, prNumber: true, prLifecycleStatus: true, supersededByPrNumber: true },
             limit: 5,
           },
         },

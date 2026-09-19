@@ -94,12 +94,40 @@ export interface MissionCompletionDecision {
   infraStalledTitles: string[];
   /**
    * Terminal (`completed`) deliverables whose latest worker produced a PR that
-   * has not merged — open, conflicted, CI-failing, or closed without merging.
-   * The task's own status is `completed`, but its PR's state is the actual
-   * terminal state (task facae217). Blocks completion until it merges.
+   * has not merged — open, conflicted, CI-failing, or closed-and-unmerged with
+   * no supersession recorded. The task's own status is `completed`, but its
+   * PR's state is the actual terminal state (task facae217). Blocks completion
+   * until it merges, or until a supersession edge names the PR that shipped it.
    */
   awaitingMerge: number;
-  awaitingMergeDetails: Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>;
+  awaitingMergeDetails: Array<{
+    taskId: string;
+    title: string;
+    prNumber: number | null;
+    prUrl: string | null;
+    /**
+     * True when the PR is closed (will never merge on its own) and nothing
+     * recorded that it shipped elsewhere — the case `record_pr_supersession`
+     * exists to resolve. False/absent means the PR is still open (or
+     * conflicted/CI-failing) and merging it directly is the remedy.
+     */
+    closedUnsuperseded?: boolean;
+  }>;
+  /**
+   * Terminal deliverables whose PR closed unmerged but is recorded as
+   * superseded by a merged PR (task fcaf83d5) — counted as shipped, never as
+   * awaiting-merge. Reported separately so a reader can see the mission closed
+   * with rerouted work rather than an ordinary merge.
+   */
+  supersededCount: number;
+  supersededDetails: Array<{
+    taskId: string;
+    title: string;
+    prNumber: number | null;
+    supersededByPrNumber: number;
+    supersededByPrUrl: string | null;
+    supersededReason: string | null;
+  }>;
 }
 
 const TERMINAL_TASK_STATUSES = new Set(['completed', 'failed', 'cancelled']);
@@ -197,7 +225,9 @@ export async function canCompleteMission(
     criteriaEvaluatedAt: null as string | null,
     infraStalledTitles: [] as string[],
     awaitingMerge: 0,
-    awaitingMergeDetails: [] as Array<{ taskId: string; title: string; prNumber: number | null; prUrl: string | null }>,
+    awaitingMergeDetails: [] as MissionCompletionDecision['awaitingMergeDetails'],
+    supersededCount: 0,
+    supersededDetails: [] as MissionCompletionDecision['supersededDetails'],
   };
 
   if (!mission) {
@@ -243,7 +273,10 @@ export async function canCompleteMission(
     with: {
       // Latest worker only — enough to answer "did this deliverable's PR merge?"
       workers: {
-        columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+        columns: {
+          prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true,
+          supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
+        },
         orderBy: (w, { desc: d }) => [d(w.startedAt)],
         limit: 1,
       },
@@ -315,26 +348,75 @@ export async function canCompleteMission(
     };
   }
 
+  type WorkerRow = {
+    prUrl: string | null;
+    mergedAt: Date | string | null;
+    prLifecycleStatus: string | null;
+    prNumber: number | null;
+    supersededByPrNumber: number | null;
+    supersededByPrUrl: string | null;
+    supersededReason: string | null;
+  };
+  const latestWorker = (t: { workers?: WorkerRow[] }) => t.workers?.[0];
+
   // A task's status is not its terminal state — its PR's state is (task facae217).
   // `pending` above only catches non-terminal rows, so a deliverable that reached
   // `completed` with an unmerged PR sails through it; this is the check that
   // would have caught M4 (dormancy: "all deliverables terminal; no goal
   // criteria" while PR #2020 sat open with changes requested). Blocks on ANY
   // unmerged PR — open, conflicted, CI-failing, or closed without merging —
-  // because none of those states means the deliverable shipped.
+  // because none of those states means the deliverable shipped, UNLESS a
+  // supersession edge (task fcaf83d5) names the merged PR that shipped it
+  // instead. `recordPrSupersession` verifies that edge against GitHub at write
+  // time, so a stored `supersededByPrNumber` is trusted here without a second
+  // GitHub round-trip — a merge is permanent, so the claim cannot go stale.
+  const superseded = deliverables.filter(t => {
+    if (t.status !== 'completed') return false;
+    const w = latestWorker(t as unknown as { workers?: WorkerRow[] });
+    return !!w?.prUrl && !w.mergedAt && !!w.supersededByPrNumber;
+  });
+  if (superseded.length > 0) {
+    base.supersededCount = superseded.length;
+    base.supersededDetails = superseded.map(t => {
+      const w = latestWorker(t as unknown as { workers?: WorkerRow[] })!;
+      return {
+        taskId: t.id,
+        title: t.title,
+        prNumber: w.prNumber,
+        supersededByPrNumber: w.supersededByPrNumber!,
+        supersededByPrUrl: w.supersededByPrUrl,
+        supersededReason: w.supersededReason,
+      };
+    });
+  }
+
   const awaitingMerge = deliverables.filter(t => {
     if (t.status !== 'completed') return false;
-    const w = (t as unknown as { workers?: Array<{ prUrl: string | null; mergedAt: Date | string | null }> }).workers?.[0];
-    return !!w?.prUrl && !w.mergedAt;
+    const w = latestWorker(t as unknown as { workers?: WorkerRow[] });
+    return !!w?.prUrl && !w.mergedAt && !w.supersededByPrNumber;
   });
   if (awaitingMerge.length > 0) {
     base.awaitingMerge = awaitingMerge.length;
     base.awaitingMergeDetails = awaitingMerge.map(t => {
-      const w = (t as unknown as { workers?: Array<{ prUrl: string | null; prNumber: number | null }> }).workers?.[0];
-      return { taskId: t.id, title: t.title, prNumber: w?.prNumber ?? null, prUrl: w?.prUrl ?? null };
+      const w = latestWorker(t as unknown as { workers?: WorkerRow[] });
+      // Distinguishes the two remedies (the task's own doctrine): an open PR
+      // just needs merging, a closed one needs either a merge (impossible —
+      // GitHub won't reopen it) or a supersession claim naming where the work
+      // actually landed.
+      const closedUnsuperseded = w?.prLifecycleStatus === 'closed';
+      return {
+        taskId: t.id,
+        title: t.title,
+        prNumber: w?.prNumber ?? null,
+        prUrl: w?.prUrl ?? null,
+        ...(closedUnsuperseded ? { closedUnsuperseded: true as const } : {}),
+      };
     });
     const named = base.awaitingMergeDetails
-      .map(d => `"${d.title}"${d.prNumber ? ` (PR #${d.prNumber})` : ''}`)
+      .map(d => {
+        const label = `"${d.title}"${d.prNumber ? ` (PR #${d.prNumber})` : ''}`;
+        return d.closedUnsuperseded ? `${label} — closed unmerged, no supersession recorded` : `${label} — PR not merged`;
+      })
       .join(', ');
     return {
       ...base,
@@ -517,6 +599,8 @@ export async function completeMissionIfVerified(
     criteriaEvaluatedAt: decision.criteriaEvaluatedAt,
     awaitingMerge: decision.awaitingMerge,
     awaitingMergeDetails: decision.awaitingMergeDetails,
+    supersededCount: decision.supersededCount,
+    supersededDetails: decision.supersededDetails,
     ...(opts.predicate ? { predicate: opts.predicate } : {}),
   }).catch(e => console.error(`[mission-completion] decision event failed for ${missionId}:`, e));
 
