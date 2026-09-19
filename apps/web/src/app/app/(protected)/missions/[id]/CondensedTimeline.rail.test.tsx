@@ -4,9 +4,11 @@
  * `lib/condensed-timeline-rail.test.ts` covers).
  */
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import CondensedTimeline from './CondensedTimeline';
 import type {
+  BookkeepingTask,
   CondensedTimelineProps,
   CondensedTimelineTask,
   CondensedTimelineWorker,
@@ -591,7 +593,9 @@ describe('CondensedTimeline — chain rollup (Rule D7-5)', () => {
       <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: [chain] }} expandedChainIds={new Set(['spec'])} />,
     ));
 
-    expect(html).toContain('▣3');
+    // v3: `▣3` → `▼3` is the collapsed/expanded indication (Rule D1-6).
+    expect(html).toContain('▼3');
+    expect(html).not.toContain('▣3');
     // Ordinal sub-rows, each labelled with its own taskType (Rule D1-3).
     expect(html).toContain('>2</span><a class="min-w-0 flex-1 truncate');
     expect(html).toContain('>BUILD </span>');
@@ -648,5 +652,413 @@ describe('CondensedTimeline — chain rollup (Rule D7-5)', () => {
     expect(html).toContain('#2295');
     expect(html).not.toContain('#2287');
     expect(html).toContain('0.62');
+  });
+});
+
+// ─── v3: which element owns a tap (§13.3, §13.4) ─────────────────────────────
+
+/** Void/self-closing elements never open a scope in `enclosingTaskIds`. */
+const VOID_TAGS = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+
+/**
+ * Every `data-task-id` in scope at `index`, outermost first.
+ *
+ * This is the delegated handler's own question: `TaskPanelWrapper` runs
+ * `closest('[data-task-id]')` from the click target, so the LAST entry is the
+ * task a tap at that point would peek, and `[]` means a tap there peeks nothing
+ * (Rule D13-13).
+ */
+function enclosingTaskIds(html: string, index: number): string[] {
+  const stack: (string | null)[] = [];
+  const tag = /<(\/?)([a-zA-Z][\w-]*)((?:"[^"]*"|[^>"])*)>/g;
+  let m: RegExpExecArray | null;
+  while ((m = tag.exec(html)) !== null) {
+    // A match that STARTS before `index` but ends after it is the element the
+    // index sits inside the opening tag of — it counts as enclosing.
+    if (m.index >= index) break;
+    const [, closing, name, attrs] = m;
+    if (closing) { stack.pop(); continue; }
+    if (VOID_TAGS.has(name.toLowerCase()) || attrs.trimEnd().endsWith('/')) continue;
+    stack.push(attrs.match(/data-task-id="([^"]*)"/)?.[1] ?? null);
+  }
+  return stack.filter((v): v is string => v != null);
+}
+
+/** The `<button …>…</button>` whose opening tag carries `data-testid={id}`. */
+function controlAt(html: string, testid: string): { start: number; open: string; inner: string } {
+  const at = html.indexOf(`data-testid="${testid}"`);
+  expect(at).toBeGreaterThan(-1);
+  const start = html.lastIndexOf('<', at);
+  const openEnd = html.indexOf('>', at);
+  const close = html.indexOf('</button>', openEnd);
+  return { start, open: html.slice(start, openEnd + 1), inner: html.slice(start, close + 9) };
+}
+
+/** The `<div class="flex gap-1.5 …">` row that encloses `index`. */
+function rowAt(html: string, index: number): string {
+  const start = html.lastIndexOf('<div class="flex gap-1.5', index);
+  expect(start).toBeGreaterThan(-1);
+  const next = html.indexOf('<div class="flex gap-1.5', index + 1);
+  return html.slice(start, next === -1 ? undefined : next);
+}
+
+const memberWorker = (n: number) =>
+  worker({ prNumber: n, prUrl: `https://github.com/o/r/pull/${n}` });
+
+/** §11.14's fixture: SPEC(#2270) → BUILD(#2287) → REVIEW(#2295), all merged. */
+const ledgerChain = (buildOver: Partial<CondensedTimelineTask> = {}) =>
+  chainOf(makeTask('spec', { title: '[spec] Ledger slice 2', latestWorker: memberWorker(2270) }), [
+    makeTask('build', { title: '[build] Ledger slice 2', dependsOn: ['spec'], latestWorker: memberWorker(2287), ...buildOver }),
+    makeTask('review', { title: '[review] Ledger slice 2', dependsOn: ['build'], latestWorker: memberWorker(2295) }),
+  ]);
+
+const railOfChain = (chain: ChainUnit<CondensedTimelineTask>, extra: Partial<CondensedTimelineProps> = {}) =>
+  mobileTree(renderToStaticMarkup(
+    <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, done: [chain] }} {...extra} />,
+  ));
+
+describe('CondensedTimeline — the chain row is a disclosure, never a link (§13.4)', () => {
+  it('names the head in the title and the terminal member in the right column (AC-33, §11.14)', () => {
+    const html = railOfChain(ledgerChain());
+
+    expect(html).toContain('Ledger slice 2');
+    expect(html).toContain('#2295');
+    expect(html).not.toContain('#2270');
+    expect(html).not.toContain('#2287');
+  });
+
+  it('puts no task link and no data-task-id on a row standing for three tasks (AC-34, Rule D1-7)', () => {
+    const html = railOfChain(ledgerChain());
+    const badge = html.indexOf('▣3');
+    const line = rowAt(html, badge);
+
+    expect(line).not.toContain('/app/tasks/');
+    expect(line).not.toContain('data-task-id');
+    // The only `<a>` on the line is the terminal PR — not a task link.
+    expect(line).toContain('https://github.com/o/r/pull/2295');
+  });
+
+  it('leaves a tap anywhere in the chain toggle with no task to resolve (AC-35, Rule D13-14/D13-15)', () => {
+    const html = railOfChain(ledgerChain());
+    const toggle = controlAt(html, 'rail-chain-toggle');
+
+    // `closest('[data-task-id]')` from anywhere inside the control finds nothing,
+    // so the delegated handler cannot preventDefault or set `?task=` (D13-15).
+    expect(enclosingTaskIds(html, toggle.start)).toEqual([]);
+    expect(toggle.inner).not.toContain('data-task-id');
+    // And there is no link under the finger either.
+    expect(toggle.inner).not.toContain('<a ');
+    expect(toggle.open).toContain('type="button"');
+  });
+
+  it('carries the badge and the title inside ONE button (Rule D13-17)', () => {
+    const html = railOfChain(ledgerChain());
+    const toggle = controlAt(html, 'rail-chain-toggle');
+
+    expect(toggle.inner).toContain('▣3');
+    expect(toggle.inner).toContain('Ledger slice 2');
+    expect(toggle.open).toContain('aria-expanded="false"');
+    // Rule D13-3: ≥44 CSS px wide, full row height.
+    expect(toggle.open).toContain('self-stretch');
+    expect(rowAt(html, html.indexOf('▣3'))).toContain('min-h-[24px]');
+  });
+
+  it('flips the badge glyph and opens the named member group when activated (AC-36, Rule D1-6)', () => {
+    const html = railOfChain(ledgerChain(), { expandedChainIds: new Set(['spec']) });
+    const toggle = controlAt(html, 'rail-chain-toggle');
+
+    expect(toggle.open).toContain('aria-expanded="true"');
+    expect(toggle.inner).toContain('▼3');
+    expect(html).not.toContain('▣3');
+
+    const controls = toggle.open.match(/aria-controls="([^"]*)"/)?.[1];
+    expect(controls).toBeTruthy();
+    const group = html.indexOf('data-testid="rail-chain-members"');
+    expect(group).toBeGreaterThan(-1);
+    expect(rowAt(html, group)).toBeTruthy();
+    expect(html.slice(html.lastIndexOf('<', group), html.indexOf('>', group))).toContain(`id="${controls}"`);
+
+    // Three ordinal sub-rows, each labelled from its own bracketed prefix.
+    for (const label of ['SPEC', 'BUILD', 'REVIEW']) expect(html).toContain(`>${label} </span>`);
+  });
+
+  it('changes no OTHER chain row when one expands (AC-36, Rule D13-8)', () => {
+    const second = chainOf(makeTask('s2', { title: '[spec] Ledger slice 3', latestWorker: memberWorker(2301) }), [
+      makeTask('b2', { title: '[build] Ledger slice 3', dependsOn: ['s2'], latestWorker: memberWorker(2302) }),
+    ]);
+    const html = mobileTree(renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, done: [ledgerChain(), second] }}
+        expandedChainIds={new Set(['spec'])}
+      />,
+    ));
+
+    expect(html.match(/data-testid="rail-chain-toggle"/g)).toHaveLength(2);
+    expect(html).toContain('▼3');
+    expect(html).toContain('▣2');
+    expect(html.match(/data-testid="rail-chain-members"/g)).toHaveLength(1);
+  });
+
+  it('sends each ordinal sub-row to its OWN task, never the head (AC-37, Rule D13-16)', () => {
+    const html = railOfChain(ledgerChain(), { expandedChainIds: new Set(['spec']) });
+
+    for (const id of ['spec', 'build', 'review']) {
+      const href = html.indexOf(`href="/app/tasks/${id}"`);
+      expect(href).toBeGreaterThan(-1);
+      // The nearest `data-task-id` a tap on `2 BUILD` resolves to is BUILD.
+      expect(enclosingTaskIds(html, href).at(-1)).toBe(id);
+    }
+    // The desktop peek predicate, reused rather than re-derived (Rule D13-16).
+    expect(html).toContain('data-task-actionable');
+  });
+
+  it('keeps data-task-id off the unit wrapper and on the smallest single-task row (AC-38, Rule D13-13)', () => {
+    const html = railOfChain(ledgerChain(), { expandedChainIds: new Set(['spec']) });
+
+    const node = html.indexOf('data-rail-node');
+    const nodeTag = html.slice(html.lastIndexOf('<', node), html.indexOf('>', node));
+    expect(nodeTag).not.toContain('data-task-id');
+
+    // No title link is ever enclosed by another task's id.
+    for (const m of html.matchAll(/<a class="min-w-0 flex-1 truncate[^"]*" href="\/app\/tasks\/([^"]+)"/g)) {
+      expect(enclosingTaskIds(html, m.index!).at(-1)).toBe(m[1]);
+    }
+  });
+
+  it('still collapses at N=2, with the same badge and the same control (AC-43, §11.19)', () => {
+    const two = chainOf(makeTask('spec', { title: '[spec] Ledger slice 3', latestWorker: memberWorker(2298) }), [
+      makeTask('build', { title: '[build] Ledger slice 3', dependsOn: ['spec'], latestWorker: memberWorker(2301) }),
+    ]);
+    const html = railOfChain(two);
+
+    expect(html).toContain('▣2');
+    expect(html).toContain('data-testid="rail-chain-toggle"');
+    expect(html).toContain('#2301');
+    expect(html).not.toContain('#2298');
+    expect(rowAt(html, html.indexOf('▣2'))).not.toContain('/app/tasks/');
+  });
+});
+
+describe('CondensedTimeline — two disclosures on one unit (Rule D13-10, §11.16)', () => {
+  const withMark = () => ledgerChain({
+    reviewerNote: { type: 'reviewer_request_changes', title: 'Changes requested', body: null, status: 'open', supersededByPrNumber: null },
+    attempts: strip({ parentTaskId: 'build' }),
+  });
+
+  it('moves the attempt control onto the member and folds the chain row\'s away (AC-41, Rule D13-17)', () => {
+    const html = railOfChain(withMark(), { expandedChainIds: new Set(['spec']) });
+    const chainLine = rowAt(html, html.indexOf('▼3'));
+
+    // The chain row keeps the rolled-up mark as STATIC text …
+    expect(chainLine).toContain('rail-outcome-mark');
+    expect(chainLine).toContain('>!<');
+    // … and offers no second control re-printing the members' own panels.
+    expect(chainLine).not.toContain('rail-attempt-toggle');
+    expect(chainLine.match(/aria-expanded/g)).toHaveLength(1);
+
+    // Member 2 owns its history now.
+    const memberLine = rowAt(html, html.indexOf('href="/app/tasks/build"'));
+    expect(memberLine).toContain('rail-attempt-toggle');
+    expect(memberLine).toContain('>!<');
+  });
+
+  it('keeps the chain row\'s own control while the chain is shut (AC-20, Rule D13-17)', () => {
+    const html = railOfChain(withMark());
+    const chainLine = rowAt(html, html.indexOf('▣3'));
+
+    expect(chainLine).toContain('rail-attempt-toggle');
+    expect(chainLine).toContain('>!<');
+  });
+
+  it('opens both and nests the panel between member 2 and member 3 (AC-42, §11.16)', () => {
+    const html = railOfChain(withMark(), {
+      expandedChainIds: new Set(['spec']),
+      disclosedTaskIds: new Set(['build']),
+    });
+
+    // Exactly two open controls in the unit: the chain toggle and member 2's.
+    expect(html.match(/aria-expanded="true"/g)).toHaveLength(2);
+    expect(html).toContain('data-testid="rail-chain-toggle"');
+    expect(html).toContain('data-testid="rail-attempt-toggle"');
+
+    const panel = html.indexOf('data-testid="rail-attempt-disclosure"');
+    expect(panel).toBeGreaterThan(html.indexOf('href="/app/tasks/build"'));
+    expect(panel).toBeLessThan(html.indexOf('href="/app/tasks/review"'));
+    // A stray tap in the panel can only ever peek member 2.
+    expect(enclosingTaskIds(html, panel)).toEqual(['build']);
+  });
+});
+
+describe('CondensedTimeline — expansion is inert to layout (Rule D13-6, §11.17, §11.18)', () => {
+  const friday = '2026-09-11T10:00:00.000Z';
+  const saturday = '2026-09-12T10:00:00.000Z';
+  const spanning = () =>
+    chainOf(
+      makeTask('spec', { title: '[spec] Ledger slice 2', taskUpdatedAt: friday, latestWorker: worker({ prNumber: 2270, prUrl: 'https://github.com/o/r/pull/2270', mergedAt: friday }) }),
+      [
+        makeTask('build', { title: '[build] Ledger slice 2', dependsOn: ['spec'], taskUpdatedAt: friday, latestWorker: worker({ prNumber: 2287, prUrl: 'https://github.com/o/r/pull/2287', mergedAt: friday }) }),
+        makeTask('review', { title: '[review] Ledger slice 2', dependsOn: ['build'], taskUpdatedAt: saturday, latestWorker: worker({ prNumber: 2295, prUrl: 'https://github.com/o/r/pull/2295', mergedAt: saturday }) }),
+      ],
+    );
+
+  it('emits no tick between two ordinal sub-rows of a day-spanning chain (AC-45, §11.17)', () => {
+    const collapsed = railOfChain(spanning());
+    const expanded = railOfChain(spanning(), { expandedChainIds: new Set(['spec']) });
+
+    // Same ticks, same labels, collapsed or open.
+    const ticks = (html: string) => [...html.matchAll(/data-testid="rail-tick"[\s\S]*?<\/div>/g)].map(m => m[0]);
+    expect(ticks(expanded)).toEqual(ticks(collapsed));
+
+    // And none of them falls inside the expanded member group.
+    const group = expanded.indexOf('data-testid="rail-chain-members"');
+    const afterGroup = expanded.indexOf('href="/app/tasks/review"');
+    expect(expanded.slice(group, afterGroup)).not.toContain('rail-tick');
+  });
+
+  it('keeps the now tick and the goal root below the last ordinal sub-row (AC-46, §11.18)', () => {
+    const extra = { railGoal: { total: 3, passed: 2 } };
+    const collapsed = railOfChain(spanning(), extra);
+    const expanded = railOfChain(spanning(), { ...extra, expandedChainIds: new Set(['spec']) });
+
+    const lastOrdinal = expanded.indexOf('href="/app/tasks/review"');
+    expect(lastOrdinal).toBeGreaterThan(-1);
+    expect(expanded.indexOf('rail-goal-root')).toBeGreaterThan(lastOrdinal);
+    // Neither the tick labels nor the pass count move.
+    expect(expanded.match(/now · [A-Z][a-z]{2} \d+/g)).toEqual(collapsed.match(/now · [A-Z][a-z]{2} \d+/g));
+    expect(expanded).toContain('2 / 3');
+  });
+});
+
+describe('CondensedTimeline — Lane 2 is badge-free and stops its own taps (§11.20)', () => {
+  const fanOut = (): ChainUnit<CondensedTimelineTask> => ({
+    head: makeTask('head', { title: '[build] slice 3 dedupe index', status: 'running' }),
+    tail: [
+      makeTask('s1', { title: '[review] slice 3 dedupe index', status: 'pending', dependsOn: ['head'] }),
+      makeTask('s2', { title: '[build] Backfill assertions', status: 'pending', dependsOn: ['head'] }),
+      makeTask('s3', { title: '[build] Third sibling', status: 'pending', dependsOn: ['head'] }),
+    ],
+    shape: 'fan-out',
+  });
+
+  it('never renders a chain badge on a fan-out node (AC-44)', () => {
+    const html = mobileTree(renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, running: [fanOut()] }} />,
+    ));
+
+    expect(html).not.toContain('▣');
+    expect(html).not.toContain('▼');
+    expect(html).not.toContain('rail-chain-toggle');
+    expect(html).toContain('+1');
+  });
+
+  it('leaves the fork glyph with no task to resolve either (AC-47, Rule D13-14)', () => {
+    const html = mobileTree(renderToStaticMarkup(
+      <CondensedTimeline {...baseProps} groups={{ ...emptyGroups, running: [fanOut()] }} />,
+    ));
+
+    const fork = html.indexOf('├╮');
+    expect(fork).toBeGreaterThan(-1);
+    expect(enclosingTaskIds(html, fork)).toEqual([]);
+
+    // Each sibling row, by contrast, names exactly itself (Rule D13-16).
+    for (const id of ['s1', 's2']) {
+      expect(enclosingTaskIds(html, html.indexOf(`href="/app/tasks/${id}"`)).at(-1)).toBe(id);
+    }
+    expect(enclosingTaskIds(html, html.indexOf('href="/app/tasks/head"')).at(-1)).toBe('head');
+  });
+});
+
+describe('CondensedTimeline — expansion has exactly one writer (AC-40, Rule D13-18)', () => {
+  const source = readFileSync(new URL('./CondensedTimeline.tsx', import.meta.url), 'utf8');
+
+  it('never subscribes the rail to the router or an effect', () => {
+    // The sheet's own `router.replace` re-renders this tree. Nothing in it may
+    // read the address or fire on mount, or expansion would flip behind a sheet.
+    expect(source).not.toContain('useSearchParams');
+    expect(source).not.toContain('usePathname');
+    expect(source).not.toContain('useEffect');
+  });
+
+  it('writes the chain expansion state only from the chain toggle\'s onClick', () => {
+    // The rail's setter is uniquely named so this stays a mechanical check: the
+    // file has other `setExpanded`s (desktop chain blocks, the footer) that are
+    // nothing to do with a chain row.
+    const writers = [...source.matchAll(/setChainExpanded\(/g)];
+    expect(writers).toHaveLength(1);
+
+    // …and that one call site is the `onToggle` the chain button fires.
+    const before = source.slice(Math.max(0, writers[0].index! - 200), writers[0].index!);
+    expect(before).toContain('onToggle');
+  });
+
+  it('reads the fixture seam only from a useState initializer', () => {
+    const reads = [...source.matchAll(/expandedChainIds\?\./g)];
+    expect(reads).toHaveLength(1);
+    expect(source.slice(Math.max(0, reads[0].index! - 60), reads[0].index!)).toContain('useState(');
+  });
+});
+
+// ─── v3.1: the goal root and criteria evaluators (§5, §11.21) ────────────────
+
+describe('CondensedTimeline — the goal root reads verdicts, not evaluators (§5)', () => {
+  const evaluator = (over: Partial<BookkeepingTask> = {}): BookkeepingTask => ({
+    id: 'eval-1',
+    title: 'Verify goal criterion: tests green',
+    taskUpdatedAt: '2026-09-11T11:00:00.000Z',
+    latestWorker: null,
+    ...over,
+  });
+
+  const withEvaluator = (tasks: BookkeepingTask[], passed: number | null = 1) =>
+    mobileTree(renderToStaticMarkup(
+      <CondensedTimeline
+        {...baseProps}
+        groups={{ ...emptyGroups, done: [chainOf(makeTask('gate', { title: 'Wire the §4 delta gate', latestWorker: memberWorker(2289) }))] }}
+        railGoal={{ total: 3, passed }}
+        bookkeepingTasks={tasks}
+      />,
+    ));
+
+  it('keeps a running evaluator off the rail and below the root (AC-48, §11.21a)', () => {
+    const html = withEvaluator([evaluator()]);
+
+    // The root is the rail's last element; the footer follows it and is not
+    // part of the rail. The evaluator is reachable there and only there.
+    const root = html.indexOf('data-testid="rail-goal-root"');
+    const footer = html.indexOf('orchestrator run');
+    expect(root).toBeGreaterThan(-1);
+    expect(footer).toBeGreaterThan(root);
+
+    // Not a node, not an ordinal sub-row, not a Lane-2 sibling — whatever its
+    // status, a `bookkeeping` task never reaches the rail at all.
+    expect(html).not.toContain('data-task-id="eval-1"');
+    expect(html).not.toContain('href="/app/tasks/eval-1"');
+    expect(html.slice(0, root)).not.toContain('Verify goal criterion');
+    expect(html.match(/data-rail-node/g)).toHaveLength(1);
+    expect(html).toContain('goal ');
+    expect(html).toContain('1 / 3');
+  });
+
+  it('counts only `pass`, and never degrades an evaluated count to ? (AC-49, Rule D5-7)', () => {
+    // Stored verdicts pass / PENDING / fail → 1 of 3, hollow square, no `?`.
+    const html = withEvaluator([evaluator()], 1);
+
+    expect(html).toContain('1 / 3');
+    expect(html).not.toContain('? / 3');
+    // Hollow, because `passed < total` — a `completed` evaluator proves nothing.
+    const root = html.indexOf('data-testid="rail-goal-root"');
+    expect(html.slice(root, root + 400)).not.toContain('bg-current');
+  });
+
+  it('spends no ✗ on an evaluator that died and was re-claimed (AC-50, §11.21b)', () => {
+    const html = withEvaluator([
+      evaluator(),
+      evaluator({ id: 'eval-2' }),
+    ], 1);
+
+    expect(html).not.toContain('✗');
+    expect(html).not.toContain('rail-attempt-toggle');
+    expect(html).toContain('1 / 3');
   });
 });
