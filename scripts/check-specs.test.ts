@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import {
   apiRouteTable,
+  checkSpecsExitCode,
   claimedApiRoutes,
   claimedSymbols,
   codeSurfacePaths,
@@ -40,6 +41,25 @@ function bodyOf(slug: string): string {
   const end = raw.indexOf('\n---', 3);
   return end === -1 ? raw : raw.slice(end + 4);
 }
+
+describe('checkSpecsExitCode', () => {
+  test('clean run exits 0', () => {
+    expect(checkSpecsExitCode(0, false)).toBe(0);
+  });
+
+  test('a real content error exits 1, index fresh', () => {
+    expect(checkSpecsExitCode(1, false)).toBe(1);
+  });
+
+  test('index-only staleness exits 2, not 1 — the case a caller may treat as advisory', () => {
+    expect(checkSpecsExitCode(0, true)).toBe(2);
+  });
+
+  test('a real content error still exits 1 even when the index is ALSO stale', () => {
+    // The mechanical drift must never mask a genuine authoring problem.
+    expect(checkSpecsExitCode(1, true)).toBe(1);
+  });
+});
 
 describe('claimedSymbols', () => {
   test('claims camelCase with an internal hump', () => {

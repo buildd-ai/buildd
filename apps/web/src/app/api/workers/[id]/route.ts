@@ -834,9 +834,17 @@ export async function PATCH(
   if (typeof dirtyWorktree === 'boolean') updates.dirtyWorktree = dirtyWorktree;
   // Waiting state — sensitive: store type only, drop prompt prose
   if (waitingFor !== undefined) {
+    // Contract violation: the agent stopped and asked, but stated no real
+    // question — either the runner's own fallback text (no question content
+    // was ever passed to AskUserQuestion) or an empty/whitespace prompt. A
+    // human opening this learns nothing and has to reconstruct the ask from
+    // the transcript, so flag it rather than accept it silently. The flag is
+    // a boolean, not prose, so it survives sensitive-workspace redaction.
+    const isContentlessQuestion = waitingFor?.type === 'question'
+      && (!waitingFor.prompt || !waitingFor.prompt.trim() || waitingFor.prompt.trim() === 'Awaiting input');
     updates.waitingFor = (isSensitive && waitingFor !== null)
-      ? { type: waitingFor.type }
-      : waitingFor;
+      ? { type: waitingFor.type, ...(isContentlessQuestion ? { contractViolation: true } : {}) }
+      : (waitingFor !== null && isContentlessQuestion ? { ...waitingFor, contractViolation: true } : waitingFor);
   }
   // Pushover notification when agent needs input — sensitive: generic message only
   if (waitingFor?.type === 'question') {
@@ -1428,8 +1436,16 @@ export async function PATCH(
   // `code_failure`, which consumesRetryAttempt() charges. Enough deferrals in a
   // row and a task that was never actually attempted is permanently failed.
   const isCodexDeferral = status === 'failed' && typeof error === 'string' && error.startsWith('Deferred:');
+  // A worker correctly asking a human a question should almost never reach
+  // this branch — the runner reports `waiting_input`, not `failed`, for that
+  // abort. This exists for the remaining terminal paths (the waiting_input
+  // timeout in cleanupStuckWaitingInput's sibling case here, or any future
+  // producer of the same 'needs_input:' prefix) so a parked question can never
+  // fall through classifyReportedFailure's code_failure default.
+  const isNeedsInput = (status === 'failed' || status === 'error') && typeof error === 'string' && error.startsWith('needs_input');
   if (status === 'failed' || status === 'error') {
     updates.exitCause = classifyReportedFailure({
+      needsInput: isNeedsInput,
       budgetLimited: isBudgetError,
       sandboxMountGap: isSandboxMountGap,
       steeringDelivery: isSteeringDelivery,
@@ -2059,6 +2075,13 @@ export async function PATCH(
         shouldAutoRetry = retryCount < maxRetries;
         // A cancelled task must not be auto-retried — the user explicitly cancelled it.
         if (taskForRetry?.status === 'cancelled') shouldAutoRetry = false;
+        // A parked question must never be blind-requeued into the same
+        // unanswered question before a human sees it — that both wastes a
+        // worker and discards the question. This should be structurally
+        // unreachable now that the runner reports waiting_input for this
+        // abort, but the exemption stays as the guard against any path that
+        // still reports it as a reported `failed` outcome.
+        if (isNeedsInput) shouldAutoRetry = false;
         // Precedence rule: budget_exhausted mission wins over auto-retry requeue.
         // Same guard as the sandbox_mount_gap block above — a pending task in an
         // exhausted mission is skipped by the claim loop and would be silently stuck.

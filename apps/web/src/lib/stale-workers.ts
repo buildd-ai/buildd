@@ -866,6 +866,11 @@ export async function cleanupStuckWaitingInput(accountId: string): Promise<{ fai
       .set({
         status: 'failed',
         error: `Worker timed out waiting for user input (${(worker as any).task?.missionId ? '4' : '24'}+ hours)`,
+        // Not a code defect — an unanswered question timing out is the
+        // correct terminal outcome for a hard-blocked worker. Must carry its
+        // own exit cause so it stays out of the failure rate and
+        // failure-signature ranking while remaining queryable.
+        exitCause: 'needs_input',
         completedAt: new Date(),
         updatedAt: new Date(),
       })

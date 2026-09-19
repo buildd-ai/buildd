@@ -62,6 +62,20 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
     setOptimistic(null);
   }, [item]);
 
+  // `item.missionMergeBlockedReason` is re-derived server-side on every page
+  // render — never a stale flag on its own. But a merge attempt refused by
+  // `guardMissionPrMerge` BEFORE that reason cleared leaves `mergeState` stuck
+  // on 'error' with the old refusal text, since nothing else resets it. When
+  // fresh props land with a different reason (including it clearing to null),
+  // drop the local click state so the card renders straight off `item` again.
+  useEffect(() => {
+    setMergeState('idle');
+    setErrorMsg('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.missionMergeBlockedReason]);
+
+  const missionMergeBlocked = Boolean(item.missionMergeBlockedReason);
+
   useEffect(() => {
     if (cardState === 'merged_resolved') {
       const timer = setTimeout(() => setDismissed(true), MERGED_DISMISS_MS);
@@ -246,7 +260,19 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
                 Already merged
               </span>
             )}
-            {!optimistic && mergeState === 'idle' && (
+            {/* This is the mission's own integration PR and `guardMissionPrMerge`
+                currently refuses it — a sibling task PR on the integration
+                branch hasn't landed yet. Re-derived server-side on every
+                render, so this disables itself the moment that clears. */}
+            {!optimistic && mergeState === 'idle' && missionMergeBlocked && (
+              <span
+                title={item.missionMergeBlockedReason ?? undefined}
+                className="inline-flex items-center gap-1 text-[12px] font-medium text-text-muted cursor-not-allowed opacity-60 px-2.5 py-0.5 border border-border-default rounded"
+              >
+                Merge
+              </span>
+            )}
+            {!optimistic && mergeState === 'idle' && !missionMergeBlocked && (
               <button
                 onClick={() => setMergeState('confirming')}
                 className="inline-flex items-center gap-1 text-[12px] font-medium text-white bg-accent hover:bg-accent/90 transition-colors px-2.5 py-0.5 rounded"
@@ -300,11 +326,16 @@ export function WaitingOnYouMergeCard({ item }: WaitingOnYouMergeCardProps) {
           {item.escalationReason}
         </p>
       )}
+      {missionMergeBlocked && (
+        <p className="text-[12px] text-status-error mt-0.5 break-words">
+          {item.missionMergeBlockedReason}
+        </p>
+      )}
       <AgentRecommendation recommendation={item.recommendation} />
       <ActionCardContextLine item={item} className="mt-0.5" />
 
       {/* Confirm strip: full-width below the title, only when confirming */}
-      {!optimistic && mergeState === 'confirming' && item.prNumber != null && (
+      {!optimistic && !missionMergeBlocked && mergeState === 'confirming' && item.prNumber != null && (
         <div className="mt-2 pt-2 border-t border-primary/20 flex items-center justify-between gap-2">
           <span className="text-[11px] text-text-secondary min-w-0">{confirmMsg}</span>
           <div className="flex items-center gap-2 flex-shrink-0">

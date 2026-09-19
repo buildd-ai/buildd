@@ -420,3 +420,41 @@ describe('WaitingOnYouReviewCard — Re-review changes since approval', () => {
     expect(html).toContain('>Re-review<');
   });
 });
+
+describe('WaitingOnYouReviewCard mission-PR merge gate', () => {
+  const BLOCKED_REASON =
+    "This mission's work is not finished — 2 task PR(s) still open on the integration branch: "
+    + 'PR #2514 (fix retry logic), PR #2516 (add timeout). Cancel the remaining task(s), or let '
+    + 'them land, then merge.';
+
+  it('disables the merge affordance and names the blocking PRs when guardMissionPrMerge refuses', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          verdictSummary: 'Reviewer approved — awaiting human merge',
+          escalationReason: 'Reviewer approved — awaiting human merge',
+          missionMergeBlockedReason: BLOCKED_REASON,
+        })}
+      />,
+    );
+    expect(html).toContain('PR #2514');
+    expect(html).toContain('PR #2516');
+    expect(html).toContain('cursor-not-allowed');
+    // No clickable merge/apply affordances while the mission gate refuses.
+    expect(html).not.toContain('Merge anyway');
+    expect(html).not.toContain('>Apply<');
+  });
+
+  it('renders the normal actionable card once the gate clears (reason absent)', () => {
+    const html = renderToStaticMarkup(
+      <WaitingOnYouReviewCard
+        item={item({
+          verdictSummary: 'Reviewer approved — awaiting human merge',
+          escalationReason: 'Reviewer approved — awaiting human merge',
+        })}
+      />,
+    );
+    expect(html).not.toContain('cursor-not-allowed');
+    expect(html).toContain('>Merge<');
+  });
+});

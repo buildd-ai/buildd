@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ActionCardContextLine } from './ActionCardContextLine';
 import Spinner from './Spinner';
@@ -82,6 +82,20 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
   // did not land, so retrying cannot double-merge.
   const [mergeRetrySafe, setMergeRetrySafe] = useState(true);
 
+  // `item.missionMergeBlockedReason` is re-derived server-side on every page
+  // render (see EscalationRawItem doc) — it is never stale on its own. But a
+  // failed merge attempt from BEFORE it cleared leaves this component's own
+  // `state` stuck on 'error' with the old refusal text, since nothing else
+  // resets it. Whenever fresh props land with a different blocked reason
+  // (including it clearing to null), drop any local click-driven state so the
+  // card falls back to rendering straight off `item` again.
+  useEffect(() => {
+    setState('idle');
+    setErrorMsg('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.missionMergeBlockedReason]);
+
+  const missionMergeBlocked = Boolean(item.missionMergeBlockedReason);
   const hasRecommendation = Boolean(item.recommendation);
   // An open escalation note exists but carries no structured recommendation —
   // still dispatchable off its free-text reason. Excluded once retries are
@@ -242,7 +256,26 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
 
       {item.prNumber != null && (
         <>
-          {state === 'idle' && canApply && (
+          {/* This is the mission's own integration PR, and `guardMissionPrMerge`
+              currently refuses to merge it — some sibling task PR on the
+              integration branch hasn't landed yet. The reviewer's verdict above
+              is still accurate (the code is approved); merging is what would
+              fail, so that's the only affordance this state disables. Re-derived
+              server-side on every render (see EscalationRawItem doc) — once the
+              blocking work lands, this block simply stops rendering. */}
+          {state === 'idle' && missionMergeBlocked && (
+            <div className="mt-2.5 pt-2 border-t border-status-error/20">
+              <p className="text-[11px] text-status-error break-words">{item.missionMergeBlockedReason}</p>
+              <span
+                title={item.missionMergeBlockedReason ?? undefined}
+                className="mt-1.5 inline-flex items-center gap-1 text-[12px] font-medium text-text-muted cursor-not-allowed opacity-60 px-2.5 py-1 border border-border-default rounded"
+              >
+                Merge
+              </span>
+            </div>
+          )}
+
+          {state === 'idle' && !missionMergeBlocked && canApply && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <div className="flex items-center gap-2 flex-wrap">
                 <button
@@ -283,7 +316,7 @@ export function WaitingOnYouReviewCard({ item }: WaitingOnYouReviewCardProps) {
               verdict at all (reviewer task failed/cancelled, or no reviewer
               task exists) also gets Re-review, since nothing re-dispatches on
               its own. */}
-          {state === 'idle' && !canApply && (
+          {state === 'idle' && !missionMergeBlocked && !canApply && (
             <div className="mt-2.5 pt-2 border-t border-status-error/20">
               <div className="flex items-center gap-2 flex-wrap">
                 <button

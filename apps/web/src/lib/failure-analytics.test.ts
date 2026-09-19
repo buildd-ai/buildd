@@ -333,6 +333,24 @@ describe('computeFailureAnalytics — totals', () => {
     expect(a.windowStart).toBe('2026-08-27T12:00:00.000Z');
     expect(a.generatedAt).toBe(NOW.toISOString());
   });
+
+  // Regression for the needs_input taxonomy bug: an agent correctly stopping
+  // to ask a human a question — even the waiting_input timeout, which is
+  // status 'failed' by the time it reaches this aggregation — must not count
+  // against the failure rate. A genuine code failure alongside it still must.
+  it('excludes needs_input from the failure rate while still counting a real failure', () => {
+    const workers = [
+      worker({ status: 'failed', exitCause: 'needs_input', error: 'needs_input: awaiting input' }),
+      worker({ status: 'failed', exitCause: 'code_failure', error: 'TypeError: cannot read x' }),
+      worker({ status: 'completed', error: null, exitCause: null }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.totals.terminal).toBe(3);
+    // Only the genuine code failure counts — needs_input is terminal but not
+    // chargeable, and completed is not a failure at all.
+    expect(a.totals.failed).toBe(1);
+    expect(a.totals.failureRatePct).toBe(33);
+  });
 });
 
 describe('computeFailureAnalytics — died-early cohort', () => {
@@ -402,6 +420,20 @@ describe('computeFailureAnalytics — exit cause breakdown', () => {
     expect(a.byExitCause[0].exitCause).toBe('budget_limited');
     expect(a.byExitCause[0].count).toBe(3);
   });
+
+  // needs_input is excluded from the population this breakdown is built from
+  // entirely (see the totals test above) — it must never appear as a bucket
+  // here, the same way a would-be top failure-signature entry for it must not
+  // appear in the ranking below.
+  it('never surfaces needs_input as an exit-cause bucket', () => {
+    const workers = [
+      worker({ status: 'failed', exitCause: 'needs_input', error: 'needs_input: q1' }),
+      worker({ status: 'failed', exitCause: 'needs_input', error: 'needs_input: q2' }),
+      worker({ status: 'failed', exitCause: 'code_failure' }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.byExitCause).toEqual([{ exitCause: 'code_failure', count: 1, sharePct: 100 }]);
+  });
 });
 
 describe('computeFailureAnalytics — failure signatures', () => {
@@ -446,6 +478,21 @@ describe('computeFailureAnalytics — failure signatures', () => {
       workers: [worker({ status: 'failed', error: TERMINATED, completedAt: null, createdAt: created })],
     });
     expect(a.signatures[0].lastSeen).toBe(created.toISOString());
+  });
+
+  // Regression: a needs_input signature must not appear in the top-signature
+  // ranking — the surface anyone actually looks at to decide what to fix —
+  // even when it would otherwise out-count a real failure's signature.
+  it('excludes needs_input signatures from the ranking entirely', () => {
+    const workers = [
+      ...Array.from({ length: 5 }, () =>
+        worker({ status: 'failed', exitCause: 'needs_input', error: 'needs_input: awaiting input' }),
+      ),
+      worker({ status: 'failed', error: TERMINATED }),
+    ];
+    const a = computeFailureAnalytics({ window: '7d', now: NOW, workers });
+    expect(a.signatures).toHaveLength(1);
+    expect(a.signatures[0].signature).toBe(TERMINATED);
   });
 
   it('records the distinct exit causes and died-early count per signature', () => {

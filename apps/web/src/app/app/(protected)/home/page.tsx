@@ -13,6 +13,8 @@ import { WorkspaceFilter } from '@/components/WorkspaceFilter';
 import Spinner from '@/components/Spinner';
 import { Greeting } from './greeting';
 import { resolvePolicy, isMissionIntegrationBase } from '@/lib/merge-policy';
+import { guardMissionPrMerge } from '@/lib/mission-pr';
+import { isMissionPrTask } from '@buildd/core/mission-integration';
 import ExternalLink from '@/components/ExternalLink';
 import InternalLink from '@/components/InternalLink';
 import { buildActionQueue, buildDecideItems, buildDiscrepancyItems, summariseActionQueueAge } from '@/lib/action-queue';
@@ -965,7 +967,7 @@ export default async function HomePage({
             },
             with: {
               task: {
-                columns: { id: true, title: true, missionId: true, status: true, requiresReview: true, result: true },
+                columns: { id: true, title: true, taskClass: true, missionId: true, status: true, requiresReview: true, result: true },
                 with: { mission: { columns: { id: true, title: true, mergePolicy: true, requiresReview: true, workingBranch: true, integrationBranchEnabled: true } } },
               },
             },
@@ -1110,6 +1112,27 @@ export default async function HomePage({
                   mission,
                 }),
               }));
+            }
+            // ─────────────────────────────────────────────────────────────────────
+
+            // ── Mission-PR merge gate ───────────────────────────────────────────
+            // A mission's own integration PR ("Ship mission: ..." bookkeeping task)
+            // can look reviewer-approved and still be refused by `guardMissionPrMerge`
+            // at merge time — the reviewer gate above and the merge gate are two
+            // different questions (review state vs. "is this mission's work
+            // finished"), and only the merge route consulted the second one. Ask it
+            // here too, at card-build time, so the card never advertises a merge the
+            // gate was always going to refuse. Read fresh on every request — same
+            // "no persisted flag" rule the header comment states for QUESTION/DECIDE,
+            // and the reason this doubles as the fix for a stale refusal outliving
+            // the state it described (once the blocking PRs land, the next render
+            // simply stops setting this).
+            const missionPrGateMap = new Map<string, string | null>();
+            for (const w of openPrWorkers) {
+              if (!w.taskId || !w.task) continue;
+              if (!isMissionPrTask(w.task)) continue;
+              const gate = await guardMissionPrMerge(w.task);
+              missionPrGateMap.set(w.taskId, gate.blocks ? gate.reason : null);
             }
             // ─────────────────────────────────────────────────────────────────────
 
@@ -1371,6 +1394,7 @@ export default async function HomePage({
                   prLifecycleStatus: w.prLifecycleStatus ?? null,
                   prOpenedAt: w.completedAt ?? w.createdAt ?? null,
                   prLifecycleVerifiedAt: w.prLastVerifiedAt ?? null,
+                  missionMergeBlockedReason: w.taskId ? missionPrGateMap.get(w.taskId) ?? null : null,
                 };
               })
               .sort((a, b) => {

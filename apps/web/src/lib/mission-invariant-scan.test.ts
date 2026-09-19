@@ -312,12 +312,12 @@ describe('loadInvariantSnapshot mapping', () => {
     expect(snapshot.missions.map(m => m.id)).toEqual(['m-3']);
   });
 
-  it('lifts context.baseBranch and structuredOutput.plan onto the snapshot task', async () => {
+  it('lifts context.baseBranch, context.requiresPlanApproval and structuredOutput.plan onto the snapshot task', async () => {
     backfillTaskRows = [
       {
         id: 't-1', workspaceId: 'ws-1', missionId: null, parentTaskId: null, title: 'X',
         status: 'completed', mode: 'planning', taskClass: 'work', outputRequirement: 'auto',
-        context: { baseBranch: 'mission/example-1234' },
+        context: { baseBranch: 'mission/example-1234', requiresPlanApproval: true },
         result: { structuredOutput: { plan: [{ ref: 'a' }] } },
         createdAt: NOW, updatedAt: NOW,
       },
@@ -328,7 +328,26 @@ describe('loadInvariantSnapshot mapping', () => {
     const t = snapshot.tasks.find(x => x.id === 't-1');
 
     expect(t?.contextBaseBranch).toBe('mission/example-1234');
+    expect(t?.requiresPlanApproval).toBe(true);
     expect(t?.planRaw).toEqual([{ ref: 'a' }]);
+  });
+
+  it('defaults requiresPlanApproval to false when context omits it', async () => {
+    backfillTaskRows = [
+      {
+        id: 't-2', workspaceId: 'ws-1', missionId: null, parentTaskId: null, title: 'Y',
+        status: 'completed', mode: 'planning', taskClass: 'work', outputRequirement: 'auto',
+        context: {},
+        result: { structuredOutput: { plan: [{ ref: 'a' }] } },
+        createdAt: NOW, updatedAt: NOW,
+      },
+    ];
+    openPrRows = [openPr({ prBaseRef: 'dev', taskId: 't-2' })];
+
+    const { snapshot } = await loadInvariantSnapshot(NOW, { checkRef: checkRef as any });
+    const t = snapshot.tasks.find(x => x.id === 't-2');
+
+    expect(t?.requiresPlanApproval).toBe(false);
   });
 
   it('keeps only the newest reviewer verdict per PR', async () => {

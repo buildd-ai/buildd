@@ -249,7 +249,7 @@ export function planSteps(manifest: EnvManifest): Step[] {
 
 // ─── Execution ───────────────────────────────────────────────────────────────
 
-export type StepStatus = 'ok' | 'fail' | 'skip';
+export type StepStatus = 'ok' | 'fail' | 'skip' | 'warn';
 
 export interface StepResult {
   phase: PhaseKind;
@@ -367,9 +367,21 @@ export async function executeSteps(steps: Step[], opts: ExecuteOptions): Promise
         : { phase: step.phase, label: step.label, status: 'fail', message: `\`${step.tool}\` not on PATH` };
     } else {
       const out = await run(step.command!, { cwd: opts.root, timeoutMs: step.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS, env });
-      result = out.code === 0
-        ? { phase: step.phase, label: step.label, status: 'ok', message: 'ok' }
-        : { phase: step.phase, label: step.label, status: 'fail', message: failMessage(out) };
+      if (out.code === 0) {
+        result = { phase: step.phase, label: step.label, status: 'ok', message: 'ok' };
+      } else if (step.phase === 'readiness' && out.code === 2) {
+        // Convention (readiness phase only): exit 2 means "passed, but with a
+        // condition worth surfacing" — distinct from exit 1's genuine failure.
+        // `scripts/check-specs.ts --check` uses it for a stale generated
+        // docs/specs/INDEX.md with no other spec error: a base-branch hygiene
+        // problem, not something this task's tree is responsible for, and not
+        // something worth killing a worker over when CI's own dedicated lint
+        // step already catches and blocks it at the PR/push level. See
+        // docs/design/reliable-env-provisioning.md.
+        result = { phase: step.phase, label: step.label, status: 'warn', message: failMessage(out) };
+      } else {
+        result = { phase: step.phase, label: step.label, status: 'fail', message: failMessage(out) };
+      }
     }
 
     result.durationMs = now() - start;
@@ -530,7 +542,10 @@ const C = {
 };
 
 function icon(s: StepStatus): string {
-  return s === 'ok' ? `${C.green}✓${C.reset}` : s === 'skip' ? `${C.dim}∅${C.reset}` : `${C.red}✗${C.reset}`;
+  if (s === 'ok') return `${C.green}✓${C.reset}`;
+  if (s === 'skip') return `${C.dim}∅${C.reset}`;
+  if (s === 'warn') return `${C.yellow}!${C.reset}`;
+  return `${C.red}✗${C.reset}`;
 }
 
 /** Human-readable report for the CLI. */

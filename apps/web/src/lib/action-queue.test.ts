@@ -1294,3 +1294,22 @@ describe('buildActionQueue — snoozedSubjectKeys', () => {
     expect(result).toHaveLength(1);
   });
 })
+
+describe('buildActionQueue — missionMergeBlockedReason pass-through', () => {
+  it('carries the reason through unchanged when the caller supplies it', () => {
+    const result = buildActionQueue([], [escalationItem({
+      verdictSummary: 'Reviewer approved — awaiting human merge',
+      missionMergeBlockedReason:
+        "This mission's work is not finished — 2 task PR(s) still open on the integration branch: "
+        + 'PR #2514 (fix retry logic), PR #2516 (add timeout). Cancel the remaining task(s), or let '
+        + 'them land, then merge.',
+    })]);
+    expect(result[0].missionMergeBlockedReason).toContain('PR #2514');
+    expect(result[0].missionMergeBlockedReason).toContain('PR #2516');
+  });
+
+  it('defaults to null for an ordinary task PR — guardMissionPrMerge never blocks those', () => {
+    const result = buildActionQueue([], [escalationItem()]);
+    expect(result[0].missionMergeBlockedReason).toBeNull();
+  });
+})

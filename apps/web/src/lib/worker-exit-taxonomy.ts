@@ -6,7 +6,14 @@ export type WorkerExitCause =
   | 'silent_start'
   | 'reassigned'
   | 'condition_unmet'
-  | 'sandbox_mount_gap';
+  | 'sandbox_mount_gap'
+  /**
+   * The agent stopped to ask a human a question and nobody answered before
+   * the waiting_input timeout — correct behaviour, not a crash. Must never
+   * be booked as code_failure; excluded from the failure rate and
+   * failure-signature ranking, but still queryable by this exit cause.
+   */
+  | 'needs_input';
 
 /**
  * Failure strings that mean "the coordination server told the runner to stop",
@@ -65,6 +72,15 @@ export function classifyReportedFailure(input: {
    * never actually attempted.
    */
   conditionUnmet?: boolean;
+  /**
+   * The reported error is the `needs_input: <question>` text the AskUserQuestion
+   * abort handler writes. A worker in this state should almost always be
+   * reported as `waiting_input`, never `failed` — this input exists for the
+   * remaining terminal paths (the waiting_input timeout, or any future
+   * producer of the same prefix) so they are never silently booked as
+   * code_failure.
+   */
+  needsInput?: boolean;
 }): WorkerExitCause {
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
@@ -74,6 +90,10 @@ export function classifyReportedFailure(input: {
   // Server-side concurrency conflicts are infra failures for the same reason:
   // the session was killed by coordination bookkeeping, not by the work.
   if (input.concurrencyConflict) return 'infra_failure';
+  // A genuine needs_input report should still be filed under a real diagnosed
+  // cause above when one is also present — same reasoning as conditionUnmet
+  // below, and checked ahead of it because it is the more specific signal.
+  if (input.needsInput) return 'needs_input';
   // Deliberately last of the non-default causes: a deferral report carrying a
   // real budget/sandbox/steering signal should still be filed under that
   // signal, which is the diagnosis, not under the scheduling decision.
@@ -133,5 +153,9 @@ export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefin
     // nothing about the task — charging them would burn the retry budget of a
     // task that was never actually attempted.
     && exitCause !== 'never_started'
-    && exitCause !== 'silent_start';
+    && exitCause !== 'silent_start'
+    // A parked question that timed out unanswered is not the task's own
+    // defect — charging it would burn the retry budget on a task that was
+    // never actually attempted at solving the problem, only blocked on it.
+    && exitCause !== 'needs_input';
 }

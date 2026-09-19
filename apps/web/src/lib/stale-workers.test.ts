@@ -163,6 +163,47 @@ describe('cleanupStuckWaitingInput', () => {
     expect(result.retriedTasks).toBe(1);
   });
 
+  // A worker timing out unanswered is not a code defect — it must carry its
+  // own exit cause so it is excluded from the failure rate / signature
+  // ranking (failure-analytics.ts) rather than defaulting to code_failure.
+  it('books the timed-out worker as exitCause needs_input, not code_failure', async () => {
+    const staleDate = new Date(Date.now() - 25 * 60 * 60 * 1000);
+    mockWorkersFindMany.mockResolvedValue([
+      { id: 'w1', taskId: 'task-1', status: 'waiting_input', updatedAt: staleDate, waitingFor: { type: 'question', prompt: 'What color?' } },
+    ]);
+
+    mockTasksFindFirst.mockResolvedValue({
+      id: 'task-1',
+      workspaceId: 'ws-1',
+      title: 'Fix the bug',
+      description: 'Fix the login bug',
+      priority: 0,
+      category: 'bug',
+      project: 'web',
+      context: {},
+      requiredCapabilities: [],
+      missionId: null,
+      runnerPreference: 'any',
+      mode: 'execution',
+      outputRequirement: 'auto',
+      outputSchema: null,
+    });
+
+    let workerUpdateSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((vals: any) => {
+        workerUpdateSet = vals;
+        return { where: mock(() => Promise.resolve()) };
+      }),
+    });
+
+    await cleanupStuckWaitingInput('account-1');
+
+    expect(workerUpdateSet).not.toBeNull();
+    expect(workerUpdateSet.status).toBe('failed');
+    expect(workerUpdateSet.exitCause).toBe('needs_input');
+  });
+
   it('does not touch waiting_input workers under 24 hours old', async () => {
     const recentDate = new Date(Date.now() - 12 * 60 * 60 * 1000); // 12 hours ago
     mockWorkersFindMany.mockResolvedValue([]); // Query with lt(24h) returns nothing
