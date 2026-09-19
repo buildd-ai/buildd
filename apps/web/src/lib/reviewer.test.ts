@@ -17,6 +17,9 @@ let missionFindFirstResult: any = null;
 // Fixture for the Rule P1-7 attempt-phase read. Null = the reviewed task has no
 // phase, which is the majority case today.
 let parentPhaseRow: any = null;
+// Fixture for `loadTaskSpecSource`'s read of the reviewed task's own
+// `context.specSource`. Null = the task carries no specSource, the majority case.
+let originalTaskContextRow: any = null;
 
 function whereResult(rows: any[]) {
   const p = Promise.resolve(rows) as Promise<any[]> & { returning: () => Promise<any[]> };
@@ -57,12 +60,14 @@ mock.module('@buildd/core/db', () => ({
       // silently answer the other query.
       tasks: {
         findFirst: mock((args: any) => {
-          // Three callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
+          // Four callers reach tasks.findFirst here. supersedeReviewerTaskOnMerge
           // passes a `with: { workers }` relation; the pre-dispatch duplicate probe
-          // in createReviewerTask does not; and inheritPhaseFromParent asks for the
-          // two phase columns and nothing else. Dispatch on all three so one
-          // fixture cannot silently answer another query.
+          // in createReviewerTask does not; inheritPhaseFromParent asks for the two
+          // phase columns and nothing else; loadTaskSpecSource asks for `context`
+          // and nothing else. Dispatch on all four so one fixture cannot silently
+          // answer another query.
           if (args?.columns?.missionPhaseIndex) return Promise.resolve(parentPhaseRow);
+          if (args?.columns?.context) return Promise.resolve(originalTaskContextRow);
           if (args && !('with' in args)) {
             liveReviewerProbeArgs.push(args);
             return Promise.resolve(liveReviewerTaskResult);
@@ -122,6 +127,7 @@ import {
   preflightEscalationCheck,
   isSchemaTouchingFile,
   renderManifestGuidance,
+  renderSpecConformanceGuidance,
   resolvePriorVerdict,
   supersedeReviewerTaskOnMerge,
   REVIEWER_TASK_OUTPUT_SCHEMA,
@@ -1581,6 +1587,197 @@ describe('buildReviewerContext — mission prose criteria', () => {
     // Not required: a reviewer on a PR with no mission criteria returns none,
     // and a schema that demanded the field would fail every such review.
     expect(REVIEWER_TASK_OUTPUT_SCHEMA.required).not.toContain('criteriaFindings');
+  });
+});
+
+// ── Spec conformance (docs/design/spec-to-build-pattern.md §4) ──────────────
+
+describe('renderSpecConformanceGuidance', () => {
+  const SPEC_PATH = 'docs/design/spec-to-build-pattern.md';
+
+  it('is empty when the task carries no specSource', async () => {
+    const result = await renderSpecConformanceGuidance({
+      specSource: null,
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      headSha: 'sha1',
+    });
+    expect(result).toEqual({ doctrine: '', section: '' });
+  });
+
+  it('fetches the doc at the PR HEAD and injects it as guidance', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      expect(path).toBe(`/repos/buildd-ai/buildd/contents/${SPEC_PATH}?ref=sha1`);
+      return Promise.resolve({
+        encoding: 'base64',
+        content: Buffer.from('# Spec\n\nThe reviewer must check X against Y.').toString('base64'),
+      });
+    };
+
+    const result = await renderSpecConformanceGuidance({
+      specSource: { specPath: SPEC_PATH },
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      headSha: 'sha1',
+    });
+
+    expect(result.doctrine).toContain('SPEC DOCUMENT CONFORMANCE');
+    expect(result.section).toContain(`## Spec Conformance — ${SPEC_PATH}`);
+    expect(result.section).toContain('The reviewer must check X against Y.');
+  });
+
+  it('is empty when the fetch fails — a doc the reviewer cannot see is not asked about', async () => {
+    githubApiImpl = () => Promise.reject(new Error('boom'));
+
+    const result = await renderSpecConformanceGuidance({
+      specSource: { specPath: SPEC_PATH },
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      headSha: 'sha1',
+    });
+    expect(result).toEqual({ doctrine: '', section: '' });
+  });
+
+  it('truncates a document past the char budget and notes it', async () => {
+    const big = 'x'.repeat(25_000);
+    githubApiImpl = () => Promise.resolve({
+      encoding: 'base64',
+      content: Buffer.from(big).toString('base64'),
+    });
+
+    const result = await renderSpecConformanceGuidance({
+      specSource: { specPath: SPEC_PATH },
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+      headSha: 'sha1',
+    });
+    expect(result.section).toContain('(truncated — showing the first 20000 characters');
+  });
+});
+
+describe('buildReviewerContext — spec conformance', () => {
+  const SPEC_PATH = 'docs/design/spec-to-build-pattern.md';
+  const BASE = {
+    originalTaskId: 'original-spec',
+    originalTask: { title: 'Wire spec guidance', description: 'Extend the reviewer', pathManifest: null },
+    prNumber: 130,
+    prUrl: 'https://github.com/buildd-ai/buildd/pull/130',
+    headSha: 'sha130',
+    installationId: 1,
+    repoFullName: 'buildd-ai/buildd',
+    prFiles: [{ filename: 'apps/web/src/lib/reviewer.ts', status: 'modified', additions: 5, deletions: 0 }],
+    prBody: null,
+  };
+
+  it('reflows nothing when the task carries no specSource', async () => {
+    const prompt = await buildReviewerContext(BASE);
+    expect(prompt).not.toContain('Spec Conformance');
+    expect(prompt).not.toContain('SPEC DOCUMENT CONFORMANCE');
+  });
+
+  it('injects the spec conformance guidance for a task with specSource', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/contents/')) {
+        return Promise.resolve({
+          encoding: 'base64',
+          content: Buffer.from('The PR must implement renderSpecConformanceGuidance.').toString('base64'),
+        });
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const prompt = await buildReviewerContext({
+      ...BASE,
+      specSource: { specPath: SPEC_PATH, planningTaskId: 'planning-1' },
+    });
+
+    expect(prompt).toContain(`## Spec Conformance — ${SPEC_PATH}`);
+    expect(prompt).toContain('The PR must implement renderSpecConformanceGuidance.');
+    expect(prompt).toContain('SPEC DOCUMENT CONFORMANCE');
+  });
+
+  it('blocks a spec divergence through the existing verdict vocabulary — no new output field', async () => {
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/contents/')) {
+        return Promise.resolve({ encoding: 'base64', content: Buffer.from('spec text').toString('base64') });
+      }
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    const withSpec = await buildReviewerContext({ ...BASE, specSource: { specPath: SPEC_PATH } });
+    const without = await buildReviewerContext(BASE);
+
+    // Same output contract either way: a spec divergence is reported through
+    // `feedback` (request-changes) or `escalationReason` (escalate), exactly
+    // like a criteria mismatch or any other finding — never a new field.
+    const outputSection = (s: string) => s.slice(s.indexOf('## Your Output'));
+    expect(outputSection(withSpec)).toBe(outputSection(without));
+    expect(withSpec).toContain(
+      'request-changes when there is a nameable fix, escalate when the right fix is itself the',
+    );
+  });
+});
+
+describe('createReviewerTask — spec conformance', () => {
+  it('loads context.specSource off the reviewed task and injects spec guidance', async () => {
+    insertedTask = undefined;
+    originalTaskContextRow = {
+      context: { specSource: { specPath: 'docs/design/spec-to-build-pattern.md', planningTaskId: 'planning-9' } },
+    };
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/contents/')) {
+        return Promise.resolve({
+          encoding: 'base64',
+          content: Buffer.from('spec text for PR 131').toString('base64'),
+        });
+      }
+      if (path.includes('/files')) return Promise.resolve([]);
+      if (path.endsWith('/pulls/131')) return Promise.resolve({ body: null });
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-spec-1',
+      originalTask: { title: 'Spec task', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/spec-task' },
+      prNumber: 131,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/131',
+      headSha: 'sha131',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect(insertedTask?.description).toContain('## Spec Conformance — docs/design/spec-to-build-pattern.md');
+    expect(insertedTask?.description).toContain('spec text for PR 131');
+
+    originalTaskContextRow = null;
+  });
+
+  it('injects nothing when the reviewed task carries no specSource', async () => {
+    insertedTask = undefined;
+    originalTaskContextRow = null;
+    githubApiImpl = (installationId: number, path: string) => {
+      if (path.includes('/files')) return Promise.resolve([]);
+      if (path.endsWith('/pulls/132')) return Promise.resolve({ body: null });
+      return Promise.reject(new Error(`unexpected path: ${path}`));
+    };
+
+    await createReviewerTask({
+      workspaceId: 'ws-1',
+      originalTaskId: 'original-nospec',
+      originalTask: { title: 'Ordinary task', description: null, backend: 'claude', missionId: null },
+      worker: { branch: 'buildd/ordinary' },
+      prNumber: 132,
+      prUrl: 'https://github.com/buildd-ai/buildd/pull/132',
+      headSha: 'sha132',
+      reviewerRole: 'reviewer',
+      installationId: 1,
+      repoFullName: 'buildd-ai/buildd',
+    });
+
+    expect(insertedTask?.description).not.toContain('Spec Conformance');
   });
 });
 
