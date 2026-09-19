@@ -1,15 +1,24 @@
 ---
 status: partially
 # Structural conformance only; passing does not certify every prose invariant.
+# execution-cluster-selection and context-assembly genuinely shipped (Implementation
+# sketch step 3) but the doc must stay 'partially' until durable-context-assembly-table
+# (step 6, the assembly table) ships too, so those two would be reclassified code_ahead
+# and redispatched forever under a non-terminal status. Suppressed below (skip_until)
+# rather than left to redispatch a reconcile-spec task against an already-accurate doc.
 assertions:
   - id: "execution-cluster-selection"
     type: "symbol"
     name: "selectExecCluster"
     path: "packages/core/retrieval-clusters.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "selectExecCluster genuinely shipped (Implementation sketch step 3) — this isn't a false positive — but the doc must stay 'partially' until durable-context-assembly-table (step 6, the assembly table) ships, so this assertion will pass forever under a non-terminal status. durable-context-assembly-table is the assertion that tracks real remaining progress."
   - id: "context-assembly"
     type: "symbol"
     name: "ContextAssembly"
     path: "packages/core/retrieval-clusters.ts"
+    skip_until: "2026-12-19"
+    skip_reason: "ContextAssembly genuinely shipped (Implementation sketch step 5, the assembly record) — this isn't a false positive — but the doc must stay 'partially' until durable-context-assembly-table (step 6, the assembly table) ships, so this assertion will pass forever under a non-terminal status. durable-context-assembly-table is the assertion that tracks real remaining progress."
   - id: "durable-context-assembly-table"
     type: "config_key"
     key: "assembly_id"
@@ -279,10 +288,11 @@ The only mission-shape signal in plan-time context is `isBuildMission()`
 exactly one block: PR awareness.
 
 And there is no record of any of it. Retrieval-hit tracking exists
-(`pg-vector-store.ts:421` increments `hit_count` / `last_hit_at`,
-`schema.ts:2202-2203`) but it is a global per-chunk counter with no assembly
-identity and no outcome, so it cannot answer *which retrieval process preceded
-an observed outcome* — a question the system currently has no way to ask.
+(`packages/core/knowledge-store/pg-vector-store.ts:421` increments `hit_count` /
+`last_hit_at`, `schema.ts:2202-2203`) but it is a global per-chunk counter with
+no assembly identity and no outcome, so it cannot answer *which retrieval
+process preceded an observed outcome* — a question the system currently has no
+way to ask.
 
 ## Current state
 
@@ -765,7 +775,7 @@ links as weak evidence, instead of that choice being foreclosed by the schema.
 
 Two existing facilities cover part of this and must not be confused with it:
 
-- **Hit tracking** (`pg-vector-store.ts:421`) — global per-chunk counters, no
+- **Hit tracking** (`packages/core/knowledge-store/pg-vector-store.ts:421`) — global per-chunk counters, no
   assembly identity, no outcome. Untouched by this design.
 - **Offline eval** (`packages/core/scripts/eval-retrieval.ts` over
   `packages/core/scripts/eval/golden-queries.json`, thresholds in
