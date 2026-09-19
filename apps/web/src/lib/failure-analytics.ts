@@ -143,6 +143,24 @@ function isFailure(status: string): boolean {
   return (FAILED_WORKER_STATUSES as readonly string[]).includes(status);
 }
 
+/**
+ * A reported failure that should count against the failure rate, the
+ * exit-cause breakdown, and signature ranking.
+ *
+ * `needs_input` is deliberately excluded even though its status is `failed`:
+ * the only way a terminal worker carries this exit cause is the
+ * waiting_input timeout (cleanupStuckWaitingInput) — an agent that correctly
+ * stopped to ask a human, unanswered. That is not a code defect, so counting
+ * it would misrepresent the workspace's actual failure rate the same way the
+ * original bug did. It stays queryable via `getFailureSignatureFamily`
+ * (errorPrefix "needs_input:"), which intentionally scans every failed/error
+ * row regardless of this exclusion — that is the one place "how big is this
+ * family" is supposed to be answerable from.
+ */
+function isChargeableFailure(row: FailureWorkerRow): boolean {
+  return isFailure(row.status) && row.exitCause !== 'needs_input';
+}
+
 /** Has this worker had the chance to fail yet? See IN_FLIGHT_WORKER_STATUSES. */
 export function isTerminalWorkerStatus(status: string): boolean {
   return !(IN_FLIGHT_WORKER_STATUSES as readonly string[]).includes(status);
@@ -292,7 +310,7 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
   const taskTitles = input.taskTitles ?? {};
   const maxSignatures = input.maxSignatures ?? DEFAULT_MAX_SIGNATURES;
 
-  const failures = rows.filter(r => isFailure(r.status));
+  const failures = rows.filter(isChargeableFailure);
   const diedEarlyRows = failures.filter(isDiedEarly);
   const terminal = rows.filter(r => isTerminalWorkerStatus(r.status)).length;
 
@@ -329,13 +347,13 @@ export function computeFailureAnalytics(input: FailureAnalyticsInput): FailureAn
     const role = roleTallies.get(roleKey) ?? { started: 0, terminal: 0, failed: 0 };
     role.started += 1;
     if (isTerminal) role.terminal += 1;
-    if (isFailure(r.status)) role.failed += 1;
+    if (isChargeableFailure(r)) role.failed += 1;
     roleTallies.set(roleKey, role);
 
     const ws = wsTallies.get(r.workspaceId) ?? { started: 0, terminal: 0, failed: 0 };
     ws.started += 1;
     if (isTerminal) ws.terminal += 1;
-    if (isFailure(r.status)) ws.failed += 1;
+    if (isChargeableFailure(r)) ws.failed += 1;
     wsTallies.set(r.workspaceId, ws);
   }
 

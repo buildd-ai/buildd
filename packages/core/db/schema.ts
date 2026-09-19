@@ -1475,7 +1475,7 @@ export const workers = pgTable('workers', {
   // sandbox_mount_gap:  bwrap allowlist missing a path (npm postinstall, config file, tool binary);
   //                     task requeues; fix by adding path to BUILDD_MOUNT_ALLOWLIST_EXTRA.
   // null: worker is still active, completed successfully, or predates this column.
-  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | null>(),
+  exitCause: text('exit_cause').$type<'code_failure' | 'budget_limited' | 'infra_failure' | 'never_started' | 'silent_start' | 'reassigned' | 'condition_unmet' | 'sandbox_mount_gap' | 'needs_input' | null>(),
   // Subagent spans flushed once at worker terminal state (not on every progress event).
   // JSONB (v1): keeps the change small; migrate to a worker_subagents table when per-span
   // querying is needed (e.g. mission skyline v2 lanes-within-a-bar).

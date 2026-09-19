@@ -1704,6 +1704,76 @@ describe('PATCH /api/workers/[id]', () => {
     expect(capturedSet.waitingFor.options[2].label).toBe('Use SAML');
   });
 
+  // Cost 4: a needs_input that carries no real question — the runner's own
+  // fallback text, or blank/whitespace — teaches a human nothing and forces
+  // them to reconstruct the ask from the transcript. Flag it as a contract
+  // violation instead of accepting it silently.
+  it.each([
+    ['Awaiting input', 'the runner fallback text'],
+    ['', 'an empty prompt'],
+    ['   ', 'a whitespace-only prompt'],
+  ])('flags a contentless question (%s) as a contract violation — %s', async (prompt) => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'waiting_input', waitingFor: { type: 'question', prompt } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.waitingFor.contractViolation).toBe(true);
+  });
+
+  it('does not flag a real question as a contract violation', async () => {
+    let capturedSet: any = null;
+    mockWorkersUpdate.mockReturnValue({
+      set: mock((updates: any) => {
+        capturedSet = updates;
+        return {
+          where: mock(() => ({
+            returning: mock(() => [{
+              id: 'worker-1', status: 'waiting_input', accountId: 'account-1', workspaceId: 'ws-1', taskId: 'task-1',
+            }]),
+          })),
+        };
+      }),
+    });
+
+    mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1', accountId: 'account-1', status: 'running', workspaceId: 'ws-1', taskId: 'task-1', pendingInstructions: null,
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: { status: 'waiting_input', waitingFor: { type: 'question', prompt: 'Should I use bun or npm for this package?' } },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(capturedSet.waitingFor.contractViolation).toBeUndefined();
+  });
+
   it('an AskUserQuestion abort (status=waiting_input, error=needs_input:...) never touches task status, never auto-retries, and still notifies the owner', async () => {
     // Regression for the 4164ff29 incident: the runner used to report this
     // exact scenario as status: 'failed', which fed the mission auto-retry
@@ -7725,6 +7795,57 @@ describe('PATCH /api/workers/[id]', () => {
       expect(res.status).toBe(200);
       expect(capturedSet.exitCause).toBe('condition_unmet');
       expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(false);
+    });
+
+    // Regression for the needs_input taxonomy bug: a worker that correctly
+    // stopped to ask a human a question should almost never reach this route
+    // as status:'failed' (the runner now reports waiting_input for that
+    // abort) — but the remaining terminal path (the waiting_input timeout)
+    // and any future producer of the same prefix must never fall through to
+    // code_failure, and must never be blind-retried into the same unanswered
+    // question ahead of a human seeing it.
+    it('sets exitCause=needs_input for a needs_input: failure, does not charge a retry, and does not auto-retry a mission task', async () => {
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          capturedSet = updates;
+          return { where: mock(() => ({ returning: mock(() => [{ id: 'worker-1', status: 'failed', accountId: 'account-1', workspaceId: 'ws-1' }]) })) };
+        }),
+      });
+      const taskSetCalls: any[] = [];
+      mockTasksUpdate.mockReturnValue({
+        set: mock((updates: any) => {
+          taskSetCalls.push(updates);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        pendingInstructions: null,
+      });
+      // missionId set — this is exactly the shape that used to get one blind
+      // auto-retry (retryCount < 1) before a human could ever answer.
+      mockTasksFindFirst.mockResolvedValue({ id: 'task-1', status: 'in_progress', workspaceId: 'ws-1', missionId: 'mission-1', outputRequirement: 'none', context: {} });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'needs_input: Should the mission branch merge now?' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(200);
+      expect(capturedSet.exitCause).toBe('needs_input');
+      expect(consumesRetryAttempt(capturedSet.exitCause)).toBe(false);
+      // The task must be left failed (or otherwise not silently requeued) —
+      // never flipped back to 'pending' by the blind mission auto-retry gate.
+      expect(taskSetCalls.some((s: any) => s.status === 'pending')).toBe(false);
     });
 
     // The deferral is a scheduling decision, not a diagnosis: when the same

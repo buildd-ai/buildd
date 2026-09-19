@@ -1868,6 +1868,43 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Park a `needs_input` abort as `waiting_input` instead of reporting it as a
+   * failure. Shared by two call sites that both see this same abort: the
+   * natural post-loop path (the query loop breaks cleanly after
+   * `AskUserQuestion` sets `worker.status = 'waiting'`) and the thrown-AbortError
+   * path (`session.abortController.abort()` makes the SDK's async generator
+   * throw, which skips the post-loop path entirely and lands in the outer
+   * catch). The first fix here (see docs/specs/human-in-the-loop-protocol.md)
+   * only handled the post-loop path; the thrown path is the one that actually
+   * fires for the AskUserQuestion abort, since abort() always makes the
+   * in-flight `for await` throw before control ever reaches post-loop cleanup.
+   */
+  private async parkNeedsInputAbort(worker: LocalWorker): Promise<void> {
+    console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
+    sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
+    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+    // Mirrors the sibling non-abort branch's local 'waiting' state — the
+    // session is gone here, but 'waiting' + no live session is already a
+    // recognized local state elsewhere in this file.
+    worker.status = 'waiting';
+    worker.currentAction = 'Needs input';
+    worker.hasNewActivity = true;
+    // Not terminal — no completedAt. The worker is still open.
+    // Re-send waitingFor so the dashboard can render the answer UI even
+    // if the earlier sync got 409'd.
+    await this.buildd.updateWorker(worker.id, {
+      status: 'waiting_input',
+      error: worker.error,
+      milestones: worker.milestones,
+      ...(worker.waitingFor ? { waitingFor: worker.waitingFor as any } : {}),
+      ...gitStats,
+    });
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
@@ -3524,28 +3561,7 @@ export class WorkerManager {
       // `/respond` and `cleanupStuckWaitingInput` own the eventual resolution
       // (answer, or timeout after 4h/24h) — this path only parks.
       if (worker.error?.startsWith('needs_input')) {
-        console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
-        sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
-        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
-        // Mirrors the sibling non-abort branch's local 'waiting' state — the
-        // session is gone here, but 'waiting' + no live session is already a
-        // recognized local state elsewhere in this file.
-        worker.status = 'waiting';
-        worker.currentAction = 'Needs input';
-        worker.hasNewActivity = true;
-        // Not terminal — no completedAt. The worker is still open.
-        // Re-send waitingFor so the dashboard can render the answer UI even
-        // if the earlier sync got 409'd.
-        await this.buildd.updateWorker(worker.id, {
-          status: 'waiting_input',
-          error: worker.error,
-          milestones: worker.milestones,
-          ...(worker.waitingFor ? { waitingFor: worker.waitingFor as any } : {}),
-          ...gitStats,
-        });
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
+        await this.parkNeedsInputAbort(worker);
         return;
       }
 
@@ -3858,6 +3874,21 @@ export class WorkerManager {
           return;
         }
       } catch { /* non-fatal — proceed with fail */ }
+
+      // The AskUserQuestion abort handler (handleMessage) sets worker.error to
+      // 'needs_input: <question>' and calls abortController.abort() BEFORE this
+      // catch runs — that abort() is exactly what makes the SDK's async
+      // generator throw and lands us here, so this is the path that actually
+      // fires for that abort, not the post-loop branch below (which only runs
+      // when the query loop exits without throwing). Must be checked before the
+      // generic isAbortError handling: a parked question is not a crash, and
+      // reporting status:'failed' here fed the mission auto-retry gate and
+      // classifyReportedFailure's code_failure default. See
+      // docs/specs/human-in-the-loop-protocol.md.
+      if (worker.error?.startsWith('needs_input')) {
+        await this.parkNeedsInputAbort(worker);
+        return;
+      }
 
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 
