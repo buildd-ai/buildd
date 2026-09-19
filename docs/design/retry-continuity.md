@@ -1,5 +1,5 @@
 ---
-status: partially
+status: shipped
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
   - id: "worktree-base-resolution"
@@ -12,13 +12,14 @@ assertions:
     path: "apps/web/src/lib/ci-retry.ts"
   - id: "retry-worktree-tests"
     type: "test_file"
-    path: "apps/runner/__tests__/unit/worktree-utils.test.ts"
+    path: "apps/runner/__tests__/unit/resume-branch-fallback.test.ts"
 ---
 # Retry Continuity Design Spec
 
-> **Status:** partially shipped — §§1–5 describe the original design. §8 (added later) documents the
+> **Status:** shipped. §§1–5 describe the original design, which shipped in PR #1268. §8 documents the
 > `worker.branch` persistence bug found in production (#1714–#1717) and the targeted fix shipped in
-> the same PR. The full §§2–5 design remains in-flight.
+> PR #1720. Since then the runner side has grown further than either section anticipated — see the
+> "Beyond this spec" note at the end of §4 and §8.
 >
 > **Scope:** End-to-end design for preserving prior-attempt git work across all
 > retry paths — auto-requeue, CI retry (`ci-retry.ts`), and reviewer-loop retry
@@ -27,9 +28,13 @@ assertions:
 >
 > **Sources of truth read before this doc:**
 > - `apps/web/src/app/api/workers/[id]/route.ts` — worker status transitions
->   (lines 590–613: auto-retry; lines 1292–1315: reviewer-loop retry)
+>   (failure capture and reviewer-loop retry; the file has grown substantially
+>   since this spec was written, so treat the line numbers below as approximate)
 > - `apps/web/src/lib/ci-retry.ts` — CI retry task builder
-> - `apps/runner/src/worktree-utils.ts` — `resolveWorktreeBase()` (current impl)
+> - `apps/runner/src/worktree-utils.ts` — `resolveWorktreeBase()`,
+>   `buildRetryContinuitySection()`, `clearResumeContext()` (current impl)
+> - `apps/runner/src/git-operations.ts` — `setupWorktree()`, which now owns branch
+>   naming and calls `resolveWorktreeBase()` internally
 > - `packages/shared/src/types.ts` — `Task`, `Worker`, `TaskResult`
 > - `packages/core/db/schema.ts` — `tasks` (context jsonb), `workers` (branch,
 >   lastCommitSha fields)
@@ -132,7 +137,9 @@ export interface TaskRetryContext {
 ## 2. Failure Capture
 
 **File:** `apps/web/src/app/api/workers/[id]/route.ts`  
-**Where:** The `status === 'failed'` block (lines 590–613).
+**Where:** The `status === 'failed'` block (currently around line 2107 — the file has grown
+substantially since this spec was written; search for `resumeBranch: worker.branch` rather than
+trusting the line number).
 
 When a worker's status transitions to `failed`, before the task is either
 re-queued (auto-retry) or permanently marked failed, write
@@ -195,26 +202,34 @@ Key invariants:
 - `worker.lastCommitSha` may be `null` if the agent never reported a commit (e.g.
   aborted on startup). The spread guard prevents writing `lastCommitSha: null`.
 
+**Shipped:** the block above landed essentially as described, with one addition
+not in this spec — an `isSensitive` guard redacts `failureContext.summary` to the
+literal string `'runtime_error'` when the failure is flagged sensitive, instead of
+echoing `body.error`/`worker.error` verbatim.
+
 ---
 
 ## 3. Retry Propagation
 
 ### 3.1 Auto-requeue (same task)
 
-When `shouldAutoRetry = true`, the task context is updated in-place (line 611:
-`context: taskCtxForRetry`) and the task flips to `pending`. Because
+When `shouldAutoRetry = true`, the task context is updated in-place (`context:
+taskCtxForRetry`) and the task flips to `pending`. Because
 `resumeBranch`, `lastCommitSha`, and `failureContext` are written into
 `taskCtxForRetry` (§2), they persist naturally with the task and will be
 available to the next worker that claims it.
 
-**Verification needed:** Confirm nothing in the claim path or `resolveWorktreeBase()` call (§4) wipes or overwrites `resumeBranch`/`lastCommitSha` after they are set. Specifically:
-- `apps/web/src/app/api/workers/claim/route.ts` — must not reset task context fields on claim.
-- `apps/runner/src/workers.ts` — the worker init path reads `task.context` but does not mutate it server-side.
+**Verified:** neither the claim path (`apps/web/src/app/api/workers/claim/route.ts`)
+nor the worker init path in `apps/runner/src/workers.ts` mutates these context
+fields — they pass through untouched to `resolveWorktreeBase()` (§4). The only
+code that clears them is `clearResumeContext()`, invoked deliberately from
+`apps/runner/src/git-operations.ts` when a resume candidate turns out to be
+unusable (see §4's "Beyond this spec" note).
 
 ### 3.2 CI retry task (`apps/web/src/lib/ci-retry.ts`)
 
-`buildCIRetryTask()` already copies `baseBranch: worker.branch` into the child
-task context (line 85). The upgrade:
+`buildCIRetryTask()` copies `baseBranch: worker.branch` into the child
+task context. The upgrade:
 
 1. Also copy `resumeBranch`, `lastCommitSha`, and the structured `failureContext`
    from the *parent task context* if present. The parent task has these fields
@@ -242,10 +257,17 @@ context: {
 },
 ```
 
-### 3.3 Reviewer-loop retry task (`route.ts` line ~1292)
+**Shipped:** landed as described. The actual context object carries more fields
+than shown above — `workspaceMaxCiRetries`-derived `maxIterations`,
+`foreign_head_sha`/`foreignCommitAuthor` (a non-worker commit doesn't consume a
+retry attempt), `ciRunId`/`ciRunUrl`/`ciFailedJobId` for log retrieval, and
+carried-over `verificationCommand`/`skillSlugs` — all additive to the
+`resumeBranch`/`lastCommitSha`/`failureContext` shape this spec covers.
 
-The reviewer-loop already sets `baseBranch: workerBranch` in the new task's
-context (line 1304). The upgrade copies `lastCommitSha` and builds a structured
+### 3.3 Reviewer-loop retry task (`apps/web/src/app/api/workers/[id]/route.ts`)
+
+The reviewer-loop sets `baseBranch: workerBranch` in the new task's
+context. The upgrade copies `lastCommitSha` and builds a structured
 `failureContext`:
 
 ```typescript
@@ -385,8 +407,39 @@ If the count exceeds 50 but the PR is still open (active work), treat as `'ok'`
 
 The existing synchronous `resolveWorktreeBase(defaultBranch, context)` signature
 is changed to async. All callers must be updated to `await` the result. The
-worktree tests in `apps/runner/__tests__/unit/worktree-utils.test.ts` must be
-updated to pass mock `fetchBranch` callbacks.
+worktree tests must be updated to pass mock `fetchBranch` callbacks.
+
+### 4.3 Beyond this spec — shipped shape
+
+The signature above is what shipped, but the implementation has grown two things
+this spec never anticipated:
+
+- **`onFallback` callback.** `ResolveWorktreeBaseOptions` also carries an
+  `onFallback?: (info: { candidate: string; reason: 'missing' | 'diverged' }) => void`.
+  The caller (`apps/runner/src/git-operations.ts`, inside `setupWorktree()`) uses
+  it to invoke `clearResumeContext()` on the task context the moment a resume
+  candidate is rejected, so prompt-building (§5) never references a branch that
+  no longer exists. This spec's §5 handled that case by construction (no
+  `resumeBranch` in context ⇒ no section), but didn't specify who clears the
+  stale field once a probe rejects it.
+- **`baseBranch` is no longer just a legacy alias for `resumeBranch`.** The
+  shipped function treats them as two different ladder rungs with different
+  divergence semantics: `resumeBranch` is a prior *attempt* (divergence beyond
+  50 commits means it ran away — fall back to trunk), while `baseBranch` can be
+  a deliberately declared base (a stacked predecessor, or a mission integration
+  branch) that is *supposed* to be ahead of trunk — divergence there is expected,
+  not a fault, and falling back to trunk would actively break the PR's diff. A
+  missing `resumeBranch` cascades to a still-valid `declaredBase` instead of
+  going straight to `defaultBranch`. See the doc comment on `resolveWorktreeBase`
+  in `worktree-utils.ts` for the full reasoning.
+- **`git worktree add -b` branch naming moved to `setupWorktree()`**
+  (`apps/runner/src/git-operations.ts`), which wraps `resolveWorktreeBase()` and
+  additionally decides the actual local branch name — reusing the resume
+  candidate when usable, falling back to the task's own branch or a
+  worker-id-suffixed unique name when both are already checked out elsewhere
+  (`SetupWorktreeResult` also reports `sharedBranch` info for that case). None of
+  this branch-naming/collision logic is specified here; it grew out of the
+  production bug fixed in §8.
 
 ---
 
@@ -396,10 +449,15 @@ When `context.resumeBranch` is set on the claimed task, the runner injects an
 additional section into the worker system prompt instructing the agent to assess
 the prior work before touching files.
 
-**File:** `apps/runner/src/workers.ts`  
-**Where:** Near line 1727–1734 where `systemPrompt.append` is constructed.
+**File:** `apps/runner/src/workers.ts`, calling into `apps/runner/src/worktree-utils.ts`.
 
-### 5.1 Injection logic
+**Shipped as an extraction, not inline code:** the logic below was pulled out into
+an exported, independently-testable function, `buildRetryContinuitySection()` in
+`worktree-utils.ts` (see §4's file). `workers.ts` just imports it and appends the
+result to `systemPrompt.append` when non-`null`. This is a naming/location
+divergence from what §5.1 originally proposed inline — the behavior is unchanged.
+
+### 5.1 Injection logic (as originally proposed — see note above for shipped location)
 
 ```typescript
 // Build retry-continuity prompt section if resumeBranch is set
@@ -450,10 +508,17 @@ and a brief rationale. Example:
 
 ## 6. Test Requirements
 
-### 6.1 Unit tests (`apps/runner/__tests__/unit/worktree-utils.test.ts`)
+### 6.1 Unit tests
 
-The existing unit tests for `resolveWorktreeBase` must be updated for the new
-async signature and extended to cover:
+**Shipped location differs from what this spec named.** Coverage did not land
+in a single `worktree-utils.test.ts` — it is split across
+`apps/runner/__tests__/unit/resume-branch-fallback.test.ts` (`buildRetryContinuitySection`,
+`clearResumeContext`, and the fresh-start end-to-end scenario),
+`worktree-base-branch.test.ts`, `cbm-base-ref-keying.test.ts`, and
+`worktree-mission-integration-guard.test.ts` (all three covering
+`resolveWorktreeBase`, the last two for scenarios §4.3 describes that this spec
+never anticipated). The original table of cases below still holds; it is just
+verified across those files instead of one:
 
 | Test case | Input | Expected output |
 |-----------|-------|-----------------|
@@ -564,13 +629,16 @@ finds all ancestor workers with open `prNumber`s and closes them via GitHub PATC
 
 ### 8.4 Attempt Number Stamping
 
-**Dedup path (branch reuse):** When the GitHub API head-branch dedup finds an existing PR
-and `retryIteration > 0`, the handler patches the PR body to replace (or append) an attempt
-line: `_Attempt N/M — retry task \`<taskId>\`._` This makes the attempt number legible in
-the PR without reopening it.
+Both paths stamp the same line shape today —
+`_Attempt N/M — resume failed; new branch._` — rather than the two distinct
+messages this spec originally sketched:
 
-**Fallback path (new PR):** The new PR body includes a lineage suffix:
-`_Attempt N/M — retry task \`<taskId>\`. Resume branch was unavailable; new PR opened._`
+- **Dedup path (existing PR found for the branch):** patches the PR body,
+  replacing a prior stamp via `attemptPattern` if present, with
+  `_Attempt ${retryIteration + 1}/${maxIterations} — resume failed; new branch._`.
+- **Fallback path (fresh PR opened):** appends the same shape as a lineage
+  suffix, `_Attempt ${retryIteration}/${maxIterations} — resume failed; new branch._`
+  (one iteration behind the dedup path's count).
 
 ### 8.5 Regression Test Coverage
 
