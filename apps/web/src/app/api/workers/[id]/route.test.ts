@@ -9494,6 +9494,46 @@ describe('terminal-record ledger', () => {
     expect(res.status).toBe(200);
     expect(firedTerminalRecords).toHaveLength(0);
   });
+
+  // A worker parking on a question is a HEALTHY pause, not a session end, and
+  // the ledger is one row per worker (`workerId` unique, `onConflictDoNothing`
+  // — see packages/core/terminal-records.ts). A row written here would be the
+  // FIRST writer and would therefore silently swallow the real outcome the
+  // resumed session goes on to report, so the failure mode is a LOST
+  // measurement rather than a duplicate one. Load-bearing for
+  // docs/specs/answered-question-resume.md, whose whole premise is that the
+  // same worker row survives the park and finishes later.
+  it('records nothing when a worker parks on a question', async () => {
+    mockWorkersFindFirst.mockResolvedValue({
+      id: 'worker-1',
+      accountId: 'account-1',
+      workspaceId: 'ws-1',
+      status: 'running',
+      taskId: 'task-1',
+    });
+    mockWorkersUpdate.mockReturnValue({
+      set: mock(() => ({
+        where: mock(() => ({
+          returning: mock(() => [{ id: 'worker-1', status: 'waiting_input' }]),
+        })),
+      })),
+    });
+
+    const req = createMockRequest({
+      method: 'PATCH',
+      headers: { Authorization: 'Bearer bld_test' },
+      body: {
+        status: 'waiting_input',
+        waitingFor: { type: 'question', prompt: 'Which auth method?' },
+        turns: 40,
+        costUsd: 0.75,
+      },
+    });
+    const res = await PATCH(req, { params: mockParams });
+
+    expect(res.status).toBe(200);
+    expect(firedTerminalRecords).toHaveLength(0);
+  });
 });
 
 // ── Re-arm cap-deferred schedule on worker completion (Defect 2) ───────────────

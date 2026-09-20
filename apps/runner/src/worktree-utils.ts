@@ -451,3 +451,36 @@ export function candidateRepoRoots(opts: {
   }
   return [...repos];
 }
+
+/**
+ * Does a worker's worktree survive the end of its session?
+ *
+ * The answer matters most for a PARKED QUESTION. `AskUserQuestion` aborts the
+ * subprocess, so the session-end cleanup runs while the worker still holds
+ * unpushed commits and uncommitted changes. Deleting the worktree there would
+ * destroy exactly the state a resumed answer needs — and the cold continuation
+ * path cannot recreate it, because `baseBranch` resolves only against a branch
+ * that was already pushed and carries no uncommitted work at all.
+ *
+ * `waiting` (a parked question or plan approval) and `done` (a completed
+ * worker that may still receive a follow-up) are preserved; the eviction sweep
+ * reclaims them later under `WAITING_WORKTREE_TTL_MS`. Every other exit —
+ * error, abort, crash — cleans up immediately.
+ *
+ * Exceptions: an e2e test branch is ephemeral and always cleaned, and a bwrap
+ * retry keeps its worktree so the restarted session reuses it.
+ *
+ * See docs/specs/answered-question-resume.md.
+ */
+export function shouldPreserveWorktreeOnSessionEnd(opts: {
+  /** Local worker status at the moment the session ended. */
+  status: string | undefined;
+  /** True for an ephemeral e2e branch. */
+  isEphemeralBranch: boolean;
+  /** True when the session is about to restart without the sandbox. */
+  bwrapRetryPending: boolean;
+}): boolean {
+  if (opts.bwrapRetryPending) return true;
+  if (opts.isEphemeralBranch) return false;
+  return opts.status === 'done' || opts.status === 'waiting';
+}

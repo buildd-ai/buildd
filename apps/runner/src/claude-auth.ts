@@ -90,3 +90,43 @@ export function cleanupClaudeConfigDir(workerId: string, claudeConfigDir: string
     console.warn(`[Worker ${workerId}] Failed to clean up Claude config dir:`, err);
   }
 }
+
+/**
+ * Refuse to resume a parked session on a claim-time token we can already see is
+ * expired.
+ *
+ * A worker parked on a question keeps its worktree and its transcript, but NOT
+ * its credential: `startSession`'s `finally` block deletes the per-worker config
+ * dir and deregisters it from the broker, so nothing refreshes it while the
+ * question waits. On resume the broker is asked first; when the broker has
+ * nothing, the fallback is the access token delivered at CLAIM time — which for
+ * a question answered hours later is stale. Spawning on it produced a session
+ * that died saying it was not logged in, long after the human had answered.
+ *
+ * Returns the error message to throw, or null when the token is usable. A named
+ * failure before the spawn is visible in error traces and failure analytics;
+ * "Not logged in" hundreds of turns deep is not.
+ *
+ * Only guards RESUME invocations: a fresh session's claim-time token was minted
+ * moments earlier by the claim gate, and hard-failing there on a clock skew
+ * would break the common path to fix the rare one.
+ *
+ * See docs/specs/answered-question-resume.md.
+ */
+export function staleResumeCredentialError(opts: {
+  isResume: boolean;
+  /** True when the token came from the broker, i.e. it is as fresh as the runner can make it. */
+  fromBroker: boolean;
+  /** Expiry of the claim-delivered token, when known. */
+  tokenExpiresAt: Date | null | undefined;
+  now?: number;
+}): string | null {
+  if (!opts.isResume || opts.fromBroker) return null;
+  // Unknown expiry is not evidence of staleness — do not fail closed on it.
+  if (!opts.tokenExpiresAt) return null;
+  if (opts.tokenExpiresAt.getTime() > (opts.now ?? Date.now())) return null;
+
+  return 'Cannot resume this session: the agent credential delivered when the task was '
+    + 'claimed has expired and the credential broker has no fresher one. Reconnect the '
+    + 'account in Settings → Credentials, then answer the question again.';
+}

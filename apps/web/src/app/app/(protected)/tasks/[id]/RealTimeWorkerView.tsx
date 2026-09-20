@@ -75,8 +75,16 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
+  // Set only when the answer became a COLD continuation — a new task to link
+  // to. A resume returns the same task the reader is already on, so there is
+  // no second task to point at and this stays null.
   const [continuationTaskId, setContinuationTaskId] = useState<string | null>(null);
   const [answerError, setAnswerError] = useState<{ message: string; credentialRevoked?: boolean } | null>(null);
+  // What the server said it did with the answer — resumed the parked session,
+  // or fell back to a continuation and why. Never invent this client-side: the
+  // path is the server's decision, and a wrong caption is the silent
+  // degradation this whole flow exists to avoid.
+  const [answerOutcome, setAnswerOutcome] = useState<string | null>(null);
   const answeredPromptRef = useRef<string | null>(null);
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [abortLoading, setAbortLoading] = useState(false);
@@ -135,13 +143,13 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
     }
   }, [worker.id]);
 
-  // Send answer via respond endpoint — always creates a NEW task rather than
-  // resuming the live session. More stable than /instruct (which requires the
-  // session to still be alive — this worker's session is not; the runner
-  // aborts it when the question is asked). The new task's worktree continues
-  // on the same branch ONLY if the original worker had already pushed it
-  // (e.g. a PR was already open); if the question was asked before anything
-  // was pushed, the new task starts fresh from the default branch instead.
+  // Send the answer via the respond endpoint, which decides between resuming
+  // this worker's own parked session and starting a cold continuation — and
+  // says which it did. The runner aborts the session when a question is asked,
+  // but the transcript and the worktree survive, so a resume is possible
+  // whenever the runner holding them is still reporting. See
+  // docs/specs/answered-question-resume.md. The response's `message` is the
+  // owner-facing sentence for whichever path ran.
   async function handleAnswer(option: string) {
     setAnswerSending(option);
     setAnswerError(null);
@@ -163,8 +171,12 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
         });
         return;
       }
+      setAnswerOutcome(typeof data?.message === 'string' ? data.message : 'Answer sent.');
       answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
-      setContinuationTaskId(typeof data.taskId === 'string' ? data.taskId : null);
+      // Only a cold continuation has a SEPARATE task worth linking to.
+      setContinuationTaskId(
+        data?.path === 'cold_continuation' && typeof data.taskId === 'string' ? data.taskId : null,
+      );
       setAnswerSent(true);
     } catch (err) {
       console.error('Failed to send answer:', err);
@@ -373,7 +385,7 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
           )}
           {answerSent ? (
             <p data-testid="worker-answer-sent" className="mt-2 text-sm text-status-success">
-              Answer sent — this session ended and a new task was created to continue.
+              {answerOutcome ?? 'Answer sent.'}
               {continuationTaskId && (
                 <>
                   {' '}<a href={`/app/tasks/${continuationTaskId}`} className="underline hover:no-underline">View continuation task →</a>

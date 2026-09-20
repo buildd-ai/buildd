@@ -4,7 +4,7 @@ import { workers, tasks, workerHeartbeats } from '@buildd/core/db/schema';
 import { eq, and, lt, inArray, or, isNull } from 'drizzle-orm';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { authenticateApiKey } from '@/lib/api-auth';
-import { cleanupStaleWorkers, cleanupStuckWaitingInput } from '@/lib/stale-workers';
+import { cleanupStaleWorkers, cleanupStuckWaitingInput, cleanupUnresumedAnswers } from '@/lib/stale-workers';
 import { LIVE_WORKER_STATUSES } from '@/lib/task-presentation';
 import { checkWorkerDeliverables, getWorkerArtifactCount } from '@/lib/worker-deliverables';
 import { resolveCompletedTask } from '@/lib/task-dependencies';
@@ -225,6 +225,11 @@ export async function POST(req: NextRequest) {
   //    tenant. Cross-account coverage belongs to /api/cron/waiting-input-sweep.
   let waitingInputFailedWorkers = 0;
   let waitingInputRetriedTasks = 0;
+  // 4b. Degrade answers that were queued for a parked session and never
+  //     acknowledged, so an answer is never silently held by a runner that died
+  //     between receiving it and its next sync. See
+  //     docs/specs/answered-question-resume.md.
+  let unresumedAnswersDegraded = 0;
 
   for (const accountId of uniqueAccountIds) {
     try {
@@ -238,6 +243,11 @@ export async function POST(req: NextRequest) {
       waitingInputRetriedTasks += waitingInputResult.retriedTasks;
     } catch {
       // Non-fatal — a failed waiting_input sweep must not skip other accounts
+    }
+    try {
+      unresumedAnswersDegraded += (await cleanupUnresumedAnswers(accountId)).degraded;
+    } catch {
+      // Non-fatal — same reasoning as the sweep above
     }
   }
 
@@ -321,6 +331,7 @@ export async function POST(req: NextRequest) {
       orphanedTasks,
       stuckWaitingInput: waitingInputFailedWorkers,
       retriedTasks: waitingInputRetriedTasks,
+      unresumedAnswers: unresumedAnswersDegraded,
       heartbeatOrphans,
       staleHeartbeats: deletedHeartbeats.length,
     },

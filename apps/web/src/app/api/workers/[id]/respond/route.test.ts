@@ -5,8 +5,6 @@ const mockGetCurrentUser = mock(() => null as any);
 const mockAuthenticateApiKey = mock(() => null as any);
 const mockWorkersFindFirst = mock(() => null as any);
 const mockVerifyWorkspaceAccess = mock(() => Promise.resolve(null as any));
-const mockSecretsFindFirst = mock(() => Promise.resolve(null as any));
-const mockGetActiveClaudeSecretId = mock(() => Promise.resolve(null as string | null));
 
 const mockInsertReturning = mock(() => [{ id: 'new-task-1', title: 'Continue: Fix auth bug' }]);
 const mockInsertValues = mock(() => {
@@ -41,22 +39,38 @@ mock.module('@/lib/team-access', () => ({
   verifyWorkspaceAccess: mockVerifyWorkspaceAccess,
 }));
 
-mock.module('@/lib/credential-health', () => ({
-  getActiveClaudeSecretId: mockGetActiveClaudeSecretId,
-}));
-
 // Order of writes matters (C3): the answer must be claimed with a CAS BEFORE
 // the retry task is inserted, so a losing racer inserts nothing.
 const callOrder: string[] = [];
+
+// `tasks.context.answerDelivery` write — a plain promise so the route's
+// `.catch()` on it resolves.
+const mockTasksUpdateSet = mock((values: any) => {
+  tasksUpdated.push(values);
+  return { where: () => Promise.resolve([]) };
+});
+const tasksUpdated: any[] = [];
+
+// Feed notes naming which answer path ran.
+const notesInserted: any[] = [];
+const mockNotesInsertValues = mock((values: any) => {
+  notesInserted.push(values);
+  return Promise.resolve([]);
+});
+
+const mockTriggerEvent = mock(() => Promise.resolve(true));
+
+const mockPreflight = mock(async () => ({ state: 'ok' as const }));
 
 mock.module('@buildd/core/db', () => ({
   db: {
     query: {
       workers: { findFirst: mockWorkersFindFirst },
-      secrets: { findFirst: mockSecretsFindFirst },
     },
-    insert: mockInsert,
-    update: () => mockWorkersUpdate(),
+    insert: (table: any) =>
+      table === 'missionNotes' ? { values: mockNotesInsertValues } : mockInsert(),
+    update: (table: any) =>
+      table === 'tasks' ? { set: mockTasksUpdateSet } : mockWorkersUpdate(),
   },
 }));
 
@@ -69,7 +83,18 @@ mock.module('drizzle-orm', () => ({
 mock.module('@buildd/core/db/schema', () => ({
   workers: { id: 'workers.id', status: 'workers.status', waitingFor: 'workers.waitingFor' },
   tasks: 'tasks',
-  secrets: { id: 'secrets.id', teamId: 'secrets.teamId', purpose: 'secrets.purpose' },
+  missionNotes: 'missionNotes',
+}));
+
+mock.module('@/lib/pusher', () => ({
+  triggerEvent: mockTriggerEvent,
+  channels: { worker: (id: string) => `worker-${id}` },
+  events: { WORKER_COMMAND: 'worker:command' },
+}));
+
+mock.module('@/lib/answer-credential-preflight', () => ({
+  preflightBackendCredential: mockPreflight,
+  CREDENTIAL_PREFLIGHT_MARGIN_MS: 300000,
 }));
 
 import { POST } from './route';
@@ -142,10 +167,6 @@ describe('POST /api/workers/[id]/respond', () => {
     mockAuthenticateApiKey.mockReset();
     mockWorkersFindFirst.mockReset();
     mockVerifyWorkspaceAccess.mockReset();
-    mockSecretsFindFirst.mockReset();
-    mockSecretsFindFirst.mockResolvedValue(null);
-    mockGetActiveClaudeSecretId.mockReset();
-    mockGetActiveClaudeSecretId.mockResolvedValue(null);
     mockInsert.mockClear();
     mockInsertValues.mockClear();
     mockInsertReturning.mockClear();
@@ -168,6 +189,13 @@ describe('POST /api/workers/[id]/respond', () => {
       return { where: mockWorkersUpdateWhere };
     }) as any);
     mockWorkersUpdate.mockReturnValue({ set: mockWorkersUpdateSet });
+    mockTasksUpdateSet.mockClear();
+    mockNotesInsertValues.mockClear();
+    mockTriggerEvent.mockClear();
+    mockPreflight.mockClear();
+    mockPreflight.mockImplementation(async () => ({ state: 'ok' as const }));
+    tasksUpdated.length = 0;
+    notesInserted.length = 0;
     callOrder.length = 0;
   });
 
@@ -651,43 +679,290 @@ describe('POST /api/workers/[id]/respond', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Credential health pre-check: a continuation must not be dispatched into a
-  // backend credential already known-revoked. Requirement #4 in the task —
-  // this mirrors the classification workers/[id]/route.ts's credential-health
-  // step already runs on a live PATCH, just one step earlier.
+  // Answer path: resume the parked session, or fall back loudly
   // ---------------------------------------------------------------------------
-  describe('credential health pre-check', () => {
-    it('refuses to answer when the claude credential is revoked, leaving the question open', async () => {
+  // A worker parked on a question is a HEALTHY session. Answering it used to
+  // end that session unconditionally and hand a cold `Continue:` task a branch
+  // and a description — so a worker hundreds of turns deep lost every judgement
+  // it had made. See docs/specs/answered-question-resume.md.
+  describe('answer path', () => {
+    /** A worker that clears every resume gate. */
+    function parkedWorker(overrides: Record<string, unknown> = {}) {
+      return {
+        ...baseWorker,
+        status: 'waiting_input',
+        updatedAt: new Date(),
+        turns: 42,
+        supportsInstructionAck: true,
+        pendingInstructions: null,
+        instructionHistory: [],
+        account: { teamId: 'team-1' },
+        ...overrides,
+      };
+    }
+
+    function authorize() {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockAuthenticateApiKey.mockResolvedValue(null);
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    // AC-AQR-9 — same task, same worker, no Continue: child.
+    it('resumes the parked session instead of creating a continuation task', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('resume');
+      expect(data.reasonCode).toBe('resume_eligible');
+      // The caller navigates back to the SAME task — the resumed worker is there.
+      expect(data.taskId).toBe('task-1');
+      expect(mockInsertValues).not.toHaveBeenCalled();
+    });
+
+    // AC-AQR-10 — the answer rides the acknowledged instruction queue, which is
+    // the wiring the runner already drains into resumeSession.
+    it('queues the answer on the same worker with an unconfirmed delivery state', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      const setValues = mockWorkersUpdateSet.mock.calls[0][0] as any;
+      expect(setValues.pendingInstructions).toBe('Use JWT tokens');
+      expect(setValues.instructionHistory).toHaveLength(1);
+      expect(setValues.instructionHistory[0].deliveryState).toBe('pending');
+      expect(setValues.instructionHistory[0].message).toBe('Use JWT tokens');
+    });
+
+    it('appends to an existing instruction queue rather than overwriting it', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(
+        parkedWorker({ pendingInstructions: 'earlier undelivered message' }),
+      );
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      const setValues = mockWorkersUpdateSet.mock.calls[0][0] as any;
+      expect(setValues.pendingInstructions).toContain('earlier undelivered message');
+      expect(setValues.pendingInstructions).toContain('Use JWT tokens');
+    });
+
+    // AC-AQR-11 — superseding a worker that goes on to finish would hide a real
+    // success or failure behind an analytics exclusion.
+    it('does not supersede or complete the resumed worker', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      const setValues = mockWorkersUpdateSet.mock.calls[0][0] as any;
+      expect(setValues.status).toBeUndefined();
+      expect(setValues.completedAt).toBeUndefined();
+      expect(setValues.waitingFor).toBeNull();
+    });
+
+    it('pushes the answer urgently as well as queueing it', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(mockTriggerEvent).toHaveBeenCalledTimes(1);
+      const [channel, event, payload] = mockTriggerEvent.mock.calls[0] as any[];
+      expect(channel).toBe('worker-worker-1');
+      expect(event).toBe('worker:command');
+      expect(payload).toMatchObject({ action: 'message', text: 'Use JWT tokens' });
+    });
+
+    // AC-AQR-12/13 — the resume path offers no second way past the single-answer guard.
+    it('still gates on the question being open, returning 409 to a racing answer', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+      mockWorkersUpdateReturning.mockReturnValue([]);
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(409);
+      expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(mockTriggerEvent).not.toHaveBeenCalled();
+      const where = mockWorkersUpdateWhere.mock.calls[0][0] as any;
+      expect(JSON.stringify(where)).toContain('isNotNull');
+    });
+
+    it('records the resume decision on the answered task', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(tasksUpdated).toHaveLength(1);
+      expect(tasksUpdated[0].context.answerDelivery).toMatchObject({
+        path: 'resume',
+        reasonCode: 'resume_eligible',
+        workerId: 'worker-1',
+      });
+      expect(tasksUpdated[0].context.answerDelivery.ackDeadlineAt).toBeTruthy();
+    });
+
+    it('posts one feed note naming the resumed path', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(notesInserted).toHaveLength(1);
+      expect(notesInserted[0].type).toBe('update');
+      expect(notesInserted[0].taskId).toBe('task-1');
+      expect(notesInserted[0].body).toContain('Resumed');
+    });
+
+    // AC-AQR-14/15 — a fallback is never silent.
+    it.each([
+      ['a worker that is no longer parked', { status: 'error' }, 'worker_not_parked'],
+      [
+        'a runner that stopped syncing the worker',
+        { updatedAt: new Date(Date.now() - 10 * 60 * 1000) },
+        'runner_not_holding_transcript',
+      ],
+      [
+        'a runner that cannot confirm delivery',
+        { supportsInstructionAck: false },
+        'runner_cannot_confirm_delivery',
+      ],
+      ['a session past the turn ceiling', { turns: 5000 }, 'context_ceiling'],
+    ])('falls back to a continuation for %s, recording the reason', async (_label, overrides, reasonCode) => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker(overrides as Record<string, unknown>));
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.path).toBe('cold_continuation');
+      expect(data.reasonCode).toBe(reasonCode);
+      expect(data.taskId).toBe('new-task-1');
+
+      // Recorded on the continuation itself, on the answered task, and in the feed.
+      const insertedValues = mockInsertValues.mock.calls[0][0] as any;
+      expect(insertedValues.context.answerDelivery.reasonCode).toBe(reasonCode);
+      expect(tasksUpdated[0].context.answerDelivery.reasonCode).toBe(reasonCode);
+      expect(notesInserted).toHaveLength(1);
+      expect(notesInserted[0].body).toContain('continuation');
+    });
+
+    // AC-AQR-23 — the answer is still recorded; the owner is warned separately.
+    it('warns the owner when the backend credential is unhealthy, without dropping the answer', async () => {
+      authorize();
+      mockPreflight.mockImplementation(async () => ({
+        state: 'unhealthy' as const,
+        detail: 'the claude credential for this workspace is expired and could not be refreshed',
+      }) as any);
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(res.status).toBe(200);
+      const data = await res.json();
+      expect(data.reasonCode).toBe('credential_unhealthy');
+      // The human's answer survives as a durable task.
+      expect(mockInsertValues).toHaveBeenCalledTimes(1);
+      expect(notesInserted[0].type).toBe('warning');
+      expect(notesInserted[0].body).toContain('expired');
+    });
+
+    // AC-AQR-8 — an account supplying its own key has no managed row.
+    it('resumes when no managed credential row exists', async () => {
+      authorize();
+      mockPreflight.mockImplementation(async () => ({ state: 'unknown' as const }) as any);
+      mockWorkersFindFirst.mockResolvedValue(parkedWorker());
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      const data = await res.json();
+      expect(data.path).toBe('resume');
+    });
+
+    it('preflights the codex credential for a codex-backed task', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(
+        parkedWorker({ task: { ...baseWorker.task, backend: 'codex' } }),
+      );
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(mockPreflight.mock.calls[0][0]).toMatchObject({ backend: 'codex' });
+    });
+
+    it('omits the question from the delivery record for a sensitive workspace', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue(
+        parkedWorker({ workspace: { teamId: 'team-1', dataClass: 'sensitive' } }),
+      );
+
+      await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      expect(tasksUpdated[0].context.answerDelivery.question).toBeUndefined();
+      const setValues = mockWorkersUpdateSet.mock.calls[0][0] as any;
+      expect(setValues.instructionHistory[0].message).toBeUndefined();
+    });
+  });
+  // ---------------------------------------------------------------------------
+  // Revoked credential: refused outright, not routed down either path (#2528).
+  //
+  // A revoked credential cannot be recovered without a human, and the claim
+  // rail already declines to inject one — so a continuation could not run
+  // either, while superseding the worker would destroy the transcript and
+  // worktree that make a later RESUME possible. Refusing keeps the question
+  // parked and costs nothing. An expired-but-refreshable credential is the
+  // different case handled by gate G5 above.
+  // ---------------------------------------------------------------------------
+  describe('revoked credential refusal', () => {
+    function authorize() {
+      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
+      mockAuthenticateApiKey.mockResolvedValue(null);
+      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    it('refuses the answer when the claude credential is revoked, leaving the question open', async () => {
+      authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-      mockGetActiveClaudeSecretId.mockResolvedValue('secret-1');
-      mockSecretsFindFirst.mockResolvedValue({ healthStatus: 'revoked', lastFailureMessage: 'invalid_grant' });
+      mockPreflight.mockImplementation(async () => ({
+        state: 'unhealthy' as const,
+        revoked: true,
+        detail: 'the claude credential for this workspace has been revoked',
+        lastFailureMessage: 'invalid_grant',
+      }) as any);
 
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
 
       expect(res.status).toBe(409);
       const data = await res.json();
       expect(data.credentialRevoked).toBe(true);
+      expect(data.backend).toBe('claude');
       expect(data.error).toContain('revoked');
       expect(data.error).toContain('invalid_grant');
-      // The answer must not be lost, and no continuation dispatched into a dead credential.
+      // Nothing written: the answer is not lost and no continuation is
+      // dispatched into a dead credential.
       expect(mockWorkersUpdateSet).not.toHaveBeenCalled();
       expect(mockInsertValues).not.toHaveBeenCalled();
+      expect(notesInserted).toHaveLength(0);
     });
 
-    it('refuses to answer when the codex credential is revoked, for a codex-backend task', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    it('names the codex backend when a codex-backed task has a revoked credential', async () => {
+      authorize();
       mockWorkersFindFirst.mockResolvedValue({
         ...baseWorker,
         task: { ...baseWorker.task, backend: 'codex' },
       });
-      mockSecretsFindFirst
-        .mockResolvedValueOnce({ id: 'codex-secret-1' })
-        .mockResolvedValueOnce({ healthStatus: 'revoked', lastFailureMessage: null });
+      mockPreflight.mockImplementation(async () => ({
+        state: 'unhealthy' as const,
+        revoked: true,
+        detail: 'the codex credential for this workspace has been revoked',
+      }) as any);
 
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
 
@@ -698,13 +973,10 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(mockInsertValues).not.toHaveBeenCalled();
     });
 
-    it('proceeds normally when the credential is healthy', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    it('proceeds when the credential is merely healthy or absent', async () => {
+      authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-      mockGetActiveClaudeSecretId.mockResolvedValue('secret-1');
-      mockSecretsFindFirst.mockResolvedValue({ healthStatus: 'healthy', lastFailureMessage: null });
+      mockPreflight.mockImplementation(async () => ({ state: 'unknown' as const }) as any);
 
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
 
@@ -712,31 +984,23 @@ describe('POST /api/workers/[id]/respond', () => {
       const data = await res.json();
       expect(data.taskId).toBe('new-task-1');
     });
-
-    it('proceeds normally when no credential is on file for the team', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
-      mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
-      mockGetActiveClaudeSecretId.mockResolvedValue(null);
-
-      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
-
-      expect(res.status).toBe(200);
-      expect(mockSecretsFindFirst).not.toHaveBeenCalled();
-    });
   });
 
   // ---------------------------------------------------------------------------
-  // Continuation link-back: a later reader of the answered worker's row (the
-  // task-detail page, a post-supersession error report) needs a durable
-  // pointer to where the work continued.
+  // Continuation link-back (#2528): a later reader of the answered worker's row
+  // (the task-detail page, a post-supersession error report) needs a durable
+  // pointer to where the work continued. Cold path only — a resume has no
+  // second task, so asserting its absence there is part of the contract.
   // ---------------------------------------------------------------------------
   describe('continuation task link-back', () => {
-    it('writes the continuation taskId back onto the answered worker after success', async () => {
+    function authorize() {
       mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
       mockAuthenticateApiKey.mockResolvedValue(null);
       mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+    }
+
+    it('writes the continuation taskId back onto the answered worker after success', async () => {
+      authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
 
       const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
@@ -749,9 +1013,7 @@ describe('POST /api/workers/[id]/respond', () => {
     });
 
     it('does not fail the answer when the link-back write itself fails', async () => {
-      mockGetCurrentUser.mockResolvedValue({ id: 'user-1' });
-      mockAuthenticateApiKey.mockResolvedValue(null);
-      mockVerifyWorkspaceAccess.mockResolvedValue({ teamId: 'team-1', role: 'owner' });
+      authorize();
       mockWorkersFindFirst.mockResolvedValue({ ...baseWorker });
 
       let calls = 0;
@@ -769,6 +1031,29 @@ describe('POST /api/workers/[id]/respond', () => {
       expect(res.status).toBe(200);
       const data = await res.json();
       expect(data.taskId).toBe('new-task-1');
+    });
+
+    it('does not link a continuation onto a RESUMED worker', async () => {
+      authorize();
+      mockWorkersFindFirst.mockResolvedValue({
+        ...baseWorker,
+        status: 'waiting_input',
+        updatedAt: new Date(),
+        turns: 42,
+        supportsInstructionAck: true,
+        pendingInstructions: null,
+        instructionHistory: [],
+      });
+
+      const res = await POST(createMockRequest({ message: 'Use JWT tokens' }), { params: mockParams });
+
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.path).toBe('resume');
+      // One write only — the claim. Nothing claims a supersession that did not
+      // happen.
+      expect(mockWorkersUpdateSet).toHaveBeenCalledTimes(1);
+      expect(mockWorkersUpdateSet.mock.calls[0][0].continuationTaskId).toBeUndefined();
     });
   });
 });
