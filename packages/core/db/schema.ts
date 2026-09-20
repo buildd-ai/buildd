@@ -858,6 +858,8 @@ export const missions = pgTable('missions', {
   goalCriteria: jsonb('goal_criteria').$type<import('@buildd/shared').GoalCriterion[] | null>(),
   // Last evaluation result, persisted by evaluateGoalCriteria callers.
   goalCriteriaState: jsonb('goal_criteria_state').$type<import('@buildd/shared').GoalCriteriaState | null>(),
+  // Full render-ready snapshot, written on completion; null until computed.
+  flightStripCache: jsonb('flight_strip_cache').$type<import('../mission-helpers').FlightStripData | null>(),
   // When false, organizer never auto-evaluates criteria; on-demand still works.
   // null reads as true (default: auto-verify ON when criteria are set).
   autoVerify: boolean('auto_verify'),

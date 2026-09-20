@@ -838,12 +838,13 @@ describe('computeMissionSkyline', () => {
   function makeWorker(
     startMin: number,
     endMin: number,
-    opts: { status?: string; prUrl?: string | null; mergedAt?: string | null } = {},
+    opts: { status?: string; exitCause?: string | null; prUrl?: string | null; mergedAt?: string | null } = {},
   ) {
     return {
       startedAt: ms(startMin),
       completedAt: ms(endMin),
       status: opts.status ?? 'completed',
+      exitCause: opts.exitCause ?? null,
       prUrl: opts.prUrl ?? null,
       mergedAt: opts.mergedAt ?? null,
     };
@@ -918,11 +919,16 @@ describe('computeMissionSkyline', () => {
     expect(result!.peakConcurrency).toBe(3);
   });
 
-  it('state: failed when status=failed (the real terminal value the runner writes)', () => {
+  it('state: failed only for a real failure cause', () => {
     const result = computeMissionSkyline([
-      { workers: [makeWorker(0, 15, { status: 'failed' })] },
+      { workers: [makeWorker(0, 15, { status: 'failed', exitCause: 'code_failure' })] },
     ]);
     expect(result!.blocks[0].state).toBe('failed');
+  });
+
+  it('state: budget-limited exits do not receive failure color', () => {
+    const result = computeMissionSkyline([{ workers: [makeWorker(0, 15, { status: 'failed', exitCause: 'budget_limited' })] }]);
+    expect(result!.blocks[0].state).not.toBe('failed');
   });
 
   it('state: not failed when status=error (runner never writes this value)', () => {

@@ -270,6 +270,21 @@ export function deriveWorkKind(input: WorkKindInput): WorkKindResult | null {
   return null;
 }
 
+/** Rule L-1: downstream of deriveWorkKind, never a second classification chain. */
+export const WORK_KIND_TO_FLIGHT_STRIP_LANE: Record<WorkKind, import('@buildd/core/mission-helpers').FlightStripLane> = {
+  engineering: 'BUILD', analysis: 'CHECK', observation: 'CHECK',
+  research: 'THINK', design: 'THINK', writing: 'THINK', coordination: 'THINK',
+};
+
+export function deriveFlightStripLane(input: WorkKindInput): import('@buildd/core/mission-helpers').FlightStripLane {
+  const resolved = deriveWorkKind(input);
+  if (!resolved) return 'UNCLASSIFIED';
+  // WorkKindResult intentionally exposes a glyph, not a kind. Reverse its
+  // canonical table rather than reimplementing the helper's precedence.
+  const kind = (Object.keys(WORK_KIND_GLYPHS) as WorkKind[]).find(k => WORK_KIND_GLYPHS[k].glyph === resolved.glyph);
+  return kind ? WORK_KIND_TO_FLIGHT_STRIP_LANE[kind] : 'UNCLASSIFIED';
+}
+
 // ─── Stale worker ─────────────────────────────────────────────────────────────
 
 /**

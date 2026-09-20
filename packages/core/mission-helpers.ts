@@ -1210,6 +1210,7 @@ type WorkerSpan = {
   status: string;
   prUrl: string | null;
   mergedAt: Date | string | null;
+  exitCause?: string | null;
 };
 
 function workerEndMs(w: WorkerSpan, now: number): number {
@@ -1219,7 +1220,7 @@ function workerEndMs(w: WorkerSpan, now: number): number {
 }
 
 function workerBlockState(w: WorkerSpan): SkylineBlockState {
-  if (w.status === 'failed') return 'failed';
+  if (isFlightStripFailure(w)) return 'failed';
   if (w.mergedAt) return 'merged';
   if (w.prUrl) return 'awaiting';
   return 'merged';
@@ -1366,5 +1367,276 @@ export function computeMissionSkyline(
     parallelFactor,
     peakConcurrency,
     reviewTailMin,
+  };
+}
+
+// ─── Mission flight strip ─────────────────────────────────────────────────────
+
+export const FLIGHT_STRIP_IDLE_THRESHOLD_MS = SKYLINE_SLOT_MS;
+export const FLIGHT_STRIP_SEGMENT_CAP = 12;
+export const FLIGHT_STRIP_LANES = ['THINK', 'BUILD', 'CHECK', 'UNCLASSIFIED'] as const;
+export type FlightStripLane = (typeof FLIGHT_STRIP_LANES)[number];
+export type FlightStripConcurrencyTier = 1 | 2 | 3;
+export const FLIGHT_STRIP_FILLS = {
+  1: '#4f8a6b', 2: '#8fd9b0', 3: '#c4f2d8', failed: '#d2584b', unclassified: '#6f6a60',
+} as const;
+
+export interface FlightStripWorker {
+  id?: string;
+  startedAt?: Date | string | null;
+  completedAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  status: string;
+  exitCause?: string | null;
+}
+
+export interface FlightStripTask {
+  id: string;
+  /** Resolve with task-presentation.deriveFlightStripLane; core never guesses from prose or roles. */
+  lane?: FlightStripLane | null;
+  status?: string;
+  creationSource?: string | null;
+  mode?: string | null;
+  missionPhaseIndex?: number | null;
+  missionPhaseLabel?: string | null;
+  workers?: FlightStripWorker[];
+}
+
+export interface FlightStripBar {
+  taskId: string;
+  workerId: string | null;
+  lane: FlightStripLane;
+  /** Greedy packing within this work lane, calculated before axis compression. */
+  track: number;
+  startMs: number;
+  endMs: number;
+  /** All x/width fields share a normalized 0..1 domain, including queued estimates. */
+  x: number;
+  width: number;
+  durationMin: number;
+  concurrencyTier: FlightStripConcurrencyTier;
+  failed: boolean;
+  fill: string;
+  phaseIndex: number | null;
+}
+
+export interface FlightStripRailMark {
+  kind: 'human' | 'orchestrator';
+  id: string;
+  atMs: number;
+  x: number;
+}
+
+export interface FlightStripBreak {
+  startMs: number;
+  endMs: number;
+  durationMin: number;
+  x: number;
+}
+
+export interface FlightStripPhaseDivider {
+  phaseIndex: number;
+  label: string;
+  phaseLabel: string | null;
+  x: number;
+}
+
+export interface FlightStripQueuedBar {
+  taskId: string;
+  lane: FlightStripLane;
+  x: number;
+  width: number;
+  estimatedDurationMin: number;
+}
+
+/** JSON-safe render payload stored verbatim in missions.flightStripCache. */
+export interface FlightStripData {
+  version: 1;
+  lanes: Array<{ lane: FlightStripLane; trackCount: number }>;
+  bars: FlightStripBar[];
+  railMarks: FlightStripRailMark[];
+  phaseDividers: FlightStripPhaseDivider[];
+  breaks: FlightStripBreak[];
+  queuedBars: FlightStripQueuedBar[];
+  nowX: number | null;
+  agentTimeMin: number;
+  axisSpanMin: number;
+  idleElidedMin: number;
+  /** Null when there is no measured work. */
+  parallelFactor: number | null;
+  peakConcurrency: number;
+  /** 0..100, null when no steering events exist. Counts events before any renderer folding. */
+  humanPercent: number | null;
+}
+
+export interface FlightStripOptions {
+  now?: number;
+  /** Only an explicitly active mission gets the now-line and queued estimates. */
+  status?: string;
+  notes?: Array<{ id: string; authorType: string; createdAt: Date | string }>;
+}
+
+function flightStripTimestamp(value: Date | string | null | undefined): number | null {
+  if (value == null) return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** Rule L-3: a human-filed planning/coordination task remains ordinary work. */
+export function isFlightStripOrchestrator(task: Pick<FlightStripTask, 'creationSource' | 'mode'>): boolean {
+  return task.mode === 'planning' && (task.creationSource === 'schedule' || task.creationSource === 'orchestrator');
+}
+
+function isFlightStripFailure(worker: { status: string; exitCause?: string | null }): boolean {
+  return worker.status === 'failed' && (worker.exitCause === 'code_failure' || worker.exitCause === 'infra_failure');
+}
+
+/**
+ * Pure computation over worker spans and pre-resolved lanes. Callers resolve each
+ * lane with deriveFlightStripLane beside deriveWorkKind; this package has no web
+ * dependency. Work intervals are half-open. All idle is removed, but only gaps
+ * at the named threshold get a break glyph. Folding belongs to the renderer and
+ * must never change the metrics. Empty/rail-only missions return a valid payload.
+ */
+export function computeFlightStrip(tasks: FlightStripTask[], opts: FlightStripOptions = {}): FlightStripData {
+  const now = opts.now ?? Date.now();
+  const bars: FlightStripBar[] = [];
+  const railMarks: FlightStripRailMark[] = [];
+  const phaseLabels = new Map<number, string | null>();
+  let completedCount = 0;
+  let completedDurationMin = 0;
+  for (const task of tasks) {
+    if (isFlightStripOrchestrator(task)) {
+      const starts = (task.workers ?? []).map(w => flightStripTimestamp(w.startedAt)).filter((s): s is number => s !== null);
+      // S-2 is one event per task, even when a planning task has retries.
+      if (starts.length) railMarks.push({ kind: 'orchestrator', id: task.id, atMs: Math.min(...starts), x: 0 });
+      continue;
+    }
+    for (const worker of task.workers ?? []) {
+      if (worker.exitCause === 'never_started' || worker.exitCause === 'silent_start') continue;
+      const startMs = flightStripTimestamp(worker.startedAt);
+      const endMs = flightStripTimestamp(worker.completedAt ?? worker.updatedAt) ?? now;
+      if (startMs === null || !Number.isFinite(endMs) || endMs <= startMs) continue;
+      if (worker.status === 'completed') {
+        completedCount++;
+        completedDurationMin += (endMs - startMs) / 60_000;
+      }
+      const phaseIndex = task.missionPhaseIndex ?? null;
+      if (phaseIndex !== null) phaseLabels.set(phaseIndex, task.missionPhaseLabel ?? null);
+      bars.push({
+        taskId: task.id, workerId: worker.id ?? null, lane: task.lane ?? 'UNCLASSIFIED',
+        track: 0, startMs, endMs, x: 0, width: 0, durationMin: (endMs - startMs) / 60_000,
+        concurrencyTier: 1, failed: isFlightStripFailure(worker), fill: '', phaseIndex,
+      });
+    }
+  }
+  bars.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs || a.taskId.localeCompare(b.taskId));
+
+  const laneEnds = new Map<FlightStripLane, number[]>();
+  const union: Array<{ start: number; end: number; offset: number }> = [];
+  for (const bar of bars) {
+    const ends = laneEnds.get(bar.lane) ?? [];
+    let track = ends.findIndex(end => end <= bar.startMs);
+    if (track < 0) track = ends.length;
+    ends[track] = bar.endMs;
+    laneEnds.set(bar.lane, ends);
+    bar.track = track;
+    const last = union.at(-1);
+    if (last && bar.startMs <= last.end) last.end = Math.max(last.end, bar.endMs);
+    else union.push({ start: bar.startMs, end: bar.endMs, offset: 0 });
+  }
+
+  // End before start at identical timestamps: touching spans are not concurrent.
+  const events = bars.flatMap((bar, index) => [
+    { ms: bar.startMs, delta: 1, index }, { ms: bar.endMs, delta: -1, index },
+  ]).sort((a, b) => a.ms - b.ms || a.delta - b.delta);
+  const active = new Set<number>();
+  const laneCounts = new Map<FlightStripLane, number>();
+  let peakConcurrency = 0;
+  for (const event of events) {
+    const lane = bars[event.index].lane;
+    laneCounts.set(lane, (laneCounts.get(lane) ?? 0) + event.delta);
+    if (event.delta < 0) { active.delete(event.index); continue; }
+    active.add(event.index);
+    peakConcurrency = Math.max(peakConcurrency, active.size);
+    for (const index of active) {
+      const bar = bars[index];
+      const tier = Math.min(3, 1 + active.size - (laneCounts.get(bar.lane) ?? 0)) as FlightStripConcurrencyTier;
+      bar.concurrencyTier = Math.max(bar.concurrencyTier, tier) as FlightStripConcurrencyTier;
+    }
+  }
+
+  let axisMs = 0;
+  let idleMs = 0;
+  const breaks: FlightStripBreak[] = [];
+  for (let i = 0; i < union.length; i++) {
+    const interval = union[i];
+    interval.offset = axisMs;
+    axisMs += interval.end - interval.start;
+    if (i === 0) continue;
+    const previous = union[i - 1];
+    const gap = interval.start - previous.end;
+    idleMs += gap;
+    if (gap >= FLIGHT_STRIP_IDLE_THRESHOLD_MS) {
+      breaks.push({ startMs: previous.end, endMs: interval.start, durationMin: gap / 60_000, x: interval.offset });
+    }
+  }
+  // Binary search makes projections into long histories logarithmic. Events in
+  // a gap snap to the common compressed edge; events outside work clamp to it.
+  const project = (ms: number): number => {
+    let lo = 0;
+    let hi = union.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (union[mid].end < ms) lo = mid + 1;
+      else hi = mid;
+    }
+    const interval = union[lo];
+    return interval ? interval.offset + Math.max(0, ms - interval.start) : axisMs;
+  };
+
+  const activeMission = opts.status != null && !['completed', 'failed', 'cancelled', 'archived'].includes(opts.status);
+  const queued = activeMission ? tasks.filter(t => !isFlightStripOrchestrator(t)
+    && (t.status === 'pending' || t.status === 'assigned')
+    && !(t.workers ?? []).some(w => flightStripTimestamp(w.startedAt) !== null)) : [];
+  const estimateMin = completedCount ? completedDurationMin / completedCount
+    : FLIGHT_STRIP_IDLE_THRESHOLD_MS / 60_000;
+  const estimateMs = estimateMin * 60_000;
+  const domainMs = axisMs + queued.length * estimateMs;
+  const normalize = (ms: number) => domainMs > 0 ? ms / domainMs : 0;
+  for (const bar of bars) {
+    bar.x = normalize(project(bar.startMs));
+    bar.width = normalize(bar.endMs - bar.startMs);
+    bar.fill = bar.failed ? FLIGHT_STRIP_FILLS.failed : bar.lane === 'UNCLASSIFIED'
+      ? FLIGHT_STRIP_FILLS.unclassified : FLIGHT_STRIP_FILLS[bar.concurrencyTier];
+  }
+  for (const gap of breaks) gap.x = normalize(gap.x);
+  for (const note of opts.notes ?? []) {
+    const atMs = flightStripTimestamp(note.createdAt);
+    if (note.authorType === 'user' && atMs !== null) railMarks.push({ kind: 'human', id: note.id, atMs, x: 0 });
+  }
+  railMarks.sort((a, b) => a.atMs - b.atMs || a.id.localeCompare(b.id));
+  for (const mark of railMarks) mark.x = normalize(project(mark.atMs));
+
+  const phaseStarts = new Map<number, number>();
+  for (const bar of bars) {
+    if (bar.phaseIndex !== null && !phaseStarts.has(bar.phaseIndex)) phaseStarts.set(bar.phaseIndex, bar.startMs);
+  }
+  const phaseDividers = [...phaseStarts.entries()].sort((a, b) => a[0] - b[0]).slice(1).map(([phaseIndex, start]) => ({
+    phaseIndex, label: `P${phaseIndex}`, phaseLabel: phaseLabels.get(phaseIndex) ?? null, x: normalize(project(start)),
+  }));
+  const agentTimeMin = bars.reduce((sum, bar) => sum + bar.durationMin, 0);
+  const axisSpanMin = axisMs / 60_000;
+  return {
+    version: 1,
+    lanes: FLIGHT_STRIP_LANES.map(lane => ({ lane, trackCount: laneEnds.get(lane)?.length ?? 0 })),
+    bars, railMarks, phaseDividers, breaks,
+    queuedBars: queued.map((t, i) => ({ taskId: t.id, lane: t.lane ?? 'UNCLASSIFIED',
+      x: normalize(axisMs + i * estimateMs), width: normalize(estimateMs), estimatedDurationMin: estimateMin })),
+    nowX: activeMission ? normalize(axisMs) : null,
+    agentTimeMin, axisSpanMin, idleElidedMin: idleMs / 60_000,
+    parallelFactor: axisSpanMin > 0 ? agentTimeMin / axisSpanMin : null,
+    peakConcurrency,
+    humanPercent: railMarks.length ? 100 * railMarks.filter(m => m.kind === 'human').length / railMarks.length : null,
   };
 }
