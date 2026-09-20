@@ -1434,9 +1434,14 @@ export default async function TaskDetailPage({
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>
-                        {parseFloat(worker.costUsd?.toString() || '0') > 0 && (
-                          <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
-                        )}
+                        {worker.account?.authType === 'oauth'
+                          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+                              <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
+                            )
+                          : parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                              <span>${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                            )
+                        }
                         {(worker.resultMeta as any)?.terminalReason && (worker.resultMeta as any).terminalReason !== 'completed' && (
                           <span className="text-status-warning">stop: {((worker.resultMeta as any).terminalReason as string).replace(/_/g, ' ')}</span>
                         )}
