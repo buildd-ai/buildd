@@ -1380,6 +1380,15 @@ export async function handleBuilddAction(
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
           if (w.error) wlines.push(`  Error: ${w.error}`);
+          // A gate-rejected completion (outputRequirement 400) persists the
+          // agent's summary here instead of discarding it — surface it
+          // plainly as a REJECTED deliverable, never as a satisfied one.
+          if (w.rejectedCompletionPayload) {
+            const rc = w.rejectedCompletionPayload;
+            wlines.push(`  ⚠️ **Rejected deliverable** (outputRequirement '${rc.reason}' not satisfied, not a completed outcome)`);
+            if (rc.salvagedArtifactId) wlines.push(`  Salvaged as artifact: ${rc.salvagedArtifactId} (use get_artifact to read it)`);
+            if (rc.summary) wlines.push(`  Rejected summary: ${rc.summary}`);
+          }
           if (w.waitingFor) {
             const actionUrl = `${taskUrl}/respond`;
             wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
@@ -3146,7 +3155,13 @@ export async function handleBuilddAction(
           body: JSON.stringify(artifactBody),
         });
       } else {
-        const workerId = resolveWorkerId(params.workerId, ctx);
+        const workerId = (params.workerId as string) || ctx.workerId;
+        if (!workerId) {
+          throw new Error(
+            'workerId is required — pass it explicitly, ensure the MCP server has worker context, ' +
+            'or pass missionId or initiativeId instead to create a mission- or initiative-level artifact with no worker.',
+          );
+        }
         artifactData = await api(`/api/workers/${workerId}/artifacts`, {
           method: 'POST',
           body: JSON.stringify(artifactBody),

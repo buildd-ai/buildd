@@ -36,11 +36,14 @@ interface TaskPanelData {
     linesAdded: number | null;
     linesRemoved: number | null;
     costUsd: string | null;
+    inputTokens: number;
+    outputTokens: number;
     startedAt: string | null;
     completedAt: string | null;
     waitingFor: { type: string; prompt: string; options?: string[] } | null;
     branch: string | null;
     milestones: Array<{ type: string; label: string; ts: number; [k: string]: unknown }> | null;
+    account: { authType: string } | null;
   } | null;
   result: {
     summary: string | null;
@@ -313,6 +316,9 @@ export default function TaskPanel({
                 currentAction={w.currentAction}
                 turns={w.turns}
                 costUsd={w.costUsd}
+                inputTokens={w.inputTokens}
+                outputTokens={w.outputTokens}
+                authType={w.account?.authType}
                 milestones={(w.milestones ?? []) as never}
                 onWorkerEvent={fetchTask}
               />
@@ -349,6 +355,9 @@ export default function TaskPanel({
                 turns={w.turns}
                 commitCount={w.commitCount}
                 costUsd={w.costUsd}
+                inputTokens={w.inputTokens}
+                outputTokens={w.outputTokens}
+                authType={w.account?.authType}
                 branch={w.branch}
               />
             )}

@@ -1093,9 +1093,11 @@ export async function POST(req: NextRequest) {
       subjectDedupeScope: 'active' | 'none';
       subjectResolution?: 'filed_anyway';
     }) => {
-      const [created] = await db
-        .insert(tasks)
-        .values({
+      let created: typeof tasks.$inferSelect | undefined;
+      try {
+        [created] = await db
+          .insert(tasks)
+          .values({
         id: subjectOverrides.id,
         workspaceId,
         title,
@@ -1172,8 +1174,22 @@ export async function POST(req: NextRequest) {
             startResolution: deferredStart.resolution,
           },
         } : {}),
-        })
-        .returning();
+          })
+          .returning();
+      } catch (error) {
+        // The partial unique index tasks_active_planning_per_mission (one
+        // active mode:'planning' task per mission) only ever collides on
+        // the emitsPlan path — this is the only place this route sets
+        // mode: 'planning'. Un-caught, the raw Postgres 23505 propagated
+        // as an opaque "Failed query: insert into tasks..." 500,
+        // indistinguishable from a genuine server error. Surface it as
+        // the actionable conflict it actually is instead.
+        const cause = (error as { cause?: { code?: string; constraint?: string } })?.cause;
+        if (cause?.code === '23505' && cause?.constraint === 'tasks_active_planning_per_mission') {
+          throw new Error('active_planning_task_conflict');
+        }
+        throw error;
+      }
       if (!created) throw new Error('task_insert_failed');
       return created;
     };
@@ -1361,6 +1377,10 @@ export async function POST(req: NextRequest) {
         detail: { origin: subjectOriginForError ?? null },
       });
       return NextResponse.json({ error: message }, { status: 400 });
+    }
+    if (error instanceof Error && error.message === 'active_planning_task_conflict') {
+      const message = 'This mission already has an active planning task in progress — wait for it to complete, or approve/reject it, before creating another.';
+      return NextResponse.json({ error: message }, { status: 409 });
     }
     console.error('Create task error:', error);
     const detail = error instanceof Error ? error.message : String(error);

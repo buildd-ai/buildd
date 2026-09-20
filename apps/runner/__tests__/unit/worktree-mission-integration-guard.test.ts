@@ -26,7 +26,11 @@ let existingPaths: Set<string>;
 let missingBranches: Set<string>;
 const MAIN_WORKTREE = '/repo';
 const DEFAULT_BRANCH = 'dev';
-const MISSION_BRANCH = 'buildd/mission-abc';
+// Real mission branches always carry the `mission/` prefix
+// (generateMissionBranchName, packages/core/branch-names.ts) — the fixture
+// must match that shape for the `looksLikeMissionIntegrationBranch` guard
+// (see the requestedBranch regression test below) to exercise anything real.
+const MISSION_BRANCH = 'mission/checkout-arc-1a2b3c4d';
 
 function porcelain(): string {
   return [...worktrees.entries()]
@@ -328,5 +332,45 @@ describe('setupWorktree — mission integration branch guard', () => {
 
     expect(result).not.toBeNull();
     expect(result.base).toBe(`origin/${DEFAULT_BRANCH}`);
+  });
+
+  // Regression (friction task f43ebcff): a review-retry's context sets BOTH
+  // `baseBranch` and `resumeBranch` to the SAME `workerBranch` value (see
+  // handleReviewerOutcomeIfNeeded in apps/web/src/app/api/workers/[id]/route.ts
+  // — "MUST continue on same branch"). When that propagated `workerBranch`
+  // turns out to literally be the mission's own integration branch, the
+  // resume ladder finds it present and not diverged, so `base` legitimately
+  // resolves to `origin/<mission branch>` and `requestedBranch` becomes the
+  // mission branch too — a shape indistinguishable, by base-equality alone,
+  // from an ordinary resume onto a real per-task branch (there `base` is
+  // ALSO `origin/<resumeCandidate>`, by construction). The old guard only
+  // ever compared `branch` (the task's own, freshly-generated, unrelated
+  // name) against `base`, so this candidate sailed through unrejected and the
+  // worker was checked out directly onto the mission branch — the exact
+  // symptom `create_pr` then refuses on both sides (head can't be the
+  // worker's own branch AND head can't be the mission integration branch).
+  test('resumeBranch present and valid but literally the mission branch: guard fires on requestedBranch, task lands on its own branch', async () => {
+    const TASK_BRANCH = 'buildd/retry-task-own-branch';
+
+    const result = await setupWorktree(
+      MAIN_WORKTREE,
+      TASK_BRANCH, // the retry task's own freshly-generated branch — not the mission branch
+      DEFAULT_BRANCH,
+      'worker-review-retry',
+      { baseBranch: MISSION_BRANCH, resumeBranch: MISSION_BRANCH }, // stale workerBranch propagated as both
+    );
+
+    expect(result).not.toBeNull();
+    expect(result.branch).not.toBe(MISSION_BRANCH);
+    expect(result.branch).toBe(TASK_BRANCH);
+    expect(result.base).toBe(`origin/${MISSION_BRANCH}`);
+    expect(result.sharedBranch?.candidate).toBe(MISSION_BRANCH);
+    expect(result.sharedBranch?.reason).toBe('mission_branch');
+
+    const adds = syncCalls.filter(c => c.cmd.includes('git worktree add'));
+    expect(adds.length).toBe(1);
+    expect(adds[0].cmd).not.toContain(`-b "${MISSION_BRANCH}"`);
+    expect(adds[0].cmd).toContain(`-b "${TASK_BRANCH}"`);
+    expect(adds[0].cmd).toContain(`"origin/${MISSION_BRANCH}"`);
   });
 });

@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-19
+last_verified: 2026-09-20
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -114,7 +114,10 @@ an enum) to allow extension without migrations.
   A gate-rejected completion (any of AC-3/AC-3a/AC-3b/AC-3c/AC-3g) persists the
   agent's `summary`/`structuredOutput`/`resultMeta` verbatim onto
   `workers.rejectedCompletionPayload` before returning the 400 — a 60-turn
-  run's only output must not evaporate along with the 400.
+  run's only output must not evaporate along with the 400. That payload is
+  exposed read-only (AC-3h) and, when the refusal is terminal by construction
+  (AC-3i), salvaged as an artifact — see below. Persisting it is not enough on
+  its own: see AC-3h.
 - A task transitions to `failed` permanently after `MAX_WORKER_RETRIES = 3`
   failed workers with no deliverables.
 - A task with `roleSlug = null` is claimable by any runner with access to the
@@ -201,6 +204,32 @@ an enum) to allow extension without migrations.
   unreviewed changes reached `completed` on a fallback summary. The same
   cross-branch-deliverable (`workers.mergedAt`) and `discardEdits`
   satisfiers from AC-3d/AC-3e apply here too.
+- AC-3h: GIVEN a worker row carries `rejectedCompletionPayload` (set by any of
+  AC-3/AC-3a/AC-3b/AC-3c/AC-3g/AC-3i) WHEN `get_task` (`GET
+  /api/tasks/[id]?include=workers` and the MCP `get_task` action built on it)
+  is called THEN the payload's `reason`, `summary`, and (if present)
+  `salvagedArtifactId` are returned/printed, labeled as a **rejected**
+  deliverable, never as a satisfied one. Before this AC, persistence alone
+  (AC-3/etc.) was not enough: the payload had no read path — `GET
+  /api/tasks/[id]` did not select the column, and the MCP tool never asked for
+  it — so a preserved 54-turn run's findings were unreadable by any operator
+  or agent surface, only the raw 400 text on `worker.error` was visible.
+- AC-3i: GIVEN an `artifact_required` (or `pr_required`/`auto`/`none`)
+  completion is refused (any arm of AC-3/AC-3a/AC-3b/AC-3c/AC-3g) AND
+  `summarySource = 'fallback'` WHEN the refusal is persisted (AC-3 note) THEN
+  a `summary`-type artifact is also created from the preserved summary,
+  tagged `metadata: { salvaged: true, rejectedReason }`, and cross-referenced
+  as `rejectedCompletionPayload.salvagedArtifactId`. The task still fails —
+  salvage is not a satisfier and must never be read as one. Scoped to
+  `summarySource = 'fallback'` specifically: that value means this PATCH is
+  the runner's own end-of-session completion (`apps/runner/src/workers.ts`,
+  the "Actually completed" branch) firing *after* the SDK query loop already
+  exited — there is no agent turn left to read the 400's hint and retry, unlike
+  a `summarySource = 'agent'` refusal (the agent's own `complete_task` MCP
+  call), which already gets an actionable `errorResult` back
+  (`packages/core/mcp-tools.ts`) and can call `create_artifact` itself within
+  the same session — salvaging there too would risk a stray duplicate
+  artifact once that retry succeeds.
 - AC-4: GIVEN a task that has had 3 prior `failed` workers WHEN the 4th worker
   is marked stale THEN `tasks.status = 'failed'` (permanent, no more retries).
 - AC-5: GIVEN a concurrent claim race WHEN two runners call `claim_task`
@@ -215,6 +244,14 @@ an enum) to allow extension without migrations.
   `resolveCompletedTask()`
 - Stale reclaim: `apps/web/src/lib/stale-workers.ts` — `resolveStaleTask()`
 - Schema: `packages/core/db/schema.ts` — `tasks` table, `workers.rejectedCompletionPayload`
+- Rejected-payload exposure: `apps/web/src/app/api/tasks/[id]/route.ts` (GET,
+  `include=workers` column select), `packages/core/mcp-tools.ts` (`get_task`
+  action, `case 'get_task'` inside `handleBuilddAction` — the file has a
+  second, unreachable `case 'get_task'` later in the same switch; the first
+  one wins and is the one that matters), task detail page
+  (`apps/web/src/app/app/(protected)/tasks/[id]/page.tsx`)
+- Salvage-on-terminal-refusal: `persistRejectedCompletionPayload` in
+  `apps/web/src/app/api/workers/[id]/route.ts`
 - Reviewer task creation: `apps/web/src/lib/reviewer.ts` — `createReviewerTask()`
 - Reviewer contract-failure escalation: `apps/web/src/lib/auto-merge.ts` —
   `escalateReviewContractFailure()`
