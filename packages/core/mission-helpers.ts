@@ -1368,3 +1368,165 @@ export function computeMissionSkyline(
     reviewTailMin,
   };
 }
+
+// ─── Mission flight strip ─────────────────────────────────────────────────────
+
+export const FLIGHT_STRIP_IDLE_THRESHOLD_MS = 5 * 60_000;
+export const FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP = 8;
+export const FLIGHT_STRIP_BAR_CAP = 64;
+
+export interface FlightStripTask {
+  id: string;
+  status: string;
+  taskClass?: string | null;
+  roleSlug?: string | null;
+  kind?: string | null;
+  title?: string | null;
+}
+
+export interface FlightStripWorker {
+  id: string;
+  taskId: string;
+  status: string;
+  startedAt: Date | string | null;
+  completedAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  exitCause?: string | null;
+}
+
+/** Callers adapt human mission notes/instructions and model-run cycles here.
+ * Deterministic heartbeat ticks are not steering events and must not be supplied. */
+export interface FlightStripSteeringEvent {
+  id: string;
+  kind: 'human' | 'orchestrator';
+  at: Date | string;
+}
+
+export interface MissionFlightStripOptions {
+  now?: number;
+  missionCompletedAt?: Date | string | null;
+  steeringEvents?: readonly FlightStripSteeringEvent[];
+}
+
+export interface FlightStripBar {
+  taskId: string;
+  workerId: string | null;
+  lane: WorkLane | null;
+  start: number;
+  end: number;
+  /** Peak concurrent workers overlapping this bar; 3 means 3+. */
+  concurrency: 0 | 1 | 2 | 3;
+  fill: 'concurrency' | 'failure' | 'none';
+  dashed: boolean;
+}
+
+export interface MissionFlightStripData {
+  bars: FlightStripBar[];
+  foldedBars: number;
+  /** null is an uncaptioned track, never an inferred build lane. In mixed
+   * missions unknown bars keep lane=null for an uncaptioned overlay. */
+  lanes: Array<WorkLane | null>;
+  hasLaneData: boolean;
+  durationMs: number;
+  peakConcurrency: number;
+  now: number | null;
+  phases: Array<{ label: string; position: number; idleMs: number }>;
+  rail: { visible: boolean; marks: Array<{ id: string; kind: 'human' | 'orchestrator'; position: number; count: number }> };
+}
+
+/** Pure, normalized geometry. The axis is the union of worker time plus short
+ * idle gaps (concurrent time is counted once). Long gaps consume no width.
+ * Queued bars are zero-duration anchors: the renderer owns their hollow glyph
+ * width, just as it owns pixel conversion. All metrics precede display folding. */
+export function computeMissionFlightStrip(
+  tasks: readonly FlightStripTask[],
+  workers: readonly FlightStripWorker[],
+  opts: MissionFlightStripOptions = {},
+): MissionFlightStripData {
+  const now = opts.now ?? Date.now();
+  const timestamp = (value: Date | string | null | undefined) =>
+    value == null ? NaN : new Date(value).getTime();
+  const tasksById = new Map(tasks.map(t => [t.id, t]));
+  const spans = workers.flatMap(w => {
+    const task = tasksById.get(w.taskId);
+    const start = timestamp(w.startedAt);
+    const end = LIVE_SET.has(w.status as typeof MISSION_LIVE_WORKER_STATUSES[number]) && !w.completedAt
+      ? now : timestamp(w.completedAt ?? w.updatedAt);
+    return task && Number.isFinite(start) && Number.isFinite(end) && end > start
+      ? [{ worker: w, task, start, end, peak: 1 }] : [];
+  }).sort((a, b) => a.start - b.start || a.end - b.end || a.worker.id.localeCompare(b.worker.id));
+
+  const gaps: Array<{ start: number; end: number; removedBefore: number }> = [];
+  const origin = spans[0]?.start ?? now;
+  let lastEnd = origin;
+  let removed = 0;
+  for (const span of spans) {
+    if (span.start - lastEnd >= FLIGHT_STRIP_IDLE_THRESHOLD_MS) {
+      gaps.push({ start: lastEnd, end: span.start, removedBefore: removed });
+      removed += span.start - lastEnd;
+    }
+    lastEnd = Math.max(lastEnd, span.end);
+  }
+  const durationMs = lastEnd - origin - removed;
+  const position = (time: number): number => {
+    if (durationMs <= 0) return 0;
+    // Binary search the last gap beginning before this timestamp. Events inside
+    // an elision map to its boundary, including interventions during idle time.
+    let low = 0;
+    let high = gaps.length;
+    while (low < high) {
+      const mid = (low + high) >>> 1;
+      if (gaps[mid].start <= time) low = mid + 1;
+      else high = mid;
+    }
+    const gap = gaps[low - 1];
+    const offset = gap ? gap.removedBefore + Math.min(time, gap.end) - gap.start : 0;
+    return Math.max(0, Math.min(1, (time - origin - offset) / durationMs));
+  };
+
+  // Sweep ends before starts at equal timestamps, as in the skyline. Only
+  // retained bars need a peak bucket, keeping the sweep bounded by the bar cap.
+  const events = spans.flatMap((s, index) => [{ time: s.start, delta: 1, index }, { time: s.end, delta: -1, index }])
+    .sort((a, b) => a.time - b.time || a.delta - b.delta);
+  const visibleActive = new Set<number>();
+  let concurrent = 0;
+  let peakConcurrency = 0;
+  for (const event of events) {
+    concurrent += event.delta;
+    if (event.delta < 0) visibleActive.delete(event.index);
+    else if (event.index < FLIGHT_STRIP_BAR_CAP) visibleActive.add(event.index);
+    peakConcurrency = Math.max(peakConcurrency, concurrent);
+    if (event.delta > 0) for (const index of visibleActive) spans[index].peak = Math.max(spans[index].peak, concurrent);
+  }
+  const bars: FlightStripBar[] = spans.slice(0, FLIGHT_STRIP_BAR_CAP).map(s => ({
+    taskId: s.task.id, workerId: s.worker.id, lane: deriveWorkLane(s.task),
+    start: position(s.start), end: position(s.end),
+    concurrency: Math.min(3, s.peak) as 1 | 2 | 3,
+    fill: s.worker.exitCause === 'code_failure' || s.worker.exitCause === 'infra_failure' ? 'failure' : 'concurrency',
+    dashed: false,
+  }));
+  const activeTasks = new Set(spans.filter(s => LIVE_SET.has(s.worker.status as typeof MISSION_LIVE_WORKER_STATUSES[number])).map(s => s.task.id));
+  const queued = tasks.filter(t => (t.status === 'pending' || t.status === 'queued' || t.status === 'assigned') && !activeTasks.has(t.id));
+  for (const task of queued.slice(0, Math.max(0, FLIGHT_STRIP_BAR_CAP - bars.length))) {
+    bars.push({ taskId: task.id, workerId: null, lane: deriveWorkLane(task), start: position(now), end: position(now), concurrency: 0, fill: 'none', dashed: true });
+  }
+
+  const steering = (opts.steeringEvents ?? []).filter(e => Number.isFinite(timestamp(e.at)))
+    .slice().sort((a, b) => timestamp(a.at) - timestamp(b.at) || a.id.localeCompare(b.id));
+  const cycles = steering.filter(e => e.kind === 'orchestrator');
+  const retainedCycles = new Set(cycles.slice(0, FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP).map(e => e));
+  const cluster = cycles.length > FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP ? cycles[FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP - 1] : null;
+  const marks = steering.filter(e => e.kind === 'human' || retainedCycles.has(e)).map(e => ({
+    id: e.id, kind: e.kind, position: position(timestamp(e.at)),
+    count: e === cluster ? cycles.length - FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP + 1 : 1,
+  }));
+  const hasLaneData = tasks.some(t => deriveWorkLane(t) !== null);
+  return {
+    bars, foldedBars: Math.max(0, spans.length + queued.length - bars.length),
+    lanes: hasLaneData ? ['think', 'build', 'check'] : [null], hasLaneData,
+    durationMs, peakConcurrency,
+    now: opts.missionCompletedAt ? null : position(now),
+    phases: spans.length ? [{ label: 'P1', position: 0, idleMs: 0 }, ...gaps.map((gap, i) => ({ label: `P${i + 2}`, position: position(gap.end), idleMs: gap.end - gap.start }))] : [],
+    rail: { visible: marks.length > 0, marks },
+  };
+}
