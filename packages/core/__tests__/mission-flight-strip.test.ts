@@ -93,4 +93,13 @@ describe('computeMissionFlightStrip', () => {
     expect(strip.peakConcurrency).toBe(BARS + 3);
     expect(strip.durationMs).toBe(100);
   });
+  it('keeps a live worker and the most recent history visible when folding beyond the bar cap, dropping the oldest instead', () => {
+    const historical = Array.from({ length: BARS }, (_, i) => worker(`old-${i}`, i * 10, i * 10 + 5));
+    const live = { ...worker('newest', BARS * 10, BARS * 10 + 5), status: 'running', completedAt: null, updatedAt: date(BARS * 10 + 5) };
+    const strip = compute([{ ...task, status: 'running' }], [...historical, live], { now: BARS * 10 + 20 });
+    expect(strip.bars).toHaveLength(BARS);
+    expect(strip.foldedBars).toBe(1);
+    expect(strip.bars.some(b => b.workerId === 'newest')).toBe(true);
+    expect(strip.bars.some(b => b.workerId === 'old-0')).toBe(false);
+  });
 });
