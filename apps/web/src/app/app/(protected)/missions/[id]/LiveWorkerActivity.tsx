@@ -12,6 +12,9 @@ interface Props {
   currentAction: string | null;
   turns: number | null;
   costUsd: string | null;
+  inputTokens?: number;
+  outputTokens?: number;
+  authType?: string | null;
   milestones: Milestones;
   /** Called on every worker realtime event so the panel can refetch the summary
    *  (turns/cost/status/PR) and flip out of the running view when the run ends. */
@@ -34,6 +37,9 @@ export default function LiveWorkerActivity({
   currentAction,
   turns,
   costUsd,
+  inputTokens,
+  outputTokens,
+  authType,
   milestones,
   onWorkerEvent,
 }: Props) {
@@ -126,10 +132,15 @@ export default function LiveWorkerActivity({
         </button>
       </div>
 
-      {/* Live turns / cost */}
+      {/* Live turns / cost or tokens */}
       <div className="flex items-center gap-3 text-[11px] text-text-muted tabular-nums">
         {turns != null && <span>{turns} turn{turns !== 1 ? 's' : ''}</span>}
-        {costUsd != null && <span>${Number(costUsd).toFixed(3)}</span>}
+        {authType === 'oauth'
+          ? ((inputTokens || 0) + (outputTokens || 0)) > 0 && (
+              <span>{((inputTokens || 0) + (outputTokens || 0)).toLocaleString()} tokens</span>
+            )
+          : costUsd != null && <span>${Number(costUsd).toFixed(3)}</span>
+        }
       </div>
 
       {/* Live background-agents tree (transient, from Pusher) */}
