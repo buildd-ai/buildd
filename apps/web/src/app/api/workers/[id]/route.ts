@@ -1208,13 +1208,42 @@ export async function PATCH(
             summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
           },
         });
+        const rejectedSummary = isSensitive ? null : (typeof body.summary === 'string' ? body.summary.slice(0, 5000) : null);
+        const rejectedSummarySource = typeof body.summarySource === 'string' ? body.summarySource : null;
+
+        // 'fallback' means this PATCH came from the runner's own end-of-session
+        // completion (apps/runner/src/workers.ts, the "Actually completed"
+        // branch) — the SDK query loop already exited, so there is no agent
+        // turn left to read this refusal's hint and retry (unlike an
+        // agent-authored 'agent' call, which gets an actionable errorResult
+        // back from mcp-tools.ts and can still call create_artifact itself).
+        // That makes this refusal terminal by construction — salvage the
+        // summary as an artifact now, or it is gone with the failed worker.
+        // Deliberately NOT a satisfier: the task still fails below, and the
+        // artifact is titled/metadata-tagged 'salvaged' so it never reads as
+        // a produced deliverable.
+        let salvagedArtifactId: string | null = null;
+        if (rejectedSummarySource === 'fallback' && rejectedSummary && worker.workspaceId) {
+          const [salvaged] = await db.insert(artifacts).values({
+            workerId: worker.id,
+            workspaceId: worker.workspaceId,
+            missionId: taskMissionId ?? null,
+            type: 'summary',
+            title: `Salvaged completion (rejected: ${reason})`,
+            content: rejectedSummary,
+            metadata: { salvaged: true, rejectedReason: reason },
+          }).returning({ id: artifacts.id });
+          salvagedArtifactId = salvaged?.id ?? null;
+        }
+
         await db.update(workers).set({
           rejectedCompletionPayload: {
             reason,
-            summary: isSensitive ? null : (typeof body.summary === 'string' ? body.summary.slice(0, 5000) : null),
+            summary: rejectedSummary,
             structuredOutput: isSensitive ? null : (body.structuredOutput ?? null),
-            summarySource: typeof body.summarySource === 'string' ? body.summarySource : null,
+            summarySource: rejectedSummarySource,
             rejectedAt: new Date().toISOString(),
+            ...(salvagedArtifactId ? { salvagedArtifactId } : {}),
           },
           updatedAt: new Date(),
         }).where(eq(workers.id, id));

@@ -1380,6 +1380,15 @@ export async function handleBuilddAction(
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
           if (w.error) wlines.push(`  Error: ${w.error}`);
+          // A gate-rejected completion (outputRequirement 400) persists the
+          // agent's summary here instead of discarding it — surface it
+          // plainly as a REJECTED deliverable, never as a satisfied one.
+          if (w.rejectedCompletionPayload) {
+            const rc = w.rejectedCompletionPayload;
+            wlines.push(`  ⚠️ **Rejected deliverable** (outputRequirement '${rc.reason}' not satisfied, not a completed outcome)`);
+            if (rc.salvagedArtifactId) wlines.push(`  Salvaged as artifact: ${rc.salvagedArtifactId} (use get_artifact to read it)`);
+            if (rc.summary) wlines.push(`  Rejected summary: ${rc.summary}`);
+          }
           if (w.waitingFor) {
             const actionUrl = `${taskUrl}/respond`;
             wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
