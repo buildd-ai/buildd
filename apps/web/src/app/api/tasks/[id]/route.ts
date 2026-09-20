@@ -116,6 +116,12 @@ export async function GET(
           outputTokens: true,
           costUsd: true,
           createdAt: true,
+          // A gate-rejected completion (outputRequirement 400) persists the
+          // agent's summary here instead of discarding it — but until now
+          // nothing read it back, so a rejected 60-turn run's only trace was
+          // the raw 400 text in `error`. Surfaced read-only: never a
+          // satisfied deliverable, just the salvage record of a refused one.
+          rejectedCompletionPayload: true,
         },
       });
     }

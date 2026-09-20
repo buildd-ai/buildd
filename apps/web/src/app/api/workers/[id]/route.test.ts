@@ -3542,6 +3542,130 @@ describe('PATCH /api/workers/[id]', () => {
       expect((await res.json()).hint).toBe('create_pr or create_artifact');
     });
 
+    // Regression for the 54-turn-run-lost incident: a research task declares
+    // artifact_required, produces no artifact, and the ONLY completion attempt
+    // is the runner's own end-of-session PATCH (summarySource: 'fallback') —
+    // there is no agent turn left to react to the 400. The refusal must still
+    // (a) persist the payload onto the worker row, readable via get_task, and
+    // (b) salvage the summary as an artifact so the run is not a total loss —
+    // while the task itself still fails; a salvaged artifact must never read
+    // as a satisfied deliverable.
+    it('artifact_required + fallback summary (no agent left) → persists payload AND salvages an artifact', async () => {
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/recon',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'),
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'artifact_required',
+        missionId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          capturedSet = vals;
+          return { where: mock(() => ({ returning: mock(() => []) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: '54 turns of findings on the claude.ai Design canvas question.',
+          summarySource: 'fallback',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+
+      // (a) The rejected payload is persisted on the worker row.
+      expect(capturedSet?.rejectedCompletionPayload?.reason).toBe('artifact_required');
+      expect(capturedSet?.rejectedCompletionPayload?.summary).toContain('54 turns of findings');
+      expect(capturedSet?.rejectedCompletionPayload?.summarySource).toBe('fallback');
+
+      // (b) A salvage artifact was created and cross-referenced from the payload.
+      expect(lastInsertValues?.type).toBe('summary');
+      expect(lastInsertValues?.metadata?.salvaged).toBe(true);
+      expect(lastInsertValues?.content).toContain('54 turns of findings');
+      expect(capturedSet?.rejectedCompletionPayload?.salvagedArtifactId).toBeTruthy();
+    });
+
+    it('artifact_required + agent-authored summary (retry still possible) → does NOT salvage an artifact', async () => {
+      // summarySource: 'agent' means the agent itself called complete_task and
+      // got an actionable errorResult back (packages/core/mcp-tools.ts) — it
+      // can still call create_artifact and retry within the same session, so
+      // auto-salvaging here would be premature and could leave a stray
+      // duplicate artifact once the agent's own retry succeeds.
+      mockArtifactsFindMany.mockResolvedValue([]);
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1', teamId: 'team-1' });
+      mockWorkersFindFirst.mockResolvedValue({
+        id: 'worker-1',
+        accountId: 'account-1',
+        status: 'running',
+        workspaceId: 'ws-1',
+        taskId: 'task-1',
+        branch: 'buildd/recon',
+        commitCount: 0,
+        prUrl: null,
+        prNumber: null,
+        startedAt: new Date('2026-08-01T10:00:00.000Z'),
+        pendingInstructions: null,
+        milestones: null,
+        waitingFor: null,
+      });
+      mockTasksFindFirst.mockResolvedValue({
+        id: 'task-1',
+        outputRequirement: 'artifact_required',
+        missionId: null,
+      });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', githubRepoId: null, releaseConfig: null });
+
+      let capturedSet: any = null;
+      mockWorkersUpdate.mockReturnValue({
+        set: mock((vals: any) => {
+          capturedSet = vals;
+          return { where: mock(() => ({ returning: mock(() => []) })) };
+        }),
+      });
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          status: 'completed',
+          summary: 'Conclusion reached, forgot the artifact.',
+          summarySource: 'agent',
+        },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(400);
+      expect(capturedSet?.rejectedCompletionPayload?.summarySource).toBe('agent');
+      expect(capturedSet?.rejectedCompletionPayload?.salvagedArtifactId).toBeUndefined();
+      // The gate ledger write (gate_events) is the only insert on this path —
+      // no artifact-shaped row (type: 'summary', metadata.salvaged) went out.
+      expect(lastInsertValues?.type).not.toBe('summary');
+      expect(lastInsertValues?.metadata?.salvaged).toBeUndefined();
+    });
+
     it('artifact_required + artifact present + 0 diff + no PR → completed even with branch_merge release config', async () => {
       // Regression test: tasks with outputRequirement='artifact_required' that produce
       // only an artifact (no code changes, no pushed branch) were incorrectly flipped
