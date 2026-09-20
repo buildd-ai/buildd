@@ -918,11 +918,18 @@ describe('computeMissionSkyline', () => {
     expect(result!.peakConcurrency).toBe(3);
   });
 
-  it('state: failed when status=error', () => {
+  it('state: failed when status=failed (the real terminal value the runner writes)', () => {
+    const result = computeMissionSkyline([
+      { workers: [makeWorker(0, 15, { status: 'failed' })] },
+    ]);
+    expect(result!.blocks[0].state).toBe('failed');
+  });
+
+  it('state: not failed when status=error (runner never writes this value)', () => {
     const result = computeMissionSkyline([
       { workers: [makeWorker(0, 15, { status: 'error' })] },
     ]);
-    expect(result!.blocks[0].state).toBe('failed');
+    expect(result!.blocks[0].state).not.toBe('failed');
   });
 
   it('state: awaiting when prUrl set and mergedAt null', () => {

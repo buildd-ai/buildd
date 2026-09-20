@@ -1147,7 +1147,7 @@ function workerEndMs(w: WorkerSpan, now: number): number {
 }
 
 function workerBlockState(w: WorkerSpan): SkylineBlockState {
-  if (w.status === 'error') return 'failed';
+  if (w.status === 'failed') return 'failed';
   if (w.mergedAt) return 'merged';
   if (w.prUrl) return 'awaiting';
   return 'merged';
