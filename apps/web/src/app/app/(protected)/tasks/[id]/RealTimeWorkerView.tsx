@@ -75,6 +75,8 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
   const [worker, setWorker] = useState<Worker>(initialWorker);
   const [answerSending, setAnswerSending] = useState<string | null>(null);
   const [answerSent, setAnswerSent] = useState(false);
+  const [continuationTaskId, setContinuationTaskId] = useState<string | null>(null);
+  const [answerError, setAnswerError] = useState<{ message: string; credentialRevoked?: boolean } | null>(null);
   const answeredPromptRef = useRef<string | null>(null);
   const [showAbortConfirm, setShowAbortConfirm] = useState(false);
   const [abortLoading, setAbortLoading] = useState(false);
@@ -142,20 +144,31 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
   // was pushed, the new task starts fresh from the default branch instead.
   async function handleAnswer(option: string) {
     setAnswerSending(option);
+    setAnswerError(null);
     try {
       const res = await fetch(`/api/workers/${worker.id}/respond`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: option }),
       });
+      const data = await res.json();
       if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || 'Failed to send answer');
+        // A known-revoked backend credential is refused here rather than
+        // silently dispatched into a continuation that would just fail again
+        // — the question stays open (waitingFor is untouched server-side) so
+        // this can be retried once the credential is reconnected.
+        setAnswerError({
+          message: data.error || 'Failed to send answer',
+          credentialRevoked: data.credentialRevoked === true,
+        });
+        return;
       }
       answeredPromptRef.current = worker.waitingFor?.prompt ?? null;
+      setContinuationTaskId(typeof data.taskId === 'string' ? data.taskId : null);
       setAnswerSent(true);
     } catch (err) {
       console.error('Failed to send answer:', err);
+      setAnswerError({ message: err instanceof Error ? err.message : 'Failed to send answer' });
     } finally {
       setAnswerSending(null);
     }
@@ -352,8 +365,21 @@ export default function RealTimeWorkerView({ initialWorker, statusColors, modelT
             <span data-testid="worker-needs-input-label" className="font-mono text-[10px] font-medium text-status-warning uppercase tracking-[2.5px]">Needs input</span>
           </div>
           <p data-testid="worker-needs-input-prompt" className="text-sm text-text-primary">{worker.waitingFor.prompt}</p>
+          {answerError && (
+            <p data-testid="worker-answer-error" className="mt-2 text-sm text-status-error">
+              {answerError.message}
+              {answerError.credentialRevoked && ' Your answer was not lost — retry once the credential is reconnected.'}
+            </p>
+          )}
           {answerSent ? (
-            <p className="mt-2 text-sm text-status-success">Answer sent — a new task has been created to continue</p>
+            <p data-testid="worker-answer-sent" className="mt-2 text-sm text-status-success">
+              Answer sent — this session ended and a new task was created to continue.
+              {continuationTaskId && (
+                <>
+                  {' '}<a href={`/app/tasks/${continuationTaskId}`} className="underline hover:no-underline">View continuation task →</a>
+                </>
+              )}
+            </p>
           ) : worker.waitingFor.options && worker.waitingFor.options.length > 0 ? (
             <div data-testid="worker-needs-input-options" className="flex flex-col gap-2 mt-3">
               {worker.waitingFor.options.map((opt, i) => {

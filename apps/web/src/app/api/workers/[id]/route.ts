@@ -142,8 +142,13 @@ function resolveSessionActualModel(
  *     never an abort: report a retryable conflict and let the runner re-sync.
  *
  * The current row is re-read to tell the two apart.
+ *
+ * `extra` merges additional fields into a terminal (abort) response only —
+ * used to tell the runner a failure report it lost the race on was still
+ * recorded somewhere durable (see `postSupersessionErrorRecorded` below),
+ * so its console log reads as "captured" rather than "silently dropped".
  */
-async function workerConflictResponse(id: string) {
+async function workerConflictResponse(id: string, extra?: Record<string, unknown>) {
   const current = await db.query.workers.findFirst({ where: eq(workers.id, id) });
   const actualStatus = current?.status ?? null;
 
@@ -164,6 +169,7 @@ async function workerConflictResponse(id: string) {
     reason: current?.error || `worker already ${actualStatus}`,
     actualStatus,
     hasDeliverables: deliverables.hasAny,
+    ...extra,
   }, { status: 409 });
 }
 
@@ -357,6 +363,142 @@ async function checkAndExhaustMissionBudget(missionId: string): Promise<boolean>
   if (spendUsd < budgetUsd) return false;
 
   await exhaustMissionBudget(missionId, mission.title, spendUsd, budgetUsd);
+  return true;
+}
+
+/**
+ * Auth-failure/success classification against the backend credential.
+ *
+ * Extracted so the post-supersession path below (a terminal report for a
+ * worker `/respond` already answered) can run the IDENTICAL classify →
+ * attribute → record sequence a live terminal transition gets. Credential
+ * health is about the CREDENTIAL, not the reporting worker's own recorded
+ * outcome — a dead credential kills the continuation task exactly as it
+ * would kill this worker, so it must not matter which one told us first.
+ */
+async function recordCredentialHealthForOutcome(
+  taskId: string | null,
+  status: string,
+  error: string | null | undefined,
+): Promise<void> {
+  if (!taskId) return;
+  const taskForHealth = await db.query.tasks.findFirst({
+    where: eq(tasks.id, taskId),
+    columns: { backend: true, workspaceId: true },
+    with: { workspace: { columns: { teamId: true } } },
+  });
+  const teamId = (taskForHealth?.workspace as { teamId?: string } | undefined)?.teamId;
+  if (!teamId) return;
+
+  const backend = (taskForHealth as any)?.backend as string | undefined;
+  const workspaceId = taskForHealth?.workspaceId ?? null;
+
+  if (status === 'failed' && error) {
+    const severity = classifyAuthErrorSeverity(error);
+    if (severity !== 'none') {
+      let secretId: string | null = null;
+      if (!backend || backend === 'claude') {
+        secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+      } else if (backend === 'codex') {
+        // For Codex tasks, detect whether the failure was actually caused by
+        // a Claude/Anthropic auth error (leaked Claude creds, misconfiguration)
+        // rather than a Codex/OpenAI auth error. Attributing a Claude error to
+        // the Codex credential falsely marks it revoked/degraded.
+        const isClaudeOriginError = /access token could not be refreshed|logged out or signed in to another account|invalid authentication credentials|anthropic/i.test(error);
+        if (isClaudeOriginError) {
+          console.warn(`[workers PATCH] Codex task ${taskId} failed with a Claude auth error — attributing to Claude credential, not Codex`);
+          secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+        } else {
+          const codexRow = await db.query.secrets.findFirst({
+            where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+            columns: { id: true },
+          });
+          secretId = codexRow?.id ?? null;
+        }
+      }
+
+      if (secretId) {
+        const result = await recordCredentialAuthFailure(secretId, error);
+        if (result?.becameRevoked) {
+          void notifyTeam(teamId, 'credentialExpired', {
+            title: '🔑 Credential revoked — action required',
+            message: `Backend credential (${backend ?? 'claude'}) was revoked. Re-auth in Settings → Agent Backends.\nError: ${error.slice(0, 150)}`,
+            url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings`,
+            urlTitle: 'Open settings',
+            priority: 1,
+          });
+        }
+      }
+    }
+  } else if (status === 'completed') {
+    let secretId: string | null = null;
+    if (!backend || backend === 'claude') {
+      secretId = await getActiveClaudeSecretId(teamId, workspaceId);
+    } else if (backend === 'codex') {
+      const codexRow = await db.query.secrets.findFirst({
+        where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
+        columns: { id: true },
+      });
+      secretId = codexRow?.id ?? null;
+    }
+    if (secretId) await recordCredentialAuthSuccess(secretId);
+  }
+}
+
+/**
+ * Record a terminal failure report for a worker `/respond` already marked
+ * `superseded` before this PATCH's own terminal-ownership CAS could land.
+ *
+ * Does NOT touch `status` — the row stays `superseded`, exactly as
+ * `IN_FLIGHT_WORKER_STATUSES`/`FAILED_WORKER_STATUSES` in lib/failure-analytics
+ * require, so this can never flip a superseded worker back into the failure
+ * rate. It records the error on a side field instead (`postSupersessionError`),
+ * inserts the same `worker_error_traces` row a live failure would get (so
+ * `get_error_traces` sees it regardless of whether this PATCH's own
+ * `appendErrorTraces` array — processed unconditionally above, before this
+ * CAS ever runs — happened to carry anything), and feeds credential health.
+ *
+ * CAS'd on `status = 'superseded'` rather than trusting the caller's
+ * already-stale `worker` read: `workerConflictResponse` re-reads the row for
+ * the same reason, and this function is only ever called on that re-read's
+ * conflict path, so a row that moved to some OTHER terminal status between
+ * those two reads should not have this write land either — it silently no-ops.
+ */
+async function recordPostSupersessionError(
+  id: string,
+  error: string,
+  isSensitive: boolean,
+): Promise<boolean> {
+  const trimmed = error.slice(0, 2000);
+  const [row] = await db
+    .update(workers)
+    .set({
+      postSupersessionError: trimmed,
+      postSupersessionErrorAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(workers.id, id), eq(workers.status, 'superseded')))
+    .returning({ id: workers.id, taskId: workers.taskId });
+
+  if (!row) return false;
+
+  try {
+    await db.insert(workerErrorTraces).values({
+      workerId: id,
+      taskId: row.taskId,
+      pattern: 'post_supersession_error',
+      excerpt: isSensitive ? '' : trimmed.slice(0, 500),
+      source: 'post_supersession',
+    });
+  } catch (err) {
+    console.error(`[Worker ${id}] Failed to insert post-supersession error trace:`, err);
+  }
+
+  try {
+    await recordCredentialHealthForOutcome(row.taskId, 'failed', trimmed);
+  } catch (err) {
+    console.error(`[Worker ${id}] Failed to record credential health for post-supersession error:`, err);
+  }
   return true;
 }
 
@@ -1416,7 +1558,19 @@ export async function PATCH(
       .returning({ id: workers.id });
 
     if (!reserved) {
-      return workerConflictResponse(id);
+      // Most commonly: `/respond` already marked this worker `superseded`
+      // after a human answered its question, and this PATCH is the runner's
+      // own (now-late) terminal report for the same session — see
+      // recordPostSupersessionError for why that report must not vanish.
+      let postSupersessionErrorRecorded = false;
+      if ((status === 'failed' || status === 'error') && typeof error === 'string' && error.trim()) {
+        try {
+          postSupersessionErrorRecorded = await recordPostSupersessionError(id, error, isSensitive);
+        } catch (err) {
+          console.error(`[Worker ${id}] Failed to record post-supersession error:`, err);
+        }
+      }
+      return workerConflictResponse(id, postSupersessionErrorRecorded ? { postSupersessionErrorRecorded: true } : undefined);
     }
     terminalTransitionReserved = true;
   }
@@ -2961,70 +3115,7 @@ export async function PATCH(
       });
 
       // Credential health tracking: update health state on auth failure or success.
-      await runStep('credential-health', async () => {
-        const taskForHealth = await db.query.tasks.findFirst({
-          where: eq(tasks.id, taskId),
-          columns: { backend: true, workspaceId: true },
-          with: { workspace: { columns: { teamId: true } } },
-        });
-        const teamId = (taskForHealth?.workspace as { teamId?: string } | undefined)?.teamId;
-        if (!teamId) return;
-
-        const backend = (taskForHealth as any)?.backend as string | undefined;
-        const workspaceId = taskForHealth?.workspaceId ?? null;
-
-        if (status === 'failed' && error) {
-          const severity = classifyAuthErrorSeverity(error);
-          if (severity !== 'none') {
-            let secretId: string | null = null;
-            if (!backend || backend === 'claude') {
-              secretId = await getActiveClaudeSecretId(teamId, workspaceId);
-            } else if (backend === 'codex') {
-              // For Codex tasks, detect whether the failure was actually caused by
-              // a Claude/Anthropic auth error (leaked Claude creds, misconfiguration)
-              // rather than a Codex/OpenAI auth error. Attributing a Claude error to
-              // the Codex credential falsely marks it revoked/degraded.
-              const isClaudeOriginError = /access token could not be refreshed|logged out or signed in to another account|invalid authentication credentials|anthropic/i.test(error);
-              if (isClaudeOriginError) {
-                // Attribute to the Claude credential so the Codex credential health is unaffected.
-                console.warn(`[workers PATCH] Codex task ${taskId} failed with a Claude auth error — attributing to Claude credential, not Codex`);
-                secretId = await getActiveClaudeSecretId(teamId, workspaceId);
-              } else {
-                const codexRow = await db.query.secrets.findFirst({
-                  where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
-                  columns: { id: true },
-                });
-                secretId = codexRow?.id ?? null;
-              }
-            }
-
-            if (secretId) {
-              const result = await recordCredentialAuthFailure(secretId, error);
-              if (result?.becameRevoked) {
-                void notifyTeam(teamId, 'credentialExpired', {
-                  title: '🔑 Credential revoked — action required',
-                  message: `Backend credential (${backend ?? 'claude'}) was revoked. Re-auth in Settings → Agent Backends.\nError: ${error.slice(0, 150)}`,
-                  url: `${process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev'}/app/settings`,
-                  urlTitle: 'Open settings',
-                  priority: 1,
-                });
-              }
-            }
-          }
-        } else if (status === 'completed') {
-          let secretId: string | null = null;
-          if (!backend || backend === 'claude') {
-            secretId = await getActiveClaudeSecretId(teamId, workspaceId);
-          } else if (backend === 'codex') {
-            const codexRow = await db.query.secrets.findFirst({
-              where: and(eq(secretsTable.teamId, teamId), eq(secretsTable.purpose, 'codex_credential')),
-              columns: { id: true },
-            });
-            secretId = codexRow?.id ?? null;
-          }
-          if (secretId) await recordCredentialAuthSuccess(secretId);
-        }
-      });
+      await runStep('credential-health', () => recordCredentialHealthForOutcome(taskId, status, error));
     }
   }
 

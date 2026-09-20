@@ -521,6 +521,16 @@ function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWind
   const lines: string[] = [];
   const nextCall = `context: { frictionSignature: "${lookup.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
 
+  if (lookup.known && lookup.supersededOnly) {
+    lines.push(`Known, but only on worker(s) already \`superseded\` when the error landed — ${lookup.count} occurrence(s) in the last ${window}.`);
+    lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
+    lines.push(`first seen ${lookup.firstSeen} · last seen ${lookup.lastSeen}`);
+    if (lookup.exampleTaskId) lines.push(`example task: ${lookup.exampleTaskId}`);
+    lines.push('Not counted against the failure rate — the worker(s) had already been answered/replaced when this landed. See the worker row for details.');
+    lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
+    return lines.join('\n');
+  }
+
   if (lookup.known) {
     lines.push(`Known failure pattern — ${lookup.count} occurrence(s) in the last ${window}.`);
     lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);

@@ -1514,6 +1514,28 @@ export const workers = pgTable('workers', {
   // update_progress PATCH. Appended server-side (deduped, capped at 500). Cleared
   // on terminal worker status. Used by passive collision detection (§6d).
   observedTouches: jsonb('observed_touches').$type<string[] | null>(),
+  // A runner terminal PATCH (status=failed/error) that arrives for a worker
+  // ALREADY `superseded` (POST /api/workers/[id]/respond answered its question
+  // first) cannot go through the normal terminal-transition write — that CAS is
+  // reserved by whichever write reaches the row first, and superseded already
+  // won. Without this column that later report had nowhere durable to land: the
+  // PATCH 409s before `error` is ever set, so a real backend-auth failure on the
+  // answered session was invisible to the owner and never reached credential
+  // health. Set only by that late-PATCH path in workers/[id]/route.ts, never by
+  // the normal terminal-transition write — a superseded worker's OWN outcome
+  // stays whatever `/respond` recorded; this is strictly an out-of-band report
+  // about what happened to the session afterward. Deliberately excluded from
+  // failure-analytics signatures/rate (keyed off `status`, not this column) —
+  // see lib/failure-analytics.ts's superseded-error lookup for how it still
+  // surfaces to `get_failure_analytics(error=...)`.
+  postSupersessionError: text('post_supersession_error'),
+  postSupersessionErrorAt: timestamp('post_supersession_error_at', { withTimezone: true }),
+  // The `Continue: <title>` task /respond created when this worker's question
+  // was answered. Written back after that insert succeeds, so the worker row
+  // — surfaced in the UI long after the continuation is the only task anyone
+  // still looks at — carries a durable pointer to it instead of requiring a
+  // reverse lookup through `tasks.context.previousAttempt.workerId`.
+  continuationTaskId: uuid('continuation_task_id').references(() => tasks.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({
