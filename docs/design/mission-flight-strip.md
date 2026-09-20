@@ -28,7 +28,7 @@ result as unlabelled colored rectangles. Three concrete failures:
    codebase writes in ordinary operation. Every genuinely failed worker falls
    through to the `mergedAt ? merged : prUrl ? awaiting : merged` branch and
    renders as a win. A regression test at
-   `packages/core/__tests__/mission-helpers.test.ts:784` locks in the
+   `packages/core/__tests__/mission-helpers.test.ts:930` locks in the
    `status === 'error'` check, which is why the gap has persisted.
 
 The design boards for this mission (three `.dc.html` boards copied into
@@ -357,7 +357,7 @@ mission history grows.
 
 **Rule P-1 (compute once, store on completion):** a new nullable jsonb column,
 `missions.flightStripCache`, following the same shape and lifecycle precedent
-as `missions.goalCriteriaState` (`packages/core/db/schema.ts:105`) — computed
+as `missions.goalCriteriaState` (`packages/core/db/schema.ts:860`) — computed
 once by whichever path transitions a mission to `status = 'completed'`, and
 never recomputed after. The stored payload is the full render-ready shape:
 lanes, bars, rail marks, phase dividers, breaks, and the derived metrics from
@@ -443,7 +443,7 @@ retried after a partial run without side effects.
 5. A worker with `status = 'failed'`, `exitCause = 'code_failure'` renders
    `#d2584b` — the direct regression test for the bug in §Problem, replacing
    the `status === 'error'` assertion at
-   `packages/core/__tests__/mission-helpers.test.ts:784`.
+   `packages/core/__tests__/mission-helpers.test.ts:930`.
 6. A mission where no task has `missionPhaseIndex` set renders zero phase
    dividers and zero phase labels (Rule X-3).
 7. A mission with tasks split across two `missionPhaseIndex` values renders
