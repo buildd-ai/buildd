@@ -66,11 +66,18 @@ export async function GET(
         linesAdded: true,
         linesRemoved: true,
         costUsd: true,
+        inputTokens: true,
+        outputTokens: true,
         startedAt: true,
         completedAt: true,
         waitingFor: true,
         branch: true,
         milestones: true,
+      },
+      with: {
+        account: {
+          columns: { authType: true },
+        },
       },
     });
 
@@ -155,11 +162,16 @@ export async function GET(
             linesAdded: worker.linesAdded,
             linesRemoved: worker.linesRemoved,
             costUsd: worker.costUsd,
+            inputTokens: worker.inputTokens,
+            outputTokens: worker.outputTokens,
             startedAt: worker.startedAt,
             completedAt: worker.completedAt,
             waitingFor: worker.waitingFor as { type: string; prompt: string; options?: string[] } | null,
             branch: worker.branch,
             milestones: worker.milestones ?? [],
+            account: worker.account
+              ? { authType: worker.account.authType }
+              : null,
           }
         : null,
       lastError: trace

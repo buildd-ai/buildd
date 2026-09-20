@@ -10,7 +10,7 @@ export default async function WorkersPage() {
   const isDev = process.env.NODE_ENV === 'development';
   const user = await getCurrentUser();
 
-  let allWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect | null })[] = [];
+  let allWorkers: (typeof workers.$inferSelect & { task: typeof tasks.$inferSelect | null; account: { authType: string } | null })[] = [];
 
   if (!isDev) {
     if (!user) {
@@ -25,7 +25,7 @@ export default async function WorkersPage() {
         allWorkers = await db.query.workers.findMany({
           where: inArray(workers.workspaceId, workspaceIds),
           orderBy: desc(workers.createdAt),
-          with: { task: true },
+          with: { task: true, account: true },
         }) as any;
       }
     } catch (error) {
@@ -91,7 +91,14 @@ export default async function WorkersPage() {
                       <div className="flex items-center gap-4 mt-2 text-xs text-text-muted">
                         <span>Branch: {worker.branch}</span>
                         <span>Turns: {worker.turns}</span>
-                        <span>Cost: ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                        {worker.account?.authType === 'oauth'
+                          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+                              <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
+                            )
+                          : parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                              <span>Cost: ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                            )
+                        }
                       </div>
                     </div>
                     <span className={`px-2 py-1 text-xs rounded-full ml-4 ${statusColors[worker.status] || statusColors.idle}`}>
@@ -120,7 +127,14 @@ export default async function WorkersPage() {
                       <p className="text-sm text-text-secondary">{worker.task?.title || 'No task'}</p>
                       <div className="flex items-center gap-4 mt-2 text-xs text-text-muted">
                         <span>Turns: {worker.turns}</span>
-                        <span>Cost: ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                        {worker.account?.authType === 'oauth'
+                          ? ((worker.inputTokens || 0) + (worker.outputTokens || 0)) > 0 && (
+                              <span>{((worker.inputTokens || 0) + (worker.outputTokens || 0)).toLocaleString()} tokens</span>
+                            )
+                          : parseFloat(worker.costUsd?.toString() || '0') > 0 && (
+                              <span>Cost: ${parseFloat(worker.costUsd?.toString() || '0').toFixed(4)}</span>
+                            )
+                        }
                         {worker.error && <span className="text-status-error">Error: {worker.error.slice(0, 50)}</span>}
                       </div>
                     </div>
