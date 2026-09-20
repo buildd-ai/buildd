@@ -1431,6 +1431,50 @@ export default async function TaskDetailPage({
                       {worker.error && (
                         <p className="font-mono text-[11px] text-status-error mt-0.5 whitespace-pre-wrap break-words" title={worker.error}>{worker.error}</p>
                       )}
+                      {worker.status === 'superseded' && (
+                        <p className="text-[11px] text-text-muted mt-0.5">
+                          Session ended after the question was answered.{' '}
+                          {worker.continuationTaskId ? (
+                            <a href={`/app/tasks/${worker.continuationTaskId}`} className="text-status-info hover:underline">
+                              Continued in a new task →
+                            </a>
+                          ) : (
+                            'Continuation task not recorded.'
+                          )}
+                        </p>
+                      )}
+                      {worker.postSupersessionError && (
+                        <p
+                          className="font-mono text-[11px] text-status-warning mt-0.5 whitespace-pre-wrap break-words"
+                          title={worker.postSupersessionError}
+                        >
+                          Error reported after this session ended: {worker.postSupersessionError}
+                          {worker.continuationTaskId && (
+                            <>
+                              {' '}<a href={`/app/tasks/${worker.continuationTaskId}`} className="text-status-info hover:underline">See continuation →</a>
+                            </>
+                          )}
+                        </p>
+                      )}
+                      {worker.rejectedCompletionPayload && (() => {
+                        const rejected = worker.rejectedCompletionPayload as {
+                          reason?: string; summary?: string | null; salvagedArtifactId?: string;
+                        };
+                        return (
+                          <div className="mt-1 rounded-[6px] border border-status-warning/30 bg-status-warning/5 px-2 py-1.5">
+                            <p className="font-mono text-[10px] uppercase tracking-wide text-status-warning">
+                              ⚠ Rejected deliverable — not a satisfied outcome
+                              {rejected.reason ? ` (${rejected.reason})` : ''}
+                            </p>
+                            {rejected.summary && (
+                              <p className="text-[11px] text-text-muted mt-0.5 whitespace-pre-wrap break-words line-clamp-4">{rejected.summary}</p>
+                            )}
+                            {rejected.salvagedArtifactId && (
+                              <p className="font-mono text-[10px] text-text-muted mt-0.5">Salvaged as artifact {rejected.salvagedArtifactId}</p>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <div className="flex items-center gap-3 mt-1 font-mono text-[11px] text-text-muted">
                         <span>{worker.startedAt ? timeAgo(worker.startedAt) : '-'}</span>
                         <span>{worker.turns} turns</span>

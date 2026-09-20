@@ -521,6 +521,16 @@ function formatFailureLookup(lookup: FailureSignatureLookup, window: FailureWind
   const lines: string[] = [];
   const nextCall = `context: { frictionSignature: "${lookup.frictionSignature}", frictionExcerpt: "<first line of your error>" }`;
 
+  if (lookup.known && lookup.supersededOnly) {
+    lines.push(`Known, but only on worker(s) already \`superseded\` when the error landed — ${lookup.count} occurrence(s) in the last ${window}.`);
+    lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
+    lines.push(`first seen ${lookup.firstSeen} · last seen ${lookup.lastSeen}`);
+    if (lookup.exampleTaskId) lines.push(`example task: ${lookup.exampleTaskId}`);
+    lines.push('Not counted against the failure rate — the worker(s) had already been answered/replaced when this landed. See the worker row for details.');
+    lines.push(`Next: file your friction report with ${nextCall} — it appends to the existing report instead of filing a duplicate.`);
+    return lines.join('\n');
+  }
+
   if (lookup.known) {
     lines.push(`Known failure pattern — ${lookup.count} occurrence(s) in the last ${window}.`);
     lines.push(`signature: ${truncateTo(lookup.signature, 200)}`);
@@ -1380,6 +1390,15 @@ export async function handleBuilddAction(
           if (w.lastCommitSha) wlines.push(`  Last commit: ${String(w.lastCommitSha).slice(0, 7)}`);
           if (w.completedAt) wlines.push(`  Completed: ${w.completedAt}`);
           if (w.error) wlines.push(`  Error: ${w.error}`);
+          // A gate-rejected completion (outputRequirement 400) persists the
+          // agent's summary here instead of discarding it — surface it
+          // plainly as a REJECTED deliverable, never as a satisfied one.
+          if (w.rejectedCompletionPayload) {
+            const rc = w.rejectedCompletionPayload;
+            wlines.push(`  ⚠️ **Rejected deliverable** (outputRequirement '${rc.reason}' not satisfied, not a completed outcome)`);
+            if (rc.salvagedArtifactId) wlines.push(`  Salvaged as artifact: ${rc.salvagedArtifactId} (use get_artifact to read it)`);
+            if (rc.summary) wlines.push(`  Rejected summary: ${rc.summary}`);
+          }
           if (w.waitingFor) {
             const actionUrl = `${taskUrl}/respond`;
             wlines.push(`  **Needs input:** ${w.waitingFor.prompt || 'Awaiting response'}`);
@@ -3146,7 +3165,13 @@ export async function handleBuilddAction(
           body: JSON.stringify(artifactBody),
         });
       } else {
-        const workerId = resolveWorkerId(params.workerId, ctx);
+        const workerId = (params.workerId as string) || ctx.workerId;
+        if (!workerId) {
+          throw new Error(
+            'workerId is required — pass it explicitly, ensure the MCP server has worker context, ' +
+            'or pass missionId or initiativeId instead to create a mission- or initiative-level artifact with no worker.',
+          );
+        }
         artifactData = await api(`/api/workers/${workerId}/artifacts`, {
           method: 'POST',
           body: JSON.stringify(artifactBody),
