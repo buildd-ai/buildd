@@ -3155,7 +3155,13 @@ export async function handleBuilddAction(
           body: JSON.stringify(artifactBody),
         });
       } else {
-        const workerId = resolveWorkerId(params.workerId, ctx);
+        const workerId = (params.workerId as string) || ctx.workerId;
+        if (!workerId) {
+          throw new Error(
+            'workerId is required — pass it explicitly, ensure the MCP server has worker context, ' +
+            'or pass missionId or initiativeId instead to create a mission- or initiative-level artifact with no worker.',
+          );
+        }
         artifactData = await api(`/api/workers/${workerId}/artifacts`, {
           method: 'POST',
           body: JSON.stringify(artifactBody),
