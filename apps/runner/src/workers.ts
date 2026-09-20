@@ -1484,6 +1484,15 @@ export class WorkerManager {
 
     // Sequential enforcement for Codex: at most 1 active Codex worker per workspace.
     // Codex uses a shared 5-hour plan window, so concurrent runs exhaust it quickly.
+    //
+    // Primary enforcement now lives at claim time (POST /api/workers/claim defers
+    // with reason `codex_single_flight` before ever handing back a claimed worker),
+    // so this should fire rarely. It stays as a backstop for the race the claim
+    // route's in-memory, per-request tracking can't see: two concurrent claim
+    // requests (this runner polling twice, or two runners) that each pass the
+    // server-side check before either has actually claimed. Losing this backstop
+    // would mean that race goes back to running two Codex workers on one 5-hour
+    // window instead of costing one already-started worker.
     if (fullTask.backend === 'codex') {
       const activeCodexWorker = Array.from(this.workers.values()).find(w =>
         w.workspaceId === fullTask.workspaceId &&
@@ -1859,6 +1868,43 @@ export class WorkerManager {
     }
   }
 
+  /**
+   * Park a `needs_input` abort as `waiting_input` instead of reporting it as a
+   * failure. Shared by two call sites that both see this same abort: the
+   * natural post-loop path (the query loop breaks cleanly after
+   * `AskUserQuestion` sets `worker.status = 'waiting'`) and the thrown-AbortError
+   * path (`session.abortController.abort()` makes the SDK's async generator
+   * throw, which skips the post-loop path entirely and lands in the outer
+   * catch). The first fix here (see docs/specs/human-in-the-loop-protocol.md)
+   * only handled the post-loop path; the thrown path is the one that actually
+   * fires for the AskUserQuestion abort, since abort() always makes the
+   * in-flight `for await` throw before control ever reaches post-loop cleanup.
+   */
+  private async parkNeedsInputAbort(worker: LocalWorker): Promise<void> {
+    console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
+    sessionLog(worker.id, 'info', 'input_as_retry', worker.error || 'needs_input', worker.taskId);
+    this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
+    const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
+    // Mirrors the sibling non-abort branch's local 'waiting' state — the
+    // session is gone here, but 'waiting' + no live session is already a
+    // recognized local state elsewhere in this file.
+    worker.status = 'waiting';
+    worker.currentAction = 'Needs input';
+    worker.hasNewActivity = true;
+    // Not terminal — no completedAt. The worker is still open.
+    // Re-send waitingFor so the dashboard can render the answer UI even
+    // if the earlier sync got 409'd.
+    await this.buildd.updateWorker(worker.id, {
+      status: 'waiting_input',
+      error: worker.error,
+      milestones: worker.milestones,
+      ...(worker.waitingFor ? { waitingFor: worker.waitingFor as any } : {}),
+      ...gitStats,
+    });
+    this.emit({ type: 'worker_update', worker });
+    storeSaveWorker(worker);
+  }
+
   private async startSession(worker: LocalWorker, cwd: string, task: BuilddTask, resumeSessionId?: string) {
     sessionLog(worker.id, 'info', 'session_start', `mode=${task.mode || 'execution'} resume=${!!resumeSessionId} cwd=${cwd}`, task.id);
     const isSensitive = worker.workspaceDataClass === 'sensitive';
@@ -1991,6 +2037,8 @@ export class WorkerManager {
           title: task.title,
           description: task.description,
           pathManifest: task.pathManifest,
+          // Carries the claim-time predicted file area for treatment-arm tasks.
+          context: (task as any).context,
         }, 5),
         this.buildd.searchFeedbackMemories(task.workspaceId),
       ]);
@@ -2002,6 +2050,7 @@ export class WorkerManager {
         derivedBy: taskMemory.derivedBy,
         results: taskMemory.results.length,
         scopePaths: taskMemory.scopePaths.length,
+        predictedPaths: taskMemory.predictedPaths.length,
         inferredPaths: taskMemory.inferredPaths.length,
         pathScopeMissed: taskMemory.pathScopeMissed,
       }), task.id);
@@ -2048,7 +2097,6 @@ export class WorkerManager {
         inputAsRetry: this.config.inputAsRetry,
         resolvedContextProviders: (task.context as any)?.resolvedContextProviders as string[] | undefined,
         feedbackMemories,
-        memoryDigestTaskScopedFraction: this.config.memoryDigestTaskScopedFraction,
       });
       let promptText = built.promptText;
 
@@ -3287,28 +3335,26 @@ export class WorkerManager {
         }
       }
 
-      // One composition record per prompt build, in BOTH arms. The control row
-      // is the denominator: without it, "no task_scoped prompts" and "no
-      // prompts at all" look identical.
+      // One composition record per prompt build — what the workspace-memory
+      // block cost, on the durable rail the concluded memory-digest
+      // experiment left behind (see memory-digest-policy.ts).
       //
       // Deliberately emitted HERE — below the Codex AGENTS.md prepend above and
       // below the tenant-context append — because this is the last line that
       // mutates promptText. Built any earlier, promptBytes is short by whatever
       // a later branch adds and memoryShare is correspondingly inflated.
       const composition = buildPromptCompositionRecord({
-        assignment: built.assignment,
         memory: built.memory,
         promptText,
         backend: task.backend,
         taskMatchDerivedBy: taskMemory.derivedBy,
       });
       sessionLog(worker.id, 'info', 'prompt-composition', JSON.stringify(composition), task.id);
-      // Also on stdout, as a live "is the arm firing at all" signal. Whether
+      // Also on stdout, as a live "is this firing at all" signal. Whether
       // that outlives the process is a property of the deployment's launcher,
       // not of this code: the reference one appends to a container-local file
       // inside a restart loop, so it accumulates history but is unrotated and
-      // dies with the container. Neither sink is a queryable rail — see the
-      // open question in the design doc.
+      // dies with the container. Neither sink is a queryable rail.
       console.log('[prompt-composition]', JSON.stringify({ workerId: worker.id, taskId: task.id, ...composition }));
       // Durable, queryable rail: neither of the above survives long enough or
       // is queryable enough to analyse the arm across a task's retry chain.
@@ -3515,28 +3561,7 @@ export class WorkerManager {
       // `/respond` and `cleanupStuckWaitingInput` own the eventual resolution
       // (answer, or timeout after 4h/24h) — this path only parks.
       if (worker.error?.startsWith('needs_input')) {
-        console.log(`[Worker ${worker.id}] inputAsRetry: parking as waiting_input — ${worker.error}`);
-        sessionLog(worker.id, 'info', 'input_as_retry', worker.error, worker.taskId);
-        this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
-        const gitStats = await collectGitStats(this.sessions.get(worker.id)?.cwd, worker.id, worker.commits.length, worker.worktreeBaseRef);
-        // Mirrors the sibling non-abort branch's local 'waiting' state — the
-        // session is gone here, but 'waiting' + no live session is already a
-        // recognized local state elsewhere in this file.
-        worker.status = 'waiting';
-        worker.currentAction = 'Needs input';
-        worker.hasNewActivity = true;
-        // Not terminal — no completedAt. The worker is still open.
-        // Re-send waitingFor so the dashboard can render the answer UI even
-        // if the earlier sync got 409'd.
-        await this.buildd.updateWorker(worker.id, {
-          status: 'waiting_input',
-          error: worker.error,
-          milestones: worker.milestones,
-          ...(worker.waitingFor ? { waitingFor: worker.waitingFor as any } : {}),
-          ...gitStats,
-        });
-        this.emit({ type: 'worker_update', worker });
-        storeSaveWorker(worker);
+        await this.parkNeedsInputAbort(worker);
         return;
       }
 
@@ -3849,6 +3874,21 @@ export class WorkerManager {
           return;
         }
       } catch { /* non-fatal — proceed with fail */ }
+
+      // The AskUserQuestion abort handler (handleMessage) sets worker.error to
+      // 'needs_input: <question>' and calls abortController.abort() BEFORE this
+      // catch runs — that abort() is exactly what makes the SDK's async
+      // generator throw and lands us here, so this is the path that actually
+      // fires for that abort, not the post-loop branch below (which only runs
+      // when the query loop exits without throwing). Must be checked before the
+      // generic isAbortError handling: a parked question is not a crash, and
+      // reporting status:'failed' here fed the mission auto-retry gate and
+      // classifyReportedFailure's code_failure default. See
+      // docs/specs/human-in-the-loop-protocol.md.
+      if (worker.error?.startsWith('needs_input')) {
+        await this.parkNeedsInputAbort(worker);
+        return;
+      }
 
       this.addCheckpoint(worker, CheckpointEvent.TASK_ERROR);
 

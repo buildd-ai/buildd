@@ -240,3 +240,105 @@ describe('retrieveTaskMemory — inferred paths (step 2)', () => {
     expect(r.derivedBy).toBe('title_phrase');
   });
 });
+
+describe('retrieveTaskMemory — predicted area (step 2)', () => {
+  const PREDICTED = ['apps/web/src/lib/knowledge-context.ts', 'packages/core/path-overlap.ts'];
+  const DESC = 'The bug is in packages/core/memory-store.ts';
+
+  /** Treatment-arm hint, exactly as the claim route mirrors it onto task.context. */
+  const hint = (paths: string[] = PREDICTED) => ({
+    predictedTaskArea: {
+      arm: 'neighbour_area',
+      policyVersion: 'task-area-v1',
+      paths,
+      source: 'diff',
+    },
+  });
+
+  /** Routes by which path set was sent, so the steps can be told apart. */
+  function routed(byStep: Record<'declared' | 'predicted' | 'inferred' | 'title', TaskMemoryObservation[]>) {
+    const calls: Call[] = [];
+    const s: ObservationSearcher & { calls: Call[] } = {
+      calls,
+      async searchObservations(_ws, query, limit, files) {
+        calls.push({ query, limit, files });
+        if (!files?.length) return byStep.title;
+        if (files.some(f => PREDICTED.includes(f))) return byStep.predicted;
+        if (files.includes('apps/runner/src/index.ts')) return byStep.declared;
+        return byStep.inferred;
+      },
+    };
+    return s;
+  }
+
+  test('a treatment-arm task is scoped by what similar completed tasks touched', async () => {
+    const s = routed({ declared: [], predicted: [mem('p')], inferred: [mem('i')], title: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC, context: hint() }));
+
+    expect(r.derivedBy).toBe('predicted_area');
+    expect(r.results.map(m => m.id)).toEqual(['p']);
+    expect(r.predictedPaths).toEqual(PREDICTED);
+    expect(s.calls[0].files).toEqual(PREDICTED);
+  });
+
+  // The prediction is a union over OTHER tasks' diffs; a declaration is this
+  // task's author speaking. Same reasoning that keeps the regex step behind it.
+  test('a declared manifest still wins, and costs no extra round trip', async () => {
+    const s = routed({ declared: [mem('a')], predicted: [mem('p')], inferred: [], title: [] });
+    const r = await retrieveTaskMemory(s, task({ description: DESC, context: hint() }));
+
+    expect(r.derivedBy).toBe('path_manifest');
+    expect(r.predictedPaths).toEqual([]);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test('falls through predicted → inferred → title when the prediction misses', async () => {
+    const s = routed({ declared: [], predicted: [], inferred: [], title: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC, context: hint() }));
+
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(s.calls.map(c => (c.files?.length ? c.files.join(',') : 'title'))).toEqual([
+      PREDICTED.join(','),
+      'packages/core/memory-store.ts',
+      'title',
+    ]);
+  });
+
+  // The absence of a hint IS the control arm — no arm logic lives in the
+  // runner, so a control session must be indistinguishable from one built
+  // before the experiment existed.
+  test('a control-arm task behaves exactly as before: no hint, no extra call', async () => {
+    const s = routed({ declared: [], predicted: [mem('p')], inferred: [mem('i')], title: [] });
+    const r = await retrieveTaskMemory(s, task({
+      pathManifest: [],
+      description: DESC,
+      context: { predictedTaskArea: { ...hint().predictedTaskArea, arm: 'regex_paths' } },
+    }));
+
+    expect(r.derivedBy).toBe('inferred_paths');
+    expect(r.predictedPaths).toEqual([]);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  test('a malformed hint degrades to the control, it does not throw', async () => {
+    const s = routed({ declared: [], predicted: [], inferred: [mem('i')], title: [] });
+    for (const context of [undefined, {}, { predictedTaskArea: 'yes' }, { predictedTaskArea: { paths: [] } }]) {
+      const r = await retrieveTaskMemory(s, task({ pathManifest: [], description: DESC, context }));
+      expect(r.predictedPaths).toEqual([]);
+      expect(r.derivedBy).toBe('inferred_paths');
+    }
+  });
+
+  test('the repo-wide sentinel is stripped from a predicted area too', async () => {
+    const s = routed({ declared: [], predicted: [], inferred: [], title: [mem('t')] });
+    const r = await retrieveTaskMemory(s, task({
+      pathManifest: [],
+      description: 'no paths here',
+      context: hint(['**']),
+    }));
+
+    expect(r.predictedPaths).toEqual([]);
+    expect(r.derivedBy).toBe('title_phrase');
+    expect(s.calls).toHaveLength(1);
+  });
+});

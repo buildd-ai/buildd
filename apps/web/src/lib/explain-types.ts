@@ -11,7 +11,8 @@
  * caller that wants prose writes it; `explain` never does, and never calls a
  * model to get it.
  */
-import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource } from './mission-state-view';
+import type { MissionStateKind, WaitingOnDescriptor, MissionStateSource, MissionSituation } from './mission-state-view';
+import { OUTSTANDING_RANK } from './mission-state-view';
 
 export type ExplainScope = 'task' | 'mission' | 'workspace' | 'pr';
 
@@ -66,6 +67,7 @@ export type CausalLinkSource =
   | 'workers.mergedAt + workers.observedTouches ∪ tasks.pathManifest'
   | 'workers.observedTouches ∪ tasks.pathManifest (no intersection)'
   | 'workers.prLifecycleStatus + workers.conflictDetectedAt'
+  | 'gate_events.detail.consecutiveDeferrals'
   | 'tasks.subjectPrNumber + workers.mergedAt'
   | 'workers.mergedAt + workers.prLifecycleStatus + workers.supersededByPrNumber';
 
@@ -143,6 +145,16 @@ export interface ExplainAnswer {
   state: MissionStateKind;
   /** Straight off the accessor. Null only on `complete` / `idle` / `running`. */
   waitingOn: WaitingOnDescriptor | null;
+  /**
+   * Every fact outstanding right now, ranked — NOT just the one that won
+   * precedence. Leads with `waitingOn` when that is non-null. A subject reading
+   * `running` with an open PR reports the PR here; `waitingOn` alone cannot,
+   * and a consumer that trusted `waitingOn === null` to mean "nothing to do"
+   * was reading a verdict as an inventory.
+   */
+  outstanding: readonly WaitingOnDescriptor[];
+  /** The one plain-language line the mission surfaces render. */
+  situation: MissionSituation;
   /** Ordered cause → effect, hard refs on every element. */
   because: CausalLink[];
   history: HistoryNode[];
@@ -169,24 +181,15 @@ export interface ExplainResult {
 /**
  * Rank for the workspace scope: which blockers a human should look at first.
  *
- * Ordered by who has to act and how stuck the work is. A self-resolving wait
- * ranks last on purpose — it resolves without anyone, so surfacing it above a
- * failed task would be the same "everything shouted equally" failure one level
- * up.
+ * This is `OUTSTANDING_RANK` from the accessor, not a second table. Ordered by
+ * who has to act and how stuck the work is; a self-resolving wait ranks last on
+ * purpose — it resolves without anyone, so surfacing it above a failed task
+ * would be the same "everything shouted equally" failure one level up. The
+ * mission header ranks its outstanding facts with the same numbers, so
+ * `explain` and the screen cannot disagree about what matters most.
  */
-const WAITING_ON_RANK: Record<WaitingOnDescriptor['kind'], number> = {
-  task_failed: 0,
-  human_decision: 1,
-  dependency: 2,
-  merge: 3,
-  criterion_failing: 4,
-  task: 5,
-  criterion_unverified: 6,
-  self_resolving_wait: 7,
-};
-
 export function waitingOnRank(waitingOn: WaitingOnDescriptor | null): number {
-  return waitingOn ? WAITING_ON_RANK[waitingOn.kind] : Number.MAX_SAFE_INTEGER;
+  return waitingOn ? OUTSTANDING_RANK[waitingOn.kind] : Number.MAX_SAFE_INTEGER;
 }
 
 /** Sort gated subjects most-actionable first; ties break on subject label for stability. */

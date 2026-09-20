@@ -2997,6 +2997,112 @@ describe('POST /api/tasks', () => {
     });
   });
 
+  describe('emitsPlan (spec-to-build)', () => {
+    function setupEmitsPlanAuth() {
+      mockGetCurrentUser.mockResolvedValue(null);
+      mockAccountsFindFirst.mockResolvedValue({ id: 'account-1', apiKey: 'bld_test' });
+      mockWorkspacesFindFirst.mockResolvedValue({ id: 'ws-1', teamId: 'team-1' });
+      mockResolveCreatorContext.mockResolvedValue({
+        createdByAccountId: 'account-1',
+        createdByWorkerId: null,
+        creationSource: 'api',
+        parentTaskId: null,
+      });
+    }
+
+    function captureInsert() {
+      const createdTask = { id: 'task-ep', workspaceId: 'ws-1', title: 'Task', status: 'pending' };
+      const captured: { values: any } = { values: null };
+      mockTasksInsert.mockReturnValue({
+        values: mock((values: any) => {
+          captured.values = values;
+          return { returning: mock(() => [createdTask]) };
+        }),
+      });
+      return captured;
+    }
+
+    it('forces mode: planning and context.requiresPlanApproval: true, overriding whatever the caller passed', async () => {
+      setupEmitsPlanAuth();
+      const captured = captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Spec: something',
+          description: 'write a spec and propose a breakdown',
+          emitsPlan: true,
+          pathManifest: ['docs/design/something.md'],
+          // Caller tries to undo the forced fields — both must be ignored.
+          mode: 'execution',
+          context: { requiresPlanApproval: false },
+        },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(captured.values.mode).toBe('planning');
+      expect(captured.values.context.requiresPlanApproval).toBe(true);
+    });
+
+    it('rejects creation when pathManifest is missing', async () => {
+      setupEmitsPlanAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Spec: something',
+          description: 'write a spec and propose a breakdown',
+          emitsPlan: true,
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('emitsPlan: true');
+      expect(data.error).toContain('pathManifest');
+    });
+
+    it('rejects creation when pathManifest is an empty array', async () => {
+      setupEmitsPlanAuth();
+      captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: {
+          workspaceId: 'ws-1',
+          title: 'Spec: something',
+          emitsPlan: true,
+          pathManifest: [],
+        },
+      }));
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('pathManifest');
+    });
+
+    it('leaves mode and requiresPlanApproval untouched for a plain create_task call', async () => {
+      setupEmitsPlanAuth();
+      const captured = captureInsert();
+
+      const response = await POST(createMockRequest({
+        method: 'POST',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { workspaceId: 'ws-1', title: 'Ordinary task' },
+      }));
+
+      expect(response.status).toBe(200);
+      expect(captured.values.mode).toBe('execution');
+      expect(captured.values.context?.requiresPlanApproval).toBeUndefined();
+    });
+  });
+
   // ── Pre-dispatch subject dedupe ────────────────────────────────────────────
   //
   // prepareSubjectFiling already resolves the incoming anchor against the live

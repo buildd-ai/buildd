@@ -22,19 +22,13 @@ import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { fireDeferralEvent, GATE_SLUGS } from './gate-ledger';
-
-/**
- * A task pending past its own `startAt` by more than 2 hours is stranded (the
- * `interval '2 hours'` literal in the query below — kept inline since it's a
- * SQL interval, not a JS duration this module otherwise consumes).
- *
- * A task with no `startAt` at all (blocked by a gate that never sets one —
- * `workspace_cap`, `mission_paced`, `advisory_manifest`, etc.) is stranded once
- * the SAME reason has fired this many consecutive polls. Sized against a
- * runner's ~30s heartbeat poll so the two detection paths land in the same
- * rough 2-hour ballpark rather than one firing hours before the other.
- */
-const STRAND_CONSECUTIVE_THRESHOLD = 200;
+// A task pending past its own `startAt` by more than 2 hours is stranded (the
+// `interval '2 hours'` literal in the query below — kept inline since it's a
+// SQL interval, not a JS duration this module otherwise consumes). The
+// counter-based path shares its threshold with the mission header's much
+// earlier surfacing threshold, so the two cannot drift apart — see
+// `claim-deferral-thresholds.ts`.
+import { STRAND_CONSECUTIVE_THRESHOLD } from './claim-deferral-thresholds';
 
 const STRANDED_NOTE_PREFIX = '[stranded]';
 

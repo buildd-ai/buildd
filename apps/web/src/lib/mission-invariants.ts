@@ -1,10 +1,10 @@
 /**
  * Mission-state invariants — the pure half of the hourly sweep.
  *
- * Fourteen named records, each of which is a defect shape that actually shipped
+ * Fifteen named records, each of which is a defect shape that actually shipped
  * and then sat unnoticed for hours or days because nothing in the system could
  * express it as a question. `deriveMissionHealth` answers "how is this mission
- * doing" from task counts; none of these thirteen are visible in task counts.
+ * doing" from task counts; none of these fifteen are visible in task counts.
  *
  * ── The check is code, the fix is an agent ──────────────────────────────────
  * Every predicate here is plain JavaScript over rows the caller already read.
@@ -89,6 +89,18 @@ export const MISSION_MERGED_TWICE_MS = 0;
  * report even then.
  */
 export const PLAN_PRODUCED_NO_CHILDREN_MS = 2 * HOUR;
+
+/**
+ * Zero — deliberately, and not the same reasoning as `MISSION_MERGED_TWICE_MS`.
+ * There is no legitimate delay to wait out here: `requiresPlanApproval` means
+ * the plan is *never* auto-approved, so "a human hasn't looked yet" is true the
+ * instant the planning task completes, not just after some transient settles.
+ * This invariant is a status signal, not a bug detector — it should be visible
+ * from the first sweep, and it stays visible for as long as the plan sits
+ * unapproved, however long that turns out to be. See `spec-to-build-pattern.md`
+ * "Failure modes": a spec-authored plan must never time out into auto-dispatch.
+ */
+export const PLAN_AWAITING_APPROVAL_MS = 0;
 
 /**
  * The escalation already worked — a human owes the mission a decision and the
@@ -236,6 +248,16 @@ export interface SnapshotTask {
   outputRequirement: string | null;
   /** `context.baseBranch` — where the task was TOLD to base its PR. */
   contextBaseBranch: string | null;
+  /**
+   * `context.requiresPlanApproval === true` — a plan that must be approved by a
+   * human, never auto-approved. Forced on every `emitsPlan` spec task
+   * (`docs/design/spec-to-build-pattern.md` Proposal §2) and settable directly
+   * via `context`. Splits `plan_produced_no_children` (whose remedy assumes the
+   * approval path is broken) from `plan_awaiting_approval` (whose whole point
+   * is that nothing is broken — the plan is exactly where it should be until a
+   * human looks at it).
+   */
+  requiresPlanApproval: boolean;
   /** `result.structuredOutput.plan`, verbatim — see {@link countPlanSteps}. */
   planRaw: unknown;
   /** Number of tasks whose `parentTaskId` is this task. */
@@ -356,6 +378,7 @@ export type InvariantKey =
   | 'worker_on_integration_branch'
   | 'mission_merged_twice'
   | 'plan_produced_no_children'
+  | 'plan_awaiting_approval'
   | 'criteria_escalated_unanswered'
   | 'stranded_commits'
   | 'release_without_head'
@@ -539,7 +562,7 @@ export function countPlanSteps(raw: unknown): number {
   return 0;
 }
 
-// ── The thirteen ────────────────────────────────────────────────────────────
+// ── The fifteen ─────────────────────────────────────────────────────────────
 
 export const INVARIANTS: Invariant[] = [
   {
@@ -738,6 +761,13 @@ export const INVARIANTS: Invariant[] = [
       const out: InvariantViolation[] = [];
       for (const t of s.tasks) {
         if (t.mode !== 'planning' || t.status !== 'completed') continue;
+        // A `requiresPlanApproval` plan is never auto-dispatched, so "the
+        // approval path could not act on it" is the wrong diagnosis for it —
+        // that's exactly the expected, working state `plan_awaiting_approval`
+        // names below. Reporting it here too would suggest the remedy
+        // (re-approve it) is a bug fix rather than the one action this plan
+        // is deliberately waiting on.
+        if (t.requiresPlanApproval) continue;
         const steps = countPlanSteps(t.planRaw);
         if (steps === 0 || t.childCount > 0) continue;
         const ageMs = olderThan(now, t.updatedAt, PLAN_PRODUCED_NO_CHILDREN_MS);
@@ -747,6 +777,46 @@ export const INVARIANTS: Invariant[] = [
           entityKind: 'task',
           workspaceId: t.workspaceId,
           detail: `${steps}-step plan, 0 child tasks, completed ${Math.round(ageMs / HOUR)}h ago`,
+          ageMs,
+        });
+      }
+      return out;
+    },
+  },
+
+  {
+    key: 'plan_awaiting_approval',
+    title: 'Completed plan requires human approval and none has been given',
+    thresholdMs: PLAN_AWAITING_APPROVAL_MS,
+    remedy:
+      'This is the point of a spec-authored plan: it will not auto-dispatch, no matter how long it waits. ' +
+      'Review it and call POST /api/tasks/[id]/approve-plan to create the child tasks, or ' +
+      'POST /api/tasks/[id]/reject-plan with feedback to send it back for revision.',
+    // Report-only, permanently. Unlike `plan_produced_no_children`'s sibling
+    // remedy, "approve it" here is a human decision this module must never make
+    // for them — see `docs/design/spec-to-build-pattern.md` "Failure modes":
+    // a spec-authored plan has no "today's behavior" to time out into, so
+    // there is nothing this invariant could promote itself to besides staying
+    // report-only. It deliberately does NOT unify with
+    // `docs/design/plan-first-missions.md`'s 24h auto-dispatch invariant —
+    // auto-approving a spec's own breakdown is exactly what "spec before code"
+    // forbids.
+    files: false,
+    resolves: false,
+    query: (s, now) => {
+      const out: InvariantViolation[] = [];
+      for (const t of s.tasks) {
+        if (t.mode !== 'planning' || t.status !== 'completed') continue;
+        if (!t.requiresPlanApproval) continue;
+        const steps = countPlanSteps(t.planRaw);
+        if (steps === 0 || t.childCount > 0) continue;
+        const ageMs = olderThan(now, t.updatedAt, PLAN_AWAITING_APPROVAL_MS);
+        if (ageMs === null) continue;
+        out.push({
+          entityId: t.id,
+          entityKind: 'task',
+          workspaceId: t.workspaceId,
+          detail: `${steps}-step plan awaiting human approval, completed ${Math.round(ageMs / HOUR)}h ago`,
           ageMs,
         });
       }

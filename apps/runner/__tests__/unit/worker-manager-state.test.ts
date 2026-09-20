@@ -19,17 +19,32 @@ import type { LocalWorker, LocalUIConfig } from '../../src/types';
 // Mock SDK query — returns an async iterable that yields controlled messages
 let mockMessages: any[] = [];
 let mockStreamInputFn = mock(() => {});
+// Opt-in (default off, reset every test): when true, the iterator throws an
+// AbortError the moment the real AbortController passed into query() has been
+// aborted, instead of quietly continuing to the next scripted message. This
+// mirrors the real SDK — session.abortController.abort() makes its async
+// generator throw — which the default behavior above does NOT: it lets the
+// loop run to `done: true` regardless of abort(), so it only ever exercises
+// the post-loop cleanup path, never the catch-block path a thrown abort
+// actually takes in production.
+let mockThrowOnAbort = false;
 
 mock.module('@anthropic-ai/claude-agent-sdk', () => ({
-  query: (_opts: any) => {
+  query: (opts: any) => {
     const msgs = [...mockMessages];
     let idx = 0;
+    const signal = opts?.options?.abortController?.signal as AbortSignal | undefined;
     return {
       streamInput: mockStreamInputFn,
       supportedModels: async () => [],
       [Symbol.asyncIterator]() {
         return {
           async next() {
+            if (mockThrowOnAbort && signal?.aborted) {
+              const err = new Error('The operation was aborted.');
+              err.name = 'AbortError';
+              throw err;
+            }
             if (idx < msgs.length) {
               return { value: msgs[idx++], done: false };
             }
@@ -192,6 +207,7 @@ describe('WorkerManager — state transitions', () => {
 
   beforeEach(() => {
     mockMessages = [];
+    mockThrowOnAbort = false;
     mockUpdateWorker.mockClear();
     mockClaimTask.mockReset();
     mockClaimTask.mockResolvedValue({ workers: [] });
@@ -473,6 +489,68 @@ describe('WorkerManager — state transitions', () => {
         (call: any[]) => call[1]?.status === 'failed'
       );
       expect(failedCalls.length).toBe(0);
+    });
+
+    // Regression for the live bug: session.abortController.abort() (called
+    // synchronously right after the immediate waiting_input sync above) makes
+    // the REAL SDK's async generator throw on its next iteration — the outer
+    // catch block, not the post-loop cleanup branch above, is what actually
+    // runs for this abort in production. The sibling test above uses the
+    // default mock iterator, which ignores abort() and keeps yielding
+    // scripted messages, so it only ever exercises the post-loop branch and
+    // would pass even if the catch block still reported 'failed'. This test
+    // opts into the abort-throws mock to exercise the path that is actually
+    // reached, and is what would have caught the bug (#2050 fixed only the
+    // unreachable branch; the reachable one still booked these as
+    // code_failure and blind-retried mission tasks into the same unanswered
+    // question).
+    test('a thrown AbortError from the real abort path also parks as waiting_input, not failed', async () => {
+      mockThrowOnAbort = true;
+      mockMessages = [
+        { type: 'system', subtype: 'init', session_id: 'sess-retry-throw' },
+        {
+          type: 'assistant',
+          message: {
+            content: [{
+              type: 'tool_use',
+              id: 'toolu_retry_throw',
+              name: 'AskUserQuestion',
+              input: {
+                questions: [{ question: 'Should the mission branch merge now?', header: 'Merge now?' }],
+              },
+            }],
+          },
+        },
+        // Never reached when the abort mock is armed — the iterator throws
+        // before yielding this. Left in to prove the assertions below aren't
+        // passing merely because there was nothing left to mis-report.
+        { type: 'result', subtype: 'success', session_id: 'sess-retry-throw' },
+      ];
+
+      mockClaimTask.mockImplementation(async () => ({ workers: [{
+        id: 'w-retry-throw',
+        branch: 'buildd/retry-throw',
+        task: makeTask(),
+      }] }));
+
+      manager = new WorkerManager(makeConfig({ inputAsRetry: true }));
+      await manager.claimAndStart(makeTask());
+      await new Promise(r => setTimeout(r, 200));
+
+      const worker = manager.getWorker('w-retry-throw');
+      expect(worker?.status).toBe('waiting');
+      expect(worker?.error).toContain('needs_input');
+      expect(worker?.waitingFor?.prompt).toBe('Should the mission branch merge now?');
+
+      const failedCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'failed'
+      );
+      expect(failedCalls.length).toBe(0);
+
+      const waitingCalls = mockUpdateWorker.mock.calls.filter(
+        (call: any[]) => call[1]?.status === 'waiting_input'
+      );
+      expect(waitingCalls.length).toBeGreaterThanOrEqual(1);
     });
 
     test('syncs waiting_input to server and stays waiting_input (never marks failed)', async () => {

@@ -224,6 +224,17 @@ export interface EscalationRawItem {
    * check, so it cannot answer "do we actually know this PR's state".
    */
   prLifecycleVerifiedAt?: Date | null;
+  /**
+   * Set only for a mission's own integration PR (the "Ship mission: ..."
+   * bookkeeping task) when `guardMissionPrMerge` currently refuses to merge
+   * it — the reason names the blocking task/PR. Re-derived live by the
+   * caller on every queue build via a fresh `guardMissionPrMerge` call, the
+   * same live-re-check pattern QUESTION and DECIDE use (see the freshness
+   * rule at the top of this file): there is no persisted flag to trust here,
+   * only a DB read taken at build time. Never set for an ordinary task PR —
+   * `guardMissionPrMerge` itself is a no-op for those.
+   */
+  missionMergeBlockedReason?: string | null;
 }
 
 export interface ActionQueueItem {
@@ -319,6 +330,8 @@ export interface ActionQueueItem {
    * real blocker instead of assuming completion means merged.
    */
   docFixPrLifecycleStatus?: string | null;
+  /** See {@link EscalationRawItem.missionMergeBlockedReason} — carried through unchanged. */
+  missionMergeBlockedReason?: string | null;
 }
 
 // Chip display order: lower index = shown first.
@@ -785,6 +798,7 @@ export function buildActionQueue(
       conflictRetryIteration: item.conflictRetryIteration ?? undefined,
       deadZoneExhausted: item.deadZoneExhausted ?? undefined,
       deadZoneLastRetryTaskId: item.deadZoneLastRetryTaskId ?? undefined,
+      missionMergeBlockedReason: item.missionMergeBlockedReason ?? null,
     });
   }
 

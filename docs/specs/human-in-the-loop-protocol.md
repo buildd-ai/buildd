@@ -2,13 +2,13 @@
 title: Human-in-the-Loop Protocol
 status: active
 owner: max
-last_verified: 2026-09-04
+last_verified: 2026-09-19
 summary: Every human answer to an agent MUST either reach a live session or become a durable retry task, and MUST NOT be accepted for a worker that can never act on it, applied twice, or reported as delivered when dropped.
 domain: tasks
-surfaces: [apps/web/src/app/api/workers/[id]/instruct/route.ts, apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts]
+surfaces: [apps/web/src/app/api/workers/[id]/respond/route.ts, apps/web/src/app/api/workers/[id]/route.ts, apps/runner/src/workers.ts, apps/web/src/lib/worker-exit-taxonomy.ts]
 related: [mission-task-lifecycle, runner-liveness, mcp-action-contracts]
-keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner]
-verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts]
+keywords: [waiting_input, waitingFor, pendingInstructions, instructionHistory, deliveryState, AskUserQuestion, send_agent_message, inputAsRetry, needs_input, worker-needs-input-banner, contractViolation, exitCause]
+verified_by: [apps/web/src/app/api/workers/[id]/instruct/route.test.ts, apps/web/src/app/api/workers/[id]/respond/route.test.ts, packages/core/__tests__/mcp-tools-send-agent-message.test.ts, apps/web/src/app/api/workers/[id]/route.test.ts, apps/web/src/app/api/workers/[id]/interrupt/route.test.ts, apps/web/src/app/api/tasks/[id]/approve-plan/route.test.ts, apps/runner/__tests__/unit/worker-manager-state.test.ts, apps/web/src/lib/worker-exit-taxonomy.test.ts, apps/web/src/lib/failure-analytics.test.ts, apps/web/src/lib/stale-workers.test.ts, apps/web/src/lib/task-presentation.test.ts]
 supersedes: []
 # Structural conformance only; passing does not certify every prose invariant.
 assertions:
@@ -82,19 +82,65 @@ question — answering spawns a new worker", and that is literal.
 - **`waiting_input` does not imply a live session.** In the runner's default
   mode (`inputAsRetry !== false`) an `AskUserQuestion` tool call is terminal for
   the session: the runner awaits the `waiting_input` sync, then aborts the
-  subprocess. The post-loop cleanup PATCH keeps `status: 'waiting_input'`
-  (carrying `error: 'needs_input: …'` for observability) rather than dropping
-  to `failed` — a parked question is not a crash. Reporting it as `failed` here
-  used to feed the server's generic mission auto-retry gate (blind
-  re-dispatch into the same unanswered question before any human saw it) and
-  the failure-analytics / success-rate-by-role aggregates, and hid the task
-  behind `deriveTaskPhase`'s failed-wins-over-waiting_input precedence
+  subprocess (`session.abortController.abort()`). The abort makes the SDK's
+  async generator throw on its next iteration, so the code path that actually
+  runs for this abort is the outer `catch` in `startSession`
+  (`apps/runner/src/workers.ts`), not the post-loop cleanup branch that runs
+  after the query loop exits without throwing. Both branches share one
+  `parkNeedsInputAbort` helper that keeps `status: 'waiting_input'` (carrying
+  `error: 'needs_input: …'` for observability) rather than dropping to
+  `failed` — a parked question is not a crash. A first fix touched only the
+  post-loop branch, which is unreachable for this abort in practice, so the
+  abort kept reporting `status: 'failed'` in production after that fix merged
+  — the misclassification, the blind mission auto-retry below, and the
+  `deriveTaskPhase` precedence bug all stayed live until both call sites were
+  fixed together. Reporting `failed` here used to feed the server's generic
+  mission auto-retry gate (blind re-dispatch into the same unanswered
+  question before any human saw it) and the failure-analytics /
+  success-rate-by-role aggregates, and hid the task behind
+  `deriveTaskPhase`'s failed-wins-over-waiting_input precedence
   (`apps/web/src/lib/task-presentation.ts`) instead of its dedicated
-  `waiting_input` phase — see the 4164ff29 incident. Every surface that offers
-  an answer affordance still keys on `waitingFor` rather than on a live
-  status — `RealTimeWorkerView` renders `worker-needs-input-banner` from
-  `worker.waitingFor` alone, which now agrees with `status` instead of
-  compensating for it.
+  `waiting_input` phase. Every surface that offers an answer affordance still
+  keys on `waitingFor` rather than on a live status — `RealTimeWorkerView`
+  renders `worker-needs-input-banner` from `worker.waitingFor` alone, which
+  now agrees with `status` instead of compensating for it.
+- **A worker that never reaches `waiting_input` at all — the waiting_input
+  timeout — still carries its own exit cause.** `cleanupStuckWaitingInput`
+  (`apps/web/src/lib/stale-workers.ts`) fails the worker with
+  `exitCause: 'needs_input'` (`apps/web/src/lib/worker-exit-taxonomy.ts`), and
+  the PATCH route classifies the same way for any other `status: 'failed'`
+  report whose error still carries the `needs_input:` prefix
+  (`classifyReportedFailure`'s `needsInput` input). `needs_input` is excluded
+  from `consumesRetryAttempt` (not chargeable — the task was never actually
+  attempted, only blocked) and from `failure-analytics.ts`'s failure rate,
+  exit-cause breakdown and top-signature ranking (`isChargeableFailure`), but
+  remains queryable via `getFailureSignatureFamily`'s `errorPrefix:
+  "needs_input:"` rollup, which intentionally scans every failed/error row
+  regardless of this exclusion.
+- **`deriveTaskPhase` checks a pending question before a failed task status.**
+  (`apps/web/src/lib/task-presentation.ts`). The waiting_input timeout — and
+  any other path that still reports `needs_input` as a failure — flips
+  `tasks.status` to `'failed'` as part of building its retry; if the phase
+  derivation checked `taskStatus === 'failed'` first, the `waiting_input`
+  phase (and the respond affordance rendered from it) could never appear once
+  that happened. A genuine `completed` task status still wins over a stale
+  `waitingFor`.
+- **The mission auto-retry gate excludes `needs_input`.** The PATCH route's
+  per-task auto-retry (`shouldAutoRetry`, gated on `status === 'failed'`) must
+  never blind-requeue a task whose failure is a parked question — that
+  re-dispatches a worker into the same unanswered question before a human
+  ever sees it, wasting a worker and discarding the question. This should be
+  structurally unreachable now that the abort itself reports
+  `waiting_input`, not `failed`; the exemption is defense-in-depth for the
+  remaining `status: 'failed'` paths above.
+- **A contentless question is a contract violation, not a silent accept.**
+  When the PATCH route persists a `waitingFor.type === 'question'` payload
+  whose `prompt` is empty, whitespace-only, or the runner's own fallback text
+  (`'Awaiting input'` — used when `AskUserQuestion` was called with no
+  `question` text), it stamps `waitingFor.contractViolation: true` in the
+  same write. The flag is a boolean, not prose, so it survives the
+  `sensitive`-workspace redaction that otherwise drops `prompt` to `{ type }`
+  alone.
 
 **Acceptance criteria**:
 - AC-HITL-1: GIVEN a runner PATCH with `status: 'waiting_input'` and
@@ -107,12 +153,54 @@ question — answering spawns a new worker", and that is literal.
 - AC-HITL-3: GIVEN a worker in `waiting_input` WHEN a PATCH with
   `status: 'running'` and no `waitingFor` key arrives THEN `waitingFor` is set
   to `null` in the same update.
+- AC-HITL-32: GIVEN a `session.abortController.abort()`-triggered thrown
+  AbortError for a `needs_input:`-prefixed `worker.error` (the actual runtime
+  path, not the post-loop-exit path) WHEN the runner's outer catch handles it
+  THEN the worker is reported `status: 'waiting_input'`, never `'failed'`.
+- AC-HITL-33: GIVEN a `waiting_input` timeout (`cleanupStuckWaitingInput`) or
+  any `status: 'failed'` report whose error starts with `needs_input:` WHEN
+  the worker row is written THEN `exitCause` is `'needs_input'`, it is
+  excluded from `failure-analytics.ts`'s failure rate and top-signature
+  ranking, and it does not consume a retry attempt
+  (`consumesRetryAttempt`), but remains retrievable via
+  `getFailureSignatureFamily(errorPrefix: "needs_input:")`.
+- AC-HITL-34: GIVEN a mission task whose worker reports `status: 'failed'`
+  with a `needs_input:`-prefixed error WHEN the PATCH route evaluates its
+  auto-retry gate THEN `shouldAutoRetry` is `false` — the task is not
+  blind-requeued ahead of a human answering.
+- AC-HITL-35: GIVEN `taskStatus: 'failed'` and a live `workerWaitingFor` (or
+  `workerStatus: 'waiting_input'`) WHEN `deriveTaskPhase` runs THEN the result
+  is `'waiting_input'`, not `'failed'`; GIVEN `taskStatus: 'completed'` WHEN
+  the same stale `workerWaitingFor` is present THEN the result is still
+  `'completed'`.
+- AC-HITL-36: GIVEN a `waitingFor.type === 'question'` payload whose `prompt`
+  is empty, whitespace-only, or the literal runner fallback `'Awaiting input'`
+  WHEN the PATCH route persists it THEN the stored `waitingFor` carries
+  `contractViolation: true`; GIVEN a real question text THEN the field is
+  absent.
 
 **Code surface**:
-- `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact),
-  `:456` (notify with respond link), `:470` (auto-clear on resume)
-- `apps/runner/src/workers.ts:4265` (`AskUserQuestion` handling), `:3215`
-  (`inputAsRetry` abort branch — post-loop cleanup, parks as `waiting_input`)
+- `apps/web/src/app/api/workers/[id]/route.ts:450` (persist + redact,
+  contract-violation flag), `:456` (notify with respond link), `:470`
+  (auto-clear on resume), classify call site (`isNeedsInput` /
+  `classifyReportedFailure`), mission auto-retry gate (`isNeedsInput` exemption
+  on `shouldAutoRetry`)
+- `apps/runner/src/workers.ts`: `AskUserQuestion` handling (sets
+  `worker.error = 'needs_input: …'` and calls `abortController.abort()`),
+  `parkNeedsInputAbort` (shared helper — parks as `waiting_input`), called
+  from both the post-loop cleanup branch AND the outer `catch`'s
+  `isAbortError` handling — the latter is the path that actually fires in
+  production for this abort
+- `apps/web/src/lib/worker-exit-taxonomy.ts` (`needs_input` exit cause,
+  `classifyReportedFailure`'s `needsInput` input, `consumesRetryAttempt`
+  exclusion)
+- `apps/web/src/lib/failure-analytics.ts` (`isChargeableFailure` — excludes
+  `needs_input` from the failure rate / signature ranking while
+  `buildSignatureFamily` still scans it)
+- `apps/web/src/lib/stale-workers.ts` (`cleanupStuckWaitingInput` writes
+  `exitCause: 'needs_input'`)
+- `apps/web/src/lib/task-presentation.ts` (`deriveTaskPhase` — pending
+  question checked before `taskStatus === 'failed'`)
 - `apps/web/src/app/api/tasks/waiting-input/route.ts`
 - `apps/web/src/app/app/(protected)/tasks/[id]/RealTimeWorkerView.tsx:331`
   (`worker-needs-input-banner`), fixtures at

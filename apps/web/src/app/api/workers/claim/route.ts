@@ -52,6 +52,8 @@ import {
   attachKnowledgeContext,
   attachSubjectPriorWork,
   attachDiscrepancyContext,
+  attachTaskAreaScope,
+  predictTaskAreas,
 } from './context-injection';
 import {
   attachClaudeCredentials,
@@ -808,6 +810,7 @@ export async function POST(req: NextRequest) {
     routing_paused: 0,
     duplicate_worker: 0,
     runner_capability: 0,
+    codex_single_flight: 0,
   };
 
   // One gate_events row per (task, reason) examined-and-not-dispatched this
@@ -1057,6 +1060,15 @@ export async function POST(req: NextRequest) {
   }
 
   for (const task of filteredTasks) {
+    // Captured before any provider-toggle/budget-failover flip below can mutate
+    // (task as any).backend, so the Codex single-flight check further down tests
+    // what this task WAS ASSIGNED, not what it may have just been flipped to.
+    // `tryFlipToCodex` already refuses to flip into a busy/already-flipped
+    // workspace, so a flip-produced Codex task can never trip that check anyway —
+    // this only needs to catch the task that was Codex from creation and so never
+    // goes through `tryFlipToCodex` at all.
+    const taskOriginallyCodex = (task as any).backend === 'codex';
+
     // Skip tasks whose required connectors are not available in the claiming workspace.
     // connectorMismatchTaskIds is populated by the pre-filter block above.
     if (connectorMismatchTaskIds.has(task.id)) { deferTask(task, 'connector_mismatch'); continue; }
@@ -1312,6 +1324,29 @@ export async function POST(req: NextRequest) {
     }
 
     const isCodexTask = (task as any).backend === 'codex';
+
+    // Codex single-flight (≤1 Codex worker per workspace): a task that was
+    // already assigned backend='codex' at creation time never goes through
+    // `tryFlipToCodex` (that guard only runs for a flip decision), so without
+    // this check it sailed straight through to the atomic claim below and the
+    // constraint was only discovered after a worker had already started —
+    // enforced by killing it (see the runner's startFromClaim single-flight
+    // check, kept as a race backstop for two concurrent claim requests this
+    // in-batch check can't see). Deferring here means the task stays pending
+    // and is retried on a later poll once the workspace's one Codex slot
+    // frees, at zero worker cost. codexBusyWorkspaces also picks up a Codex
+    // task claimed earlier in THIS batch (see the post-claim bookkeeping
+    // below), so two originally-Codex tasks for the same workspace in one
+    // poll don't both get claimed.
+    if (
+      taskOriginallyCodex &&
+      isCodexTask && // still resolved to Codex — the toggle/wall reroutes above may have moved it to Claude
+      (codexBusyWorkspaces.has(task.workspaceId) || codexFlippedWorkspaces.has(task.workspaceId))
+    ) {
+      deferTask(task, 'codex_single_flight', { workspaceId: task.workspaceId });
+      continue;
+    }
+
     const claudeBudgetBlocked = !isCodexTask && claudePoolBlocked;
 
     // Proactive budget failover: rather than skip a Claude task until the session/
@@ -1494,6 +1529,13 @@ export async function POST(req: NextRequest) {
 
     // Count this claim toward the per-workspace cap for the rest of the batch.
     activeByWorkspace.set(task.workspaceId, (activeByWorkspace.get(task.workspaceId) || 0) + 1);
+
+    // Mirror into the Codex single-flight tracker so a second originally-Codex
+    // task for this workspace, later in the same batch, hits the defer above
+    // instead of claiming alongside the one just claimed here.
+    if (isCodexTask) {
+      codexBusyWorkspaces.add(task.workspaceId);
+    }
 
     // Mission-level post-claim bookkeeping: update in-memory counters so
     // subsequent tasks in the same batch respect the gates we just passed.
@@ -1757,13 +1799,20 @@ export async function POST(req: NextRequest) {
   await attachSkillBundles(claimedWorkers, filteredTasks, account.id);
   await attachRoleConfig(claimedWorkers, filteredTasks, account.id);
 
-  // Prompt-context injection. ORDER IS THE CONTRACT: these four append to the
+  // Predict each task's file area from what similar COMPLETED tasks actually
+  // touched, before any block is built — attachKnowledgeContext uses it as its
+  // path filter. Advisory and never written to tasks.path_manifest; see
+  // @buildd/core/task-area-prediction.
+  const taskAreaPredictions = await predictTaskAreas(filteredTasks);
+
+  // Prompt-context injection. ORDER IS THE CONTRACT: these five append to the
   // same resolvedContextProviders rail and the runner concatenates it in order.
   // See ./context-injection.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
-  await attachKnowledgeContext(claimedWorkers, filteredTasks);
+  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions);
   await attachSubjectPriorWork(claimedWorkers, filteredTasks);
   await attachDiscrepancyContext(claimedWorkers, filteredTasks);
+  await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
 
   // Enrich rollup tasks with sibling results (for tasks that have a parentTaskId)
   for (const cw of claimedWorkers) {

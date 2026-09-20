@@ -629,14 +629,22 @@ what shipped is free text with a stable, small set of actual values.
 
 ### 3. Workspace-scope ranking rule
 
-Implemented as `WAITING_ON_RANK` + `rankGatedSubjects` in `explain-types.ts`.
-Fixed priority by `waitingOn.kind`, most-actionable first:
+Implemented as `rankGatedSubjects` in `explain-types.ts`, over
+`OUTSTANDING_RANK` — which lives in `mission-state-view.ts` because the mission
+header ranks its own outstanding facts with the same numbers. One table, so
+`explain` and the screen cannot disagree about what matters most. Fixed
+priority by `waitingOn.kind`, most-actionable first:
 
 ```
 task_failed (0) > human_decision (1) > dependency (2) > merge (3)
-  > criterion_failing (4) > task (5) > criterion_unverified (6)
-  > self_resolving_wait (7)
+  > criterion_failing (4) > claim_deferral (5) > task (6)
+  > criterion_unverified (7) > self_resolving_wait (8)
 ```
+
+`claim_deferral` sits below the things only the owner can clear and above the
+things that clear themselves: an agent the claim loop keeps refusing is a
+platform problem the owner should see, but it is not the thing they are being
+asked to do.
 
 Ties (same `kind`) break on `subject.label`, alphabetically — for stability
 across calls, not for any semantic meaning. `self_resolving_wait` ranks last
@@ -776,3 +784,87 @@ scope including the workspace fan-out:
 nothing. `deriveMissionStateView` is the only function that returns the brand
 key, tests construct views by calling it (never by casting a literal), and no
 helper re-opens the type with an `as` escape hatch.
+
+## `outstanding` and `situation` — the verdict ranks facts, it does not erase them
+
+Added after an owner opened a mission whose work was entirely finished, whose
+integration PR was still open, and whose screen offered seven equally-weighted
+buttons and no statement of what was being asked. `explain` already computed
+the answer; the screen rendered a capability menu instead.
+
+Two things were wrong, and only one of them was the screen's fault.
+
+### The accessor's half
+
+`waitingOn` is a PRECEDENCE VERDICT: one blocker, the one that best describes
+the mission. Rule 5 — "a live worker is observable ground truth" —
+short-circuits the chain above the merge, criteria and open-task rules. That is
+right for `kind` and wrong for a surface: one stale worker row made
+`activeAgents` non-zero, `running` won, `waitingOn` went null, and every
+consumer that read `waitingOn === null` as "nothing outstanding" said so over
+the top of an open PR. Same class as the false-zero counts fixed in #2355 —
+populate every fact, let the verdict carry precedence.
+
+`MissionStateView` therefore carries a second, unranked answer:
+
+```typescript
+readonly outstanding: readonly WaitingOnDescriptor[];  // every fact, ranked by OUTSTANDING_RANK
+readonly situation: MissionSituation;                  // the one line a surface renders
+```
+
+- `outstanding` is populated on **every** variant, including `running` and
+  `idle`, and leads with `waitingOn` when that is non-null (so it is a superset
+  of the old behaviour, never a replacement).
+- The single subtraction: a fact whose whole claim is *nothing is executing* —
+  `self_resolving_wait`, and the STALLED reading of `task` — is **refuted** by a
+  live worker, not merely outranked by it. With `activeAgents > 0` the wait is
+  dropped and the open-task fact is rebuilt in its honest form ("N tasks still
+  open", tone `neutral`) instead of "open with no live worker".
+- A terminal mission reports nothing outstanding. A completed mission's stale
+  criteria verdict is history, and rule 1 already said so.
+
+`MissionSituation` is `{ headline, tone, focus, nextAction, alsoOutstanding,
+derivedFrom }`. `headline` is the sentence: `<what it is doing> — but <what it
+is waiting on>` when both are true, which is precisely the sentence the
+observed screen could not produce.
+
+`because[]` follows: `buildStateBecause` now emits links for every entry in
+`outstanding`, and its closing link says *"State is running, but N fact(s) are
+still outstanding: …"* rather than *"no source reports anything outstanding"*.
+
+### The claim-loop deferral
+
+`gate_events` already recorded every claim-loop refusal, coalesced per
+(taskId, reason) into `detail.consecutiveDeferrals` with a
+`detail.firstDeferredAt` floor. Nothing on any mission surface read it, so a
+task the loop had turned away repeatedly rendered as a healthy spinner.
+
+New `WaitingOnDescriptor` variant `claim_deferral`, fed by
+`loadMissionClaimDeferrals` (`mission-claim-deferrals.ts`). Deliberately **not**
+part of `resolve`'s precedence chain: a deferral says nothing about what state
+the mission is in — it says the state on screen is not the whole story. It
+reaches surfaces through `outstanding` only, so `kind` is unchanged by it.
+
+Threshold: `SURFACE_DEFERRAL_THRESHOLD` in `claim-deferral-thresholds.ts`,
+pinned at a twentieth of `STRAND_CONSECUTIVE_THRESHOLD` rather than chosen as a
+round number, so it tracks the stranding definition instead of drifting from
+it. Freshness: a streak counter is never reset when a task finally dispatches
+(nothing writes a "cleared" row), so `DEFERRAL_FRESHNESS_MS` is the only signal
+that a streak has ended — see the module note for why 15 minutes.
+
+### The surfaces' half
+
+`MissionSituationBlock` (header) and `MissionSituationLine` (mission card) both
+render `MissionStateView.situation`. Neither builds a sentence. The header adds
+one wired primary affordance (`affordanceFor`, which returns `null` rather than
+a button with nowhere to go) and the top link of `because[]` with its hard ref.
+Everything the mission merely *supports* — Plan now, Disarm, Edit schedule,
+Complete, Delete — moved behind a disclosure in `MissionSettings`, which raises
+no primary button of its own while the header is offering one.
+
+Two accessor inputs exist purely so a caller can answer without paying for the
+full derivations: `missionPr` (the integration PR's number and href, which
+`canCompleteMission` does not know) and `unmergedPrs` (open task PRs straight
+off worker rows). The missions LIST uses both — it cannot afford a
+`canCompleteMission` decision per row — and gets the same sentence the detail
+page gets from the full input.
