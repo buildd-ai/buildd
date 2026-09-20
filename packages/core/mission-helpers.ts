@@ -1484,6 +1484,21 @@ export function computeMissionFlightStrip(
     return Math.max(0, Math.min(1, (time - origin - offset) / durationMs));
   };
 
+  // Which spans survive the bar cap when spans.length exceeds it: live workers
+  // first (an active worker's bar must never silently vanish), then the most
+  // recent historical spans (tail of the ascending-by-start array) fill any
+  // remaining budget — never the earliest, or a long-running mission would
+  // render as if nothing is happening now.
+  const keptIndices = new Set<number>();
+  spans.forEach((s, index) => {
+    if (keptIndices.size < FLIGHT_STRIP_BAR_CAP && LIVE_SET.has(s.worker.status as typeof MISSION_LIVE_WORKER_STATUSES[number])) {
+      keptIndices.add(index);
+    }
+  });
+  for (let index = spans.length - 1; index >= 0 && keptIndices.size < FLIGHT_STRIP_BAR_CAP; index--) {
+    keptIndices.add(index);
+  }
+
   // Sweep ends before starts at equal timestamps, as in the skyline. Only
   // retained bars need a peak bucket, keeping the sweep bounded by the bar cap.
   const events = spans.flatMap((s, index) => [{ time: s.start, delta: 1, index }, { time: s.end, delta: -1, index }])
@@ -1494,11 +1509,11 @@ export function computeMissionFlightStrip(
   for (const event of events) {
     concurrent += event.delta;
     if (event.delta < 0) visibleActive.delete(event.index);
-    else if (event.index < FLIGHT_STRIP_BAR_CAP) visibleActive.add(event.index);
+    else if (keptIndices.has(event.index)) visibleActive.add(event.index);
     peakConcurrency = Math.max(peakConcurrency, concurrent);
     if (event.delta > 0) for (const index of visibleActive) spans[index].peak = Math.max(spans[index].peak, concurrent);
   }
-  const bars: FlightStripBar[] = spans.slice(0, FLIGHT_STRIP_BAR_CAP).map(s => ({
+  const bars: FlightStripBar[] = Array.from(keptIndices).sort((a, b) => a - b).map(index => spans[index]).map(s => ({
     taskId: s.task.id, workerId: s.worker.id, lane: deriveWorkLane(s.task),
     start: position(s.start), end: position(s.end),
     concurrency: Math.min(3, s.peak) as 1 | 2 | 3,
