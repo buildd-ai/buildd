@@ -278,6 +278,55 @@ describe('GET /api/tasks/[id]', () => {
     expect(data.artifacts[0].shareUrl).toContain('/share/tok1');
   });
 
+  it('surfaces rejectedCompletionPayload for a gate-rejected worker via include=workers', async () => {
+    // Regression: a completion refused by the outputRequirement gate
+    // (artifact_required, no artifact) persists the agent's summary onto
+    // workers.rejectedCompletionPayload, but nothing read it back — get_task
+    // showed no trace of a 54-turn run beyond the raw 400 in worker.error.
+    const mockTask = {
+      id: TASK_ID,
+      title: 'Test Task',
+      workspaceId: 'ws-1',
+      workspace: { id: 'ws-1', teamId: 'team-1' },
+    };
+    mockGetCurrentUser.mockResolvedValue(null);
+    mockAccountsFindFirst.mockResolvedValue({ id: 'account-123', apiKey: 'bld_xxx' });
+    mockTasksFindFirst.mockResolvedValue(mockTask);
+    mockWorkersFindMany.mockReset();
+    mockWorkersFindMany.mockResolvedValue([
+      {
+        id: 'w-1',
+        status: 'failed',
+        branch: 'buildd/recon',
+        rejectedCompletionPayload: {
+          reason: 'artifact_required',
+          summary: 'Findings from a 54-turn research run.',
+          structuredOutput: null,
+          summarySource: 'fallback',
+          rejectedAt: '2026-09-20T12:41:21.137Z',
+          salvagedArtifactId: 'art-salvage-1',
+        },
+      },
+    ] as any);
+
+    const request = createMockRequest({
+      headers: { Authorization: 'Bearer bld_xxx' },
+      search: '?include=workers',
+    });
+    const response = await callHandler(GET, request, TASK_ID);
+
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.workers[0].rejectedCompletionPayload.reason).toBe('artifact_required');
+    expect(data.workers[0].rejectedCompletionPayload.summary).toContain('54-turn research run');
+    expect(data.workers[0].rejectedCompletionPayload.salvagedArtifactId).toBe('art-salvage-1');
+
+    // The column must actually be requested from the DB, not just passed
+    // through when present by accident.
+    const callArgs = mockWorkersFindMany.mock.calls[0]?.[0] as any;
+    expect(callArgs?.columns?.rejectedCompletionPayload).toBe(true);
+  });
+
   it('omits workers/artifacts when include is not requested', async () => {
     const mockTask = {
       id: TASK_ID,

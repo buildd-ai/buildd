@@ -38,6 +38,7 @@ const EMPTY_FAMILY = {
 };
 
 const mockGetFailureSignatureFamily = mock(() => Promise.resolve(EMPTY_FAMILY as any));
+const mockFindSupersededErrorMatch = mock(() => Promise.resolve(null as any));
 
 // Stands in for the real normalizer (unit tested in the lib): first non-empty
 // line, whitespace collapsed, digits → <n>. Spied so the lookup tests can prove
@@ -52,6 +53,7 @@ const mockNormalizeErrorSignature = mock((raw: string | null | undefined) => {
 mock.module('@/lib/failure-analytics', () => ({
   getFailureAnalytics: mockGetFailureAnalytics,
   getFailureSignatureFamily: mockGetFailureSignatureFamily,
+  findSupersededErrorMatch: mockFindSupersededErrorMatch,
   normalizeErrorSignature: mockNormalizeErrorSignature,
   FAILURE_WINDOWS: ['24h', '7d', '30d'],
   parseFailureWindow: (raw: string | null | undefined) =>
@@ -245,6 +247,7 @@ describe('GET /api/health/failures — signature lookup', () => {
     mockAuthenticateApiKey.mockReset();
     mockGetFailureAnalytics.mockReset();
     mockGetFailureSignatureFamily.mockReset();
+    mockFindSupersededErrorMatch.mockReset();
     mockWorkspacesFindFirst.mockReset();
     mockWorkspacesFindMany.mockReset();
     mockNormalizeErrorSignature.mockClear();
@@ -253,6 +256,7 @@ describe('GET /api/health/failures — signature lookup', () => {
     mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
     mockGetFailureAnalytics.mockResolvedValue(analyticsWith([STALE_CLUSTER], 12));
     mockGetFailureSignatureFamily.mockResolvedValue(EMPTY_FAMILY);
+    mockFindSupersededErrorMatch.mockResolvedValue(null);
   });
 
   it('omits the lookup block entirely when no error param is given', async () => {
@@ -360,6 +364,59 @@ describe('GET /api/health/failures — signature lookup', () => {
     await GET(makeRequest(`${URL_BASE}?error=${encodeURIComponent('boom')}`));
     expect(mockWorkspacesFindMany.mock.calls.length).toBe(1);
     expect(mockGetFailureAnalytics.mock.calls[0][0]).toEqual([VALID_UUID, 'ws-2']);
+  });
+
+  // ── Superseded-error fallback ────────────────────────────────────────────
+  // A worker `/respond` already superseded before its terminal error report
+  // landed is excluded from `analytics` entirely (see failure-analytics.ts).
+  // Without a fallback, that exact error text would come back "no match"
+  // even though workers/[id]/route.ts recorded it on the worker row.
+  describe('when the ranked clusters miss', () => {
+    beforeEach(() => {
+      // No cluster in the ranked signatures for this describe block.
+      mockGetFailureAnalytics.mockResolvedValue(analyticsWith([], 0));
+    });
+
+    it('falls back to a superseded-worker match and flags it supersededOnly', async () => {
+      mockFindSupersededErrorMatch.mockResolvedValue({
+        count: 2,
+        firstSeen: '2026-08-22T00:00:00.000Z',
+        lastSeen: '2026-08-27T00:00:00.000Z',
+        exampleWorkerId: 'worker-1',
+        exampleTaskId: 'task-1',
+      });
+
+      const res = await GET(makeRequest(`${URL_BASE}?error=${encodeURIComponent('Not logged in · Please run /login')}`));
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.lookup.known).toBe(true);
+      expect(body.lookup.supersededOnly).toBe(true);
+      expect(body.lookup.count).toBe(2);
+      expect(body.lookup.firstSeen).toBe('2026-08-22T00:00:00.000Z');
+      expect(body.lookup.lastSeen).toBe('2026-08-27T00:00:00.000Z');
+      expect(body.lookup.exampleTaskId).toBe('task-1');
+    });
+
+    it('does not call the superseded fallback when a ranked cluster already matched', async () => {
+      mockGetFailureAnalytics.mockResolvedValue(analyticsWith([STALE_CLUSTER], 12));
+      await GET(makeRequest(`${URL_BASE}?error=${encodeURIComponent('Stale worker expired (no update for 15+ minutes)')}`));
+      expect(mockFindSupersededErrorMatch).not.toHaveBeenCalled();
+    });
+
+    it('remains a clean unknown (no supersededOnly) when neither source matches', async () => {
+      mockFindSupersededErrorMatch.mockResolvedValue(null);
+      const res = await GET(makeRequest(`${URL_BASE}?error=${encodeURIComponent('never seen before')}`));
+      const body = await res.json();
+      expect(body.lookup.known).toBe(false);
+      expect(body.lookup.supersededOnly).toBeUndefined();
+    });
+
+    it('scopes the superseded fallback to the same window and workspace set as the main lookup', async () => {
+      mockWorkspacesFindMany.mockResolvedValue([{ id: VALID_UUID }]);
+      await GET(makeRequest(`${URL_BASE}?window=30d&error=${encodeURIComponent('boom')}`));
+      expect(mockFindSupersededErrorMatch.mock.calls[0][0]).toEqual([VALID_UUID]);
+      expect(mockFindSupersededErrorMatch.mock.calls[0][1]).toBe('30d');
+    });
   });
 });
 

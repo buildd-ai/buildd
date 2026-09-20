@@ -1765,6 +1765,15 @@ export interface FailureSignatureLookup {
    * in which case a rare match may have been missed.
    */
   exhaustive: boolean;
+  /**
+   * True when every occurrence came from a worker `/respond` had already
+   * marked `superseded` (its question was answered) by the time the error
+   * landed — recorded via `workers.postSupersessionError`, never counted in
+   * `analytics.totals`/`signatures` at all, because a superseded worker's
+   * outcome must not move the failure rate. Absent when `known` is false, or
+   * when the match came from the normal failure population.
+   */
+  supersededOnly?: boolean;
 }
 
 /**

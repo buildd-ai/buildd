@@ -11,7 +11,7 @@
  */
 import { db } from '@buildd/core/db';
 import { workers, tasks, workspaces } from '@buildd/core/db/schema';
-import { and, desc, eq, gte, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull } from 'drizzle-orm';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
 import { normalizeErrorSignature, EMPTY_SIGNATURE } from './error-signature';
 import type {
@@ -505,6 +505,87 @@ export async function getFailureAnalytics(
   } catch (err) {
     console.error('[failure-analytics] query failed:', err);
     return empty();
+  }
+}
+
+export interface SupersededErrorLookup {
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  exampleWorkerId: string;
+  exampleTaskId: string | null;
+}
+
+/**
+ * Search `postSupersessionError` on `superseded` workers for a signature
+ * match, within the same window/workspace scope `getFailureAnalytics` uses.
+ *
+ * Deliberately a separate query, not folded into `fetchFailureWorkerRows`:
+ * these workers are excluded from the failure population by design
+ * (`IN_FLIGHT_WORKER_STATUSES` includes `superseded`), and mixing them into
+ * the same row set that `computeFailureAnalytics` ranks would risk a future
+ * change accidentally promoting one into `totals`/`signatures`. This exists
+ * only so `getFailureSignatureLookup` can answer "did this happen" for a
+ * caller that already knows the exact text — see workers/[id]/route.ts's
+ * `recordPostSupersessionError` for where the column is written.
+ * Read-only. Never throws — returns null if the query fails.
+ */
+export async function findSupersededErrorMatch(
+  scopedWsIds: string[],
+  window: FailureWindow,
+  signature: string,
+  now: Date = new Date(),
+): Promise<SupersededErrorLookup | null> {
+  if (scopedWsIds.length === 0) return null;
+  const windowStart = windowStartFor(window, now);
+
+  try {
+    const rows = await db
+      .select({
+        id: workers.id,
+        taskId: workers.taskId,
+        postSupersessionError: workers.postSupersessionError,
+        postSupersessionErrorAt: workers.postSupersessionErrorAt,
+        createdAt: workers.createdAt,
+      })
+      .from(workers)
+      .where(and(
+        inArray(workers.workspaceId, scopedWsIds),
+        eq(workers.status, 'superseded'),
+        isNotNull(workers.postSupersessionError),
+        gte(workers.createdAt, windowStart),
+      ))
+      .orderBy(desc(workers.createdAt))
+      .limit(MAX_WORKER_ROWS);
+
+    let count = 0;
+    let firstSeen: number | null = null;
+    let lastSeen: number | null = null;
+    let exampleWorkerId: string | null = null;
+    let exampleTaskId: string | null = null;
+
+    for (const row of rows as any[]) {
+      if (normalizeErrorSignature(row.postSupersessionError as string | null) !== signature) continue;
+      count += 1;
+      const at = (row.postSupersessionErrorAt ?? row.createdAt) as Date;
+      const ts = at.getTime();
+      if (firstSeen === null || ts < firstSeen) firstSeen = ts;
+      if (lastSeen === null || ts > lastSeen) lastSeen = ts;
+      if (!exampleWorkerId) exampleWorkerId = row.id as string;
+      if (!exampleTaskId && row.taskId) exampleTaskId = row.taskId as string;
+    }
+
+    if (count === 0 || firstSeen === null || lastSeen === null || !exampleWorkerId) return null;
+    return {
+      count,
+      firstSeen: new Date(firstSeen).toISOString(),
+      lastSeen: new Date(lastSeen).toISOString(),
+      exampleWorkerId,
+      exampleTaskId,
+    };
+  } catch (err) {
+    console.error('[failure-analytics] superseded-error lookup failed:', err);
+    return null;
   }
 }
 

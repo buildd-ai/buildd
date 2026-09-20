@@ -6,9 +6,11 @@ import { eq } from 'drizzle-orm';
 import {
   getFailureAnalytics,
   getFailureSignatureFamily,
+  findSupersededErrorMatch,
   normalizeErrorSignature,
   parseFailureWindow,
   FAILURE_WINDOWS,
+  type FailureWindow,
 } from '@/lib/failure-analytics';
 import { getGateAnalytics, getGateReasonFamily } from '@/lib/gate-analytics-query';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
@@ -35,9 +37,29 @@ const MAX_PREFIX_INPUT = 200;
  * Normalization is delegated to the shared lib, so a lookup and the aggregation
  * can never disagree about what counts as "the same failure". A miss is a
  * normal answer (`known: false`), not an error — the caller asked a question.
+ *
+ * When nothing in the ranked clusters matches, this falls back to
+ * `workers.postSupersessionError` — a real error report that arrived for a
+ * worker `/respond` had already superseded (see workers/[id]/route.ts). Those
+ * workers are excluded from `analytics` entirely by design (superseded must
+ * never move the failure rate), so without this fallback the exact text an
+ * owner is staring at in the live feed would come back "New failure — no
+ * match", even though the platform recorded it.
  */
-function lookupSignature(analytics: FailureAnalytics, rawError: string): FailureSignatureLookup {
+async function lookupSignature(
+  analytics: FailureAnalytics,
+  rawError: string,
+  scopedWsIds: string[],
+  window: FailureWindow,
+): Promise<FailureSignatureLookup> {
   const signature = normalizeErrorSignature(rawError.slice(0, MAX_LOOKUP_INPUT));
+  const query = rawError.length > MAX_ECHOED_QUERY ? `${rawError.slice(0, MAX_ECHOED_QUERY)}…` : rawError;
+  const frictionSignature = toFrictionSignature(signature);
+
+  // When the ranking accounts for every failure in the window it was not
+  // truncated, so `known: false` is definitive rather than "possibly ranked out".
+  const ranked = analytics.signatures.reduce((sum, s) => sum + s.count, 0);
+  const exhaustive = ranked >= analytics.totals.failed;
 
   // diedEarlySignatures is a subset ranking; a signature can rank there while
   // being pushed out of the main ranking, so both are searched.
@@ -46,22 +68,36 @@ function lookupSignature(analytics: FailureAnalytics, rawError: string): Failure
     analytics.diedEarlySignatures.find(s => s.signature === signature) ??
     null;
 
-  // When the ranking accounts for every failure in the window it was not
-  // truncated, so `known: false` is definitive rather than "possibly ranked out".
-  const ranked = analytics.signatures.reduce((sum, s) => sum + s.count, 0);
+  if (cluster) {
+    return {
+      query,
+      signature,
+      frictionSignature,
+      known: true,
+      count: cluster.count,
+      firstSeen: cluster.firstSeen,
+      lastSeen: cluster.lastSeen,
+      diedEarlyCount: cluster.diedEarlyCount,
+      exitCauses: cluster.exitCauses,
+      exampleTaskId: cluster.exampleTaskId,
+      exhaustive,
+    };
+  }
 
+  const superseded = await findSupersededErrorMatch(scopedWsIds, window, signature);
   return {
-    query: rawError.length > MAX_ECHOED_QUERY ? `${rawError.slice(0, MAX_ECHOED_QUERY)}…` : rawError,
+    query,
     signature,
-    frictionSignature: toFrictionSignature(signature),
-    known: cluster !== null,
-    count: cluster?.count ?? 0,
-    firstSeen: cluster?.firstSeen ?? null,
-    lastSeen: cluster?.lastSeen ?? null,
-    diedEarlyCount: cluster?.diedEarlyCount ?? 0,
-    exitCauses: cluster?.exitCauses ?? [],
-    exampleTaskId: cluster?.exampleTaskId ?? null,
-    exhaustive: ranked >= analytics.totals.failed,
+    frictionSignature,
+    known: superseded !== null,
+    count: superseded?.count ?? 0,
+    firstSeen: superseded?.firstSeen ?? null,
+    lastSeen: superseded?.lastSeen ?? null,
+    diedEarlyCount: 0,
+    exitCauses: [],
+    exampleTaskId: superseded?.exampleTaskId ?? null,
+    exhaustive,
+    ...(superseded ? { supersededOnly: true } : {}),
   };
 }
 
@@ -176,7 +212,7 @@ export async function GET(req: NextRequest) {
         gates?: GateAnalytics;
         gateFamily?: GateReasonFamily;
       } = { analytics };
-      if (lookupInput) body.lookup = lookupSignature(analytics, lookupInput);
+      if (lookupInput) body.lookup = await lookupSignature(analytics, lookupInput, scopedWsIds, window);
       // `errorPrefix` means different things on the two families, so it is
       // routed to exactly one of them rather than answered twice: over gate
       // reasons under family=gate, over worker error signatures otherwise.

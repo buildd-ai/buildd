@@ -284,6 +284,49 @@ describe('get_task', () => {
     expect(text).toContain('Which approach?');
   });
 
+  it('surfaces a rejected deliverable payload as REJECTED, not a satisfied outcome', async () => {
+    // Regression for the 54-turn-run-lost incident: outputRequirement
+    // 'artifact_required' refused complete_task and persisted the agent's
+    // summary onto workers.rejectedCompletionPayload, but get_task never
+    // read it back — the operator saw only the raw 400 in worker.error.
+    mockApi.mockResolvedValue({
+      id: TASK_ID,
+      title: 'Recon task',
+      status: 'failed',
+      priority: 5,
+      workspace: { name: 'buildd' },
+      workers: [
+        {
+          id: 'w-failed',
+          status: 'failed',
+          branch: 'buildd/recon',
+          error: 'API error: 400 - {"error":"This task requires a deliverable before completing."}',
+          rejectedCompletionPayload: {
+            reason: 'artifact_required',
+            summary: '54 turns of findings on the design-canvas question.',
+            summarySource: 'fallback',
+            rejectedAt: '2026-09-20T12:41:21.137Z',
+            salvagedArtifactId: 'art-salvage-1',
+          },
+        },
+      ],
+      artifacts: [],
+    });
+
+    const result = await handleBuilddAction(
+      mockApi as unknown as ApiFn,
+      'get_task',
+      { taskId: TASK_ID },
+      ctx(),
+    );
+
+    const text = result.content[0].text;
+    expect(text).toContain('Rejected deliverable');
+    expect(text).toContain("not satisfied, not a completed outcome");
+    expect(text).toContain('54 turns of findings');
+    expect(text).toContain('art-salvage-1');
+  });
+
   it('includes workerUrl for each worker', async () => {
     mockApi.mockResolvedValue({
       id: TASK_ID,
