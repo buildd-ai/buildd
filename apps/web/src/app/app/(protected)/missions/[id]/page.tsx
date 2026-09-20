@@ -999,6 +999,20 @@ export default async function MissionDetailPage({
         />
       </div>
 
+      {/* ── Flight strip navigator (§7) — pinned under the title. Tapping a bar
+          scrolls to and outlines its task row, and vice versa. Task list
+          grouped by stored mission phase, tagged by lane; goal criteria live
+          in the Verified pill sheet above, not here; MissionSettings lives
+          behind the header's overflow menu, not here either. */}
+      <MissionFlightStripNav
+        data={flightStripData}
+        groups={flightStripGroups}
+        orchestratorPlans={orchestratorPlans}
+        orchestratorTicks={orchestratorTicks}
+        records={missionRecords.map(a => ({ id: a.id, title: a.title, type: a.type }))}
+        recordsHref="#mission-artifacts"
+      />
+
       {/* ── Status Block ── */}
       <div className="mb-6">
         <MissionInlineEdit
@@ -1385,20 +1399,6 @@ export default async function MissionDetailPage({
           />
         </div>
       )}
-
-      {/* ── Flight strip navigator (§7) — pinned under the title. Tapping a bar
-          scrolls to and outlines its task row, and vice versa. Task list
-          grouped by stored mission phase, tagged by lane; goal criteria live
-          in the Verified pill sheet above, not here; MissionSettings lives
-          behind the header's overflow menu, not here either. */}
-      <MissionFlightStripNav
-        data={flightStripData}
-        groups={flightStripGroups}
-        orchestratorPlans={orchestratorPlans}
-        orchestratorTicks={orchestratorTicks}
-        records={missionRecords.map(a => ({ id: a.id, title: a.title, type: a.type }))}
-        recordsHref="#mission-artifacts"
-      />
 
       {/* ── Criteria gate ──
           The situation block above the fold now states a criteria hold in the

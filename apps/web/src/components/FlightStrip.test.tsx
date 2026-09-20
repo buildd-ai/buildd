@@ -159,4 +159,63 @@ describe('FlightStrip', () => {
     const strip = computeMissionFlightStrip([], []);
     expect(() => renderToStaticMarkup(<FlightStrip data={strip} />)).not.toThrow();
   });
+
+  describe('interactivity (mission-detail navigator)', () => {
+    it('adds tap targets to bars when onBarSelect is passed', () => {
+      const strip = computeMissionFlightStrip(
+        [{ id: 'a', status: 'completed' }],
+        [worker('w1', 'a', 0, 100)],
+      );
+      const html = renderToStaticMarkup(<FlightStrip data={strip} onBarSelect={() => {}} />);
+      expect(html).toContain('role="button"');
+      expect(html).toContain('tabindex="0"');
+    });
+
+    it('omits tap targets when onBarSelect is not passed (card usage stays unaffected)', () => {
+      const strip = computeMissionFlightStrip(
+        [{ id: 'a', status: 'completed' }],
+        [worker('w1', 'a', 0, 100)],
+      );
+      const html = renderToStaticMarkup(<FlightStrip data={strip} />);
+      expect(html).not.toContain('role="button"');
+      expect(html).not.toContain('tabindex="0"');
+      // outline rect is fill="none" stroke={NOW_COLOR} stroke-width="2" — that exact
+      // triple is unique to it (the hatch pattern also uses stroke-width 2, but a
+      // different color and no fill attribute)
+      expect(html).not.toContain(`fill="none" stroke="${FLIGHT_STRIP_NOW_COLOR}" stroke-width="2"`);
+    });
+
+    it('outlines the selected solid bar', () => {
+      const strip = computeMissionFlightStrip(
+        [{ id: 'a', status: 'completed' }, { id: 'b', status: 'completed' }],
+        [worker('w1', 'a', 0, 100), worker('w2', 'b', 100, 200)],
+      );
+      const html = renderToStaticMarkup(<FlightStrip data={strip} selectedTaskId="a" onBarSelect={() => {}} />);
+      expect(html).toContain(`fill="none" stroke="${FLIGHT_STRIP_NOW_COLOR}" stroke-width="2"`);
+    });
+
+    it('outlines the selected dashed (queued) bar', () => {
+      const strip = computeMissionFlightStrip(
+        [{ id: 'a', status: 'running' }, { id: 'queued', status: 'pending' }],
+        [{ ...worker('w1', 'a', 0, 10), status: 'running', completedAt: null, updatedAt: date(10) }],
+        { now: 100 },
+      );
+      const html = renderToStaticMarkup(
+        <FlightStrip data={strip} selectedTaskId="queued" onBarSelect={() => {}} />,
+      );
+      expect(html).toContain('stroke-dasharray="3 2"');
+      expect(html).toContain(`fill="none" stroke="${FLIGHT_STRIP_NOW_COLOR}" stroke-width="2"`);
+    });
+
+    it('renders no outline when selectedTaskId matches no bar', () => {
+      const strip = computeMissionFlightStrip(
+        [{ id: 'a', status: 'completed' }],
+        [worker('w1', 'a', 0, 100)],
+      );
+      const html = renderToStaticMarkup(
+        <FlightStrip data={strip} selectedTaskId="does-not-exist" onBarSelect={() => {}} />,
+      );
+      expect(html).not.toContain(`fill="none" stroke="${FLIGHT_STRIP_NOW_COLOR}" stroke-width="2"`);
+    });
+  });
 });
