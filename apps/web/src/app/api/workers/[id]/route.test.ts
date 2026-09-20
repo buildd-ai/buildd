@@ -52,6 +52,7 @@ const mockPostPrReview = mock(() => Promise.resolve({ posted: true, reviewId: 1 
 const mockTriggerEvent = mock(() => Promise.resolve());
 const mockTeamsFindFirst = mock(() => Promise.resolve(null));
 const mockSecretsFindMany = mock(() => Promise.resolve([] as any[]));
+const mockSecretsFindFirst = mock(() => Promise.resolve(null as any));
 const mockWorkerErrorTracesFindMany = mock(() => Promise.resolve([] as any[]));
 // Direct mock for hasCodexCredential — Bun 1.4.0+ uses per-file module registries
 // so transitive @buildd/core/db mocks may not reach codex-credential.ts.
@@ -113,7 +114,7 @@ mock.module('@buildd/core/db', () => ({
       githubRepos: { findFirst: mockGithubReposFindFirst },
       teams: { findFirst: mockTeamsFindFirst },
       connectors: { findFirst: mockConnectorsFindFirst },
-      secrets: { findMany: mockSecretsFindMany },
+      secrets: { findMany: mockSecretsFindMany, findFirst: mockSecretsFindFirst },
       workerErrorTraces: { findMany: mockWorkerErrorTracesFindMany },
       missions: { findFirst: mockMissionsFindFirst },
       missionNotes: { findMany: (...args: any[]) => mockMissionNotesFindMany(...args) },
@@ -619,6 +620,10 @@ describe('PATCH /api/workers/[id]', () => {
     mockTeamsFindFirst.mockReset();
     mockWorkerErrorTracesFindMany.mockReset();
     mockWorkerErrorTracesFindMany.mockResolvedValue([]);
+    mockSecretsFindMany.mockReset();
+    mockSecretsFindMany.mockResolvedValue([]);
+    mockSecretsFindFirst.mockReset();
+    mockSecretsFindFirst.mockResolvedValue(null);
     lastInsertTable = null;
     lastInsertValues = null;
     mockGenericInsert.mockClear();
@@ -1384,6 +1389,189 @@ describe('PATCH /api/workers/[id]', () => {
       expect(exitCauses.length).toBeGreaterThan(0);
       expect(exitCauses).not.toContain('code_failure');
       expect(exitCauses).toContain('infra_failure');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // A worker `/respond` already marked `superseded` can still get a genuine
+  // terminal report from the runner (most commonly a backend-auth failure that
+  // will also kill the continuation task). That PATCH loses the terminal-
+  // ownership CAS — the row is already terminal — but the error it carries
+  // must not be silently dropped. See recordPostSupersessionError in route.ts.
+  // ---------------------------------------------------------------------------
+  describe('post-supersession error reporting', () => {
+    const supersededWorker = {
+      id: 'worker-1',
+      accountId: 'account-1',
+      status: 'superseded',
+      workspaceId: 'ws-1',
+      taskId: 'task-1',
+      milestones: [],
+      pendingInstructions: null,
+    };
+
+    /**
+     * Sequences `db.update(workers)...returning()` results across the multiple
+     * `workers` update calls this branch makes: [0] the terminal-ownership CAS
+     * (must miss — the row is already superseded), [1] recordPostSupersessionError's
+     * own CAS'd write (succeeds), and (if credential health finds a task) no
+     * further `workers` update is needed.
+     */
+    function sequenceWorkersUpdateReturns(returns: any[][]) {
+      let call = 0;
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock(() => ({
+          where: mock(() => ({
+            returning: mock(() => {
+              const result = returns[Math.min(call, returns.length - 1)];
+              call += 1;
+              return result;
+            }),
+          })),
+        })),
+      }));
+    }
+
+    it('records the error, inserts a trace row, and tells the runner it was recorded', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...supersededWorker });
+      sequenceWorkersUpdateReturns([[], [{ id: 'worker-1', taskId: 'task-1' }]]);
+
+      const req = createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Not logged in · Please run /login' },
+      });
+      const res = await PATCH(req, { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.abort).toBe(true);
+      expect(data.actualStatus).toBe('superseded');
+      expect(data.postSupersessionErrorRecorded).toBe(true);
+
+      // The trace row is queryable via get_error_traces regardless of whether
+      // this PATCH's own appendErrorTraces (none, here) carried anything.
+      expect(lastInsertValues).toMatchObject({
+        workerId: 'worker-1',
+        taskId: 'task-1',
+        pattern: 'post_supersession_error',
+        source: 'post_supersession',
+      });
+      expect(lastInsertValues.excerpt).toContain('Not logged in');
+    });
+
+    it('never flips the worker back to failed — the CAS write only sets postSupersessionError', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...supersededWorker });
+      const sets: any[] = [];
+      let call = 0;
+      mockWorkersUpdate.mockImplementation(() => ({
+        set: mock((values: any) => {
+          sets.push(values);
+          const idx = call;
+          call += 1;
+          return {
+            where: mock(() => ({
+              returning: mock(() => (idx === 0 ? [] : [{ id: 'worker-1', taskId: 'task-1' }])),
+            })),
+          };
+        }),
+      }));
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Not logged in · Please run /login' },
+      }), { params: mockParams });
+
+      // [0] is the reservation ATTEMPT — it does propose `status`, but its
+      // WHERE clause matches 0 rows (the row is already terminal), so nothing
+      // from it is ever actually committed. [1] is the post-supersession
+      // record, which never sets `status` at all — only the side field.
+      expect(sets.length).toBe(2);
+      expect(sets[0].status).toBe('failed');
+      expect(sets[1].status).toBeUndefined();
+      expect(sets[1].postSupersessionError).toContain('Not logged in');
+      expect(sets[1].postSupersessionErrorAt).toBeInstanceOf(Date);
+    });
+
+    it('does not record anything for a duplicate report on an already-failed (not superseded) worker', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      // This hits the earlier reactivation guard (worker.status === 'failed'),
+      // not the post-supersession branch at all — TERMINAL_WORKER_STATUSES'
+      // other members (failed/completed/error) are all intercepted before the
+      // CAS this branch guards. Asserting the no-op behavior here regardless:
+      // a duplicate report must never fabricate a recorded flag or a trace row.
+      mockWorkersFindFirst.mockResolvedValue({ ...supersededWorker, status: 'failed', error: 'first failure' });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Not logged in · Please run /login' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(409);
+      const data = await res.json();
+      expect(data.postSupersessionErrorRecorded).toBeUndefined();
+      expect(lastInsertValues).toBeNull();
+    });
+
+    it('feeds credential health for the underlying task when the error is auth-class', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...supersededWorker });
+      sequenceWorkersUpdateReturns([[], [{ id: 'worker-1', taskId: 'task-1' }]]);
+      mockTasksFindFirst.mockResolvedValue({
+        backend: 'claude',
+        workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+      mockSecretsFindMany.mockResolvedValue([{ id: 'secret-1', purpose: 'oauth_token' }]);
+      mockSecretsFindFirst.mockResolvedValue({ healthStatus: 'healthy', consecutiveAuthFailures: 0 });
+      const secretsSets: any[] = [];
+      mockSecretsUpdate.mockReturnValue({
+        set: mock((values: any) => {
+          secretsSets.push(values);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      const res = await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'Not logged in · Please run /login' },
+      }), { params: mockParams });
+
+      expect(res.status).toBe(409);
+      expect(secretsSets.length).toBeGreaterThan(0);
+      expect(secretsSets[0].healthStatus).toBe('degraded');
+      expect(secretsSets[0].lastFailureMessage).toContain('Not logged in');
+    });
+
+    it('does not touch credential health for a non-auth error', async () => {
+      mockAuthenticateApiKey.mockResolvedValue({ id: 'account-1' });
+      mockWorkersFindFirst.mockResolvedValue({ ...supersededWorker });
+      sequenceWorkersUpdateReturns([[], [{ id: 'worker-1', taskId: 'task-1' }]]);
+      mockTasksFindFirst.mockResolvedValue({
+        backend: 'claude',
+        workspaceId: 'ws-1',
+        workspace: { teamId: 'team-1' },
+      });
+      const secretsSets: any[] = [];
+      mockSecretsUpdate.mockReturnValue({
+        set: mock((values: any) => {
+          secretsSets.push(values);
+          return { where: mock(() => Promise.resolve()) };
+        }),
+      });
+
+      await PATCH(createMockRequest({
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer bld_test' },
+        body: { status: 'failed', error: 'connection reset by peer' },
+      }), { params: mockParams });
+
+      expect(secretsSets.length).toBe(0);
     });
   });
 
