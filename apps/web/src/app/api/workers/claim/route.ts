@@ -55,6 +55,7 @@ import {
   attachTaskAreaScope,
   predictTaskAreas,
 } from './context-injection';
+import { attachMissionHandoff } from './mission-handoff-injection';
 import {
   attachClaudeCredentials,
   attachCodexCredentials,
@@ -1809,7 +1810,10 @@ export async function POST(req: NextRequest) {
   // same resolvedContextProviders rail and the runner concatenates it in order.
   // See ./context-injection.
   await attachExternalContextProviders(claimedWorkers, filteredTasks);
-  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions);
+  // Track sources rendered by handoff for knowledge context dedupe
+  const handoffExcludedSources = new Set<string>();
+  await attachMissionHandoff(claimedWorkers, filteredTasks, handoffExcludedSources);
+  await attachKnowledgeContext(claimedWorkers, filteredTasks, taskAreaPredictions, handoffExcludedSources);
   await attachSubjectPriorWork(claimedWorkers, filteredTasks);
   await attachDiscrepancyContext(claimedWorkers, filteredTasks);
   await attachTaskAreaScope(claimedWorkers, filteredTasks, taskAreaPredictions);
