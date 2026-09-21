@@ -121,45 +121,50 @@ export default async function TaskDetailPage({
     notFound();
   }
 
-  // For non-mission tasks: count open question notes (drives "Waiting on you" badge)
-  let openQuestionCount = 0;
-  if (!task.missionId) {
-    const [row] = await db
-      .select({ c: count() })
-      .from(missionNotes)
-      .where(and(
-        eq(missionNotes.taskId, id),
-        isNull(missionNotes.missionId),
-        eq(missionNotes.type, 'question'),
-        eq(missionNotes.status, 'open'),
-      ));
-    openQuestionCount = Number(row?.c ?? 0);
-  }
-
-  // Fetch dependency tasks if dependsOn has entries
+  // These three need nothing but the task row and the access check above, and
+  // nothing each other produces, so they are one wait rather than three serial
+  // neon-http round trips. The access gate deliberately stays *ahead* of the
+  // group rather than joining it: this is an authorization path, and reading a
+  // task's workers for a viewer who turns out not to have access is not a
+  // trade worth two round trips.
   const depTaskIds = (task.dependsOn as string[] | undefined) || [];
-  const depTasks = depTaskIds.length > 0
-    ? await db.query.tasks.findMany({
-        where: inArray(tasks.id, depTaskIds),
-        columns: { id: true, title: true, status: true, result: true },
-        with: {
-          workers: {
-            columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
-            orderBy: desc(workers.createdAt),
-            limit: 1,
+  const [openQuestionRows, depTasks, taskWorkers] = await Promise.all([
+    // For non-mission tasks: count open question notes (drives "Waiting on you" badge)
+    task.missionId
+      ? Promise.resolve([] as { c: number }[])
+      : db
+          .select({ c: count() })
+          .from(missionNotes)
+          .where(and(
+            eq(missionNotes.taskId, id),
+            isNull(missionNotes.missionId),
+            eq(missionNotes.type, 'question'),
+            eq(missionNotes.status, 'open'),
+          )),
+    // Dependency tasks, if dependsOn has entries
+    depTaskIds.length > 0
+      ? db.query.tasks.findMany({
+          where: inArray(tasks.id, depTaskIds),
+          columns: { id: true, title: true, status: true, result: true },
+          with: {
+            workers: {
+              columns: { prUrl: true, prNumber: true, mergedAt: true, prLifecycleStatus: true },
+              orderBy: desc(workers.createdAt),
+              limit: 1,
+            },
           },
-        },
-      })
-    : [];
-
-  // Get workers for this task
-  const taskWorkers = await db.query.workers.findMany({
-    where: eq(workers.taskId, id),
-    orderBy: desc(workers.createdAt),
-    with: {
-      account: true,
-    },
-  });
+        })
+      : Promise.resolve([]),
+    // Workers for this task
+    db.query.workers.findMany({
+      where: eq(workers.taskId, id),
+      orderBy: desc(workers.createdAt),
+      with: {
+        account: true,
+      },
+    }),
+  ]);
+  const openQuestionCount = Number(openQuestionRows[0]?.c ?? 0);
 
   // Read-through refresh: if the latest worker is completed with an open PR,
   // check GitHub in case the merged webhook was missed.
@@ -263,34 +268,45 @@ export default async function TaskDetailPage({
     }
   }
 
-  // Fetch artifacts for all workers on this task
+  // Artifacts, error traces and ship state are mutually independent — one wait
+  // instead of three. The release *label* genuinely follows the ship-state
+  // resolver (it needs the release id it returns), so it stays chained inside
+  // that entry rather than becoming a fourth serial step.
   const workerIds = taskWorkers.map(w => w.id);
-  const taskArtifacts = workerIds.length > 0
-    ? await db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
-    : [];
-
-  // Fetch agent error traces (pattern-matched failures from tool output).
-  // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
-  // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
-  const errorTraces = await db.query.workerErrorTraces.findMany({
-    where: eq(workerErrorTraces.taskId, id),
-    orderBy: [desc(workerErrorTraces.ts)],
-    limit: 50,
-  });
-  // Ship state (§10.3) — whether this task is attributed to a healthy release.
-  const shippedRelease = await resolveShippedRelease(task.id);
-  // The `Shipped in <release>` line (U7) needs a name for the release the shared
-  // resolver identified. Read it by id — the release_tasks attribution join stays
-  // in resolveShippedRelease so no surface re-derives it.
-  let shippedReleaseLabel: string | null = null;
-  if (shippedRelease) {
-    const [rel] = await db
-      .select({ version: releases.version, unit: releases.unit, headSha: releases.headSha })
-      .from(releases)
-      .where(eq(releases.id, shippedRelease.releaseId))
-      .limit(1);
-    shippedReleaseLabel = rel?.version ?? rel?.unit ?? (rel?.headSha ? rel.headSha.slice(0, 7) : null);
-  }
+  const [taskArtifacts, errorTraces, ship] = await Promise.all([
+    // Artifacts for all workers on this task
+    workerIds.length > 0
+      ? db.query.artifacts.findMany({ where: inArray(artifacts.workerId, workerIds) })
+      : Promise.resolve([]),
+    // Agent error traces (pattern-matched failures from tool output).
+    // Captured by the runner's error-trace-scanner — see apps/runner/src/error-trace-scanner.ts.
+    // Cap to most recent 50 here; full list available via /api/tasks/[id]/error-traces.
+    db.query.workerErrorTraces.findMany({
+      where: eq(workerErrorTraces.taskId, id),
+      orderBy: [desc(workerErrorTraces.ts)],
+      limit: 50,
+    }),
+    (async () => {
+      // Ship state (§10.3) — whether this task is attributed to a healthy release.
+      const shippedRelease = await resolveShippedRelease(task.id);
+      // The `Shipped in <release>` line (U7) needs a name for the release the
+      // shared resolver identified. Read it by id — the release_tasks
+      // attribution join stays in resolveShippedRelease so no surface
+      // re-derives it.
+      let label: string | null = null;
+      if (shippedRelease) {
+        const [rel] = await db
+          .select({ version: releases.version, unit: releases.unit, headSha: releases.headSha })
+          .from(releases)
+          .where(eq(releases.id, shippedRelease.releaseId))
+          .limit(1);
+        label = rel?.version ?? rel?.unit ?? (rel?.headSha ? rel.headSha.slice(0, 7) : null);
+      }
+      return { shippedRelease, label };
+    })(),
+  ]);
+  const shippedRelease = ship.shippedRelease;
+  const shippedReleaseLabel = ship.label;
 
   // Origin (U6, Problem §4) — provenance from stored columns only, no title parsing.
   // "You" is claimed only when the creating account is named after the viewer;
