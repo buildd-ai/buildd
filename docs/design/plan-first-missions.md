@@ -99,9 +99,9 @@ files — the create-time auto-start in `POST /api/missions`
 (`apps/web/src/app/api/missions/route.ts:440-450`, the `runMission` call itself
 at line 445), the manual "Run now" endpoint
 (`apps/web/src/app/api/missions/[id]/run/route.ts:65`), and two call sites
-inside `apps/web/src/lib/mission-loop.ts`: `maybeRetriggerMission` (line 301,
+inside `apps/web/src/lib/mission-loop.ts`: `maybeRetriggerMission` (line 302,
 fires after a planning task *completes*) and the failure-retry path inside
-`retriggerMissionOnFailure` (line 478, fires after a planning task *fails*).
+`retriggerMissionOnFailure` (line 479, fires after a planning task *fails*).
 The recurring cron dispatcher itself never calls `runMission`
 (`apps/web/src/app/api/cron/schedules/route.ts` creates heartbeat tasks
 directly, comment at `mission-run.ts:279-283` confirms: "cron path creates
