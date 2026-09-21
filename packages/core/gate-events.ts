@@ -74,6 +74,14 @@ export const GATE_SLUGS = {
   OUTPUT_REQUIREMENT: 'output_requirement',
   /** PATCH /api/workers/[id] — refusing to adopt a PR that targets the wrong base. */
   MISSION_BASE_ADOPTION: 'mission_base_adoption',
+  /**
+   * PATCH /api/workers/[id] — a runner reporting that a prior mutation of OURS
+   * was refused (a non-gate 4xx, or an unqueueable 5xx). Those reports are
+   * exempt from the task's retry budget, so this row is what keeps the
+   * exemption countable instead of invisible: a rise here means the runner is
+   * sending requests we reject, not that agents are failing.
+   */
+  WORKER_PATCH_REFUSED: 'worker_patch_refused',
   /** create_pr — head is not the worker's own branch. */
   PR_HEAD_MISMATCH: 'pr_head_mismatch',
   /** create_pr — base disagrees with the mission integration branch. */

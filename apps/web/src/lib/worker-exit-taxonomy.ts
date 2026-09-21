@@ -13,7 +13,33 @@ export type WorkerExitCause =
    * be booked as code_failure; excluded from the failure rate and
    * failure-signature ranking, but still queryable by this exit cause.
    */
-  | 'needs_input';
+  | 'needs_input'
+  /**
+   * The coordination server REFUSED a mutation from this session — a bad or
+   * expired runner credential, a worker row that no longer exists, a malformed
+   * payload, a rate limit, a 5xx that could not be queued. It describes the
+   * REQUEST, not the work: a fresh attempt against the same broken credential
+   * or the same missing row fails identically, so charging a retry spends the
+   * budget with no chance of a different outcome — the same argument this file
+   * already accepts for never_started/silent_start.
+   *
+   * Bounded rather than unbounded: the PATCH route routes this through the
+   * existing infraRetryCount / MAX_INFRA_RETRIES_PATCH budget, so the exemption
+   * cannot become an infinite retry loop.
+   */
+  | 'server_refused'
+  /**
+   * A declared output gate (GATE_SLUGS.OUTPUT_REQUIREMENT) refused the
+   * completion: the session ran, produced commits or a dirty worktree, and
+   * shipped neither a PR nor an artifact.
+   *
+   * IS charged — this refusal only reaches the runner for a session that ended
+   * without the agent ever calling complete_task, and a fresh attempt can
+   * plausibly open the PR — but kept out of `code_failure` so a coordination
+   * refusal stops being reported as an agent code defect, and so the
+   * chargeability decision lives in exactly one place (consumesRetryAttempt).
+   */
+  | 'output_unmet';
 
 /**
  * Failure strings that mean "the coordination server told the runner to stop",
@@ -81,6 +107,19 @@ export function classifyReportedFailure(input: {
    * code_failure.
    */
   needsInput?: boolean;
+  /**
+   * The runner is reporting that THIS SERVER refused one of its mutations (a
+   * 4xx, or a 5xx the outbox could not queue) rather than that the session
+   * crashed. A report, not a decision: the runner holds no retry counter, so
+   * chargeability is settled here and in consumesRetryAttempt.
+   */
+  serverRefused?: boolean;
+  /**
+   * The refusal above carried GATE_SLUGS.OUTPUT_REQUIREMENT — i.e. it was about
+   * this session's DELIVERABLES, not about the shape of its request. Strictly
+   * narrower than `serverRefused` and checked first.
+   */
+  outputGateRefused?: boolean;
 }): WorkerExitCause {
   if (input.budgetLimited) return 'budget_limited';
   if (input.sandboxMountGap) return 'sandbox_mount_gap';
@@ -90,6 +129,13 @@ export function classifyReportedFailure(input: {
   // Server-side concurrency conflicts are infra failures for the same reason:
   // the session was killed by coordination bookkeeping, not by the work.
   if (input.concurrencyConflict) return 'infra_failure';
+  // An output-gate refusal is about the session's DELIVERABLES, so it stays
+  // chargeable — but under its own cause rather than code_failure. Checked
+  // before serverRefused because both are true for a gate 400 and the gate is
+  // the more specific claim.
+  if (input.outputGateRefused) return 'output_unmet';
+  // Every other refusal is about the REQUEST, not the work.
+  if (input.serverRefused) return 'server_refused';
   // A genuine needs_input report should still be filed under a real diagnosed
   // cause above when one is also present — same reasoning as conditionUnmet
   // below, and checked ahead of it because it is the more specific signal.
@@ -157,5 +203,11 @@ export function consumesRetryAttempt(exitCause: WorkerExitCause | null | undefin
     // A parked question that timed out unanswered is not the task's own
     // defect — charging it would burn the retry budget on a task that was
     // never actually attempted at solving the problem, only blocked on it.
-    && exitCause !== 'needs_input';
+    && exitCause !== 'needs_input'
+    // A refused REQUEST says nothing about the work — see WorkerExitCause.
+    // NOTE: 'output_unmet' is deliberately ABSENT from this list. It IS
+    // charged: that refusal is about the session's deliverables, and a fresh
+    // attempt can plausibly ship them. If the evidence says otherwise, this is
+    // the one line to change.
+    && exitCause !== 'server_refused';
 }
