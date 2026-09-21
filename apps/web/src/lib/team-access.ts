@@ -1,7 +1,15 @@
 import { cache } from 'react';
 import { db } from '@buildd/core/db';
 import { teamMembers, workspaces, accountWorkspaces, teams } from '@buildd/core/db/schema';
-import { eq, and, inArray, sql } from 'drizzle-orm';
+import { eq, and, or, inArray, sql } from 'drizzle-orm';
+import { QueryBuilder } from 'drizzle-orm/pg-core';
+
+/**
+ * Builds the two scope subqueries below without a db handle, so the predicate
+ * is renderable (and therefore assertable) independently of any connection —
+ * see team-access-workspace-scope.test.ts.
+ */
+const qb = new QueryBuilder();
 
 type TeamRole = 'owner' | 'admin' | 'member';
 
@@ -95,39 +103,48 @@ export const verifyAccountWorkspaceAccess = cache(async (
  * Cached per-request via React cache() so layout + page share the same result.
  * Both the protected layout and the page it renders resolve this scope, and it
  * is re-resolved on every Pusher-driven router.refresh().
+ *
+ * One statement, deliberately. This used to be four strictly sequential
+ * queries — personal team by slug, that team's workspaces, the user's
+ * memberships, those teams' workspaces — and neon-http has no pooling, so each
+ * one cost a separate HTTP round trip for a predicate Postgres can evaluate in
+ * a single pass. The two arms are unchanged and still OR'd:
+ *
+ *   1. the personal team (slug = personal-{userId}), which is the fallback for
+ *      accounts predating teamMembers enforcement; and
+ *   2. every team the user actually has a teamMembers row for.
+ *
+ * SELECT DISTINCT does the set union the old Set<string> accumulator did.
+ * `accountWorkspaces` is intentionally not consulted here — that is the API-key
+ * account path (verifyAccountWorkspaceAccess), not the session-user path.
+ *
+ * Two invariants this leans on. `teams.slug` is UNIQUE (schema.ts), so the
+ * personal-team subquery matches at most one row — exactly what the old
+ * findFirst did, not a widening. And the return value is an unordered set, as
+ * it always was: neither of the old findMany calls carried an ORDER BY either.
  */
 export const getUserWorkspaceIds = cache(async (userId: string): Promise<string[]> => {
-  const ids = new Set<string>();
+  const rows = await db
+    .selectDistinct({ id: workspaces.id })
+    .from(workspaces)
+    .where(
+      or(
+        // 1. Workspaces via personal team (for users missing team_members rows)
+        inArray(
+          workspaces.teamId,
+          qb.select({ id: teams.id }).from(teams).where(eq(teams.slug, `personal-${userId}`)),
+        ),
+        // 2. Workspaces via team membership
+        inArray(
+          workspaces.teamId,
+          qb.select({ teamId: teamMembers.teamId }).from(teamMembers).where(eq(teamMembers.userId, userId)),
+        ),
+      ),
+    );
 
-  // 1. Workspaces via personal team (for users missing team_members rows)
-  const personalTeam = await db.query.teams.findFirst({
-    where: eq(teams.slug, `personal-${userId}`),
-    columns: { id: true },
-  });
-  if (personalTeam) {
-    const personalWorkspaces = await db.query.workspaces.findMany({
-      where: eq(workspaces.teamId, personalTeam.id),
-      columns: { id: true },
-    });
-    for (const w of personalWorkspaces) ids.add(w.id);
-  }
-
-  // 2. Workspaces via team membership
-  const memberships = await db.query.teamMembers.findMany({
-    where: eq(teamMembers.userId, userId),
-    columns: { teamId: true },
-  });
-
-  if (memberships.length > 0) {
-    const teamIds = memberships.map(m => m.teamId);
-    const teamWorkspaces = await db.query.workspaces.findMany({
-      where: inArray(workspaces.teamId, teamIds),
-      columns: { id: true },
-    });
-    for (const w of teamWorkspaces) ids.add(w.id);
-  }
-
-  return [...ids];
+  // DISTINCT already dedupes in Postgres; the Set keeps the contract explicit
+  // and independent of the query shape.
+  return [...new Set(rows.map(r => r.id))];
 });
 
 /**
