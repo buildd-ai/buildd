@@ -83,6 +83,32 @@ describe('record_pr_supersession', () => {
     expect(output).toContain('PR #2287 recorded as superseded by PR #2293');
     expect(output).toContain('https://github.com/org/repo/pull/2293');
   });
+
+  it('includes both the implicit ctx.workerId and the explicit prNumber in the outgoing body', async () => {
+    // Production calls always carry a real ctx.workerId — the caller's own worker.
+    // This reproduces the exact request shape that triggered the 400: workerId and
+    // prNumber both present, with server-side resolution (route.ts) responsible for
+    // prioritizing prNumber over the implicitly-injected workerId.
+    const calls: Array<{ path: string; init: any }> = [];
+    const api = apiRecording(calls, {
+      ok: true,
+      supersededPrNumber: 2287,
+      supersedingPrNumber: 2293,
+      supersedingPrUrl: 'https://github.com/org/repo/pull/2293',
+    });
+
+    await handleBuilddAction(
+      api,
+      'record_pr_supersession',
+      { prNumber: 2287, supersedingPrNumber: 2293, reason: 'branch deleted; re-landed via #2293' },
+      context(),
+    );
+
+    expect(calls).toHaveLength(1);
+    const body = JSON.parse(calls[0]!.init.body);
+    expect(body.workerId).toBe('worker-1');
+    expect(body.prNumber).toBe(2287);
+  });
 });
 
 describe('get_pr renders a recorded supersession edge', () => {
