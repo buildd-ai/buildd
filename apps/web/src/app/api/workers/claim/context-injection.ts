@@ -315,7 +315,7 @@ export async function attachKnowledgeContext(
         teamId,
         trigger,
         chain,
-        opts: { sensitive },
+        opts: { sensitive, excludedSourceIds: handoffExcludedSources },
       });
       parts = clustered;
       recipeAssembly = assembly;
@@ -331,7 +331,11 @@ export async function attachKnowledgeContext(
       const declared = manifestPaths((task as any).pathManifest);
       const hint = declared.length === 0 ? taskAreaHint(predictions?.get(task.id)) : null;
       const paths = declared.length > 0 ? declared : (hint?.paths ?? []);
-      parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, { sensitive, paths });
+      parts = await buildKnowledgeContext(seedQuery, task.workspaceId, teamId, undefined, {
+        sensitive,
+        paths,
+        excludedSourceIds: handoffExcludedSources,
+      });
     }
 
     // One record per claim, always — the recipe's when it served the request,

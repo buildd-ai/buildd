@@ -239,6 +239,40 @@ describe('buildKnowledgeContext', () => {
     const result = await buildKnowledgeContext('goal', 'ws-1', 'team-1', store);
     expect(result).toEqual([]);
   });
+
+  it('drops a hit whose id is in excludedSourceIds — a task the handoff section already rendered', async () => {
+    const store = mockStore({
+      'ws-1:task': [{ id: 'task:dep-1', content: '# Task: upstream dependency' }],
+    });
+    const text = (await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store, {
+      excludedSourceIds: new Set(['task:dep-1']),
+    })).join('\n');
+    expect(text).not.toContain('upstream dependency');
+    expect(text).not.toContain('Past task outcomes');
+  });
+
+  it('drops a PR hit whose id is in excludedSourceIds, including in the path-based lookup', async () => {
+    const store = mockStore({
+      'ws-1:pr': [{ id: 'pr:42', content: '# PR #42: upstream PR', metadata: { prNumber: 42 } }],
+    });
+    const text = (await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store, {
+      paths: ['apps/web/src/lib/auth.ts'],
+      excludedSourceIds: new Set(['pr:42']),
+    })).join('\n');
+    expect(text).not.toContain('upstream PR');
+    expect(text).not.toContain('Pull requests');
+    expect(text).not.toContain('Recent work on relevant paths');
+  });
+
+  it('keeps hits whose id is not excluded', async () => {
+    const store = mockStore({
+      'ws-1:task': [{ id: 'task:other', content: '# Task: unrelated work' }],
+    });
+    const text = (await buildKnowledgeContext('build feature', 'ws-1', 'team-1', store, {
+      excludedSourceIds: new Set(['task:dep-1']),
+    })).join('\n');
+    expect(text).toContain('unrelated work');
+  });
 });
 
 describe('buildKnowledgeContext corpora hint', () => {
@@ -461,7 +495,7 @@ const DEFAULT_KEYS: ClusterKeys = {
 function runCluster(
   byNs: Record<string, Array<Partial<QueryResult>>>,
   keys: ClusterKeys = DEFAULT_KEYS,
-  opts?: { sensitive?: boolean },
+  opts?: { sensitive?: boolean; excludedSourceIds?: ReadonlySet<string> },
   recipe: ClusterRecipe = TOOL_INFRA_ERROR_V1,
 ) {
   const { store, calls } = clusterStore(byNs);
@@ -671,6 +705,32 @@ describe('buildClusteredKnowledgeContext — graph neighbours do not claim the k
       'team-1:memory': [hit({ id: 'plain', corpus: 'memory', rerank: STRONG })],
     });
     expect(assembly.items.find(i => i.chunkId === 'plain')!.reason).toBe('error_signature_query_hit');
+  });
+});
+
+describe('buildClusteredKnowledgeContext — handoff dedupe', () => {
+  it('drops a hit whose id was already rendered by the mission handoff section', async () => {
+    const { assembly } = await runCluster(
+      {
+        'ws-1:task': [
+          hit({ id: 'task:dep-1', corpus: 'task', rerank: STRONG, content: '# upstream dependency' }),
+        ],
+      },
+      DEFAULT_KEYS,
+      { excludedSourceIds: new Set(['task:dep-1']) },
+    );
+    expect(assembly.items.some(i => i.chunkId === 'task:dep-1')).toBe(false);
+  });
+
+  it('renders a non-excluded hit from the same query normally', async () => {
+    const { parts } = await runCluster(
+      {
+        'ws-1:task': [hit({ id: 'task:other', corpus: 'task', rerank: STRONG, content: '# unrelated work' })],
+      },
+      DEFAULT_KEYS,
+      { excludedSourceIds: new Set(['task:dep-1']) },
+    );
+    expect(parts.join('\n')).toContain('unrelated work');
   });
 });
 
