@@ -223,6 +223,47 @@ export const WAITING_WORKTREE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Idle threshold before a leftover worktree is considered stale/removable. */
 export const STALE_WORKTREE_IDLE_MS = 60 * 60 * 1000;
 
+/** The minimal in-memory worker shape the ownership check needs. */
+export interface WorktreeOwnershipRecord {
+  worktreePath?: string;
+  status?: string;
+}
+
+/**
+ * Is `worktreePath` currently owned by a LIVE worker other than
+ * `excludeWorkerId`?
+ *
+ * Worktree paths used to be keyed on the REQUESTED branch (see setupWorktree),
+ * so a mission's tasks — all handed the same shared head branch by
+ * `generateTaskBranchName` — computed one directory while holding N distinct
+ * branches. A retry on the same task computes the identical path too. Any
+ * removal must therefore consult this first: `git worktree remove --force`
+ * exits 0 *after* deleting another worker's work, so there is no second line of
+ * defence, and a clean `git status` does not mean idle — an agent that has
+ * committed (common: commit early, push late) reads clean while its SDK session
+ * still has that path as `cwd`.
+ *
+ * "Live" is anything short of the two terminal statuses: `stale` and `waiting`
+ * workers can still resume into the same session and the same worktree.
+ *
+ * Matching is exact, deliberately. Prefix matching would also protect every
+ * `-w<id8>` diversion hanging off the same stem, which is the population the
+ * reaper exists to reclaim.
+ */
+export function isWorktreePathOwnedByOtherLiveWorker(
+  workers: Iterable<[string, WorktreeOwnershipRecord]>,
+  worktreePath: string,
+  excludeWorkerId: string,
+): boolean {
+  for (const [id, other] of workers) {
+    if (id === excludeWorkerId) continue;
+    if (other.worktreePath === worktreePath && other.status !== 'done' && other.status !== 'error') {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Does this branch name identify a per-task buildd worktree branch?
  * Matches the `buildd/<slug>` task branches and the `--e2e-test-` ephemeral

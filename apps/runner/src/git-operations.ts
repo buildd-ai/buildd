@@ -6,7 +6,15 @@
 import * as cp from 'child_process';
 import * as fs from 'fs';
 import { join } from 'path';
-import { resolveWorktreeBase, clearResumeContext, parseWorktreeList, BranchFetchResult } from './worktree-utils';
+import {
+  resolveWorktreeBase,
+  clearResumeContext,
+  parseWorktreeList,
+  isWorktreePathOwnedByOtherLiveWorker,
+  type BranchFetchResult,
+  type WorktreeOwnershipRecord,
+} from './worktree-utils';
+import { sessionLog as realSessionLog } from './session-logger';
 import { isGeneratedPath } from '@buildd/shared';
 import { looksLikeMissionIntegrationBranch } from '@buildd/core/mission-integration';
 
@@ -24,6 +32,9 @@ let mkdirSync = fs.mkdirSync;
 let appendFileSync = fs.appendFileSync;
 let readFileSync = fs.readFileSync;
 let rmSync = fs.rmSync;
+// Injected so unit tests do not append to the host's ~/.buildd/logs while
+// exercising the removal guard.
+let sessionLog: typeof realSessionLog = realSessionLog;
 // Optional spy for cleanupWorktree — set via __setGitOpsDeps to avoid mock.module pollution
 let _cleanupSpy: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null = null;
 
@@ -35,6 +46,8 @@ export interface GitOpsDeps {
   appendFileSync: typeof fs.appendFileSync;
   readFileSync: typeof fs.readFileSync;
   rmSync: typeof fs.rmSync;
+  /** Optional: keep session-log writes out of the host log dir in tests. */
+  sessionLog?: typeof realSessionLog;
   // Optional spy that intercepts cleanupWorktree calls (used by eviction tests)
   cleanupSpy?: ((repoPath: string, worktreePath: string, workerId: string) => Promise<void>) | null;
 }
@@ -48,6 +61,7 @@ export function __setGitOpsDeps(mocks: GitOpsDeps): void {
   appendFileSync = mocks.appendFileSync;
   readFileSync = mocks.readFileSync;
   rmSync = mocks.rmSync;
+  sessionLog = mocks.sessionLog ?? realSessionLog;
   if (mocks.cleanupSpy !== undefined) _cleanupSpy = mocks.cleanupSpy;
 }
 
@@ -60,6 +74,7 @@ export function __resetGitOpsDeps(): void {
   appendFileSync = fs.appendFileSync;
   readFileSync = fs.readFileSync;
   rmSync = fs.rmSync;
+  sessionLog = realSessionLog;
   _cleanupSpy = null;
 }
 
@@ -608,6 +623,102 @@ export async function cleanupWorktree(repoPath: string, worktreePath: string, wo
       execSync('git worktree prune', execOpts);
     } catch {}
   }
+}
+
+/** Why a worktree removal was refused, when it was. */
+export type WorktreeRemovalOutcome =
+  | { removed: true }
+  | { removed: false; reason: 'owned_by_live_worker' | 'unpushed_commits' };
+
+export interface RemoveWorktreeOptions {
+  repoPath: string;
+  worktreePath: string;
+  workerId: string;
+  /** Live-worker view — the runner passes `this.workers` straight in. */
+  workers: Iterable<[string, WorktreeOwnershipRecord]>;
+  /** Branch checked out at `worktreePath`; required for `protectUnpushed`. */
+  branch?: string;
+  /** Default false. When true, also refuse a tree holding commits not on origin. */
+  protectUnpushed?: boolean;
+}
+
+/**
+ * Does `branch` hold commits that are not on `origin/<branch>`?
+ *
+ * Fail-CLOSED: an inconclusive probe (no remote branch, git error, timeout)
+ * counts as unpushed. Mirrors doctor.ts's `isBranchPushed`, inverted — the cost
+ * of being wrong here is a leaked directory the reaper collects, versus commits
+ * that exist nowhere else.
+ */
+function hasUnpushedCommits(repoPath: string, branch: string | undefined): boolean {
+  if (!branch) return true;
+  const opts = { cwd: repoPath, timeout: 5000, encoding: 'utf-8' as const };
+  try {
+    const count = String(
+      execSync(`git rev-list --count "origin/${branch}..${branch}"`, opts) ?? '',
+    ).trim();
+    const n = parseInt(count, 10);
+    return isNaN(n) ? true : n > 0;
+  } catch {
+    return true;
+  }
+}
+
+/** Shared gate for both the async and sync removal entry points. */
+function removalRefusal(opts: RemoveWorktreeOptions): WorktreeRemovalOutcome | null {
+  const { repoPath, worktreePath, workerId, workers } = opts;
+  if (isWorktreePathOwnedByOtherLiveWorker(workers, worktreePath, workerId)) {
+    const msg = `Refused to remove worktree ${worktreePath}: owned by another live worker`;
+    sessionLog(workerId, 'warn', 'worktree_removal_skipped_owned', msg);
+    console.warn(`[Worker ${workerId}] ${msg} (force-remove exits 0 after destroying its work)`);
+    return { removed: false, reason: 'owned_by_live_worker' };
+  }
+  if (opts.protectUnpushed && hasUnpushedCommits(repoPath, opts.branch)) {
+    const msg = `Refused to remove worktree ${worktreePath}: commits are not on origin`;
+    sessionLog(workerId, 'warn', 'worktree_removal_skipped_unpushed', msg);
+    console.warn(`[Worker ${workerId}] ${msg}`);
+    return { removed: false, reason: 'unpushed_commits' };
+  }
+  return null;
+}
+
+/**
+ * THE removal entry point for runner-side worktree teardown.
+ *
+ * Refuses to touch a path a live worker owns. `cleanupWorktree` above is the
+ * executor and must not be called directly from a teardown path — the ownership
+ * predicate already existed (privately, in worker-sync.ts) and still covered
+ * only two of six removal sites, which is precisely the failure mode one
+ * exported executor removes. The reaper in doctor.ts is the one legitimate
+ * direct caller: it has its own record-based gates and no in-memory map.
+ */
+export async function removeWorktreeIfUnowned(
+  opts: RemoveWorktreeOptions,
+): Promise<WorktreeRemovalOutcome> {
+  const refusal = removalRefusal(opts);
+  if (refusal) return refusal;
+  await cleanupWorktree(opts.repoPath, opts.worktreePath, opts.workerId);
+  return { removed: true };
+}
+
+/**
+ * Synchronous sibling for `destroy()`, which runs on process teardown with no
+ * event loop left to await on. Shares `removalRefusal` — the predicate is the
+ * part that must never be duplicated.
+ */
+export function removeWorktreeIfUnownedSync(
+  opts: RemoveWorktreeOptions,
+): WorktreeRemovalOutcome {
+  const refusal = removalRefusal(opts);
+  if (refusal) return refusal;
+  const { repoPath, worktreePath, workerId } = opts;
+  try {
+    console.log(`[Worker ${workerId}] Removing worktree: ${worktreePath}`);
+    execSync(`git worktree remove --force "${worktreePath}"`, { cwd: repoPath, timeout: 5000 });
+  } catch {
+    try { rmSync(worktreePath, { recursive: true, force: true }); } catch {}
+  }
+  return { removed: true };
 }
 
 /**
