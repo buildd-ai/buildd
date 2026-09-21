@@ -623,9 +623,19 @@ deleted), the runner falls back and a new PR opens. To enforce the one-open-PR i
 
 **`apps/web/src/app/api/github/pr/route.ts`** — the `closeAncestorRetryPrs` function walks
 the `parentTaskId` chain when a retry task opens a fallback PR (`retryIteration > 0`). It
-finds all ancestor workers with open `prNumber`s and closes them via GitHub PATCH
+finds ancestor workers with open `prNumber`s and closes them via GitHub PATCH
 `{ state: 'closed' }`, posting a comment linking the successor PR. Called as a non-blocking
 `.catch()`-guarded promise after the new PR is created.
+
+The walk stops climbing past any task that isn't itself a genuine retry attempt
+(`taskClass === 'attempt'`, the marker `ci-retry.ts` / `conflict-retry.ts` / the
+reviewer-retry path all stamp). This matters because `parentTaskId` is not
+exclusively a retry-lineage pointer — `resolveCreatorContext`
+(`apps/web/src/lib/task-service.ts`) auto-sets it to the calling worker's *current*
+task whenever a new task is created without one explicitly (e.g. a `[friction]`
+report filed mid-task). Without the `taskClass` gate, that creation-provenance link
+looks identical to a retry link, and the walk would climb straight through it into
+an unrelated task and close its unrelated open PR, mislabeling it "superseded."
 
 ### 8.4 Attempt Number Stamping
 
