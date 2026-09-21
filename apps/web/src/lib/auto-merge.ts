@@ -41,7 +41,21 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
  *   - tier 1 (auto-threshold): threshold.denyPaths
  *   - tier 2 (agent-review): agentReview.escalateToPaths (treated as block paths here)
  *
- * ## The exemptions from the aggregate line threshold
+ * ## The aggregate line-count cap is auto-threshold ONLY
+ *
+ * `threshold` (and its `maxLines`/`maxSourceLines`) is a tier-1 concept — see
+ * `MergePolicy` in `@buildd/shared` and `docs/design/merge-policy.md`. The cap
+ * is auto-threshold's proxy for "no human or agent has looked at this diff".
+ * Under `agent-review` a reviewer has already returned a terminal verdict
+ * before this function runs — that verdict IS the judgment the cap stands in
+ * for elsewhere — and under `human` a person is the gate. Re-applying the
+ * default 800-line cap to either tier would make it structurally unable to
+ * ever merge the class of PR it was configured to merge. So the size check
+ * below only runs when `policy.tier === 'auto-threshold'`; every other check
+ * in this function (CI, denyPaths/escalateToPaths, the migration inspector,
+ * the conflict/mergeable-state check) still runs for every tier, unchanged.
+ *
+ * ## The exemptions from the aggregate line threshold (auto-threshold only)
  *
  * `opts.mission` is the calling worker's mission, and it is read for two
  * decisions, both of which ask `isMissionIntegrationBase` — never a branch-name
@@ -58,7 +72,10 @@ import { fireGateEvent, GATE_SLUGS } from '@/lib/gate-ledger';
  * is a rollup of every commit since the last release, each of which was
  * already size-gated on its own way into the release branch — re-applying the
  * cap to the union would make every release unmergeable by policy regardless
- * of review outcome. Nothing else is relaxed, same as Option A′.
+ * of review outcome. Nothing else is relaxed, same as Option A′. (Under
+ * `agent-review` this exemption is redundant — the tier gate above already
+ * exempts the aggregate check — but it stays load-bearing for `auto-threshold`
+ * workspaces, which is the only tier it was ever written for.)
  *
  * Omit `opts` and this behaves exactly as it did before either exemption
  * existed.
@@ -205,65 +222,72 @@ export async function evaluateAutoMergeSafety(
     console.warn(`Could not read PR ${repoFullName}#${prNumber}:`, err);
   }
 
-  // Is this the mission's integration PR (integration branch → trunk)?
-  //
-  // `isMissionIntegrationBase` asks "is this ref the mission's integration
-  // branch"; for the mission PR the ref of interest is its HEAD, since its BASE
-  // is trunk. Authoritative predicate rather than the `mission/` shape
-  // heuristic: the only caller can reach the mission row, and a false positive
-  // here would drop the size gate for any branch that merely looks like a
-  // mission branch. An unknown head ref or a mission that has not opted in is
-  // false, so nothing changes for a mission that is not using Option A′.
-  const isMissionIntegrationPr = isMissionIntegrationBase({
-    baseRef: prData?.head?.ref ?? null,
-    mission: opts?.mission ?? null,
-  });
+  // Aggregate line-count cap — auto-threshold tier ONLY (see the function
+  // doc comment). `agent-review` and `human` never reach this block, so a
+  // workspace on either tier cannot inherit the 800-line default just
+  // because `policy.threshold` happened to be unset.
+  if (policy.tier === 'auto-threshold') {
+    // Is this the mission's integration PR (integration branch → trunk)?
+    //
+    // `isMissionIntegrationBase` asks "is this ref the mission's integration
+    // branch"; for the mission PR the ref of interest is its HEAD, since its BASE
+    // is trunk. Authoritative predicate rather than the `mission/` shape
+    // heuristic: the only caller can reach the mission row, and a false positive
+    // here would drop the size gate for any branch that merely looks like a
+    // mission branch. An unknown head ref or a mission that has not opted in is
+    // false, so nothing changes for a mission that is not using Option A′.
+    const isMissionIntegrationPr = isMissionIntegrationBase({
+      baseRef: prData?.head?.ref ?? null,
+      mission: opts?.mission ?? null,
+    });
 
-  // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
-  // Unlike the mission check above, this compares BOTH refs — a release PR's
-  // own head and base are both configured (releaseBranch, prodBranch), so
-  // there is no single trunk-base assumption to lean on.
-  const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
-    headRef: prData?.head?.ref ?? null,
-    baseRef: prData?.base?.ref ?? null,
-  });
+    // Is this the workspace's release-branch → prod-branch PR (e.g. dev → main)?
+    // Unlike the mission check above, this compares BOTH refs — a release PR's
+    // own head and base are both configured (releaseBranch, prodBranch), so
+    // there is no single trunk-base assumption to lean on.
+    const isReleasePr = isReleaseBranchPr(opts?.releaseConfig ?? null, {
+      headRef: prData?.head?.ref ?? null,
+      baseRef: prData?.base?.ref ?? null,
+    });
 
-  const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
-  const sourceFiles = files.filter(
-    (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
-  );
-  const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
-  // Option A′: the AGGREGATE line threshold does not apply to a mission
-  // integration PR. That PR is the union of every task diff in the mission, and
-  // each of those diffs was already size-gated when it merged into the
-  // integration branch — 800 lines is the right granularity per task, and
-  // re-applying it to the union double-counts a check that already passed.
-  // Under the DEFAULT policy the union is over the cap essentially by
-  // construction, which would make every mission PR unmergeable by the platform
-  // and reduce "the tier applies at the mission PR" to a claim that only holds
-  // for operators who explicitly configured a tier.
-  //
-  // The same reasoning applies to the workspace's release PR (dev → main):
-  // it bundles every commit merged since the last release, each already
-  // size-gated on its own way into the release branch, so the union is over
-  // the cap essentially by construction and every release would otherwise
-  // need a human to merge_pr regardless of review outcome.
-  //
-  // ONLY the aggregate size gate is exempt for either. Everything else in this
-  // function still runs, unchanged and in the same order: CI-green
-  // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
-  // operation-class inspector, and the conflict / branch-protection checks.
-  if ((isMissionIntegrationPr || isReleasePr) && totalLines > maxLines) {
-    const exemption = isMissionIntegrationPr ? 'mission integration PR' : 'release PR';
-    console.log(
-      `[auto-merge] ${repoFullName}#${prNumber}: ${exemption} — aggregate size gate not applied ` +
-        `(${totalLines} source lines > limit ${maxLines}); each underlying commit was size-gated on the way in`,
+    const LOCKFILE_PATTERNS = [/\.lock$/, /^bun\.lockb$/];
+    const sourceFiles = files.filter(
+      (f) => !isGeneratedPath(f.filename) && !LOCKFILE_PATTERNS.some((p) => p.test(f.filename)),
     );
-  } else if (totalLines > maxLines) {
-    return {
-      ok: false,
-      reason: `diff size ${totalLines} source lines > limit ${maxLines} (${files.length - sourceFiles.length} noise files excluded)`,
-    };
+    const totalLines = sourceFiles.reduce((sum, f) => sum + (f.additions || 0) + (f.deletions || 0), 0);
+    // Option A′: the AGGREGATE line threshold does not apply to a mission
+    // integration PR. That PR is the union of every task diff in the mission, and
+    // each of those diffs was already size-gated when it merged into the
+    // integration branch — 800 lines is the right granularity per task, and
+    // re-applying it to the union double-counts a check that already passed.
+    // Under the DEFAULT policy the union is over the cap essentially by
+    // construction, which would make every mission PR unmergeable by the platform
+    // and reduce "the tier applies at the mission PR" to a claim that only holds
+    // for operators who explicitly configured a tier.
+    //
+    // The same reasoning applies to the workspace's release PR (dev → main):
+    // it bundles every commit merged since the last release, each already
+    // size-gated on its own way into the release branch, so the union is over
+    // the cap essentially by construction and every release would otherwise
+    // need a human to merge_pr regardless of review outcome.
+    //
+    // ONLY the aggregate size gate is exempt for either. Everything else in this
+    // function still runs, unchanged and in the same order: CI-green
+    // (fail-closed if unverifiable), denyPaths / escalateToPaths, the migration
+    // operation-class inspector, and the conflict / branch-protection checks.
+    if ((isMissionIntegrationPr || isReleasePr) && totalLines > maxLines) {
+      const exemption = isMissionIntegrationPr ? 'mission integration PR' : 'release PR';
+      console.log(
+        `[auto-merge] ${repoFullName}#${prNumber}: ${exemption} — aggregate size gate not applied ` +
+          `(${totalLines} source lines > limit ${maxLines}); each underlying commit was size-gated on the way in`,
+      );
+    } else if (totalLines > maxLines) {
+      const limitSource = policy.threshold?.maxLines != null ? 'configured' : 'default';
+      return {
+        ok: false,
+        reason: `auto-threshold tier: diff size ${totalLines} source lines > ${limitSource} limit ${maxLines} (${files.length - sourceFiles.length} noise files excluded)`,
+      };
+    }
   }
 
   // Conflict detection — check GitHub's mergeable_state before attempting merge.

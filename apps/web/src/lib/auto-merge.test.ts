@@ -356,6 +356,111 @@ describe('evaluateAutoMergeSafety tier 2 escalateToPaths', () => {
   });
 });
 
+// ── Aggregate line-count cap is auto-threshold ONLY ──────────────────────────
+//
+// A workspace on `agent-review` or `human` declares no `threshold` — the
+// field belongs to `auto-threshold` (docs/design/merge-policy.md). Before this
+// fix, `evaluateAutoMergeSafety` read `policy.threshold?.maxLines ?? 800`
+// unconditionally, so a terminal-approved agent-review PR over 800 lines was
+// refused by a cap the workspace never configured (PR #2540).
+describe('evaluateAutoMergeSafety aggregate line-count cap — tier-gated', () => {
+  it('merges an agent-review PR over 800 lines — the reviewer already judged it', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    const policy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'builder', gateCondition: 'approve-and-merge', maxConfidenceThreshold: 0.6 },
+    };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('still escalates an oversized agent-review PR that touches escalateToPaths', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([
+        ...OVERSIZED_FILES,
+        { filename: '.github/workflows/build.yml', additions: 1, deletions: 0 },
+      ]);
+    const policy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'builder', escalateToPaths: ['.github/workflows/'] },
+    };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('.github/workflows/build.yml'),
+    });
+  });
+
+  it('still refuses an oversized agent-review PR when CI is red', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi.mockResolvedValueOnce({
+      check_runs: [{ name: 'build', status: 'completed', conclusion: 'failure' }],
+    });
+    const policy: MergePolicy = {
+      tier: 'agent-review',
+      agentReview: { reviewerRole: 'builder' },
+    };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('build'),
+    });
+  });
+
+  it('still refuses an oversized diff under auto-threshold (no regression)', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    await expect(
+      evaluateAutoMergeSafety(...params, autoThresholdPolicy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('auto-threshold tier'),
+    });
+  });
+
+  it('honors an explicitly configured maxLines under auto-threshold', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce([{ filename: 'apps/web/src/lib/feature.ts', additions: 150, deletions: 0 }])
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    const policy: MergePolicy = { tier: 'auto-threshold', threshold: { maxLines: 100 } };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({
+      ok: false,
+      reason: expect.stringContaining('configured limit 100'),
+    });
+  });
+
+  it('refuses a human-tier PR before ever reaching the size check — tier itself is the gate', async () => {
+    mockGithubApi.mockReset();
+    mockGithubApi
+      .mockResolvedValueOnce({ check_runs: [] })
+      .mockResolvedValueOnce(OVERSIZED_FILES)
+      .mockResolvedValueOnce({ mergeable_state: 'clean', head: { sha: 'head-sha' } });
+    // evaluateAutoMergeSafety itself has no tier === 'human' branch (routes
+    // never call it for that tier — see docs/design/merge-policy.md §4), so a
+    // 'human' policy simply skips the size gate the same as agent-review does.
+    const policy: MergePolicy = { tier: 'human' };
+    await expect(
+      evaluateAutoMergeSafety(...params, policy),
+    ).resolves.toEqual({ ok: true });
+  });
+});
+
 describe('evaluateAutoMergeSafety generated-path exclusion', () => {
   const POLICY: MergePolicy = {
     tier: 'auto-threshold',
