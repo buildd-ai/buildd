@@ -118,7 +118,7 @@ fires after a planning task *completes*) and the failure-retry path inside
 `retriggerMissionOnFailure` (line 479, fires after a planning task *fails*).
 The recurring cron dispatcher itself never calls `runMission`
 (`apps/web/src/app/api/cron/schedules/route.ts` creates heartbeat tasks
-directly, comment at `mission-run.ts:279-283` confirms: "cron path creates
+directly, comment at `mission-run.ts:318-323` confirms: "cron path creates
 tasks directly (not via runMission)") — so heartbeat-created tasks are outside
 this code path entirely, independent of the gate.
 
