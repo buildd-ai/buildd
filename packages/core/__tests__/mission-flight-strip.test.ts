@@ -17,6 +17,23 @@ describe('computeMissionFlightStrip', () => {
     expect(strip.lanes).toEqual(['think', 'build', 'check']);
     expect(strip.bars.map(b => b.lane)).toEqual(['check', null]);
   });
+  // AC-8: the elision threshold is normative at 15 minutes (Rule X-2), not just
+  // "whatever the constant currently says" — a literal-minutes test so a future
+  // change to FLIGHT_STRIP_IDLE_THRESHOLD_MS can't silently drift from the spec
+  // the way packages/core/__tests__/mission-helpers.test.ts:784 once let the
+  // status==='error' bug survive by asserting the code's own behavior back at it.
+  it('AC-8: merges a 14-minute gap silently but elides a 15-minute gap with a break glyph', () => {
+    const FOURTEEN_MIN = 14 * 60_000;
+    const FIFTEEN_MIN = 15 * 60_000;
+    const merged = compute([task], [worker('a', 0, 100), worker('b', 100 + FOURTEEN_MIN, 300 + FOURTEEN_MIN)]);
+    expect(merged.phases).toHaveLength(1);
+    expect(merged.durationMs).toBe(300 + FOURTEEN_MIN);
+
+    const elided = compute([task], [worker('a', 0, 100), worker('b', 100 + FIFTEEN_MIN, 300 + FIFTEEN_MIN)]);
+    expect(elided.phases).toHaveLength(2);
+    expect(elided.durationMs).toBe(300);
+  });
+
   it('elides threshold-sized gaps and derives phases from exactly those boundaries', () => {
     const strip = compute([task], [worker('a', 0, 100), worker('b', 100 + GAP, 300 + GAP)]);
     expect(strip.durationMs).toBe(300);

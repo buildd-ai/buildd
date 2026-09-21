@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { computeMissionFlightStrip } from '@buildd/core/mission-helpers';
+import { computeMissionFlightStrip, FLIGHT_STRIP_IDLE_THRESHOLD_MS } from '@buildd/core/mission-helpers';
 import { computeFlightDetailStats, describeSteeringPattern, formatFlightDuration } from './flight-detail-stats';
 
 const date = (ms: number) => new Date(ms);
@@ -26,7 +26,7 @@ describe('computeFlightDetailStats', () => {
   });
 
   it('sums every elided gap into idleElidedMs', () => {
-    const GAP = 10 * 60_000; // above the 5-minute idle threshold
+    const GAP = FLIGHT_STRIP_IDLE_THRESHOLD_MS; // the elision boundary itself (Rule X-2, AC-8)
     const strip = computeMissionFlightStrip(
       [{ id: 'a', status: 'completed' }, { id: 'b', status: 'completed' }],
       [worker('w1', 'a', 0, 60_000), worker('w2', 'b', 60_000 + GAP, 120_000 + GAP)],
