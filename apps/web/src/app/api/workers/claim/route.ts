@@ -1806,6 +1806,29 @@ export async function POST(req: NextRequest) {
   // @buildd/core/task-area-prediction.
   const taskAreaPredictions = await predictTaskAreas(filteredTasks);
 
+  // Count dependents for each claimed task (for handoff announcement)
+  const claimedTaskIds = claimedWorkers.map(cw => cw.taskId);
+  if (claimedTaskIds.length > 0) {
+    const dependentCounts = new Map<string, number>();
+    const dependentRows = await db
+      .select({ taskId: sql`jsonb_array_elements(dependsOn)::text`, dependentCount: sql`count(*)::integer` })
+      .from(tasks)
+      .where(inArray(tasks.id, claimedTaskIds))
+      .groupBy(sql`jsonb_array_elements(dependsOn)::text`);
+
+    for (const row of dependentRows) {
+      dependentCounts.set(row.taskId, (row as any).dependentCount ?? 0);
+    }
+
+    for (const cw of claimedWorkers) {
+      const count = dependentCounts.get(cw.taskId) ?? 0;
+      if (count > 0) {
+        if (!cw.context) cw.context = {};
+        (cw.context as any).dependentCount = count;
+      }
+    }
+  }
+
   // Prompt-context injection. ORDER IS THE CONTRACT: these five append to the
   // same resolvedContextProviders rail and the runner concatenates it in order.
   // See ./context-injection.
