@@ -16,6 +16,16 @@
  * alert body — binary_absent keeps its known remediation (the image pin)
  * called out explicitly, since that one case has an established fix.
  *
+ * "Unhealthy" is broader than cbmOutcome='disabled': the worker path sets
+ * outcome='enforced' the moment CBM is mounted, without waiting to see
+ * whether the index bootstrap that makes the mount useful actually
+ * succeeded. A fleet where every index build fails but the binary is present
+ * therefore reports outcome='enforced' on every worker — the disabled-only
+ * predicate reported that as 100% healthy while indexing was 100% broken.
+ * `isUnhealthy` also fires on outcome='enforced' + bootstrapResult='failed'
+ * (see cbm-enforcement.ts / CbmMetrics.bootstrapResult); 'skipped_warm' is
+ * not a failure, since it means a shared seed was admitted instead.
+ *
  * The check is best-effort: never throws, never blocks the caller. The dedupeKey
  * ensures one alert per workspace per reportOps throttle window (default 1h).
  *
@@ -48,14 +58,36 @@ function opsEnabled(): boolean {
   return v === '1' || v === 'true' || v === 'yes';
 }
 
-function isDisabled(cbm: unknown): boolean {
+/**
+ * True when a worker's CBM record means the capability was NOT healthy —
+ * either enforcement gave up entirely (outcome='disabled') or it claims
+ * 'enforced' while the index bootstrap that enforcement depends on failed.
+ *
+ * The worker path sets outcome='enforced' the moment CBM is mounted,
+ * unconditionally — it does not wait to see whether the index build that
+ * makes the mount useful actually succeeded. `bootstrapResult` is a separate,
+ * independently-set field, so a fleet where every index build fails but the
+ * binary is present reports outcome='enforced' on every worker: `isDisabled`
+ * (the old name of this predicate) could never see it, and the detector
+ * reported 100% healthy while indexing was 100% broken. `skipped_warm` is
+ * excluded on purpose — it means a shared seed was admitted, so no per-task
+ * index needed to run at all, which is not a failure.
+ */
+function isUnhealthy(cbm: unknown): boolean {
   if (!cbm || typeof cbm !== 'object') return false;
   const c = cbm as Record<string, unknown>;
-  return c.outcome === 'disabled';
+  if (c.outcome === 'disabled') return true;
+  return c.outcome === 'enforced' && c.bootstrapResult === 'failed';
 }
 
-function disableReasonOf(cbm: Record<string, unknown>): string {
-  return typeof cbm.disableReason === 'string' ? cbm.disableReason : 'unknown';
+function reasonOf(cbm: Record<string, unknown>): string {
+  if (typeof cbm.disableReason === 'string') return cbm.disableReason;
+  if (cbm.outcome === 'enforced' && cbm.bootstrapResult === 'failed') {
+    return typeof cbm.bootstrapFailReason === 'string'
+      ? `bootstrap_failed:${cbm.bootstrapFailReason}`
+      : 'bootstrap_failed';
+  }
+  return 'unknown';
 }
 
 /**
@@ -104,8 +136,8 @@ export async function detectCbmFleetDisabled(
   try {
     if (!opsEnabled()) return;
 
-    // Short-circuit: current worker is not disabled at all, so the streak is broken.
-    if (!isDisabled(currentCbm)) return;
+    // Short-circuit: current worker is healthy, so the streak is broken.
+    if (!isUnhealthy(currentCbm)) return;
 
     // Query the last (N-1) completed workers with CBM metrics.
     const rows = await db.query.workers.findMany({
@@ -123,17 +155,23 @@ export async function detectCbmFleetDisabled(
     const prior = cbmWindow(rows, CBM_FLEET_THRESHOLD - 1);
     if (prior.length < CBM_FLEET_THRESHOLD - 1) return; // not enough history yet
 
-    const allPriorDisabled = prior.every(isDisabled);
-    if (!allPriorDisabled) return;
+    const allPriorUnhealthy = prior.every(isUnhealthy);
+    if (!allPriorUnhealthy) return;
 
     const reasons = new Set<string>([
-      disableReasonOf(currentCbm as Record<string, unknown>),
-      ...prior.map(disableReasonOf),
+      reasonOf(currentCbm as Record<string, unknown>),
+      ...prior.map(reasonOf),
     ]);
     const reasonList = [...reasons].sort().join(', ');
-    const remediation = reasons.has('binary_absent')
-      ? ' /opt/buildd/bin/codebase-memory-mcp missing from runner image for at least one worker in the streak — re-run install.sh or rebuild the worker image.'
-      : '';
+    const remediations = [
+      reasons.has('binary_absent')
+        ? ' /opt/buildd/bin/codebase-memory-mcp missing from runner image for at least one worker in the streak — re-run install.sh or rebuild the worker image.'
+        : '',
+      [...reasons].some(r => r.startsWith('bootstrap_failed'))
+        ? ' Index bootstrap failed for at least one enforced worker in the streak — check codebase-memory-mcp indexing logs on the runner image.'
+        : '',
+    ];
+    const remediation = remediations.join('');
 
     await reportOps({
       source: 'cbm-health',

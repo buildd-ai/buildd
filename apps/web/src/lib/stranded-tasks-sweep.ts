@@ -22,13 +22,18 @@ import { db } from '@buildd/core/db';
 import { tasks, missionNotes } from '@buildd/core/db/schema';
 import { and, eq, sql } from 'drizzle-orm';
 import { fireDeferralEvent, GATE_SLUGS } from './gate-ledger';
-// A task pending past its own `startAt` by more than 2 hours is stranded (the
-// `interval '2 hours'` literal in the query below — kept inline since it's a
-// SQL interval, not a JS duration this module otherwise consumes). The
-// counter-based path shares its threshold with the mission header's much
-// earlier surfacing threshold, so the two cannot drift apart — see
-// `claim-deferral-thresholds.ts`.
-import { STRAND_CONSECUTIVE_THRESHOLD } from './claim-deferral-thresholds';
+// A task pending past its own `startAt`, OR stuck in a claim-loop deferral
+// streak, for at least STRAND_MS is stranded. The decision is made in JS
+// (isStranded) rather than in the SQL WHERE clause below, on purpose: it used
+// to be a `consecutiveDeferrals >= 200` SQL condition, sized against an
+// assumed ~30s runner poll, and the measured p50 claim cadence (over five
+// minutes) meant 200 consecutive polls was many hours further away than any
+// stuck task in the audit window ever got — the query could never match. A
+// plain SQL literal threshold like that has no test that can prove it fires;
+// a pure function does. See `claim-deferral-thresholds.ts` for the shared
+// elapsed-time definition, which the mission header's much earlier surfacing
+// threshold is pinned to so the two cannot drift apart independently.
+import { isStranded, STRAND_MS } from './claim-deferral-thresholds';
 
 const STRANDED_NOTE_PREFIX = '[stranded]';
 
@@ -59,12 +64,31 @@ export interface StrandedSweepResult {
 }
 
 /**
+ * Whether a fetched row is actually stranded, evaluated in JS against the
+ * shared elapsed-time definition rather than as a SQL literal — see the
+ * import comment above for why a literal threshold here is untestable by
+ * construction.
+ */
+function isStrandedCandidate(c: StrandedCandidateRow, now: number): boolean {
+  if (c.startAt && now - new Date(c.startAt).getTime() >= STRAND_MS) return true;
+  const detail = c.detail;
+  const consecutiveDeferrals = typeof detail?.consecutiveDeferrals === 'number' ? detail.consecutiveDeferrals : null;
+  const firstDeferredAt = detail && typeof detail.firstDeferredAt === 'string' ? detail.firstDeferredAt : null;
+  return isStranded(consecutiveDeferrals, firstDeferredAt, now);
+}
+
+/**
  * Flag every pending task stuck past the strand threshold with one gate_events
  * row (outcome=stranded, coalesced) and one open mission note, then clear any
  * previously-stranded task that re-armed (claimed, cancelled, completed, or
  * failed since).
  */
 export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
+  // Loose SQL pre-filter only: pending tasks with either an old startAt or ANY
+  // deferral history at all. The exact strand decision — including the
+  // firstDeferredAt elapsed-time check — happens in isStrandedCandidate below,
+  // using the exact same STRAND_MS constant, so the two cannot drift apart.
+  const strandMinutes = STRAND_MS / 60_000;
   const result = await db.execute(sql`
     WITH latest_deferral AS (
       SELECT DISTINCT ON (task_id) task_id, reason, detail
@@ -86,15 +110,15 @@ export async function sweepStrandedTasks(): Promise<StrandedSweepResult> {
     LEFT JOIN latest_deferral ld ON ld.task_id = t.id
     WHERE t.status = 'pending'
       AND (
-        (t.start_at IS NOT NULL AND t.start_at < now() - interval '2 hours')
-        OR (
-          ld.detail IS NOT NULL
-          AND (ld.detail ->> 'consecutiveDeferrals')::int >= ${STRAND_CONSECUTIVE_THRESHOLD}
-        )
+        (t.start_at IS NOT NULL AND t.start_at < now() - (${strandMinutes} * interval '1 minute'))
+        OR ld.detail IS NOT NULL
       )
   `);
 
-  const candidates = (result.rows ?? []) as unknown as StrandedCandidateRow[];
+  const now = Date.now();
+  const candidates = ((result.rows ?? []) as unknown as StrandedCandidateRow[]).filter(c =>
+    isStrandedCandidate(c, now),
+  );
   let stranded = 0;
 
   for (const c of candidates) {

@@ -76,7 +76,12 @@ describe('mission header — Part 2 regression: a live worker must not suppress 
     const { html } = render({
       ...base,
       activeAgents: 1,
-      deferrals: [{ taskId: 'task-stuck', reason: 'workspace_cap', consecutiveDeferrals: 13, firstDeferredAt: null }],
+      deferrals: [{
+        taskId: 'task-stuck',
+        reason: 'workspace_cap',
+        consecutiveDeferrals: 13,
+        firstDeferredAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      }],
     });
 
     expect(html).toContain('13 times in a row');
