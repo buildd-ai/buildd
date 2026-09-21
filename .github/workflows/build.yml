@@ -572,6 +572,14 @@ jobs:
               # (only `build` is), so a red here annotates the run without
               # blocking a merge — including the hotfix PRs that are this job's
               # entire population.
+              #
+              # NOTE: ci-fix.yml detects this error message pattern and handles
+              # infrastructure failures specially: instead of attempting a code
+              # fix (which cannot succeed), it auto-reruns the failed job up to
+              # 3 times with backoff. This gives transient Tailscale outages a
+              # chance to clear without creating unnecessary CI-retry tasks. If
+              # the job persistently fails with this error after 3 reruns, a
+              # human must run 'sudo tailscale up --ssh' on the host.
               echo "::error::Test machine ${TEST_HOST} is unreachable over Tailscale, so NO integration or E2E tests ran. This is an infrastructure failure, not a code failure — but it is reported as a failure so it cannot masquerade as passing coverage. Fix: run 'sudo tailscale up --ssh' on the host (it logs out and stays out), then re-run this job."
               echo "INTEGRATION_MODE=skipped_unreachable"
               echo "machine_online=false" >> "$GITHUB_OUTPUT"
