@@ -1565,48 +1565,6 @@ export async function PATCH(
         }
         if (hasCrossBranchDeliverable || discardReason) skipRelease = true;
       }
-
-      // Handoff gate: a task with dependents must include handoff.delivered
-      // in its structuredOutput before completing. Check live at completion time
-      // to catch tasks that acquire dependents mid-flight.
-      if (worker.taskId) {
-        const taskId = worker.taskId;
-        // Check if any task has this taskId in its dependsOn array via JSONB containment
-        const dependentTask = await db.query.tasks.findFirst({
-          where: and(
-            sql`${tasks.dependsOn} @> ${sql.raw(`'${JSON.stringify([taskId]).replace(/'/g, "''")}'`)}`,
-            not(eq(tasks.status, 'cancelled')),
-          ),
-          columns: { id: tasks.id },
-        });
-
-        if (dependentTask) {
-          const handoff = body.structuredOutput?.handoff as { delivered?: unknown } | undefined;
-          const handoffDelivered = typeof handoff?.delivered === 'string' ? handoff.delivered.trim() : '';
-
-          if (!handoffDelivered) {
-            await persistRejectedCompletionPayload('handoff_required');
-            fireGateEvent({
-              gate: GATE_SLUGS.HANDOFF_REQUIRED,
-              surface: 'PATCH /api/workers/[id]',
-              outcome: 'rejected',
-              reason: 'completion refused: task with dependents must include handoff.delivered',
-              workspaceId: worker.workspaceId,
-              missionId: taskMissionId,
-              taskId: worker.taskId,
-              workerId: worker.id,
-              callerOrigin: 'worker',
-              detail: {
-                hasDependents: true,
-              },
-            });
-            return NextResponse.json({
-              error: 'This task has dependents waiting for its output. You must include `handoff.delivered` in your `structuredOutput` before completing.',
-              hint: 'handoff_required',
-            }, { status: 400 });
-          }
-        }
-      }
     }
   }
 

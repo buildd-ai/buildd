@@ -414,16 +414,6 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
     );
   }
 
-  // Handoff announcement: if this task has dependents, require handoff.delivered
-  const taskCtx = task.context as { dependentCount?: number } | undefined;
-  const dependentCount = taskCtx?.dependentCount ?? 0;
-  if (dependentCount > 0) {
-    const taskWord = dependentCount === 1 ? 'task' : 'task(s)';
-    promptParts.push(
-      `## Handoff Required\n**${dependentCount} ${taskWord} depend on this one.** You must include \`handoff.delivered\` in your structured output before completing. This is a one-line summary of what you delivered — your interfaces, key decisions, gotchas, or what's left undone if relevant.`,
-    );
-  }
-
   // Add output requirement context so agents know what deliverables are expected
   const outputReq = task.outputRequirement || 'auto';
   // A planning task whose plan is a PROPOSAL SLOT rather than its deliverable
