@@ -142,6 +142,7 @@ beforeEach(() => {
   missionRows = [];
   taskRows = [];
   workerRows = [];
+  gateEventRows = [];
   completionDecision = { ok: true, code: 'ok', reason: 'clear' };
   workStateResult = null;
   inFlightCanCompleteMission = 0;
@@ -250,6 +251,48 @@ describe('explainTask', () => {
     expect(answer.waitingOn).toBeNull();
     expect(answer.nextAction).toBeNull();
     expect(answer.derivedFrom.waitingOn).toBeNull();
+  });
+
+  it('surfaces the blocking PR for a path_overlap deferral in gateHistory', async () => {
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    gateEventRows = [
+      {
+        occurredAt: new Date('2026-01-01T00:00:00.000Z'),
+        gate: 'claim',
+        outcome: 'deferred',
+        reason: 'path_overlap',
+        detail: { consecutiveDeferrals: 3, prNumber: 42, prUrl: 'https://example.invalid/pr/42' },
+      },
+    ];
+
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.gateHistory).toHaveLength(1);
+    expect(answer.gateHistory[0]).toMatchObject({
+      reason: 'path_overlap',
+      blockingPrNumber: 42,
+      blockingPrUrl: 'https://example.invalid/pr/42',
+      blockingTaskId: null,
+    });
+  });
+
+  it('surfaces the blocking task for a path_overlap deferral against an active path_claim', async () => {
+    taskRows = [task({ id: 'task-1', status: 'pending' })];
+    gateEventRows = [
+      {
+        occurredAt: new Date('2026-01-01T00:00:00.000Z'),
+        gate: 'claim',
+        outcome: 'deferred',
+        reason: 'path_overlap',
+        detail: { blockingTaskId: 'task-99' },
+      },
+    ];
+
+    const answer = (await explainTask('task-1'))!.subjects[0];
+    expect(answer.gateHistory[0]).toMatchObject({
+      blockingTaskId: 'task-99',
+      blockingPrNumber: null,
+      blockingPrUrl: null,
+    });
   });
 });
 

@@ -1832,28 +1832,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Compute dependent count for each claimed task: count how many other tasks
-  // have this task in their dependsOn array. Add to task context so prompt
-  // builder can announce handoff requirement.
-  for (const cw of claimedWorkers) {
-    const taskId = cw.taskId;
-    if (!taskId) continue;
-
-    const dependents = await db.query.tasks.findMany({
-      where: and(
-        sql`${tasks.dependsOn} @> ${sql.raw(`'${JSON.stringify([taskId]).replace(/'/g, "''")}'`)}`,
-        not(eq(tasks.status, 'cancelled')),
-      ),
-      columns: { id: tasks.id },
-    });
-
-    if (dependents.length > 0) {
-      const taskCtx = (cw.task as any)?.context ?? {};
-      taskCtx.dependentCount = dependents.length;
-      (cw.task as any).context = taskCtx;
-    }
-  }
-
   // Attach inline decrypted server-managed credentials (API key and/or OAuth
   // token), team-scoped to prevent cross-team leakage. See ./credential-injection.
   await attachServerManagedSecrets(claimedWorkers, account.id);
