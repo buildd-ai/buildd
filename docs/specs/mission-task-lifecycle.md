@@ -2,7 +2,7 @@
 title: Mission & Task Lifecycle
 status: active
 owner: max
-last_verified: 2026-09-20
+last_verified: 2026-09-21
 summary: The coordination layer MUST allow only documented task/worker/mission transitions, name every claim gate, refuse completion without passing criteria, and refuse any merge that outruns an outstanding review verdict.
 domain: missions
 surfaces: [apps/web/src/lib/mission-completion.ts, apps/web/src/app/api/workers/claim/route.ts, packages/core/mission-helpers.ts, apps/web/src/lib/review-verdict-gate.ts]
@@ -183,9 +183,15 @@ an enum) to allow extension without migrations.
   ⇒ dropped-verdict handling: requeue the same task once (`context.
   reviewContractRetryCount`), and on a second contract violation, fail
   permanently AND escalate (mission note + Pushover via
-  `escalateReviewContractFailure`) — nothing else re-dispatches a reviewer for
-  an existing PR/head SHA outside the webhook's `opened` action, so a silent
-  permanent failure here would strand the PR unreviewed forever.
+  `escalateReviewContractFailure`) — a `review_failed` outcome (no verdict at
+  all) has no push that clears it, so nothing re-dispatches a reviewer for
+  that exact head SHA outside the webhook's `opened` action, and a silent
+  permanent failure here would strand the PR unreviewed forever. This is
+  narrower than it once was: a `synchronize` push DOES now re-dispatch a
+  reviewer, but only when the PR carries a terminal `changes_requested` /
+  `escalated` verdict to re-review (see AC-11z) — a `review_failed` round
+  produced no verdict to react to, so it still depends entirely on this
+  requeue-then-escalate path.
 - AC-3g: GIVEN `outputRequirement = 'none'` and `tasks.taskClass != 'bookkeeping'`,
   `commitCount > 0` or `workers.dirtyWorktree = true`, no PR detected, and no
   deliverable artifact WHEN `complete_task` is called THEN the server returns a
@@ -564,13 +570,29 @@ stored — it is derived on read from the state of associated tasks via
   resolves to `auto-threshold` by construction while
   `requestIntegrationBranchReview` dispatches a reviewer at it on purpose, so a
   tier-conditional check leaves the Option A′ population ungated.
-  - A verdict binds to the commit it was made against. The gate compares the
-    review round's `headSha` to the commit being merged: the same commit blocks,
-    a later one does not. This is required, not a refinement — nothing
-    re-dispatches a reviewer on `synchronize`, so a verdict-only rule would
-    deadlock every PR that was ever told to change something.
+  - A `request-changes`/`escalated` verdict blocks regardless of whether a
+    later push moved the head — a push is no longer, on its own, treated as
+    proof the finding was addressed. The webhook re-dispatches a reviewer on
+    `synchronize` whenever the PR carries exactly that kind of terminal
+    verdict (`maybeReDispatchReviewer`), and `readPrReviewStatus` reads the
+    newest reviewer task, so a fresh round simply replaces the stale verdict
+    once it lands; until it does, the gate keeps blocking. This closes the
+    incident shape the gate exists to prevent: a merge landing on the exact
+    commit a reviewer had just rejected, because an unrelated earlier push had
+    already made the SHAs differ.
+  - An `approved` verdict is the opposite default — it passes unless a later
+    push is PROVABLY a different commit from the one approved, in which case
+    it blocks as `stale_approval`. Unlike the block kinds above, this is not
+    paired with an automatic re-dispatch (re-reviewing every push after every
+    approval would fire far more often, since most approved PRs merge before
+    another push lands) — the gate itself is the explicit recorded decision
+    that the approval no longer covers what would merge; a human or a fresh
+    re-review request clears it.
   - If either commit is unknown, or the review status cannot be read, the gate
-    fails closed. Same doctrine as the CI read in `evaluateAutoMergeSafety`.
+    fails closed for every kind above EXCEPT `stale_approval`, which starts
+    from a pass and so treats an unprovable comparison as "cannot show this
+    approval is stale" rather than manufacturing a block. Same doctrine as the
+    CI read in `evaluateAutoMergeSafety`.
   - `review_failed` (a reviewer that produced no verdict) does NOT block: there
     is no finding to protect, nothing can clear it, and it has its own
     escalation (`escalateReviewContractFailure`).
@@ -631,9 +653,20 @@ stored — it is derived on read from the state of associated tasks via
   what would clear it, and a `review_verdict` row is written to the gate
   ledger. This holds under `auto-threshold` as well as `agent-review`.
 - AC-11z: GIVEN the same PR after a push moves its head SHA WHEN a merge is
-  attempted THEN it proceeds — the verdict describes code that is no longer
-  what merges, and nothing re-reviews an existing head SHA. GIVEN instead a
-  later review round that ended `approve` THEN it also proceeds.
+  attempted THEN it is STILL refused — a push is no longer, by itself, treated
+  as proof the finding was addressed. GIVEN the workspace's effective policy
+  for that PR is `agent-review` THEN the `synchronize` webhook dispatches
+  exactly one fresh reviewer round against the new head
+  (`maybeReDispatchReviewer`), single-flight with the existing
+  one-reviewer-per-PR rule, and inheriting the same retry-round budget the
+  request-changes fix loop already tracks — so it is subject to the same
+  round cap and escalates through the same path
+  (`escalateReviewerExhaustion`) on exhaustion. GIVEN instead a later review
+  round that ended `approve` at the PR's current head THEN the merge proceeds;
+  GIVEN an `approve` recorded at an EARLIER head than the one being merged
+  THEN it is refused as `stale_approval` instead — an approval is not silently
+  re-used past the commit it was made against, and (unlike request-changes) is
+  not paired with an automatic re-dispatch.
 - AC-11za: GIVEN a blocking verdict WHEN a human merges from the dashboard with
   `override: true` THEN the merge proceeds and is recorded as a `bypassed`
   ledger row naming the overridden verdict and the person; GIVEN the same

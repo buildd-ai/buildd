@@ -3145,6 +3145,166 @@ describe('POST /api/github/webhook', () => {
       expect(mockCreateReviewerTask).not.toHaveBeenCalled();
     });
   });
+
+  // The other half of the reviewer-loop-never-closes fix: `maybeDispatchReviewer`
+  // above only ever fires on `opened`, so a fix pushed after a request-changes
+  // verdict was never re-reviewed. `maybeReDispatchReviewer` closes that gap on
+  // `synchronize`.
+  describe('pull_request re-review dispatch on synchronize (agent-review policy)', () => {
+    const OLD_SHA = 'a'.repeat(40);
+    const NEW_SHA = 'b'.repeat(40);
+
+    function makeSynchronizePayload(overrides: Record<string, any> = {}) {
+      return {
+        action: 'synchronize',
+        pull_request: {
+          number: 42,
+          merged: false,
+          draft: false,
+          head: { ref: 'buildd/abc12345-feat', sha: NEW_SHA },
+          html_url: 'https://github.com/test-org/test-repo/pull/42',
+          base: { ref: 'dev' },
+          ...overrides.pull_request,
+        },
+        repository: { full_name: 'test-org/test-repo', ...overrides.repository },
+        installation: { id: 5000, ...overrides.installation },
+      };
+    }
+
+    function withAgentReviewWorkspaceAndWorker() {
+      mockWorkersFindFirst.mockReturnValue({
+        id: 'w1',
+        workspaceId: 'ws1',
+        taskId: 'task-1',
+        branch: 'buildd/abc12345-feat',
+        prNumber: 42,
+      });
+      mockWorkspacesFindFirst.mockReturnValue({
+        id: 'ws1',
+        gitConfig: { mergePolicy: { tier: 'agent-review', agentReview: { reviewerRole: 'reviewer' } } },
+      });
+      mockTasksFindFirst.mockReturnValue({
+        id: 'task-1',
+        title: 'Add feature X',
+        description: 'Build feature X',
+        backend: 'codex',
+        missionId: null,
+        pathManifest: ['apps/web/src/lib/feature-x.ts'],
+        context: { iteration: 1, maxIterations: 3 },
+      });
+      mockResolvePolicy.mockReturnValue({
+        tier: 'agent-review',
+        agentReview: { reviewerRole: 'reviewer', escalateToPaths: [], maxConfidenceThreshold: 0.6 },
+      });
+      mockGithubApi.mockReturnValue(Promise.resolve([]));
+    }
+
+    function withChangesRequestedVerdict(reviewHeadSha = OLD_SHA) {
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'changes_requested', terminal: true, reviewTaskId: 'review-1', adoptedTaskId: 'task-1',
+        verdict: 'request-changes', confidence: 0.9, summary: 'needs work', feedback: 'fix the null check',
+        escalationReason: null, iteration: 1, maxIterations: 3, reviewHeadSha,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+    }
+
+    it('re-dispatches exactly one reviewer when a push follows a request-changes verdict', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({
+        prNumber: 42,
+        headSha: NEW_SHA,
+        reviewerRole: 'reviewer',
+        originalTaskId: 'task-1',
+        priorVerdict: { headSha: OLD_SHA, verdict: 'request-changes' },
+      });
+      expect(mockDispatchNewTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-dispatches after an escalated verdict too', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'escalated', terminal: true, reviewTaskId: 'review-1', adoptedTaskId: 'task-1',
+        verdict: 'escalate', confidence: 0.5, summary: 'unclear', feedback: null,
+        escalationReason: 'touches auth boundary', iteration: 1, maxIterations: 3, reviewHeadSha: OLD_SHA,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).toHaveBeenCalledTimes(1);
+      expect(mockCreateReviewerTask.mock.calls[0][0]).toMatchObject({
+        priorVerdict: { headSha: OLD_SHA, verdict: 'escalate' },
+      });
+    });
+
+    it('does not stack a second reviewer while one is already in flight (single-flight)', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'reviewing', terminal: false, reviewTaskId: 'review-1', adoptedTaskId: 'task-1',
+        verdict: null, confidence: null, summary: null, feedback: null, escalationReason: null,
+        iteration: 1, maxIterations: 3, reviewHeadSha: OLD_SHA,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not re-dispatch on an approved verdict — the gate handles a stale approval, not this path', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      mockReadPrReviewStatus.mockResolvedValue({
+        state: 'approved', terminal: true, reviewTaskId: 'review-1', adoptedTaskId: 'task-1',
+        verdict: 'approve', confidence: 0.9, summary: 'lgtm', feedback: null, escalationReason: null,
+        iteration: 0, maxIterations: 3, reviewHeadSha: OLD_SHA,
+        prState: 'open', merged: false, mergeBlocked: null,
+      } as any);
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not re-dispatch when the head has not actually moved past the verdict (duplicate delivery)', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict(NEW_SHA);
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not re-dispatch outside agent-review tier', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      withChangesRequestedVerdict();
+      mockResolvePolicy.mockReturnValue({ tier: 'auto-threshold', threshold: { maxLines: 800, denyPaths: [] } });
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+
+    it('does not re-dispatch when no review was ever requested for this PR', async () => {
+      withAgentReviewWorkspaceAndWorker();
+      // Default mock: state 'not_requested'.
+
+      const res = await POST(createWebhookRequest('pull_request', makeSynchronizePayload()));
+
+      expect(res.status).toBe(200);
+      expect(mockCreateReviewerTask).not.toHaveBeenCalled();
+    });
+  });
 });
 
 // ── Inbound work-tracker: issues → tasks (spec §3) ───────────────────────────
