@@ -7,6 +7,7 @@ import { buildKnowledgeContext, buildEntityCatalogContext } from './knowledge-co
 import { buildWorkspaceStateContext, type OrganizerCause, type WorkspaceStateCauseData } from './workspace-state-context';
 import { LIVE_WORKER_STATUSES } from './task-presentation';
 import { REPO_WIDE_SENTINEL } from '@buildd/core/path-overlap';
+import type { TaskHandoff } from '@buildd/shared';
 
 /**
  * Flatten active tasks' pathManifests into concrete search paths for the
@@ -1261,9 +1262,12 @@ async function buildHeartbeatContext(mission: {
     descParts.push('\n## Completed Tasks');
     for (const t of completedTasks) {
       const result = t.result as Record<string, unknown> | null;
-      const summary = result?.summary as string || 'no summary';
+      const structuredOutput = result?.structuredOutput as { handoff?: TaskHandoff } | undefined;
+      const handoffDelivered = structuredOutput?.handoff?.delivered ?? null;
+      const summary = handoffDelivered || (result?.summary as string) || 'no summary';
+      const label = handoffDelivered ? '[handoff]' : '[summary]';
       const role = t.roleSlug || 'none';
-      descParts.push(`- [${role}] ${t.title}: ${summary.slice(0, 200)}`);
+      descParts.push(`- [${role}] ${t.title}: ${label} ${summary.slice(0, 200)}`);
     }
   }
 

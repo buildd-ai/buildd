@@ -96,10 +96,11 @@ export async function buildKnowledgeContext(
   workspaceId: string | null | undefined,
   teamId: string | null | undefined,
   store?: KnowledgeQuerier,
-  opts?: { sensitive?: boolean; paths?: string[] },
+  opts?: { sensitive?: boolean; paths?: string[]; excludedSourceIds?: ReadonlySet<string> },
 ): Promise<string[]> {
   if (!query.trim()) return [];
   const sensitive = opts?.sensitive ?? false;
+  const excluded = opts?.excludedSourceIds;
   try {
     const ks: KnowledgeQuerier = store ?? new PgVectorStore(getVoyageEmbedder(), getVoyageReranker());
 
@@ -120,7 +121,7 @@ export async function buildKnowledgeContext(
       ? await Promise.all(
           sources.map(async (s) => {
             const results = await ks.query(s.ns, { text: query, topK: 3 }).catch(() => [] as QueryResult[]);
-            const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR);
+            const strong = results.filter(r => (r.score ?? 0) >= PRECISION_FLOOR && !excluded?.has(r.id));
             if (strong.length === 0) return [];
             const lines = [`\n### ${s.label}`];
             for (const r of strong) lines.push(...renderHitLines(r));
@@ -143,9 +144,11 @@ export async function buildKnowledgeContext(
     const paths = opts?.paths;
     if (workspaceId && paths && paths.length > 0) {
       const pathQuery = paths.slice(0, 20).join('\n');
-      const pathResults = await ks
-        .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3 })
-        .catch(() => [] as QueryResult[]);
+      const pathResults = (
+        await ks
+          .query(buildNamespace(workspaceId, 'pr'), { text: pathQuery, topK: 3 })
+          .catch(() => [] as QueryResult[])
+      ).filter(r => !excluded?.has(r.id));
       if (pathResults.length > 0) {
         output.push('\n## Recent work on relevant paths');
         for (const r of pathResults) output.push(...renderHitLines(r));
@@ -182,7 +185,7 @@ export type ClusterRetrievalInput = {
   teamId?: string | null;
   trigger: ContextAssembly['trigger'];
   chain: AssemblyChain;
-  opts?: { sensitive?: boolean; source?: 'live' | 'eval' };
+  opts?: { sensitive?: boolean; source?: 'live' | 'eval'; excludedSourceIds?: ReadonlySet<string> };
   store?: KnowledgeQuerier;
 };
 
@@ -311,6 +314,7 @@ export async function buildClusteredKnowledgeContext(
 ): Promise<{ parts: string[]; assembly: ContextAssembly }> {
   const { recipe, keys, workspaceId, teamId, trigger, chain } = input;
   const sensitive = input.opts?.sensitive ?? false;
+  const excluded = input.opts?.excludedSourceIds;
   const paths = usablePaths(keys.paths);
 
   const assembly: ContextAssembly = {
@@ -359,9 +363,11 @@ export async function buildClusteredKnowledgeContext(
         return { weak: true, groups: null };
       }
 
-      const results = await ks
-        .query(ns, { text, topK: step.topK, mode: step.mode })
-        .catch(() => [] as QueryResult[]);
+      const results = (
+        await ks
+          .query(ns, { text, topK: step.topK, mode: step.mode })
+          .catch(() => [] as QueryResult[])
+      ).filter(r => !excluded?.has(r.id));
 
       // Strength is judged over SEED hits only. A graph neighbour was not
       // returned by this query, so letting it satisfy the step's threshold
