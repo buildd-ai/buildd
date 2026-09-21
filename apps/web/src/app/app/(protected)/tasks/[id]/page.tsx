@@ -93,7 +93,9 @@ export default async function TaskDetailPage({
     where: eq(tasks.id, id),
     with: {
       workspace: true,
-      account: true,
+      // Explicit allowlist, like every sibling relation in this shape: the two
+      // fields the page reads off an account rather than the whole row.
+      account: { columns: { name: true, authType: true } },
       mission: {
         columns: { id: true, title: true, status: true },
         with: { initiative: { columns: { id: true, title: true } } },
@@ -159,9 +161,7 @@ export default async function TaskDetailPage({
     db.query.workers.findMany({
       where: eq(workers.taskId, id),
       orderBy: desc(workers.createdAt),
-      with: {
-        account: true,
-      },
+      with: { account: { columns: { name: true, authType: true } } },
     }),
   ]);
   const openQuestionCount = Number(openQuestionRows[0]?.c ?? 0);
@@ -186,7 +186,8 @@ export default async function TaskDetailPage({
           const updatedWorkers = await db.query.workers.findMany({
             where: eq(workers.taskId, id),
             orderBy: desc(workers.createdAt),
-            with: { account: true },
+            // Must match the shape above: these rows replace the ones there.
+            with: { account: { columns: { name: true, authType: true } } },
           });
           taskWorkers.splice(0, taskWorkers.length, ...updatedWorkers);
         }
