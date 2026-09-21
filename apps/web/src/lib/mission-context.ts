@@ -1234,29 +1234,12 @@ async function buildHeartbeatContext(mission: {
   const notesParts = await buildNotesContext(mission.id, criteriaState?.evaluatedAt ?? null);
   descParts.push(...notesParts);
 
-  // Protocol — action-oriented, not passive
-  descParts.push('\n## Protocol');
-  descParts.push(`You are running a mission heartbeat. Your job is to **drive the mission forward**, not just report status.
-- Assess the phase above and execute the required actions.
-- If you created tasks, retried failures, or made changes, report status "action_taken" with what you did.
-- Only report "ok" if the mission is actively progressing and no action is needed RIGHT NOW.
-- If the mission is stalled (same state as prior heartbeats), you MUST take action or escalate — never report "ok" for a stalled mission.
-- If you need a human decision (e.g., repo creation approval), create a task with a clear question or use waiting_input.
-- Before creating a task, check the "Active/Pending Tasks" section. If a pending task with a similar title already exists, do NOT create a duplicate.
-- **Prior-work gate**: Before creating any task, check "Related prior work" below. If a retrieved item scores ≥0.82 similarity AND its PR was merged within 14 days, do NOT create the task. Instead: \`post_note type=decision\` naming the PR and why decomposition was skipped for that item.`);
-
-  // Direct action guidance — let heartbeats do small tasks in-session
-  descParts.push(`\n## Direct Action
-If the required work is small (< 5 tool calls) and you have the right tools available, do it yourself instead of creating a task. Examples:
-- Classify a few transactions → call the relevant MCP tool directly
-- Send a notification → use the notification tool
-- Check a status and report → read the data, summarize
-
-Only create child tasks when the work requires:
-- A separate git branch / PR
-- Extended multi-file code changes
-- A different role's expertise (e.g., builder for code)
-- More than ~5 minutes of work`);
+  // Protocol + Direct Action — byte-identical across every heartbeat cycle,
+  // cause, and mission (no interpolation), so they are no longer rendered
+  // here. The runner injects `HEARTBEAT_PROTOCOL_BLOCK` (@buildd/shared) into
+  // the prompt for any task with `context.heartbeat === true`, unconditional
+  // on roleSlug — see apps/runner/src/prompt-builder.ts. Rendering it here
+  // AND there would duplicate it in every prompt; keep it to exactly one path.
 
   // Prior heartbeats — read only operational count fields (no content-bearing strings)
   if (priorHeartbeats.length > 0) {
