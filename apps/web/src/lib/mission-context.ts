@@ -1278,9 +1278,11 @@ Only create child tasks when the work requires:
     descParts.push('\n## Completed Tasks');
     for (const t of completedTasks) {
       const result = t.result as Record<string, unknown> | null;
-      const summary = result?.summary as string || 'no summary';
+      const handoffDelivered = (result?.structuredOutput as Record<string, unknown> | null)?.handoff?.delivered as string | null;
+      const summary = handoffDelivered || (result?.summary as string) || 'no summary';
+      const label = handoffDelivered ? '[handoff]' : '[summary]';
       const role = t.roleSlug || 'none';
-      descParts.push(`- [${role}] ${t.title}: ${summary.slice(0, 200)}`);
+      descParts.push(`- [${role}] ${t.title}: ${label} ${summary.slice(0, 200)}`);
     }
   }
 
