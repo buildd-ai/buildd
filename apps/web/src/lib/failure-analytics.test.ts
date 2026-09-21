@@ -1,4 +1,37 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, mock } from 'bun:test';
+
+// findSupersededErrorMatch is the only export here that touches Postgres
+// (everything else is pure — see the file header). Mocked at the `db.select`
+// chain so the aggregation logic itself gets real coverage instead of being
+// opaque behind the route-level mock in health/failures/route.test.ts.
+const mockWorkersSelectRows = mock(() => Promise.resolve([] as any[]));
+mock.module('@buildd/core/db', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: () => mockWorkersSelectRows(),
+          }),
+        }),
+      }),
+    }),
+  },
+}));
+mock.module('@buildd/core/db/schema', () => ({
+  workers: {
+    id: 'workers.id',
+    taskId: 'workers.taskId',
+    workspaceId: 'workers.workspaceId',
+    status: 'workers.status',
+    postSupersessionError: 'workers.postSupersessionError',
+    postSupersessionErrorAt: 'workers.postSupersessionErrorAt',
+    createdAt: 'workers.createdAt',
+  },
+  tasks: 'tasks',
+  workspaces: 'workspaces',
+}));
+
 import {
   normalizeErrorSignature,
   FAILURE_WINDOWS,
@@ -6,6 +39,7 @@ import {
   windowStartFor,
   computeFailureAnalytics,
   buildSignatureFamily,
+  findSupersededErrorMatch,
   type FailureWorkerRow,
 } from './failure-analytics';
 import { toFrictionSignature } from '@buildd/core/failure-friction-signature';
@@ -699,6 +733,75 @@ describe('buildSignatureFamily', () => {
     expect(family.topSignatures).toHaveLength(5);
     expect(family.topSignatures[0].signature).toContain('alpha');
     expect(family.topSignatures[0].count).toBe(8);
+  });
+});
+
+// ── findSupersededErrorMatch ────────────────────────────────────────────────
+// A worker `/respond` already superseded before its terminal error report
+// landed can never appear in the normal `failures` population (status-gated),
+// so this is a wholly separate query — see workers/[id]/route.ts's
+// recordPostSupersessionError for where `postSupersessionError` is written.
+describe('findSupersededErrorMatch', () => {
+  const NOW = new Date('2026-08-28T12:00:00.000Z');
+
+  it('returns null without querying when no workspace is in scope', async () => {
+    mockWorkersSelectRows.mockClear();
+    const result = await findSupersededErrorMatch([], '7d', 'some signature', NOW);
+    expect(result).toBeNull();
+    expect(mockWorkersSelectRows).not.toHaveBeenCalled();
+  });
+
+  it('aggregates only the rows whose normalized error matches the requested signature', async () => {
+    mockWorkersSelectRows.mockResolvedValueOnce([
+      {
+        id: 'w1', taskId: 't1',
+        postSupersessionError: 'Not logged in · Please run /login',
+        postSupersessionErrorAt: new Date('2026-08-22T00:00:00.000Z'),
+        createdAt: new Date('2026-08-20T00:00:00.000Z'),
+      },
+      {
+        id: 'w2', taskId: 't2',
+        postSupersessionError: 'Not logged in · Please run /login',
+        postSupersessionErrorAt: new Date('2026-08-27T00:00:00.000Z'),
+        createdAt: new Date('2026-08-25T00:00:00.000Z'),
+      },
+      {
+        id: 'w3', taskId: 't3',
+        postSupersessionError: 'totally different error',
+        postSupersessionErrorAt: new Date('2026-08-26T00:00:00.000Z'),
+        createdAt: new Date('2026-08-26T00:00:00.000Z'),
+      },
+    ]);
+
+    const signature = normalizeErrorSignature('Not logged in · Please run /login');
+    const result = await findSupersededErrorMatch(['ws-1'], '7d', signature, NOW);
+
+    expect(result).toEqual({
+      count: 2,
+      firstSeen: '2026-08-22T00:00:00.000Z',
+      lastSeen: '2026-08-27T00:00:00.000Z',
+      exampleWorkerId: 'w1',
+      exampleTaskId: 't1',
+    });
+  });
+
+  it('returns null when nothing in the window matches', async () => {
+    mockWorkersSelectRows.mockResolvedValueOnce([
+      {
+        id: 'w1', taskId: 't1',
+        postSupersessionError: 'a completely unrelated error',
+        postSupersessionErrorAt: new Date('2026-08-22T00:00:00.000Z'),
+        createdAt: new Date('2026-08-20T00:00:00.000Z'),
+      },
+    ]);
+    const result = await findSupersededErrorMatch(['ws-1'], '7d', 'Not logged in', NOW);
+    expect(result).toBeNull();
+  });
+
+  it('never throws — a query failure resolves to null', async () => {
+    mockWorkersSelectRows.mockImplementationOnce(() => Promise.reject(new Error('db down')));
+    const result = await findSupersededErrorMatch(['ws-1'], '7d', 'anything', NOW);
+    expect(result).toBeNull();
   });
 });
 

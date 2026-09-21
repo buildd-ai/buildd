@@ -3,12 +3,12 @@
 import { useState, useMemo, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import type { MissionSegment, MissionSkylineData } from '@buildd/core/mission-helpers';
+import type { MissionSegment, MissionFlightStripData } from '@buildd/core/mission-helpers';
 import { deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, type MissionAuthorshipHealth } from '@buildd/core/mission-helpers';
 import { MissionBadges } from '@/components/MissionProgress';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
-import { MissionSkylineChart } from '@/components/MissionSkylineChart';
+import { FlightStrip } from '@/components/FlightStrip';
 import { MissionReleaseFooter, type ReleaseFooterData } from '@/components/MissionReleaseFooter';
 import { MissionSituationLine } from '@/components/missions/MissionSituationBlock';
 import type { MissionSituation } from '@/lib/mission-state-view';
@@ -82,8 +82,7 @@ export interface MissionItem {
   goalCriteriaCount: number;
   goalCriteriaOverall: 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null;
   authorshipHealth: MissionAuthorshipHealth;
-  skyline: MissionSkylineData | null;
-  normalizationSlots: number;
+  flightStrip: MissionFlightStripData | null;
   releaseFooter: ReleaseFooterData;
   /**
    * What this mission is waiting on, in the SAME sentence the mission header
@@ -96,6 +95,14 @@ interface WorkspaceBucket {
   workspaceName: string | null;
   workspaceId: string | null;
   missions: MissionItem[];
+}
+
+/** Rule A-1/A-2: a mission with no worker spans yet and nothing queued has
+ * nothing worth drawing — same gate the old completed-only skyline effectively
+ * had (it returned null for zero spans); computeMissionFlightStrip never
+ * returns null, so the card decides instead. */
+function hasFlightStripActivity(data: MissionFlightStripData | null): boolean {
+  return !!data && (data.bars.length > 0 || data.rail.marks.length > 0);
 }
 
 const FILTER_TABS: { key: FilterTab; label: string }[] = [
@@ -540,6 +547,9 @@ function FullMissionCard({ mission, group }: { mission: MissionItem; group: Miss
           <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
         {mission.totalTasks > 0 && <div className="my-2.5"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>}
+        {hasFlightStripActivity(mission.flightStrip) && (
+          <div className="mb-2.5"><FlightStrip data={mission.flightStrip!} /></div>
+        )}
 
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted flex-wrap">
           {mission.role && (
@@ -700,15 +710,15 @@ function CompactMissionCard({ mission, group }: { mission: MissionItem; group: M
           <VerificationPill criteriaCount={mission.goalCriteriaCount} overall={mission.goalCriteriaOverall} />
           <MissionAuthorshipStats health={mission.authorshipHealth} />
         </div>
-        {group === 'completed' && mission.skyline ? (
+        {hasFlightStripActivity(mission.flightStrip) ? (
           <div className="mt-2">
-            <MissionSkylineChart skyline={mission.skyline} normalizationSlots={mission.normalizationSlots} />
+            <FlightStrip data={mission.flightStrip!} />
           </div>
         ) : mission.totalTasks > 0 ? (
           <div className="mt-2"><MissionProgressBar density="full" missionId={mission.id} segments={mission.segments} completedTasks={mission.completedTasks} totalTasks={mission.totalTasks} inFlightTasks={mission.inFlightTasks} /></div>
         ) : null}
         <div className="text-[11px] text-text-muted mt-1 flex items-center gap-1.5 flex-wrap">
-          {!(group === 'completed' && mission.skyline) && mission.totalTasks > 0 && (
+          {!hasFlightStripActivity(mission.flightStrip) && mission.totalTasks > 0 && (
             <span>{mission.completedTasks} of {mission.totalTasks} done</span>
           )}
           <span title={mission.lastActivityAt ? `Last activity: ${mission.lastActivityAt}` : undefined}>

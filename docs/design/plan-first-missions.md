@@ -1,3 +1,34 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# The gate machinery (requiresPlanApproval, the plan_awaiting_approval invariant,
+# PlanReviewPanel) exists — but shipped for docs/design/spec-to-build-pattern.md's
+# emitsPlan path, not for this doc's own trigger (flipping the flag on a
+# mission's first organizer cycle from POST /api/missions). That specific write
+# is still absent, so this doc's premise "nothing sets requiresPlanApproval" is
+# now stale prose (two other writers exist) even though its own proposal is
+# unbuilt.
+assertions:
+  - id: "plan-review-panel-component"
+    type: "symbol"
+    name: "PlanReviewPanel"
+    path: "apps/web/src/app/app/(protected)/tasks/[id]/PlanReviewPanel.tsx"
+  - id: "plan-awaiting-approval-invariant"
+    type: "config_key"
+    key: "plan_awaiting_approval"
+    file: "apps/web/src/lib/mission-invariants.ts"
+  - id: "requires-plan-approval-gate-read"
+    type: "symbol_reachable"
+    symbol: "requiresPlanApproval"
+    entry: "apps/web/src/lib/task-dependencies.ts"
+    as: "read"
+  - id: "mission-auto-start-sets-requires-plan-approval"
+    type: "symbol_reachable"
+    symbol: "requiresPlanApproval"
+    entry: "apps/web/src/app/api/missions/route.ts"
+    as: "assign"
+---
+
 # Plan-first for account-authored missions
 
 **Status:** Proposed

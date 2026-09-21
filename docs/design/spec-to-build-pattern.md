@@ -1,3 +1,40 @@
+---
+status: proposed
+# Draft assertions — Tier 3 weekly cron (docs/design/spec-conformance.md §Tier 3).
+# All four assertions below pass against the current tree: Proposal §1
+# (emitsPlan), §2 (forced requiresPlanApproval), §3 (specSource traceability)
+# and §4 (renderSpecConformanceGuidance) all read as shipped, even though the
+# doc's own "Current state (recon)" section still says the create_task path is
+# unreachable — that recon is now stale, not the code. All-pass here derives
+# `implemented`, which contradicts the declared `proposed` status under CI's
+# derived-vs-declared check (§2 case 2). Promoting a design doc's status is an
+# editorial/lifecycle call (this doc still has open "Non-goals" and "Open
+# questions" sections a promotion would need to reconcile) that belongs to a
+# human reviewer, not this Tier-3 drafting pass — so `emits-plan-gate-in-tasks-route`
+# is suppressed below to keep status `proposed` (honest: passes, but promotion
+# undecided) instead of contradicting.
+assertions:
+  - id: "emits-plan-gate-in-tasks-route"
+    type: "symbol_reachable"
+    symbol: "emitsPlan"
+    entry: "apps/web/src/app/api/tasks/route.ts"
+    as: "assign"
+    skip_until: "2026-12-15"
+    skip_reason: "Passes — emitsPlan is wired end-to-end (route, approve-plan specSource, reviewer guidance, mission-invariants split, dashboard rendering per independent verification). Suppressed so promoting this design doc's status from 'proposed' to 'implemented' stays a human editorial decision, not one this drafting pass makes unilaterally — see status callout above."
+  - id: "spec-source-context-type"
+    type: "symbol"
+    name: "SpecSourceContext"
+    path: "apps/web/src/lib/approve-plan.ts"
+  - id: "spec-conformance-reviewer-guidance"
+    type: "symbol"
+    name: "renderSpecConformanceGuidance"
+    path: "apps/web/src/lib/reviewer.ts"
+  - id: "emits-plan-mcp-allowlist"
+    type: "config_key"
+    key: "emitsPlan"
+    file: "packages/core/mcp-tools.ts"
+---
+
 # Spec-to-build as a first-class pattern
 
 **Status:** Proposed

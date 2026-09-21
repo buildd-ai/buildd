@@ -7,6 +7,7 @@ import { authenticateApiKey } from '@/lib/api-auth';
 import { resolveAccountTeamIds } from '@/lib/team-access';
 import { computeNextRunAt } from '@/lib/schedule-helpers';
 import { computeMissionProgress, validateGoalCriteria } from '@buildd/core/mission-helpers';
+import { computeAndStoreFlightStripCache } from '@buildd/core/flight-strip-store';
 import { isMissionBlocked, wouldCreateCycle } from '@/lib/mission-dependency';
 import { laterStartAt, resolveDeferredStart } from '@/lib/deferred-start';
 import { refreshStaleWorkers } from '@/lib/pr-state-refresh';
@@ -646,6 +647,22 @@ export async function PATCH(
       .set(updateData)
       .where(eq(missions.id, id))
       .returning();
+
+    // Rule P-1's write side (docs/design/mission-flight-strip.md): a person may
+    // always override completion, so this explicit path is a second writer
+    // alongside `completeMissionIfVerified` — both fire on the same transition
+    // (status -> 'completed'), never on 'archived'. Awaited (unlike the
+    // automated path's fire-and-forget): this is a single bounded DB read plus
+    // write, not a GitHub round-trip, and an explicit human/MCP action is not
+    // the hot path a background compute is protecting — the list page can
+    // read the cache immediately instead of racing the response. A failure
+    // here must still not fail the PATCH the mission's own status change
+    // depends on.
+    if (status === 'completed' && existing.status !== 'completed') {
+      await computeAndStoreFlightStripCache(id, { missionCompletedAt: updated?.completedAt ?? new Date() }).catch(e =>
+        console.error(`[missions/patch] flight-strip cache compute failed for ${id}:`, e)
+      );
+    }
 
     // Opting a mission in has one side effect that cannot wait for the next
     // organizer cycle: the integration branch must exist on the remote before

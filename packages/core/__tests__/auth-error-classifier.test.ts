@@ -61,6 +61,10 @@ describe('classifyAuthErrorSeverity', () => {
     it('matches Codex "No Codex auth found"', () => {
       expect(classifyAuthErrorSeverity('No Codex auth found')).toBe('degraded');
     });
+
+    it('matches the Claude CLI\'s own "Not logged in · Please run /login"', () => {
+      expect(classifyAuthErrorSeverity('Not logged in · Please run /login')).toBe('degraded');
+    });
   });
 
   describe('none — non-auth errors', () => {

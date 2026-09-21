@@ -1,21 +1,25 @@
 import { db } from '@buildd/core/db';
 import { missions, workspaces, workspaceSkills, missionNotes, workers, tasks, initiatives } from '@buildd/core/db/schema';
-import { eq, and, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
+import { eq, and, or, inArray, desc, isNotNull, isNull, ne } from 'drizzle-orm';
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { getCurrentUser } from '@/lib/auth-helpers';
 import { getUserTeamIds, getUserWorkspaceIds } from '@/lib/team-access';
 import { deriveTaskHealthSignal, formatNextRun, deriveMissionDisplayState, getMissionStateChip } from '@/lib/mission-helpers';
-import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth } from '@buildd/core/mission-helpers';
+import { computeMissionProgress, deriveMissionProgressMetric, deriveTaskType, computeMissionSkyline, deriveCriteriaGatePresentation, CRITERIA_GATE_TONE_CLASS, isDeliverableTask, computeMissionAuthorshipHealth, computeMissionFlightStrip, deriveWorkLane } from '@buildd/core/mission-helpers';
 import { loadMissionFollowupTasks } from '@/lib/mission-followups';
 import { MissionAuthorshipStats } from '@/components/MissionAuthorshipStats';
 import { inferCriteriaFailureReading, describeCriteriaFailureReading } from '@/lib/criteria-rearm';
 import { MissionProgressBar } from '@/components/MissionProgressBar';
 import { deriveChainPosition, type ChainPositionResult, type ChainPositionDep } from '@/lib/task-presentation';
 import { getHeartbeatStatus, isOverdue as checkOverdue } from '@/lib/heartbeat-helpers';
-import { isSystemWorkspace, displayWorkspaceName } from '@buildd/shared';
+import { isSystemWorkspace, displayWorkspaceName, type GoalCriterion, type GoalCriteriaState } from '@buildd/shared';
 import { resolvePolicy } from '@/lib/merge-policy';
-import MissionSettings from './MissionSettings';
+import { buildSteeringEvents, countOrchestratorPlans } from '@/lib/mission-steering-events';
+import { groupTasksByPhase, selectMissionRecords } from '@/lib/flight-strip-nav';
+import MissionFlightStripNav from './MissionFlightStripNav';
+import MissionVerifiedPill from './MissionVerifiedPill';
+import MissionOverflowMenu from './MissionOverflowMenu';
 import MissionMergePolicyRow from '@/components/MissionMergePolicyRow';
 import MissionReviewSummary from './MissionReviewSummary';
 import MissionInitiativeSelector, { type InitiativeOption } from './MissionInitiativeSelector';
@@ -40,7 +44,6 @@ import MissionConfig from './MissionConfig';
 import MissionTabs from './MissionTabs';
 import MissionFeed from './MissionFeed';
 import MissionSecondaryPanel from './MissionSecondaryPanel';
-import MissionGoalCriteria from './MissionGoalCriteria';
 import MissionDecisionSheet from './MissionDecisionSheet';
 import { buildFileWorkHref } from '@/lib/criteria-decision-links';
 import RaiseBudgetButton from './RaiseBudgetButton';
@@ -149,6 +152,8 @@ export default async function MissionDetailPage({
               turns: true,
               completedAt: true,
               startedAt: true,
+              updatedAt: true,
+              exitCause: true,
               currentAction: true,
               commitCount: true,
               filesChanged: true,
@@ -225,8 +230,8 @@ export default async function MissionDetailPage({
                       id: true, status: true, waitingFor: true, branch: true, prUrl: true,
                       prNumber: true, prLifecycleStatus: true, mergedAt: true, costUsd: true,
                       supersededByPrNumber: true, supersededByPrUrl: true, supersededReason: true,
-                      turns: true, completedAt: true, startedAt: true, currentAction: true,
-                      commitCount: true, filesChanged: true,
+                      turns: true, completedAt: true, startedAt: true, updatedAt: true, exitCause: true,
+                      currentAction: true, commitCount: true, filesChanged: true,
                     },
                     orderBy: (w: any, { desc }: any) => [desc(w.startedAt)],
                     limit: 3,
@@ -309,6 +314,25 @@ export default async function MissionDetailPage({
       reviewerNoteMap.set(note.taskId, note);
     }
   }
+
+  // Human-authored mission notes — the flight-strip steering rail's "human
+  // touch" diamonds (mission-steering-events.ts). Task-scoped notes (a reply
+  // or guidance posted against one task) are written with `missionId: null`
+  // (apps/web/src/app/api/tasks/[id]/notes/route.ts) — a human touch on this
+  // mission's work, so both arms must be read or most human steering marks
+  // would silently vanish from the rail.
+  const humanSteeringNotes = allMissionTaskIds.length > 0
+    ? await db.query.missionNotes.findMany({
+        where: and(
+          or(eq(missionNotes.missionId, id), inArray(missionNotes.taskId, allMissionTaskIds)),
+          eq(missionNotes.authorType, 'user'),
+        ),
+        columns: { id: true, authorType: true, createdAt: true },
+      })
+    : await db.query.missionNotes.findMany({
+        where: and(eq(missionNotes.missionId, id), eq(missionNotes.authorType, 'user')),
+        columns: { id: true, authorType: true, createdAt: true },
+      });
 
   // BT-21: resolve effective merge policy tier for mission header chip
   const workspaceForPolicy = mission.workspaceId
@@ -809,6 +833,58 @@ export default async function MissionDetailPage({
     ) || []
   ) || [];
 
+  // ── Flight strip navigator (docs/design/mission-flight-strip.md §7) ────────
+  // Bars come from deliverable (taskClass='work') spans only — an orchestrator
+  // planning task has no lane and would otherwise render as a misclassified
+  // BUILD bar. Steering marks are supplied separately, on the options bag.
+  const flightStripTasks = timelineTasks.map(t => ({
+    id: t.id, status: t.status, taskClass: t.taskClass, roleSlug: t.roleSlug, kind: t.kind, title: t.title,
+  }));
+  const flightStripWorkers = timelineTasks.flatMap(t =>
+    ((t.workers ?? []) as any[]).map(w => ({
+      id: w.id, taskId: t.id, status: w.status, startedAt: w.startedAt, completedAt: w.completedAt,
+      updatedAt: w.updatedAt, exitCause: w.exitCause,
+    }))
+  );
+  const steeringEvents = buildSteeringEvents(
+    allTasks.map(t => ({
+      id: t.id, mode: t.mode, creationSource: t.creationSource,
+      workers: ((t.workers ?? []) as any[]).map(w => ({ turns: w.turns, startedAt: w.startedAt })),
+    })),
+    humanSteeringNotes,
+  );
+  const flightStripData = computeMissionFlightStrip(flightStripTasks, flightStripWorkers, {
+    missionCompletedAt: (mission as any).completedAt ?? null,
+    steeringEvents,
+  });
+  const orchestratorPlans = countOrchestratorPlans(flightStripData.rail);
+  const orchestratorTicks = (mission.schedule as any)?.totalChecks ?? 0;
+  const missionRecords = selectMissionRecords(allArtifacts);
+
+  // Goal criteria — hoisted so the header's Verified pill and its bottom
+  // sheet (MissionVerifiedPill) read the same values the removed
+  // always-visible block used to.
+  const goalCriteria = ((mission as any).goalCriteria as GoalCriterion[] | null) ?? [];
+  const goalCriteriaStateFull = (mission as any).goalCriteriaState as GoalCriteriaState | null;
+  const autoVerifyFlag = (mission as any).autoVerify as boolean | null;
+
+  const flightStripNavTasksWithPhase = timelineTasks.map(t => ({
+    id: t.id,
+    title: t.title,
+    href: `/app/tasks/${t.id}`,
+    lane: deriveWorkLane(t),
+    status: t.status,
+    prNumber: ((t.workers as any[])?.[0]?.prNumber as number | null | undefined) ?? null,
+    artifacts: ((t.workers as any[]) ?? []).flatMap(w => (w.artifacts ?? [])).map((a: any) => ({ id: a.id, type: a.type, title: a.title })),
+    missionPhaseIndex: t.missionPhaseIndex ?? null,
+    missionPhaseLabel: t.missionPhaseLabel ?? null,
+  }));
+  const flightStripGroups = groupTasksByPhase(flightStripNavTasksWithPhase).map(g => ({
+    index: g.index,
+    label: g.label,
+    tasks: g.tasks.map(({ missionPhaseIndex, missionPhaseLabel, ...row }) => row),
+  }));
+
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://buildd.dev';
 
   const missionTaskIds = allTasks.map((t) => t.id);
@@ -895,19 +971,47 @@ export default async function MissionDetailPage({
       {/* Freshen PR state on open — reconcile only, never a planning pass */}
       <MissionReconcileOnOpen missionId={id} />
 
-      {/* Breadcrumbs */}
-      <div className="flex items-center gap-2 text-[12px] text-text-muted mb-5">
-        {breadcrumb.links.map((link, i) => (
-          <span key={link.href} className="flex items-center gap-2">
-            {i > 0 && <span>/</span>}
-            <Link href={link.href} className="hover:text-text-secondary transition-colors">
-              {link.label}
-            </Link>
-          </span>
-        ))}
-        <span>/</span>
-        <span className="text-text-secondary truncate">{breadcrumb.currentLabel}</span>
+      {/* Breadcrumbs + overflow menu (MissionSettings relocated behind it) */}
+      <div className="flex items-center justify-between gap-2 mb-5">
+        <div className="flex items-center gap-2 text-[12px] text-text-muted min-w-0">
+          {breadcrumb.links.map((link, i) => (
+            <span key={link.href} className="flex items-center gap-2 shrink-0">
+              {i > 0 && <span>/</span>}
+              <Link href={link.href} className="hover:text-text-secondary transition-colors">
+                {link.label}
+              </Link>
+            </span>
+          ))}
+          <span className="shrink-0">/</span>
+          <span className="text-text-secondary truncate">{breadcrumb.currentLabel}</span>
+        </div>
+        <MissionOverflowMenu
+          missionId={id}
+          currentStatus={mission.status}
+          cronExpression={scheduleCron}
+          workspaceId={mission.workspaceId}
+          roles={roles}
+          hasSchedule={!!scheduleCron}
+          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
+          isHeld={isHeld}
+          displayState={displayState}
+          hasPrimaryAction={hasPrimaryAction}
+        />
       </div>
+
+      {/* ── Flight strip navigator (§7) — pinned under the title. Tapping a bar
+          scrolls to and outlines its task row, and vice versa. Task list
+          grouped by stored mission phase, tagged by lane; goal criteria live
+          in the Verified pill sheet above, not here; MissionSettings lives
+          behind the header's overflow menu, not here either. */}
+      <MissionFlightStripNav
+        data={flightStripData}
+        groups={flightStripGroups}
+        orchestratorPlans={orchestratorPlans}
+        orchestratorTicks={orchestratorTicks}
+        records={missionRecords.map(a => ({ id: a.id, title: a.title, type: a.type }))}
+        recordsHref="#mission-artifacts"
+      />
 
       {/* ── Status Block ── */}
       <div className="mb-6">
@@ -946,6 +1050,15 @@ export default async function MissionDetailPage({
                   {hasPolicyOverride && <span className="opacity-60">·override</span>}
                 </Link>
               )}
+              <MissionVerifiedPill
+                missionId={id}
+                criteria={goalCriteria}
+                criteriaState={goalCriteriaStateFull}
+                autoVerify={autoVerifyFlag}
+                readonly={isTerminal}
+                failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
+                overall={missionCriteriaOverall as 'pass' | 'fail' | 'UNVERIFIED' | 'NOT_EVALUATED' | 'PENDING' | null}
+              />
               <MissionAuthorshipStats health={authorshipHealth} />
             </span>
           }
@@ -971,13 +1084,11 @@ export default async function MissionDetailPage({
             (inferCriteriaFailureReading) is the difference between an owner
             editing one line and an owner filing a phantom task. */}
         {displayState === 'waiting_decision' && (() => {
-          const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
-          const goalCriteria = ((mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null) ?? [];
-          const reading = inferCriteriaFailureReading(goalCriteriaState);
+          const reading = inferCriteriaFailureReading(goalCriteriaStateFull);
           const readingCopy = describeCriteriaFailureReading(reading);
           // First non-passing criterion, by its stable `index` — not array
           // position in `criteria`, which can skip entries.
-          const failingState = (goalCriteriaState?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
+          const failingState = (goalCriteriaStateFull?.criteria ?? []).find(c => c.verdict !== 'pass') ?? null;
           const failingCriterionIndex = failingState ? failingState.index : null;
           const failingCriterion = failingCriterionIndex != null ? goalCriteria[failingCriterionIndex] ?? null : null;
           const fileWorkHref = buildFileWorkHref({
@@ -993,7 +1104,7 @@ export default async function MissionDetailPage({
                   Waiting for human decision
                 </span>
                 <span className="text-[12px] text-text-secondary">
-                  {readingCopy} See Goal Criteria below ↓
+                  {readingCopy} See Goal Criteria above ↑
                 </span>
               </div>
               <MissionDecisionSheet
@@ -1289,22 +1400,6 @@ export default async function MissionDetailPage({
         </div>
       )}
 
-      {/* Mission Controls & Quick Task */}
-      <div className="mb-6">
-        <MissionSettings
-          missionId={id}
-          currentStatus={mission.status}
-          cronExpression={scheduleCron}
-          workspaceId={mission.workspaceId}
-          roles={roles}
-          hasSchedule={!!scheduleCron}
-          orchestrationMode={mission.orchestrationMode as 'auto' | 'manual' | undefined ?? 'auto'}
-          isHeld={isHeld}
-          displayState={displayState}
-          hasPrimaryAction={hasPrimaryAction}
-        />
-      </div>
-
       {/* ── Criteria gate ──
           The situation block above the fold now states a criteria hold in the
           same sentence as every other blocker, ranked against them, with the
@@ -1315,7 +1410,7 @@ export default async function MissionDetailPage({
           whose `explain` read failed still sees the gate. */}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && criteriaGate.state === 'unverified' && (
         <p className="mb-4 text-[12px] text-text-muted">
-          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria below ↓
+          Completion gated by {countOf(missionCriteria!.length, 'criterion', 'criteria')}, not yet verified. See Goal Criteria above ↑
         </p>
       )}
       {!missionAnswer && displayState !== 'waiting_decision' && criteriaGate && (criteriaGate.state === 'failing' || criteriaGate.state === 'refused') && (
@@ -1324,7 +1419,7 @@ export default async function MissionDetailPage({
             {criteriaGate.label}
           </span>
           <span className="text-[12px] text-text-secondary">
-            {criteriaGate.detail ? `${criteriaGate.detail} — ` : ''}see Goal Criteria below ↓
+            {criteriaGate.detail ? `${criteriaGate.detail} — ` : ''}see Goal Criteria above ↑
           </span>
         </div>
       )}
@@ -1384,28 +1479,6 @@ export default async function MissionDetailPage({
         ) : undefined}
       />
 
-
-      {/* ── Goal Criteria — shown when criteria are set (empty = no chrome) ── */}
-      {(() => {
-        const goalCriteria = (mission as any).goalCriteria as import('@buildd/shared').GoalCriterion[] | null;
-        const goalCriteriaState = (mission as any).goalCriteriaState as import('@buildd/shared').GoalCriteriaState | null;
-        const autoVerify = (mission as any).autoVerify as boolean | null;
-        const criteria = goalCriteria ?? [];
-        const isTerminalMission = ['completed', 'archived'].includes(mission.status);
-        if (criteria.length === 0 && isTerminalMission) return null;
-        return (
-          <div className="mb-6" id="mission-goal-criteria">
-            <MissionGoalCriteria
-              missionId={id}
-              criteria={criteria}
-              criteriaState={goalCriteriaState}
-              autoVerify={autoVerify}
-              readonly={isTerminalMission}
-              failingCiPrNumbers={failingCiPrNumbers.length > 0 ? failingCiPrNumbers : undefined}
-            />
-          </div>
-        );
-      })()}
 
       {/* ── Secondary: Settings (collapsed by default) ── */}
       {(isHeartbeat || !['completed', 'archived'].includes(mission.status)) && (
@@ -1510,22 +1583,24 @@ export default async function MissionDetailPage({
       )}
 
       {/* ── Artifacts ── */}
-      <MissionArtifacts
-        artifacts={allArtifacts.map((a) => ({
-          id: a.id,
-          type: a.type,
-          title: a.title ?? a.key ?? null,
-          content: a.content ?? null,
-          shareToken: a.shareToken ?? null,
-          visibility: (a.visibility as 'private' | 'public') ?? 'private',
-          metadata: (a.metadata as Record<string, unknown>) ?? {},
-          createdAt: String(a.createdAt),
-          taskTitle: a.taskTitle ?? null,
-        }))}
-        baseUrl={baseUrl}
-        missionId={id}
-        initialOpenArtifactId={initialOpenArtifactId}
-      />
+      <div id="mission-artifacts">
+        <MissionArtifacts
+          artifacts={allArtifacts.map((a) => ({
+            id: a.id,
+            type: a.type,
+            title: a.title ?? a.key ?? null,
+            content: a.content ?? null,
+            shareToken: a.shareToken ?? null,
+            visibility: (a.visibility as 'private' | 'public') ?? 'private',
+            metadata: (a.metadata as Record<string, unknown>) ?? {},
+            createdAt: String(a.createdAt),
+            taskTitle: a.taskTitle ?? null,
+          }))}
+          baseUrl={baseUrl}
+          missionId={id}
+          initialOpenArtifactId={initialOpenArtifactId}
+        />
+      </div>
 
     </div>
     </TaskPanelWrapper>

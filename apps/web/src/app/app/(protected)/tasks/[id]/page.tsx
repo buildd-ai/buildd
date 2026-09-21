@@ -1431,6 +1431,31 @@ export default async function TaskDetailPage({
                       {worker.error && (
                         <p className="font-mono text-[11px] text-status-error mt-0.5 whitespace-pre-wrap break-words" title={worker.error}>{worker.error}</p>
                       )}
+                      {worker.status === 'superseded' && (
+                        <p className="text-[11px] text-text-muted mt-0.5">
+                          Session ended after the question was answered.{' '}
+                          {worker.continuationTaskId ? (
+                            <a href={`/app/tasks/${worker.continuationTaskId}`} className="text-status-info hover:underline">
+                              Continued in a new task →
+                            </a>
+                          ) : (
+                            'Continuation task not recorded.'
+                          )}
+                        </p>
+                      )}
+                      {worker.postSupersessionError && (
+                        <p
+                          className="font-mono text-[11px] text-status-warning mt-0.5 whitespace-pre-wrap break-words"
+                          title={worker.postSupersessionError}
+                        >
+                          Error reported after this session ended: {worker.postSupersessionError}
+                          {worker.continuationTaskId && (
+                            <>
+                              {' '}<a href={`/app/tasks/${worker.continuationTaskId}`} className="text-status-info hover:underline">See continuation →</a>
+                            </>
+                          )}
+                        </p>
+                      )}
                       {worker.rejectedCompletionPayload && (() => {
                         const rejected = worker.rejectedCompletionPayload as {
                           reason?: string; summary?: string | null; salvagedArtifactId?: string;
