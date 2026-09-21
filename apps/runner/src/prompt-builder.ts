@@ -3,6 +3,7 @@ import type { LocalWorker, BuilddTask } from './types';
 import { sessionLog } from './session-logger';
 import { shouldDenyPrMutation } from './pr-mutation-enforcement.js';
 import { resolveTaskPrBase } from '@buildd/core/mission-integration';
+import { HEARTBEAT_PROTOCOL_BLOCK } from '@buildd/shared';
 import {
   buildMemoryBlock,
   type MemoryBlockResult,
@@ -445,6 +446,17 @@ export function buildPromptWithComposition(ctx: PromptContext): PromptBuildResul
       'Use it only when the task description asks you to propose follow-up work. When you do, each `plan` item needs: ref (unique ID like "step-1"), title, description.\n' +
       'Nothing in the plan is dispatched automatically — a human approves or rejects it. Do NOT call create_task to file the work yourself.'
     );
+  }
+
+  // Heartbeat protocol — static text, unconditional on roleSlug (mission-run's
+  // dominant-role derivation can swap a heartbeat task's role away from
+  // 'organizer', and a workspace may run an overridden organizer role config
+  // that never carries this text) so a heartbeat gets it regardless of which
+  // role, if any, got attached at claim time. See heartbeat-protocol.ts for why
+  // this is not rendered into task.description any more.
+  const isHeartbeatTask = (task.context as { heartbeat?: boolean } | undefined)?.heartbeat === true;
+  if (isHeartbeatTask) {
+    promptParts.push(HEARTBEAT_PROTOCOL_BLOCK);
   }
 
   // Inject aggregation context: embed child task results directly so the agent
