@@ -1371,7 +1371,7 @@ export function computeMissionSkyline(
 
 // ─── Mission flight strip ─────────────────────────────────────────────────────
 
-export const FLIGHT_STRIP_IDLE_THRESHOLD_MS = 5 * 60_000;
+export const FLIGHT_STRIP_IDLE_THRESHOLD_MS = 15 * 60_000;
 export const FLIGHT_STRIP_ORCHESTRATOR_MARK_CAP = 8;
 export const FLIGHT_STRIP_BAR_CAP = 64;
 
