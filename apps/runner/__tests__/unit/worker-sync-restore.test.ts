@@ -142,4 +142,43 @@ describe('WorkerSync.restoreWorkersFromDisk — restart orphan notification', ()
 
     expect(mockUpdateWorker).not.toHaveBeenCalled();
   });
+
+  test('flags the reconciliation write so the server records a crashed terminal outcome, not an ordinary failure', () => {
+    diskWorkers = [restartKilledFromDisk()];
+    const { sync } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    const [, update] = mockUpdateWorker.mock.calls[0] as any[];
+    expect(update.crashReconciled).toBe(true);
+  });
+
+  test('carries whatever cost/token numbers the crashed session had accumulated, so the terminal record is not measurement-blind', () => {
+    diskWorkers = [restartKilledFromDisk({
+      resultMeta: { totalCostUsd: 1.23, numTurns: 7 },
+      tokenTally: { inputTokens: 4000, outputTokens: 900 },
+    })];
+    const { sync } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    const [, update] = mockUpdateWorker.mock.calls[0] as any[];
+    expect(update.costUsd).toBe(1.23);
+    expect(update.inputTokens).toBe(4000);
+    expect(update.outputTokens).toBe(900);
+    expect(update.resultMeta?.numTurns).toBe(7);
+  });
+
+  test('omits attribution fields entirely when the crashed session never got far enough to accumulate any', () => {
+    diskWorkers = [restartKilledFromDisk()];
+    const { sync } = makeSync();
+
+    sync.restoreWorkersFromDisk();
+
+    const [, update] = mockUpdateWorker.mock.calls[0] as any[];
+    expect(update.costUsd).toBeUndefined();
+    expect(update.inputTokens).toBeUndefined();
+    expect(update.outputTokens).toBeUndefined();
+    expect(update.resultMeta).toBeUndefined();
+  });
 });

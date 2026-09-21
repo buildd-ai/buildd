@@ -8,6 +8,7 @@ import { saveWorker as storeSaveWorker, loadAllWorkers } from './worker-store';
 import { cleanupWorktree } from './git-operations';
 import { WAITING_WORKTREE_TTL_MS } from './worktree-utils';
 import { sessionLog } from './session-logger';
+import { buildTerminalAttributionPayload } from './terminal-attribution';
 import { WORKER_HARD_TIMEOUT_MS } from '@buildd/shared';
 
 /**
@@ -247,10 +248,23 @@ export class WorkerSync {
           worker.currentAction = 'Process restarted';
           delete worker.killedByRestart;
 
-          // Notify server so it doesn't stay "running" forever
+          // Notify server so it doesn't stay "running" forever. Carries
+          // whatever cost/token/turn numbers this session had accumulated
+          // before the process died — without them the crashed session's
+          // terminal record (see PATCH /api/workers/[id]) would land with
+          // every measurement null, exactly like the refusal-path bug this
+          // was built alongside. `crashReconciled` tells the server this
+          // 'failed' write is a reconciliation, not the agent's own report,
+          // so its terminal record's outcome reads 'crashed' rather than an
+          // ordinary failure.
           this.ctx.buildd.updateWorker(worker.id, {
             status: 'failed',
             error: 'Process restarted',
+            crashReconciled: true,
+            ...buildTerminalAttributionPayload(worker),
+            ...(typeof worker.resultMeta?.numTurns === 'number' && worker.resultMeta.numTurns > 0
+              ? { resultMeta: { numTurns: worker.resultMeta.numTurns } }
+              : {}),
           }).catch(() => {});
         }
         // Ensure arrays exist (workers saved before these features were added)
