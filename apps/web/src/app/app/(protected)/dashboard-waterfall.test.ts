@@ -25,7 +25,7 @@ const CEILINGS: Record<string, number> = {
   'layout.tsx': 3,
   'missions/page.tsx': 11,
   'missions/[id]/page.tsx': 15,
-  'tasks/[id]/page.tsx': 22,
+  'tasks/[id]/page.tsx': 19,
 };
 
 /**
@@ -59,6 +59,23 @@ describe('dashboard render waterfalls stay collapsed', () => {
     expect(countSerialWaits('const [a, b] = await Promise.all([f(), g()]);')).toBe(1);
     expect(countSerialWaits('const a = await f(); const b = await g();')).toBe(2);
     expect(countSerialWaits('// await f()\n/* await g() */')).toBe(0);
+  });
+});
+
+describe('task detail keeps GitHub off the critical path', () => {
+  const page = () => sources.get('tasks/[id]/page.tsx')!;
+
+  it('does not call the GitHub REST client from the page body', () => {
+    // Up to three sequential REST calls with no latency ceiling, and unlike the
+    // DB round trips on this page they do not shrink from running in-region.
+    // They live in PrDetailsCard behind a Suspense boundary now.
+    expect(page()).not.toContain('githubApi(');
+  });
+
+  it('streams the PR panel behind a boundary whose fallback is the stored card', () => {
+    const source = page();
+    expect(source).toContain('<Suspense fallback={<StoredPrCard {...storedPrFacts} />}>');
+    expect(source).toContain('<PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />');
   });
 });
 

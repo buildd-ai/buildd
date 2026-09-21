@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { db } from '@buildd/core/db';
 import { tasks, workers, artifacts, workspaceSkills, workerErrorTraces, workspaces, missionNotes, releases } from '@buildd/core/db/schema';
 import { eq, desc, inArray, asc, ne, and, isNull, count } from 'drizzle-orm';
@@ -43,8 +44,7 @@ import { resolveShippedRelease } from '@/lib/task-ship-state';
 import { deriveTaskOrigin } from '@/lib/task-origin';
 import { TaskShipBadge } from '@/components/TaskShipBadge';
 import { SpecSourceBlock, type SpecSourceContext } from '@/components/SpecSourceBlock';
-import { githubApi } from '@/lib/github';
-import PrCard, { type CiCheckRun } from '@/components/task/PrCard';
+import PrDetailsCard, { StoredPrCard } from './PrDetailsCard';
 
 // Exit causes that get their own badge instead of a bare "Failed" — each one
 // tells the operator where to look (budget, infra, over-claim, dead session).
@@ -190,80 +190,6 @@ export default async function TaskDetailPage({
           });
           taskWorkers.splice(0, taskWorkers.length, ...updatedWorkers);
         }
-      }
-    }
-  }
-
-  // Fetch PR details (CI checks, review state, mergeable) for the PR panel (AC-4).
-  // One GitHub call per task detail render when an open PR is present.
-  // Non-fatal: CI/review details are supplementary; merge state is already in DB.
-  let prDetails: {
-    ciChecks: { total: number; passed: number; failed: number; pending: number; runs: CiCheckRun[] } | null;
-    reviews: { approved: number; changesRequested: number; pending: number } | null;
-    mergeable: boolean | null;
-    mergeableState: string | null;
-  } | null = null;
-
-  {
-    const prWorker = taskWorkers.find(w => w.prNumber && w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed' && w.prLifecycleStatus !== 'merged');
-    if (prWorker?.prNumber && prWorker.prUrl) {
-      try {
-        const wsWithInstall = await db.query.workspaces.findFirst({
-          where: eq(workspaces.id, task.workspaceId),
-          with: {
-            githubInstallation: { columns: { installationId: true } },
-            githubRepo: { columns: { fullName: true } },
-          },
-          columns: {},
-        });
-        const installId = wsWithInstall?.githubInstallation?.installationId;
-        const repoFullName = wsWithInstall?.githubRepo?.fullName;
-        if (installId && repoFullName) {
-          const pr = await githubApi(installId, `/repos/${repoFullName}/pulls/${prWorker.prNumber}`);
-          const headSha = pr.head?.sha as string | undefined;
-          const [checksResult, reviewsResult] = await Promise.allSettled([
-            headSha
-              ? githubApi(installId, `/repos/${repoFullName}/commits/${headSha}/check-runs?per_page=100`)
-              : Promise.resolve(null),
-            githubApi(installId, `/repos/${repoFullName}/pulls/${prWorker.prNumber}/reviews`),
-          ]);
-          const checksData = checksResult.status === 'fulfilled' ? checksResult.value : null;
-          const reviewsData = reviewsResult.status === 'fulfilled' ? reviewsResult.value : null;
-          const checkRuns: any[] = Array.isArray(checksData?.check_runs) ? checksData.check_runs : [];
-          const isTerminal = (c: any) => c.status === 'completed';
-          const isPassing = (c: any) => isTerminal(c) && (c.conclusion === 'success' || c.conclusion === 'skipped' || c.conclusion === 'neutral');
-          const isFailing = (c: any) => isTerminal(c) && (c.conclusion === 'failure' || c.conclusion === 'timed_out' || c.conclusion === 'cancelled' || c.conclusion === 'action_required');
-          const reviewList: any[] = Array.isArray(reviewsData) ? reviewsData : [];
-          const ACTIONABLE = new Set(['APPROVED', 'CHANGES_REQUESTED', 'DISMISSED', 'PENDING']);
-          const latestByUser = new Map<string, string>();
-          for (const r of reviewList) {
-            if (r.user?.login && ACTIONABLE.has(r.state)) latestByUser.set(r.user.login, r.state);
-          }
-          const reviewStates = [...latestByUser.values()];
-          prDetails = {
-            ciChecks: checkRuns.length > 0 ? {
-              total: checkRuns.length,
-              passed: checkRuns.filter(isPassing).length,
-              failed: checkRuns.filter(isFailing).length,
-              pending: checkRuns.filter((c: any) => !isTerminal(c)).length,
-              runs: checkRuns.map((c: any): CiCheckRun => ({
-                name: c.name,
-                conclusion: c.conclusion ?? null,
-                status: c.status,
-                detailsUrl: c.details_url ?? c.html_url ?? null,
-              })),
-            } : null,
-            reviews: {
-              approved: reviewStates.filter(s => s === 'APPROVED').length,
-              changesRequested: reviewStates.filter(s => s === 'CHANGES_REQUESTED').length,
-              pending: reviewStates.filter(s => s === 'PENDING').length,
-            },
-            mergeable: typeof pr.mergeable === 'boolean' ? pr.mergeable : null,
-            mergeableState: typeof pr.mergeable_state === 'string' ? pr.mergeable_state : null,
-          };
-        }
-      } catch {
-        // Non-fatal — PR panel degrades to stored state
       }
     }
   }
@@ -1274,23 +1200,27 @@ export default async function TaskDetailPage({
         {(() => {
           const prWorker = taskWorkers.find(w => w.prNumber && w.prUrl && !w.mergedAt && w.prLifecycleStatus !== 'closed' && w.prLifecycleStatus !== 'merged');
           if (!prWorker?.prUrl || !prWorker.prNumber) return null;
+          const storedPrFacts = {
+            prUrl: prWorker.prUrl,
+            prNumber: prWorker.prNumber,
+            prLifecycleStatus: prWorker.prLifecycleStatus,
+            linesAdded: prWorker.linesAdded,
+            linesRemoved: prWorker.linesRemoved,
+            filesChanged: prWorker.filesChanged,
+          };
           return (
             <div className="mb-8">
               <div className="font-mono text-[10px] uppercase tracking-[2.5px] text-text-muted pb-2 border-b border-border-default mb-4">
                 Pull Request
               </div>
-              <PrCard
-                prUrl={prWorker.prUrl}
-                prNumber={prWorker.prNumber}
-                prLifecycleStatus={prWorker.prLifecycleStatus}
-                linesAdded={prWorker.linesAdded}
-                linesRemoved={prWorker.linesRemoved}
-                filesChanged={prWorker.filesChanged}
-                ciChecks={prDetails?.ciChecks ?? null}
-                reviews={prDetails?.reviews ?? null}
-                mergeable={prDetails?.mergeable ?? null}
-                mergeableState={prDetails?.mergeableState ?? null}
-              />
+              {/* The GitHub-derived half of this card (CI runs, reviews,
+                  mergeability) is up to three sequential REST calls, so it
+                  streams in behind a boundary instead of holding the whole
+                  page. The fallback is the same card rendered from stored
+                  state, so the PR is readable and linkable on first paint. */}
+              <Suspense fallback={<StoredPrCard {...storedPrFacts} />}>
+                <PrDetailsCard workspaceId={task.workspaceId} {...storedPrFacts} />
+              </Suspense>
             </div>
           );
         })()}
